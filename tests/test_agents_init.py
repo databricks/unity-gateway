@@ -169,7 +169,9 @@ class TestConfigureWiresAiToolsInstall:
 
     def _stub_configure(self, monkeypatch):
         captured = {}
-        monkeypatch.setattr(agents_mod, "configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            agents_mod, "configure_tool", lambda tool, state, model=None, **_kw: state
+        )
         monkeypatch.setattr(agents_mod, "save_state", lambda state: None)
         monkeypatch.setattr(
             agents_mod,
@@ -1120,7 +1122,9 @@ class TestConfigureSelectedTools:
     def test_merges_with_existing_available_tools(self, monkeypatch):
         """Configuring a new tool should not drop previously-configured tools
         from state['available_tools']."""
-        monkeypatch.setattr("ucode.agents.configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            "ucode.agents.configure_tool", lambda tool, state, model=None, **_kw: state
+        )
         monkeypatch.setattr("ucode.agents.save_state", lambda s: None)
 
         state = {
@@ -1132,7 +1136,9 @@ class TestConfigureSelectedTools:
         assert set(result["available_tools"]) == {"codex", "claude"}
 
     def test_adds_new_tool_to_available_tools(self, monkeypatch):
-        monkeypatch.setattr("ucode.agents.configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            "ucode.agents.configure_tool", lambda tool, state, model=None, **_kw: state
+        )
         monkeypatch.setattr("ucode.agents.save_state", lambda s: None)
 
         state = {
@@ -1144,7 +1150,9 @@ class TestConfigureSelectedTools:
         assert set(result["available_tools"]) == {"codex", "claude"}
 
     def test_empty_selection_preserves_existing(self, monkeypatch):
-        monkeypatch.setattr("ucode.agents.configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            "ucode.agents.configure_tool", lambda tool, state, model=None, **_kw: state
+        )
         monkeypatch.setattr("ucode.agents.save_state", lambda s: None)
 
         state = {"workspace": "https://x.databricks.com", "available_tools": ["codex"]}
@@ -1250,6 +1258,20 @@ class TestConfigureToolUserScope:
         managed_files.set_config_scope("user")
         with pytest.raises(RuntimeError, match="requirements.toml"):
             agents_mod.refuse_user_scope_over_managed_files(["codex"])
+
+    def test_managed_config_blocks_user_scope(self):
+        managed_files.set_config_scope("user")
+        with pytest.raises(RuntimeError, match=r"--user.*publishes a managed config.*--global"):
+            agents_mod.refuse_user_scope_over_managed_config("https://ws.example.com", {"x": 1})
+
+    @pytest.mark.parametrize("scope", ["user", "global"])
+    def test_no_managed_config_does_not_block(self, scope):
+        managed_files.set_config_scope(scope)
+        agents_mod.refuse_user_scope_over_managed_config("https://ws.example.com", None)
+
+    def test_global_scope_does_not_block_managed_config(self):
+        managed_files.set_config_scope("global")
+        agents_mod.refuse_user_scope_over_managed_config("https://ws.example.com", {"x": 1})
 
     def test_no_managed_path_is_not_checked(self, monkeypatch):
         monkeypatch.setattr(agents_mod.codex, "codex_managed_config_path", lambda: None)

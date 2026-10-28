@@ -1,11 +1,13 @@
 import json
+import sys
 import threading
-from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import httpx
 import pytest
 
+import tests.e2e_cuj.helpers.tui_request_recorder as recorder_module
 from tests.e2e_cuj.helpers.tui_request_recorder import (
     RecordedRequest,
     RecordedResponse,
@@ -58,9 +60,7 @@ def test_records_request_and_response(recorder):
     assert_response(recorder.response_for(request))
 
 
-def test_configures_isolated_session_state_for_recorder(recorder, tmp_path):
-    commands = []
-
+def _configured_session(recorder, tmp_path, commands):
     class Session:
         home = tmp_path
 
@@ -82,18 +82,28 @@ def test_configures_isolated_session_state_for_recorder(recorder, tmp_path):
                     }
                 )
             )
-            (app / "managed-config.json").write_text(
+            (app / "refresh_ts.json").write_text(
                 json.dumps(
                     {
-                        "workspace": recorder.upstream,
-                        "config": {"spec_version": 1},
-                        "retrieved_at": "2000-01-01T00:00:00+00:00",
-                        "outcome": "published",
+                        recorder.upstream: {
+                            "outcome": "published",
+                            "policy_fingerprint": {"exists": False},
+                        }
                     }
                 )
             )
 
-    recorder.configure_session(Session(), ["configure", "--disable-databricks-ai-tools"])
+    return Session()
+
+
+def test_configures_isolated_session_state_for_recorder(recorder, tmp_path, monkeypatch):
+    commands = []
+    monkeypatch.setattr(recorder_module, "WORKSPACE_POLICY_PATH", tmp_path / "absent.json")
+
+    recorder.configure_session(
+        _configured_session(recorder, tmp_path, commands),
+        ["configure", "--disable-databricks-ai-tools"],
+    )
 
     assert commands == [
         [
@@ -106,14 +116,31 @@ def test_configures_isolated_session_state_for_recorder(recorder, tmp_path):
     state = json.loads((tmp_path / ".ucode/state.json").read_text())
     assert state["current_workspace"] == recorder.url
     assert state["workspaces"][recorder.url] == state["workspaces"][recorder.upstream]
-    managed_path = tmp_path / ".ucode/managed-config.json"
-    managed = json.loads(managed_path.read_text())
-    assert managed["workspace"] == recorder.url
-    first_refresh = datetime.fromisoformat(managed["retrieved_at"])
-
-    managed["retrieved_at"] = "2000-01-01T00:00:00+00:00"
-    managed_path.write_text(json.dumps(managed))
+    refresh = json.loads((tmp_path / ".ucode/refresh_ts.json").read_text())
+    assert refresh[recorder.url] == refresh[recorder.upstream]
+    # Without an installed policy there is nothing to retarget before a launch.
     recorder.prepare_launch()
+    assert json.loads((tmp_path / ".ucode/refresh_ts.json").read_text()) == refresh
 
-    refreshed = json.loads(managed_path.read_text())
-    assert datetime.fromisoformat(refreshed["retrieved_at"]) >= first_refresh
+
+@pytest.mark.skipif(sys.platform == "win32", reason="CUJs run on Linux")
+def test_retargets_an_installed_policy_to_the_recorder(recorder, tmp_path, monkeypatch):
+    policy = tmp_path / "managed-settings.json"
+    policy.write_text(json.dumps({"workspace": recorder.upstream, "config": {"spec_version": 1}}))
+    monkeypatch.setattr(recorder_module, "WORKSPACE_POLICY_PATH", policy)
+    copies = []
+
+    def fake_sudo_cp(command, check):
+        assert command[:2] == ["sudo", "cp"] and check is True
+        copies.append(command[3])
+        policy.write_text(Path(command[2]).read_text())
+
+    monkeypatch.setattr(recorder_module.subprocess, "run", fake_sudo_cp)
+
+    recorder.configure_session(_configured_session(recorder, tmp_path, []), ["configure"])
+
+    assert copies == [str(policy)]
+    assert json.loads(policy.read_text())["workspace"] == recorder.url
+    entry = json.loads((tmp_path / ".ucode/refresh_ts.json").read_text())[recorder.url]
+    assert "last_checked_at" not in entry
+    assert entry["policy_fingerprint"]["exists"] is True

@@ -139,6 +139,26 @@ def test_windows_policy_paths_match_pinned_agent_locations():
     )
 
 
+@pytest.mark.parametrize(
+    ("system_platform", "claude_path"),
+    [
+        ("linux", "/etc/claude-code/managed-settings.json"),
+        ("darwin", "/Library/Application Support/ClaudeCode/managed-settings.json"),
+    ],
+)
+def test_posix_policy_paths_include_the_installed_workspace_policy(system_platform, claude_path):
+    paths = runner.managed_policy_paths(
+        ["claude", "codex"], {}, platform_name="posix", system_platform=system_platform
+    )
+
+    assert paths == (
+        Path("/etc/unitygateway/managed-settings.json"),
+        Path("/etc/codex/managed_config.toml"),
+        Path("/etc/codex/requirements.toml"),
+        Path(claude_path),
+    )
+
+
 def test_windows_policy_preflight_fails_closed_without_required_roots():
     with pytest.raises(RuntimeError, match="PROGRAMDATA"):
         runner.managed_policy_paths(["codex"], {}, platform_name="nt", system_platform="win32")

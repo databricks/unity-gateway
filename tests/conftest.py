@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from types import SimpleNamespace
 
@@ -36,6 +37,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
     from ucode import desktop_auth as desktop_auth_mod
+    from ucode.agents import claude as claude_mod
     from ucode.agents import codex as codex_mod
     from ucode.agents.desktop import claude as desktop_mod
 
@@ -46,11 +48,33 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
     monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(desktop_auth_mod, "_AUTH_LOCK_PATH", state_dir / "claude-desktop-auth.lock")
-    # MANAGED_CONFIG_PATH is bound from APP_DIR at import, so patching APP_DIR alone doesn't move it;
-    # rebind it or save_managed_state writes to the developer's real ~/.ucode/managed-config.json.
+    # The workspace policy lives outside APP_DIR; rebind it, and its user-owned refresh stamps,
+    # so no test reads or installs the machine-wide copy.
     monkeypatch.setattr(
-        managed_config_mod, "MANAGED_CONFIG_PATH", state_dir / "managed-config.json"
+        managed_config_mod,
+        "MANAGED_CONFIG_PATH",
+        tmp_path / "etc" / "unitygateway" / "managed-settings.json",
     )
+    monkeypatch.setattr(managed_config_mod, "REFRESH_TS_PATH", state_dir / "refresh_ts.json")
+    monkeypatch.setattr(
+        managed_config_mod, "USER_MANAGED_CONFIG_PATH", state_dir / "managed-config.json"
+    )
+
+    def install_test_policy(path, desired_text, *, interactive=False, allow_sudo=True):
+        if path != managed_config_mod.MANAGED_CONFIG_PATH or not path.is_relative_to(tmp_path):
+            pytest.fail(f"test attempted to install machine-wide policy at {path}")
+        if config_io_mod.is_dry_run():
+            return
+        if desired_text is None:
+            path.unlink(missing_ok=True)
+        else:
+            config_io_mod.atomic_write_json(path, json.loads(desired_text))
+            path.chmod(0o644)
+
+    monkeypatch.setattr(managed_config_mod, "update_workspace_policy", install_test_policy)
+    # The installer is faked above, so let every host take the installable (Linux/macOS) path;
+    # tests for Windows or UG_SKIP_OS_SETTINGS override this.
+    monkeypatch.setattr(managed_config_mod, "current_os", lambda: managed_files_mod.OS.LINUX)
     backup_dir = state_dir / "managed-backups"
     monkeypatch.setattr(managed_files_mod, "MANAGED_BACKUP_DIR", backup_dir)
     monkeypatch.setattr(
@@ -58,6 +82,11 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(managed_files_mod, "_config_scope", "global")
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
+    # Launch seeds Claude's feature cache in `.claude.json`; never touch the developer's copy.
+    monkeypatch.setattr(claude_mod, "CLAUDE_CODE_CONFIG_PATH", tmp_path / ".claude.json")
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    # The header mod installs beside the real managed file; tests opt in with a tmp root.
+    monkeypatch.setattr(claude_mod, "claude_header_mod_root", lambda: None)
     monkeypatch.setattr(
         codex_mod, "CODEX_MODEL_CATALOG_PATH", state_dir / "codex-model-catalog.json"
     )
@@ -77,6 +106,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
     monkeypatch.delenv("UCODE_SMART_ROUTER_PYTHON", raising=False)
+    # `ug --header` exports this to the agent, so an outer session's value would leak into launches.
+    monkeypatch.delenv("UG_HEADERS", raising=False)
     # When the suite runs inside a ug smart-routing session, these ambient env vars
     # make smart_routing_enabled()/configured_router_name() read the host's live
     # routing state, leaking a Databricks-Smart-Router-Recipe header into

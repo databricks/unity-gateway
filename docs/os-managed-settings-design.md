@@ -34,9 +34,11 @@ OS-managed files like `UG_SKIP_OS_SETTINGS`: no administrator permission, and ma
 register in user scope. Because OS-managed settings take precedence over user settings,
 `ug configure --user` fails before configuring any agent while a selected agent's OS-managed file
 exists (including Windows `requirements.toml`), whoever wrote it; `ug revert`, removal, or
-`--global` resolves it. Launches don't check: a managed file added later simply takes precedence,
-without the `UG_SKIP_OS_SETTINGS` stale-override error. `ug configure` without `--user` and
-`ug revert` reset the scope to `global`.
+`--global` resolves it. Launches don't check: a managed file added later simply takes precedence.
+`UG_SKIP_OS_SETTINGS` doesn't check either: ug trusts the OS-managed files present and leaves them
+untouched. `ug configure` without `--user` and `ug revert` reset the scope to `global`.
+`ug configure --user` also fails when the selected workspace publishes a managed config, since that
+config must be installed machine-wide.
 
 ## Interactive Detection
 

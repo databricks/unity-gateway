@@ -34,6 +34,7 @@ from tests.e2e_cuj.helpers.session import (
     dirty_runner_message,
     record_machine_wide_leak,
 )
+from tests.e2e_cuj.helpers.skills import codex_exec_final_answer
 from tests.e2e_cuj.helpers.terminal import Terminal
 from tests.e2e_cuj.helpers.workspace import Workspace
 from tests.e2e_cuj.test_cuj3_models import _catalog_display_names
@@ -792,3 +793,25 @@ def test_cuj2_mcp_listing_retries_a_banner_only_claude_listing(tmp_path, monkeyp
     cuj2._assert_generated_mcp_listings(SimpleNamespace(env={"PATH": str(tmp_path)}, run=run))
 
     assert calls == [CLAUDE, CLAUDE, CODEX]
+
+
+def _codex_events(*events):
+    return "\n".join(json.dumps(event) for event in events)
+
+
+def test_codex_exec_final_answer_reads_the_last_message_of_a_completed_turn():
+    stdout = _codex_events(
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "I'll fetch it."}},
+        {"type": "item.completed", "item": {"type": "command_execution", "command": "cat"}},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "ugsum-4c1e9a"}},
+        {"type": "turn.completed", "usage": {}},
+    )
+    assert codex_exec_final_answer("Reading prompt from stdin...\n" + stdout) == "ugsum-4c1e9a"
+
+
+def test_codex_exec_final_answer_is_empty_without_a_completed_turn():
+    stdout = _codex_events(
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "ugsum-4c1e9a"}},
+        {"type": "turn.failed", "error": {"message": "boom"}},
+    )
+    assert codex_exec_final_answer(stdout) == ""

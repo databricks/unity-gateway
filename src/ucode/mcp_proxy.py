@@ -52,6 +52,7 @@ from ucode.databricks import (
     mcp_service_needs_connection_login,
 )
 from ucode.mcp_connection_login import connection_from_url, run_connection_login
+from ucode.ug_headers import ug_headers
 
 # Exit code used when the proxy cannot continue. MCP clients surface a non-zero
 # exit far more usefully than a timeout, so bail out instead of hanging.
@@ -189,8 +190,8 @@ def _build_token_auth(
     the gateway answers with an RFC 9728 ``401`` until the user holds the per-user
     connection credential. Rather than block startup logging in every configured
     server (which pops N browsers and stalls the agent's MCP startup), we let the
-    bridge come up immediately and only run
-    ``databricks auth login --resource`` when a request actually reports missing
+    bridge come up immediately and only open the MCP service sign-in page
+    when a request reports missing
     connection authentication. JSON-RPC authentication errors are handled by the
     bridge below because httpx auth only sees HTTP responses.
     So a browser opens only for a service you actually *use*, one at a time, and
@@ -521,6 +522,7 @@ async def _run(url: str, workspace: str, profile: str | None, use_pat: bool = Fa
     # yields a (read, write) pair in both.
     async with httpx.AsyncClient(
         auth=auth,
+        headers=ug_headers(),
         timeout=httpx.Timeout(
             connect=30.0,
             read=300.0,

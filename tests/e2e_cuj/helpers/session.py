@@ -76,7 +76,13 @@ class UserSession(IntegrationSession):
 
     def revert_machine_wide(self, name, message):
         state_dir = self.home / ".ucode"
-        if any((state_dir / file).is_file() for file in MANAGED_STATE_FILES):
-            with TerminalProcess(self, "ug", [str(self.binary), "revert"], name) as terminal:
-                terminal.finish()
+        try:
+            if any((state_dir / file).is_file() for file in MANAGED_STATE_FILES):
+                with TerminalProcess(self, "ug", [str(self.binary), "revert"], name) as terminal:
+                    terminal.finish()
+        finally:
+            # Backstop: `ug revert` removes the workspace policy, but it can fail or be skipped.
+            policy = constants.WORKSPACE_POLICY_PATH
+            if policy.exists():
+                self.run("rm", "-f", str(policy), binary=self.which("sudo"))
         assert not any(path.exists() for path in constants.MANAGED_PATHS), message

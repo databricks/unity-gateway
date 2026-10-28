@@ -16,7 +16,7 @@ import subprocess
 from pathlib import Path
 
 from ucode.config_io import ToolSpec
-from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT
 from ucode.databricks import (
     AnthropicModelCatalog,
     get_databricks_token,
@@ -80,6 +80,8 @@ TOOL_ALIASES = {
 DEFAULT_TOOL = "codex"
 BUNDLE_VERSION = 1
 _MANAGED_SETTINGS_TOOLS = {"claude", "codex"}
+# Agents that can take their models from a Unity Catalog schema (`--model-location`).
+MODEL_LOCATION_TOOLS = (AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT)
 _NATIVE_UPGRADE_COMMANDS = {
     "claude": ["claude", "upgrade"],
     "codex": ["codex", "update"],
@@ -433,6 +435,20 @@ def refuse_user_scope_over_managed_files(tools: list[str]) -> None:
             )
 
 
+def refuse_user_scope_over_managed_config(workspace: str | None, managed: dict | None) -> None:
+    """Run by ``ug configure`` right after its forced managed-config read, before any agent is set up.
+
+    A workspace that publishes a managed config must install it machine-wide, so ``--user`` cannot
+    apply. ``managed`` is the manifest from that read; None means no managed config is present.
+    """
+    if config_scope() != "user" or managed is None:
+        return
+    raise RuntimeError(
+        f"`ug configure --user` can't be used with {workspace}: it publishes a managed config, "
+        "which must be installed machine-wide. Use `ug configure --global` (the default)."
+    )
+
+
 def configure_tool(
     tool: str,
     state: dict,
@@ -445,6 +461,7 @@ def configure_tool(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
+    derive_managed_model_inputs: bool = False,
 ) -> dict:
     result: dict | tuple[dict, str]
     if tool == AGENT_CODEX:
@@ -467,10 +484,12 @@ def configure_tool(
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
             picker_catalog=picker_catalog,
+            derive_managed_model_inputs=derive_managed_model_inputs,
         )
     elif tool == "copilot":
-        # Under a model provider service, Copilot starts on one of the service's models, chosen at launch.
-        if not model and not provider:
+        # Under a model provider service or a model location, Copilot starts on one of its models,
+        # chosen at launch.
+        if not model and not provider and not parent_schema:
             raise RuntimeError(f"A {tool} model must be selected before configuration.")
         result = copilot.write_tool_config(state, model)
     else:
@@ -591,10 +610,10 @@ def configure_single_tool(
 def _persisted_model_location(tool: str, state: dict, provider: str | None) -> str | None:
     """The model location ``ug configure`` saved for ``tool``, unless a provider is in play.
 
-    Only claude and codex discover models by parent schema; an explicit or persisted provider
-    keeps the source it names.
+    Only ``MODEL_LOCATION_TOOLS`` discover models by parent schema; an explicit or persisted
+    provider keeps the source it names.
     """
-    if tool not in (AGENT_CLAUDE, AGENT_CODEX) or provider or get_provider_service(state, tool):
+    if tool not in MODEL_LOCATION_TOOLS or provider or get_provider_service(state, tool):
         return None
     return get_model_location(state, tool)
 
@@ -623,6 +642,9 @@ def _configure_one(
     if tool == "codex":
         return configure_tool("codex", state)
     state, model = resolve_launch_model(tool, state, None)
+    if tool == AGENT_CLAUDE:
+        # `ug configure` writes the managed model keys a plain launch would.
+        return configure_tool(tool, state, model, derive_managed_model_inputs=True)
     return configure_tool(tool, state, model)
 
 

@@ -96,11 +96,11 @@ class TestRenderBudgetLimits:
         assert "$20.00 limit for period [red]WEEK[/red]" in text.plain
         assert all(span.style != "red" for span in text.spans)
 
-    def test_shows_category_summary_and_additional_budgets(self):
+    def test_shows_limits_in_one_list(self):
         result = render_budget_limits(
             [
                 BudgetLimitStatus(
-                    "daily-main",
+                    "a1d38e6f-86cd-4da9-b6f7-bde5be230412",
                     PER_USER,
                     "DAY",
                     Decimal("87"),
@@ -108,14 +108,16 @@ class TestRenderBudgetLimits:
                     Decimal("50"),
                 ),
                 BudgetLimitStatus(
-                    "monthly-main",
+                    "c59b4827-208a-4b5e-96c3-78e83909ce41",
                     PER_USER,
                     "MONTH",
                     Decimal("83.73"),
                     Decimal("1674.62"),
                     Decimal("2000"),
                 ),
-                BudgetLimitStatus("shared-main", SHARED, "MONTH", Decimal("82")),
+                BudgetLimitStatus(
+                    "f8c260e1-90b3-4a74-a56d-2598c0fcb6e5", SHARED, "MONTH", Decimal("82")
+                ),
                 BudgetLimitStatus(
                     "b73a5c28-3e91-4a62-9f54-dae1f2348b67",
                     PER_USER,
@@ -130,28 +132,36 @@ class TestRenderBudgetLimits:
             ]
         )
 
-        summary, additional_limits = result.split("[bold]Additional limits[/bold]")
-        assert summary.startswith("\n[bold]Your Unity Gateway spend limits[/bold]")
-        assert "[yellow][██████████████████████████░░░░][/yellow] 87% used" in summary
-        assert "[bold]Daily personal limit[/bold]" in summary
-        assert "$43.50 of $50.00 used · $6.50 remaining today" in summary
-        assert "83.73% used" in summary
-        assert "$1,674.62 of $2,000.00 used · $325.38 remaining this month" in summary
-        assert "82% used" in summary
-        assert "[bold]Monthly shared limit[/bold]" in summary
-        assert "budget" not in summary.lower()
+        assert result.startswith(
+            "\n[bold][underline]Your Unity Gateway spend limits[/underline][/bold]"
+        )
+        assert "Additional limits" not in result
+        heading, daily, monthly, shared, other_daily, other_shared = result.strip().split("\n\n")
+        assert heading == "[bold][underline]Your Unity Gateway spend limits[/underline][/bold]"
+        assert "[yellow][██████████████████████████░░░░][/yellow] 87% used" in daily
+        assert "[bold]Daily personal limit (budget a1d38e6f)[/bold]" in daily
+        assert "$43.50 of $50.00 used · $6.50 remaining today" in daily
+        assert "83.73% used" in monthly
+        assert "[bold]Monthly personal limit (budget c59b4827)[/bold]" in monthly
+        assert "$1,674.62 of $2,000.00 used · $325.38 remaining this month" in monthly
+        assert "82% used" in shared
+        assert "[bold]Monthly shared limit (budget f8c260e1)[/bold]" in shared
+        assert "a1d38e6f-86cd-4da9-b6f7-bde5be230412" not in result
+        assert "c59b4827-208a-4b5e-96c3-78e83909ce41" not in result
+        assert "f8c260e1-90b3-4a74-a56d-2598c0fcb6e5" not in result
+        assert "$" not in shared
 
-        assert "[green][████████████░░░░░░░░░░░░░░░░░░][/green] 40% used" in additional_limits
-        assert "Daily personal limit (budget b73a5c28)" in additional_limits
+        assert "[green][████████████░░░░░░░░░░░░░░░░░░][/green] 40% used" in other_daily
+        assert "Daily personal limit (budget b73a5c28)" in other_daily
         assert "b73a5c28-3e91-4a62-9f54-dae1f2348b67" not in result
-        assert "$20.00 of $50.00 used · $30.00 remaining today" in additional_limits
-        assert "Monthly shared limit (budget e42f8d19)" in additional_limits
+        assert "$20.00 of $50.00 used · $30.00 remaining today" in other_daily
+        assert "20% used" in other_shared
+        assert "Monthly shared limit (budget e42f8d19)" in other_shared
         assert "e42f8d19-6c73-4b05-a128-9f3d7c6e2b41" not in result
-        shared_block = additional_limits.split("Monthly shared limit (budget e42f8d19)", 1)[1]
-        assert "$" not in shared_block
+        assert "$" not in other_shared
         assert "Showing " not in result
 
-    def test_caps_display_at_five_while_preserving_each_category(self):
+    def test_shows_the_five_highest_percentages_without_category_priority(self):
         result = render_budget_limits(
             [
                 BudgetLimitStatus("extra-98", PER_USER, "MONTH", Decimal("98")),
@@ -166,26 +176,21 @@ class TestRenderBudgetLimits:
             ]
         )
 
-        summary, additional_limits = result.split("[bold]Additional limits[/bold]")
-        assert summary.count("% used") == 4
-        assert "120% used" in summary
-        assert "80% used" in summary
-        assert "70% used" in summary
-        assert "10% used" in summary
-        assert "Monthly personal limit" in summary
-        assert "Monthly shared limit" in summary
-        assert "Daily personal limit" in summary
-        assert "Daily shared limit" in summary
-        assert additional_limits.count("% used") == 1
-        assert "99% used" in additional_limits
-        assert "Monthly personal limit (budget extra-99)" in additional_limits
-        assert "98% used" not in result
+        limits = result.strip().split("\n\n")[1:-1]
+        assert len(limits) == 5
+        for limit, percent in zip(limits, ("120", "99", "98", "80", "79"), strict=True):
+            assert f"{percent}% used" in limit
+        for limit, budget_id in zip(
+            limits, ("monthly", "extra-99", "extra-98", "daily-80", "daily-79"), strict=True
+        ):
+            assert f"(budget {budget_id})" in limit
+        assert "shared limit" not in result
         assert (
             "[dim]Showing 5 of 9 spend limits. Run ug usage --all to see all limits.[/dim]"
             in result
         )
 
-    def test_all_preserves_category_priority_and_displays_every_limit(self):
+    def test_all_sorts_every_limit_by_percentage_without_category_priority(self):
         result = render_budget_limits(
             [
                 BudgetLimitStatus("monthly", PER_USER, "MONTH", Decimal("90")),
@@ -199,14 +204,14 @@ class TestRenderBudgetLimits:
             show_all=True,
         )
 
-        summary, additional_limits = result.split("[bold]Additional limits[/bold]")
-        assert "90% used" in summary
-        assert "Daily shared limit" in summary
-        assert "Usage percentage not reported" in summary
-        assert additional_limits.index("budget first") < additional_limits.index("budget second")
-        assert additional_limits.index("budget second") < additional_limits.index("budget lower")
-        assert additional_limits.index("budget lower") < additional_limits.index("budget lowest")
-        assert additional_limits.index("budget lowest") < additional_limits.index("budget unknown")
+        assert "Additional limits" not in result
+        assert result.index("budget monthly") < result.index("budget first")
+        assert result.index("budget first") < result.index("budget second")
+        assert result.index("budget second") < result.index("budget lower")
+        assert result.index("budget lower") < result.index("budget lowest")
+        assert result.index("budget lowest") < result.index("budget unknown")
+        assert result.index("budget unknown") < result.index("budget shared")
+        assert len(result.strip().split("\n\n")) == 8
         assert result.count("% used") == 5
         assert result.count("Usage percentage not reported") == 2
         assert "Showing " not in result
@@ -226,38 +231,29 @@ class TestRenderBudgetLimits:
         assert result.count("% used") == 6
         assert "Showing " not in result
 
-    def test_fills_five_slots_from_a_single_category(self):
-        result = render_budget_limits(
-            [
-                BudgetLimitStatus(f"limit-{percent}", PER_USER, "MONTH", Decimal(percent))
-                for percent in ("10", "20", "30", "40", "50", "60", "70")
-            ]
-        )
-
-        summary, additional_limits = result.split("[bold]Additional limits[/bold]")
-        assert "70% used" in summary
-        assert result.count("% used") == 5
-        for percent in ("60", "50", "40", "30"):
-            assert f"{percent}% used" in additional_limits
-        assert "20% used" not in result
-        assert "10% used" not in result
-        assert "Showing 5 of 7 spend limits." in result
-
     def test_preserves_api_order_for_equal_percentages_at_the_cutoff(self):
         result = render_budget_limits(
             [
-                BudgetLimitStatus(f"tie-{index}", SHARED, "MONTH", Decimal("50"))
+                BudgetLimitStatus(
+                    f"tie-{index}",
+                    PER_USER if index % 2 else SHARED,
+                    "DAY" if index < 3 else "MONTH",
+                    Decimal("50"),
+                )
                 for index in range(6)
             ]
         )
 
         assert result.count("% used") == 5
-        for index in range(1, 5):
+        for index in range(5):
             assert f"budget tie-{index}" in result
+        for index in range(4):
+            assert result.index(f"budget tie-{index}") < result.index(f"budget tie-{index + 1}")
         assert "budget tie-5" not in result
         assert "Showing 5 of 6 spend limits." in result
 
-    def test_preserves_a_category_without_percentages_within_the_cap(self):
+    @pytest.mark.parametrize("show_all", [False, True])
+    def test_sorts_missing_percentages_after_reported_percentages(self, show_all):
         result = render_budget_limits(
             [
                 BudgetLimitStatus("shared", SHARED, "MONTH", None),
@@ -265,16 +261,25 @@ class TestRenderBudgetLimits:
                     BudgetLimitStatus(f"limit-{percent}", PER_USER, "MONTH", Decimal(percent))
                     for percent in ("10", "20", "30", "40", "50", "60")
                 ],
-            ]
+            ],
+            show_all=show_all,
         )
 
-        assert result.count("% used") == 4
-        assert result.count("Usage percentage not reported") == 1
-        assert "Monthly shared limit" in result
-        assert "60% used" in result
-        assert "20% used" not in result
-        assert "10% used" not in result
-        assert "Showing 5 of 7 spend limits." in result
+        limits = result.strip().split("\n\n")[1:]
+        if show_all:
+            assert len(limits) == 7
+            assert "10% used" in limits[-2]
+            assert "Usage percentage not reported" in limits[-1]
+            assert "Monthly shared limit (budget shared)" in limits[-1]
+            assert "Showing " not in result
+        else:
+            assert result.count("% used") == 5
+            assert "Usage percentage not reported" not in result
+            assert "Monthly shared limit" not in result
+            assert "10% used" not in result
+            assert "Showing 5 of 7 spend limits." in limits.pop()
+        for limit, percent in zip(limits[:5], ("60", "50", "40", "30", "20"), strict=True):
+            assert f"{percent}% used" in limit
 
     @pytest.mark.parametrize(
         ("percent", "color"),
@@ -306,6 +311,7 @@ class TestRenderBudgetLimits:
         assert percent_style.color is None
         assert percent_style.dim is not True
         assert heading_style.bold is True
+        assert heading_style.underline is True
         assert heading_style.color is None
 
     def test_separates_summary_from_auth_output_without_color_codes(self):
@@ -324,11 +330,12 @@ class TestRenderBudgetLimits:
         )
         assert "\x1b" not in output
         assert "[bold]" not in output
+        assert "[underline]" not in output
         assert "[yellow]" not in output
         assert "80% used" in output
         assert "Monthly personal limit" in output
 
-    def test_omits_additional_limits_when_each_category_has_one_limit(self):
+    def test_shows_a_single_limit_without_a_truncation_note(self):
         result = render_budget_limits(
             [BudgetLimitStatus("only", PER_USER, "DAY", Decimal("10"), Decimal("5"), Decimal("50"))]
         )
@@ -336,6 +343,7 @@ class TestRenderBudgetLimits:
         assert "Your Unity Gateway spend limits" in result
         assert "Additional limits" not in result
         assert "Showing " not in result
+        assert "Daily personal limit (budget only)" in result
         assert "10% used" in result
         assert "$5.00 of $50.00 used · $45.00 remaining today" in result
 
@@ -371,9 +379,10 @@ class TestRenderBudgetLimits:
         assert "$12.50 over the limit today" in result
 
     @pytest.mark.parametrize("scope_type", [PER_USER, SHARED])
-    def test_shows_valid_limits_without_reported_percentages(self, scope_type):
+    @pytest.mark.parametrize("threshold", [Decimal("0"), Decimal("50")])
+    def test_shows_valid_limits_without_reported_percentages(self, scope_type, threshold):
         result = render_budget_limits(
-            [BudgetLimitStatus("unknown", scope_type, "MONTH", None, threshold=Decimal("50"))]
+            [BudgetLimitStatus("unknown", scope_type, "MONTH", None, threshold=threshold)]
         )
 
         assert "[dim]Usage percentage not reported[/dim]" in result
@@ -382,8 +391,8 @@ class TestRenderBudgetLimits:
         assert "% used" not in result
         assert "█" not in result
         if scope_type == PER_USER:
-            assert "$50.00 limit this month" in result
-            assert "$0.00" not in result
+            assert f"${threshold:.2f} limit this month" in result
+            assert "used ·" not in result
         else:
             assert "$" not in result
 
@@ -396,22 +405,55 @@ class TestRenderBudgetLimits:
             ]
         )
 
-        summary, additional_limits = result.split("[bold]Additional limits[/bold]")
-        assert "0% used" in summary
-        assert "Monthly personal limit" in summary
-        assert "Monthly shared limit" in summary
-        assert "Usage percentage not reported" in summary
-        assert "Usage percentage not reported" in additional_limits
-        assert "Monthly personal limit (budget unknown)" in additional_limits
+        assert "Additional limits" not in result
+        assert "0% used" in result
+        assert "Monthly personal limit" in result
+        assert "Monthly shared limit" in result
+        assert result.count("Usage percentage not reported") == 2
+        assert "Monthly personal limit (budget unknown)" in result
+        assert result.index("0% used") < result.index("budget unknown")
+        assert result.index("budget unknown") < result.index("Monthly shared limit")
 
-    def test_preserves_known_amounts_without_a_percentage(self):
+    @pytest.mark.parametrize(
+        ("spend", "expected_amounts"),
+        [
+            ("0", "$0.00 of $0.00 used · $0.00 remaining today"),
+            ("1", "$1.00 of $0.00 used · $1.00 over the limit today"),
+        ],
+    )
+    def test_shows_zero_threshold_as_fully_used(self, spend, expected_amounts):
         result = render_budget_limits(
-            [BudgetLimitStatus("zero-limit", PER_USER, "DAY", None, Decimal("1"), Decimal("0"))]
+            [BudgetLimitStatus("zero-limit", PER_USER, "DAY", None, Decimal(spend), Decimal("0"))]
         )
 
-        assert "Usage percentage not reported" in result
-        assert "$1.00 of $0.00 used · $1.00 over the limit today" in result
-        assert "% used" not in result
+        assert "[red][██████████████████████████████][/red] 100% used" in result
+        assert expected_amounts in result
+        assert "Usage percentage not reported" not in result
+
+    @pytest.mark.parametrize("show_all", [False, True])
+    def test_ranks_zero_threshold_with_reported_spend_as_fully_used(self, show_all):
+        result = render_budget_limits(
+            [
+                *[
+                    BudgetLimitStatus(f"limit-{percent}", PER_USER, "MONTH", Decimal(percent))
+                    for percent in ("50", "60", "70", "80", "90")
+                ],
+                BudgetLimitStatus("zero-limit", PER_USER, "DAY", None, Decimal("0"), Decimal("0")),
+            ],
+            show_all=show_all,
+        )
+
+        limits = result.strip().split("\n\n")[1:]
+        assert "100% used" in limits[0]
+        assert "Daily personal limit (budget zero-lim)" in limits[0]
+        for limit, percent in zip(limits[1:5], ("90", "80", "70", "60"), strict=True):
+            assert f"{percent}% used" in limit
+        if show_all:
+            assert "50% used" in limits[-1]
+            assert "Showing " not in result
+        else:
+            assert "50% used" not in result
+            assert "Showing 5 of 6 spend limits." in limits[-1]
 
     def test_preserves_spend_without_a_threshold_or_percentage(self):
         result = render_budget_limits(

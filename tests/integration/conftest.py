@@ -144,25 +144,33 @@ def session(request, installed_binary):
         try:
             yield user
         finally:
-            # Restore machine-level settings through the same public CLI that
-            # created them. A later fresh-home test must not inherit this setup.
-            if any(
-                (user.home / ".ucode" / name).is_file()
-                for name in ("state.json", "managed-backups/manifest.json")
-            ):
-                if os.name == "posix":
-                    # Import PTY support only when a live-capable run actually
-                    # created state that teardown must revert.
-                    from utils.terminal import TerminalProcess
+            try:
+                # Restore machine-level settings through the same public CLI that
+                # created them. A later fresh-home test must not inherit this setup.
+                if any(
+                    (user.home / ".ucode" / name).is_file()
+                    for name in ("state.json", "managed-backups/manifest.json")
+                ):
+                    if os.name == "posix":
+                        # Import PTY support only when a live-capable run actually
+                        # created state that teardown must revert.
+                        from utils.terminal import TerminalProcess
 
-                    with TerminalProcess(
-                        user, "ug", [str(user.binary), "revert"], "cleanup-revert"
-                    ) as terminal:
-                        terminal.finish()
-                else:
-                    # Installation checks are noninteractive; if a regression
-                    # creates state, still clean it through the installed CLI.
-                    user.run("revert", timeout=120)
+                        with TerminalProcess(
+                            user, "ug", [str(user.binary), "revert"], "cleanup-revert"
+                        ) as terminal:
+                            terminal.finish()
+                    else:
+                        # Installation checks are noninteractive; if a regression
+                        # creates state, still clean it through the installed CLI.
+                        user.run("revert", timeout=120)
+            finally:
+                # Backstop: `ug revert` removes the workspace policy, but it can fail or be
+                # skipped, and a later fresh-home case or the next run's preflight must start clean.
+                policy = Path("/etc/unitygateway/managed-settings.json")
+                sudo = shutil.which("sudo")
+                if os.name == "posix" and policy.exists() and sudo:
+                    user.run("-n", "rm", "-f", str(policy), binary=Path(sudo), timeout=30, ok=False)
 
 
 @pytest.fixture

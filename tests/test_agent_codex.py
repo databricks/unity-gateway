@@ -1489,6 +1489,38 @@ class TestCodexLaunch:
         )
         assert "Databricks-Model-Provider-Service" not in provider_arg
 
+    def test_launch_adds_ug_headers_without_writing_the_profile(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        profile_path = tmp_path / "ucode.config.toml"
+        before = profile_path.read_text(encoding="utf-8")
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/a")
+
+        codex.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        provider_arg = next(
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
+        )
+        assert "x-databricks-traffic-id" in provider_arg
+        assert "testenv://liteswap/a" in provider_arg
+        assert profile_path.read_text(encoding="utf-8") == before
+
+    def test_smart_routing_overlay_adds_ug_headers_keeping_existing_ones(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "x-team: other\nX-New: 1")
+        monkeypatch.setattr(
+            codex,
+            "render_overlay",
+            lambda *a, **k: {
+                "model_providers": {"Databricks": {"http_headers": {"X-Team": "eng"}}}
+            },
+        )
+
+        overlay = codex._render_launch_overlay(WS)
+
+        assert overlay["model_providers"]["Databricks"]["http_headers"] == {
+            "X-Team": "eng",
+            "X-New": "1",
+        }
+
     def test_provider_discovery_uses_custom_oauth_token(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
         catalog_path = tmp_path / "models.json"
@@ -1771,31 +1803,25 @@ class TestCodexManagedConfig:
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
         assert not managed_path.exists()
 
-    def test_skip_env_errors_on_stale_managed_override(self, tmp_path, monkeypatch):
+    def test_skip_env_trusts_a_stale_managed_file(self, tmp_path, monkeypatch):
+        """The opt-out trusts whatever OS-managed file exists: no check, no write, no error."""
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
-        # A managed file left from an earlier workspace still points at that workspace's gateway.
         managed_path.parent.mkdir(parents=True, exist_ok=True)
-        managed_path.write_text(
+        stale = (
             'model_provider = "Databricks"\n'
             "[model_providers.Databricks]\n"
-            'base_url = "https://old-workspace.databricks.com/ai-gateway/openai/v1"\n',
-            encoding="utf-8",
+            'base_url = "https://old-workspace.databricks.com/ai-gateway/openai/v1"\n'
         )
+        managed_path.write_text(stale, encoding="utf-8")
         monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
         monkeypatch.setattr(
             codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
         )
 
-        # A stale override silently defeats the reconfigure, so launching must fail loudly.
-        with pytest.raises(RuntimeError) as excinfo:
-            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
 
-        # The stale managed file is left in place and the user is told how to clear it.
-        assert managed_path.exists()
-        message = str(excinfo.value)
-        assert managed_files.SKIP_OS_SETTINGS_ENV in message
-        assert "stale" in message
-        assert "ug revert" in message
+        assert config_path.exists()
+        assert managed_path.read_text(encoding="utf-8") == stale
 
     def test_user_scope_launches_over_stale_managed_override(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
@@ -2560,6 +2586,29 @@ class TestOtelTokenProvider:
 class TestWriteUserMcpServers:
     """Batched user-scope `[mcp_servers]` writes for the workspace-managed reconcile path."""
 
+    def test_replaces_proxy_entry_without_starting_cli(self, tmp_path, monkeypatch):
+        path = tmp_path / "config.toml"
+        path.write_text(
+            'model = "gpt-5"\n\n[mcp_servers.mine]\ncommand = "x"\n\n'
+            '[mcp_servers.github]\ncommand = "old-proxy"\n'
+        )
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
+        import ucode.mcp as mcp_mod
+
+        monkeypatch.setattr(
+            mcp_mod,
+            "add_codex_mcp_server",
+            lambda *args: pytest.fail("batched write should not invoke Codex CLI"),
+        )
+        entry = codex.managed_mcp_entry(["ug", "mcp-proxy", "https://ws/x"])
+        removed = codex.write_user_mcp_servers({"github": entry}, {"github"})
+
+        doc = read_toml_safe(path)
+        assert removed == {"github"}
+        assert doc["model"] == "gpt-5"
+        assert doc["mcp_servers"]["mine"]["command"] == "x"
+        assert dict(doc["mcp_servers"]["github"]) == entry
+
     def test_adds_and_preserves_other_tables(self, tmp_path, monkeypatch):
         path = tmp_path / "config.toml"
         path.write_text('model = "gpt-5"\n\n[mcp_servers.mine]\ncommand = "x"\nargs = []\n')
@@ -2608,38 +2657,34 @@ class TestWriteUserMcpServers:
         path.write_text("this is = = not valid toml [[[")
         monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
         added: list[tuple[str, list]] = []
-        http_added: list[tuple[str, str, str]] = []
         removed: list[str] = []
         import ucode.mcp as mcp_mod
 
         monkeypatch.setattr(
             mcp_mod, "add_codex_mcp_server", lambda n, argv: added.append((n, argv))
         )
-        monkeypatch.setattr(
-            mcp_mod,
-            "add_codex_http_mcp_server",
-            lambda n, url, client_id: http_added.append((n, url, client_id)),
-        )
         monkeypatch.setattr(mcp_mod, "remove_codex_mcp_server", lambda n: removed.append(n) or True)
 
-        # An HTTP+OAuth entry (no `command`) alongside a stdio one: the fallback must dispatch on
-        # shape, not blindly read entry["command"] (which KeyError'd), and register HTTP as HTTP.
+        # A malformed file is left intact while stdio registration uses the CLI fallback.
         codex.write_user_mcp_servers(
-            {
-                "svc": {"command": "ug", "args": ["mcp-proxy", "u"]},
-                "gh": {
-                    "url": "https://ws/x",
-                    "oauth_resource": "https://ws/x",
-                    "oauth": {"client_id": "codex-cli"},
-                },
-            },
+            {"svc": {"command": "ug", "args": ["mcp-proxy", "u"]}},
             {"old"},
         )
 
         assert path.read_text() == "this is = = not valid toml [[["  # never overwritten
         assert added == [("svc", ["ug", "mcp-proxy", "u"])]
-        assert http_added == [("gh", "https://ws/x", "codex-cli")]
         assert removed == ["old"]
+
+    def test_unparseable_file_does_not_start_native_oauth_login(self, tmp_path, monkeypatch):
+        path = tmp_path / "config.toml"
+        path.write_text("this is = = not valid toml [[[", encoding="utf-8")
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
+        with pytest.raises(RuntimeError, match="invalid TOML"):
+            codex.write_user_mcp_servers(
+                {"github": codex.managed_mcp_http_entry("https://ws/mcp", "https://client/id")},
+                {"github"},
+            )
+        assert path.read_text(encoding="utf-8") == "this is = = not valid toml [[["
 
     @pytest.fixture(autouse=True)
     def _clear_codex_home_env(self, monkeypatch):

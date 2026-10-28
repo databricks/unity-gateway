@@ -27,6 +27,7 @@ from .helpers.constants import (
     CODEX_SOL_MODEL,
     INFERENCE_PATHS,
     RUN_HEADER,
+    WORKSPACE_POLICY_PATH,
 )
 from .helpers.desktop import assert_claude_desktop_profile, enable_claude_desktop
 from .helpers.evidence import SessionEvidence
@@ -117,10 +118,10 @@ def _assert_inference_requests(
 
 
 def _managed_config(session) -> dict:
-    cache_path = session.home / ".ucode" / "managed-config.json"
-    cache = json.loads(cache_path.read_text())
-    raw = cache.get("config")
-    assert isinstance(raw, dict), cache
+    """The policy `ug configure` installed for this machine."""
+    installed = json.loads(WORKSPACE_POLICY_PATH.read_text())
+    raw = installed.get("config")
+    assert isinstance(raw, dict), installed
     return raw
 
 

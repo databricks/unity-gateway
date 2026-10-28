@@ -12,7 +12,9 @@ sends, and open-source models are not validated with Copilot yet.
 
 `ug copilot --provider` registers a Model Provider Service's models instead: its Claude models on
 the Anthropic endpoint, its other chat models on the gateway's native OpenAI route, with every
-registry provider sending the service's routing header.
+registry provider sending the service's routing header. `ug copilot --model-location` registers
+the model services of one Unity Catalog schema: those named like Claude or GPT models on their
+usual wire, the rest on the Anthropic endpoint like Claude Code, which the gateway translates.
 
 Copilot holds its provider credential for the whole session, so every provider points at a
 per-session loopback proxy (`gateway_proxy.start_gateway_auth_proxy`): Copilot authenticates to
@@ -61,10 +63,12 @@ from ucode.custom_oauth import launch_token
 from ucode.databricks import (
     ANTHROPIC_API_PROVIDER_TYPES,
     ANTHROPIC_FAMILIES,
+    MICROSOFT_FOUNDRY_PROVIDER_TYPE,
     ModelServiceEntry,
     bare_model_name,
     build_copilot_base_url,
     build_tool_base_url,
+    list_anthropic_model_catalog,
     list_provider_service_models,
     model_version_sort_key,
     resolve_provider_service,
@@ -74,6 +78,7 @@ from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
     release_file_lock,
 )
+from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_warning
@@ -116,6 +121,8 @@ CREDENTIAL_ENV_KEYS = ("COPILOT_PROVIDER_BEARER_TOKEN", "OAUTH_TOKEN")
 CATALOG_STATE_KEY = "copilot_catalog"
 # The Model Provider Service this launch routes through; set by the launch command, never saved.
 LAUNCH_PROVIDER_SERVICE_KEY = "_copilot_launch_provider_service"
+# The Unity Catalog schema whose model services this launch uses; never saved.
+LAUNCH_MODEL_LOCATION_KEY = "_copilot_launch_model_location"
 
 # The wire APIs Copilot speaks; `responses` and `completions` are Copilot's `wireApi` values.
 WIRE_ANTHROPIC = "anthropic"
@@ -192,7 +199,8 @@ def classify_model(
     they don't declare. Without ``provider_type``, ``model`` is a Databricks model service and
     ``api_types`` its advertised routes. With it, ``model`` is a Model Provider Service target and
     ``api_types`` its declared APIs: Anthropic-API provider types serve only Claude, and other types
-    put every model that isn't GPT 5+ or o-series on Chat Completions."""
+    put every model that isn't GPT 5+ or o-series on Chat Completions, except Foundry's Claude
+    models, which use Anthropic."""
     declared = tuple(api_types)
     tail = bare_model_name(model)
     if provider_type is None:
@@ -208,6 +216,10 @@ def classify_model(
             return None, "ug copilot uses only the Claude models of this service"
         return wire, None
     if provider_type is not None:
+        # Foundry serves its Claude targets on the Anthropic route but not on Chat Completions,
+        # whatever the targets declare.
+        if wire == WIRE_ANTHROPIC and provider_type == MICROSOFT_FOUNDRY_PROVIDER_TYPE:
+            return wire, None
         return (WIRE_RESPONSES if wire == WIRE_RESPONSES else WIRE_COMPLETIONS), None
     if wire is None:
         if "gemini-" in tail:
@@ -294,14 +306,22 @@ def _catalog_sort_key(model: CopilotModel) -> tuple:
 
 
 def build_catalog(
-    models: Iterable[tuple[str, Iterable[str]]], *, provider_type: str | None = None
+    models: Iterable[tuple[str, Iterable[str]]],
+    *,
+    provider_type: str | None = None,
+    fallback_wire: str | None = None,
 ) -> tuple[list[CopilotModel], list[tuple[str, str]]]:
     """The ``(model, api_types)`` pairs Copilot can use, sorted Claude first (by family, newest
-    first) then GPT, and the skipped models with the reason (see :func:`classify_model`)."""
+    first) then GPT, and the skipped models with the reason (see :func:`classify_model`).
+
+    With ``fallback_wire``, a model whose name doesn't decide the wire uses it instead of being
+    skipped; unsupported models are still skipped."""
     usable: dict[str, CopilotModel] = {}
     skipped: dict[str, str] = {}
     for model, api_types in models:
         wire, reason = classify_model(model, api_types, provider_type=provider_type)
+        if wire is None and fallback_wire and bare_model_name(model) not in _UNSUPPORTED_MODELS:
+            wire = fallback_wire
         if wire is not None:
             usable.setdefault(model, CopilotModel(model, wire))
         elif reason is not None:
@@ -370,6 +390,23 @@ def provider_service_catalog(
             + "; ".join(f"{model} ({reason})" for model, reason in skipped)
             + "."
         )
+    return catalog
+
+
+def location_catalog(state: dict, schema: str) -> list[CopilotModel]:
+    """The model services of Unity Catalog schema ``schema`` that this launch registers.
+
+    The listing names some services by gateway alias (``anthropic-aigw-<hash>-<name>``); Copilot
+    sends the full name, which the gateway routes directly."""
+    workspace = state["workspace"]
+    listing = list_anthropic_model_catalog(
+        workspace, launch_token(state, workspace), parent_schema=schema
+    )
+    models = (unwrap_anthropic_gateway_model(model) for model in listing.model_ids)
+    catalog, _ = build_catalog(((model, ()) for model in models), fallback_wire=WIRE_ANTHROPIC)
+    if not catalog:
+        reason = f": {listing.error_msg}" if listing.error_msg else ""
+        raise RuntimeError(f"Found no model services to use in {schema}{reason}.")
     return catalog
 
 
@@ -561,6 +598,7 @@ def render_providers_config(
     session_secret: str,
     *,
     provider_service: str | None = None,
+    model_location: str | None = None,
 ) -> dict:
     """Copilot's providers.json for ``catalog``: one provider per wire, all on the session proxy.
 
@@ -607,8 +645,12 @@ def render_providers_config(
         if catalog_id is not None:
             entry["modelId"] = catalog_id
         limits = copilot_model_limits(model.id) if model.wire == WIRE_ANTHROPIC else None
-        if limits is not None and provider_service and sum(limits) > _CLAUDE_200K_WINDOW:
-            # A Model Provider Service may not serve the 1M window.
+        if (
+            limits is not None
+            and (provider_service or model_location)
+            and sum(limits) > _CLAUDE_200K_WINDOW
+        ):
+            # A Model Provider Service, or a location's model service, may not serve the 1M window.
             limits = _CLAUDE_200K_LIMITS
         if limits is not None:
             entry["maxPromptTokens"], entry["maxOutputTokens"] = limits
@@ -846,14 +888,16 @@ def _wait_for_exit(proc: _ChildProcess) -> int:
 
 
 def _session_catalog(
-    state: dict, tool_args: list[str], provider_service: str | None
+    state: dict, tool_args: list[str], provider_service: str | None, model_location: str | None
 ) -> list[CopilotModel]:
-    """The models this launch registers: the Model Provider Service's, else the Databricks
-    catalog."""
+    """The models this launch registers: the Model Provider Service's, the model location's,
+    else the Databricks catalog."""
     if provider_service:
         return provider_service_catalog(
             state, provider_service, explicit_model_arg_value(tool_args)
         )
+    if model_location:
+        return location_catalog(state, model_location)
     catalog = copilot_catalog(state)
     if not catalog:
         raise RuntimeError(
@@ -867,11 +911,15 @@ def _session_catalog(
 
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
     provider_service = state.pop(LAUNCH_PROVIDER_SERVICE_KEY, None)
-    catalog = _session_catalog(state, tool_args, provider_service)
+    model_location = state.pop(LAUNCH_MODEL_LOCATION_KEY, None)
+    catalog = _session_catalog(state, tool_args, provider_service, model_location)
     # Resolve before the proxy starts so a bad model fails without starting Copilot.
     tool_args, selected = rewrite_model_args(tool_args, catalog)
     start_model = selected or launch_model(
-        state, catalog, requested=options.launch_model, managed_list=not provider_service
+        state,
+        catalog,
+        requested=options.launch_model,
+        managed_list=not (provider_service or model_location),
     )
     scrub_stored_credentials()
 
@@ -895,7 +943,11 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     try:
         proxy_base_url = f"http://{LOOPBACK_HOST}:{server.server_address[1]}"
         config = render_providers_config(
-            catalog, proxy_base_url, session_secret, provider_service=provider_service
+            catalog,
+            proxy_base_url,
+            session_secret,
+            provider_service=provider_service,
+            model_location=model_location,
         )
         wire_override = os.environ.get("COPILOT_PROVIDER_WIRE_MODEL")
         if wire_override:

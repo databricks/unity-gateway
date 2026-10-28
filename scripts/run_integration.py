@@ -93,6 +93,8 @@ def managed_policy_paths(
                 )
             paths.append(Path(program_files) / "ClaudeCode" / "managed-settings.json")
     elif platform_name == "posix":
+        # Unity Gateway's installed workspace policy affects every agent.
+        paths.append(Path("/etc/unitygateway/managed-settings.json"))
         if "codex" in selected:
             paths.extend(
                 [Path("/etc/codex/managed_config.toml"), Path("/etc/codex/requirements.toml")]
