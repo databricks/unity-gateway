@@ -69,6 +69,12 @@ Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern. When the plugin has MC
 also generates a `unity-gateway-connectors` skill whose description names them, so Claude knows
 the connectors exist on the first turn instead of asking whether they are connected.
 
+Connection-status notices can become stale. The skill directs Claude to rediscover tools and
+try a relevant discovered tool before reporting a configured connector disconnected or unavailable.
+It must base availability claims on observed discovery results or tool errors, rather than a
+status reminder alone. If no callable tools are exposed, it reports that limitation without
+inventing a disconnect, reconnection, or authentication diagnosis.
+
 The skill distinguishes configured connectors from authenticated connections. It directs
 Claude to discover tools before calling them and use the exact names returned. It forbids guessing
 tool names or repeating an unavailable call; Claude must rediscover the matching connector's tools.
@@ -131,6 +137,8 @@ To check workspace-login isolation, log out of the configured Databricks CLI ses
 new Cowork task, and send an unrelated prompt such as "What is 2 + 2?". The credential helper
 may restore Databricks sign-in, but no Atlassian or other connector login should open. Then
 request Jira issues and verify that connector sign-in opens only if that operation needs it.
+After sleep/wake or a connection-status notice, request another connector operation. Verify
+Claude rediscovers the tools and tries a relevant call before claiming the connector is unavailable.
 
 
 Cowork plugin support can still be disabled by Anthropic account feature flags or managed
