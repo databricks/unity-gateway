@@ -166,9 +166,9 @@ class TestResolveWorkspace:
         with _host_types(**{SHARED: "unified"}):
             assert resolve_workspace(f"{SHARED}/?o=123") == f"{SHARED}?w=123"
 
-    def test_selector_on_single_workspace_host_is_dropped(self, capsys):
+    def test_selector_on_single_workspace_host_keeps_the_saved_form(self, capsys):
         with _host_types(**{CLASSIC: "workspace"}):
-            assert resolve_workspace(f"{CLASSIC}/?o=123") == CLASSIC
+            assert resolve_workspace(f"{CLASSIC}/?o=123") == f"{CLASSIC}/?o=123"
         assert "serves a single workspace" in capsys.readouterr().out
 
     def test_unreachable_host_with_an_id_fails(self):
@@ -182,7 +182,7 @@ class TestResolveWorkspace:
 
     def test_host_without_host_type_is_treated_as_single_workspace(self):
         with _host_types():
-            assert resolve_workspace(f"{CLASSIC}/?o=123") == CLASSIC
+            assert resolve_workspace(f"{CLASSIC}/?o=123") == f"{CLASSIC}/?o=123"
 
     def test_profile_id_on_single_workspace_host_is_dropped_silently(self, capsys):
         with _host_types(**{CLASSIC: "workspace"}):
@@ -193,8 +193,13 @@ class TestResolveWorkspace:
         with _host_types(**{SHARED: "unified"}):
             assert resolve_workspace(SHARED, "123", explicit_id=False) == f"{SHARED}?w=123"
 
-    def test_extra_parts_are_dropped_with_a_note(self, capsys):
-        assert resolve_workspace(f"{CLASSIC}/browse") == CLASSIC
+    def test_extra_parts_on_single_workspace_host_are_kept(self, capsys):
+        assert resolve_workspace(f"{CLASSIC}/browse") == f"{CLASSIC}/browse"
+        assert capsys.readouterr().out == ""
+
+    def test_extra_parts_on_multi_workspace_host_are_dropped_with_a_note(self, capsys):
+        with _host_types(**{SHARED: "unified"}):
+            assert resolve_workspace(f"{SHARED}/browse?o=123") == f"{SHARED}?w=123"
         assert "not part of the workspace URL" in capsys.readouterr().out
 
     def test_conflicting_ids(self):

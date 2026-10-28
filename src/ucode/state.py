@@ -18,7 +18,7 @@ from ucode.databricks import (
     build_shared_base_urls,
 )
 from ucode.managed_files import CONFIG_SCOPES, DEFAULT_CONFIG_SCOPE
-from ucode.workspace import canonical_workspace_key, split_workspace_key, workspace_key
+from ucode.workspace import split_workspace_key, workspace_key
 
 STATE_PATH = APP_DIR / "state.json"
 STATE_VERSION = 3
@@ -48,35 +48,20 @@ def load_full_state() -> dict:
         return {"state_version": STATE_VERSION, "current_workspace": None, "workspaces": {}}
     if not isinstance(data, dict) or data.get("state_version") != STATE_VERSION:
         return {"state_version": STATE_VERSION, "current_workspace": None, "workspaces": {}}
-    _migrate_legacy_workspace_keys(data)
     return data
 
 
-def _canonical_saved_key(key: str, block: object) -> str:
-    """Like :func:`canonical_workspace_key`, also for a ``<host>?w=<id>`` key an older version saved.
+def _split_saved_key(workspaces: object, key: str) -> tuple[str, str | None]:
+    """:func:`split_workspace_key` for a saved key.
 
-    This version writes ``workspace_id`` into every block it keys that way.
+    An older version saved a pasted URL as its key, so a ``<host>?w=<id>`` key only selects a
+    workspace when its block carries that ``workspace_id``, which this version always writes.
     """
     host, workspace_id = split_workspace_key(key)
-    if workspace_id and not (isinstance(block, dict) and block.get("workspace_id") == workspace_id):
-        return host
-    return canonical_workspace_key(key)
-
-
-def _migrate_legacy_workspace_keys(data: dict) -> None:
-    workspaces = data.get("workspaces")
-    if not isinstance(workspaces, dict):
-        return
-    for key in list(workspaces):
-        canonical = _canonical_saved_key(key, workspaces[key])
-        if canonical == key or canonical in workspaces:
-            continue
-        block = workspaces.pop(key)
-        if isinstance(block, dict) and "workspace" in block:
-            block["workspace"] = canonical
-        workspaces[canonical] = block
-        if data.get("current_workspace") == key:
-            data["current_workspace"] = canonical
+    block = workspaces.get(key) if isinstance(workspaces, dict) else None
+    if workspace_id and isinstance(block, dict) and block.get("workspace_id") != workspace_id:
+        return key, None
+    return host, workspace_id
 
 
 def current_workspace_key(full: dict) -> str | None:
@@ -125,7 +110,7 @@ def load_state() -> dict:
     ws_state = full.get("workspaces", {}).get(key, {})
     if not isinstance(ws_state, dict):
         ws_state = {}
-    workspace, workspace_id = split_workspace_key(key)
+    workspace, workspace_id = _split_saved_key(full.get("workspaces"), key)
     ws_state["workspace"] = workspace
     if workspace_id:
         ws_state["workspace_id"] = workspace_id
@@ -149,13 +134,15 @@ def save_state(state: dict) -> None:
     full = load_full_state()
     workspace = state.get("workspace")
     if workspace:
-        workspace_id = state.get("workspace_id")
-        key = workspace_key(workspace, workspace_id if isinstance(workspace_id, str) else None)
+        saved_id = state.get("workspace_id")
+        workspace_id = saved_id if isinstance(saved_id, str) else None
+        key = workspace_key(workspace, workspace_id)
     else:
         key = current_workspace_key(full)
+        workspace_id = _split_saved_key(full.get("workspaces"), key)[1] if key else None
     if key:
         block = hydrate_state(_without_managed_overlay(state))
-        _write_workspace_block(full, key, block)
+        _write_workspace_block(full, key, block, workspace_id)
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
@@ -163,21 +150,22 @@ def save_state(state: dict) -> None:
         raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
 
 
-def _write_workspace_block(full: dict, key: str, block: dict) -> None:
+def _write_workspace_block(full: dict, key: str, block: dict, workspace_id: str | None) -> None:
     """Store ``block`` under ``key`` and select it, keeping the bare-host alias in step."""
     workspaces = full.setdefault("workspaces", {})
-    host, workspace_id = split_workspace_key(key)
     block.pop(ALIAS_OF_KEY, None)
     if workspace_id:
+        host = split_workspace_key(key)[0]
         block["workspace_id"] = workspace_id
         workspaces[key] = block
         workspaces[host] = {**block, ALIAS_OF_KEY: key}
         full[CURRENT_WORKSPACE_KEY] = key
+        full["current_workspace"] = host
     else:
         block.pop("workspace_id", None)
         workspaces[key] = block
         full.pop(CURRENT_WORKSPACE_KEY, None)
-    full["current_workspace"] = host
+        full["current_workspace"] = key
 
 
 def _without_managed_overlay(state: dict) -> dict:
@@ -216,7 +204,7 @@ def set_current_workspace(workspace: str | None) -> None:
         full["current_workspace"] = None
         full.pop(CURRENT_WORKSPACE_KEY, None)
     else:
-        host, workspace_id = split_workspace_key(workspace)
+        host, workspace_id = _split_saved_key(full.get("workspaces"), workspace)
         alias_block = full.get("workspaces", {}).get(host)
         if not workspace_id and isinstance(alias_block, dict):
             # The bare host of a multi-workspace host means its current workspace.

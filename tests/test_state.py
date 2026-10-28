@@ -586,14 +586,17 @@ class TestLegacyWorkspaceKeys:
             encoding="utf-8",
         )
 
-    def test_pasted_query_is_rekeyed_to_the_bare_host(self):
+    def test_pasted_query_key_is_kept(self):
         legacy = f"{FAKE_WS}/?o=123"
         self._write({legacy: {"workspace": legacy, "profile": "p"}}, legacy)
         loaded = load_state()
-        assert loaded["workspace"] == FAKE_WS
+        assert loaded["workspace"] == legacy
         assert loaded["profile"] == "p"
         save_state(loaded)
-        assert list(_raw_state()["workspaces"]) == [FAKE_WS]
+        raw = _raw_state()
+        assert list(raw["workspaces"]) == [legacy]
+        assert raw["current_workspace"] == legacy
+        assert state_mod.CURRENT_WORKSPACE_KEY not in raw
 
     def test_existing_bare_host_block_wins(self):
         legacy = f"{FAKE_WS}/browse"
@@ -605,9 +608,14 @@ class TestLegacyWorkspaceKeys:
         self._write({KEY_A: {"workspace_id": "111"}, FAKE_WS: {"profile": "c"}}, FAKE_WS)
         assert set(load_full_state()["workspaces"]) == {KEY_A, FAKE_WS}
 
-    def test_selector_key_saved_by_an_older_version_is_rekeyed(self):
+    def test_selector_key_saved_by_an_older_version_stays_a_plain_key(self):
         legacy = f"{FAKE_WS}?w=1"
         self._write({legacy: {"workspace": legacy, "profile": "p"}}, legacy)
         loaded = load_state()
-        assert loaded["workspace"] == FAKE_WS
+        assert loaded["workspace"] == legacy
         assert "workspace_id" not in loaded
+        save_state(loaded)
+        raw = _raw_state()
+        assert list(raw["workspaces"]) == [legacy]
+        assert "workspace_id" not in raw["workspaces"][legacy]
+        assert raw["current_workspace"] == legacy

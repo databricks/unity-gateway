@@ -146,22 +146,6 @@ def is_unified_host(host: str) -> bool:
         return False
 
 
-def canonical_workspace_key(key: str) -> str:
-    """``key`` as this version saves it: unchanged when canonical, else its bare host.
-
-    Older versions saved a pasted URL as is, so a saved workspace can carry a path or query. A
-    query selector is dropped rather than kept: whether the host serves several workspaces is
-    unknown here.
-    """
-    if split_workspace_key(key)[1]:
-        return key
-    try:
-        parsed = split_workspace_url(key)
-    except RuntimeError:
-        return key
-    return parsed.host if parsed.extra_parts or parsed.workspace_id else key
-
-
 def resolve_workspace(
     raw: str,
     workspace_id: str | None = None,
@@ -170,9 +154,10 @@ def resolve_workspace(
 ) -> str:
     """Resolve a workspace URL plus an optional workspace id into its ``state.json`` key.
 
-    The id only counts on a host that serves several workspaces; on any other host it is dropped,
-    so a single-workspace URL resolves to the same bare host as before. ``explicit_id`` is False
-    for an id read from a Databricks CLI profile, which single-workspace profiles carry too.
+    The id only counts on a host that serves several workspaces. Any other URL resolves to the key
+    earlier versions saved for it, so existing ``state.json`` entries and policies still match.
+    ``explicit_id`` is False for an id read from a Databricks CLI profile, which single-workspace
+    profiles carry too.
     """
     parsed = split_workspace_url(raw)
     flag_id = workspace_id.strip() if workspace_id and workspace_id.strip() else None
@@ -182,10 +167,9 @@ def resolve_workspace(
             f"selected in {raw}."
         )
     selected = flag_id or parsed.workspace_id
-    if parsed.extra_parts:
-        print_note(f"Using {parsed.host}; the rest of {raw} is not part of the workspace URL.")
+    legacy_key = normalize_workspace_url(raw)
     if selected is None:
-        return parsed.host
+        return legacy_key
     try:
         kind = host_type(parsed.host)
     except HostUnreachableError as exc:
@@ -194,7 +178,9 @@ def resolve_workspace(
             "Check your network and retry."
         ) from exc
     if kind == UNIFIED_HOST_TYPE:
+        if parsed.extra_parts:
+            print_note(f"Using {parsed.host}; the rest of {raw} is not part of the workspace URL.")
         return workspace_key(parsed.host, validate_workspace_id(selected))
     if explicit_id or parsed.workspace_id:
         print_note(f"{parsed.host} serves a single workspace, so the workspace id is not needed.")
-    return parsed.host
+    return legacy_key
