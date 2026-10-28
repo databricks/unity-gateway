@@ -62,9 +62,18 @@ UG owns these local files:
 - Generated marketplace: `~/.ucode/claude-cowork-marketplace`
 - Selected Cowork root record: `~/.ucode/claude-cowork.json`
 
-Start a new Cowork session after configure. Plugin MCP servers connect asynchronously and
-may take a few seconds to appear, so a tool can be absent on the first model turn. Deferred
-tool search or a retry after another tool call should find it. The resulting tool name follows
+Start a new Cowork session after configure. Plugin MCP servers connect asynchronously, so
+a tool can be absent on the first model turn. Cowork may also disconnect idle sessions
+(observed after five minutes) and initialize connectors again on resume. A `pending` status
+alone does not establish disconnection or missing authentication. If the requested connector's
+tools are absent at startup, after resume, or while it is `pending`, the skill directs Claude
+to wait five seconds at a time using an exposed shell or wait tool, then recheck availability.
+Waiting stops as soon as tools appear, with at most thirty seconds of waiting in total. This gives asynchronous
+initialization time to finish; it does not guarantee that the client refreshes exposed tools.
+Use the tools currently exposed by the client;
+`ToolSearch` is an option only when available. Other discovery/status actions must support
+the requested operation in their descriptions, and plugin/catalog results do not establish
+that a service tool is callable. The resulting tool name follows
 Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern. When the plugin has MCP servers, UG
 also generates a `unity-gateway-connectors` skill whose description names them, so Claude knows
 the connectors exist on the first turn instead of asking whether they are connected.
@@ -72,12 +81,15 @@ the connectors exist on the first turn instead of asking whether they are connec
 Connection-status notices can become stale. The skill directs Claude to rediscover tools and
 try a relevant discovered tool before reporting a configured connector disconnected or unavailable.
 It must base availability claims on observed discovery results or tool errors, rather than a
-status reminder alone. If no callable tools are exposed, it reports that limitation without
-inventing a disconnect, reconnection, or authentication diagnosis.
+status reminder alone. If no callable tools are exposed after these checks, it reports that
+limitation without inventing a disconnect, reconnection, or authentication diagnosis.
 
 The skill distinguishes configured connectors from authenticated connections. It directs
-Claude to discover tools before calling them and use the exact names returned. It forbids guessing
-tool names or repeating an unavailable call; Claude must rediscover the matching connector's tools.
+Claude to check exposed tools and use supported discovery actions before calling them, using
+only the exact names exposed or returned. It forbids guessing tool names, repeating an unavailable
+call, authenticating another connector, or spawning a subagent solely to make tools appear.
+If no supported wait action exists, or tools remain absent after the bounded wait, Claude
+reports that limitation without inventing its cause.
 If discovery exposes only `authenticate`, Claude should call that discovered tool, rediscover after
 sign-in, and retry the original request in the same turn without asking for another message.
 An unavailable tool name and permission denials alone do not establish an authentication failure.
