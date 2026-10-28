@@ -293,11 +293,6 @@ def _unwrapped_claude_model_id(model: str) -> str:
     return routing.unwrap_anthropic_gateway_model(model)
 
 
-def _claude_router_model_id(model: str) -> str:
-    """Unwrap an Anthropic gateway id and drop Claude Code's `[1m]` hint, then normalize."""
-    return routing.normalize_model(_unwrapped_claude_model_id(model).removesuffix("[1m]"))
-
-
 def _claude_model_overrides(model_ids: list[str]) -> dict[str, str]:
     overrides: dict[str, str] = {}
     prefix = "system.ai."
@@ -309,8 +304,12 @@ def _claude_model_overrides(model_ids: list[str]) -> dict[str, str]:
 
 def _routed_claude_agent_slug(model: str) -> str:
     canonical = _canonical_claude_model_id(model)
-    normalized = routing.normalize_model(canonical)
-    safe = "".join(character if character.isalnum() else "-" for character in normalized)
+    readable = canonical.rsplit("/", 1)[-1]
+    for prefix in ("databricks-", "system.ai."):
+        if readable.startswith(prefix):
+            readable = readable[len(prefix) :]
+            break
+    safe = "".join(character if character.isalnum() else "-" for character in readable.lower())
     slug = "-".join(part for part in safe.split("-") if part)
     digest = hashlib.sha256(canonical.encode()).hexdigest()[:8]
     return f"{CLAUDE_ROUTED_AGENT_PREFIX}{slug[:36]}-{digest}"
@@ -340,9 +339,19 @@ def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
         "unset": [key for key in SMART_ROUTING_ENV_KEYS if key not in source],
         "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
         "routeCommand": [],
+        "orchestratorInstructions": (
+            orchestrator.CLAUDE_AGENT_DESCRIPTION
+            if orchestrator.enabled(source, agent=AGENT_CLAUDE)
+            else ""
+        ),
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
     }
+
+
+def _claude_mod_launch_args(options: Mapping[str, object]) -> list[str]:
+    # Replayed prompt snapshots bypass tool.describe, even after cache invalidation.
+    return ["--system-prompt-snapshot", "off"] if options.get("orchestratorInstructions") else []
 
 
 def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
@@ -355,6 +364,12 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             "description": "Launch-scoped agents for Unity Gateway smart routing.",
             "author": {"name": "Databricks"},
             "userConfig": {
+                "orchestratorInstructions": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Orchestrator delegation instructions",
+                    "description": "Agent tool guidance for an eligible orchestration launch",
+                },
                 "isaacExecutable": {
                     "type": "string",
                     "default": "",
@@ -433,18 +448,14 @@ def _request_claude_routing_decision(
     prompt: str,
     model_ids: list[str],
 ) -> tuple[routing.RoutingDecision | None, str | None]:
-    available: dict[str, str] = {}
-    for model in _canonical_claude_models(model_ids):
-        available.setdefault(_claude_router_model_id(model), model)
-    if not available:
+    route_options = routing.route_options_for(_canonical_claude_models(model_ids), "claude")
+    if not route_options:
         return None, "Anthropic models endpoint returned no Claude models"
-    route_options = [(model, "claude") for model in available]
     return routing.select_route(
         workspace,
         token,
         prompt,
         route_options,
-        lambda selected: available.get(_claude_router_model_id(selected)),
         router_name=routing.configured_router_name(),
         timeout=CLAUDE_ROUTE_SELECTION_TIMEOUT_S,
     )
@@ -731,12 +742,13 @@ def launch_claude(
             session_path = _prepare_smart_router_session("claude")
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
-            settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
-                "options"
-            ] = {
+            mod_options = {
                 **_claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env}),
                 "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),
             }
+            settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
+                "options"
+            ] = mod_options
             try:
                 write_json_file(settings_path, settings)
                 _write_routed_claude_plugin(plugin_dir, model_ids)
@@ -747,6 +759,7 @@ def launch_claude(
                 binary,
                 "--settings",
                 str(settings_path),
+                *_claude_mod_launch_args(mod_options),
                 *model_args,
                 "--plugin-dir",
                 str(plugin_dir),

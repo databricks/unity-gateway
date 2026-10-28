@@ -46,7 +46,7 @@ def _managed_env(tmp_path, monkeypatch, managed_doc=None):
         claude, "refresh_managed_config", lambda *a, **kw: SimpleNamespace(manifest={"claude": {}})
     )
     # As `ug configure` runs it.
-    monkeypatch.setattr(claude, "_header_mod_requested", True)
+    monkeypatch.setattr(claude, "_explicit_configure", True)
     monkeypatch.delenv("UG_HEADERS", raising=False)
     return managed_path, root, writes
 
@@ -73,26 +73,46 @@ def test_configure_installs_and_enables_mod_then_stays_put(tmp_path, monkeypatch
     assert len(writes) == count  # unchanged files are never rewritten through sudo
 
 
-def test_launch_adds_the_mod_only_with_headers_and_keeps_configures(tmp_path, monkeypatch):
+def test_launch_never_installs_or_enables_the_mod(tmp_path, monkeypatch):
     managed_path, root, writes = _managed_env(tmp_path, monkeypatch)
-    monkeypatch.setattr(claude, "_header_mod_requested", False)
+    monkeypatch.setattr(claude, "_explicit_configure", False)
     state = {"workspace": WS, "codex_models": []}
 
-    # Another writer of the managed file drops entries it doesn't know; a plain launch mustn't
-    # add them back every time.
     claude.write_tool_config(state, "databricks-claude-sonnet-4")
     assert not root.exists()
     assert "enabledPlugins" not in json.loads(managed_path.read_text())
 
+    # Headers alone don't make a launch write root-owned files.
     monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/unit")
+    count = len(writes)
+    claude.write_tool_config(state, "databricks-claude-sonnet-4")
+    assert not root.exists()
+    assert "enabledPlugins" not in json.loads(managed_path.read_text())
+    assert len(writes) == count
+    assert not claude.header_mod_active()
+
+
+def test_launch_leaves_a_stale_mod_alone_and_reads_it_as_inactive(tmp_path, monkeypatch):
+    managed_path, root, writes = _managed_env(tmp_path, monkeypatch)
+    state = {"workspace": WS, "codex_models": []}
     claude.write_tool_config(state, "databricks-claude-sonnet-4")
     assert claude.header_mod_active()
 
-    # Once added, a plain launch leaves the mod as it is.
-    monkeypatch.delenv("UG_HEADERS")
+    # A ug upgrade changes register.ts; a launch must not rewrite the root-owned copy.
+    register = root / "ug-headers/hooks/register.ts"
+    register.write_text("// old version\n", encoding="utf-8")
+    monkeypatch.setattr(claude, "_explicit_configure", False)
+    monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/unit")
     count = len(writes)
     claude.write_tool_config(state, "databricks-claude-sonnet-4")
-    assert claude.header_mod_active() and len(writes) == count
+    assert register.read_text(encoding="utf-8") == "// old version\n"
+    assert len(writes) == count
+    assert not claude.header_mod_active()
+
+    # Configure upgrades it.
+    monkeypatch.setattr(claude, "_explicit_configure", True)
+    claude.write_tool_config(state, "databricks-claude-sonnet-4")
+    assert claude.header_mod_active()
 
 
 def test_admin_prepend_list_is_kept_and_revert_restores_it(tmp_path, monkeypatch):

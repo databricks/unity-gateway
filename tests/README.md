@@ -40,13 +40,37 @@ Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin 
 `test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
 `native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in CI. The existing Claude
-skill-toggle integration journey checks the live recipe payload field across on/off/on.
+skill-toggle integration journey checks the live recipe payload field and Agent/Task
+delegation descriptions across on/off/on. Native request-construction checks verify the
+description switches after both native commands and CLI session toggles, including
+native toggles after resuming a saved prompt-snapshot fixture. The description includes
+instructions to end the current turn while awaiting a
+background completion notification, and retains native follow-up guidance and the Agent
+schema, including routing-only, Omni, and missing-marker launches.
+These deliberately unauthenticated requests do not establish
+successful inference or delegation quality.
 See [the mod guide](../docs/claude-mod.md).
+
+Native mod component tests cover a lone call's decision under its Agent row, parallel calls
+drawn as cards above the parent's next reply in call order (replies drawn before routing
+never used, calls still routing waiting for a later reply, cards kept across a turn that
+ends while a background agent runs and dropped on abort), distinct IDs for identical tasks,
+nothing above the prompt, pending row and turn-spinner routing timers, and disabled/failed
+routing. They do not establish live
+parallel-agent TUI or gateway coverage.
 
 `test_ug_headers.py` covers the `UG_HEADERS` parser and the `--header` flag, `test_databricks.py`
 ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching a Codex launch's
 `-c` headers (plain and smart-routed) without writing its profile. No automated test checks the
 header at the gateway.
+
+`test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
+the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
+making no privileged write after another writer drops them, skip mode, revert, and admin passthrough
+not overriding them. `native_claude/test_credentials.py` runs the CI-pinned Claude (2.1.290) against a
+fake API with both shell variables set: the blanks make it send the `apiKeyHelper` token, or on the relayed
+path its own OAuth token, with no empty header; without them the shell's values win (control cases). It
+skips on a machine with Claude managed settings, which would replace the fixture's.
 
 `test_claude_header_mod.py` covers installing the Claude header mod's files and managed entries
 (no rewrite when unchanged), keeping an admin's `prependPlugins`, a failed install never enabling
@@ -268,13 +292,26 @@ exit code 0, deletes the UG profile, and restores the previous selection without
 workspace state; a repeated revert also returns 0.
 
 `test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
-generated marketplace/plugin/MCP manifests, current-workspace managed-skill selection,
+generated marketplace/plugin/MCP manifests, the generated connector skill naming Claude-only
+MCP servers, current-workspace managed-skill selection,
 Claude-only MCP filtering, absolute proxy executables, saved PAT mode, custom-OAuth refusal,
-install/update selection, idempotent cleanup, and saved-root removal. CLI component tests
+install/update selection, idempotent cleanup, and saved-root removal. Alias checks cover
+short service-first names, unchanged proxy routing, custom-name preservation,
+order-independent collisions, and repeated replacement of old keys. Manifest checks require
+the `ug` name and display name in both manifests. Legacy-registration checks cover
+replacement after successful install/update, preservation on install failure, scoped
+cleanup, and unrelated-plugin preservation. CLI component tests
 cover managed setup after successful skill/MCP reconciliation, preservation after transient
 reconciliation failures, and cleanup for unmanaged or non-Claude configurations. These tests
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
 late MCP connection, tool discovery, or inference behavior.
+
+`test_cowork_skills.py` checks current-workspace managed and user-downloaded skill copies,
+project/other-workspace/user-authored exclusions, and add/update/remove CLI flows using
+names, schemas, and the picker. It checks generated bundle contents and stale-file cleanup
+while preserving managed skills; project-local skills stay excluded during plugin refreshes.
+Skill APIs and the native plugin CLI are substituted; native Cowork skill invocation
+remains unverified.
 
 Model-source tests require Desktop-only, case-insensitive `\bclaude-` filtering
 instead of copying every catalog entry. Mixed static/discovered lists exclude GPT/OSS
@@ -343,11 +380,18 @@ Concurrent callers share a per-profile fetch, and an in-flight result cannot
 restore a memo invalidated by login.
 Fake CLI subprocesses check that re-auth runs only when a successful help probe
 advertises `--no-browser`. Search component tests verify token reuse and transient
-timeout retries. `test_mcp_connection_login.py` verifies token/failure invalidation
-after successful and failed login attempts; `test_mcp_proxy.py` checks fresh tokens
-on async post-login retries and recovery when a connection-backed service returns
-the MCP authentication-required error. These checks do not establish live login or
-launch-time savings.
+timeout retries.
+`test_mcp_connection_login.py` controls only browser, HTTP, and clock boundaries. It checks
+service-name encoding, workspace-ID resolution, the selected profile user's credential,
+pending/FAILED/404 states, transient errors, denial, malformed responses, wrong-account
+timeout, manual URL fallback, and workspace-token failures. Success requires an ACTIVE
+credential; success, denial, and timeout preserve the workspace profile and token memo.
+These replace obsolete resource-flag support, CLI resource-login, and token-invalidation
+cases because connector browser sign-in no longer runs CLI login or replaces its session.
+`test_mcp_proxy.py` checks credential readiness, preserved workspace profile/token, and
+replay of the original HTTP request after browser sign-in. The existing MCP
+authentication-required recovery remains covered. These checks do not establish live
+provider sign-in, deployed credential API availability, or native Desktop behavior.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,
@@ -382,12 +426,13 @@ without tier rules, applying recommendations when tiers exist, and serializing t
 API field. These are unit/component checks; live request-count coverage is not included.
 
 `test_usage.py`, `test_budget.py`, and `test_cli.py` cover the standard usage summary
-and the opt-in expanded budget view. Tests check five-limit selection across personal/shared
-and daily/monthly budgets, the full listing with `--all`, its help text, and the hint when
-more limits exist.
+and the opt-in expanded budget view. Tests check the five highest usage percentages
+without category grouping, stable ties, missing percentages ordered last, the full
+listing with `--all`, its help text, and the hint when more limits exist.
 They check missing usage amounts, unavailable expanded views, and lookup errors
 without reporting failures as absent budgets.
-Presentation checks cover spacing, usage colors, over-limit values, and output without colors.
+Presentation checks cover a single list with short budget IDs on every entry, spacing,
+usage colors, over-limit values, and output without colors.
 These are unit/component tests, not live sign-in or end-to-end coverage.
 
 `test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
@@ -404,8 +449,17 @@ default, a family default, or both, while preserving startup selection and famil
 `TestBuildClaudeArgv` also checks that caller permission denies survive ug's technical
 native-search deny in direct, relayed, and routing settings composition. Inline/file
 inputs, repeated settings, and empty launch overrides retain restrictions and leave
-source files unchanged. These are actual argv/configuration assertions, not native
-classifier or parent/child acceptance coverage.
+source files unchanged. `test_claude_launch_settings.py` drives normal and relayed
+launches with oversized Windows settings, preserving merged values and literal
+prompt arguments while keeping the settings file alive until the child exits.
+Success, nonzero exit, interruption, and spawn failures clean up temporary files;
+relayed failures also stop the proxy. Separate launches use separate files, and
+short Windows commands and POSIX keep their existing argv. Real Python children
+read the file for large catalogs and commands containing non-BMP characters.
+Windows command limits and child lifecycle are otherwise simulated; the native
+Bedrock integration journey still supplies live Windows/Claude coverage.
+These are actual argv/configuration assertions, not native classifier acceptance
+coverage.
 `test_databricks.py` checks bounded Anthropic catalog requests with `limit=1000`, including
 scoped routing headers and model display metadata. It also verifies that Windows CLI install
 and upgrade use WinGet and report an actionable error when WinGet is unavailable. Windows
@@ -429,7 +483,7 @@ orchestration on and off. It mocks the router response, not native Claude render
 Existing launch tests cover caller argument preservation and file removal after exit. These checks
 do not cover plugin-write/process-start failures, native plugin refresh, or daemon behavior.
 
-`test_claude_routing.py` checks that the decision log retains the exact candidate
+`test_claude_smart_routing_v2.py` checks that the decision log retains the exact candidate
 models and router name sent in the request. `test_codex_routing.py` checks that
 Codex decisions carry the same request metadata. These use mocked HTTP responses.
 
@@ -557,7 +611,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | Old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
 | `test_ug_configure_managed_claude`, `test_ug_configure_managed_codex` | Configure on the managed workspace with the stubbed `managed_workspace_default.json` CodingAgentConfig | No agent selector; each agent's generated config exposes exactly the admin's static model_services; real gateway prompt on launch. The Codex case also checks the shared catalog pointer, restart guidance, and a fresh bare app-server's visible model list |
-| `e2e_cuj/test_cuj5_budget_defaults.py` | Launch bare `ug` with separate low-spend and above-tier principals against the fixed 1% tier (`spending_percentage=0.01`); explicitly launch `ug claude` above the tier | Bare launches check Claude/Sonnet below the tier and the Codex/Luna recommendation above it; `ug usage` agrees with backend spend, threshold, and percentage. Explicit `ug claude` displays the backend's Codex/Luna recommendation while its generated model setting and native header select Sonnet. No budget writes or inference tasks. Runs on its own `E2E CUJs · CUJ 5 · Budget-driven defaults` runner with both credential pairs documented in `integration/README.md`. |
+| `e2e_cuj/test_cuj5_budget_defaults.py` | Launch bare `ug` with separate low-spend and above-tier principals against the fixed 1% tier (`spending_percentage=0.01`); explicitly launch `ug claude`, and `ug claude --model`, above the tier | Bare launches check Claude/Sonnet below the tier and the Codex/Luna recommendation above it; `ug usage` agrees with backend spend, threshold, and percentage. Explicit `ug claude` displays the backend's Codex/Luna recommendation while its generated model setting and native header select Sonnet. `ug claude --model <Sonnet id>` (the workspace's only Claude model) displays the same recommendation, selects Sonnet in the native header, and leaves the user and OS-managed settings files byte-identical to configure's (Sonnet `ANTHROPIC_MODEL`); a following plain launch selects Sonnet without rewriting them. A differing Claude budget pick, alone or with smart routing, is unit-covered only. No budget writes or inference tasks. Runs on its own `E2E CUJs · CUJ 5 · Budget-driven defaults` runner with both credential pairs documented in `integration/README.md`. |
 | `test_case_01_*` | Launch managed Claude without defaults after configure and from fresh state | Claude receives the admin MPS header; its gateway cache and replacement picker match the independently fetched provider model IDs; catalog labels are preserved and a model appears in a numbered picker row |
 | `test_case_03_*`, `test_case_05_*` | Pass a provider or model-location override to managed Claude after configure and from fresh state | ug rejects the override before Claude starts and preserves agent-owned state |
 | `test_case_02_*` | Launch managed Codex after configure and from fresh state | The scoped and stable catalogs, ug-launched app server, and fresh bare app server match the independently fetched admin MPS model IDs. The configured case uses real `ug revert` to remove ug's shared pointer and stable file while preserving a user setting |
@@ -580,7 +634,7 @@ With Claude and Codex selected there are **88 live cases** (12 marked TUI cases)
 the CodingAgentConfig input injected from a JSON file in `fixtures/managed_config/`), and **7 installation checks**. The 14 retained numbered scenarios
 comprise **24 explicit journeys**: 12 managed configured/fresh executions and 12 unmanaged
 executions. The remaining managed-fixture cases cover focused model, MCP, skills,
-cache-TTL, and lifecycle shapes, including two Claude defaults cases. Parametrization varies
+saved-config replay, and lifecycle shapes, including two Claude defaults cases. Parametrization varies
 argument spelling or external routing selector, never hides the agent/provider in the test name. Duplicate boot-only cases
 are incorporated into the Databricks configuration TUI journeys.
 Generated-file cleanup and strict app-server stdout assertions remain enforced.
@@ -764,19 +818,20 @@ service running, and leaving another exporter alone. They do not establish a liv
 desktop GUI, a real `launchctl` or `schtasks` run, or a login/reboot pass.
 
 `test_managed_config.py` and `test_managed_files.py` cover machine policy versus user-owned
-`refresh_ts.json`, five-minute throttling, no privileged write for unchanged policy or
+`refresh_ts.json`, launches replaying the saved read without a request, no privileged write for unchanged policy or
 retrieval-only drift, configure-only sudo selection, deferred-update warning/fallback, matching
 removal, workspace isolation, fingerprint invalidation, and dry-run behavior.
-Pending-change regressions cover one warning across expired checks, distinct-change warnings,
+Pending-change regressions cover one warning across rechecks, distinct-change warnings,
 retrieval/key-order stability, removal, and clearing after remote/MDM/configure reconciliation.
 Workspace-lock regressions in `test_managed_config.py` and `test_cli.py` refuse foreign workspaces
 before cache/auth/bootstrap, including bare/agent launches, dry-run, and skip-preflight.
 `test_ug_managed_machine_refuses_foreign_workspace_launch` adds the black-box managed journey
 (stubbed managed config): configure followed by rejected bare/Claude/Codex workspace overrides, with policy,
 refresh metadata, and user state unchanged. This new live case has not been run locally.
-`test_ug_managed_config_launch_reuses_cache_within_ttl` is the live journey for root-owned `0644`
-policy, user-owned `0600` timestamps, and unchanged policy bytes/inode/mtime/ctime after an
-expired unchanged check. Its live sudo/password behavior still requires a disposable clean VM.
+`test_ug_managed_config_launch_replays_saved_config` is the live journey for root-owned `0644`
+policy, a user-owned `0600` record with a `published` outcome and no timestamp, and unchanged
+policy and record bytes (inode/mtime/ctime for the policy) across two launches. The record is
+backdated first, so the removed five-minute refresh would have refetched and rewritten it. Its live sudo/password behavior still requires a disposable clean VM.
 Non-root writer regressions cover terminal/script launches, initial install and removal, and
 verify that neither a sudo capability probe nor a prompting worker is started.
 
@@ -852,3 +907,14 @@ rejects stale or unrelated panels. Live audit correlation and child answers rema
 After Codex compaction removes a prompt, display correlation may instead use the
 native Spawned row immediately following the routing box. Unit checks reject later
 answer text, intervening prompts, and nonadjacent or unrelated spawn rows.
+
+Browser MCP review regressions check stale ACTIVE credentials wait for a changed credential
+or an observed non-ACTIVE state, pending provisioning continues, and missing services fail
+before browser launch even with a cached workspace ID. Polling bounds each HTTP call
+by the remaining deadline and never reports success from a late response. These component tests control external boundaries
+and do not establish live browser sign-in or endpoint availability.
+
+Pre-browser credential reads retry transient HTTP/network failures twice before reporting failure.
+
+Credential validation rejects malformed initial responses before browser launch and non-string
+states during polling. The browser subprocess runs Python in isolated mode.

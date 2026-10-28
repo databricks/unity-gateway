@@ -169,7 +169,9 @@ class TestConfigureWiresAiToolsInstall:
 
     def _stub_configure(self, monkeypatch):
         captured = {}
-        monkeypatch.setattr(agents_mod, "configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            agents_mod, "configure_tool", lambda tool, state, model=None, **_kw: state
+        )
         monkeypatch.setattr(agents_mod, "save_state", lambda state: None)
         monkeypatch.setattr(
             agents_mod,
@@ -1134,7 +1136,9 @@ class TestConfigureSelectedTools:
     def test_merges_with_existing_available_tools(self, monkeypatch):
         """Configuring a new tool should not drop previously-configured tools
         from state['available_tools']."""
-        monkeypatch.setattr("ucode.agents.configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            "ucode.agents.configure_tool", lambda tool, state, model=None, **_kw: state
+        )
         monkeypatch.setattr("ucode.agents.save_state", lambda s: None)
 
         state = {
@@ -1146,7 +1150,9 @@ class TestConfigureSelectedTools:
         assert set(result["available_tools"]) == {"codex", "claude"}
 
     def test_adds_new_tool_to_available_tools(self, monkeypatch):
-        monkeypatch.setattr("ucode.agents.configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            "ucode.agents.configure_tool", lambda tool, state, model=None, **_kw: state
+        )
         monkeypatch.setattr("ucode.agents.save_state", lambda s: None)
 
         state = {
@@ -1158,7 +1164,9 @@ class TestConfigureSelectedTools:
         assert set(result["available_tools"]) == {"codex", "claude"}
 
     def test_empty_selection_preserves_existing(self, monkeypatch):
-        monkeypatch.setattr("ucode.agents.configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            "ucode.agents.configure_tool", lambda tool, state, model=None, **_kw: state
+        )
         monkeypatch.setattr("ucode.agents.save_state", lambda s: None)
 
         state = {"workspace": "https://x.databricks.com", "available_tools": ["codex"]}

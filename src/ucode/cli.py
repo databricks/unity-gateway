@@ -22,6 +22,7 @@ from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
 from ucode import custom_oauth
 from ucode.agents import (
+    MODEL_LOCATION_TOOLS,
     TOOL_SPECS,
     LaunchOptions,
     check_gateway_endpoint,
@@ -53,6 +54,7 @@ from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    AGENT_COPILOT,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -943,7 +945,7 @@ def _setup_single_agent(
 ) -> dict:
     """Log in, discover the agent's models, and write its config, then print the summary.
 
-    With ``apply_managed`` the workspace's managed config governs claude/codex (the
+    With ``apply_managed`` the workspace's managed config governs claude/codex/copilot (the
     ``ug configure --agent`` path: admin-enabled applies the admin config, a disabled agent is
     rejected). ``ug agents add`` passes ``apply_managed=False`` to set up a self-managed agent
     standalone, independent of the managed config.
@@ -968,16 +970,17 @@ def _setup_single_agent(
     if apply_managed and tool in ("claude", "codex"):
         # Explicit configure always reads the workspace policy fresh, so it can install it.
         managed, _ = _refresh_configured_policy(state)
+    elif apply_managed:
+        # Other agents only read the policy; they never install it.
+        managed, _ = _read_policy_for_other_agent(state)
+    if apply_managed:
         refuse_user_scope_over_managed_config(state.get("workspace"), managed)
+    if apply_managed and tool in MODEL_LOCATION_TOOLS:
         _reject_disabled_agent(managed, tool)
         if managed is not None:
             state = resolve_state(managed, state, tool)
             if not managed_provider_service(managed, tool):
                 parent_schema = managed_unity_catalog_location(managed, tool)
-    elif apply_managed:
-        # Other agents only read the policy; they never install it.
-        managed, _ = _read_policy_for_other_agent(state)
-        refuse_user_scope_over_managed_config(state.get("workspace"), managed)
     _reject_managed_model_source(managed, model_location=model_location, provider=provider)
     if model_location is not None or provider is not None:
         # The flag names this agent's source outright.
@@ -996,10 +999,10 @@ def _setup_single_agent(
             resolved_mcps = _configure_managed_mcp_servers(managed)
             skills_configured = _configure_managed_skills(managed)
             if resolved_mcps is not None and skills_configured:
-                _sync_claude_cowork_mcp_servers(state, managed_mcp_servers=resolved_mcps)
-    install_databricks_ai_tools_for_agents(
-        [tool], state, force_refresh=tool not in ("claude", "codex")
-    )
+                _sync_claude_cowork_plugin(state, managed_mcp_servers=resolved_mcps)
+    # Only the Claude and Codex branch above reads the managed config fresh.
+    managed_refreshed = apply_managed and tool in ("claude", "codex")
+    install_databricks_ai_tools_for_agents([tool], state, force_refresh=not managed_refreshed)
     spec = TOOL_SPECS[tool]
     provider_summary = "Databricks" if parent_schema else _provider_summary(tool, state)
     console.print(
@@ -1042,9 +1045,9 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     (``system.ai``), a Model Provider Service, or a custom Unity Catalog model location — and
     persist (or clear) the choice.
 
-    No-op for tools other than claude/codex/gemini/copilot (gemini and copilot have no custom
-    location). Falls back to Databricks when no matching provider services are found or the
-    listing fails and no custom location is offered.
+    No-op for tools other than claude/codex/gemini/copilot (gemini has no custom location). Falls
+    back to Databricks when no matching provider services are found or the listing fails and no
+    custom location is offered.
     """
     if tool not in ("claude", "codex", "gemini", "copilot"):
         return state
@@ -1062,7 +1065,7 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     token = get_databricks_token(state["workspace"], state.get("profile"))
     with spinner("Checking for model provider services..."):
         names, reason = list_tool_provider_services(tool, state["workspace"], token)
-    offers_location = tool in ("claude", "codex")
+    offers_location = tool in MODEL_LOCATION_TOOLS
     if reason is not None:
         # Most workspaces don't have the feature enabled — that's the common case,
         # so skip the provider choice silently. Only surface unexpected failures.
@@ -1215,7 +1218,7 @@ def _configure_workspace_command(
             resolved = resolve_state(managed, state, tool_name)
             parent_schema = (
                 managed_unity_catalog_location(managed, tool_name)
-                if tool_name in ("claude", "codex")
+                if tool_name in MODEL_LOCATION_TOOLS
                 and not managed_provider_service(managed, tool_name)
                 else None
             )
@@ -1261,7 +1264,7 @@ def _configure_workspace_command(
                 str(server["name"]) for server in (resolved_mcps or []) if server.get("name")
             ]
             if "claude" in configured_tools and resolved_mcps is not None and skills_configured:
-                _sync_claude_cowork_mcp_servers(state, managed_mcp_servers=resolved_mcps)
+                _sync_claude_cowork_plugin(state, managed_mcp_servers=resolved_mcps)
         _summarize_managed_config(managed, configured_tools, registered_mcps)
         return 0
 
@@ -1356,7 +1359,7 @@ def _configure_workspace_command(
 
         configure_claude_desktop(state)
         if not is_dry_run():
-            _sync_claude_cowork_mcp_servers(state)
+            _sync_claude_cowork_plugin(state)
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
         spec = TOOL_SPECS[tool_name]
@@ -2020,10 +2023,10 @@ def _not_installed_message(agents: list[str]) -> str:
     return f"Not installed or not set up: {names}. Install the CLI on PATH, then rerun."
 
 
-def _sync_claude_cowork_mcp_servers(
+def _sync_claude_cowork_plugin(
     state: dict | None = None, *, managed_mcp_servers: list[dict] | None = None
 ) -> None:
-    """Keep Claude Cowork's generated plugin aligned with Claude-targeted MCP state."""
+    """Keep Claude Cowork's generated plugin aligned with workspace MCPs and skills."""
     current_state = state if state is not None else load_state()
     configured_tools = set(current_state.get("available_tools") or []) | set(
         current_state.get("last_configured_tools") or []
@@ -2052,7 +2055,7 @@ def _configure_optional_setup(state: dict, tools: list[str]) -> None:
     install_databricks_ai_tools_for_agents(tools, state)
     configure_mcp_command()
     if "claude" in tools:
-        _sync_claude_cowork_mcp_servers()
+        _sync_claude_cowork_plugin()
 
 
 @mcp_app.command("add")
@@ -2150,7 +2153,7 @@ def mcp_add(
             else None
         )
         add_mcp_command(location=location, services=selected, agents=scope)
-        _sync_claude_cowork_mcp_servers()
+        _sync_claude_cowork_plugin()
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -2184,7 +2187,7 @@ def mcp_remove(
     )
     try:
         remove_mcp_command(agents=requested_agents)
-        _sync_claude_cowork_mcp_servers()
+        _sync_claude_cowork_plugin()
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -2379,28 +2382,26 @@ def skills_add(
                     f"(invalid: {', '.join(invalid)})."
                 )
             configure_selected_skills_download_command(sorted(requested_skills), path)
-            return
-        locations = _parse_skill_locations(location)
-        if not locations:
-            if _stdin_is_interactive():
-                if mcp:
-                    configured_agents = (
-                        _configure_agents_for_mcp(sorted(requested_agents))
-                        if requested_agents
-                        else None
-                    )
-                    configure_skills_mcp_picker_command(agents=configured_agents)
-                else:
-                    configure_skills_download_picker_command(path=path)
-                return
-            raise RuntimeError("--location is required for `ug skills add`.")
-        if mcp:
-            configured_agents = (
-                _configure_agents_for_mcp(sorted(requested_agents)) if requested_agents else None
-            )
-            add_skills_command(locations, agents=configured_agents)
         else:
-            configure_location_skills_download_command(locations, path=path)
+            locations = _parse_skill_locations(location)
+            if not locations and not _stdin_is_interactive():
+                raise RuntimeError("--location is required for `ug skills add`.")
+            if mcp:
+                configured_agents = (
+                    _configure_agents_for_mcp(sorted(requested_agents))
+                    if requested_agents
+                    else None
+                )
+                if locations:
+                    add_skills_command(locations, agents=configured_agents)
+                else:
+                    configure_skills_mcp_picker_command(agents=configured_agents)
+                return
+            if locations:
+                configure_location_skills_download_command(locations, path=path)
+            else:
+                configure_skills_download_picker_command(path=path)
+        _sync_claude_cowork_plugin()
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -2498,6 +2499,7 @@ def skills_remove(
                     f"(invalid: {', '.join(invalid)})."
                 )
             remove_downloaded_skills_command([], sorted(requested_skills), path=path)
+            _sync_claude_cowork_plugin()
             return
         locations = _parse_skill_locations(location)
         if path is not None and not locations:
@@ -2505,6 +2507,7 @@ def skills_remove(
         if not locations and not _stdin_is_interactive():
             raise RuntimeError("--location or --names is required for `ug skills remove`.")
         remove_downloaded_skills_command(locations, path=path)
+        _sync_claude_cowork_plugin()
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -3472,7 +3475,7 @@ def _launch_tool(
             parent_schema is None
             and explicit_provider is None
             and not persisted_provider
-            and tool in {"claude", "codex"}
+            and tool in MODEL_LOCATION_TOOLS
         ):
             parent_schema = get_model_location(state, tool)
         # An explicit --model-location displaces a persisted provider, as --provider displaces a
@@ -3514,7 +3517,7 @@ def _launch_tool(
         managed_provider = managed_provider_service(managed or {}, tool)
         managed_parent_schema = (
             managed_unity_catalog_location(managed or {}, tool)
-            if tool in {"claude", "codex"} and not managed_provider
+            if tool in MODEL_LOCATION_TOOLS and not managed_provider
             else None
         )
         if managed_provider:
@@ -3677,18 +3680,32 @@ def _launch_tool(
         # The router's per-launch pick for the root session. Codex pins it as the
         # resolved model; claude pins it via ANTHROPIC_MODEL (route_root_model).
         route_root_model = None
+        claude_inputs_from_configure = (
+            False  # claude's model inputs are the ones `ug configure` derives
+        )
+        session_model = None  # launch-only model for Claude Code's `--model` flag
         managed_model = None
         relayed_forward_model = None  # forwarded to Claude Code's --model for a relayed provider
-        if provider or managed_parent_schema or picker_catalog:
+        # picker_catalog stands in for Claude's provider or location. Copilot picks its start model
+        # from its location catalog, and resolving one below would demand a Databricks model.
+        if (
+            provider
+            or managed_parent_schema
+            or picker_catalog
+            or (tool == AGENT_COPILOT and parent_schema)
+        ):
             # Routing through a Model Provider Service pins no Databricks model;
             # scoped UC discovery likewise lets the agent select from the parent schema. Skip model
             # resolution, which would otherwise fail when global discovery found no models.
             resolved_model = None
             managed_source_model = (
                 managed_launch_model(managed or {}, recommendation, tool)
-                if tool == "claude" and (managed_provider or managed_parent_schema)
+                if tool in (AGENT_CLAUDE, AGENT_COPILOT)
+                and (managed_provider or managed_parent_schema)
                 else None
             )
+            if tool == AGENT_COPILOT:
+                managed_model = managed_source_model
             if tool == "claude" and managed_parent_schema:
                 # Native discovery supplies the catalog, but the managed policy still controls
                 # which model Claude starts on.
@@ -3726,20 +3743,30 @@ def _launch_tool(
                 managed_launch_model(managed, recommendation, tool) if managed is not None else None
             )
             state, resolved_model = resolve_launch_model(tool, state, managed_model)
-            # The admin's model outranks a smart-routing pick too. Claude only launches on it when
-            # pinned as ANTHROPIC_MODEL (route_root_model); other agents take `resolved_model`,
-            # which already holds it from resolve_launch_model above.
-            if managed_model:
-                if tool == "claude":
-                    route_root_model = managed_model
-                else:
-                    resolved_model = managed_model
+            # The admin's model outranks a smart-routing pick too. Other agents take
+            # `resolved_model`, which already holds it from resolve_launch_model above.
+            if managed_model and tool != "claude":
+                resolved_model = managed_model
+            if tool == "claude":
+                # Claude's managed files hold only what `ug configure` writes (the admin's default
+                # and family models), so a launch never rewrites them. A different per-launch
+                # model (budget recommendation) goes through Claude Code's `--model` flag, which
+                # outranks a managed ANTHROPIC_MODEL.
+                managed_inputs = claude_agent.managed_model_inputs(state, managed)
+                coding_agent_config_defaults = managed_inputs.coding_agent_config_defaults
+                route_root_model = managed_inputs.route_root_model
+                picker_catalog = managed_inputs.picker_catalog
+                claude_inputs_from_configure = True
+                if managed_model and managed_model != managed_inputs.route_root_model:
+                    session_model = claude_agent.picker_row_model(
+                        managed_inputs.picker_catalog, managed_model
+                    )
             # An explicit `--model` is the user's own choice and outranks everything above (managed
             # default, smart-routing pick). Non-claude agents take it as the resolved model, which
             # Codex keeps an explicit --model in ctx.args and passes it to its CLI verbatim.
             if model and tool != "claude":
                 resolved_model = model
-        if model and tool == "claude" and not provider:
+        if model and tool == "claude" and not provider and not claude_inputs_from_configure:
             route_root_model = None
         # List the gateway's models in ug's own /model picker so GPT rows get the `[1m]` hint.
         # Claude Code's own discovery lists them without it, so they would run at 200K.
@@ -3760,7 +3787,12 @@ def _launch_tool(
                     launch_model=model or forwarded_model,
                     discovered_catalog=discovered,
                 )
-        if coding_agent_config_defaults and not state.get("claude_static_models") and not relayed:
+        if (
+            coding_agent_config_defaults
+            and not claude_inputs_from_configure
+            and not state.get("claude_static_models")
+            and not relayed
+        ):
             picker_catalog = claude_agent.default_model_picker_catalog(
                 coding_agent_config_defaults,
                 provider=provider,
@@ -3827,16 +3859,19 @@ def _launch_tool(
             _print_budget_panel(recommendation, tool, managed)
         # The managed config's MCP servers and skills are both applied at `ug configure`, not here,
         # so the launch hot path makes no per-launch discovery calls for them.
-        if tool == "claude":
+        if tool == AGENT_CLAUDE:
             if provider:
                 state["_claude_launch_provider"] = provider
-        elif tool == "codex":
+        elif tool == AGENT_CODEX:
             if provider:
                 state["_codex_launch_provider"] = provider
             elif parent_schema:
                 state["_codex_launch_parent_schema"] = parent_schema
-        elif tool == "copilot" and provider:
-            state[copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY] = provider
+        elif tool == AGENT_COPILOT:
+            if provider:
+                state[copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY] = provider
+            elif parent_schema:
+                state[copilot_agent.LAUNCH_MODEL_LOCATION_KEY] = parent_schema
         launch_options = _launch_options(
             tool,
             ctx.args,
@@ -3847,7 +3882,8 @@ def _launch_tool(
             user_pinned_model=model or forwarded_model,
             provider=provider,
             # Copilot picks its start model from its own catalog; the admin's or budget pick leads.
-            launch_model=managed_model if tool == "copilot" else None,
+            # session_model is set for claude only.
+            launch_model=managed_model if tool == "copilot" else session_model,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):
@@ -4309,6 +4345,13 @@ def copilot_cmd(
             "(<catalog>.<schema>.<name>); `/model` then lists that service's models.",
         ),
     ] = None,
+    model_location: Annotated[
+        str | None,
+        typer.Option(
+            "--model-location",
+            help="Discover model services in `<catalog>.<schema>`. Example: main.default",
+        ),
+    ] = None,
     skip_preflight: SkipPreflightOption = False,
     workspace: WorkspaceOption = None,
 ) -> None:
@@ -4319,6 +4362,7 @@ def copilot_cmd(
         provider=provider,
         skip_preflight=skip_preflight,
         workspace_url=workspace,
+        parent_schema=model_location,
     )
 
 
@@ -4563,7 +4607,7 @@ def configure(
             raise RuntimeError("Use either --global or --user, not both.")
         scope = "user" if user_scope else "global"
         set_config_scope(scope)
-        claude_agent.request_header_mod()
+        claude_agent.request_explicit_configure()
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
@@ -4736,7 +4780,7 @@ def configure(
                     "interactive picker."
                 )
             configure_mcp_command(services=services)
-            _sync_claude_cowork_mcp_servers()
+            _sync_claude_cowork_plugin()
         if (
             fully_interactive
             and not combined_optional_setup
@@ -4744,7 +4788,7 @@ def configure(
             and prompt_yes_no("Configure MCP servers now?")
         ):
             configure_mcp_command()
-            _sync_claude_cowork_mcp_servers()
+            _sync_claude_cowork_plugin()
         save_config_scope(scope)
     except typer.Exit:
         # `typer.Exit` subclasses RuntimeError, so it has to be re-raised ahead of the handler
