@@ -246,7 +246,9 @@ success/failure, one shared deadline, and network/CLI failures at each recovery 
 Proxy bridge coverage checks that OAuth U2M discovery retains an authentication action
 alongside normal tools, without opening a browser. It covers confirmed metadata caching,
 retry after failed metadata lookup, PAT/non-U2M exclusion, pagination, upstream name collisions,
-and result/transport metadata preservation. Discovery and unrelated replies continue during
+and result/transport metadata preservation. If upstream removes its authentication tool on a
+fresh listing, local discovery and automatic recovery resume; pagination retains upstream
+ownership within that listing. Discovery and unrelated replies continue during
 interactive login. Metadata-helper cases distinguish unsupported services from failed or
 incomplete lookups; Claude registration retains the proxy when classification is unknown.
 A stream scenario covers tool failure, explicit login, tool refresh, task retry, and later

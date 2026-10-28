@@ -569,7 +569,9 @@ connect a plugin MCP server, discover its deferred tool, or run a task through i
 reauthentication after success/cancellation, refresh and task retry over in-memory MCP
 streams, and renewed discovery-auth failures. Failed metadata lookups remain retryable, and
 discovery and unrelated replies continue during interactive login. Metadata/pagination and
-upstream tool names are preserved; PAT/non-U2M discovery, permission errors, and policy URL
+upstream tool names are preserved. A fresh listing that removes upstream `authenticate`
+restores local recovery, while continuation pages preserve ownership from earlier pages.
+PAT/non-U2M discovery, permission errors, and policy URL
 elicitation stay unchanged. `../test_databricks.py` distinguishes unsupported services from
 failed or incomplete lookups; `../test_mcp.py` retains proxy registration for unknown
 classification. `../test_cowork_plugin.py` also checks generated sign-in/retry guidance. These

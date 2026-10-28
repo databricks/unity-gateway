@@ -393,13 +393,21 @@ class _McpBridge:
             )
         )
 
-    async def _with_authentication_tool(self, message: SessionMessage) -> SessionMessage:
+    async def _with_authentication_tool(
+        self, message: SessionMessage, request: JSONRPCRequest | None
+    ) -> SessionMessage:
         payload = message.message
         if not isinstance(payload, JSONRPCResponse):
             return message
         tools = payload.result.get("tools")
         if not isinstance(tools, list):
             return message
+        if (
+            request is None
+            or not isinstance(request.params, dict)
+            or not request.params.get("cursor")
+        ):
+            self._upstream_authentication_tool = False
         if any(
             isinstance(tool, dict) and tool.get("name") == AUTHENTICATE_TOOL_NAME for tool in tools
         ):
@@ -420,7 +428,10 @@ class _McpBridge:
         )
 
     async def _send_tool_list_response(
-        self, message: SessionMessage, client: _SendStream[SessionMessage]
+        self,
+        message: SessionMessage,
+        client: _SendStream[SessionMessage],
+        request: JSONRPCRequest | None = None,
     ) -> None:
         payload = message.message
         if (
@@ -446,7 +457,7 @@ class _McpBridge:
             await client.send(response)
             self._mark_tools_refreshed()
             return
-        await client.send(await self._with_authentication_tool(message))
+        await client.send(await self._with_authentication_tool(message, request))
         if isinstance(payload, JSONRPCResponse) and self.authentication_completed:
             self._mark_tools_refreshed()
 
@@ -653,7 +664,7 @@ class _McpBridge:
                         and isinstance(request, JSONRPCRequest)
                         and request.method == "tools/list"
                     ):
-                        tg.start_soon(self._send_tool_list_response, message, dest)
+                        tg.start_soon(self._send_tool_list_response, message, dest, request)
                         continue
                     await dest.send(message)
         raise ProxyTransportError("upstream MCP transport closed unexpectedly")
