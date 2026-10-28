@@ -112,7 +112,9 @@ from ucode.managed_config import (
     revert_machine_policy,
 )
 from ucode.managed_files import (
+    ManagedFileWriteUnavailable,
     config_scope,
+    explicit_managed_writes,
     managed_write_session,
     request_explicit_managed_writes,
     set_config_scope,
@@ -3144,6 +3146,9 @@ def _configure_managed_mcp_servers(managed: dict | None) -> list[dict] | None:
         )
         return None
     except RuntimeError as exc:
+        # A denied machine-wide write fails `ug configure`, like the agents' own settings.
+        if isinstance(exc, ManagedFileWriteUnavailable) and explicit_managed_writes():
+            raise
         print_warning(f"Could not register your workspace's MCP servers: {exc}")
         return None
     names = [str(server["name"]) for server in registered if server.get("name")]
@@ -4698,7 +4703,7 @@ def status_cmd() -> None:
 @app.command("revert", rich_help_panel="Manage")
 def revert_cmd() -> None:
     """Clear ug state and restore backed-up agent config files."""
-    request_explicit_managed_writes()
+    request_explicit_managed_writes("ug revert")
     try:
         result = revert()
     except RuntimeError as exc:

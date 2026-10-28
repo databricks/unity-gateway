@@ -105,31 +105,11 @@ def test_unelevated_windows_configure_asks_for_an_elevated_rerun(tmp_path, monke
         )
 
 
-@pytest.mark.parametrize("os_name", ["LINUX", "MACOS", "WINDOWS"])
-@pytest.mark.parametrize("interactive", [False, True])
-def test_configure_may_always_write(monkeypatch, os_name, interactive):
-    monkeypatch.setattr(managed_files, "current_os", lambda: getattr(managed_files.OS, os_name))
-    monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: interactive)
-    managed_files.request_explicit_managed_writes()
-
-    assert managed_files.managed_writes_allowed()
-
-    managed_files.request_explicit_managed_writes(False)
-    assert managed_files.managed_writes_allowed() is (interactive and os_name != "WINDOWS")
-
-
 def test_root_runs_privileged_commands_without_sudo(monkeypatch):
     # Containers often run as root with no sudo installed.
     monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
 
     assert managed_files._sudo_command("rm", "-f", "/etc/x") == ["rm", "-f", "/etc/x"]
-
-
-def test_non_root_privileged_commands_never_prompt_without_a_terminal(monkeypatch):
-    monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
-    monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
-
-    assert managed_files._sudo_command("rm", "-f", "/etc/x")[1:3] == ["-n", "rm"]
 
 
 @pytest.mark.parametrize("args", [["configure"], ["revert"]], ids=["configure", "revert"])
@@ -143,3 +123,111 @@ def test_configure_and_revert_request_explicit_writes(monkeypatch, args):
     CliRunner().invoke(cli_mod.app, args)
 
     assert managed_files.explicit_managed_writes()
+
+
+def _write_policy_env(tmp_path, monkeypatch):
+    """A real reconcile/revert of one managed file, with privileged writes landing in tmp_path."""
+    path = tmp_path / "managed-settings.json"
+    monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+    monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+    monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
+
+    def write(target, text):
+        target.write_text(text, encoding="utf-8")
+
+    monkeypatch.setattr(managed_files, "_sudo_replace", write)
+    monkeypatch.setattr(managed_files, "_sudo_remove", lambda target: target.unlink())
+    return path
+
+
+def _reconcile(path):
+    managed_files.reconcile_managed_file(
+        path, '{"a": 1}', tool="claude", display="Claude Code", owned_paths=[], parser=json.loads
+    )
+
+
+def _revert():
+    return managed_files.revert_managed_file(
+        "claude", display="Claude Code", parser=json.loads, dumper=json.dumps
+    )
+
+
+def test_headless_revert_restores_the_managed_file(tmp_path, monkeypatch):
+    path = _write_policy_env(tmp_path, monkeypatch)
+    managed_files.request_explicit_managed_writes()
+    _reconcile(path)
+    assert path.exists()
+
+    managed_files.request_explicit_managed_writes("ug revert")
+    assert _revert() == "removed"
+    assert not path.exists()
+
+
+def test_denied_headless_revert_keeps_the_backup_and_says_so(tmp_path, monkeypatch):
+    path = _write_policy_env(tmp_path, monkeypatch)
+    managed_files.request_explicit_managed_writes()
+    _reconcile(path)
+
+    def denied(_target):
+        raise CalledProcessError(1, ["sudo", "-n", "rm"], stderr="sudo: a password is required")
+
+    monkeypatch.setattr(managed_files, "_sudo_remove", denied)
+    managed_files.request_explicit_managed_writes("ug revert")
+
+    with pytest.raises(RuntimeError, match="The backup was retained"):
+        _revert()
+    assert path.exists()
+
+
+def test_missing_sudo_is_reported_like_a_denied_write(tmp_path, monkeypatch):
+    # A slim container may have no sudo binary at all.
+    path = _write_policy_env(tmp_path, monkeypatch)
+
+    def no_sudo(_target, _text):
+        raise FileNotFoundError(2, "No such file or directory", "/usr/bin/sudo")
+
+    monkeypatch.setattr(managed_files, "_sudo_replace", no_sudo)
+    managed_files.request_explicit_managed_writes()
+
+    with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="as root"):
+        _reconcile(path)
+
+
+@pytest.mark.parametrize(("command", "user_hint"), [("ug configure", True), ("ug revert", False)])
+def test_write_failure_names_the_command_to_rerun(tmp_path, monkeypatch, command, user_hint):
+    path = _write_policy_env(tmp_path, monkeypatch)
+
+    def denied(_target, _text):
+        raise CalledProcessError(1, ["sudo", "-n"], stderr="sudo: a password is required")
+
+    monkeypatch.setattr(managed_files, "_sudo_replace", denied)
+    managed_files.request_explicit_managed_writes(command)
+
+    with pytest.raises(managed_files.ManagedFileWriteUnavailable) as raised:
+        _reconcile(path)
+
+    assert f"Run `{command}`" in str(raised.value)
+    assert ("`--user`" in str(raised.value)) is user_hint
+
+
+def test_windows_skipped_write_warning_asks_for_elevation(tmp_path, monkeypatch):
+    warnings: list[str] = []
+    monkeypatch.setattr(managed_files, "print_warning", warnings.append)
+    monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
+
+    with managed_files.managed_write_batch(["Codex"]):
+        managed_files.warn_managed_write_skipped(tmp_path, {}, {"model_provider": "Databricks"})
+
+    assert len(warnings) == 1
+    assert "administrator rights" in warnings[0] and "sudo" not in warnings[0]
+
+
+def test_configure_fails_on_a_denied_managed_mcp_write(monkeypatch):
+    def denied(_managed, _agents):
+        raise managed_files.ManagedFileWriteUnavailable("sudo: a password is required")
+
+    monkeypatch.setattr(cli_mod, "reconcile_managed_mcp_servers", denied)
+    managed_files.request_explicit_managed_writes()
+
+    with pytest.raises(managed_files.ManagedFileWriteUnavailable):
+        cli_mod._configure_managed_mcp_servers({"default_agent": "CODING_AGENT_CODEX"})

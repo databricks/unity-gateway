@@ -35,6 +35,7 @@ from ucode.databricks import (
     raise_for_invalid_access_token,
     workspace_hostname,
 )
+from ucode.managed_files import ManagedFileWriteUnavailable, explicit_managed_writes
 from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
     CLAUDE_CODE_CIMD_CLIENT_ID,
@@ -1116,7 +1117,8 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
     Returns the servers resolved this run. Propagates the distinct
     :class:`McpServiceListingRateLimited` when discovery is rate-limited (HTTP 429), so the caller
     can skip MCP setup for the run without treating it as a hard failure; any other discovery
-    failure raises plain ``RuntimeError``. Either way the caller keeps it best-effort.
+    failure raises plain ``RuntimeError``. Either way the caller keeps it best-effort, except that
+    ``ug configure`` fails on a denied machine-wide write (:class:`ManagedFileWriteUnavailable`).
     """
     selector = managed.get("mcp_servers")
     selector = selector if isinstance(selector, dict) else {}
@@ -1179,6 +1181,9 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
         try:
             written = module.reconcile_managed_mcp(state, entries, **extra)
         except RuntimeError as exc:
+            # `ug configure` must leave the machine-wide file correct, as for agent settings.
+            if isinstance(exc, ManagedFileWriteUnavailable) and explicit_managed_writes():
+                raise
             print_warning(f"Could not update {MCP_CLIENTS[agent]['display']} managed MCP: {exc}")
             written = False
         if is_eligible and written:
