@@ -2061,9 +2061,10 @@ class TestCodexManagedConfig:
         assert state["managed_file_fingerprints"]["codex"]["scope"] == "local-compatible"
         assert codex.managed_config_is_current(state)
 
-    def test_headless_configure_warns_that_the_machine_file_was_not_updated(
+    def test_headless_setup_outside_configure_warns_that_the_machine_file_was_not_updated(
         self, tmp_path, monkeypatch
     ):
+        # `ug configure` itself always attempts the write; see the explicit-configure tests below.
         managed_path, sudo_writes = self._sudo_counting_env(
             tmp_path, monkeypatch, non_interactive=True
         )
@@ -2075,9 +2076,51 @@ class TestCodexManagedConfig:
 
         assert sudo_writes == []
         assert not managed_path.exists()
-        assert f"{managed_path} wasn't updated because no admin privileges were detected." in (
-            warnings
+        assert (
+            f"{managed_path} wasn't updated: this run has no terminal to approve sudo. Run `ug configure` to update it."
+            in warnings
         )
+
+    def _headless_configure(self, tmp_path, monkeypatch):
+        """A headless `ug configure`: no terminal, and the real write policy."""
+        managed_path, sudo_writes = self._sudo_counting_env(
+            tmp_path, monkeypatch, non_interactive=True
+        )
+        monkeypatch.setattr(codex, "managed_writes_allowed", managed_files.managed_writes_allowed)
+        managed_files.request_explicit_managed_writes()
+        return managed_path, sudo_writes
+
+    def test_headless_configure_writes_the_machine_file(self, tmp_path, monkeypatch):
+        # Same path as an interactive configure; the write itself settles privilege.
+        managed_path, sudo_writes = self._headless_configure(tmp_path, monkeypatch)
+
+        with managed_files.managed_write_batch(["Codex"]):
+            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        assert len(sudo_writes) == 1
+        assert read_toml_safe(managed_path)["model_provider"] == codex.CODEX_MODEL_PROVIDER_NAME
+
+    def test_headless_configure_fails_when_the_machine_file_cannot_be_written(
+        self, tmp_path, monkeypatch
+    ):
+        # No silent fallback to per-user settings: the error names the ways to make it work.
+        managed_path, _sudo_writes = self._headless_configure(tmp_path, monkeypatch)
+
+        def denied(target, _text):
+            raise CalledProcessError(1, ["sudo", "-n"], stderr="sudo: a password is required")
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", denied)
+
+        with (
+            pytest.raises(managed_files.ManagedFileWriteUnavailable) as raised,
+            managed_files.managed_write_batch(["Codex"]),
+        ):
+            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        message = str(raised.value)
+        assert str(managed_path) in message
+        assert "sudo: a password is required" in message
+        assert "as root" in message and "`--user`" in message
 
     def test_noninteractive_repairs_conflicting_managed_config_without_prompting(
         self, tmp_path, monkeypatch

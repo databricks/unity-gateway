@@ -1272,13 +1272,15 @@ class TestManagedWriteSkippedWarning:
         monkeypatch.setattr(managed_files, "print_warning", captured.append)
         return captured
 
-    def test_configure_names_the_file_it_could_not_write(self, warnings, tmp_path):
+    def test_batched_setup_names_the_file_it_could_not_write(self, warnings, tmp_path):
         path = tmp_path / "requirements.toml"
 
         with managed_files.managed_write_batch(["Codex"]):
             managed_files.warn_managed_write_skipped(path, {}, {"model_provider": "Databricks"})
 
-        assert warnings == [f"{path} wasn't updated because no admin privileges were detected."]
+        assert warnings == [
+            f"{path} wasn't updated: this run has no terminal to approve sudo. Run `ug configure` to update it."
+        ]
 
     def test_dry_run_stays_quiet(self, warnings, monkeypatch, tmp_path):
         monkeypatch.setattr(managed_files, "is_dry_run", lambda: True)

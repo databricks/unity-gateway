@@ -69,6 +69,7 @@ from ucode.managed_files import (
     OS,
     ManagedFileWriteUnavailable,
     current_os,
+    explicit_managed_writes,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -937,7 +938,8 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
             parser=_parse_managed_config,
         )
     except ManagedFileWriteUnavailable:
-        if conflicts:
+        # `ug configure` must leave the machine-wide file correct, so it never degrades silently.
+        if conflicts or explicit_managed_writes():
             raise
         print_warning_err(
             f"Codex OS-managed settings could not be updated at {path}; continuing with local "
@@ -1063,7 +1065,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
     The managed file is the source of truth, so this is a wipe-and-rewrite, not a diff. Every other
     managed key is preserved, including the model configuration ug wrote earlier this run. Returns
     True when the managed file is the delivery mechanism, False when it cannot be used (unsupported
-    platform or a non-interactive run), so the caller routes those servers to the user-scope
+    platform, or a run that may not write it), so the caller routes those servers to the user-scope
     registration instead."""
     path = codex_managed_config_path()
     if (

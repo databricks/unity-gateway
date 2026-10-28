@@ -68,10 +68,22 @@ class UserSession(IntegrationSession):
         return re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/-]+=*", r"\1<redacted>", text)
 
     def configure(self, args):
-        """Configure without a PTY so CI uses isolated user-local settings."""
-        self.run(*args, timeout=240)
+        """Configure with isolated user-local settings.
+
+        A headless `ug configure` writes machine-wide settings like an interactive one, so opt out
+        explicitly with `UG_SKIP_OS_SETTINGS` (which, unlike `--user`, still accepts a workspace
+        that publishes a managed config)."""
+        previous = self.env.get("UG_SKIP_OS_SETTINGS")
+        self.env["UG_SKIP_OS_SETTINGS"] = "1"
+        try:
+            self.run(*args, timeout=240)
+        finally:
+            if previous is None:
+                self.env.pop("UG_SKIP_OS_SETTINGS", None)
+            else:
+                self.env["UG_SKIP_OS_SETTINGS"] = previous
         assert not any(path.exists() for path in constants.MANAGED_PATHS), (
-            "Non-interactive CUJ configure unexpectedly created machine-wide settings"
+            "CUJ configure with UG_SKIP_OS_SETTINGS unexpectedly created machine-wide settings"
         )
 
     def revert_machine_wide(self, name, message):

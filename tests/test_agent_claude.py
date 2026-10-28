@@ -2466,7 +2466,9 @@ class TestWriteToolConfigManagedSettings:
 
         assert managed_writes == []
 
-    def test_unelevated_configure_warns_that_the_machine_file_was_not_updated(self, monkeypatch):
+    def test_setup_outside_configure_warns_that_the_machine_file_was_not_updated(self, monkeypatch):
+        # A batched setup that may not write (e.g. `ug agents add` without a terminal);
+        # `ug configure` itself always attempts the write.
         managed_writes: list = []
         self._patch(monkeypatch, [], managed_writes)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
@@ -2479,8 +2481,9 @@ class TestWriteToolConfigManagedSettings:
             )
 
         assert managed_writes == []
-        assert f"{FAKE_MANAGED_PATH} wasn't updated because no admin privileges were detected." in (
-            warnings
+        assert (
+            f"{FAKE_MANAGED_PATH} wasn't updated: this run has no terminal to approve sudo. Run `ug configure` to update it."
+            in warnings
         )
 
     def test_noninteractive_repairs_conflicting_managed_settings_without_prompting(
