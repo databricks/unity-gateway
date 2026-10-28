@@ -788,20 +788,24 @@ class TestSubcommandRouting:
         assert options.launch_smart_routing is expected
 
     @pytest.mark.parametrize(
-        ("tool_args", "model"),
-        [(["--model", "fixed"], None), (["-p", "hi", "--model", "fixed"], None), ([], "fixed")],
-    )
-    @pytest.mark.parametrize(
-        ("tool", "routing_env", "expected"),
+        ("tool", "tool_args", "model"),
         [
-            ("claude", {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}, True),
-            ("claude", {"ENABLE_SMART_ROUTING_V2": "1"}, False),
-            ("codex", {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}, False),
-            ("codex", {"ENABLE_SMART_ROUTING_V2": "1"}, False),
+            ("claude", ["--model", "fixed"], None),
+            ("claude", ["-p", "hi", "--model", "fixed"], None),
+            ("claude", [], "fixed"),
+            ("codex", [], "fixed"),
         ],
     )
-    def test_explicit_model_keeps_only_claude_subagent_routing(
-        self, monkeypatch, tool_args, model, tool, routing_env, expected
+    @pytest.mark.parametrize(
+        ("routing_env", "expected"),
+        [
+            ({"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}, True),
+            ({"ENABLE_SMART_ROUTING_V2": "1"}, False),
+        ],
+        ids=["subagent-only", "first-prompt"],
+    )
+    def test_explicit_model_keeps_only_subagent_routing(
+        self, monkeypatch, tool, tool_args, model, routing_env, expected
     ):
         for name, value in routing_env.items():
             monkeypatch.setenv(name, value)
