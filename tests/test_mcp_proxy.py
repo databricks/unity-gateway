@@ -1068,6 +1068,55 @@ class TestMcpBridgeConnectionLogin:
 
         anyio.run(scenario)
 
+    def test_upstream_authenticate_removed_on_refresh_restores_local_recovery(self, monkeypatch):
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda *a: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a: True)
+        logins = []
+        monkeypatch.setattr(
+            mcp_proxy, "run_connection_login", lambda *a, **k: logins.append(1) or (True, "")
+        )
+
+        async def scenario():
+            source_send, source_read = anyio.create_memory_object_stream(2)
+            dest_send, dest_read = anyio.create_memory_object_stream(2)
+            retry_send, retry_read = anyio.create_memory_object_stream(2)
+            bridge = mcp_proxy._McpBridge(mcp_proxy._ConnectionLogin(CONN_URL, WS, "p"))
+            query = {"name": "query"}
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(bridge.pump_upstream, source_read, dest_send, retry_send)
+                with anyio.fail_after(2):
+                    bridge.pending_requests[1] = self._request(1)
+                    first = self._response(1)
+                    first.message.result["tools"] = [{"name": "authenticate"}, query]
+                    await source_send.send(first)
+                    assert await dest_read.receive() is first
+
+                    bridge.pending_requests[2] = self._request(2)
+                    refreshed = self._response(2)
+                    refreshed.message.result["tools"] = [query]
+                    await source_send.send(refreshed)
+                    received = await dest_read.receive()
+                    assert received.message.result["tools"] == [
+                        query,
+                        bridge._authentication_tool(),
+                    ]
+                    assert logins == []
+
+                    request = self._tool_call_request(3, "query")
+                    bridge.pending_requests[3] = request
+                    await source_send.send(self._error(request_id=3))
+                    assert await retry_read.receive() is request
+                    assert logins == [1]
+                    success = mcp_proxy.SessionMessage(
+                        mcp_proxy.JSONRPCResponse(jsonrpc="2.0", id=3, result={"content": []})
+                    )
+                    await source_send.send(success)
+                    assert await dest_read.receive() is success
+                tg.cancel_scope.cancel()
+
+        anyio.run(scenario)
+
     @pytest.mark.parametrize("upstream_authenticate", [False, True])
     def test_paginated_discovery_adds_local_auth_only_on_final_page(
         self, monkeypatch, upstream_authenticate
@@ -1091,6 +1140,7 @@ class TestMcpBridgeConnectionLogin:
                     await source_send.send(first)
                     assert await dest_read.receive() is first
                     bridge.pending_requests[2] = self._request(2)
+                    bridge.pending_requests[2].message.params = {"cursor": "next-page"}
                     final = self._response(2)
                     await source_send.send(final)
                     received = await dest_read.receive()
