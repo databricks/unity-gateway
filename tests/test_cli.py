@@ -3837,6 +3837,51 @@ class TestRevert:
         assert "Could not remove leftover Copilot session files" in _strip_ansi(result.output)
         assert cleared == [True]
 
+    @pytest.mark.parametrize("existed", [False, True])
+    def test_antigravity_revert_keeps_skills_entries_added_after_configure(
+        self, existed, monkeypatch, tmp_path
+    ):
+        from ucode.agents import antigravity
+
+        monkeypatch.setattr(antigravity, "UG_AGENTS_SKILLS_DIR", tmp_path / ".agents/skills")
+        skills = antigravity.AGY_SKILLS_CONFIG_PATH
+        if existed:
+            skills.parent.mkdir(parents=True)
+            skills.write_text(json.dumps({"entries": [{"path": "/mine"}]}))
+        antigravity.write_tool_config({**MINIMAL_STATE}, None)
+        # skills.json is shared with the Antigravity app: the user adds to it after configure.
+        config = json.loads(skills.read_text())
+        config["entries"].append({"path": "/later"})
+        skills.write_text(json.dumps(config))
+
+        with (
+            patch("ucode.cli.load_state", return_value=dict(MINIMAL_STATE)),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.clear_state"),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        expected = [{"path": "/mine"}, {"path": "/later"}] if existed else [{"path": "/later"}]
+        assert json.loads(skills.read_text()) == {"entries": expected}
+        assert "Antigravity CLI config: restored" in _strip_ansi(result.output)
+
+    def test_antigravity_revert_deletes_skills_file_it_created(self, monkeypatch, tmp_path):
+        from ucode.agents import antigravity
+
+        monkeypatch.setattr(antigravity, "UG_AGENTS_SKILLS_DIR", tmp_path / ".agents/skills")
+        antigravity.write_tool_config({**MINIMAL_STATE}, None)
+
+        with (
+            patch("ucode.cli.load_state", return_value=dict(MINIMAL_STATE)),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.clear_state"),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        assert not antigravity.AGY_SKILLS_CONFIG_PATH.exists()
+
     def test_reverts_mcp_configs_before_clearing_state(self):
         state = {
             **MINIMAL_STATE,

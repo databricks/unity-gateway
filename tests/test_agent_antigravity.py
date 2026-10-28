@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import json
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import MagicMock
 
-import httpx
 import pytest
 
 from ucode import gateway_proxy
@@ -120,6 +117,8 @@ class TestModelNames:
             ("system.ai.gemini-3-8-flash", "gemini-3.8-flash"),
             ("gemini-3.8-flash", "gemini-3.8-flash"),
             ("gemini-3.8-flash-high", "gemini-3.8-flash-high"),
+            # A preview model's tiers drop `-preview` (`agy models` lists only this id).
+            ("gemini-3.1-pro-low-thinking", "gemini-3.1-pro-low-thinking"),
         ],
     )
     def test_launch_model_accepts_databricks_id_name_or_variant(self, requested, expected):
@@ -264,6 +263,13 @@ class TestCatalogName:
             "gemini-3.5-flash-lite"
         )
         assert antigravity._catalog_name("gemini-3.5-flash-high", catalog) == "gemini-3.5-flash"
+
+    def test_preview_model_tier_belongs_to_the_preview_name(self):
+        catalog = antigravity.model_catalog(_state())
+
+        assert antigravity._catalog_name("gemini-3.1-pro-low-thinking", catalog) == (
+            "gemini-3.1-pro-preview"
+        )
 
 
 class TestSelectionId:
@@ -441,113 +447,6 @@ class TestMcpConfig:
         assert removed == {"a"}
 
 
-class _RecordingGateway(BaseHTTPRequestHandler):
-    requests: list[dict] = []
-
-    def log_message(self, format, *args):
-        return
-
-    def do_POST(self):
-        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-        type(self).requests.append(
-            {"path": self.path, "headers": dict(self.headers), "body": json.loads(body)}
-        )
-        payload = b'data: {"candidates": []}\n\n'
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
-
-
-@pytest.fixture
-def recording_gateway():
-    _RecordingGateway.requests = []
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _RecordingGateway)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        yield f"http://127.0.0.1:{server.server_address[1]}", _RecordingGateway.requests
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
-class TestGatewayProxy:
-    """The loopback proxy `launch` starts, exercised over real HTTP."""
-
-    def _start(self, upstream: str, catalog: dict[str, str]):
-        return gateway_proxy.start_gateway_auth_proxy(
-            upstream,
-            lambda _force: "dbx-token",
-            session_secret="session-secret",
-            added_headers=antigravity.proxy_headers("cat.sch.svc"),
-            sign_in_hint="sign in",
-            allowed_path_prefixes=(antigravity.GEMINI_GATEWAY_PATH,),
-            path_rewriter=lambda path: antigravity.rewrite_model_path(path, catalog),
-            body_rewriter=antigravity.rewrite_request_body,
-        )
-
-    def test_forwards_with_databricks_token_mapped_model_and_fixed_body(self, recording_gateway):
-        upstream, requests = recording_gateway
-        server, cache, client = self._start(
-            upstream, {"gemini-3.8-flash": "system.ai.gemini-3-8-flash"}
-        )
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        try:
-            port = server.server_address[1]
-            response = httpx.post(
-                f"http://127.0.0.1:{port}/ai-gateway/gemini/v1beta/models/"
-                "gemini-3.8-flash:streamGenerateContent?alt=sse",
-                headers={"Authorization": "Bearer session-secret"},
-                json={
-                    "generationConfig": {
-                        "thinkingConfig": {"includeThoughts": True, "thinkingBudget": 0}
-                    }
-                },
-            )
-        finally:
-            cache.stop()
-            server.shutdown()
-            server.server_close()
-            client.close()
-
-        assert response.status_code == 200
-        [request] = requests
-        assert request["path"] == (
-            "/ai-gateway/gemini/v1beta/models/system.ai.gemini-3-8-flash"
-            ":streamGenerateContent?alt=sse"
-        )
-        assert request["headers"]["Authorization"] == "Bearer dbx-token"
-        assert request["headers"][MODEL_PROVIDER_SERVICE_HEADER] == "cat.sch.svc"
-        assert request["body"] == {"generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}}
-
-    @pytest.mark.parametrize(
-        ("path", "auth", "status"),
-        [
-            ("/ai-gateway/gemini/v1beta/models/m:generateContent", "Bearer wrong", 401),
-            ("/ai-gateway/anthropic/v1/messages", "Bearer session-secret", 404),
-            ("/api/2.0/serving-endpoints", "Bearer session-secret", 404),
-        ],
-    )
-    def test_rejects_bad_secret_and_non_gemini_paths(self, recording_gateway, path, auth, status):
-        upstream, requests = recording_gateway
-        server, cache, client = self._start(upstream, {})
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        try:
-            port = server.server_address[1]
-            response = httpx.post(
-                f"http://127.0.0.1:{port}{path}", headers={"Authorization": auth}, json={}
-            )
-        finally:
-            cache.stop()
-            server.shutdown()
-            server.server_close()
-            client.close()
-
-        assert response.status_code == status
-        assert requests == []
-
-
 class TestLaunch:
     def _launch(self, monkeypatch, state, tool_args, options=None):
         captured: dict = {}
@@ -616,6 +515,12 @@ class TestLaunch:
         assert captured["argv"] == ["/opt/bin/agy", "--model", "gemini-3.8-flash-high"]
         assert captured["env"]["AGY_LLM_GATEWAY_MODELS"].split(",")[0] == "gemini-3.8-flash"
 
+    def test_preview_tier_launches_and_leads_the_catalog(self, monkeypatch):
+        captured = self._launch(monkeypatch, _state(), ["--model", "gemini-3.1-pro-low-thinking"])
+
+        assert captured["argv"] == ["/opt/bin/agy", "--model", "gemini-3.1-pro-low-thinking"]
+        assert captured["env"]["AGY_LLM_GATEWAY_MODELS"].split(",")[0] == "gemini-3.1-pro-preview"
+
     def test_subcommands_run_without_model(self, monkeypatch):
         captured = self._launch(monkeypatch, _state(), ["mcp", "list"])
 
@@ -632,6 +537,57 @@ class TestLaunch:
         assert captured["argv"] == ["/opt/bin/agy"]
         assert captured["env"]["AGY_LLM_GATEWAY_MODELS"] == "gemini-3.1-pro-preview"
         assert captured["proxy"]["added_headers"][MODEL_PROVIDER_SERVICE_HEADER] == "cat.sch.svc"
+
+    def _failing_launch(self, monkeypatch, wait=None, popen_error=None):
+        server, cache, client = MagicMock(), MagicMock(), MagicMock()
+        server.server_address = ("127.0.0.1", 4321)
+        monkeypatch.setattr(
+            gateway_proxy, "start_gateway_auth_proxy", lambda *a, **k: (server, cache, client)
+        )
+
+        def fake_popen(argv, env):
+            if popen_error is not None:
+                raise popen_error
+            proc = MagicMock()
+            proc.wait.side_effect = wait
+            return proc
+
+        monkeypatch.setattr(antigravity.subprocess_cross_os, "popen", fake_popen)
+        monkeypatch.setattr(antigravity, "resolve_binary", lambda: "/opt/bin/agy")
+        return server, cache, client
+
+    @staticmethod
+    def _assert_proxy_stopped(server, cache, client):
+        cache.stop.assert_called_once()
+        server.shutdown.assert_called_once()
+        server.server_close.assert_called_once()
+        client.close.assert_called_once()
+
+    def test_spawn_failure_stops_the_proxy(self, monkeypatch):
+        proxy = self._failing_launch(monkeypatch, popen_error=OSError("exec format error"))
+
+        with pytest.raises(OSError, match="exec format error"):
+            antigravity.launch(_state(), [], options=LaunchOptions())
+
+        self._assert_proxy_stopped(*proxy)
+
+    def test_nonzero_exit_is_returned_and_stops_the_proxy(self, monkeypatch):
+        proxy = self._failing_launch(monkeypatch, wait=[3])
+
+        with pytest.raises(SystemExit) as exc:
+            antigravity.launch(_state(), [], options=LaunchOptions())
+
+        assert exc.value.code == 3
+        self._assert_proxy_stopped(*proxy)
+
+    def test_ctrl_c_keeps_the_proxy_up_until_agy_exits(self, monkeypatch):
+        server, cache, client = self._failing_launch(monkeypatch, wait=[KeyboardInterrupt, 130])
+
+        with pytest.raises(SystemExit) as exc:
+            antigravity.launch(_state(), [], options=LaunchOptions())
+
+        assert exc.value.code == 130
+        self._assert_proxy_stopped(server, cache, client)
 
     def test_no_gemini_models_is_actionable(self):
         with pytest.raises(RuntimeError, match="No Gemini model is available"):

@@ -62,15 +62,17 @@ routing. They do not establish live
 parallel-agent TUI or gateway coverage.
 
 `test_agent_antigravity.py` covers the Antigravity CLI agent: Databricks-to-Antigravity model
-names (dotted versions, `-preview` names, image models dropped), the `agy models` selection-id
-lookup, the gateway-mode environment, skills.json/mcp_config.json merges, provider-service
-pinning, and the loopback proxy over real local HTTP (session secret, Gemini-only paths, model
-path rewrite, Databricks token and provider header, the `includeThoughts` body fix).
-`test_agents_init.py`, `test_mcp.py`, `test_cli.py` and `test_agents_commands.py` cover its
-dispatch, native installer, `agy mcp list` parsing, `ug antigravity`/`ug agy`, and
-`ug agents add antigravity`. These are unit/component checks. Live inference, MCP tool calls,
-and skill loading were checked by hand against a staging workspace with agy 1.4.9; there is no
-automated integration coverage, and Model Provider Service routing has not been run live.
+names (dotted versions, `-preview` names and their tiers, image models dropped), the `agy models`
+selection-id lookup, the gateway-mode environment, skills.json/mcp_config.json merges and the
+entry-scoped skills.json revert, provider-service pinning, and launch cleanup (spawn failure,
+nonzero exit, Ctrl-C). `test_gateway_proxy_integration.py` runs the Antigravity proxy hooks over
+real local HTTP (model path rewrite, `includeThoughts` body fix, provider header, Gemini-only
+route). `test_agents_init.py`, `test_mcp.py`, `test_cli.py` (including `ug revert` keeping
+skills.json entries added after configure) and `test_agents_commands.py` cover dispatch, the
+native installer, `agy mcp list` parsing, `ug antigravity`/`ug agy`, and
+`ug agents add antigravity`. These are unit/component checks. Automated live coverage is the six
+journeys in `integration/` (non-blocking Linux CI lane; see `integration/README.md`); Model
+Provider Service routing is covered only by unit tests.
 
 `test_ug_headers.py` covers the `UG_HEADERS` parser and the `--header` flag, `test_databricks.py`
 ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching a Codex launch's

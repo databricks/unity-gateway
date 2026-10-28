@@ -225,7 +225,7 @@ def _resolve_launch_model(model: str, catalog: dict[str, str]) -> str:
     for agy_name, gateway_model in catalog.items():
         if model == gateway_model:
             return agy_name
-    if any(model.startswith(f"{agy_name}-") for agy_name in catalog):
+    if _catalog_name(model, catalog) is not None:
         return model
     available = ", ".join(catalog) or "none"
     raise RuntimeError(
@@ -418,13 +418,21 @@ def _is_subcommand(tool_args: list[str]) -> bool:
     return bool(tool_args) and tool_args[0] in _SUBCOMMANDS
 
 
-def _catalog_name(model: str, catalog: dict[str, str]) -> str | None:
-    """The catalog name ``model`` (a name or one of its variants) belongs to."""
-    if model in catalog:
+def _catalog_name(model: str, catalog: Iterable[str]) -> str | None:
+    """The catalog name ``model`` (a name or one of its tier variants) belongs to.
+
+    Tiers are named after the model without its `-preview` suffix
+    (`gemini-3.1-pro-low-thinking` is a tier of `gemini-3.1-pro-preview`)."""
+    names = list(catalog)
+    if model in names:
         return model
     # `gemini-3.5-flash-lite-high` belongs to `gemini-3.5-flash-lite`, not `gemini-3.5-flash`.
-    matches = [name for name in catalog if model.startswith(f"{name}-")]
-    return max(matches, key=len, default=None)
+    matches = [
+        (len(base), name)
+        for name in names
+        if model.startswith(f"{(base := name.removesuffix('-preview'))}-")
+    ]
+    return max(matches, default=(0, None))[1]
 
 
 def _selection_id(binary: str, env: dict[str, str], model: str, catalog: Iterable[str] = ()) -> str:
