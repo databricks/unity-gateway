@@ -255,9 +255,7 @@ class TestMcpRegistration(BaseCujTest):
         Path(session.env["DATABRICKS_CONFIG_FILE"]).write_text(
             f"[{profile}]\nhost = {workspace.url}\nauth_type = databricks-cli\n"
         )
-        session.configure(
-            ["configure", "--profile", profile, "--workspace", workspace.url, "--skip-upgrade"]
-        )
+        session.configure(["configure", "--profile", profile, "--skip-upgrade"])
         servers = installed_cowork_servers(session, root)
         run_id = fresh_id()
 
