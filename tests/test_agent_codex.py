@@ -12,8 +12,10 @@ from subprocess import CalledProcessError
 from unittest.mock import Mock
 
 import pytest
+import tomlkit
 
 from ucode import custom_oauth, gateway_proxy, managed_files
+from ucode import databricks as db_mod
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
@@ -1867,6 +1869,68 @@ class TestCodexManagedConfig:
             assert doc["model_provider"] == "Databricks"
             assert doc["model_providers"]["Databricks"]["base_url"].startswith(WS)
             assert "auth" in doc["model_providers"]["Databricks"]
+
+    @staticmethod
+    def _fake_ug(tmp_path, name):
+        exe = tmp_path / name / ("ug.exe" if os.name == "nt" else "ug")
+        exe.parent.mkdir()
+        exe.write_text("#!/bin/sh\n")
+        exe.chmod(0o755)
+        return str(exe)
+
+    def _auth_launch(self, tmp_path, monkeypatch, command, args, *, configure):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        mine = self._fake_ug(tmp_path, "mine")
+        monkeypatch.setattr(db_mod, "ug_binary", lambda: mine)
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        # Serialize with the product's TOML writer so Windows paths (backslashes) are escaped.
+        managed_path.write_text(
+            tomlkit.dumps(
+                {"model_providers": {"Databricks": {"auth": {"command": command, "args": args}}}}
+            ),
+            encoding="utf-8",
+        )
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
+        if configure:
+            with managed_files.managed_write_batch(["Codex"]):
+                codex.write_tool_config(state)
+        else:
+            codex.write_tool_config(state)
+        auth = read_toml_safe(managed_path)["model_providers"]["Databricks"]["auth"]
+        return mine, auth
+
+    ARGS = ["auth-token", "--host", WS, "--browser-login"]
+
+    def test_launch_keeps_auth_command_from_another_ug_installation(self, tmp_path, monkeypatch):
+        other = self._fake_ug(tmp_path, "other")
+        _, auth = self._auth_launch(tmp_path, monkeypatch, other, self.ARGS, configure=False)
+        assert auth["command"] == other
+        assert list(auth["args"]) == self.ARGS
+
+    def test_configure_repoints_auth_command(self, tmp_path, monkeypatch):
+        other = self._fake_ug(tmp_path, "other")
+        mine, auth = self._auth_launch(tmp_path, monkeypatch, other, self.ARGS, configure=True)
+        assert auth["command"] == mine
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["auth-token", "--host", "https://other.databricks.com", "--browser-login"],
+            ["auth-token", "--host", WS, "--profile", "p", "--browser-login"],
+            ["auth-token", "--host", WS],
+        ],
+    )
+    def test_launch_updates_auth_with_different_arguments(self, tmp_path, monkeypatch, args):
+        other = self._fake_ug(tmp_path, "other")
+        mine, auth = self._auth_launch(tmp_path, monkeypatch, other, args, configure=False)
+        assert auth["command"] == mine
+        assert list(auth["args"]) == self.ARGS
+
+    def test_launch_updates_auth_with_missing_executable(self, tmp_path, monkeypatch):
+        mine, auth = self._auth_launch(
+            tmp_path, monkeypatch, str(tmp_path / "gone" / "ug"), self.ARGS, configure=False
+        )
+        assert auth["command"] == mine
 
     def test_managed_config_preserves_other_keys(self, tmp_path, monkeypatch):
         _, managed_path = self._patch(tmp_path, monkeypatch)

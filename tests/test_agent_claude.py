@@ -17,6 +17,7 @@ import pytest
 from ucode import databricks as db_mod
 from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, claude
+from ucode.os_compatibility.subprocess_cross_os import shell_command
 from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
 from ucode.telemetry import client_platform
@@ -1184,6 +1185,93 @@ class TestWriteToolConfigManagedSettings:
         assert written["env"]["MY_OWN"] == "keep"
         assert written["env"]["ANTHROPIC_BASE_URL"]
         assert written["apiKeyHelper"]
+
+    @staticmethod
+    def _fake_ug(tmp_path, name):
+        exe = tmp_path / name / ("ug.exe" if os.name == "nt" else "ug")
+        exe.parent.mkdir()
+        exe.write_text("#!/bin/sh\n")
+        exe.chmod(0o755)
+        return str(exe)
+
+    def _helper_launch(self, monkeypatch, tmp_path, existing_cmd, *, configure, profile=None):
+        mine = self._fake_ug(tmp_path, "mine")
+        monkeypatch.setattr(db_mod, "ug_binary", lambda: mine)
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {str(FAKE_MANAGED_PATH): {"apiKeyHelper": existing_cmd}}
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        state = {"workspace": WS, "codex_models": [], "profile": profile}
+        if configure:
+            with managed_files.managed_write_batch(["Claude Code"]):
+                claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        else:
+            claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        return mine, json.loads(managed_writes[0][1])["apiKeyHelper"], private_writes
+
+    def test_launch_keeps_helper_from_another_ug_installation(self, monkeypatch, tmp_path):
+        other = self._fake_ug(tmp_path, "other")
+        existing_cmd = shell_command([other, "auth-token", "--host", WS, "--profile", "p"])
+        _, helper, _ = self._helper_launch(
+            monkeypatch, tmp_path, existing_cmd, configure=False, profile="p"
+        )
+        assert helper == existing_cmd
+
+    def test_configure_repoints_helper_to_this_installation(self, monkeypatch, tmp_path):
+        other = self._fake_ug(tmp_path, "other")
+        mine, helper, _ = self._helper_launch(
+            monkeypatch,
+            tmp_path,
+            f"{other} auth-token --host {WS} --profile p",
+            configure=True,
+            profile="p",
+        )
+        assert helper == f"{mine} auth-token --host {WS} --profile p"
+
+    @pytest.mark.parametrize(
+        "existing_args",
+        [
+            "--host https://other.databricks.com --profile p",
+            f"--host {WS} --profile other",
+            f"--host {WS}",
+            f"--host {WS} --profile p --use-pat",
+        ],
+    )
+    def test_launch_updates_helper_with_different_arguments(
+        self, monkeypatch, tmp_path, existing_args
+    ):
+        other = self._fake_ug(tmp_path, "other")
+        mine, helper, _ = self._helper_launch(
+            monkeypatch,
+            tmp_path,
+            f"{other} auth-token {existing_args}",
+            configure=False,
+            profile="p",
+        )
+        assert helper == f"{mine} auth-token --host {WS} --profile p"
+
+    @pytest.mark.parametrize("kind", ["missing", "not-executable", "other-command", "relative"])
+    def test_launch_updates_helper_with_unusable_executable(self, monkeypatch, tmp_path, kind):
+        other = self._fake_ug(tmp_path, "other")
+        exe = {
+            "missing": str(tmp_path / "gone" / "ug"),
+            "not-executable": other,
+            "other-command": str(tmp_path / "other" / "tool"),
+            "relative": "ug",
+        }[kind]
+        if kind == "not-executable":
+            if os.name == "nt":
+                # Windows has no execute bit (os.access(X_OK) is true for any file); executability
+                # there is judged by extension and covered in test_databricks.py.
+                pytest.skip("no execute permission bit on Windows")
+            Path(other).chmod(0o644)
+        if kind == "other-command":
+            Path(exe).write_text("#!/bin/sh\n")
+            Path(exe).chmod(0o755)
+        mine, helper, _ = self._helper_launch(
+            monkeypatch, tmp_path, f"{exe} auth-token --host {WS}", configure=False
+        )
+        assert helper == f"{mine} auth-token --host {WS}"
 
     def test_managed_file_updates_gateway_settings_without_changing_model_picker(self, monkeypatch):
         private_writes: list = []

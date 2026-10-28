@@ -54,6 +54,7 @@ from ucode.databricks import (
     build_otel_traces_endpoint,
     build_tool_base_url,
     get_databricks_token,
+    keep_equivalent_helper_command,
     maybe_add_gpt_1m_suffix,
     ug_binary,
 )
@@ -67,6 +68,7 @@ from ucode.managed_files import (
     apply_settings_passthrough,
     claude_header_mod_root,
     current_os,
+    explicit_configure_active,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -503,6 +505,9 @@ def _web_search_mcp_entry(
         "args": ["mcp", "web-search", MANAGED_ENTRY_FLAG],
         "env": env,
     }
+
+
+_AUTH_HELPER_KEYS = ("apiKeyHelper", "otelHeadersHelper")
 
 
 def render_overlay(
@@ -1660,7 +1665,14 @@ def write_tool_config(
                 existing_default = base_env.get(key)
                 if isinstance(existing_default, str):
                     target_env[key] = existing_default
+        existing_helpers = {key: base.get(key) for key in _AUTH_HELPER_KEYS}
         merged = deep_merge_dict(base, overlay_for_merge)
+        if not explicit_configure_active():
+            # Only `ug configure` re-points a helper at the running installation; a launch from
+            # another one keeps an equivalent helper so it never rewrites the OS-managed file.
+            for key, existing_helper in existing_helpers.items():
+                if isinstance(merged.get(key), str):
+                    merged[key] = keep_equivalent_helper_command(existing_helper, merged[key])
         for key in stale_picker_keys:
             merged.pop(key, None)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]

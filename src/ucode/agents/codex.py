@@ -61,6 +61,7 @@ from ucode.databricks import (
     _fetch_codex_model_catalog,
     build_auth_token_argv,
     build_tool_base_url,
+    keep_equivalent_helper_argv,
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
@@ -69,6 +70,7 @@ from ucode.managed_files import (
     OS,
     ManagedFileWriteUnavailable,
     current_os,
+    explicit_configure_active,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -256,6 +258,31 @@ def _provider_block(
             "refresh_interval_ms": 900000,
         },
     }
+
+
+def _provider_auth(doc: dict) -> dict | None:
+    providers = doc.get("model_providers")
+    provider = providers.get(CODEX_MODEL_PROVIDER_NAME) if isinstance(providers, dict) else None
+    auth = provider.get("auth") if isinstance(provider, dict) else None
+    return auth if isinstance(auth, dict) else None
+
+
+def _keep_equivalent_auth(doc: dict, existing: dict | None) -> None:
+    """Keep the existing auth helper when it differs only by where the same ug executable lives."""
+    auth = _provider_auth(doc)
+    if existing is None or auth is None:
+        return
+    old_args, new_args = existing.get("args"), auth.get("args")
+    old_cmd, new_cmd = existing.get("command"), auth.get("command")
+    if not (
+        isinstance(old_cmd, str)
+        and isinstance(new_cmd, str)
+        and isinstance(old_args, list)
+        and isinstance(new_args, list)
+    ):
+        return
+    kept = keep_equivalent_helper_argv([str(old_cmd), *map(str, old_args)], [new_cmd, *new_args])
+    auth["command"] = str(kept[0])
 
 
 def render_overlay(
@@ -520,7 +547,11 @@ def write_tool_config(
 
     def compose(base: dict, *, include_catalog: bool = True) -> dict:
         prune_key_paths(base, _PROVIDER_HTTP_HEADERS_KEY_PATHS)
+        existing_auth = _provider_auth(base)
+        existing_auth = copy.deepcopy(existing_auth) if existing_auth is not None else None
         deep_merge_dict(base, copy.deepcopy(overlay))
+        if not explicit_configure_active():
+            _keep_equivalent_auth(base, existing_auth)
         # deep_merge can't drop keys, so clear model preferences from an earlier run.
         if chosen_model is None and not smart_routing_v2.smart_routing_enabled(
             None, default=False, agent=AGENT_CODEX

@@ -1962,6 +1962,81 @@ def ug_binary() -> str:
     return shutil.which("ug") or "ug"
 
 
+def _windows_executable_extension(path: str) -> bool:
+    """Whether ``path`` has an extension Windows runs directly (``PATHEXT``).
+
+    Windows has no execute permission bit: ``os.access(path, os.X_OK)`` is true for any existing
+    file there, so executability is judged by extension instead."""
+    pathext = os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
+    return os.path.splitext(path)[1].casefold() in {
+        ext.strip().casefold() for ext in pathext.split(";") if ext.strip()
+    }
+
+
+def _usable_equivalent_executable(existing: str, desired: str) -> bool:
+    """Whether ``existing`` is another installation of the executable ``desired`` names."""
+    if not (
+        os.path.isabs(existing)
+        and os.path.basename(existing).casefold() == os.path.basename(desired).casefold()
+        and os.path.isfile(existing)
+    ):
+        return False
+    if os.name == "nt":
+        return _windows_executable_extension(existing)
+    return os.access(existing, os.X_OK)
+
+
+def keep_equivalent_helper_argv(existing: list[str], desired: list[str]) -> list[str]:
+    """``existing`` when it only differs from ``desired`` in where the same ug executable lives.
+
+    The ``ug`` path a helper records depends on which installation or PATH ran the command, so a
+    launch from another installation must not rewrite an otherwise identical helper. The existing
+    executable must still exist and be executable; any other difference (subcommand, host,
+    profile, flags) returns ``desired``."""
+    if (
+        existing
+        and desired
+        and existing[1:] == desired[1:]
+        and _usable_equivalent_executable(existing[0], desired[0])
+    ):
+        return list(existing)
+    return desired
+
+
+def _split_helper_command(command: str) -> tuple[str, str] | None:
+    """Split a command built by :func:`build_auth_shell_command` into (executable, rest).
+
+    ``subprocess_cross_os.shell_command`` quotes with ``shlex.join`` (single quotes) on POSIX and
+    ``subprocess.list2cmdline`` (double quotes) on Windows, so each is parsed the same way."""
+    if os.name == "nt":
+        command = command.strip()
+        if command.startswith('"'):
+            end = command.find('"', 1)
+            if end < 0:
+                return None
+            return command[1:end], command[end + 1 :]
+        exe, _, rest = command.partition(" ")
+        return exe, (" " + rest) if rest else ""
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return None
+    if not argv:
+        return None
+    rest = subprocess_cross_os.shell_command(argv[1:])
+    return argv[0], (" " + rest) if rest else ""
+
+
+def keep_equivalent_helper_command(existing: object, desired: str) -> str:
+    """String form of :func:`keep_equivalent_helper_argv` for a shell-quoted helper command."""
+    if not isinstance(existing, str) or existing == desired:
+        return desired
+    old, new = _split_helper_command(existing), _split_helper_command(desired)
+    if old is None or new is None or old[1] != new[1]:
+        return desired
+    return existing if _usable_equivalent_executable(old[0], new[0]) else desired
+
+
 def build_auth_token_argv(
     workspace: str, profile: str | None = None, *, use_pat: bool = False
 ) -> list[str]:
