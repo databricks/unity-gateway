@@ -338,6 +338,8 @@ def test_ug_configure_claude_desktop_cowork_mcp(live_session, workspace):
     async def scenario():
         for service, tool in MCP_FIXTURE_SERVICES.items():
             alias = service.rsplit(".", 1)[1]
-            await assert_mcp_fixture_call(session, servers[alias], tool, run_id)
+            await assert_mcp_fixture_call(
+                session, servers[alias], tool, run_id, evidence_prefix="cowork"
+            )
 
     anyio.run(scenario)

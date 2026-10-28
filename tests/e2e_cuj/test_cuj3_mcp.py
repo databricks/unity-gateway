@@ -239,7 +239,9 @@ class TestMcpRegistration(BaseCujTest):
         async def scenario():
             for service, tool in SERVICES.items():
                 registration = config["mcpServers"][registered_name(service)]
-                await assert_mcp_fixture_call(session, registration, tool, run_id)
+                await assert_mcp_fixture_call(
+                    session, registration, tool, run_id, evidence_prefix="claude-code"
+                )
 
         anyio.run(scenario)
 
@@ -262,7 +264,9 @@ class TestMcpRegistration(BaseCujTest):
         async def scenario():
             for service, tool in SERVICES.items():
                 alias = service.rsplit(".", 1)[1]
-                await assert_mcp_fixture_call(session, servers[alias], tool, run_id)
+                await assert_mcp_fixture_call(
+                    session, servers[alias], tool, run_id, evidence_prefix="cowork"
+                )
 
         anyio.run(scenario)
 

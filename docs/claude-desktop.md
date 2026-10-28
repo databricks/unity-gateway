@@ -295,6 +295,7 @@ the MCP fixture CUJ also checks discovery and tool calls against a real workspac
 and the Desktop integration journey read commands from a Cowork plugin installed by the real
 Claude CLI and require fresh receipts from both live fixture tools. The Desktop case runs in
 the existing Linux/Windows Claude jobs in a separate step against CUJ3's workspace, with
-step-scoped credentials and isolated output. Separate relay and non-relayed Anthropic
-MPS journeys use the generated helper credentials and profile headers for real Messages requests.
+step-scoped credentials and isolated output. The system.ai and subscription-relay journeys
+use the generated helper credentials and profile headers for real Messages requests. CUJ2
+asserts Desktop configuration for its non-relay Anthropic MPS.
 These checks do not launch Desktop or validate native OAuth consent, skill use, or app reconnects.

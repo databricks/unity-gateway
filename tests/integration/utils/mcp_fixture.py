@@ -20,7 +20,9 @@ def fixture_receipt(tool: str, run_id: str) -> str:
     ).hexdigest()
 
 
-async def assert_mcp_fixture_call(session, registration: dict, tool: str, run_id: str) -> None:
+async def assert_mcp_fixture_call(
+    session, registration: dict, tool: str, run_id: str, *, evidence_prefix: str
+) -> None:
     parameters = StdioServerParameters(**registration)
     parameters.env = {**session.env, **(parameters.env or {})}
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as diagnostics:
@@ -40,6 +42,6 @@ async def assert_mcp_fixture_call(session, registration: dict, tool: str, run_id
         finally:
             diagnostics.seek(0)
             stderr = session.redact(diagnostics.read())
-            session.record(f"proxy-{tool}-stderr.json", {"stderr": stderr})
+            session.record(f"{evidence_prefix}-{tool}-stderr.json", {"stderr": stderr})
         assert "Traceback" not in stderr
-    session.record(f"proxy-{tool}.json", {"run_id": run_id, "result": result})
+    session.record(f"{evidence_prefix}-{tool}.json", {"run_id": run_id, "result": result})
