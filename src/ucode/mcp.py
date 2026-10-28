@@ -278,7 +278,8 @@ def _oauth_http_client(client: str, workspace: str, *, use_pat: bool) -> str | N
         return None
     if client == "cursor" and not cursor.supports_cimd():
         return None
-    if workspace_supports_cimd(workspace):
+    # Codex's client signs in on workspaces that don't advertise CIMD support yet.
+    if client == "codex" or workspace_supports_cimd(workspace):
         client_id = PINNED_CIMD_CLIENT_IDS[client]
         return client_id if oauth_client_available(workspace, client_id) else None
     return None

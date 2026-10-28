@@ -370,11 +370,15 @@ class TestConfigureClientMcpServer:
         else:
             assert written == [("github", AIGW_MCP_URL, expected_id)]
 
-    @pytest.mark.parametrize("client", ["codex", "cursor"])
-    def test_native_cimd_requires_workspace_support(self, monkeypatch, client):
+    def test_cursor_native_cimd_requires_workspace_support(self, monkeypatch):
         monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: False)
         monkeypatch.setattr(mcp.cursor, "supports_cimd", lambda: True)
-        assert mcp._oauth_http_client(client, WS, use_pat=False) is None
+        assert mcp._oauth_http_client("cursor", WS, use_pat=False) is None
+
+    def test_codex_native_cimd_skips_workspace_support(self, monkeypatch):
+        monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: False)
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda ws, client_id: True)
+        assert mcp._oauth_http_client("codex", WS, use_pat=False) == mcp.CODEX_CIMD_CLIENT_ID
 
     def test_old_cursor_uses_proxy(self, monkeypatch):
         monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: True)
