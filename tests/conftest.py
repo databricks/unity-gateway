@@ -178,3 +178,58 @@ def e2e_state(e2e_workspace, e2e_token):
         "base_urls": build_shared_base_urls(e2e_workspace),
         "managed_configs": {},
     }
+
+
+@pytest.fixture
+def claude_managed_env(tmp_path, monkeypatch):
+    """Factory for the real Claude reconcile flow, with privileged writes landing in ``tmp_path``.
+
+    ``make(managed_doc=None)`` returns ``(managed_path, header_mod_root, writes)``."""
+    import shutil
+
+    from ucode import managed_files
+    from ucode.agents import claude
+    from ucode.managed_files import OS
+
+    def make(managed_doc=None):
+        managed_path = tmp_path / "managed-settings.json"
+        if managed_doc is not None:
+            managed_path.write_text(json.dumps(managed_doc), encoding="utf-8")
+        root = tmp_path / "ucode-plugins"
+        backup_dir = tmp_path / "managed-backups"
+        writes: list[str] = []
+        monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "current_os", lambda: OS.LINUX)
+        monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backup_dir)
+        monkeypatch.setattr(
+            managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
+        )
+
+        def _write(target, text):
+            writes.append(str(target))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", _write)
+        monkeypatch.setattr(managed_files, "_sudo_remove", lambda path: path.unlink())
+        monkeypatch.setattr(claude, "remove_privileged_tree", shutil.rmtree)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
+        monkeypatch.setattr(claude, "claude_header_mod_root", lambda: root)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
+        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        monkeypatch.setattr(
+            claude,
+            "refresh_managed_config",
+            lambda *a, **kw: SimpleNamespace(manifest={"claude": {}}),
+        )
+        # As `ug configure` runs it.
+        monkeypatch.setattr(claude, "_explicit_configure", True)
+        monkeypatch.delenv("UG_HEADERS", raising=False)
+        return managed_path, root, writes
+
+    return make

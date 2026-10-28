@@ -272,21 +272,13 @@ class TestRenderOverlay:
         assert "Databricks-Smart-Router-Recipe" not in merged
         assert "x-caller: keep" in merged
 
-    def test_request_tags_header_added_when_env_set(self, monkeypatch):
-        # A JSON value (commas + colons) must survive intact: ANTHROPIC_CUSTOM_HEADERS
-        # is newline-delimited and split on the first colon, so the value is preserved.
-        tags = '{"team":"infra","env":"prod"}'
-        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", tags)
+    def test_request_tags_never_persisted_in_overlay(self, monkeypatch):
+        # Persisted headers leak one launch's tags into later sessions and into the managed
+        # file; they are sent per launch instead (see tests/test_claude_request_tags.py).
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", '{"team":"infra","env":"prod"}')
         overlay, _ = claude.render_overlay(WS, "s4")
         headers = overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
-        assert f"Databricks-Ai-Gateway-Request-Tags: {tags}" in headers.splitlines()
-
-    def test_request_tags_header_absent_when_env_unset(self, monkeypatch):
-        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS", raising=False)
-        overlay, _ = claude.render_overlay(WS, "s4")
-        assert (
-            "Databricks-Ai-Gateway-Request-Tags" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
-        )
+        assert "Databricks-Ai-Gateway-Request-Tags" not in headers
 
     def test_does_not_disable_experimental_betas(self):
         # Would suppress the beta header 1h prompt caching needs.
@@ -3174,7 +3166,9 @@ class TestClaudeLaunch:
         monkeypatch.setattr(
             claude,
             "_launch_relayed",
-            lambda state, binary, tool_args: calls.append((state, binary, tool_args)),
+            lambda state, binary, tool_args, settings_override=None: calls.append(
+                (state, binary, tool_args)
+            ),
         )
         state = {"workspace": WS, "claude_relayed": True}
 
@@ -4620,7 +4614,7 @@ class TestEnsureHooksModulesGate:
             json.dumps({"cachedGrowthBookFeatures": {"tengu_plugin_hooks_modules": False}})
         )
         monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
-        monkeypatch.setattr(claude, "_launch_relayed", lambda *args: None)
+        monkeypatch.setattr(claude, "_launch_relayed", lambda *args, **kwargs: None)
 
         claude.launch({"workspace": WS, "claude_relayed": True}, [], options=LaunchOptions())
 

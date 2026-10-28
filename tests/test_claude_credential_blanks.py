@@ -3,7 +3,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.test_claude_header_mod import _managed_env
 from ucode.agents import claude
 
 WS = "https://example.cloud.databricks.com"
@@ -12,9 +11,9 @@ MODEL = "databricks-claude-sonnet-4"
 
 
 @pytest.fixture
-def env(tmp_path, monkeypatch):
+def env(tmp_path, monkeypatch, claude_managed_env):
     """The header-mod tests' real reconcile flow, run as `ug configure`; tests call `request_explicit_configure(False)` for a launch."""
-    managed_path, _root, writes = _managed_env(tmp_path, monkeypatch)
+    managed_path, _root, writes = claude_managed_env()
     claude.request_explicit_configure()
     yield SimpleNamespace(
         managed=managed_path, user=tmp_path / "ucode-settings.json", writes=writes, mp=monkeypatch
