@@ -293,7 +293,7 @@ system.ai models and subscription-relay MPS. Each asserts the generated profile,
 credential helper, completes real Messages inference, installs Cowork through the Claude CLI,
 and discovers/calls DBSQL through the installed plugin using a read-only computed query.
 Both check repeated configuration, preservation of unrelated settings, and revert cleanup.
-All calls use the journey's existing model workspace. CUJ1 and CUJ2 assert Desktop configuration
-for system.ai models and non-relay Anthropic MPS. CUJ3 checks that its incompatible scoped
-model aliases produce a warning while preserving existing Desktop configuration.
+All calls use the journey's existing model workspace. CUJ1 and CUJ2 compare complete Desktop
+profile/metadata JSON for system.ai models and non-relay Anthropic MPS. CUJ3's existing configure
+journey checks that its incompatible scoped aliases preserve all Desktop profile/metadata bytes.
 These checks do not launch Desktop or validate native OAuth consent, skill use, or app reconnects.

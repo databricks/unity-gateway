@@ -38,9 +38,9 @@ adds system.ai.dbsql through public ug commands, and uses the installed plugin's
 discover tools and execute a read-only query with a computed receipt. Both check repeat
 configure, preservation of unrelated settings, and profile/plugin cleanup on revert, within
 the existing Linux/Windows integration lanes and their model workspace.
-CUJ1 and CUJ2 assert Desktop configuration for system.ai models and non-relay Anthropic MPS.
-CUJ3 verifies that its incompatible scoped model aliases produce a warning and leave existing
-Desktop configuration untouched. These tests do not
+CUJ1 and CUJ2 compare complete Desktop profile/metadata JSON for system.ai models and non-relay
+Anthropic MPS. CUJ3's existing configure journey checks its incompatible scoped model aliases
+leave every existing Desktop profile/metadata byte untouched. These tests do not
 launch Desktop, exercise its scheduling of the helper, execute connector skills, or run
 browser consent.
 

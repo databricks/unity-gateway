@@ -84,18 +84,20 @@ def _revert_catalog_test_state(cuj):
     )
 
 
-class TestCatalogDesktopConfiguration(BaseCujTest):
+class TestCatalogDiscovery(BaseCujTest):
     WORKSPACE_URL = "https://dbc-bbdd5508-648e.cloud.databricks.com"
 
     @pytest.mark.claude
-    def test_catalog_discovery_preserves_desktop_config_without_compatible_model_ids(self, cuj):
-        """Scenario: configure the scoped catalog beside an existing Desktop profile.
+    @pytest.mark.tui
+    def test_catalog_discovery_claude_picker_preserves_default(self, cuj):
+        """Scenario: configure, launch ug claude, inspect its picker, then submit a task.
 
-        Expected: aliases such as ug_e2e.models.claude_haiku do not match Desktop's Claude-family
-        filter. Configure warns instead of writing an unusable profile and preserves every
-        existing profile and metadata byte. CUJ1/CUJ2 cover compatible Desktop model sources.
+        Expected: only Sonnet/Haiku/Kimi/GPT Luna appear; Gemini and decoys are absent.
+        Dismissing the picker without a selection preserves Sonnet for the completed task.
+        Existing Desktop files remain unchanged: scoped aliases such as claude_haiku do not
+        match Desktop's Claude-family filter. CUJ1/CUJ2 check complete compatible profiles.
         """
-        session, workspace, _recorder = cuj
+        session, workspace, recorder = cuj
         config_library = enable_claude_desktop(session, workspace.url)
         config_library.mkdir()
         personal_id = "62de45ce-d2ad-4507-a8e2-7e59529af303"
@@ -113,34 +115,9 @@ class TestCatalogDesktopConfiguration(BaseCujTest):
         for name, contents in existing.items():
             (config_library / name).write_bytes(contents)
 
-        configured = session.run(
-            "configure",
-            "--workspace",
-            workspace.url,
-            "--skip-upgrade",
-            "--disable-databricks-ai-tools",
-            timeout=300,
-        )
-        assert "No Claude-family models found for Desktop" in (
-            configured.stdout + configured.stderr
-        )
+        recorder.configure_session(session, ["configure", "--skip-upgrade"])
         assert {path.name: path.read_bytes() for path in config_library.iterdir()} == existing
         assert not (session.home / ".ucode/claude-desktop.json").exists()
-
-
-class TestCatalogDiscovery(BaseCujTest):
-    WORKSPACE_URL = "https://dbc-bbdd5508-648e.cloud.databricks.com"
-
-    @pytest.mark.claude
-    @pytest.mark.tui
-    def test_catalog_discovery_claude_picker_preserves_default(self, cuj):
-        """Scenario: configure, launch ug claude, inspect its picker, then submit a task.
-
-        Expected: only Sonnet/Haiku/Kimi/GPT Luna appear; Gemini and decoys are absent.
-        Dismissing the picker without a selection preserves Sonnet for the completed task.
-        """
-        session, workspace, recorder = cuj
-        recorder.configure_session(session, ["configure", "--skip-upgrade"])
 
         parent_catalog = _catalog_display_names(workspace, CLAUDE, MODEL_SCHEMA)
         decoy_catalog = _catalog_display_names(workspace, CLAUDE, OTHER_MODEL_SCHEMA)

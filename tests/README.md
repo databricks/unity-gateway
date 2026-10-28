@@ -267,8 +267,9 @@ The installed-CLI integration suite covers two complete Desktop journeys on Linu
 system.ai models and subscription-relay Anthropic MPS. Both verify profile configuration,
 credential-helper execution, live Messages inference, installed Cowork MCP calls, preservation,
 and revert. See [integration coverage](integration/README.md) for prerequisites and evidence.
-CUJ1/CUJ2 retain Desktop configuration assertions for system.ai models and non-relay Anthropic
-MPS; CUJ3 checks its incompatible scoped aliases warn without changing existing profiles.
+CUJ1/CUJ2 compare complete Desktop profile/metadata JSON for system.ai models and non-relay
+Anthropic MPS. CUJ3's existing picker journey checks its incompatible scoped aliases preserve
+all Desktop profile/metadata bytes after its existing configure call.
 These cases do not launch Desktop, execute connector skills, or exercise browser login/renewal.
 The [native integration plan](../docs/claude-desktop-integration-testing.md) defines the
 separate interactive macOS and Windows coverage needed for those claims.

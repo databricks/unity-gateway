@@ -65,14 +65,17 @@ uv run pytest -c tests/e2e_cuj/pytest.ini --confcutdir=tests/e2e_cuj \
 
 CUJ1 and CUJ2's configuration cases read their dedicated workspaces' published CodingAgentConfig
 without `UCODE_MANAGED_CONFIG_STUB`. They enable Claude Desktop's isolated Linux profile path
-before running installed `ug configure`, then verify the fixed profile uses either the published
-Databricks-hosted Claude models or the published Anthropic provider service and selected model.
+before their existing installed `ug configure`, then compare the entire profile and metadata
+JSON with the expected structure and values. This includes model labels, helper arguments and
+refresh settings, headers, discovery settings, and CUJ1's OTLP fields. The profile uses either
+the published Databricks-hosted Claude models or the Anthropic provider service and selected model.
 They do not launch Desktop or execute the credential helper.
 
-CUJ3 also configures beside an existing Desktop profile and checks the file outcome. Its scoped
+CUJ3's existing Claude picker journey also configures beside a personal Desktop profile and checks
+every profile/metadata byte after its existing configure call. Its scoped
 aliases use names such as `ug_e2e.models.claude_haiku`, which Desktop's Claude-family filter does
-not accept. Configure must warn and preserve all existing profile and metadata bytes rather
-than write an unusable profile. Successful Desktop profiles remain covered by CUJ1/CUJ2.
+not accept, so existing files must remain unchanged and UG must not save selection state.
+Successful Desktop profiles remain covered by CUJ1/CUJ2. No extra CUJ test or configure is added.
 
 ## Smart-routing CUJ
 
