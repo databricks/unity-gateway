@@ -195,6 +195,8 @@ _pinned = False
 def selector_headers(workspace_id: str | None) -> dict[str, str]:
     if not workspace_id:
         return {}
+    if not _DIGITS.fullmatch(workspace_id):
+        return {SELECTOR_HEADER_NAMES[1]: workspace_id}
     return dict.fromkeys(SELECTOR_HEADER_NAMES, workspace_id)
 
 
@@ -257,7 +259,7 @@ def _origin(url: str) -> str:
 def signin_redirect_reason(url: str) -> WorkspaceSelectionReason:
     """Why a request to ``url`` was answered with the sign-in page instead of the API."""
     host = _origin(url)
-    selected = workspace_headers(url).get(SELECTOR_HEADER_NAMES[0])
+    selected = workspace_headers(url).get(SELECTOR_HEADER_NAMES[1])
     if selected:
         return WorkspaceSelectionReason(
             f"{host} did not route the request to workspace {selected}; check the workspace id."
@@ -276,7 +278,7 @@ def workspace_failure_reason(url: str, status: int, body: str) -> WorkspaceSelec
     """A clearer reason for a failure caused by the workspace selection, else None."""
     if status == 403 and "account admin" in body and is_unified_host(_origin(url)):
         return signin_redirect_reason(url)
-    selected = workspace_headers(url).get(SELECTOR_HEADER_NAMES[0])
+    selected = workspace_headers(url).get(SELECTOR_HEADER_NAMES[1])
     if selected and status == 400 and "Invalid Token" in body:
         return WorkspaceSelectionReason(
             f"{_origin(url)} rejected the token for workspace {selected}: the token is invalid, "
@@ -289,8 +291,11 @@ def response_workspace_mismatch(
     url: str, response_org_id: str | None
 ) -> WorkspaceSelectionReason | None:
     """A failure reason when the host answered for a different workspace than the one selected."""
-    selected = workspace_headers(url).get(SELECTOR_HEADER_NAMES[0])
+    selected = workspace_headers(url).get(SELECTOR_HEADER_NAMES[1])
     if not selected or not response_org_id or response_org_id == selected:
+        return None
+    if not _DIGITS.fullmatch(selected):
+        # The host resolves a stable connection id to the numeric id it echoes.
         return None
     return WorkspaceSelectionReason(
         f"{_origin(url)} answered for workspace {response_org_id}, not the selected {selected}."
@@ -299,5 +304,5 @@ def response_workspace_mismatch(
 
 def workspace_id_args(host: str) -> list[str]:
     """``--workspace-id <id>`` for a ug helper bound to ``host``, when the selection applies there."""
-    workspace_id = workspace_headers(host).get(SELECTOR_HEADER_NAMES[0])
+    workspace_id = workspace_headers(host).get(SELECTOR_HEADER_NAMES[1])
     return ["--workspace-id", workspace_id] if workspace_id else []

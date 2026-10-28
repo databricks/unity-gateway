@@ -62,6 +62,16 @@ class TestWorkspaceHeaders:
         assert workspace_id_args(SHARED) == ["--workspace-id", WSID]
         assert workspace_id_args(CLASSIC) == []
 
+    def test_stable_connection_id_sends_workspace_id_only(self):
+        connection_id = "1b4e28ba-2fa1-11d2-883f-0016d3cca427"
+        activate(SHARED, connection_id)
+        try:
+            assert workspace_headers(SHARED) == {"X-Databricks-Workspace-Id": connection_id}
+            assert workspace_id_args(SHARED) == ["--workspace-id", connection_id]
+            assert response_workspace_mismatch(f"{SHARED}/api", "222") is None
+        finally:
+            activate(None, None)
+
     def test_pinned_selection_survives_loading_state(self):
         pin(SHARED, WSID)
         activate_state({"workspace": SHARED, "workspace_id": "222"})
