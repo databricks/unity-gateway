@@ -1,7 +1,5 @@
 """Managed catalog discovery, default launches, and explicit model selection."""
 
-import json
-
 import pytest
 
 from tests.integration.utils.agents import claude, codex
@@ -26,7 +24,7 @@ from .catalog_discovery_expectations import (
     OTHER_MODEL_SCHEMA,
 )
 from .helpers.constants import CLAUDE, CODEX
-from .helpers.desktop import enable_claude_desktop
+from .helpers.desktop import assert_claude_desktop_unchanged, enable_claude_desktop
 from .helpers.evidence import (
     SessionEvidence,
     assert_claude_headless_model,
@@ -99,25 +97,8 @@ class TestCatalogDiscovery(BaseCujTest):
         """
         session, workspace, recorder = cuj
         config_library = enable_claude_desktop(session, workspace.url)
-        config_library.mkdir()
-        personal_id = "62de45ce-d2ad-4507-a8e2-7e59529af303"
-        existing = {
-            f"{personal_id}.json": json.dumps(
-                {"inferenceProvider": "anthropic", "userSetting": "keep"}
-            ).encode(),
-            "_meta.json": json.dumps(
-                {
-                    "entries": [{"id": personal_id, "name": "Personal"}],
-                    "appliedId": personal_id,
-                }
-            ).encode(),
-        }
-        for name, contents in existing.items():
-            (config_library / name).write_bytes(contents)
-
         recorder.configure_session(session, ["configure", "--skip-upgrade"])
-        assert {path.name: path.read_bytes() for path in config_library.iterdir()} == existing
-        assert not (session.home / ".ucode/claude-desktop.json").exists()
+        assert_claude_desktop_unchanged(session, config_library)
 
         parent_catalog = _catalog_display_names(workspace, CLAUDE, MODEL_SCHEMA)
         decoy_catalog = _catalog_display_names(workspace, CLAUDE, OTHER_MODEL_SCHEMA)

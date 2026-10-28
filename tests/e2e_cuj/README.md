@@ -63,14 +63,16 @@ uv run pytest -c tests/e2e_cuj/pytest.ini --confcutdir=tests/e2e_cuj \
   --collect-only tests/e2e_cuj
 ```
 
-CUJ1 and CUJ2's configuration cases read their dedicated workspaces' published CodingAgentConfig
-without `UCODE_MANAGED_CONFIG_STUB`. They enable Claude Desktop's isolated Linux profile path
+CUJ1, CUJ2 and CUJ3 share Desktop setup that seeds the same personal profile and metadata in an
+isolated Linux profile path. CUJ1 and CUJ2's configuration cases read their dedicated workspaces'
+published CodingAgentConfig without `UCODE_MANAGED_CONFIG_STUB`. They enable this profile path
 before their existing installed `ug configure`, then compare the entire profile and metadata
 JSON with the expected structure and values. This includes model labels, helper arguments and
 refresh settings, headers, discovery settings, and CUJ1's OTLP fields. The profile uses either
 the published Databricks-hosted Claude models or the Anthropic provider service and selected model.
 CUJ2 expects its model ID as the label. Actual and expected profile JSON are retained in
 `desktop-profile.json` for failures.
+Both also require the personal profile's bytes to survive and metadata to retain its entry.
 They do not launch Desktop or execute the credential helper.
 
 CUJ3's existing Claude picker journey also configures beside a personal Desktop profile and checks

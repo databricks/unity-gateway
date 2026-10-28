@@ -7,6 +7,18 @@ from pathlib import Path
 
 PROFILE_ID = "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6"
 CLI_PROFILE = "cuj-managed"
+PERSONAL_PROFILE_ID = "62de45ce-d2ad-4507-a8e2-7e59529af303"
+PERSONAL_DESKTOP_FILES = {
+    f"{PERSONAL_PROFILE_ID}.json": json.dumps(
+        {"inferenceProvider": "anthropic", "userSetting": "keep"}
+    ).encode(),
+    "_meta.json": json.dumps(
+        {
+            "entries": [{"id": PERSONAL_PROFILE_ID, "name": "Personal"}],
+            "appliedId": PERSONAL_PROFILE_ID,
+        }
+    ).encode(),
+}
 
 
 def enable_claude_desktop(session, workspace: str) -> Path:
@@ -16,7 +28,18 @@ def enable_claude_desktop(session, workspace: str) -> Path:
         f"[{CLI_PROFILE}]\nhost = {workspace}\nauth_type = databricks-cli\n",
         encoding="utf-8",
     )
-    return desktop_root / "configLibrary"
+    config_library = desktop_root / "configLibrary"
+    config_library.mkdir()
+    for name, contents in PERSONAL_DESKTOP_FILES.items():
+        (config_library / name).write_bytes(contents)
+    return config_library
+
+
+def assert_claude_desktop_unchanged(session, config_library: Path) -> None:
+    assert {
+        path.name: path.read_bytes() for path in config_library.iterdir()
+    } == PERSONAL_DESKTOP_FILES
+    assert not (session.home / ".ucode/claude-desktop.json").exists()
 
 
 def assert_claude_desktop_profile(
@@ -71,6 +94,15 @@ def assert_claude_desktop_profile(
 
     metadata = json.loads((config_library / "_meta.json").read_text(encoding="utf-8"))
     assert metadata == {
-        "entries": [{"id": PROFILE_ID, "name": f"Unity Gateway - {CLI_PROFILE}"}],
+        "entries": [
+            {"id": PERSONAL_PROFILE_ID, "name": "Personal"},
+            {"id": PROFILE_ID, "name": f"Unity Gateway - {CLI_PROFILE}"},
+        ],
         "appliedId": PROFILE_ID,
     }, metadata
+    personal_name = f"{PERSONAL_PROFILE_ID}.json"
+    assert (config_library / personal_name).read_bytes() == PERSONAL_DESKTOP_FILES[personal_name]
+    assert {path.name for path in config_library.iterdir()} == {
+        *PERSONAL_DESKTOP_FILES,
+        f"{PROFILE_ID}.json",
+    }
