@@ -141,10 +141,9 @@ def installed_version(code: Path) -> str | None:
 
 
 def install_extension(code: Path) -> str:
-    """Install the bundled extension unless that version already is; returns what happened."""
+    """Install the bundled extension over whatever is installed; returns what happened."""
+    # Always reinstall: a ug upgrade can change the bundle without changing its version.
     version = _package()["version"]
-    if installed_version(code) == version:
-        return f"{EXTENSION_ID} {version} already installed"
     with tempfile.TemporaryDirectory(prefix="ug-vscode-") as directory:
         vsix = pack_vsix(Path(directory))
         result = _run_code(code, "--install-extension", str(vsix), "--force")

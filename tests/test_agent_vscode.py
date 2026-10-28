@@ -125,14 +125,14 @@ class TestConfigure:
             "extension/package.json",
         ]
 
-    def test_reruns_update_values_without_reinstalling_the_same_version(self, code):
+    def test_reruns_update_values_and_reinstall_the_same_version(self, code):
         vscode.configure(STATE)
         code.calls.clear()
 
         assert vscode.configure({**STATE, "profile": "other"})
 
         assert "--profile other" in _settings_values()["unityGateway.authCommand"]
-        assert [call[0] for call in code.calls] == ["--list-extensions"]
+        assert [call[0] for call in code.calls] == ["--install-extension"]
 
     def test_leaves_unreadable_settings_alone(self, code, capsys):
         _settings().parent.mkdir(parents=True)
