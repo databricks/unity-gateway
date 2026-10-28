@@ -225,6 +225,43 @@ class TestUsage:
         report.assert_called_once_with(show_all=show_all)
 
 
+class TestUi:
+    def test_opens_gateway_page_for_configured_workspace(self, monkeypatch):
+        opened = MagicMock(return_value=True)
+        monkeypatch.setattr(
+            cli_mod, "load_state", lambda: {"workspace": "example.cloud.databricks.com/"}
+        )
+        monkeypatch.setattr(cli_mod.webbrowser, "open", opened)
+
+        result = runner.invoke(app, ["ui"])
+
+        assert result.exit_code == 0, result.output
+        opened.assert_called_once_with("https://example.cloud.databricks.com/ml/ai-gateway")
+        assert "https://example.cloud.databricks.com/ml/ai-gateway" in _strip_ansi(result.output)
+
+    def test_prints_url_when_no_browser_opens(self, monkeypatch):
+        monkeypatch.setattr(
+            cli_mod, "load_state", lambda: {"workspace": "https://example.cloud.databricks.com"}
+        )
+        monkeypatch.setattr(cli_mod.webbrowser, "open", lambda url: False)
+
+        result = runner.invoke(app, ["ui"])
+
+        assert result.exit_code == 0, result.output
+        assert "Open the URL above manually" in _strip_ansi(result.output)
+
+    def test_requires_configured_workspace(self, monkeypatch):
+        opened = MagicMock()
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {})
+        monkeypatch.setattr(cli_mod.webbrowser, "open", opened)
+
+        result = runner.invoke(app, ["ui"])
+
+        assert result.exit_code == 1
+        assert "Run `ug configure` first" in _strip_ansi(result.output)
+        opened.assert_not_called()
+
+
 class TestProjectScripts:
     def test_ug_and_ucode_are_equivalent_entry_points(self):
         scripts = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())[
