@@ -12,6 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from ucode import custom_oauth
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
@@ -248,7 +249,7 @@ class TestV2Launch:
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(v2, "CLAUDE_PTY_LOG", tmp_path / "v2.log")
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
         monkeypatch.setattr(
             v2,
@@ -363,7 +364,7 @@ class TestV2Launch:
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
         monkeypatch.setattr(
             v2,
@@ -398,7 +399,7 @@ class TestV2Launch:
         user_settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
         monkeypatch.setattr(
             v2,
@@ -445,7 +446,7 @@ class TestV2Launch:
         monkeypatch.setenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "")
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
         monkeypatch.setattr(
             v2,
@@ -551,7 +552,7 @@ class TestV2ModelPickerDiscovery:
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(v2, "CLAUDE_PTY_LOG", tmp_path / "v2.log")
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
         monkeypatch.setattr(v2, "_model_picker_catalog", lambda: picker_catalog)
 
@@ -1042,7 +1043,7 @@ class TestV2HeadlessClaude:
     def _launch(monkeypatch, tmp_path, tool_args, *, stdin=None, route=None):
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
         monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
         monkeypatch.setattr(

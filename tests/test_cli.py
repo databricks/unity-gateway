@@ -1332,7 +1332,9 @@ class TestSubcommandRouting:
             }
         }
         with (
-            patch("ucode.cli.get_databricks_token", return_value="fresh-token") as mock_token,
+            patch(
+                "ucode.custom_oauth.get_databricks_token", return_value="fresh-token"
+            ) as mock_token,
             patch(
                 "ucode.smart_routing.codex_routing.route_pre_tool_use",
                 return_value=routed,
@@ -1421,7 +1423,7 @@ class TestSubcommandRouting:
                     "system.ai.claude-opus-4-8",
                 ],
                 input='{"tool_name":"Agent","tool_input":{"prompt":"fix it"}}',
-                env={"OAUTH_TOKEN": "token"},
+                env={"OAUTH_TOKEN": _jwt(time.time() + 300)},
             )
 
         assert result.exit_code == 0, result.output
@@ -1433,6 +1435,7 @@ class TestSubcommandRouting:
     @pytest.mark.parametrize("enabled", [False, True])
     def test_claude_mod_route_respects_session_controls(self, tmp_path, monkeypatch, enabled):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        launch_token = _jwt(time.time() + 300)
         session_file = tmp_path / "env.json"
         session_file.write_text(
             json.dumps(
@@ -1463,7 +1466,7 @@ class TestSubcommandRouting:
                     "system.ai.claude-opus-4-8",
                 ],
                 input='{"session_id":"s1","tool_name":"Agent","tool_input":{"prompt":"fix it"}}',
-                env={"OAUTH_TOKEN": "token", "UCODE_SESSION_ENV_FILE": str(session_file)},
+                env={"OAUTH_TOKEN": launch_token, "UCODE_SESSION_ENV_FILE": str(session_file)},
             )
         assert result.exit_code == 0, result.output
         if enabled:
@@ -1471,7 +1474,7 @@ class TestSubcommandRouting:
             route.assert_called_once_with(
                 {"session_id": "s1", "tool_name": "Agent", "tool_input": {"prompt": "fix it"}},
                 workspace="https://example.com",
-                token="token",
+                token=launch_token,
                 available_models=["system.ai.claude-opus-4-8"],
                 audit_decision=True,
                 hook_output=False,
@@ -1479,6 +1482,55 @@ class TestSubcommandRouting:
         else:
             assert result.output == ""
             route.assert_not_called()
+
+    def test_claude_mod_route_refreshes_through_custom_oauth_client(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
+        custom = {
+            "client_id": "custom-client",
+            "redirect_url": "http://localhost:8020",
+            "scopes": ["offline_access", "all-apis"],
+            "profile": "custom-profile",
+        }
+        with (
+            patch(
+                "ucode.cli.load_full_state",
+                return_value={"workspaces": {"https://example.com": {"custom_oauth": custom}}},
+            ),
+            patch("ucode.custom_oauth.get_databricks_token") as default_token,
+            patch(
+                "ucode.custom_oauth.get_custom_client_token", return_value="custom-token"
+            ) as custom_token,
+            patch(
+                "ucode.cli.smart_routing_v2.route_claude_subagent", return_value={"model": "m"}
+            ) as route,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "claude-router-hook",
+                    "route-subagent-mod",
+                    "--host",
+                    "https://example.com",
+                    "--profile",
+                    "my-profile",
+                ],
+                input='{"tool_name":"Agent","tool_input":{"prompt":"fix it"}}',
+                env={"OAUTH_TOKEN": _jwt(time.time() - 60)},
+            )
+        assert result.exit_code == 0, result.output
+        default_token.assert_not_called()
+        custom_token.assert_called_once_with(
+            "https://example.com",
+            "custom-client",
+            "http://localhost:8020",
+            scopes=["offline_access", "all-apis"],
+            profile="custom-profile",
+            force_refresh=True,
+        )
+        assert route.call_args.kwargs["token"] == "custom-token"
 
 
 class TestManagedConfigLaunchSourceGuard:
