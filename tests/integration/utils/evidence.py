@@ -5,7 +5,7 @@ import re
 import uuid
 from pathlib import Path
 
-from .agents import _evidence_id, antigravity, claude, codex, copilot
+from .agents import _evidence_id, antigravity, claude, codex, copilot, grok
 
 _AGENT_HELPERS = {"claude": claude, "codex": codex, "copilot": copilot}
 
@@ -274,6 +274,15 @@ class FileTask:
                 if row.get("type") == "assistant.message"
             ]
             assert any(self.value in answer for answer in answers), result.stdout
+        elif agent == "grok":
+            assert result.returncode == 0, result.stdout
+            records = grok.events(result.stdout)
+            assert grok.end_event(records).get("stopReason") == "end_turn", result.stdout
+            # The Read must target the fixture file, not some other path.
+            assert any(
+                self.filename in json.dumps(read) for read in grok.completed_reads(records)
+            ), result.stdout
+            assert self.value in grok.answer(records), result.stdout
         else:
             raise AssertionError(f"Unknown agent: {agent}")
 

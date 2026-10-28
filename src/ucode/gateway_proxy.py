@@ -494,11 +494,17 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     dropped_chat_completions_fields: frozenset[str]
     path_rewriter: Callable[[str], str] | None = None
     body_rewriter: Callable[[str, bytes], bytes] | None = None
+    dropped_message_fields: frozenset[str]
+    dropped_tool_parameter_keys: frozenset[str]
 
     def _request_body(self, body: bytes | None) -> bytes | None:
         if body and self.body_rewriter is not None:
             body = self.body_rewriter(self.path, body)
-        if not body or not self.dropped_chat_completions_fields:
+        if not body or not (
+            self.dropped_chat_completions_fields
+            or self.dropped_message_fields
+            or self.dropped_tool_parameter_keys
+        ):
             return body
         if not self.path.split("?", 1)[0].endswith("/chat/completions"):
             return body
@@ -506,13 +512,30 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
             payload = json.loads(body)
         except ValueError:
             return body
-        if not isinstance(payload, dict) or self.dropped_chat_completions_fields.isdisjoint(
-            payload
-        ):
+        if not isinstance(payload, dict):
             return body
+        changed = False
         for field in self.dropped_chat_completions_fields:
-            payload.pop(field, None)
-        return json.dumps(payload).encode()
+            if field in payload:
+                payload.pop(field)
+                changed = True
+        messages = payload.get("messages")
+        for message in messages if isinstance(messages, list) else []:
+            for field in self.dropped_message_fields:
+                if isinstance(message, dict) and field in message:
+                    message.pop(field)
+                    changed = True
+        tools = payload.get("tools")
+        for tool in tools if isinstance(tools, list) else []:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            parameters = function.get("parameters") if isinstance(function, dict) else None
+            if not isinstance(parameters, dict):
+                continue
+            for key in self.dropped_tool_parameter_keys:
+                if key in parameters:
+                    parameters.pop(key)
+                    changed = True
+        return json.dumps(payload).encode() if changed else body
 
     def _has_session_secret(self) -> bool:
         expected = self.session_secret.encode()
@@ -695,15 +718,19 @@ def start_gateway_auth_proxy(
     allowed_path_prefixes: tuple[str, ...] = GATEWAY_MODEL_PATH_PREFIXES,
     path_rewriter: Callable[[str], str] | None = None,
     body_rewriter: Callable[[str, bytes], bytes] | None = None,
+    dropped_message_fields: Iterable[str] = (),
+    dropped_tool_parameter_keys: Iterable[str] = (),
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start a per-session proxy for agents that only hold a static credential.
 
     The agent sends ``session_secret`` as its API key; the proxy accepts it only on
     ``allowed_path_prefixes`` and forwards with a fresh Databricks token plus
     ``added_headers``, after removing ``dropped_chat_completions_fields`` from Chat
-    Completions request bodies. ``path_rewriter`` maps an accepted request path to the
-    gateway path it is forwarded to, and ``body_rewriter(path, body)`` adjusts a request
-    body for the gateway. Binds an OS-assigned port, read from ``server.server_address[1]``.
+    Completions request bodies, ``dropped_message_fields`` from each of their messages, and
+    ``dropped_tool_parameter_keys`` from the root of each of their tools' parameter schemas.
+    ``path_rewriter`` maps an accepted request path to the gateway path it is forwarded to,
+    and ``body_rewriter(path, body)`` adjusts a request body for the gateway. Binds an
+    OS-assigned port, read from ``server.server_address[1]``.
     """
     return _start_proxy(
         workspace,
@@ -723,6 +750,8 @@ def start_gateway_auth_proxy(
             # staticmethod: a plain function on the handler class would bind as a method.
             "path_rewriter": staticmethod(path_rewriter) if path_rewriter else None,
             "body_rewriter": staticmethod(body_rewriter) if body_rewriter else None,
+            "dropped_message_fields": frozenset(dropped_message_fields),
+            "dropped_tool_parameter_keys": frozenset(dropped_tool_parameter_keys),
         },
         on_refresh_failure=on_refresh_failure,
     )

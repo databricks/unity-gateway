@@ -41,6 +41,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     from ucode.agents import antigravity as antigravity_mod
     from ucode.agents import claude as claude_mod
     from ucode.agents import codex as codex_mod
+    from ucode.agents import grok as grok_mod
     from ucode.agents.desktop import claude as desktop_mod
 
     state_dir = tmp_path / ".ucode"
@@ -106,6 +107,15 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         codex_mod, "CODEX_MODEL_CATALOG_PATH", state_dir / "codex-model-catalog.json"
     )
     monkeypatch.setattr(codex_mod, "CODEX_CONFIG_PATH", tmp_path / ".codex" / "ucode.config.toml")
+    # Grok's private home is derived from APP_DIR at import, so rebind it (and the SPEC paths
+    # `ug revert` restores) alongside it.
+    grok_home = state_dir / "grok-home"
+    monkeypatch.setattr(grok_mod, "GROK_HOME_DIR", grok_home)
+    monkeypatch.setattr(grok_mod, "GROK_CONFIG_PATH", grok_home / "config.toml")
+    monkeypatch.setattr(grok_mod, "GROK_BACKUP_PATH", state_dir / "grok-config.backup.toml")
+    monkeypatch.setattr(grok_mod, "GROK_PROXY_LOG_PATH", state_dir / "logs" / "grok-proxy.log")
+    monkeypatch.setitem(grok_mod.SPEC, "config_path", grok_home / "config.toml")
+    monkeypatch.setitem(grok_mod.SPEC, "backup_path", state_dir / "grok-config.backup.toml")
 
     def reject_privileged_write(path, _desired_text):
         pytest.fail(

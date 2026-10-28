@@ -351,6 +351,54 @@ class TestGatewayAuthProxyEndToEnd:
         assert json.loads(chat.body) == {"model": "gpt-4o-mini", "messages": []}
         assert responses.body == body
 
+    def test_drops_message_fields_and_tool_schema_keys_from_chat_completions(self, make_gateway):
+        gw = make_gateway()
+        schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}
+        nested = {"type": "object", "properties": {"$schema": {"type": "string"}}}
+        payload = {
+            "model": "system.ai.gpt-oss-120b",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "", "model_id": "gpt-oss-120b-080525"},
+            ],
+            "tools": [
+                {"type": "function", "function": {"name": "read", "parameters": schema}},
+                {"type": "function", "function": {"name": "grep", "parameters": nested}},
+            ],
+        }
+        body = json.dumps(payload).encode()
+        with _running_gateway_auth_proxy(
+            gw, dropped_message_fields=("model_id",), dropped_tool_parameter_keys=("$schema",)
+        ) as proxy_url:
+            for path in ("mlflow/v1/chat/completions", "mlflow/v1/responses"):
+                httpx.post(
+                    f"{proxy_url}/ai-gateway/{path}",
+                    headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                    content=body,
+                    timeout=10,
+                )
+        chat, responses = gw.requests
+        sent = json.loads(chat.body)
+        assert sent["messages"][1] == {"role": "assistant", "content": ""}
+        assert sent["tools"][0]["function"]["parameters"] == {"type": "object"}
+        # Only the schema root is touched: a property that happens to be named `$schema` stays.
+        assert sent["tools"][1]["function"]["parameters"] == nested
+        assert responses.body == body
+
+    def test_forwards_chat_completions_body_verbatim_when_nothing_to_drop(self, make_gateway):
+        gw = make_gateway()
+        body = b'{"model": "m",  "messages": [{"role": "user", "content": "hi"}]}'
+        with _running_gateway_auth_proxy(
+            gw, dropped_message_fields=("model_id",), dropped_tool_parameter_keys=("$schema",)
+        ) as proxy_url:
+            httpx.post(
+                f"{proxy_url}/ai-gateway/mlflow/v1/chat/completions",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=body,
+                timeout=10,
+            )
+        assert gw.requests[-1].body == body
+
     def test_accepts_secret_in_x_api_key_and_does_not_forward_it(self, make_gateway):
         gw = make_gateway()
         with _running_gateway_auth_proxy(gw, _counting_token("dbx-token")) as proxy_url:

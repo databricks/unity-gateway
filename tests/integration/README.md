@@ -329,6 +329,16 @@ trust screens through visible choices, and reads the answer from a finished agen
 revert journey checks the user's own skills.json (including an entry added after configure) and
 MCP server survive `ug revert`. Not covered: UC skill download into the declared directory, a
 TUI `/model` switch, and Windows (no Antigravity gateway build).
+Grok Build has four live headless journeys in `test_ug_grok_headless.py`, run with
+`--permission-mode dontAsk --allow Read` so Grok can only read files: a Claude task (Anthropic
+Messages, on a model older than its family's newest, which only the full catalog registers), a
+GPT task (Responses), and a plain launch on the default `ug configure` wrote (the workspace's
+newest Grok model when it serves one, on Chat Completions), each through the session's loopback
+proxy; and an unknown model that fails before Grok starts. The task journeys check that ug's
+models in `~/.ucode/grok-home/config.toml` name only the session proxy and secret, and that no
+file under the session home holds the Databricks credential. Answer and model evidence come
+from Grok's `--output-format streaming-json` events (`utils/agents/grok.py`): a completed
+`read_file` of the fixture, the streamed answer text, and the end event's per-model usage.
 
 The managed saved-config journey installs `/etc/unitygateway/managed-settings.json` through real
 configure, checks root ownership and readable modes, and checks the user-owned
@@ -406,6 +416,7 @@ Antigravity CLI is not on npm: pass `--antigravity-build` with the exact `<versi
 from Google's release manifest (for example `1.4.9-4962164969177088`). The runner downloads that
 archive for the host platform into the run directory, records its URL and SHA-512 in
 `versions.json`, and sets `AGY_CLI_DISABLE_AUTO_UPDATE=1` so the CLI cannot replace itself.
+Grok Build is opt-in from npm like Copilot: pass `--grok-version` (for example `1.0.67`).
 
 ```bash
 # Constrain the suspected dependency while keeping the real CLI and gateway.
@@ -599,6 +610,7 @@ test_ug_copilot_providers.py            # Copilot via Model Provider Services: A
 test_ug_copilot_model_location.py       # Copilot on a Unity Catalog model location: fresh --model-location file task
 test_ug_antigravity_headless.py         # Antigravity via ug's proxy: file task, --model (ug agy), Gemini MPS targets, MCP SQL tool, skill dir
 test_ug_configure_antigravity.py        # Antigravity: configure picker + TUI task + reopen; External Models picker; revert keeps user files
+test_ug_grok_headless.py                # Grok Build via the session proxy: Claude, GPT, default-model tasks; unknown model; no token on disk
 test_ug_codex_tracing.py                # Codex OTLP export reaches the configured trace table
 test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
@@ -807,7 +819,7 @@ cases instead complete real file tasks through `--workspace` and `--model-locati
 journeys check setup and launch with existing services, without inference.
 
 There are **88 live cases** (including 12 marked TUI journeys) and **7 installation
-checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds seventeen live cases; selecting Antigravity adds eight live cases (one TUI). One
+checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds seventeen live cases; selecting Antigravity adds eight live cases (one TUI); selecting Grok Build adds four live cases. One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
 Claude task. A further **44 `managed_fixture` cases** (twelve of them also `live`) run on the
 managed workspace with a checked-in JSON CodingAgentConfig from `tests/fixtures/managed_config/`
@@ -1037,6 +1049,8 @@ A non-blocking **Copilot** job (`live and copilot`, sixteen cases) runs on Linux
 same way and is likewise outside `cujs` until it is stable.
 A blocking **Antigravity** job (`live and antigravity`, eight cases) runs on Linux only with
 the pinned `ANTIGRAVITY_BUILD`; it is part of the `cujs` gate.
+A non-blocking **Grok Build** job (`live and grok`, four cases) runs on Linux only until its
+Windows build is exercised, and is also outside `cujs`.
 
 Each lane installs only the agent CLIs it needs (one, except the managed OpenCode lane's
 three), once, and runs all its configure, headless,

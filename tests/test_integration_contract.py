@@ -397,6 +397,7 @@ SKIPPED_ON_FORK_PRS = {
     "opencode",
     "copilot",
     "antigravity",
+    "grok",
     "managed",
     "managed-opencode",
     "dedicated-cuj-plan",
@@ -722,7 +723,11 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
                 marks = module_marks | _markers(node.decorator_list)
                 if marks & {"live", "managed_fixture", "workspace_switch"}:
                     assert (
-                        len(marks & {"claude", "codex", "opencode", "copilot", "antigravity"}) == 1
+                        len(
+                            marks
+                            & {"claude", "codex", "opencode", "copilot", "antigravity", "grok"}
+                        )
+                        == 1
                     ), node.name
 
 

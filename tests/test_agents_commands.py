@@ -177,6 +177,16 @@ class TestAgentsAdd:
             assert setup_spy.called
             assert add_spy.called
 
+    @pytest.mark.parametrize("tool", ["grok", "kilo"])
+    def test_agents_a_managed_config_cannot_name_are_accepted(self, tool):
+        """A managed config that enables agents blocks Grok and Kilo, which it has no enum for, and
+        the launch error points at `ug agents add`, so that command must accept them."""
+        managed = {"enabled_agents": {"claude": {}}}
+        result, setup_spy, add_spy, _ = self._run([tool], managed=managed)
+        assert result.exit_code == 0, result.output
+        assert setup_spy.called
+        assert add_spy.called
+
 
 # ---------------------------------------------------------------------------
 # `ug agents remove`

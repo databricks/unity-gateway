@@ -37,6 +37,9 @@ on:
       antigravity_build:
         description: Exact Antigravity CLI build, <version>-<build id> (Linux lane)
         default: 1.4.9-4962164969177088
+      grok_version:
+        description: Exact Grok Build version (non-blocking lane)
+        default: 1.0.67
         required: true
       dependency:
         description: Optional exact dependency for reproduction (e.g. tomlkit==0.14.0)
@@ -63,6 +66,7 @@ env:
   OPENCODE_VERSION: ${{ inputs.opencode_version || '1.18.31' }}
   COPILOT_VERSION: ${{ inputs.copilot_version || '1.0.91' }}
   ANTIGRAVITY_BUILD: ${{ inputs.antigravity_build || '1.4.9-4962164969177088' }}
+  GROK_VERSION: ${{ inputs.grok_version || '1.0.67' }}
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
 
 jobs:
@@ -219,6 +223,7 @@ jobs:
             opencode) args=(--opencode-version "$OPENCODE_VERSION") ;;
             copilot) args=(--copilot-version "$COPILOT_VERSION") ;;
             antigravity) args=(--antigravity-build "$ANTIGRAVITY_BUILD") ;;
+            grok) args=(--grok-version "$GROK_VERSION") ;;
           esac
           if [[ -n "$DEPENDENCY" ]]; then
             args+=(--dependency "$DEPENDENCY")
@@ -417,6 +422,28 @@ jobs:
       AGENT: antigravity
       TEST_MARKER: live and antigravity
       ARTIFACT_NAME: integration-full-antigravity-ubuntu-22.04
+    steps: *live-steps
+
+  # Non-blocking pending stabilization, like Copilot: continue-on-error and absent from the
+  # cujs `needs`. Linux only until the Windows build is exercised.
+  grok:
+    name: Full journeys · Grok Build · Linux (non-blocking)
+    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    needs: workspace
+    continue-on-error: true
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04]
+    timeout-minutes: 30
+    env:
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: grok
+      TEST_MARKER: live and grok
+      ARTIFACT_NAME: integration-full-grok-${{ matrix.os }}
     steps: *live-steps
 
   # Non-blocking pending stabilization: continue-on-error and absent from the cujs `needs`.
