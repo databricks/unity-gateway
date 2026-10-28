@@ -987,13 +987,13 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 88 live cases, including those smoke cases, in two
-disjoint agent lanes:
+two agent jobs per OS). Full runs every other live case in two disjoint agent lanes;
+it excludes the smoke cases, which smoke already ran on the same OS:
 
-| Agent lane | Marker | Cases |
-| --- | --- | --- |
-| Claude | `live and claude` | 40 |
-| Codex | `live and codex` | 46 |
+| Agent lane | Marker |
+| --- | --- |
+| Claude | `live and claude and not soft_fail and not smoke` |
+| Codex | `live and codex and not soft_fail and not smoke` |
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
 `continue-on-error` and is not part of the required `cujs` gate until it is stable.
@@ -1008,11 +1008,10 @@ Each lane installs only the agent CLIs it needs (one, except the managed OpenCod
 three), once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
 inside each fresh VM because configure/revert can touch machine-level settings;
-separate runners isolate those writes as well as the PTYs. Claude and Codex run
-in parallel, with at most one full-suite job per agent in a workflow run. This
-avoids six serial job startups without overlapping same-agent shards. The two
-lanes still share workspace capacity with the concurrently running agent e2e
-shards and other PRs; this limit does not guarantee freedom from rate limits.
+separate runners isolate those writes as well as the PTYs. All four agent × OS
+Full jobs run in parallel: cases share no workspace state, only inference capacity.
+They share that capacity with each other, the concurrently running agent e2e shards,
+and other PRs, so rate limits remain possible.
 No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.

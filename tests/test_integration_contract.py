@@ -104,26 +104,7 @@ def test_soft_fail_marks_only_the_affected_claude_journey():
     assert marked == [("test_ug_smart_routing_hooks.py", name) for name in CLAUDE_TOGGLE_TESTS]
 
 
-@pytest.mark.parametrize(
-    ("job_name", "agent", "retained_test"),
-    [
-        ("smoke", "claude", "test_ug_claude_headless_prompt_argument"),
-        ("smoke", "codex", "test_ug_codex_headless_prompt_argument"),
-        ("full", "claude", "test_smart_routing_claude_route_subagent_hook"),
-        ("full", "codex", "test_smart_router_skill_turns_codex_subagent_routing_back_on"),
-        ("managed", "claude", "test_ug_configure_managed_claude"),
-        ("managed", "codex", "test_smart_router_skill_turns_codex_subagent_routing_back_on"),
-        ("soft-fail", "claude", None),
-    ],
-)
-def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, retained_test):
-    job = _integration_jobs()[job_name]
-    if job_name == "managed":
-        marker = re.search(r'-- -m "([^"]+)"', job)
-    else:
-        marker = re.search(r"(?m)^      TEST_MARKER: (.+)$", job)
-    assert marker is not None
-    expression = marker.group(1).replace("${{ matrix.agent }}", agent).replace("$AGENT", agent)
+def _collect_integration_cases(expression):
     result = subprocess.run(
         [
             sys.executable,
@@ -144,6 +125,54 @@ def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, retained_test
     assert result.returncode == 0, result.stdout + result.stderr
     cases = {line for line in result.stdout.splitlines() if line.startswith("test_")}
     assert cases, result.stdout
+    return cases
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_smoke_and_full_together_cover_every_blocking_live_case(agent):
+    jobs = _integration_jobs()
+    selected = []
+    for name in ("smoke", "full"):
+        marker = re.search(r"(?m)^      TEST_MARKER: (.+)$", jobs[name])
+        assert marker is not None
+        selected.append(
+            _collect_integration_cases(marker.group(1).replace("${{ matrix.agent }}", agent))
+        )
+    smoke, full = selected
+    # Full skips smoke cases only because smoke runs them on the same OS matrix.
+    assert "os: [ubuntu-22.04, windows-latest]" in jobs["smoke"]
+    assert "os: [ubuntu-22.04, windows-latest]" in jobs["full"]
+    assert not smoke & full
+    assert smoke | full == _collect_integration_cases(f"live and {agent} and not soft_fail")
+
+
+def test_full_journeys_run_every_agent_and_os_in_parallel():
+    job = _integration_jobs()["full"]
+    assert "concurrency:" not in job
+    assert "max-parallel: 4" in job
+
+
+@pytest.mark.parametrize(
+    ("job_name", "agent", "retained_test"),
+    [
+        ("smoke", "claude", "test_ug_claude_headless_prompt_argument"),
+        ("smoke", "codex", "test_ug_codex_headless_prompt_argument"),
+        ("full", "claude", "test_smart_routing_claude_route_subagent_hook"),
+        ("full", "codex", "test_smart_router_skill_turns_codex_subagent_routing_back_on"),
+        ("managed", "claude", "test_ug_configure_managed_claude"),
+        ("managed", "codex", "test_smart_router_skill_turns_codex_subagent_routing_back_on"),
+        ("soft-fail", "claude", None),
+    ],
+)
+def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, retained_test):
+    job = _integration_jobs()[job_name]
+    if job_name == "managed":
+        marker = re.search(r'-- -m "([^"]+)"', job)
+    else:
+        marker = re.search(r"(?m)^      TEST_MARKER: (.+)$", job)
+    assert marker is not None
+    expression = marker.group(1).replace("${{ matrix.agent }}", agent).replace("$AGENT", agent)
+    cases = _collect_integration_cases(expression)
     if retained_test is not None:
         assert any(f"::{retained_test}" in case for case in cases), cases
         assert not any(f"::{toggle}[" in case for case in cases for toggle in CLAUDE_TOGGLE_TESTS)
