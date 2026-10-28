@@ -470,24 +470,33 @@ def resolve_gemini_provider_model(
         if error or service is None:
             return None, error or f"Model provider service '{provider}' was not found."
     targets = [t for t in (service.get("targets") or []) if isinstance(t, str) and t]
+    # An allow-all service serves any of its provider's models, beyond those it declares.
+    allow_all = bool(service.get("allow_all_targets"))
     if explicit_model:
-        if explicit_model in targets:
+        if explicit_model in targets or allow_all:
             return explicit_model, None
         available = ", ".join(targets) or "none"
         return None, (
             f"Model '{explicit_model}' is not a target of provider service '{provider}'. "
             f"Available: {available}."
         )
-    if not targets:
-        return None, f"Provider service '{provider}' exposes no models to launch."
-    # Reuse a previously pinned target so a bare relaunch/reconfigure keeps working without
-    # --model — but only when it is still one of the service's declared targets.
     persisted = (
         antigravity.persisted_provider_model(state)
         if tool == "antigravity"
         else gemini.persisted_provider_model()
     )
-    if persisted in targets:
+    if allow_all and persisted and not targets:
+        return persisted, None
+    if not targets:
+        if allow_all:
+            return None, (
+                f"Provider service '{provider}' serves any of its provider's models; "
+                "pass --model to choose one."
+            )
+        return None, f"Provider service '{provider}' exposes no models to launch."
+    # Reuse a previously pinned target so a bare relaunch/reconfigure keeps working without
+    # --model — when it is still one of the service's targets (any model, for allow-all).
+    if persisted in targets or (allow_all and persisted):
         return persisted, None
     if len(targets) == 1:
         return targets[0], None

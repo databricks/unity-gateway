@@ -58,16 +58,16 @@ def test_ug_configure_antigravity_gemini_mps(
     """Scenario: choose External Models and the real Gemini Enterprise MPS in `ug configure`'s
     pickers for Antigravity CLI, then run a headless task with a bare `ug antigravity`.
 
-    The service has several targets and configure has no `--model`, so ug starts on the
-    newest one.
+    The service is allow-all (it serves any of its provider's models and declares none), so
+    configure asks which model to start on; the user types the first listed model.
 
-    Expected: ug saves the provider and pins the newest target; `ug status` shows the provider;
-    the bare launch uses the saved choice to complete a file task through ug's proxy, every
-    request naming that target.
+    Expected: ug saves the provider and the typed model; `ug status` shows the provider; the
+    bare launch uses the saved choice to complete a file task through ug's proxy, every
+    request naming that model.
     """
     session = live_session
     task = FileTask(session)
-    newest = antigravity_provider_models[0]
+    model = antigravity_provider_models[0]
     command = [
         str(session.binary),
         "configure",
@@ -80,11 +80,17 @@ def test_ug_configure_antigravity_gemini_mps(
         configure.select_agent("Antigravity CLI")
         configure.choose("How should Antigravity CLI get its models?", "External Models")
         configure.choose("Select a model provider service:", antigravity_provider)
+        configure.wait_for(
+            lambda text: "Model for Antigravity CLI to start on" in text,
+            "the start-model prompt",
+            timeout=120,
+        )
+        configure.submit(model)
         configure.finish(timeout=240)
     state = session.workspace_state()
     assert state["provider_services"]["antigravity"] == antigravity_provider
     assert "antigravity" in state["available_tools"]
-    assert state["antigravity_provider_model"] == newest
+    assert state["antigravity_provider_model"] == model
     assert antigravity_provider in session.run("status").stdout
 
     result = session.run(
@@ -92,7 +98,7 @@ def test_ug_configure_antigravity_gemini_mps(
     )
 
     task.assert_headless_answer("antigravity", result)
-    assert antigravity.requested_models(session) == {newest}
+    assert antigravity.requested_models(session) == {model}
 
 
 def test_ug_configure_antigravity_revert_restores_user_files(live_session, workspace):

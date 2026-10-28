@@ -640,6 +640,32 @@ class TestResolveGeminiProviderModel:
         model, error = agents_mod.resolve_gemini_provider_model(self._STATE, "c.s.g", None)
         assert (model, error) == ("gemini-3.5-pro", None)
 
+    def test_allow_all_service_accepts_any_named_model(self, monkeypatch):
+        # An allow-all service declares few targets but serves its provider's whole catalog.
+        self._patch(
+            monkeypatch,
+            {"name": "c.s.g", "targets": ["gemini-4-carbon"], "allow_all_targets": True},
+        )
+        model, error = agents_mod.resolve_gemini_provider_model(
+            self._STATE, "c.s.g", "gemini-4-argon"
+        )
+        assert (model, error) == ("gemini-4-argon", None)
+
+    def test_allow_all_service_reuses_a_pinned_model_it_does_not_declare(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {"name": "c.s.g", "targets": ["gemini-4-carbon"], "allow_all_targets": True},
+            persisted="gemini-3.8-flash",
+        )
+        model, _ = agents_mod.resolve_gemini_provider_model(self._STATE, "c.s.g", None)
+        assert model == "gemini-3.8-flash"
+
+    def test_allow_all_service_without_targets_asks_for_a_model(self, monkeypatch):
+        self._patch(monkeypatch, {"name": "c.s.g", "targets": [], "allow_all_targets": True})
+        model, error = agents_mod.resolve_gemini_provider_model(self._STATE, "c.s.g", None)
+        assert model is None
+        assert "pass --model" in error
+
     def test_configure_pins_the_newest_of_several_targets(self, monkeypatch):
         # Configure has no --model; a launch would still ask for one (below).
         self._patch(

@@ -3805,6 +3805,51 @@ class TestStatusSkillsSection:
         assert "MCP servers: 1" in re.sub(r"\s+", " ", out)
 
 
+class TestAntigravityAllowAllProviderModel:
+    _STATE = {**MINIMAL_STATE, "workspace": "https://ws.databricks.com"}
+
+    def _run(self, monkeypatch, service, answer="gemini-4-argon"):
+        monkeypatch.setattr(
+            cli_mod, "resolve_provider_service", lambda tool, name, ws, token: (service, None)
+        )
+        asked = []
+        monkeypatch.setattr(
+            cli_mod,
+            "prompt_for_text",
+            lambda message, required=False: asked.append(message) or answer,
+        )
+        monkeypatch.setattr(cli_mod, "save_state", lambda state: None)
+        state = cli_mod._prompt_allow_all_provider_model(
+            "antigravity", dict(self._STATE), "c.s.g", "token"
+        )
+        return state, asked
+
+    def test_asks_for_a_start_model_when_the_service_declares_none(self, monkeypatch):
+        state, asked = self._run(monkeypatch, {"targets": [], "allow_all_targets": True})
+
+        assert state["antigravity_provider_model"] == "gemini-4-argon"
+        assert asked and "Antigravity CLI" in asked[0]
+
+    @pytest.mark.parametrize(
+        "service",
+        [
+            {"targets": ["gemini-3.8-flash"], "allow_all_targets": True},
+            {"targets": [], "allow_all_targets": False},
+        ],
+    )
+    def test_does_not_ask_when_a_target_can_be_pinned_or_none_is_allowed(
+        self, monkeypatch, service
+    ):
+        state, asked = self._run(monkeypatch, service)
+
+        assert asked == []
+        assert "antigravity_provider_model" not in state
+
+    def test_cancelling_the_prompt_stops_configure(self, monkeypatch):
+        with pytest.raises(KeyboardInterrupt):
+            self._run(monkeypatch, {"targets": [], "allow_all_targets": True}, answer=None)
+
+
 class TestRevert:
     def test_invalid_routing_config_does_not_block_revert(self, monkeypatch):
         monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "unsupported_v99")

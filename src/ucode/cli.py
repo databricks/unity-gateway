@@ -92,6 +92,7 @@ from ucode.databricks import (
     probe_unity_gateway_capabilities,
     resolve_pat_token,
     resolve_provider_launch_model,
+    resolve_provider_service,
     run_databricks_login,
 )
 from ucode.env import env_bool
@@ -1042,7 +1043,28 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     state = set_model_location(state, tool, None)
     state = set_provider_service(state, tool, selected)
     save_state(state)
+    if tool == "antigravity":
+        state = _prompt_allow_all_provider_model(tool, state, selected, token)
     print_success(f"{display} will route through {selected}")
+    return state
+
+
+def _prompt_allow_all_provider_model(tool: str, state: dict, provider: str, token: str) -> dict:
+    """Ask which model to start on when ``provider`` serves any model but declares none.
+
+    Antigravity names a concrete model in every request, and `ug configure` has no `--model`, so
+    an allow-all service without declared targets would otherwise leave nothing to pin."""
+    service, error = resolve_provider_service(tool, provider, state["workspace"], token)
+    if error or service is None or not service.get("allow_all_targets") or service.get("targets"):
+        return state
+    model = prompt_for_text(
+        f"Model for {TOOL_SPECS[tool]['display']} to start on (any model {provider} serves)",
+        required=True,
+    )
+    if model is None:
+        raise KeyboardInterrupt
+    state[antigravity_agent.PROVIDER_MODEL_STATE_KEY] = model.strip()
+    save_state(state)
     return state
 
 
