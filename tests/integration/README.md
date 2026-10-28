@@ -1476,7 +1476,8 @@ the helper remain unverified. Diagnostics and evidence redact credentials.
 `../test_desktop_processes.py` separately tests real helper/proxy child processes against
 controlled HTTP and browser boundaries: HTTP 401 and -32006 sign-in/replay, discovery's
 explicit authentication action, bounded persistent failures, and permission-error forwarding.
-These component tests are outside the integration suite and do not establish provider login.
+These component tests use files written by the public setup adapters, replacing native
+Claude plugin installation. They are outside the integration suite and do not establish provider login.
 The dedicated-workspace `../e2e_cuj/test_cuj3_mcp.py` also drives generated proxy commands
 with the real MCP SDK and requires receipts from both live fixture tools. No Desktop GUI,
 Cowork skill execution, or native browser interaction is claimed by these tests.

@@ -929,6 +929,8 @@ and browser boundary exercise initialization, discovery, HTTP 401/JSON-RPC -3200
 explicit authentication, exact request replay, persistent auth errors, and permission-error
 pass-through. The helper returns token-only stdout and fails cleanly without a CLI. These
 are component tests with external boundaries controlled, not live provider login or Cowork.
+Commands come from files written by the public Desktop/Cowork setup adapters; native
+Claude plugin installation is replaced while configuration generation runs normally.
 `e2e_cuj/test_cuj3_mcp.py::TestMcpRegistration::test_generated_proxy_command_lists_and_calls_live_fixture`
 executes installed UG's generated commands through the MCP SDK, lists both fixture tools,
 and checks fresh-run receipts from real workspace calls without an agent UI.

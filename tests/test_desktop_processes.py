@@ -5,6 +5,7 @@ import os
 import shlex
 import subprocess
 import sys
+import textwrap
 from contextlib import asynccontextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -17,7 +18,6 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from tests.integration.utils.harness import clean_environment
-from ucode.agents.desktop import claude, cowork
 
 try:
     from mcp.shared.exceptions import MCPError
@@ -78,7 +78,9 @@ def upstream():
                 self.respond({"signed_in": True})
                 return
             state["headers"].append(self.headers.get("Authorization"))
-            if path.endswith("/user-credentials"):
+            if path == "/ai-gateway/anthropic/v1/models":
+                self.respond({"data": [{"id": "system.ai.claude-sonnet-5"}]})
+            elif path.endswith("/user-credentials"):
                 if not connected.is_set():
                     self.respond({"message": "not connected"}, 404)
                 else:
@@ -143,8 +145,56 @@ def upstream():
         assert not thread.is_alive()
 
 
+@pytest.fixture
+def generated_commands(upstream, child_env, tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent("""\
+                import json
+                import sys
+                from pathlib import Path
+                from unittest.mock import patch
+                from ucode.agents.desktop import claude, cowork, setup
+
+                root = claude.claude_desktop_root_directory()
+                (root / "configLibrary").mkdir(parents=True)
+                (root / "local-agent-mode-sessions" / "account" / "org").mkdir(parents=True)
+                state = {"workspace": sys.argv[1], "profile": "selected-profile"}
+                setup.configure_claude_desktop(state)
+                # Native Claude plugin installation is outside this component test.
+                with patch.object(cowork, "_install_plugin") as install:
+                    setup.configure_claude_cowork(state, [{
+                        "name": "calendar",
+                        "url": sys.argv[1] + "/ai-gateway/mcp-services/system.ai.google_calendar",
+                        "clients": ["claude"],
+                    }])
+                    install.assert_called_once()
+                plugin = (Path.home() / ".ucode" / cowork.MARKETPLACE_DIRECTORY_NAME
+                          / "plugins" / cowork.PLUGIN_NAME)
+                profile = root / "configLibrary" / (claude.PROFILE_ID + ".json")
+                print(json.dumps({
+                    "profile": json.loads(profile.read_text()),
+                    "mcp": json.loads((plugin / ".mcp.json").read_text()),
+                }))
+                """),
+            upstream["workspace"],
+        ],
+        env=child_env,
+        cwd=tmp_path,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert TOKEN not in result.stdout + result.stderr
+    return json.loads(result.stdout.splitlines()[-1])
+
+
 @asynccontextmanager
-async def proxy_client(upstream, child_env, tmp_path):
+async def proxy_client(generated_commands, child_env, tmp_path):
     # This replaces only the external browser; the proxy, HTTP auth and credential polling run.
     browser = tmp_path / "browser with spaces.py"
     browser.write_text(
@@ -157,19 +207,7 @@ async def proxy_client(upstream, child_env, tmp_path):
         **child_env,
         "BROWSER": shlex.join([Path(sys.executable).as_posix(), browser.as_posix(), "%s"]),
     }
-    workspace = upstream["workspace"]
-    config = cowork._cowork_mcp_config(
-        [
-            {
-                "name": "calendar",
-                "url": f"{workspace}/ai-gateway/mcp-services/{SERVICE}",
-                "clients": ["claude"],
-            }
-        ],
-        workspace,
-        "selected-profile",
-    )
-    entry = config["mcpServers"]["calendar"]
+    entry = generated_commands["mcp"]["mcpServers"]["calendar"]
     with (tmp_path / "proxy-stderr.txt").open("w+", encoding="utf-8") as stderr:
         with anyio.fail_after(30):
             async with stdio_client(
@@ -186,7 +224,7 @@ async def proxy_client(upstream, child_env, tmp_path):
 
 @pytest.mark.parametrize("failure", ["http-401", "auth-code"])
 def test_generated_cowork_proxy_authenticates_and_replays_original_call(
-    failure, upstream, child_env, tmp_path
+    failure, upstream, generated_commands, child_env, tmp_path
 ):
     """Scenario: execute Cowork's generated command and call an unauthenticated MCP.
 
@@ -196,7 +234,7 @@ def test_generated_cowork_proxy_authenticates_and_replays_original_call(
     upstream["failure"] = failure
 
     async def scenario():
-        async with proxy_client(upstream, child_env, tmp_path) as client:
+        async with proxy_client(generated_commands, child_env, tmp_path) as client:
             assert "read_calendar" in {tool.name for tool in (await client.list_tools()).tools}
             assert upstream["browsers"] == []
             arguments = {"date": "2026-10-28", "marker": "original-request"}
@@ -221,7 +259,9 @@ def test_generated_cowork_proxy_authenticates_and_replays_original_call(
     assert set(upstream["headers"]) == {f"Bearer {TOKEN}"}
 
 
-def test_generated_proxy_discovery_exposes_explicit_authentication(upstream, child_env, tmp_path):
+def test_generated_proxy_discovery_exposes_explicit_authentication(
+    upstream, generated_commands, child_env, tmp_path
+):
     """Scenario: discovery returns -32006 before the user authenticates explicitly.
 
     Expected: authenticate stays callable, refresh discovers normal tools, and the user's
@@ -230,7 +270,7 @@ def test_generated_proxy_discovery_exposes_explicit_authentication(upstream, chi
     upstream["discovery_auth"] = True
 
     async def scenario():
-        async with proxy_client(upstream, child_env, tmp_path) as client:
+        async with proxy_client(generated_commands, child_env, tmp_path) as client:
             assert [tool.name for tool in (await client.list_tools()).tools] == ["authenticate"]
             assert upstream["browsers"] == []
             assert not (await client.call_tool("authenticate", {})).model_dump(by_alias=True)[
@@ -246,7 +286,9 @@ def test_generated_proxy_discovery_exposes_explicit_authentication(upstream, chi
     anyio.run(scenario)
 
 
-def test_generated_proxy_preserves_persistent_auth_failure(upstream, child_env, tmp_path):
+def test_generated_proxy_preserves_persistent_auth_failure(
+    upstream, generated_commands, child_env, tmp_path
+):
     """Scenario: upstream still requires authentication after a successful sign-in.
 
     Expected: the original error reaches the client, retries are bounded, and discovery still
@@ -255,7 +297,7 @@ def test_generated_proxy_preserves_persistent_auth_failure(upstream, child_env, 
     upstream["persistent"] = True
 
     async def scenario():
-        async with proxy_client(upstream, child_env, tmp_path) as client:
+        async with proxy_client(generated_commands, child_env, tmp_path) as client:
             await client.list_tools()
             with pytest.raises(MCPError) as error:
                 await client.call_tool("read_calendar", {})
@@ -269,7 +311,7 @@ def test_generated_proxy_preserves_persistent_auth_failure(upstream, child_env, 
 
 
 def test_generated_proxy_preserves_permission_error_without_starting_login(
-    upstream, child_env, tmp_path
+    upstream, generated_commands, child_env, tmp_path
 ):
     """Scenario: a tool returns an IP permission denial without an auth code or login URL.
 
@@ -279,7 +321,7 @@ def test_generated_proxy_preserves_permission_error_without_starting_login(
     upstream["failure"] = "permission"
 
     async def scenario():
-        async with proxy_client(upstream, child_env, tmp_path) as client:
+        async with proxy_client(generated_commands, child_env, tmp_path) as client:
             await client.list_tools()
             result = await client.call_tool("read_calendar", {})
             assert result.model_dump(by_alias=True)["isError"]
@@ -290,29 +332,15 @@ def test_generated_proxy_preserves_permission_error_without_starting_login(
     anyio.run(scenario)
 
 
-def test_generated_desktop_helper_emits_token_and_fails_cleanly(child_env, tmp_path):
+def test_generated_desktop_helper_emits_token_and_fails_cleanly(
+    generated_commands, child_env, tmp_path
+):
     """Scenario: run the exact generated helper command with a supplied bearer, then no CLI.
 
     Expected: token-only stdout on success; nonzero exit, empty stdout and actionable stderr
     on failure, without opening a browser or reading the developer's credentials.
     """
-    profile = claude.render_profile(
-        model_ids=("system.ai.claude-sonnet-5",),
-        base_url="https://workspace.example/ai-gateway/anthropic",
-        helper_command=sys.executable,
-        helper_args=(
-            "-m",
-            "ucode.cli",
-            "claude-desktop-auth",
-            "--host",
-            "https://workspace.example",
-            "--profile",
-            "selected-profile",
-        ),
-    )
-    profile_path = tmp_path / "desktop-profile.json"
-    profile_path.write_text(json.dumps(profile), encoding="utf-8")
-    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile = generated_commands["profile"]
     command = [profile["inferenceCredentialHelper"], *profile["inferenceCredentialHelperArgs"]]
     result = subprocess.run(
         command,

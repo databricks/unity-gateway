@@ -86,6 +86,7 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
         "--profile",
         CLI_PROFILE,
     ]
+    # session.run records stdout before we can validate and redact an unexpected credential.
     process = subprocess.Popen(
         [str(helper), *profile["inferenceCredentialHelperArgs"]],
         cwd=session.cwd,
@@ -102,7 +103,8 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     finally:
         stop_process(process)
     assert process.returncode == 0, session.redact(diagnostics)
-    assert session.redact(token_output, strip_ansi=False) == "<redacted>\n"
+    token_matches = token_output == session.env["DATABRICKS_BEARER"] + "\n"
+    assert token_matches, "Desktop helper must emit only the configured CI bearer"
     assert session.redact(diagnostics, strip_ansi=False) == ""
     request = urllib.request.Request(
         profile["inferenceGatewayBaseUrl"] + "/v1/models",

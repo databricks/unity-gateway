@@ -242,7 +242,7 @@ class TestMcpRegistration(BaseCujTest):
         session, workspace, _recorder = cuj
         session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
         config = json.loads((session.home / ".claude" / ".claude.json").read_text())
-        run_id = fresh_id()
+        task = McpFixtureTask()
 
         async def scenario():
             for service, tool in SERVICES.items():
@@ -250,30 +250,27 @@ class TestMcpRegistration(BaseCujTest):
                 parameters = StdioServerParameters(**registration)
                 parameters.env = {**session.env, **(parameters.env or {})}
                 with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as diagnostics:
-                    with anyio.fail_after(60):
-                        async with stdio_client(
-                            parameters,
-                            errlog=diagnostics,
-                        ) as streams:
-                            async with ClientSession(*streams) as client:
-                                await client.initialize()
-                                assert tool in {
-                                    item.name for item in (await client.list_tools()).tools
-                                }
-                                result = (
-                                    await client.call_tool(tool, {"run_id": run_id})
-                                ).model_dump(by_alias=True)
-                                assert not result["isError"], result
-                                expected = hashlib.sha256(
-                                    b"unity-gateway-cuj-fixture\0"
-                                    + tool.encode("ascii")
-                                    + b"\0"
-                                    + run_id.encode("ascii")
-                                ).hexdigest()
-                                assert expected in json.dumps(result["content"]), result
-                    diagnostics.seek(0)
-                    assert "Traceback" not in session.redact(diagnostics.read())
-                session.record(f"proxy-{tool}.json", {"run_id": run_id, "result": result})
+                    try:
+                        with anyio.fail_after(60):
+                            async with stdio_client(parameters, errlog=diagnostics) as streams:
+                                async with ClientSession(*streams) as client:
+                                    await client.initialize()
+                                    assert tool in {
+                                        item.name for item in (await client.list_tools()).tools
+                                    }
+                                    result = (
+                                        await client.call_tool(tool, {"run_id": task.run_id})
+                                    ).model_dump(by_alias=True)
+                                    assert not result["isError"], result
+                                    assert task.expected[tool] in json.dumps(result["content"]), (
+                                        result
+                                    )
+                    finally:
+                        diagnostics.seek(0)
+                        stderr = session.redact(diagnostics.read())
+                        session.record(f"proxy-{tool}-stderr.json", {"stderr": stderr})
+                    assert "Traceback" not in stderr
+                session.record(f"proxy-{tool}.json", {"run_id": task.run_id, "result": result})
 
         anyio.run(scenario)
 
