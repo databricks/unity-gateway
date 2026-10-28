@@ -492,6 +492,7 @@ def _launch_policy_patches(
     *,
     persisted_provider: str | None = None,
     picker_catalog: db_mod.AnthropicModelCatalog | None = None,
+    recommendation: dict | None = None,
 ):
     launch_state = dict(MINIMAL_STATE)
     picker_catalog = picker_catalog or db_mod.AnthropicModelCatalog(
@@ -503,7 +504,7 @@ def _launch_policy_patches(
         patch("ucode.cli.load_state", return_value=launch_state),
         patch("ucode.cli.ensure_provider_state", return_value=launch_state),
         patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
-        patch("ucode.cli._fetch_budget_recommendation", return_value=None),
+        patch("ucode.cli._fetch_budget_recommendation", return_value=recommendation),
         patch("ucode.cli.get_databricks_token", return_value="token"),
         patch("ucode.cli.get_provider_service", return_value=persisted_provider) as get_provider,
         patch("ucode.cli.configure_shared_state", return_value=launch_state) as shared,
@@ -770,8 +771,6 @@ class TestSubcommandRouting:
             (["fix this"], True, None, None, True),
             (["fix this"], False, None, None, False),
             (["update"], False, None, None, False),
-            (["--model", "fixed"], False, None, None, False),
-            ([], False, "fixed", None, False),
             ([], False, None, "catalog.schema.service", False),
         ],
     )
@@ -790,6 +789,40 @@ class TestSubcommandRouting:
         assert options.launch_smart_routing is expected
 
     @pytest.mark.parametrize(
+        ("tool", "tool_args", "model"),
+        [
+            ("claude", ["--model", "fixed"], None),
+            ("claude", ["-p", "hi", "--model", "fixed"], None),
+            ("claude", [], "fixed"),
+            ("codex", [], "fixed"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("routing_env", "expected"),
+        [
+            ({"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}, True),
+            ({"ENABLE_SMART_ROUTING_V2": "1"}, False),
+        ],
+        ids=["subagent-only", "first-prompt"],
+    )
+    def test_explicit_model_keeps_only_subagent_routing(
+        self, monkeypatch, tool, tool_args, model, routing_env, expected
+    ):
+        for name, value in routing_env.items():
+            monkeypatch.setenv(name, value)
+
+        options = cli_mod._launch_options(
+            tool,
+            tool_args,
+            smart_routing_enabled=True,
+            explicit_prompt=False,
+            user_pinned_model=model,
+            provider=None,
+        )
+
+        assert options.launch_smart_routing is expected
+
+    @pytest.mark.parametrize(
         ("tool_args", "expected"),
         [
             (["--session-id"], True),
@@ -801,7 +834,10 @@ class TestSubcommandRouting:
             (["--session-id", "session-123", "--model", "fixed"], False),
         ],
     )
-    def test_claude_options_allow_smart_routing_except_model(self, tool_args, expected):
+    def test_claude_options_allow_smart_routing_except_model(
+        self, monkeypatch, tool_args, expected
+    ):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
         options = cli_mod._launch_options(
             "claude",
             tool_args,
@@ -921,6 +957,37 @@ class TestSubcommandRouting:
         assert observed == [(tool in routed_tools, expected_env)]
         assert _routing_env() == env_before
 
+    @pytest.mark.parametrize(
+        ("version", "launch_args", "routed"),
+        [
+            (smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, [], True),
+            (None, [], True),
+            (smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, ["--disable-smart-routing"], False),
+            (smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, [], False),
+        ],
+        ids=["subagent-version", "managed", "disable-flag", "first-prompt-version"],
+    )
+    def test_forwarded_model_keeps_subagent_routing(
+        self, monkeypatch, version, launch_args, routed
+    ):
+        managed = None
+        if version is None:
+            managed = {"enabled_agents": {"claude": {"smart_routing_enabled": True}}}
+        else:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
+        observed = []
+
+        with _launch_policy_patches(managed) as calls:
+            calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
+                options.launch_smart_routing
+            )
+            result = runner.invoke(
+                app, ["claude", *launch_args, "--", "--model", "system.ai.claude-opus-5-5"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert observed == [routed]
+
     def test_bare_launch_keeps_a_known_version_over_managed_smart_routing(self, monkeypatch):
         monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ONLY_V0)
         managed = {"enabled_agents": {"claude": {"smart_routing_enabled": True}}}
@@ -934,6 +1001,27 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 0, result.output
         assert observed == [_version_routing_env(smart_routing_config.SUBAGENT_ONLY_V0, "claude")]
+
+    @pytest.mark.parametrize("command", ["antigravity", "agy"])
+    def test_antigravity_commands_launch_with_provider_and_model(self, command):
+        with patch("ucode.cli._launch_tool") as mock_launch:
+            result = runner.invoke(
+                app,
+                [command, "--provider", "c.s.svc", "--model", "gemini-3.8-flash", "-p", "hi"],
+            )
+
+        assert result.exit_code == 0, result.output
+        args, kwargs = mock_launch.call_args
+        assert args[0] == "antigravity"
+        assert args[1].args == ["-p", "hi"]
+        assert kwargs["provider"] == "c.s.svc"
+        assert kwargs["model"] == "gemini-3.8-flash"
+
+    def test_agy_alias_is_hidden_from_help(self):
+        result = runner.invoke(app, ["--help"])
+
+        assert "antigravity" in result.output
+        assert " agy " not in result.output
 
     def test_codex_refresh_is_consumed_by_ucode(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
@@ -1186,39 +1274,57 @@ class TestSubcommandRouting:
         assert mock_launch.call_args.kwargs["parent_schema"] == "main.default"
         assert mock_launch.call_args.args[1].args == []
 
-    def test_codex_provider_and_model_location_are_mutually_exclusive(self):
-        with _launch_policy_patches(None):
+    @pytest.mark.parametrize("tool", ["claude", "codex", "copilot"])
+    def test_provider_and_model_location_are_mutually_exclusive(self, tool):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["available_tools"] = [tool]
             result = runner.invoke(
                 app,
-                [
-                    "codex",
-                    "--provider",
-                    "main.default.provider",
-                    "--model-location",
-                    "main.default",
-                ],
+                [tool, "--provider", "main.default.provider", "--model-location", "main.default"],
             )
 
         assert result.exit_code == 1
         assert "--provider and --model-location cannot be used together" in result.output
 
-    def test_claude_provider_and_model_location_are_mutually_exclusive(self):
-        with _launch_policy_patches(None):
-            result = runner.invoke(
-                app,
-                [
-                    "claude",
-                    "--provider",
-                    "main.default.provider",
-                    "--model-location",
-                    "main.default",
-                ],
-            )
+    def test_copilot_launch_uses_saved_model_location(self):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["model_locations"] = {"copilot": "main.saved"}
+            result = runner.invoke(app, ["copilot"])
 
-        assert result.exit_code == 1
-        assert "--provider and --model-location cannot be used together" in result.output
+        assert result.exit_code == 0, result.output
+        launch_state = calls["launch"].call_args.args[1]
+        assert launch_state[copilot_agent.LAUNCH_MODEL_LOCATION_KEY] == "main.saved"
 
-    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_copilot_explicit_provider_overrides_saved_location(self):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["available_tools"] = ["copilot"]
+            calls["state"]["model_locations"] = {"copilot": "main.saved"}
+            result = runner.invoke(app, ["copilot", "--provider", "main.default.openai"])
+
+        assert result.exit_code == 0, result.output
+        launch_state = calls["launch"].call_args.args[1]
+        assert launch_state[copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY] == "main.default.openai"
+        assert copilot_agent.LAUNCH_MODEL_LOCATION_KEY not in launch_state
+
+    def test_copilot_explicit_model_location_overrides_saved_provider(self):
+        with _launch_policy_patches(None, persisted_provider="main.default.openai") as calls:
+            result = runner.invoke(app, ["copilot", "--model-location", "main.flag"])
+
+        assert result.exit_code == 0, result.output
+        launch_state = calls["launch"].call_args.args[1]
+        assert launch_state[copilot_agent.LAUNCH_MODEL_LOCATION_KEY] == "main.flag"
+        assert copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY not in launch_state
+
+    def test_copilot_saved_model_location_is_ignored_under_managed_config(self):
+        managed = {"enabled_agents": {"copilot": {"model_config": {}}}}
+        with _launch_policy_patches(managed) as calls:
+            calls["state"]["model_locations"] = {"copilot": "main.saved"}
+            result = runner.invoke(app, ["copilot"])
+
+        assert result.exit_code == 0, result.output
+        assert copilot_agent.LAUNCH_MODEL_LOCATION_KEY not in calls["launch"].call_args.args[1]
+
+    @pytest.mark.parametrize("tool", ["claude", "codex", "copilot"])
     def test_invalid_model_location_is_rejected(self, tool):
         with _launch_policy_patches(None):
             result = runner.invoke(app, [tool, "--model-location", "main"])
@@ -1313,7 +1419,9 @@ class TestSubcommandRouting:
             }
         }
         with (
-            patch("ucode.cli.get_databricks_token", return_value="fresh-token") as mock_token,
+            patch(
+                "ucode.custom_oauth.get_databricks_token", return_value="fresh-token"
+            ) as mock_token,
             patch(
                 "ucode.smart_routing.codex_routing.route_pre_tool_use",
                 return_value=routed,
@@ -1402,7 +1510,7 @@ class TestSubcommandRouting:
                     "system.ai.claude-opus-4-8",
                 ],
                 input='{"tool_name":"Agent","tool_input":{"prompt":"fix it"}}',
-                env={"OAUTH_TOKEN": "token"},
+                env={"OAUTH_TOKEN": _jwt(time.time() + 300)},
             )
 
         assert result.exit_code == 0, result.output
@@ -1414,6 +1522,7 @@ class TestSubcommandRouting:
     @pytest.mark.parametrize("enabled", [False, True])
     def test_claude_mod_route_respects_session_controls(self, tmp_path, monkeypatch, enabled):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        launch_token = _jwt(time.time() + 300)
         session_file = tmp_path / "env.json"
         session_file.write_text(
             json.dumps(
@@ -1444,7 +1553,7 @@ class TestSubcommandRouting:
                     "system.ai.claude-opus-4-8",
                 ],
                 input='{"session_id":"s1","tool_name":"Agent","tool_input":{"prompt":"fix it"}}',
-                env={"OAUTH_TOKEN": "token", "UCODE_SESSION_ENV_FILE": str(session_file)},
+                env={"OAUTH_TOKEN": launch_token, "UCODE_SESSION_ENV_FILE": str(session_file)},
             )
         assert result.exit_code == 0, result.output
         if enabled:
@@ -1452,7 +1561,7 @@ class TestSubcommandRouting:
             route.assert_called_once_with(
                 {"session_id": "s1", "tool_name": "Agent", "tool_input": {"prompt": "fix it"}},
                 workspace="https://example.com",
-                token="token",
+                token=launch_token,
                 available_models=["system.ai.claude-opus-4-8"],
                 audit_decision=True,
                 hook_output=False,
@@ -1460,6 +1569,55 @@ class TestSubcommandRouting:
         else:
             assert result.output == ""
             route.assert_not_called()
+
+    def test_claude_mod_route_refreshes_through_custom_oauth_client(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
+        custom = {
+            "client_id": "custom-client",
+            "redirect_url": "http://localhost:8020",
+            "scopes": ["offline_access", "all-apis"],
+            "profile": "custom-profile",
+        }
+        with (
+            patch(
+                "ucode.cli.load_full_state",
+                return_value={"workspaces": {"https://example.com": {"custom_oauth": custom}}},
+            ),
+            patch("ucode.custom_oauth.get_databricks_token") as default_token,
+            patch(
+                "ucode.custom_oauth.get_custom_client_token", return_value="custom-token"
+            ) as custom_token,
+            patch(
+                "ucode.cli.smart_routing_v2.route_claude_subagent", return_value={"model": "m"}
+            ) as route,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "claude-router-hook",
+                    "route-subagent-mod",
+                    "--host",
+                    "https://example.com",
+                    "--profile",
+                    "my-profile",
+                ],
+                input='{"tool_name":"Agent","tool_input":{"prompt":"fix it"}}',
+                env={"OAUTH_TOKEN": _jwt(time.time() - 60)},
+            )
+        assert result.exit_code == 0, result.output
+        default_token.assert_not_called()
+        custom_token.assert_called_once_with(
+            "https://example.com",
+            "custom-client",
+            "http://localhost:8020",
+            scopes=["offline_access", "all-apis"],
+            profile="custom-profile",
+            force_refresh=True,
+        )
+        assert route.call_args.kwargs["token"] == "custom-token"
 
 
 class TestManagedConfigLaunchSourceGuard:
@@ -1684,7 +1842,8 @@ class TestManagedClaudeModelDiscovery:
         assert result.exit_code == 0, result.output
         calls["list_catalog"].assert_not_called()
         picker = calls["configure"].call_args.kwargs["picker_catalog"]
-        assert picker.model_ids == [explicit_model or "system.ai.claude-sonnet-5[1m]"]
+        # --model is launch-only: the picker written to the managed file never depends on it.
+        assert picker.model_ids == ["system.ai.claude-sonnet-5[1m]"]
         assert calls["configure"].call_args.kwargs["route_root_model"] is None
         assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == picker.model_ids
         assert calls["launch"].call_args.kwargs["options"].user_pinned_model == explicit_model
@@ -1889,7 +2048,10 @@ class TestClaudeModelFlag:
             result = runner.invoke(app, ["claude", "--model", "system.ai.claude-opus-4-8"])
 
         assert result.exit_code == 0, result.output
-        assert calls["configure"].call_args.kwargs["route_root_model"] is None
+        # The managed default stays in the files `ug configure` wrote; --model is launch-only.
+        assert (
+            calls["configure"].call_args.kwargs["route_root_model"] == "system.ai.claude-sonnet-5"
+        )
         assert (
             calls["launch"].call_args.kwargs["options"].user_pinned_model
             == "system.ai.claude-opus-4-8"
@@ -1923,7 +2085,14 @@ class TestClaudeModelFlag:
         monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_: "token")
         native_calls: list[list[str]] = []
-        monkeypatch.setattr(claude, "exec_or_spawn", native_calls.append)
+
+        def capture_launch(argv: list[str]) -> None:
+            captured = list(argv)
+            if "ug-claude-settings-" in captured[2]:
+                captured[2] = Path(captured[2]).read_text(encoding="utf-8")
+            native_calls.append(captured)
+
+        monkeypatch.setattr(claude, "exec_or_spawn", capture_launch)
 
         with _launch_policy_patches(None) as calls:
             calls["launch"].side_effect = lambda tool, state, args, *, options: claude.launch(
@@ -2188,6 +2357,24 @@ class TestClaudeModelFlag:
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.args[1]["_codex_launch_parent_schema"] == "main.default"
 
+    def test_model_location_sets_transient_copilot_launch_marker(self):
+        state = dict(MINIMAL_STATE, available_tools=["copilot"])
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch("ucode.cli.configure_tool", return_value=state) as mock_configure,
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli.launch_agent") as mock_launch,
+        ):
+            result = runner.invoke(app, ["copilot", "--model-location", "main.default"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_configure.call_args.args[2] is None
+        launch_state = mock_launch.call_args.args[1]
+        assert launch_state[copilot_agent.LAUNCH_MODEL_LOCATION_KEY] == "main.default"
+
 
 class TestGeminiProviderLaunch:
     @staticmethod
@@ -2202,7 +2389,7 @@ class TestGeminiProviderLaunch:
         monkeypatch.setattr("ucode.cli.configure_tool", lambda *a, **k: state)
         monkeypatch.setattr(
             "ucode.cli.resolve_gemini_provider_model",
-            lambda s, p, m: ("gemini-3.5-flash", None),
+            lambda s, p, m, **k: ("gemini-3.5-flash", None),
         )
         mock_launch = MagicMock()
         monkeypatch.setattr("ucode.cli.launch_agent", mock_launch)
@@ -2261,7 +2448,7 @@ class TestMcpSubcommands:
     def test_mcp_add_syncs_claude_cowork(self):
         with (
             patch("ucode.cli.add_mcp_command") as mock_add,
-            patch("ucode.cli._sync_claude_cowork_mcp_servers") as mock_sync,
+            patch("ucode.cli._sync_claude_cowork_plugin") as mock_sync,
         ):
             result = runner.invoke(app, ["mcp", "add", "--names", "system.ai.github"])
 
@@ -2272,7 +2459,7 @@ class TestMcpSubcommands:
     def test_mcp_remove_syncs_claude_cowork(self):
         with (
             patch("ucode.cli.remove_mcp_command") as mock_remove,
-            patch("ucode.cli._sync_claude_cowork_mcp_servers") as mock_sync,
+            patch("ucode.cli._sync_claude_cowork_plugin") as mock_sync,
         ):
             result = runner.invoke(app, ["mcp", "remove"])
 
@@ -3618,6 +3805,51 @@ class TestStatusSkillsSection:
         assert "MCP servers: 1" in re.sub(r"\s+", " ", out)
 
 
+class TestAntigravityAllowAllProviderModel:
+    _STATE = {**MINIMAL_STATE, "workspace": "https://ws.databricks.com"}
+
+    def _run(self, monkeypatch, service, answer="gemini-4-argon"):
+        monkeypatch.setattr(
+            cli_mod, "resolve_provider_service", lambda tool, name, ws, token: (service, None)
+        )
+        asked = []
+        monkeypatch.setattr(
+            cli_mod,
+            "prompt_for_text",
+            lambda message, required=False: asked.append(message) or answer,
+        )
+        monkeypatch.setattr(cli_mod, "save_state", lambda state: None)
+        state = cli_mod._prompt_allow_all_provider_model(
+            "antigravity", dict(self._STATE), "c.s.g", "token"
+        )
+        return state, asked
+
+    def test_asks_for_a_start_model_when_the_service_declares_none(self, monkeypatch):
+        state, asked = self._run(monkeypatch, {"targets": [], "allow_all_targets": True})
+
+        assert state["antigravity_provider_model"] == "gemini-4-argon"
+        assert asked and "Antigravity CLI" in asked[0]
+
+    @pytest.mark.parametrize(
+        "service",
+        [
+            {"targets": ["gemini-3.8-flash"], "allow_all_targets": True},
+            {"targets": [], "allow_all_targets": False},
+        ],
+    )
+    def test_does_not_ask_when_a_target_can_be_pinned_or_none_is_allowed(
+        self, monkeypatch, service
+    ):
+        state, asked = self._run(monkeypatch, service)
+
+        assert asked == []
+        assert "antigravity_provider_model" not in state
+
+    def test_cancelling_the_prompt_stops_configure(self, monkeypatch):
+        with pytest.raises(KeyboardInterrupt):
+            self._run(monkeypatch, {"targets": [], "allow_all_targets": True}, answer=None)
+
+
 class TestRevert:
     def test_invalid_routing_config_does_not_block_revert(self, monkeypatch):
         monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "unsupported_v99")
@@ -3649,6 +3881,51 @@ class TestRevert:
         assert result.exit_code == 0, result.output
         assert "Could not remove leftover Copilot session files" in _strip_ansi(result.output)
         assert cleared == [True]
+
+    @pytest.mark.parametrize("existed", [False, True])
+    def test_antigravity_revert_keeps_skills_entries_added_after_configure(
+        self, existed, monkeypatch, tmp_path
+    ):
+        from ucode.agents import antigravity
+
+        monkeypatch.setattr(antigravity, "UG_AGENTS_SKILLS_DIR", tmp_path / ".agents/skills")
+        skills = antigravity.AGY_SKILLS_CONFIG_PATH
+        if existed:
+            skills.parent.mkdir(parents=True)
+            skills.write_text(json.dumps({"entries": [{"path": "/mine"}]}))
+        antigravity.write_tool_config({**MINIMAL_STATE}, None)
+        # skills.json is shared with the Antigravity app: the user adds to it after configure.
+        config = json.loads(skills.read_text())
+        config["entries"].append({"path": "/later"})
+        skills.write_text(json.dumps(config))
+
+        with (
+            patch("ucode.cli.load_state", return_value=dict(MINIMAL_STATE)),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.clear_state"),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        expected = [{"path": "/mine"}, {"path": "/later"}] if existed else [{"path": "/later"}]
+        assert json.loads(skills.read_text()) == {"entries": expected}
+        assert "Antigravity CLI config: restored" in _strip_ansi(result.output)
+
+    def test_antigravity_revert_deletes_skills_file_it_created(self, monkeypatch, tmp_path):
+        from ucode.agents import antigravity
+
+        monkeypatch.setattr(antigravity, "UG_AGENTS_SKILLS_DIR", tmp_path / ".agents/skills")
+        antigravity.write_tool_config({**MINIMAL_STATE}, None)
+
+        with (
+            patch("ucode.cli.load_state", return_value=dict(MINIMAL_STATE)),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.clear_state"),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        assert not antigravity.AGY_SKILLS_CONFIG_PATH.exists()
 
     def test_reverts_mcp_configs_before_clearing_state(self):
         state = {
@@ -3763,6 +4040,51 @@ class TestCopilotLaunchModel:
 
         assert result.exit_code == 0, result.output
         assert calls["launch"].call_args.kwargs["options"].launch_model == "system.ai.gpt-5-4"
+
+    @pytest.mark.parametrize(
+        "model_source",
+        [
+            {"unity_catalog_location": "main.models"},
+            {"model_provider_service": "main.default.mps"},
+        ],
+    )
+    def test_managed_default_is_the_launch_model_under_a_managed_source(self, model_source):
+        managed = {
+            "enabled_agents": {
+                "copilot": {"model_config": {"default_model": "gpt-5-4", **model_source}}
+            }
+        }
+        with _launch_policy_patches(managed) as calls:
+            result = runner.invoke(app, ["copilot"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_model == "gpt-5-4"
+
+    @pytest.mark.parametrize(
+        ("model_config", "expected_provider", "expected_location"),
+        [
+            (
+                {"model_provider_service": "main.default.managed-mps"},
+                "main.default.managed-mps",
+                None,
+            ),
+            ({"unity_catalog_location": "main.managed"}, None, "main.managed"),
+        ],
+        ids=["mps", "uc-parent"],
+    )
+    def test_managed_source_overrides_saved_provider(
+        self, model_config, expected_provider, expected_location
+    ):
+        managed = {"enabled_agents": {"copilot": {"model_config": model_config}}}
+        with _launch_policy_patches(managed, persisted_provider="main.default.developer") as calls:
+            calls["state"]["model_locations"] = {"copilot": "main.saved"}
+            result = runner.invoke(app, ["copilot"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["shared"].call_args.kwargs["skip_model_discovery"] is True
+        launch_state = calls["launch"].call_args.args[1]
+        assert launch_state.get(copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY) == expected_provider
+        assert launch_state.get(copilot_agent.LAUNCH_MODEL_LOCATION_KEY) == expected_location
 
     def test_a_managed_default_still_discovers_the_catalog(self):
         assert not cli_mod._skip_model_discovery(
@@ -4168,7 +4490,7 @@ class TestConfigureAgentFlag:
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure,
         ):
-            cli_mod._sync_claude_cowork_mcp_servers(state, managed_mcp_servers=managed)
+            cli_mod._sync_claude_cowork_plugin(state, managed_mcp_servers=managed)
 
         mock_configure.assert_called_once_with(state, [*state["mcp_servers"], *managed])
 
@@ -4192,7 +4514,7 @@ class TestConfigureAgentFlag:
             patch("ucode.cli.load_managed_mcp_servers", return_value=managed) as mock_managed,
             patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure,
         ):
-            cli_mod._sync_claude_cowork_mcp_servers(state)
+            cli_mod._sync_claude_cowork_plugin(state)
 
         mock_managed.assert_called_once_with(state, {"claude"})
         mock_configure.assert_called_once_with(state, managed)
@@ -4212,7 +4534,7 @@ class TestConfigureAgentFlag:
             ),
             patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure,
         ):
-            cli_mod._sync_claude_cowork_mcp_servers(state, managed_mcp_servers=[])
+            cli_mod._sync_claude_cowork_plugin(state, managed_mcp_servers=[])
 
         mock_configure.assert_called_once_with(state, [])
 
@@ -4221,7 +4543,7 @@ class TestConfigureAgentFlag:
 
         state = {**MINIMAL_STATE, "available_tools": ["codex"]}
         with patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure:
-            cli_mod._sync_claude_cowork_mcp_servers(state)
+            cli_mod._sync_claude_cowork_plugin(state)
 
         mock_configure.assert_not_called()
 
@@ -4520,7 +4842,7 @@ class TestConfigureMcpFlag:
             patch("ucode.cli.install_tool_binary"),
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
             patch("ucode.cli.configure_mcp_command") as mock_mcp,
-            patch("ucode.cli._sync_claude_cowork_mcp_servers") as mock_sync,
+            patch("ucode.cli._sync_claude_cowork_plugin") as mock_sync,
         ):
             result = runner.invoke(
                 app,
@@ -4541,7 +4863,7 @@ class TestConfigureMcpFlag:
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
             patch("ucode.cli._configure_shared_workspace_states") as mock_shared,
             patch("ucode.cli.configure_mcp_command") as mock_mcp,
-            patch("ucode.cli._sync_claude_cowork_mcp_servers") as mock_sync,
+            patch("ucode.cli._sync_claude_cowork_plugin") as mock_sync,
         ):
             result = runner.invoke(
                 app,
@@ -4727,6 +5049,17 @@ class TestConfigureAgentsSelection:
 
         assert asked == [["databricks", "location"]]
         assert cli_mod.get_model_location(result, "codex") == "main.models"
+
+    def test_picker_offers_location_for_copilot(self, monkeypatch):
+        state, _saved, asked = self._picker(
+            monkeypatch, "copilot", services=(["a.b.mps"], None), answers=["location"]
+        )
+
+        result = cli_mod._maybe_select_provider_service("copilot", state)
+
+        assert asked == [["databricks", "mps", "location"]]
+        assert cli_mod.get_model_location(result, "copilot") == "main.models"
+        assert cli_mod.get_provider_service(result, "copilot") is None
 
     def test_picker_reprompts_until_location_is_valid(self, monkeypatch):
         state, _saved, _asked = self._picker(
@@ -4988,6 +5321,86 @@ class TestConfigureAgentsSelection:
         configure.assert_called_once_with("codex", state, parent_schema="main.models")
         install_ai_tools.assert_called_once_with(["codex"], state, force_refresh=False)
 
+    def test_managed_copilot_parent_is_passed_to_generic_configure(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": [],
+            "copilot_models": [],
+            "provider_services": {"copilot": "main.default.developer"},
+        }
+        managed = {
+            "enabled_agents": {
+                "copilot": {"model_config": {"unity_catalog_location": "main.models"}}
+            }
+        }
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda s, **_k: (managed, False))
+        monkeypatch.setattr(
+            cli_mod,
+            "check_gateway_endpoint",
+            lambda *_a: pytest.fail("managed model sources do not require global models"),
+        )
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *_a: None)
+        configured: list[dict] = []
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda resolved, tools, **kwargs: configured.append(kwargs) or resolved,
+        )
+
+        assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
+
+        assert configured[0]["parent_schemas"] == {"copilot": "main.models"}
+
+    def test_single_copilot_agent_passes_managed_parent_directly(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "provider_services": {"copilot": "main.default.developer"},
+        }
+        managed = {
+            "enabled_agents": {
+                "copilot": {"model_config": {"unity_catalog_location": "main.models"}}
+            }
+        }
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", MagicMock())
+        monkeypatch.setattr(cli_mod, "install_tool_binary", MagicMock())
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        refresh = MagicMock(return_value=(managed, False))
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", refresh)
+        configure = MagicMock(return_value=state)
+        monkeypatch.setattr(cli_mod, "configure_single_tool", configure)
+        install_ai_tools = MagicMock()
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", install_ai_tools)
+
+        result = runner.invoke(
+            app, ["configure", "--agent", "copilot", "--workspace", "https://w.com"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "(Provider: Databricks)" in _strip_ansi(result.output)
+        refresh.assert_called_once_with(state, force_refresh=False)
+        configure.assert_called_once_with("copilot", state, parent_schema="main.models")
+        install_ai_tools.assert_called_once_with(["copilot"], state, force_refresh=True)
+
+    @pytest.mark.parametrize("apply_managed", [True, False])
+    def test_single_copilot_agent_refreshes_ai_tools_since_it_only_reads_the_policy(
+        self, monkeypatch, apply_managed
+    ):
+        state = dict(MINIMAL_STATE)
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (None, False))
+        monkeypatch.setattr(cli_mod, "configure_single_tool", lambda *a, **k: state)
+        install_ai_tools = MagicMock()
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", install_ai_tools)
+
+        cli_mod._setup_single_agent(
+            [("https://w.com", None)], "copilot", apply_managed=apply_managed
+        )
+
+        install_ai_tools.assert_called_once_with(["copilot"], state, force_refresh=True)
+
     def test_managed_config_fails_when_no_enabled_agent_is_available(self, monkeypatch):
         import ucode.cli as cli_mod
 
@@ -5186,7 +5599,7 @@ class TestConfigureAgentsSelection:
         calls: list = []
         monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda m: calls.append(m))
         cowork_sync = MagicMock()
-        monkeypatch.setattr(cli_mod, "_sync_claude_cowork_mcp_servers", cowork_sync)
+        monkeypatch.setattr(cli_mod, "_sync_claude_cowork_plugin", cowork_sync)
 
         assert (
             cli_mod.configure_workspace_command(
@@ -5886,7 +6299,9 @@ class TestConfigureSharedStateUsePat:
     ):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
         response_iter = iter(responses)
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token: next(response_iter))
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, **kwargs: next(response_iter)
+        )
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
         )
@@ -5924,7 +6339,9 @@ class TestConfigureSharedStateUsePat:
     ):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
         response_iter = iter(responses)
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token: next(response_iter))
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, **kwargs: next(response_iter)
+        )
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
         )
@@ -7073,6 +7490,74 @@ class TestBudgetRecommendationAtLaunch:
             recommendation={"agent": "claude", "model": "system.ai.claude-haiku-4-5"},
         )
         assert cfg.call_args.args[2] == "system.ai.claude-haiku-4-5"
+
+    def test_budget_pick_is_launch_only_and_managed_inputs_match_configure(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "default_model": "system.ai.claude-opus-4-8",
+                        "default_models_by_model_family": {
+                            "default_opus_model": "system.ai.claude-opus-4-8"
+                        },
+                    }
+                }
+            },
+            **self.SMART_DEFAULTS,
+        }
+        recommendation = {"agent": "claude", "model": "system.ai.claude-haiku-4-5"}
+        with _launch_policy_patches(managed, recommendation=recommendation) as calls:
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        expected = cli_mod.claude_agent.managed_model_inputs(calls["state"], managed)
+        kwargs = calls["configure"].call_args.kwargs
+        # What the launch writes is what `ug configure` writes: the admin default, not the pick.
+        assert kwargs["route_root_model"] == "system.ai.claude-opus-4-8"
+        assert kwargs["coding_agent_config_defaults"] == expected.coding_agent_config_defaults
+        assert kwargs["picker_catalog"] == expected.picker_catalog
+        options = calls["launch"].call_args.kwargs["options"]
+        assert options.launch_model == "system.ai.claude-haiku-4-5"
+        assert options.user_pinned_model is None
+
+    def test_budget_pick_equal_to_default_needs_no_launch_model(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"default_model": "system.ai.claude-opus-4-8"}}
+            },
+            **self.SMART_DEFAULTS,
+        }
+        recommendation = {"agent": "claude", "model": "system.ai.claude-opus-4-8"}
+        with _launch_policy_patches(managed, recommendation=recommendation) as calls:
+            result = runner.invoke(app, ["claude"])
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_model is None
+
+    def test_budget_pick_starts_on_its_picker_row(self):
+        """A pick matching a `[1m]` family row starts on that row, so Claude adds no duplicate."""
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "default_model": "system.ai.claude-opus-4-8",
+                        "default_models_by_model_family": {
+                            "default_opus_model": "system.ai.claude-opus-4-8",
+                            "default_sonnet_model": "system.ai.claude-sonnet-4-6",
+                        },
+                    }
+                }
+            },
+            **self.SMART_DEFAULTS,
+        }
+        recommendation = {"agent": "claude", "model": "system.ai.claude-sonnet-4-6"}
+        with _launch_policy_patches(managed, recommendation=recommendation) as calls:
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        picker = calls["configure"].call_args.kwargs["picker_catalog"]
+        assert "system.ai.claude-sonnet-4-6[1m]" in picker.model_ids
+        options = calls["launch"].call_args.kwargs["options"]
+        assert options.launch_model == "system.ai.claude-sonnet-4-6[1m]"
 
     def test_passes_configured_claude_defaults_to_writer(self, monkeypatch):
         managed = {

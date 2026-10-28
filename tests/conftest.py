@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 from types import SimpleNamespace
@@ -37,6 +38,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
     from ucode import desktop_auth as desktop_auth_mod
+    from ucode.agents import antigravity as antigravity_mod
     from ucode.agents import claude as claude_mod
     from ucode.agents import codex as codex_mod
     from ucode.agents.desktop import claude as desktop_mod
@@ -48,6 +50,19 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
     monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(desktop_auth_mod, "_AUTH_LOCK_PATH", state_dir / "claude-desktop-auth.lock")
+    # Antigravity's customization root is shared with the developer's Antigravity app and CLI.
+    agy_dir = tmp_path / ".gemini" / "config"
+    for name, path in (
+        ("AGY_MCP_CONFIG_PATH", agy_dir / "mcp_config.json"),
+        ("AGY_SKILLS_CONFIG_PATH", agy_dir / "skills.json"),
+        ("AGY_SKILLS_CREATED_MARKER", state_dir / "antigravity-skills.created"),
+        ("AGY_MCP_BACKUP_PATH", state_dir / "antigravity-mcp-config.backup.json"),
+    ):
+        monkeypatch.setattr(antigravity_mod, name, path)
+    monkeypatch.setitem(antigravity_mod.SPEC, "config_path", agy_dir / "skills.json")
+    monkeypatch.setitem(
+        antigravity_mod.SPEC, "backup_path", state_dir / "antigravity-skills.created"
+    )
     # The workspace policy lives outside APP_DIR; rebind it, and its user-owned refresh stamps,
     # so no test reads or installs the machine-wide copy.
     monkeypatch.setattr(
@@ -75,8 +90,6 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # The installer is faked above, so let every host take the installable (Linux/macOS) path;
     # tests for Windows or UG_SKIP_OS_SETTINGS override this.
     monkeypatch.setattr(managed_config_mod, "current_os", lambda: managed_files_mod.OS.LINUX)
-    # Likewise let any run install the faked policy, as root may; non-root launch tests override it.
-    monkeypatch.setattr(managed_config_mod, "is_admin", lambda: True)
     backup_dir = state_dir / "managed-backups"
     monkeypatch.setattr(managed_files_mod, "MANAGED_BACKUP_DIR", backup_dir)
     monkeypatch.setattr(
@@ -84,6 +97,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(managed_files_mod, "_config_scope", "global")
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
+    # Launch seeds Claude's feature cache in `.claude.json`; never touch the developer's copy.
+    monkeypatch.setattr(claude_mod, "CLAUDE_CODE_CONFIG_PATH", tmp_path / ".claude.json")
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     # The header mod installs beside the real managed file; tests opt in with a tmp root.
     monkeypatch.setattr(claude_mod, "claude_header_mod_root", lambda: None)
     monkeypatch.setattr(
@@ -155,12 +171,18 @@ def e2e_token(e2e_workspace):
     return get_databricks_token(e2e_workspace)
 
 
-@pytest.fixture(scope="session")
-def e2e_state(e2e_workspace, e2e_token):
-    """Full state dict mirroring what configure_shared_state produces."""
-    claude_models = fetch_ai_gateway_claude_models(e2e_workspace, e2e_token)
-    gemini_models = fetch_gemini_models(e2e_workspace, e2e_token)
-    codex_models = fetch_codex_models(e2e_workspace, e2e_token)
+@functools.cache
+def e2e_state_for(workspace: str) -> dict:
+    """Full state dict mirroring what configure_shared_state produces.
+
+    Cached per process so collection-time parametrization (tests/test_e2e.py) and the
+    ``e2e_state`` fixture query the live catalogs once. Keyed on the workspace only: a bearer
+    command mints a fresh token per call, so a token key would miss and fetch a second snapshot.
+    A failed fetch raises and is not cached."""
+    token = get_databricks_token(workspace)
+    claude_models = fetch_ai_gateway_claude_models(workspace, token)
+    gemini_models = fetch_gemini_models(workspace, token)
+    codex_models = fetch_codex_models(workspace, token)
 
     opencode_models: dict = {}
     if claude_models:
@@ -169,11 +191,18 @@ def e2e_state(e2e_workspace, e2e_token):
         opencode_models["gemini"] = gemini_models
 
     return {
-        "workspace": e2e_workspace,
+        "workspace": workspace,
         "claude_models": claude_models,
         "gemini_models": gemini_models,
         "codex_models": codex_models,
         "opencode_models": opencode_models,
-        "base_urls": build_shared_base_urls(e2e_workspace),
+        "base_urls": build_shared_base_urls(workspace),
         "managed_configs": {},
     }
+
+
+@pytest.fixture(scope="session")
+def e2e_state(e2e_workspace):
+    """Full state dict mirroring what configure_shared_state produces."""
+    # Copy so a test mutating its state cannot leak into the cached catalog.
+    return dict(e2e_state_for(e2e_workspace))

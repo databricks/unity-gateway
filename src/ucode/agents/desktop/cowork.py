@@ -25,6 +25,7 @@ PLUGIN_ID = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
 LEGACY_PLUGIN_ID = f"unity-gateway@{MARKETPLACE_NAME}"
 STATE_FILENAME = "claude-cowork.json"
 MARKETPLACE_DIRECTORY_NAME = "claude-cowork-marketplace"
+CONNECTOR_SKILL_NAME = "unity-gateway-connectors"
 
 _COWORK_MARKERS = (
     "cowork_settings.json",
@@ -42,7 +43,7 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
         raise RuntimeError("No Databricks workspace is configured for Cowork.")
 
     previous_state = config_io.read_json_safe(_state_path())
-    skill_records = _managed_skill_records(workspace)
+    skill_records = _workspace_skill_records(workspace)
     if not previous_state and not skill_records and not mcp_servers:
         return False
     if not previous_state and not _cowork_sessions_root_exists():
@@ -212,11 +213,12 @@ def _cowork_mtime(candidate: Path) -> int:
     return max(mtimes, default=0)
 
 
-def _managed_skill_records(workspace: str) -> list[dict]:
+def _workspace_skill_records(workspace: str) -> list[dict]:
     normalized_workspace = workspace.rstrip("/")
     return [
         record
-        for record in records_for_scope("managed", str(Path.home()))
+        for scope in ("managed", "user")
+        for record in records_for_scope(scope, str(Path.home()))
         if str(record.get("workspace") or "").rstrip("/") == normalized_workspace
     ]
 
@@ -326,6 +328,8 @@ def _write_marketplace(
         _write_json(staging / ".claude-plugin" / "marketplace.json", marketplace)
         _write_json(staging_plugin / ".claude-plugin" / "plugin.json", plugin)
         _copy_skills(staging_plugin / "skills", skill_records)
+        if mcp_config["mcpServers"]:
+            _write_connector_skill(staging_plugin / "skills", list(mcp_config["mcpServers"]))
 
         if backup.exists():
             shutil.rmtree(backup)
@@ -356,6 +360,28 @@ def _copy_skills(destination: Path, records: list[dict]) -> None:
         destination.mkdir(parents=True, exist_ok=True)
         shutil.copytree(source, destination / bundle_name)
         copied.add(bundle_name)
+
+
+def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
+    # Skill descriptions are in context from the first turn; plugin MCP tools connect
+    # lazily, so without this Claude asks whether a connector exists instead of using it.
+    skill_dir = destination / CONNECTOR_SKILL_NAME
+    if skill_dir.exists():
+        return
+    connectors = ", ".join(f"`{name}`" for name in server_names)
+    description = (
+        f"Unity Gateway connectors are available in this session: {connectors}. "
+        "Use the matching connector for any request about the user's own resources on "
+        "those services, such as their pull requests, issues, tickets, pages, mail, or "
+        "files. If its tools are not loaded yet, search for them. Do not ask whether the "
+        "service is connected or say it is unavailable before trying the connector."
+    )
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {CONNECTOR_SKILL_NAME}\ndescription: {json.dumps(description)}\n---\n\n"
+        f"{description}\n",
+        encoding="utf-8",
+    )
 
 
 def _claude_skill_directory(record: dict) -> Path | None:

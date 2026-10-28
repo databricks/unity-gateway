@@ -1,7 +1,8 @@
 # Unity Gateway (`ug`)
 
 Unity Gateway runs coding agents through Databricks AI Gateway. It configures
-Codex, Claude Code, Gemini CLI, OpenCode, GitHub Copilot CLI, and Pi, and can
+Codex, Claude Code, Gemini CLI, OpenCode, GitHub Copilot CLI, Pi, and Google
+Antigravity CLI, and can
 register Databricks MCP servers for Cursor Agent.
 
 The command is `ug`. Existing `ucode` commands remain supported, and the Python
@@ -52,6 +53,7 @@ ug gemini
 ug opencode
 ug copilot
 ug pi
+ug antigravity   # Google Antigravity CLI; `ug agy` is an alias
 ug cursor   # Cursor Agent, MCP-only
 ```
 
@@ -68,10 +70,25 @@ model for one launch. OpenCode's `provider/model` form is also accepted.
 Unknown Databricks models produce an error; this option does not add models
 to discovery or change ug's saved default.
 
+`ug antigravity` (or `ug agy`) runs Google's Antigravity CLI 1.2.15 or later in its
+Enterprise Gateway mode, so it never asks for Google sign-in. It offers the workspace's
+Gemini models under the names Antigravity knows them by (`system.ai.gemini-3-8-flash` is
+`gemini-3.8-flash`) and starts on the newest. A local proxy refreshes the Databricks token
+for the whole session and maps each name back to its Databricks model. `--model` accepts
+either name, or one of Antigravity's thinking tiers such as `gemini-3.8-flash-high`.
+`--provider` routes through a Gemini Enterprise Model Provider Service, as with
+`ug gemini`; choosing External Models in `ug configure` saves one. When the service declares
+several models, configure starts on the newest; when it serves any model without declaring
+one, configure asks which to start on. `--model` picks another at launch. Claude, GPT, and open-source models aren't offered, because Antigravity runs
+tools only for models it recognizes. `ug` installs the CLI with Google's installer when it
+is missing (macOS and Linux). On a workspace with a managed config, which can't enable
+Antigravity yet, run `ug agents add antigravity` to use it self-managed.
+
 `ug copilot` lists every Claude and GPT model you can use on the workspace in
 Copilot's `/model` picker, and you can switch between them mid-session. Claude
 models use the Anthropic Messages API, GPT-5 and newer use Responses, and older
-GPT models use Chat Completions. Gemini and open-source models aren't offered.
+GPT models use Chat Completions. Gemini and open-source models aren't offered, except under
+`--model-location` (below).
 `ug copilot --model claude-opus-5-5` (or `system.ai.claude-opus-5-5`, or Copilot's
 own `dbx-anthropic/system.ai.claude-opus-5-5`) picks the model a session starts on;
 an unknown or unsupported model fails before Copilot starts and lists the
@@ -95,15 +112,17 @@ Bedrock service, and the chat models of an OpenAI, Azure OpenAI or Microsoft Fou
 allows every model, `/model` lists the models the gateway reports for it, which the provider
 account may not serve; name the one to start on with `--model`. Services that relay a Claude subscription work only with Claude Code. Interactive
 `ug configure` offers the matching services under **External Models**, and a managed workspace
-config can set one for Copilot.
+config can set one for Copilot. `ug copilot --model-location <catalog>.<schema>` uses the model
+services of one schema instead: services named like Claude or GPT models use their usual API, and
+the rest go through the gateway's Anthropic endpoint, as for Claude Code.
 
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
 to select another model source; managed workspace configs control their own sources.
 Interactive `ug configure` also offers a **Custom Model Location** (`<catalog>.<schema>`) for
-Claude Code and Codex alongside Databricks Hosted and External Models. The choice is saved
-with the rest of the configuration, so later `ug claude` / `ug codex` launches use it; an
+Claude Code, Codex and Copilot alongside Databricks Hosted and External Models. The choice is saved
+with the rest of the configuration, so later `ug claude` / `ug codex` / `ug copilot` launches use it; an
 explicit `--provider` or `--model-location` still overrides it for that launch.
 
 `ug codex` validates discovered models with the installed Codex binary and publishes
@@ -157,11 +176,12 @@ Nothing is written to a config file.
 
 - **Codex**: added to the launch's `-c` provider headers.
 - **Claude Code**: added by a mod, even when managed settings set `ANTHROPIC_CUSTOM_HEADERS`.
-  `ug configure` installs it beside the managed settings (Linux and macOS, with sudo, not under
-  `--user`); without it the launch warns and Claude doesn't send them.
+  Only `ug configure` installs or upgrades it beside the managed settings (Linux and macOS, with
+  sudo, not under `--user`); a launch never writes there. When it is missing or out of date the
+  launch warns and Claude doesn't send them.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
-`copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;
+`kilo`, `copilot`, `pi`, and `antigravity`. `cursor` can be included in `--agents` for MCP-only setup;
 Cursor models still run through your Cursor account.
 
 `UG_WORKSPACE` can provide the default workspace. An explicit `--workspace` or
@@ -224,8 +244,14 @@ Connection-backed AI Gateway MCP services use native HTTP OAuth in Claude Code,
 Codex, and Cursor when the workspace publishes a compatible client. Claude Code
 uses its URL-based client ID metadata document; if it is unavailable, `ug` uses
 the local `ug mcp-proxy` stdio server with the Databricks CLI's OAuth client.
-Other servers and agents also use that proxy. V2 AI
-Gateway servers can be added with typed selectors such as
+Other servers and agents also use that proxy. When a proxied connection needs
+provider authentication, UG opens the workspace's MCP service sign-in page and
+waits up to five minutes for the selected CLI profile's user credential, then retries
+the original request. Use the same Databricks account in the browser and CLI profile.
+If no browser opens, use the URL in the MCP server log; click Login if the provider
+popup is blocked. This flow requires the workspace's MCP service login page and user-credential API;
+it does not require CLI `auth login --resource` or a CLI upgrade.
+V2 AI Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
 
@@ -335,17 +361,10 @@ ug skills remove --location main.default --via mcp
 | `ug revert` | Clear saved state and restore backed-up config files |
 | `ug upgrade` | Upgrade Unity Gateway |
 
-`ug usage` shows your Unity Gateway budget usage. To try the expanded budget view:
-
-```bash
-ENABLE_UG_USAGE_SPEND_API=1 ug usage
-```
-
-The expanded view shows up to five budget limits with the highest usage percentages,
-with a short budget ID on each entry. It tells you when more limits exist.
-Add `--all` to show every limit: `ENABLE_UG_USAGE_SPEND_API=1 ug usage --all`.
-It uses your configured workspace login; no separate login is needed.
-Leave `ENABLE_UG_USAGE_SPEND_API` unset to keep the standard summary.
+`ug usage` shows up to five Unity Gateway budget limits with the highest usage
+percentages, with a short budget ID on each entry. It tells you when more limits
+exist. Run `ug usage --all` to show every limit. Both commands use your configured
+workspace login.
 
 A launch (`ug claude`, `ug codex`) uses the workspace's managed coding agent config that
 `ug configure` last saved and does not refetch it. After an admin changes that config, run
@@ -389,6 +408,10 @@ through `SMART_ROUTER_CONFIG_VERSION`: they keep a known version and otherwise s
 main session stays on its default model.
 Like any version, it overrides individually set routing env vars. `--disable-smart-routing`
 turns routing off for the launch, including over a workspace config.
+
+An explicit `--model`, from `ug claude --model` or a launcher such as Omnigent, keeps
+subagent routing when first-prompt routing is off; the main session stays on that model.
+With first-prompt routing on, an explicit model still skips routing.
 
 ### Smart Router Orchestrator
 
@@ -485,13 +508,14 @@ preferences are ignored and their files are left untouched. See the bundled
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |
 | GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/ucode-mcp-config.json` |
 | Pi | `~/.ucode/pi-home/.pi/agent/models.json`, `~/.ucode/pi-home/.pi/agent/settings.json` |
+| Antigravity CLI | `~/.gemini/config/skills.json` (adds `~/.agents/skills`), `~/.gemini/config/mcp_config.json` (ug's MCP servers only); the gateway is set per launch through `AGY_LLM_GATEWAY_*` variables |
 | Cursor Agent | `~/.cursor/mcp.json` |
 | Unity Gateway | `/etc/unitygateway/managed-settings.json` (Linux and macOS), `~/.ucode/refresh_ts.json`, `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
 
 Workspace policy is root-owned but readable without sudo. Configure installs it only when the
-workspace publishes a policy; launches check for updates every five minutes. Non-root launches
-never invoke sudo for workspace policy: they warn about changes and keep the installed policy
-until an administrator or IT provisioning run updates it. Each distinct pending change warns once.
+workspace publishes a policy; launches check for updates every five minutes. Launches never
+write workspace policy, even as root: they warn about changes and keep the installed policy
+until `ug configure` (by an administrator or an IT provisioning run) updates it. Each distinct pending change warns once.
 The installed workspace is authoritative: selecting a different one fails launch instead of
 falling back to unmanaged behavior.
 Refresh timestamps and pending-change hashes live in user-owned `~/.ucode/refresh_ts.json`,

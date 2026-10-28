@@ -125,8 +125,9 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | `env.CLAUDE_CODE_API_KEY_HELPER_TTL_MS` | Create/replace | Create/replace | Auth-helper cache TTL |
 | `env.ENABLE_PROMPT_CACHING_1H` | Create/replace | Create/replace | Prompt-caching flag |
 | `env.ENABLE_TOOL_SEARCH` | Create/replace | Create/replace | Tool-search flag |
+| `env.ANTHROPIC_AUTH_TOKEN`, `env.ANTHROPIC_API_KEY` | Create/replace | Create/replace | Blanked (`""`) so a shell credential can't outrank `apiKeyHelper` or the subscription login (Claude Code ranks both variables above them); a settings `env` value beats the shell's for the Claude process only. Always in `ucode-settings.json`, relayed launches included. Like the header mod, `ug configure` writes them to the managed file, and a plain launch never adds them, so another writer of the file that drops them isn't fought on every launch; present ones are left as they are. Admin `agent_native_settings` can't set them |
 | `env.CLAUDE_CODE_USE_GATEWAY` | Create/replace | Create/replace | Gateway-routing flag |
-| `env.ANTHROPIC_MODEL` | Ignore | Create/replace | Launch model, from the config's `default_model` or the budget recommendation when spend tiers are set; written at launch, not by `ug configure` |
+| `env.ANTHROPIC_MODEL` | Ignore | Create/replace | The config's `default_model`, written by `ug configure` and identically by a plain launch (launch never changes it). A budget recommendation that differs, `--model`, or a forwarded `-- --model` reaches only that session through Claude Code's native `--model` flag, which outranks a managed `ANTHROPIC_MODEL`; no file is written |
 | `env.ANTHROPIC_DEFAULT_*_MODEL` | Create/replace | Create/replace | Per-family default (opus, sonnet, haiku, fable); the config's family default wins under managed config. Without a managed config, left as the OS-managed file has them (model discovery skipped) when that file has a `modelPicker` with family defaults |
 | Model picker | Ignore | Create/replace | `availableModels`, `enforceAvailableModels`, `modelPicker`; only for a managed static model list |
 | `permissions.deny` | Merge | Merge | Add `ug`'s own `WebSearch` rule when it replaces web search; other rules left alone |
@@ -135,7 +136,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | Smart-routing hooks | Merge | Merge | `PreToolUse`, `SessionStart`, `SubagentStart`; only `ug`'s own marked handlers, other hooks left alone |
 | Admin `agent_native_settings` | Ignore | Create/replace | Managed file only; copied as-is. Keys `ug` owns are skipped, `permissions.deny` and hooks are merged, and `ug`'s MCP servers are added to an admin `allowedMcpServers`. Removed when the admin drops them, unless edited by hand |
 | Smart Router Orchestrator hooks | Merge | Merge | Launch-only `UserPromptSubmit` and compact `SessionStart` handlers for smart-routed sessions with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; read the same session controls as routing |
-| Header mod | Merge | Merge | Managed file only, Linux and macOS: `extraKnownMarketplaces.ucode-managed`, `enabledPlugins["ug-headers@ucode-managed"]`, and `ug-headers@ucode-managed` first in `prependPlugins` (an unset list becomes the mod plus `sec-default@builtin`). The mod's files live in a root-owned `ucode-plugins` folder beside the managed file and add `UG_HEADERS` to each request. Added by `ug configure` or a launch with `UG_HEADERS`, never by a plain launch, so another writer of the file that drops them isn't fought on every launch. The entries are written only once the files are in place; revert removes both, keeping `sec-default@builtin` when an admin has extended the list |
+| Header mod | Merge | Merge | Managed file only, Linux and macOS: `extraKnownMarketplaces.ucode-managed`, `enabledPlugins["ug-headers@ucode-managed"]`, and `ug-headers@ucode-managed` first in `prependPlugins` (an unset list becomes the mod plus `sec-default@builtin`). The mod's files live in a root-owned `ucode-plugins` folder beside the managed file and add `UG_HEADERS` to each request. Installed, upgraded, and enabled only by `ug configure`, never by a launch (even with `UG_HEADERS`, which instead warns when the mod is missing or stale), so a launch writes no machine-wide files and another writer of the file that drops them isn't fought on every launch. The entries are written only once the files are in place; revert removes both, keeping `sec-default@builtin` when an admin has extended the list |
 
 </details>
 
@@ -158,8 +159,10 @@ When `claude_otel_tracing` is enabled, Desktop's reserved profile also owns
 for the existing `otel-headers` command. Native sessions rerun it as tokens rotate;
 no bearer is persisted. Disable/revert removes the wrapper, with atomic writes and
 rollback shared with the profile. Disabled tracing omits these fields on replacement.
-Managed Claude setup also installs a generated Cowork plugin containing only the current
-workspace's managed skills and Claude-targeted MCP servers. The source lives at
+Claude setup also installs a generated Cowork plugin containing only the current
+workspace's managed and user-downloaded home-level skills and Claude-targeted MCP servers.
+Downloaded skill additions and removals resync the plugin; project-local,
+user-authored, and other-workspace skills are excluded. The source lives at
 `~/.ucode/claude-cowork-marketplace`, and `~/.ucode/claude-cowork.json` records the selected
 account/org root for cleanup. Cowork must have started once. Setup and cleanup use scoped
 `claude plugin ... --cowork --json` commands with `CLAUDE_CONFIG_DIR`; failures stay best-effort.

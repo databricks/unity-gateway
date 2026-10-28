@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
 import shlex
 import subprocess
@@ -19,6 +20,17 @@ from ucode.agents import LaunchOptions, claude
 from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
 from ucode.telemetry import client_platform
+
+
+def _capture_claude_launch(calls: list[list[str]], argv: list[str]) -> None:
+    """Snapshot temporary Windows settings before the mocked launcher returns."""
+    captured = list(argv)
+    if "--settings" in captured:
+        index = captured.index("--settings") + 1
+        if "ug-claude-settings-" in captured[index]:
+            captured[index] = Path(captured[index]).read_text(encoding="utf-8")
+    calls.append(captured)
+
 
 WS = "https://example.databricks.com"
 # A connection MCP proxy argv, used by the Claude MCP-registration helper tests.
@@ -2788,6 +2800,34 @@ class TestWriteToolConfigManagedSettings:
 
 
 class TestAddClaudeMcpServer:
+    def test_http_pins_claude_cimd_client(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            claude.subprocess_cross_os,
+            "run",
+            lambda args, **kwargs: calls.append(args) or MagicMock(returncode=0),
+        )
+
+        claude.add_claude_http_mcp_server("github", GH_URL)
+
+        assert calls == [
+            [
+                "claude",
+                "mcp",
+                "add",
+                "--transport",
+                "http",
+                "-s",
+                "user",
+                "--client-id",
+                claude.CLAUDE_CODE_CIMD_CLIENT_ID,
+                "--callback-port",
+                "3118",
+                "github",
+                GH_URL,
+            ]
+        ]
+
     def test_registers_stdio_proxy_command(self, monkeypatch):
         calls: list[dict] = []
 
@@ -3234,7 +3274,9 @@ class TestClaudeLaunch:
         monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        monkeypatch.setattr(
+            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+        )
 
         claude.launch({"workspace": WS, "profile": "test"}, ["--debug"], options=LaunchOptions())
 
@@ -3248,7 +3290,9 @@ class TestClaudeLaunch:
         calls: list[list[str]] = []
         monkeypatch.setattr(claude.os, "name", "nt")
         monkeypatch.setattr(claude.shutil, "which", lambda _binary: str(native_binary))
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        monkeypatch.setattr(
+            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+        )
 
         claude.launch({}, ["--print", prompt], options=LaunchOptions())
 
@@ -3267,7 +3311,9 @@ class TestClaudeLaunch:
         monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
         monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        monkeypatch.setattr(
+            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+        )
 
         claude.launch(
             {
@@ -3289,7 +3335,9 @@ class TestClaudeLaunch:
         calls: list[list[str]] = []
         monkeypatch.setenv("ANTHROPIC_MODEL", "stale-model")
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        monkeypatch.setattr(
+            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+        )
         settings_path = tmp_path / "ucode-settings.json"
         saved_model = "system.ai.claude-haiku-4-5"
         settings_path.write_text(
@@ -3313,11 +3361,69 @@ class TestClaudeLaunch:
         assert calls[0][3:] == ["--model", custom_model, "--debug"]
         assert settings_path.read_bytes() == original_settings
 
-    def test_launch_custom_model_preserves_forwarded_native_model(self, monkeypatch):
+    def test_launch_only_model_uses_native_model_flag(self, monkeypatch):
+        """A budget pick differing from the managed default rides `--model`, never a file."""
         calls: list[list[str]] = []
         monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+
+        claude.launch(
+            {"workspace": WS},
+            ["--debug"],
+            options=LaunchOptions(launch_model="system.ai.claude-haiku-4-5"),
+        )
+
+        assert calls[0][3:] == ["--model", "system.ai.claude-haiku-4-5", "--debug"]
+        assert os.environ["ANTHROPIC_MODEL"] == "system.ai.claude-haiku-4-5"
+
+    def test_launch_only_model_reaches_smart_routing_model_flag(self, monkeypatch):
+        """With smart routing, the budget pick still rides `--model` unless routing picks its own."""
+        monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+        launch_v2 = Mock()
+        monkeypatch.setattr(v2, "launch_claude", launch_v2)
+        pick = "system.ai.claude-haiku-4-5"
+
+        claude.launch(
+            {"workspace": WS},
+            ["fix this bug"],
+            options=LaunchOptions(launch_smart_routing=True, launch_model=pick),
+        )
+
+        launch_v2.assert_called_once()
+        kwargs = launch_v2.call_args.kwargs
+        assert kwargs["launch_model"] is None
+        model_args = kwargs["launch_model_args"]
+        assert model_args(["fix this bug"], None) == ["--model", pick]
+        assert model_args(["fix this bug"], "system.ai.claude-opus-4-8") == [
+            "--model",
+            "system.ai.claude-opus-4-8",
+        ]
+
+    def test_user_pinned_model_outranks_launch_only_model(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+
+        claude.launch(
+            {"workspace": WS},
+            [],
+            options=LaunchOptions(
+                user_pinned_model="system.ai.claude-opus-4-8",
+                launch_model="system.ai.claude-haiku-4-5",
+            ),
+        )
+
+        assert calls[0][3:] == ["--model", "system.ai.claude-opus-4-8"]
+
+    def test_launch_custom_model_preserves_forwarded_native_model(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(
+            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+        )
 
         claude.launch(
             {"workspace": WS},
@@ -3341,7 +3447,9 @@ class TestClaudeLaunch:
         settings_path.write_text(json.dumps(original_settings))
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        monkeypatch.setattr(
+            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+        )
 
         custom_model = "system.ai.claude-opus-4-8"
         claude.launch(
@@ -3420,7 +3528,9 @@ class TestClaudeLaunch:
         monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_settings_path)
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        monkeypatch.setattr(
+            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+        )
 
         claude.launch(
             {
@@ -3471,7 +3581,9 @@ class TestClaudeLaunch:
         monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_settings_path)
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        monkeypatch.setattr(
+            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+        )
 
         claude.launch(
             {
@@ -3500,7 +3612,9 @@ class TestClaudeLaunch:
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(v2, "launch_claude", Mock())
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        monkeypatch.setattr(
+            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+        )
 
         claude.launch({"workspace": WS}, tool_args, options=LaunchOptions())
 
@@ -3536,7 +3650,9 @@ class TestClaudeLaunch:
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        monkeypatch.setattr(
+            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+        )
 
         claude.launch({"workspace": WS, "profile": "test"}, ["--debug"], options=LaunchOptions())
 
@@ -3550,7 +3666,9 @@ class TestClaudeLaunch:
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        monkeypatch.setattr(
+            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+        )
 
         claude.launch(
             {
@@ -4129,11 +4247,8 @@ class TestManagedMcpUsesManagedFile:
     def _wire(self, monkeypatch, *, supported=True, interactive=True, oauth=True):
         monkeypatch.setattr(claude, "managed_files_supported", lambda: supported)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: interactive)
-        monkeypatch.setattr(
-            claude,
-            "first_available_oauth_client",
-            lambda ws, client_ids: client_ids[0] if oauth else None,
-        )
+        monkeypatch.setattr(claude, "workspace_supports_cimd", lambda ws: oauth)
+        monkeypatch.setattr(claude, "oauth_client_available", lambda ws, client_id: oauth)
 
     def test_true_when_all_conditions_hold(self, monkeypatch):
         self._wire(monkeypatch)
@@ -4333,7 +4448,7 @@ class TestWriteUserMcpServers:
                 {"numStartups": 7, "mcpServers": {"mine": {"type": "stdio", "command": "x"}}}
             )
         )
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         entry = claude.user_stdio_mcp_entry(["ug", "mcp-proxy", "https://ws/svc"])
         claude.write_user_mcp_servers({"system-ai-github": entry}, set())
@@ -4356,7 +4471,7 @@ class TestWriteUserMcpServers:
         path.write_text(
             json.dumps({"mcpServers": {"gone": {"type": "http"}, "mine": {"type": "stdio"}}})
         )
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         claude.write_user_mcp_servers({}, {"gone"})
 
@@ -4366,7 +4481,7 @@ class TestWriteUserMcpServers:
 
     def test_writes_to_a_missing_file(self, tmp_path, monkeypatch):
         path = tmp_path / ".claude.json"
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         claude.write_user_mcp_servers({"a": {"type": "http", "url": "u"}}, set())
 
@@ -4375,7 +4490,7 @@ class TestWriteUserMcpServers:
     def test_unparseable_file_falls_back_to_cli_and_does_not_clobber(self, tmp_path, monkeypatch):
         path = tmp_path / ".claude.json"
         path.write_text("{ this is not valid json")
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
         added: list[tuple[str, object]] = []
         removed: list[tuple[str, str]] = []
         monkeypatch.setattr(claude, "add_claude_mcp_server", lambda n, e, s: added.append((n, e)))
@@ -4421,13 +4536,152 @@ class TestWriteUserMcpServers:
         config_dir.mkdir()
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
         default_path = tmp_path / "default.claude.json"
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", default_path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", default_path)
 
         claude.write_user_mcp_servers({"svc": {"type": "http", "url": "u"}}, set())
 
         written = config_dir / ".claude.json"
         assert json.loads(written.read_text())["mcpServers"]["svc"] == {"type": "http", "url": "u"}
         assert not default_path.exists()  # the default location is untouched
+
+
+def _add_mcp_servers(prefix: str, count: int) -> None:
+    for index in range(count):
+        claude.write_user_mcp_servers({f"{prefix}-{index}": {"type": "http", "url": "u"}}, set())
+
+
+def _seed_hooks_modules_gate(count: int) -> None:
+    for _ in range(count):
+        claude.ensure_hooks_modules_gate()
+
+
+class TestEnsureHooksModulesGate:
+    """Launch forces Claude Code's mods rollout gate on in `.claude.json`."""
+
+    def test_overwrites_false_and_preserves_other_keys(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "numStartups": 7,
+                    "tengu_plugin_hooks_modules": False,
+                    "cachedGrowthBookFeatures": {"other": 1, "tengu_plugin_hooks_modules": False},
+                }
+            )
+        )
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert json.loads(path.read_text()) == {
+            "numStartups": 7,
+            "cachedGrowthBookFeatures": {"other": 1, "tengu_plugin_hooks_modules": True},
+        }
+
+    def test_creates_feature_cache_when_absent(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert json.loads(path.read_text()) == {
+            "cachedGrowthBookFeatures": {"tengu_plugin_hooks_modules": True}
+        }
+
+    def test_leaves_file_untouched_when_already_on(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        original = json.dumps({"cachedGrowthBookFeatures": {"tengu_plugin_hooks_modules": True}})
+        path.write_text(original)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert path.read_text() == original
+
+    def test_unparseable_file_is_not_clobbered(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text("{ not json")
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert path.read_text() == "{ not json"
+
+    @pytest.mark.parametrize(
+        ("target", "error"),
+        [("os.replace", OSError("read-only")), ("acquire_exclusive_file_lock", TimeoutError())],
+    )
+    def test_failure_does_not_raise_or_change_file(self, tmp_path, monkeypatch, target, error):
+        path = tmp_path / ".claude.json"
+        path.write_text('{"numStartups": 7}')
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+
+        def fail(*args, **kwargs):
+            raise error
+
+        monkeypatch.setattr(f"ucode.agents.claude.{target}", fail)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert path.read_text() == '{"numStartups": 7}'
+        assert not list(tmp_path.glob("*.tmp"))
+
+    def test_locks_a_file_claude_code_does_not_use(self, tmp_path, monkeypatch):
+        # Claude Code locks `<file>.lock` itself; ug's flock must not collide with it.
+        path = tmp_path / ".claude.json"
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert (tmp_path / ".claude.json.ug.lock").exists()
+        assert not (tmp_path / ".claude.json.lock").exists()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+    def test_keeps_file_mode(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text("{}")
+        path.chmod(0o644)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert path.stat().st_mode & 0o777 == 0o644
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="uses fork to share the patched path")
+    def test_concurrent_writers_keep_every_change(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text(json.dumps({"numStartups": 7, "tengu_plugin_hooks_modules": False}))
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+        context = multiprocessing.get_context("fork")
+        workers = [
+            context.Process(target=_add_mcp_servers, args=(f"w{index}", 20)) for index in range(4)
+        ]
+        workers += [context.Process(target=_seed_hooks_modules_gate, args=(20,)) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=60)
+            assert worker.exitcode == 0
+
+        doc = json.loads(path.read_text())
+        assert doc["numStartups"] == 7
+        assert doc["cachedGrowthBookFeatures"] == {"tengu_plugin_hooks_modules": True}
+        assert "tengu_plugin_hooks_modules" not in doc
+        assert set(doc["mcpServers"]) == {f"w{w}-{i}" for w in range(4) for i in range(20)}
+        assert not list(tmp_path.glob("*.tmp"))
+
+    def test_launch_enables_gate(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text(
+            json.dumps({"cachedGrowthBookFeatures": {"tengu_plugin_hooks_modules": False}})
+        )
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "_launch_relayed", lambda *args: None)
+
+        claude.launch({"workspace": WS, "claude_relayed": True}, [], options=LaunchOptions())
+
+        features = json.loads(path.read_text())["cachedGrowthBookFeatures"]
+        assert features["tengu_plugin_hooks_modules"] is True
 
 
 class TestManagedUserAgent:
