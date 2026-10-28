@@ -364,11 +364,18 @@ Concurrent callers share a per-profile fetch, and an in-flight result cannot
 restore a memo invalidated by login.
 Fake CLI subprocesses check that re-auth runs only when a successful help probe
 advertises `--no-browser`. Search component tests verify token reuse and transient
-timeout retries. `test_mcp_connection_login.py` verifies token/failure invalidation
-after successful and failed login attempts; `test_mcp_proxy.py` checks fresh tokens
-on async post-login retries and recovery when a connection-backed service returns
-the MCP authentication-required error. These checks do not establish live login or
-launch-time savings.
+timeout retries.
+`test_mcp_connection_login.py` controls only browser, HTTP, and clock boundaries. It checks
+service-name encoding, workspace-ID resolution, the selected profile user's credential,
+pending/FAILED/404 states, transient errors, denial, malformed responses, wrong-account
+timeout, manual URL fallback, and workspace-token failures. Success requires an ACTIVE
+credential; success, denial, and timeout preserve the workspace profile and token memo.
+These replace obsolete resource-flag support, CLI resource-login, and token-invalidation
+cases because connector browser sign-in no longer runs CLI login or replaces its session.
+`test_mcp_proxy.py` checks credential readiness, preserved workspace profile/token, and
+replay of the original HTTP request after browser sign-in. The existing MCP
+authentication-required recovery remains covered. These checks do not establish live
+provider sign-in, deployed credential API availability, or native Desktop behavior.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,
@@ -460,7 +467,7 @@ orchestration on and off. It mocks the router response, not native Claude render
 Existing launch tests cover caller argument preservation and file removal after exit. These checks
 do not cover plugin-write/process-start failures, native plugin refresh, or daemon behavior.
 
-`test_claude_routing.py` checks that the decision log retains the exact candidate
+`test_claude_smart_routing_v2.py` checks that the decision log retains the exact candidate
 models and router name sent in the request. `test_codex_routing.py` checks that
 Codex decisions carry the same request metadata. These use mocked HTTP responses.
 
@@ -884,3 +891,14 @@ rejects stale or unrelated panels. Live audit correlation and child answers rema
 After Codex compaction removes a prompt, display correlation may instead use the
 native Spawned row immediately following the routing box. Unit checks reject later
 answer text, intervening prompts, and nonadjacent or unrelated spawn rows.
+
+Browser MCP review regressions check stale ACTIVE credentials wait for a changed credential
+or an observed non-ACTIVE state, pending provisioning continues, and missing services fail
+before browser launch even with a cached workspace ID. Polling bounds each HTTP call
+by the remaining deadline and never reports success from a late response. These component tests control external boundaries
+and do not establish live browser sign-in or endpoint availability.
+
+Pre-browser credential reads retry transient HTTP/network failures twice before reporting failure.
+
+Credential validation rejects malformed initial responses before browser launch and non-string
+states during polling. The browser subprocess runs Python in isolated mode.

@@ -325,7 +325,7 @@ def _http_get_bytes(
     url: str,
     token: str,
     *,
-    timeout: int = 10,
+    timeout: float = 10,
     max_retries: int = 0,
     headers: dict[str, str] | None = None,
 ) -> tuple[bytes | None, str | None]:
@@ -398,7 +398,7 @@ def _http_get_json(
     url: str,
     token: str,
     *,
-    timeout: int = 10,
+    timeout: float = 10,
     max_retries: int = 0,
     headers: dict[str, str] | None = None,
 ) -> tuple[dict | list | None, str | None]:
@@ -2731,6 +2731,20 @@ OAUTH_U2M_CONNECTION_KINDS = frozenset(
 )
 
 
+def get_mcp_service(
+    workspace: str, token: str, full_name: str
+) -> tuple[dict | list | None, str | None]:
+    url = f"{workspace_origin(workspace)}/api/2.1/unity-catalog/mcp-services/{quote(full_name, safe='')}"
+    return _http_get_json(url, token)
+
+
+def get_mcp_service_user_credential(
+    workspace: str, token: str, full_name: str, *, timeout: float = 10
+) -> tuple[dict | list | None, str | None]:
+    url = f"{workspace_origin(workspace)}/api/2.1/unity-catalog/mcp-services/{quote(full_name, safe='')}/user-credentials"
+    return _http_get_json(url, token, timeout=timeout)
+
+
 def mcp_service_needs_connection_login(workspace: str, token: str, full_name: str) -> bool:
     """Whether an AI Gateway mcp-service is backed by a per-user OAuth (U2M) connection, and so
     needs a one-time connection sign-in before it vends tools.
@@ -2740,8 +2754,7 @@ def mcp_service_needs_connection_login(workspace: str, token: str, full_name: st
     failed lookup all return ``False`` — the safe default: such services work with only the
     Databricks token that ``ug mcp-proxy`` injects, and must not be pushed into a connection-login
     OAuth flow they can't complete (AIGTWY-4856)."""
-    prefix = f"https://{workspace_hostname(workspace)}/api/2.1/unity-catalog"
-    details, err = _http_get_json(f"{prefix}/mcp-services/{quote(full_name, safe='')}", token)
+    details, err = get_mcp_service(workspace, token, full_name)
     if err is not None or not isinstance(details, dict):
         return False
     kind = ((details.get("config") or {}).get("source_connection") or {}).get("securable_kind")

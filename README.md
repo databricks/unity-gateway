@@ -227,8 +227,14 @@ Connection-backed AI Gateway MCP services use native HTTP OAuth in Claude Code,
 Codex, and Cursor when the workspace publishes a compatible client. Claude Code
 uses its URL-based client ID metadata document; if it is unavailable, `ug` uses
 the local `ug mcp-proxy` stdio server with the Databricks CLI's OAuth client.
-Other servers and agents also use that proxy. V2 AI
-Gateway servers can be added with typed selectors such as
+Other servers and agents also use that proxy. When a proxied connection needs
+provider authentication, UG opens the workspace's MCP service sign-in page and
+waits up to five minutes for the selected CLI profile's user credential, then retries
+the original request. Use the same Databricks account in the browser and CLI profile.
+If no browser opens, use the URL in the MCP server log; click Login if the provider
+popup is blocked. This flow requires the workspace's MCP service login page and user-credential API;
+it does not require CLI `auth login --resource` or a CLI upgrade.
+V2 AI Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
 
