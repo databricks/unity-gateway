@@ -111,6 +111,7 @@ def pack_vsix(directory: Path) -> Path:
         '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
         '<Default Extension=".json" ContentType="application/json"/>'
         '<Default Extension=".js" ContentType="application/javascript"/>'
+        '<Default Extension=".svg" ContentType="image/svg+xml"/>'
         '<Default Extension=".vsixmanifest" ContentType="text/xml"/>'
         "</Types>"
     )
@@ -118,10 +119,9 @@ def pack_vsix(directory: Path) -> Path:
     with zipfile.ZipFile(vsix, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("[Content_Types].xml", content_types)
         archive.writestr("extension.vsixmanifest", manifest)
-        archive.write(EXTENSION_DIR / "package.json", "extension/package.json")
-        archive.write(
-            EXTENSION_DIR / package["main"], f"extension/{package['main'].removeprefix('./')}"
-        )
+        for path in sorted(EXTENSION_DIR.rglob("*")):
+            if path.is_file():
+                archive.write(path, f"extension/{path.relative_to(EXTENSION_DIR).as_posix()}")
     return vsix
 
 

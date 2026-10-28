@@ -120,8 +120,9 @@ class TestConfigure:
         assert code.vsix_entries == [
             "[Content_Types].xml",
             "extension.vsixmanifest",
-            "extension/package.json",
+            "extension/media/databricks.svg",
             "extension/out/extension.js",
+            "extension/package.json",
         ]
 
     def test_reruns_update_values_without_reinstalling_the_same_version(self, code):
