@@ -790,6 +790,18 @@ def managed_model_inputs(state: dict, managed: dict | None) -> ManagedModelInput
     return ManagedModelInputs(defaults, root_model, picker_catalog)
 
 
+def picker_row_model(catalog: AnthropicModelCatalog | None, model: str) -> str:
+    """``model`` as the picker catalog lists it, so Claude Code matches that row and adds none.
+
+    A family row may carry a ``[1m]`` suffix the model lacks; only the exact id counts as a match.
+    """
+    if catalog is not None:
+        for row in catalog.model_ids:
+            if row.removesuffix("[1m]") == model.removesuffix("[1m]"):
+                return row
+    return model
+
+
 def _enforce_model_default_hierarchy(
     family: str,
     *,

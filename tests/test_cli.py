@@ -7300,6 +7300,32 @@ class TestBudgetRecommendationAtLaunch:
         assert result.exit_code == 0, result.output
         assert calls["launch"].call_args.kwargs["options"].launch_model is None
 
+    def test_budget_pick_starts_on_its_picker_row(self):
+        """A pick matching a `[1m]` family row starts on that row, so Claude adds no duplicate."""
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "default_model": "system.ai.claude-opus-4-8",
+                        "default_models_by_model_family": {
+                            "default_opus_model": "system.ai.claude-opus-4-8",
+                            "default_sonnet_model": "system.ai.claude-sonnet-4-6",
+                        },
+                    }
+                }
+            },
+            **self.SMART_DEFAULTS,
+        }
+        recommendation = {"agent": "claude", "model": "system.ai.claude-sonnet-4-6"}
+        with _launch_policy_patches(managed, recommendation=recommendation) as calls:
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        picker = calls["configure"].call_args.kwargs["picker_catalog"]
+        assert "system.ai.claude-sonnet-4-6[1m]" in picker.model_ids
+        options = calls["launch"].call_args.kwargs["options"]
+        assert options.launch_model == "system.ai.claude-sonnet-4-6[1m]"
+
     def test_passes_configured_claude_defaults_to_writer(self, monkeypatch):
         managed = {
             "enabled_agents": {

@@ -3654,7 +3654,9 @@ def _launch_tool(
                 picker_catalog = managed_inputs.picker_catalog
                 claude_inputs_from_configure = True
                 if managed_model and managed_model != managed_inputs.route_root_model:
-                    session_model = managed_model
+                    session_model = claude_agent.picker_row_model(
+                        managed_inputs.picker_catalog, managed_model
+                    )
             # An explicit `--model` is the user's own choice and outranks everything above (managed
             # default, smart-routing pick). Non-claude agents take it as the resolved model, which
             # Codex keeps an explicit --model in ctx.args and passes it to its CLI verbatim.
