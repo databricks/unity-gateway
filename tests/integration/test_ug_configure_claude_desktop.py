@@ -47,7 +47,9 @@ def _run_credential_helper(session, profile):
     return token_output
 
 
-def _assert_desktop_message(session, profile, model, headers, evidence_name):
+def _assert_desktop_message(
+    session, profile, model, headers, evidence_name, *, response_model=None
+):
     marker = fresh_id()
     request = urllib.request.Request(
         profile["inferenceGatewayBaseUrl"] + "/v1/messages",
@@ -75,7 +77,7 @@ def _assert_desktop_message(session, profile, model, headers, evidence_name):
         raise AssertionError(f"Desktop Messages failed ({error.code}): {details}") from None
     session.record(evidence_name, {"marker": marker, "response": message})
     assert message["type"] == "message" and message["role"] == "assistant"
-    assert message["model"] == model
+    assert message["model"] == (response_model or model)
     assert message["stop_reason"] == "end_turn"
     assert (
         "".join(part["text"] for part in message["content"] if part["type"] == "text").strip()
@@ -171,12 +173,15 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     headers = {key.casefold(): value for key, value in profile["inferenceCustomHeaders"].items()}
     assert headers["x-databricks-use-coding-agent-mode"] == "true"
     assert "databricks-model-provider-service" not in headers
+    model_id = "system.ai.claude-haiku-4-5"
+    assert model_id in {model["name"] for model in models}
     _assert_desktop_message(
         session,
         profile,
-        models[0]["name"],
+        model_id,
         {"Authorization": "Bearer " + token_output.strip()},
         "desktop-system-ai-message.json",
+        response_model="anthropic.claude-haiku-4-5-20251001-v1:0",  # Gateway returns provider ID.
     )
 
     metadata = json.loads(metadata_path.read_text())
