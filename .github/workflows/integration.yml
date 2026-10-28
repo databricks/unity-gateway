@@ -171,10 +171,6 @@ jobs:
     needs: workspace
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
-    concurrency:
-      # Both OS variants use the same workspace; avoid overlapping same-agent runs.
-      group: integration-smoke-${{ github.run_id }}-${{ matrix.agent }}
-      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
@@ -311,16 +307,13 @@ jobs:
     if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: [workspace, smoke]
     runs-on: ${{ matrix.os }}
-    concurrency:
-      # Keep the previous per-agent serialization across the new OS matrix.
-      group: integration-full-${{ github.run_id }}-${{ matrix.agent }}
-      cancel-in-progress: false
     # The runner enforces its own 3600s pytest deadline; keep the job above it
     # so a slow run fails through the runner's report instead of a job kill.
     timeout-minutes: 70
     strategy:
       fail-fast: false
-      # One runner per OS variant; concurrency above serializes variants per agent.
+      # One runner per agent and OS, all in parallel. Cases share no workspace state,
+      # only inference capacity.
       max-parallel: 4
       matrix:
         os: [ubuntu-22.04, windows-latest]
@@ -331,7 +324,8 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
-      TEST_MARKER: live and ${{ matrix.agent }} and not soft_fail
+      # Smoke cases already ran on this OS in the smoke job; don't repeat them here.
+      TEST_MARKER: live and ${{ matrix.agent }} and not soft_fail and not smoke
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ matrix.os }}
     steps: *live-steps
 
