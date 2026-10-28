@@ -265,8 +265,10 @@ GUI/helper/browser behavior, and inference remain untested by these component ch
 they do not establish native Windows or Linux support.
 The installed-CLI integration suite also configures twice and reverts against isolated
 native Linux and Windows profile paths. It verifies the fixed profile, gateway/helper/model
-fields, metadata selection, and preservation of an unrelated profile. It does not launch
-Desktop or establish GUI, Cowork, helper execution, browser authentication, or inference.
+fields, metadata selection, and preservation of an unrelated profile. It executes the exact
+helper command from that profile, checks token-only output, and uses the credential for a
+live gateway models request. CI supplies the supported bearer override; this does not
+exercise CLI OAuth refresh, Desktop invocation of the helper, Cowork, or inference.
 The [native integration plan](../docs/claude-desktop-integration-testing.md) defines the
 separate interactive macOS and Windows coverage needed for those claims.
 
@@ -285,7 +287,7 @@ Subscription-relay component coverage configures the combined credential helper 
 three platforms. Helper tests cover macOS Keychain, Linux and Windows credential files,
 `CLAUDE_CONFIG_DIR`, custom macOS Keychain entries, finite required expiry timestamps, silent
 refresh before interactive login, shared login budgets, malformed environment tokens, and
-credential separation. Native Windows/Linux Desktop helper execution and inference remain
+credential separation. Native Desktop invocation of the helper and inference remain
 unverified.
 CLI revert clears workspace state even when Desktop cleanup fails. A lock-failure
 regression invokes the Typer CLI and checks exit code 1, one warning, and a failed
@@ -920,3 +922,13 @@ Pre-browser credential reads retry transient HTTP/network failures twice before 
 
 Credential validation rejects malformed initial responses before browser launch and non-string
 states during polling. The browser subprocess runs Python in isolated mode.
+
+`test_desktop_processes.py` executes generated Desktop helper and Cowork MCP commands
+as child processes, with fresh homes and paths containing spaces. A controlled HTTP server
+and browser boundary exercise initialization, discovery, HTTP 401/JSON-RPC -32006 recovery,
+explicit authentication, exact request replay, persistent auth errors, and permission-error
+pass-through. The helper returns token-only stdout and fails cleanly without a CLI. These
+are component tests with external boundaries controlled, not live provider login or Cowork.
+`e2e_cuj/test_cuj3_mcp.py::TestMcpRegistration::test_generated_proxy_command_lists_and_calls_live_fixture`
+executes installed UG's generated commands through the MCP SDK, lists both fixture tools,
+and checks fresh-run receipts from real workspace calls without an agent UI.

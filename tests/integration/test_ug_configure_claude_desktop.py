@@ -2,11 +2,14 @@
 
 import json
 import os
+import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 import pytest
+from utils.harness import process_group_options, stop_process
 from utils.terminal import ConfigureTerminal, TerminalProcess
 
 pytestmark = [pytest.mark.live, pytest.mark.claude]
@@ -29,7 +32,9 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
 
     Expected: installed ug writes one complete fixed-UUID gateway profile, selects it without
     changing unrelated profile data, and later removes only its own profile while restoring the
-    prior selection. This checks native Linux/Windows file handling, not Desktop GUI or inference.
+    prior selection. The exact generated helper command returns a credential accepted by the live models API.
+    This checks native Linux/Windows file handling and helper execution, not Desktop GUI
+    or inference; authentication uses the supported CI bearer override.
     """
     session = live_session
     config_library = _config_library(session)
@@ -81,6 +86,36 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
         "--profile",
         CLI_PROFILE,
     ]
+    process = subprocess.Popen(
+        [str(helper), *profile["inferenceCredentialHelperArgs"]],
+        cwd=session.cwd,
+        env=session.env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        **process_group_options(),
+    )
+    try:
+        token_output, diagnostics = process.communicate(timeout=30)
+    finally:
+        stop_process(process)
+    assert process.returncode == 0, session.redact(diagnostics)
+    assert session.redact(token_output, strip_ansi=False) == "<redacted>\n"
+    assert session.redact(diagnostics, strip_ansi=False) == ""
+    request = urllib.request.Request(
+        profile["inferenceGatewayBaseUrl"] + "/v1/models",
+        headers={
+            **profile["inferenceCustomHeaders"],
+            "Authorization": "Bearer " + token_output.strip(),
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        assert response.status == 200
+        assert json.load(response)["data"]
+    session.record("desktop-helper.json", {"exit_code": process.returncode, "models_status": 200})
+
     models = profile["inferenceModels"]
     assert models and all("claude-" in model["name"].lower() for model in models)
     assert profile["inferenceCustomHeaders"]["x-databricks-use-coding-agent-mode"] == "true"

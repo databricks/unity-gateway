@@ -287,3 +287,9 @@ marked ACTIVE before login must change (for example its expiry metadata), or lea
 and return, before UG confirms reauthentication. PROVISIONING, UPDATING, and DELETING
 continue polling. Missing services fail before launching a browser; a credential 404
 means the selected user has not signed in yet and continues polling until the timeout.
+
+Automated coverage executes the helper command from the generated profile and checks its
+credential against the gateway models API using CI's supplied bearer. Separate subprocess
+component tests exercise the generated MCP command with controlled HTTP/browser boundaries;
+the MCP fixture CUJ also checks discovery and tool calls against a real workspace. These
+checks do not launch Desktop or validate native OAuth consent, skill use, or app reconnects.

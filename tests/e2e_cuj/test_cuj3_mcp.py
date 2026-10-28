@@ -3,8 +3,12 @@
 import hashlib
 import json
 import re
+import tempfile
 
+import anyio
 import pytest
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 from tests.integration.utils.evidence import (
     agent_sessions,
@@ -228,6 +232,48 @@ class TestMcpRegistration(BaseCujTest):
         assert _fixture_server_rows(output) == _expected_fixture_server_rows(), output
         assert "ug_e2e.other_tools" not in output, output
         assert "ug_e2e-other_tools" not in output, output
+
+    def test_generated_proxy_command_lists_and_calls_live_fixture(self, cuj):
+        """Scenario: configure UG and execute its generated MCP command without an agent UI.
+
+        Expected: the real stdio/HTTP proxy initializes, exposes each fixture tool, and returns
+        a receipt computed from a fresh run ID. This does not exercise Cowork or provider login.
+        """
+        session, workspace, _recorder = cuj
+        session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
+        config = json.loads((session.home / ".claude" / ".claude.json").read_text())
+        run_id = fresh_id()
+
+        async def scenario():
+            for service, tool in SERVICES.items():
+                registration = config["mcpServers"][registered_name(service)]
+                with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as diagnostics:
+                    with anyio.fail_after(60):
+                        async with stdio_client(
+                            StdioServerParameters(**registration, env=session.env),
+                            errlog=diagnostics,
+                        ) as streams:
+                            async with ClientSession(*streams) as client:
+                                await client.initialize()
+                                assert tool in {
+                                    item.name for item in (await client.list_tools()).tools
+                                }
+                                result = (
+                                    await client.call_tool(tool, {"run_id": run_id})
+                                ).model_dump(by_alias=True)
+                                assert not result["isError"], result
+                                expected = hashlib.sha256(
+                                    b"unity-gateway-cuj-fixture\0"
+                                    + tool.encode("ascii")
+                                    + b"\0"
+                                    + run_id.encode("ascii")
+                                ).hexdigest()
+                                assert expected in json.dumps(result["content"]), result
+                    diagnostics.seek(0)
+                    assert "Traceback" not in session.redact(diagnostics.read())
+                session.record(f"proxy-{tool}.json", {"run_id": run_id, "result": result})
+
+        anyio.run(scenario)
 
     @pytest.mark.claude
     @pytest.mark.tui

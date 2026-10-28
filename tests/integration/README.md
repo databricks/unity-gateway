@@ -1466,3 +1466,17 @@ Pre-browser credential reads retry transient HTTP/network failures twice before 
 
 Credential validation rejects malformed initial responses before browser launch and non-string
 states during polling. The browser subprocess runs Python in isolated mode.
+
+Desktop process coverage now includes executing `inferenceCredentialHelper` and its exact
+arguments from the profile produced by `ug configure`. The native Linux/Windows lifecycle
+journey checks clean token-only stdout and uses that token for a live gateway models request.
+It uses the supported CI bearer override, so CLI OAuth renewal and Desktop's scheduling of
+the helper remain unverified. Diagnostics and evidence redact credentials.
+
+`../test_desktop_processes.py` separately tests real helper/proxy child processes against
+controlled HTTP and browser boundaries: HTTP 401 and -32006 sign-in/replay, discovery's
+explicit authentication action, bounded persistent failures, and permission-error forwarding.
+These component tests are outside the integration suite and do not establish provider login.
+The dedicated-workspace `../e2e_cuj/test_cuj3_mcp.py` also drives generated proxy commands
+with the real MCP SDK and requires receipts from both live fixture tools. No Desktop GUI,
+Cowork skill execution, or native browser interaction is claimed by these tests.
