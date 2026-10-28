@@ -1,5 +1,9 @@
 # Integration tests
 
+`../test_integration_contract.py` checks the Pi/Gemini CI locks, Gemini's supported
+stable-version ceiling and Dependabot guard, and locked-shard Node/PATH installation
+wiring. These are offline contract checks, not live agent inference coverage.
+
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls
 still routing waiting for a later reply, distinct

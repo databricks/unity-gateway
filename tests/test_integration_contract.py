@@ -46,6 +46,64 @@ def test_integration_ci_pins_a_skills_capable_databricks_cli():
         assert tuple(map(int, version.groups())) >= SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION
 
 
+@pytest.mark.parametrize(
+    ("agent", "package"),
+    [("pi", "@earendil-works/pi-coding-agent"), ("gemini", "@google/gemini-cli")],
+)
+def test_agent_ci_locks_pin_public_dependency_trees(agent, package):
+    directory = Path(__file__).parent.parent / ".github" / "agent-locks" / agent
+    manifest = json.loads((directory / "package.json").read_text())
+    lock = json.loads((directory / "package-lock.json").read_text())
+    assert lock["packages"][""]["dependencies"] == manifest["dependencies"]
+    version = manifest["dependencies"][package]
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version), "CI must pin an exact stable release"
+    cli = lock["packages"][f"node_modules/{package}"]
+    assert cli["version"] == version
+    assert agent in cli["bin"]
+    for name, dependency in lock["packages"].items():
+        if name:
+            assert dependency["resolved"].startswith("https://registry.npmjs.org/"), name
+            assert dependency["integrity"], name
+
+
+def test_gemini_ci_lock_respects_supported_release_ceiling():
+    from ucode.agents.gemini import MAX_GEMINI_VERSION, MAX_GEMINI_VERSION_TEXT
+
+    root = Path(__file__).parent.parent
+    manifest = json.loads((root / ".github/agent-locks/gemini/package.json").read_text())
+    version = manifest["dependencies"]["@google/gemini-cli"]
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version)
+    assert tuple(map(int, version.split("."))) < MAX_GEMINI_VERSION
+    updates = (root / ".github/dependabot.yml").read_text()
+    gemini_update = updates.split('directory: "/.github/agent-locks/gemini"', 1)[1].split(
+        "\n  - package-ecosystem:", 1
+    )[0]
+    assert 'dependency-name: "@google/gemini-cli"' in gemini_update
+    assert f'versions: [">={MAX_GEMINI_VERSION_TEXT}"]' in gemini_update
+
+
+def test_locked_agent_shards_declare_node_and_install_from_locks():
+    root = Path(__file__).parent.parent
+    workflow = (root / ".github/workflows/ci.yml").read_text()
+    shards = workflow.split("\n  e2e-shards:\n", 1)[1].split("\n  e2e:\n", 1)[0]
+    assert "node-version: ${{ matrix.npm_lock && '22.19.0' || '' }}" in shards
+    assert "if: ${{ matrix.package != '' || matrix.npm_lock != '' }}" in shards
+    assert 'npm ci --prefix "$NPM_LOCK"' in shards
+    assert 'cygpath -w "$GITHUB_WORKSPACE/$NPM_LOCK/node_modules/.bin"' in shards
+    for agent in ("pi", "gemini"):
+        entry = shards.split(f"          - group: {agent}\n", 1)[1].split(
+            "\n          - group:", 1
+        )[0]
+        entry = entry.split("\n    env:", 1)[0]
+        assert f"npm_lock: .github/agent-locks/{agent}" in entry
+        assert "package:" not in entry
+    directory = root / ".github/agent-locks/pi"
+    manifest = json.loads((directory / "package.json").read_text())
+    lock = json.loads((directory / "package-lock.json").read_text())
+    assert manifest["engines"] == {"node": ">=22.19.0"}
+    assert lock["packages"][""]["engines"] == manifest["engines"]
+
+
 def test_managed_integration_ci_is_blocking():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     managed, gate = workflow.read_text().split("\n  managed:\n", 1)[1].split("\n  cujs:\n", 1)
