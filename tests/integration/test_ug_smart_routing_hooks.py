@@ -32,9 +32,6 @@ SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 SMART_ROUTING_SUBAGENT_NOTICE = "Using Unity Gateway Smart Router - Subagent"
 # No selector or legacy flag: the managed config's smart_routing.enabled alone turns routing on.
 MANAGED_DEFAULT = "managed-default"
-# The parent only delegates and invokes the skill; its default reasoning dominates the
-# journey's runtime. Routing never reads the parent's effort, so this is launch-only speed.
-CODEX_PARENT_EFFORT = ["-c", 'model_reasoning_effort="low"']
 
 
 # Use the same task_v3-compatible menu for direct hooks and managed TUI journeys.
@@ -735,10 +732,7 @@ def test_smart_router_routes_codex_subagent_at_launch(
         "--disable-databricks-ai-tools",
     )
     with AgentTerminal(
-        session,
-        "codex",
-        [str(session.binary), "codex", "--", *CODEX_PARENT_EFFORT],
-        "smart-router-launch",
+        session, "codex", [str(session.binary), "codex"], "smart-router-launch"
     ) as tui:
         tui.boot()
         _run_calculation(tui, session, "codex", "1+1", "2", orchestration_enabled, routed=True)
@@ -779,10 +773,7 @@ def test_smart_router_skill_turns_codex_subagent_routing_off(
         "--disable-databricks-ai-tools",
     )
     with AgentTerminal(
-        session,
-        "codex",
-        [str(session.binary), "codex", "--", *CODEX_PARENT_EFFORT],
-        "smart-router-skill-off",
+        session, "codex", [str(session.binary), "codex"], "smart-router-skill-off"
     ) as tui:
         tui.boot()
         _toggle_with_skill(
@@ -828,10 +819,7 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
         "--disable-databricks-ai-tools",
     )
     with AgentTerminal(
-        session,
-        "codex",
-        [str(session.binary), "codex", "--", *CODEX_PARENT_EFFORT],
-        "smart-router-skill-back-on",
+        session, "codex", [str(session.binary), "codex"], "smart-router-skill-back-on"
     ) as tui:
         tui.boot()
         _run_calculation(tui, session, "codex", "1+1", "2", orchestration_enabled, routed=True)
