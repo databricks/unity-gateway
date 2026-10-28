@@ -61,6 +61,17 @@ nothing above the prompt, pending row and turn-spinner routing timers, and disab
 routing. They do not establish live
 parallel-agent TUI or gateway coverage.
 
+`test_agent_antigravity.py` covers the Antigravity CLI agent: Databricks-to-Antigravity model
+names (dotted versions, `-preview` names, image models dropped), the `agy models` selection-id
+lookup, the gateway-mode environment, skills.json/mcp_config.json merges, provider-service
+pinning, and the loopback proxy over real local HTTP (session secret, Gemini-only paths, model
+path rewrite, Databricks token and provider header, the `includeThoughts` body fix).
+`test_agents_init.py`, `test_mcp.py`, `test_cli.py` and `test_agents_commands.py` cover its
+dispatch, native installer, `agy mcp list` parsing, `ug antigravity`/`ug agy`, and
+`ug agents add antigravity`. These are unit/component checks. Live inference, MCP tool calls,
+and skill loading were checked by hand against a staging workspace with agy 1.4.9; there is no
+automated integration coverage, and Model Provider Service routing has not been run live.
+
 `test_ug_headers.py` covers the `UG_HEADERS` parser and the `--header` flag, `test_databricks.py`
 ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching a Codex launch's
 `-c` headers (plain and smart-routed) without writing its profile. No automated test checks the

@@ -93,7 +93,9 @@ exercise.
   and run documentation at the suite root.
 - Current scope is basic Claude/Codex configuration, routing, script usage,
   command forwarding, and configure/revert CUJs, plus Copilot CLI headless
-  model tasks and one TUI model-switch journey (non-blocking lane). Do not add MCP/skills functionality,
+  model tasks and one TUI model-switch journey (non-blocking lane), plus Antigravity CLI
+  configure, TUI, headless, MCP-tool, skill-directory, and revert journeys (non-blocking
+  Linux lane). Do not add other MCP/skills functionality,
   tracing, or the broad configure-option matrix without a new scope request.
   Existing `mcp --help` checks cover dispatch only.
 

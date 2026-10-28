@@ -18,6 +18,8 @@ from utils.evidence import fresh_id
 from utils.harness import UserSession
 from utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
 
+AGENT_BINARIES = {"antigravity": "agy"}
+
 
 def pytest_collection_modifyitems(config, items):
     agents = os.environ.get("UG_INTEGRATION_AGENTS", "claude,codex").split(",")
@@ -28,7 +30,7 @@ def pytest_collection_modifyitems(config, items):
             raise pytest.UsageError("Use the integration runner; unit fixtures were inherited.")
         if any(
             item.get_closest_marker(a) and a not in agents
-            for a in ("claude", "codex", "opencode", "copilot")
+            for a in ("claude", "codex", "opencode", "copilot", "antigravity")
         ):
             deselected.append(item)
         else:
@@ -175,7 +177,9 @@ def session(request, installed_binary):
 
 @pytest.fixture
 def live_session(session, workspace):
-    for binary in ["databricks", *os.environ["UG_INTEGRATION_AGENTS"].split(",")]:
+    agents = os.environ["UG_INTEGRATION_AGENTS"].split(",")
+    # Agents run under their own binary names (`ug antigravity` launches `agy`).
+    for binary in ["databricks", *(AGENT_BINARIES.get(agent, agent) for agent in agents)]:
         if not shutil.which(binary, path=session.env["PATH"]):
             pytest.fail(f"Required integration binary is missing: {binary}")
     session.env["DATABRICKS_BEARER"] = os.environ["DATABRICKS_BEARER"]

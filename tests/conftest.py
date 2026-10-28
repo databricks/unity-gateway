@@ -38,6 +38,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
     from ucode import desktop_auth as desktop_auth_mod
+    from ucode.agents import antigravity as antigravity_mod
     from ucode.agents import claude as claude_mod
     from ucode.agents import codex as codex_mod
     from ucode.agents.desktop import claude as desktop_mod
@@ -49,6 +50,19 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
     monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(desktop_auth_mod, "_AUTH_LOCK_PATH", state_dir / "claude-desktop-auth.lock")
+    # Antigravity's customization root is shared with the developer's Antigravity app and CLI.
+    agy_dir = tmp_path / ".gemini" / "config"
+    for name, path in (
+        ("AGY_MCP_CONFIG_PATH", agy_dir / "mcp_config.json"),
+        ("AGY_SKILLS_CONFIG_PATH", agy_dir / "skills.json"),
+        ("AGY_SKILLS_BACKUP_PATH", state_dir / "antigravity-skills.backup.json"),
+        ("AGY_MCP_BACKUP_PATH", state_dir / "antigravity-mcp-config.backup.json"),
+    ):
+        monkeypatch.setattr(antigravity_mod, name, path)
+    monkeypatch.setitem(antigravity_mod.SPEC, "config_path", agy_dir / "skills.json")
+    monkeypatch.setitem(
+        antigravity_mod.SPEC, "backup_path", state_dir / "antigravity-skills.backup.json"
+    )
     # The workspace policy lives outside APP_DIR; rebind it, and its user-owned refresh stamps,
     # so no test reads or installs the machine-wide copy.
     monkeypatch.setattr(

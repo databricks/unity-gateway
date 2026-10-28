@@ -57,7 +57,16 @@ class TestModelArgumentParsing:
 
 class TestToolSpecs:
     def test_all_tools_present(self):
-        assert set(TOOL_SPECS) == {"codex", "claude", "gemini", "opencode", "kilo", "copilot", "pi"}
+        assert set(TOOL_SPECS) == {
+            "codex",
+            "claude",
+            "gemini",
+            "opencode",
+            "kilo",
+            "copilot",
+            "pi",
+            "antigravity",
+        }
 
     def test_each_spec_has_required_keys(self):
         required = {"binary", "package", "display", "config_path", "backup_path"}
@@ -1291,3 +1300,116 @@ class TestConfigureToolUserScope:
         managed_files.set_config_scope("user")
         agents_mod.configure_tool("claude", {}, "m")
         assert written == [1]
+
+
+class TestAntigravityDispatch:
+    _STATE = {"workspace": "https://ws.databricks.com", "profile": None}
+
+    @pytest.mark.parametrize("alias", ["antigravity", "agy", "Antigravity-CLI"])
+    def test_aliases_normalize(self, alias):
+        assert agents_mod.normalize_tool(alias) == "antigravity"
+
+    def test_available_only_with_agent_capable_gemini_models(self):
+        assert agents_mod.check_gateway_endpoint(
+            {"gemini_models": ["system.ai.gemini-3-8-flash"]}, "antigravity"
+        )
+        assert not agents_mod.check_gateway_endpoint(
+            {"gemini_models": ["system.ai.gemini-3-pro-image"]}, "antigravity"
+        )
+
+    def test_provider_configure_resolves_target_for_antigravity(self, monkeypatch):
+        seen = {}
+
+        def _resolve(state, provider, model, **kwargs):
+            seen["tool"] = kwargs.get("tool")
+            return "gemini-3.1-pro-preview", None
+
+        monkeypatch.setattr(agents_mod, "resolve_gemini_provider_model", _resolve)
+        captured = {}
+        monkeypatch.setattr(
+            agents_mod,
+            "configure_tool",
+            lambda tool, state, model=None, **kw: (
+                captured.update(tool=tool, model=model, provider=kw.get("provider")) or state
+            ),
+        )
+
+        agents_mod._configure_one("antigravity", dict(self._STATE), "c.s.g")
+
+        assert seen["tool"] == "antigravity"
+        assert captured == {
+            "tool": "antigravity",
+            "model": "gemini-3.1-pro-preview",
+            "provider": "c.s.g",
+        }
+
+    def test_provider_model_reuses_antigravity_pinned_target(self, monkeypatch):
+        monkeypatch.setattr(agents_mod, "get_databricks_token", lambda w, p: "token")
+        looked_up = {}
+
+        def _service(tool, name, workspace, token):
+            looked_up["tool"] = tool
+            return {"name": name, "targets": ["gemini-3.8-flash", "gemini-3.1-pro-preview"]}, None
+
+        monkeypatch.setattr(agents_mod, "resolve_provider_service", _service)
+        state = {**self._STATE, "antigravity_provider_model": "gemini-3.1-pro-preview"}
+
+        model, error = agents_mod.resolve_gemini_provider_model(
+            state, "c.s.g", None, tool="antigravity"
+        )
+
+        assert (model, error) == ("gemini-3.1-pro-preview", None)
+        assert looked_up["tool"] == "antigravity"
+
+    def test_configure_tool_writes_antigravity_config(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            agents_mod.antigravity,
+            "write_tool_config",
+            lambda state, model, provider=None: (
+                captured.update(model=model, provider=provider) or state
+            ),
+        )
+
+        agents_mod.configure_tool("antigravity", dict(self._STATE), "system.ai.gemini-3-8-flash")
+
+        assert captured == {"model": "system.ai.gemini-3-8-flash", "provider": None}
+
+    def test_missing_binary_uses_native_installer_not_npm(self, monkeypatch):
+        installed = []
+        monkeypatch.setattr(agents_mod.shutil, "which", lambda b: None)
+        monkeypatch.setattr(agents_mod.antigravity, "resolve_binary", lambda: None)
+
+        def _install():
+            installed.append(True)
+            monkeypatch.setattr(
+                agents_mod.antigravity, "resolve_binary", lambda: "/h/.local/bin/agy"
+            )
+
+        monkeypatch.setattr(agents_mod.antigravity, "install_binary", _install)
+        run = MagicMock()
+        monkeypatch.setattr(agents_mod.subprocess_cross_os, "run", run)
+
+        assert agents_mod.install_tool_binary("antigravity") is True
+        assert installed == [True]
+        run.assert_not_called()
+
+    def test_native_installer_failure_is_actionable(self, monkeypatch):
+        monkeypatch.setattr(agents_mod.shutil, "which", lambda b: None)
+        monkeypatch.setattr(agents_mod.antigravity, "resolve_binary", lambda: None)
+
+        def _fail():
+            raise RuntimeError("no network")
+
+        monkeypatch.setattr(agents_mod.antigravity, "install_binary", _fail)
+
+        with pytest.raises(RuntimeError, match="Failed to install Antigravity CLI.*no network"):
+            agents_mod.install_tool_binary("antigravity")
+        assert agents_mod.install_tool_binary("antigravity", strict=False) is False
+
+    def test_missing_binary_hint_names_installer(self, monkeypatch):
+        monkeypatch.setattr(agents_mod.shutil, "which", lambda b: None)
+        monkeypatch.setattr(agents_mod.antigravity, "resolve_binary", lambda: None)
+
+        with pytest.raises(RuntimeError, match="antigravity.google/cli/install.sh"):
+            agents_mod.ensure_tool_binary_available("antigravity")

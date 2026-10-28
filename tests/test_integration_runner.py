@@ -45,6 +45,51 @@ def test_copilot_headless_target_and_exact_version(tmp_path):
     assert args.copilot_version == "1.0.91"
 
 
+def test_antigravity_build_selects_its_headless_node_and_version(tmp_path):
+    assert runner.integration_test_targets(
+        tmp_path,
+        ["antigravity"],
+        platform_name="posix",
+        installation_only=False,
+        headless_only=True,
+    ) == [
+        f"{tmp_path / 'test_ug_antigravity_headless.py'}"
+        "::test_ug_antigravity_headless_completes_file_task"
+    ]
+    args = runner.arguments(
+        ["--antigravity-build", "1.4.9-4962164969177088", "--installation-only"], environment={}
+    )
+    assert args.antigravity_build == "1.4.9-4962164969177088"
+    assert args.antigravity_version == "1.4.9"
+
+
+@pytest.mark.parametrize("build", ["1.4.9", "latest", "1.4.9-abc", "v1.4.9-1"])
+def test_antigravity_build_must_be_exact(build):
+    with pytest.raises(SystemExit):
+        runner.arguments(["--antigravity-build", build, "--installation-only"], environment={})
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "path"),
+    [
+        ("linux", "x86_64", "linux-x64/cli_linux_x64.tar.gz"),
+        ("linux", "aarch64", "linux-arm/cli_linux_arm64.tar.gz"),
+        ("darwin", "arm64", "darwin-arm/cli_mac_arm64.tar.gz"),
+    ],
+)
+def test_antigravity_archive_url_matches_googles_release_layout(system, machine, path):
+    # Captured from the release manifests for 1.4.9.
+    assert runner.antigravity_archive_url("1.4.9-4962164969177088", system, machine) == (
+        "https://storage.googleapis.com/antigravity-public/antigravity-cli/"
+        f"1.4.9-4962164969177088/{path}"
+    )
+
+
+def test_antigravity_has_no_windows_build():
+    with pytest.raises(RuntimeError, match="No Antigravity CLI build"):
+        runner.antigravity_archive_url("1.4.9-4962164969177088", "win32", "AMD64")
+
+
 def test_copilot_version_output_matches_the_pinned_version():
     output = "GitHub Copilot CLI 1.0.91.\nRun 'copilot update' to check for updates.\n"
     assert runner.agent_version_output("copilot", output) == "GitHub Copilot CLI 1.0.91"

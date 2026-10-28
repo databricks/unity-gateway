@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 from ucode.config_io import ToolSpec
@@ -43,7 +44,7 @@ from ucode.ui import (
     status_subprocess_stdout,
 )
 
-from . import claude, codex, copilot, gemini, kilo, opencode, pi
+from . import antigravity, claude, codex, copilot, gemini, kilo, opencode, pi
 from .args import LaunchOptions as LaunchOptions
 from .args import explicit_model_arg_value as explicit_model_arg_value
 
@@ -55,6 +56,7 @@ _MODULES = {
     "kilo": kilo,
     "copilot": copilot,
     "pi": pi,
+    "antigravity": antigravity,
 }
 
 TOOL_SPECS: dict[str, ToolSpec] = {name: module.SPEC for name, module in _MODULES.items()}
@@ -75,6 +77,9 @@ TOOL_ALIASES = {
     "kilocode": "kilo",
     "copilot": "copilot",
     "pi": "pi",
+    "antigravity": "antigravity",
+    "agy": "antigravity",
+    "antigravity-cli": "antigravity",
 }
 
 DEFAULT_TOOL = "codex"
@@ -85,7 +90,11 @@ MODEL_LOCATION_TOOLS = (AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT)
 _NATIVE_UPGRADE_COMMANDS = {
     "claude": ["claude", "upgrade"],
     "codex": ["codex", "update"],
+    "antigravity": ["agy", "update"],
 }
+# Agents that speak Google's Gemini API, so a Gemini Enterprise provider service backs them and
+# a provider launch pins one of its target models.
+GEMINI_API_TOOLS = ("gemini", "antigravity")
 # Lets launchers that already own the agent install (e.g. Isaac) skip the
 # required-upgrade confirmation; declining it would only fail the launch.
 AUTO_UPGRADE_AGENT_ENV = "UG_AUTO_UPGRADE_AGENT"
@@ -126,7 +135,8 @@ def normalize_tool(tool: str) -> str:
     normalized = TOOL_ALIASES.get(tool.strip().lower())
     if not normalized:
         raise RuntimeError(
-            f"Unsupported tool '{tool}'. Use one of: codex, claude, gemini, opencode, kilo, copilot, pi."
+            f"Unsupported tool '{tool}'. Use one of: codex, claude, gemini, opencode, kilo, copilot, "
+            "pi, antigravity."
         )
     return normalized
 
@@ -137,8 +147,16 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
     package = spec["package"]
     target = f"{package}@{version}" if version else package
 
+    off_path = _off_path_binary(tool)
     if tool in _NATIVE_UPGRADE_COMMANDS and version is None and shutil.which(binary):
         command = _NATIVE_UPGRADE_COMMANDS[tool]
+    elif tool in _NATIVE_UPGRADE_COMMANDS and version is None and off_path:
+        # Installed by its own installer into a directory PATH doesn't reach yet.
+        command = [off_path, *_NATIVE_UPGRADE_COMMANDS[tool][1:]]
+    elif callable(getattr(_MODULES[tool], "install_binary", None)):
+        # Not published on npm: only its own updater can upgrade it.
+        print_warning(f"`{binary}` is not available to update {spec['display']}; continuing.")
+        return False
     else:
         if not shutil.which("npm"):
             print_warning(f"`npm` is not available to update {spec['display']}; continuing.")
@@ -157,7 +175,7 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
 
     print_success(f"{spec['display']} is up to date")
     agent_version.cache_clear()
-    return bool(shutil.which(binary))
+    return bool(shutil.which(binary)) or _installed_off_path(tool)
 
 
 def _auto_upgrade_agent_enabled() -> bool:
@@ -212,7 +230,7 @@ def install_tool_binary(
     binary = spec["binary"]
     package = spec["package"]
 
-    if shutil.which(binary):
+    if shutil.which(binary) or _installed_off_path(tool):
         # A too-new build is a correctness blocker (the tool runs but misbehaves
         # against the gateway), so check it on every launch — not just when
         # auto-configuring — mirroring the minimum-version gate below.
@@ -237,6 +255,10 @@ def install_tool_binary(
         if version_error:
             raise RuntimeError(version_error)
         return True
+
+    installer = getattr(_MODULES[tool], "install_binary", None)
+    if callable(installer):
+        return _run_native_installer(tool, installer, strict=strict)
 
     if not shutil.which("npm"):
         message = f"`{binary}` is not installed and npm is not available to install it."
@@ -273,21 +295,60 @@ def install_tool_binary(
     return True
 
 
+def _off_path_binary(tool: str) -> str | None:
+    """The binary an agent with its own installer put where PATH may not reach yet."""
+    resolver = getattr(_MODULES[tool], "resolve_binary", None)
+    return resolver() if callable(resolver) else None
+
+
+def _installed_off_path(tool: str) -> bool:
+    return _off_path_binary(tool) is not None
+
+
+def _run_native_installer(tool: str, installer: Callable[[], None], *, strict: bool) -> bool:
+    """Install ``tool`` with its module's own installer, for agents not published on npm."""
+    spec = TOOL_SPECS[tool]
+    print_section("Bootstrap")
+    print_warning(f"`{spec['binary']}` was not found. Installing {spec['display']}...")
+    try:
+        installer()
+    except (RuntimeError, OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        message = f"Failed to install {spec['display']} automatically: {exc}"
+        if strict:
+            raise RuntimeError(message) from exc
+        print_warning(f"{message} Continuing without it.")
+        return False
+    agent_version.cache_clear()
+    if not (shutil.which(spec["binary"]) or _installed_off_path(tool)):
+        message = f"{spec['display']} install completed, but `{spec['binary']}` was not found."
+        if strict:
+            raise RuntimeError(message)
+        print_warning(f"{message} Continuing without it.")
+        return False
+    return True
+
+
+def _install_hint(tool: str) -> str:
+    hint = getattr(_MODULES[tool], "INSTALL_HINT", None)
+    if isinstance(hint, str):
+        return hint
+    return f"Install it with `npm install -g {TOOL_SPECS[tool]['package']}`"
+
+
 def ensure_tool_binary_available(tool: str) -> None:
     spec = TOOL_SPECS[tool]
     binary = spec["binary"]
-    if shutil.which(binary):
+    if shutil.which(binary) or _installed_off_path(tool):
         return
     raise RuntimeError(
         f"{spec['display']} is not installed (`{binary}` was not found on PATH). "
-        f"Install it with `npm install -g {spec['package']}` or run "
-        f"`ug configure` to try automatic installation."
+        f"{_install_hint(tool)} or run `ug configure` to try automatic installation."
     )
 
 
 def tool_binary_installed(tool: str) -> bool:
     """True when the agent's CLI binary is on PATH. Read-only — for ``ucode doctor``."""
-    return bool(shutil.which(TOOL_SPECS[tool]["binary"]))
+    return bool(shutil.which(TOOL_SPECS[tool]["binary"])) or _installed_off_path(tool)
 
 
 def update_tool_binary(tool: str) -> bool:
@@ -373,8 +434,9 @@ def resolve_gemini_provider_model(
     explicit_model: str | None,
     *,
     service: dict | None = None,
+    tool: str = "gemini",
 ) -> tuple[str | None, str | None]:
-    """Pick the Gemini model to pin for a provider-service launch.
+    """Pick the Gemini model to pin for a provider-service launch of ``tool`` (a Gemini API agent).
 
     A Gemini Enterprise service routes by header but the request still names a
     concrete model in the URL, so one of the service's declared targets must be
@@ -389,7 +451,7 @@ def resolve_gemini_provider_model(
     """
     if service is None:
         token = get_databricks_token(state["workspace"], state.get("profile"))
-        service, error = resolve_provider_service("gemini", provider, state["workspace"], token)
+        service, error = resolve_provider_service(tool, provider, state["workspace"], token)
         if error or service is None:
             return None, error or f"Model provider service '{provider}' was not found."
     targets = [t for t in (service.get("targets") or []) if isinstance(t, str) and t]
@@ -405,7 +467,11 @@ def resolve_gemini_provider_model(
         return None, f"Provider service '{provider}' exposes no models to launch."
     # Reuse a previously pinned target so a bare relaunch/reconfigure keeps working without
     # --model — but only when it is still one of the service's declared targets.
-    persisted = gemini.persisted_provider_model()
+    persisted = (
+        antigravity.persisted_provider_model(state)
+        if tool == "antigravity"
+        else gemini.persisted_provider_model()
+    )
     if persisted in targets:
         return persisted, None
     if len(targets) == 1:
@@ -499,13 +565,15 @@ def configure_tool(
             raise RuntimeError(f"A {tool} model must be selected before configuration.")
         if tool == "gemini":
             result = gemini.write_tool_config(state, model, provider=provider)
+        elif tool == "antigravity":
+            result = antigravity.write_tool_config(state, model, provider=provider)
         elif tool == "pi":
             result = pi.write_tool_config(state, model)
         elif tool == "kilo":
             result = kilo.write_tool_config(state, model)
         else:
             result = opencode.write_tool_config(state, model)
-    # gemini/opencode/kilo/pi return (state, token); codex/claude/copilot return state
+    # gemini/opencode/kilo/pi return (state, token); codex/claude/copilot/antigravity return state
     if isinstance(result, tuple):
         return result[0]
     return result
@@ -550,6 +618,8 @@ def check_gateway_endpoint(state: dict, tool: str) -> bool:
         return bool(state.get("codex_models"))
     if tool == "gemini":
         return bool(state.get("gemini_models"))
+    if tool == "antigravity":
+        return bool(antigravity.model_catalog(state))
     if tool == "copilot":
         return bool(copilot.copilot_catalog(state))
     if tool == "pi":
@@ -569,6 +639,7 @@ _TOOL_DISCOVERY_SOURCES: dict[str, tuple[str, ...]] = {
     "gemini": ("gemini",),
     "copilot": ("copilot",),
     "pi": ("claude", "codex", "gemini"),
+    "antigravity": ("gemini",),
 }
 
 
@@ -625,11 +696,11 @@ def _configure_one(
     if parent_schema:
         return configure_tool(tool, state, parent_schema=parent_schema)
     if provider:
-        if tool == "gemini":
+        if tool in GEMINI_API_TOOLS:
             # Gemini pins a concrete target in the URL, so configure must resolve one now —
             # unlike claude/codex, its config writer requires a model. This also validates the
             # service in a single lookup (no resolve_provider_models family map for gemini).
-            model, error = resolve_gemini_provider_model(state, provider, None)
+            model, error = resolve_gemini_provider_model(state, provider, None, tool=tool)
             if error:
                 raise RuntimeError(error)
             return configure_tool(tool, state, model, provider=provider)

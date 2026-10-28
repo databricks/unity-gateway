@@ -192,6 +192,40 @@ class TestKiloMcpClient:
     def test_kilo_empty_listing_parses_to_no_servers(self):
         assert mcp.parse_mcp_list_output("kilo", "▲  No MCP servers configured") == {}
 
+    def test_parses_antigravity_mcp_list_table(self):
+        # Captured from agy 1.4.9: an upper-case header and an enabled/disabled state column.
+        output = (
+            "NAME  TYPE   STATUS    COMMAND/URL\n"
+            "s1    stdio  disabled  /bin/echo x\n"
+            "s2    stdio  enabled   /path/ug mcp-proxy --url https://ws/x\n"
+        )
+        assert mcp.parse_mcp_list_output("antigravity", output) == {
+            "s1": mcp.LIVE_DISABLED,
+            "s2": mcp.LIVE_ENABLED,
+        }
+
+    def test_antigravity_empty_listing_parses_to_no_servers(self):
+        assert mcp.parse_mcp_list_output("antigravity", "No MCP servers configured.") == {}
+
+    def test_antigravity_registers_stdio_proxy_in_its_mcp_config(self, monkeypatch):
+        monkeypatch.setattr(
+            mcp,
+            "build_mcp_proxy_argv",
+            lambda url, ws, profile, use_pat=False: ["/ug", "mcp-proxy", url],
+        )
+
+        mcp.configure_client_mcp_server(
+            "antigravity", "system-ai-dbsql", "https://ws/sql", "https://ws"
+        )
+
+        servers = json.loads(mcp.antigravity.AGY_MCP_CONFIG_PATH.read_text())["mcpServers"]
+        assert servers["system-ai-dbsql"] == {
+            "command": "/ug",
+            "args": ["mcp-proxy", "https://ws/sql"],
+            "disabled": False,
+        }
+        assert mcp.remove_client_mcp_server("antigravity", "system-ai-dbsql") == ["user"]
+
     def test_run_mcp_list_passes_xdg_env_for_kilo(self, monkeypatch):
         # Regression: without the pinned XDG_CONFIG_HOME, `kilo mcp list` reads the
         # user's default ~/.config/kilo and reports ug's servers as missing.

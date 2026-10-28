@@ -22,6 +22,7 @@ from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
 from ucode import custom_oauth
 from ucode.agents import (
+    GEMINI_API_TOOLS,
     MODEL_LOCATION_TOOLS,
     TOOL_SPECS,
     LaunchOptions,
@@ -41,6 +42,7 @@ from ucode.agents import (
     resolve_launch_model,
     resolve_provider_models,
 )
+from ucode.agents import antigravity as antigravity_agent
 from ucode.agents import claude as claude_agent
 from ucode.agents import codex as codex_agent
 from ucode.agents import copilot as copilot_agent
@@ -218,7 +220,7 @@ CustomOAuthConfig = custom_oauth.CustomOAuthConfig
 _DISCOVERY_CONSUMERS: dict[str, tuple[str, ...]] = {
     "claude": ("claude", "opencode", "kilo", "copilot", "pi"),
     "codex": ("codex", "copilot", "pi"),
-    "gemini": ("gemini", "opencode", "kilo", "pi"),
+    "gemini": ("gemini", "opencode", "kilo", "pi", "antigravity"),
     "oss": ("opencode", "kilo"),
 }
 
@@ -665,7 +667,12 @@ def configure_shared_state(
         or "pi" in tools
     )
     want_gemini = (
-        fetch_all or "gemini" in tools or "opencode" in tools or "kilo" in tools or "pi" in tools
+        fetch_all
+        or "gemini" in tools
+        or "opencode" in tools
+        or "kilo" in tools
+        or "pi" in tools
+        or "antigravity" in tools
     )
     # Claude's web-search server also needs a Responses-capable model.
     want_codex = (
@@ -972,11 +979,12 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     (``system.ai``), a Model Provider Service, or a custom Unity Catalog model location — and
     persist (or clear) the choice.
 
-    No-op for tools other than claude/codex/gemini/copilot (gemini has no custom location). Falls
+    No-op for tools other than claude/codex/gemini/antigravity/copilot (the Gemini API agents have
+    no custom location). Falls
     back to Databricks when no matching provider services are found or the listing fails and no
     custom location is offered.
     """
-    if tool not in ("claude", "codex", "gemini", "copilot"):
+    if tool not in ("claude", "codex", "gemini", "antigravity", "copilot"):
         return state
     display = TOOL_SPECS[tool]["display"]
 
@@ -1321,6 +1329,8 @@ def _status_models(tool: str, state: dict) -> list[str]:
     elif tool == "kilo":
         # Kilo shares OpenCode's discovery; its models live under opencode_models.
         models = _model_values(state.get("opencode_models"))
+    elif tool == "antigravity":
+        models = list(antigravity_agent.model_catalog(state).values())
     elif tool == "pi":
         models = _model_values(state.get("pi_models")) or (
             _model_values(state.get("claude_models"))
@@ -1340,7 +1350,11 @@ def _status_default_model(tool: str, state: dict, models: list[str]) -> str | No
         return explicit
     # Claude and Codex deliberately leave the starting model to the agent unless a managed
     # config pins one. The other clients write the first resolved model into their ug config.
-    return models[0] if models and tool in ("gemini", "opencode", "kilo", "pi") else None
+    return (
+        models[0]
+        if models and tool in ("gemini", "opencode", "kilo", "pi", "antigravity")
+        else None
+    )
 
 
 def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
@@ -1595,6 +1609,7 @@ _HELP_COMMAND_ORDER = (
     "opencode",
     "kilo",
     "pi",
+    "antigravity",
     "configure",
     "mcp",
     "skills",
@@ -1703,8 +1718,9 @@ app.add_typer(
     rich_help_panel="Tools and Skills",
 )
 
-# Tool keys that a managed config can govern — sourced from the same enum map managed_config uses.
-_MANAGEABLE_AGENTS: frozenset[str] = frozenset(AGENT_ENUM_TO_TOOL.values())
+# Tool keys that a managed config can govern — sourced from the same enum map managed_config uses —
+# plus Antigravity, which the managed config can't name yet and so only runs self-managed.
+_MANAGEABLE_AGENTS: frozenset[str] = frozenset(AGENT_ENUM_TO_TOOL.values()) | {"antigravity"}
 
 
 def _valid_agent_or_raise(agent: str) -> str:
@@ -3532,7 +3548,7 @@ def _launch_tool(
             if tool == "claude" and managed is not None
             else {}
         )
-        if provider and tool != "gemini":
+        if provider and tool not in GEMINI_API_TOOLS:
             provider_models, error, relayed = resolve_provider_models(tool, state, provider)
             if error:
                 if managed is not None and provider == managed_provider_service(managed, tool):
@@ -3632,10 +3648,12 @@ def _launch_tool(
                     route_root_model = resolve_provider_launch_model(
                         provider_launch_model, provider_models or {}
                     )
-            if provider and tool == "gemini":
+            if provider and tool in GEMINI_API_TOOLS:
                 # Gemini is the exception: the request still names a concrete model
                 # in the URL, so pin one of the service's targets (--model or default).
-                resolved_model, gemini_error = resolve_gemini_provider_model(state, provider, model)
+                resolved_model, gemini_error = resolve_gemini_provider_model(
+                    state, provider, model, tool=tool
+                )
                 if gemini_error:
                     raise RuntimeError(gemini_error)
         else:
@@ -4283,6 +4301,56 @@ def pi_cmd(
     _launch_tool("pi", ctx, skip_preflight=skip_preflight)
 
 
+AntigravityProviderOption = Annotated[
+    str | None,
+    typer.Option(
+        "--provider",
+        help="Route through a Unity Catalog Model Provider Service "
+        "(<catalog>.<schema>.<name>) that serves a Gemini model. Pass before any "
+        "`--` separator.",
+    ),
+]
+AntigravityModelOption = Annotated[
+    str | None,
+    typer.Option(
+        "--model",
+        help="Gemini model to launch on: a Databricks model ID (system.ai.gemini-3-8-flash) or "
+        "its Antigravity name (gemini-3.8-flash). Under --provider, selects which of the "
+        "service's target models to use. Pass before any `--` separator.",
+    ),
+]
+
+
+@app.command(
+    "antigravity",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    rich_help_panel="Launch",
+)
+def antigravity_cmd(
+    ctx: typer.Context,
+    provider: AntigravityProviderOption = None,
+    model: AntigravityModelOption = None,
+    skip_preflight: SkipPreflightOption = False,
+) -> None:
+    """Launch Google Antigravity CLI (agy) via Databricks."""
+    _launch_tool("antigravity", ctx, provider=provider, model=model, skip_preflight=skip_preflight)
+
+
+@app.command(
+    "agy",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    hidden=True,
+)
+def agy_cmd(
+    ctx: typer.Context,
+    provider: AntigravityProviderOption = None,
+    model: AntigravityModelOption = None,
+    skip_preflight: SkipPreflightOption = False,
+) -> None:
+    """Alias of `ug antigravity`."""
+    _launch_tool("antigravity", ctx, provider=provider, model=model, skip_preflight=skip_preflight)
+
+
 @app.command(
     "cursor",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
@@ -4330,7 +4398,8 @@ def configure(
         str | None,
         typer.Option(
             "--agent",
-            help="Configure only the named agent (e.g. claude, codex, gemini, opencode, kilo, copilot, pi).",
+            help="Configure only the named agent (e.g. claude, codex, gemini, opencode, kilo, "
+            "copilot, pi, antigravity).",
         ),
     ] = None,
     agents: Annotated[
