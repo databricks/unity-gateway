@@ -17,6 +17,7 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Unit/component | Existing `test_*.py` files | Individual behavior; dependencies may be mocked |
 | Dedicated-workspace CUJ | `e2e_cuj/test_*.py` | Real user journeys against read-only, preconfigured workspaces |
 | Existing e2e | `test_e2e*.py` | Real workspace behavior with some patched setup/internal calls |
+| Connector skill behavior | `connector_behavior/test_*.py` | Real Claude decisions with generated guidance and synthetic connector tools |
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
@@ -306,6 +307,24 @@ cover managed setup after successful skill/MCP reconciliation, preservation afte
 reconciliation failures, and cleanup for unmanaged or non-Claude configurations. These tests
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
 late MCP connection, tool discovery, or inference behavior.
+
+`connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
+It checks that Claude uses an available Slack tool despite a stale disconnect notice, actually
+waits and then uses a tool exposed after resume, and performs the bounded wait before reporting
+tools absent. Available/pending scenarios run with both the description alone and a skill loaded
+before the break. Assertions require actual tool calls and an answer containing a random value
+returned only by the synthetic Slack tool. The missing-tools scenario requires all six real
+five-second waits and rejects invented reconnect/sign-in instructions. Model requests are not
+retried. Slack tools are synthetic to isolate skill compliance from connector credentials;
+these are not native Cowork, Slack, proxy reconnect, or Desktop sleep/resume tests.
+
+The suite is excluded from default collection. Run it with an explicitly chosen workspace,
+profile, and exact Claude model-service name; missing inputs fail rather than skip:
+
+```bash
+PYTHONPATH=src uv run pytest --confcutdir=tests/connector_behavior tests/connector_behavior \
+  --workspace https://<workspace> --profile <profile> --model <catalog.schema.claude-model> -v
+```
 
 `test_cowork_skills.py` checks current-workspace managed and user-downloaded skill copies,
 project/other-workspace/user-authored exclusions, and add/update/remove CLI flows using

@@ -68,10 +68,13 @@ a tool can be absent on the first model turn. Cowork may also disconnect idle se
 alone does not establish disconnection or missing authentication. If the requested connector's
 tools are absent at startup, after resume, or while it is `pending`, the skill directs Claude
 to wait five seconds at a time using an exposed shell or wait tool, then recheck availability.
-Its body starts with a numbered sequence: check exposed tools, actually wait when tools are
-missing, authenticate if only that tool appears, and report the observed limitation if tools
-remain absent. Waiting stops as soon as tools appear, with at most six pauses (thirty seconds
-of waiting). This gives asynchronous initialization time to finish; it does not guarantee
+Its description directs Claude to check current tools on every connector request, including
+after a break, and call a relevant available tool before answering. The body gives a short
+sequence: check exposed tools, authenticate if only that tool appears, actually wait when
+tools are missing, and report the observed limitation if tools remain absent. Claude should
+perform these actions in the same turn without asking whether to check or retry, or ending
+with a promise to wait. Waiting stops as soon as tools appear, with at most six pauses
+(thirty seconds of waiting). This gives asynchronous initialization time to finish; it does not guarantee
 that the client refreshes exposed tools. Use the tools currently exposed by the client;
 `ToolSearch` is an option only when available. Other discovery/status actions must support
 the requested operation in their descriptions, and plugin/catalog results do not establish
@@ -84,7 +87,16 @@ Connection-status notices can become stale. The skill directs Claude to rediscov
 try a relevant discovered tool before reporting a configured connector disconnected or unavailable.
 It must base availability claims on observed discovery results or tool errors, rather than a
 status reminder alone. If no callable tools are exposed after these checks, it reports that
-limitation without inventing a disconnect, reconnection, or authentication diagnosis.
+the connector's tools are not exposed in this session, without inventing a disconnect,
+reconnection, or authentication diagnosis.
+
+The opt-in `tests/connector_behavior/` suite sends the generated skill to a real Claude model
+with synthetic Slack tools. It checks a stale disconnect notice with tools already available,
+tools appearing after an actual wait, and tools remaining absent through the wait limit.
+The first two cases run both with only the skill description initially visible and with the
+skill loaded before the break. These tests measure model compliance; they do not exercise
+Desktop's native tool exposure, sleep/resume, or proxy transport recovery. See
+`tests/README.md` for the explicit workspace, profile, and model inputs.
 
 The skill distinguishes configured connectors from authenticated connections. It directs
 Claude to check exposed tools and use supported discovery actions before calling them, using
