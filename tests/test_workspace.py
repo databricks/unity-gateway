@@ -169,7 +169,7 @@ class TestResolveWorkspace:
     def test_selector_on_single_workspace_host_keeps_the_saved_form(self, capsys):
         with _host_types(**{CLASSIC: "workspace"}):
             assert resolve_workspace(f"{CLASSIC}/?o=123") == f"{CLASSIC}/?o=123"
-        assert "serves a single workspace" in capsys.readouterr().out
+        assert "serves a single workspace" in " ".join(capsys.readouterr().out.split())
 
     def test_unreachable_host_with_an_id_fails(self):
         with (
@@ -200,7 +200,7 @@ class TestResolveWorkspace:
     def test_extra_parts_on_multi_workspace_host_are_dropped_with_a_note(self, capsys):
         with _host_types(**{SHARED: "unified"}):
             assert resolve_workspace(f"{SHARED}/browse?o=123") == f"{SHARED}?w=123"
-        assert "not part of the workspace URL" in capsys.readouterr().out
+        assert "not part of the workspace URL" in " ".join(capsys.readouterr().out.split())
 
     def test_conflicting_ids(self):
         with pytest.raises(RuntimeError, match="conflicts"):
