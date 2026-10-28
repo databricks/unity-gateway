@@ -66,7 +66,8 @@ def assert_claude_desktop_profile(
             otlpHeadersHelper=str(session.home / ".ucode/claude-desktop-otel-headers.sh"),
             otlpTracesEnabled=True,
         )
-    assert profile == expected
+    session.record("desktop-profile.json", {"actual": profile, "expected": expected})
+    assert profile == expected, (profile, expected)
 
     metadata = json.loads((config_library / "_meta.json").read_text(encoding="utf-8"))
     assert metadata == {

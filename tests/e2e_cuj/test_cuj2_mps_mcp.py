@@ -14,6 +14,7 @@ from tests.integration.utils.evidence import (
     fresh_id,
     is_child_session,
 )
+from tests.integration.utils.provider_catalog import parse_anthropic_provider_page
 
 from .base import BaseCujTest
 from .helpers.constants import (
@@ -252,6 +253,19 @@ class TestCuj2Configuration(_Cuj2Base):
         _assert_cuj2_config(published)
         _assert_mps_catalog(workspace)
         _assert_mcp_services(workspace)
+        claude_mps, claude_model = MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE]
+        catalog = parse_anthropic_provider_page(
+            workspace.client.api_client.do(
+                "GET",
+                "/ai-gateway/anthropic/v1/models",
+                headers={"Anthropic-Version": "2023-06-01", PROVIDER_HEADER: claude_mps},
+            )
+        )
+        assert [model for model, _ in catalog.models] == [claude_model], catalog
+        assert not catalog.has_more, catalog
+        desktop_model = {"name": claude_model}
+        if label := catalog.models[0][1]:
+            desktop_model["labelOverride"] = label
         config_library = enable_claude_desktop(session, workspace.url)
 
         configured = session.run(
@@ -264,12 +278,11 @@ class TestCuj2Configuration(_Cuj2Base):
         )
         assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
         _assert_configured_files(session, workspace.url)
-        claude_mps, claude_model = MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE]
         assert_claude_desktop_profile(
             session,
             config_library,
             workspace.url,
-            models=[{"name": claude_model, "labelOverride": "Claude Haiku 4.5"}],
+            models=[desktop_model],
             custom_headers={
                 "x-databricks-use-coding-agent-mode": "true",
                 PROVIDER_HEADER: claude_mps,
