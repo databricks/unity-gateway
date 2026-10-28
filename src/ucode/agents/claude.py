@@ -2007,8 +2007,9 @@ def header_mod_active() -> bool:
     if root is None or path is None:
         return False
     try:
-        if not all(file.is_file() for file in _header_mod_files(root)):
-            return False
+        for file, content in _header_mod_files(root).items():
+            if not file.is_file() or file.read_text(encoding="utf-8") != content:
+                return False
         settings = _parse_managed_settings(read_managed_file(path) or "{}")
     except (OSError, RuntimeError):
         return False
@@ -2142,9 +2143,9 @@ def _reconcile_managed_settings(
         ) from exc
     managed_before = copy.deepcopy(existing)
     header_mod_root = claude_header_mod_root()
-    # Only `ug configure` and a launch with headers add the mod: another writer of this file
-    # drops entries it doesn't know, and re-adding them would rewrite it on every launch.
-    wants_mod = _explicit_configure or bool(os.environ.get(UG_HEADERS_ENV_VAR, "").strip())
+    # Only `ug configure` installs, upgrades, or enables the mod. A launch, even with
+    # UG_HEADERS, never writes machine-wide files; `launch` warns when the mod is missing.
+    wants_mod = _explicit_configure
     # Install the files before the settings name them, so a failed install never enables a
     # plugin that isn't there; a run that can't write as root leaves any earlier entries as is.
     installed = wants_mod and _install_header_mod(header_mod_root)
@@ -2597,7 +2598,8 @@ def launch(
     if os.environ.get(UG_HEADERS_ENV_VAR, "").strip() and not header_mod_active():
         print_warning(
             "Claude Code won't send your `ug --header` / UG_HEADERS headers: ug's header mod isn't "
-            "installed. Run `ug configure` from an interactive terminal on Linux or macOS, without "
+            "installed or is out of date, and a launch never changes machine-wide files. Run "
+            "`ug configure` from an interactive terminal on Linux or macOS, without "
             "UG_SKIP_OS_SETTINGS."
         )
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
