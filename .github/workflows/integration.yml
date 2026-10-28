@@ -221,25 +221,6 @@ jobs:
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
             "${args[@]}" -- -m "$TEST_MARKER"
-      - name: Run Desktop Cowork MCP cases against the fixture workspace
-        if: ${{ !cancelled() && env.RUN_DESKTOP_MCP == 'true' }}
-        timeout-minutes: 20
-        shell: bash
-        env:
-          UCODE_TEST_WORKSPACE: https://dbc-bbdd5508-648e.cloud.databricks.com
-          DATABRICKS_BEARER: ''
-          DATABRICKS_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
-          DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
-          CLAUDE_CODE_OAUTH_TOKEN: ''
-        run: |
-          args=(--claude-version "$CLAUDE_VERSION")
-          if [[ -n "$DEPENDENCY" ]]; then
-            args+=(--dependency "$DEPENDENCY")
-          fi
-          uv run --no-project --python 3.12 python scripts/run_integration.py \
-            --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
-            --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration-desktop-mcp" \
-            "${args[@]}" -- -m "live and desktop_mcp and claude"
       - name: Upload live test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -253,19 +234,6 @@ jobs:
             ${{ runner.temp }}/ug-integration/*.log
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
-      - name: Upload Desktop Cowork MCP evidence
-        if: ${{ !cancelled() && env.RUN_DESKTOP_MCP == 'true' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
-        with:
-          name: integration-desktop-mcp-${{ runner.os }}
-          include-hidden-files: true
-          path: |
-            ${{ runner.temp }}/ug-integration-desktop-mcp/*.json
-            ${{ runner.temp }}/ug-integration-desktop-mcp/*.txt
-            ${{ runner.temp }}/ug-integration-desktop-mcp/*.xml
-            ${{ runner.temp }}/ug-integration-desktop-mcp/*.log
-            ${{ runner.temp }}/ug-integration-desktop-mcp/artifacts/
-            ${{ runner.temp }}/ug-integration-desktop-mcp/wheels/
 
   headless-windows:
     name: Windows headless journey · Claude
@@ -339,8 +307,9 @@ jobs:
     if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: [workspace, smoke]
     runs-on: ${{ matrix.os }}
-    # Allow the general runner's 3600s deadline, the bounded Cowork step, and setup/uploads.
-    timeout-minutes: 90
+    # The runner enforces its own 3600s pytest deadline; keep the job above it
+    # so a slow run fails through the runner's report instead of a job kill.
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       # One runner per agent and OS, all in parallel. Cases share no workspace state,
@@ -356,8 +325,7 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       # Smoke cases already ran on this OS in the smoke job; don't repeat them here.
-      TEST_MARKER: live and ${{ matrix.agent }} and not soft_fail and not smoke and not desktop_mcp
-      RUN_DESKTOP_MCP: ${{ matrix.agent == 'claude' }}
+      TEST_MARKER: live and ${{ matrix.agent }} and not soft_fail and not smoke
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ matrix.os }}
     steps: *live-steps
 

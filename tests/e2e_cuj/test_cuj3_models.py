@@ -1,5 +1,7 @@
 """Managed catalog discovery, default launches, and explicit model selection."""
 
+import json
+
 import pytest
 
 from tests.integration.utils.agents import claude, codex
@@ -24,6 +26,7 @@ from .catalog_discovery_expectations import (
     OTHER_MODEL_SCHEMA,
 )
 from .helpers.constants import CLAUDE, CODEX
+from .helpers.desktop import enable_claude_desktop
 from .helpers.evidence import (
     SessionEvidence,
     assert_claude_headless_model,
@@ -79,6 +82,50 @@ def _revert_catalog_test_state(cuj):
     session.revert_machine_wide(
         "catalog-discovery-cleanup-revert", "Catalog CUJ teardown left machine-wide agent settings"
     )
+
+
+class TestCatalogDesktopConfiguration(BaseCujTest):
+    WORKSPACE_URL = "https://dbc-bbdd5508-648e.cloud.databricks.com"
+
+    @pytest.mark.claude
+    def test_catalog_discovery_preserves_desktop_config_without_compatible_model_ids(self, cuj):
+        """Scenario: configure the scoped catalog beside an existing Desktop profile.
+
+        Expected: aliases such as ug_e2e.models.claude_haiku do not match Desktop's Claude-family
+        filter. Configure warns instead of writing an unusable profile and preserves every
+        existing profile and metadata byte. CUJ1/CUJ2 cover compatible Desktop model sources.
+        """
+        session, workspace, _recorder = cuj
+        config_library = enable_claude_desktop(session, workspace.url)
+        config_library.mkdir()
+        personal_id = "62de45ce-d2ad-4507-a8e2-7e59529af303"
+        existing = {
+            f"{personal_id}.json": json.dumps(
+                {"inferenceProvider": "anthropic", "userSetting": "keep"}
+            ).encode(),
+            "_meta.json": json.dumps(
+                {
+                    "entries": [{"id": personal_id, "name": "Personal"}],
+                    "appliedId": personal_id,
+                }
+            ).encode(),
+        }
+        for name, contents in existing.items():
+            (config_library / name).write_bytes(contents)
+
+        configured = session.run(
+            "configure",
+            "--workspace",
+            workspace.url,
+            "--skip-upgrade",
+            "--disable-databricks-ai-tools",
+            timeout=300,
+        )
+        assert "No Claude-family models found for Desktop" in (
+            configured.stdout + configured.stderr
+        )
+        assert {path.name: path.read_bytes() for path in config_library.iterdir()} == existing
+        assert not (session.home / ".ucode/claude-desktop.json").exists()
 
 
 class TestCatalogDiscovery(BaseCujTest):

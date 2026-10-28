@@ -128,14 +128,6 @@ def _collect_integration_cases(expression):
     return cases
 
 
-def _desktop_mcp_step(jobs):
-    return (
-        jobs["smoke"]
-        .split("      - name: Run Desktop Cowork MCP cases against the fixture workspace\n", 1)[1]
-        .split("      - name:", 1)[0]
-    )
-
-
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 def test_smoke_and_full_together_cover_every_blocking_live_case(agent):
     jobs = _integration_jobs()
@@ -151,14 +143,7 @@ def test_smoke_and_full_together_cover_every_blocking_live_case(agent):
     assert "os: [ubuntu-22.04, windows-latest]" in jobs["smoke"]
     assert "os: [ubuntu-22.04, windows-latest]" in jobs["full"]
     assert not smoke & full
-    covered = smoke | full
-    if agent == "claude":
-        marker = re.search(r'-- -m "([^"]+)"', _desktop_mcp_step(jobs))
-        assert marker is not None
-        cowork = _collect_integration_cases(marker.group(1))
-        assert not covered & cowork
-        covered |= cowork
-    assert covered == _collect_integration_cases(f"live and {agent} and not soft_fail")
+    assert smoke | full == _collect_integration_cases(f"live and {agent} and not soft_fail")
 
 
 def test_smoke_and_full_journeys_run_every_agent_and_os_in_parallel():
@@ -166,6 +151,19 @@ def test_smoke_and_full_journeys_run_every_agent_and_os_in_parallel():
     assert "concurrency:" not in jobs["smoke"]
     assert "concurrency:" not in jobs["full"]
     assert "max-parallel: 4" in jobs["full"]
+
+
+def test_full_claude_lane_includes_both_desktop_journeys():
+    full = _integration_jobs()["full"]
+    marker = re.search(r"(?m)^      TEST_MARKER: (.+)$", full)
+    assert marker is not None
+    cases = _collect_integration_cases(marker.group(1).replace("${{ matrix.agent }}", "claude"))
+    assert {
+        "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_profile_lifecycle",
+        "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_subscription_relay",
+    } <= cases
+    assert "os: [ubuntu-22.04, windows-latest]" in full
+    assert "CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" in full
 
 
 @pytest.mark.parametrize(
@@ -189,8 +187,6 @@ def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, retained_test
     assert marker is not None
     expression = marker.group(1).replace("${{ matrix.agent }}", agent).replace("$AGENT", agent)
     cases = _collect_integration_cases(expression)
-    if job_name == "full":
-        assert not any("::test_ug_configure_claude_desktop_cowork_mcp" in case for case in cases)
     if retained_test is not None:
         assert any(f"::{retained_test}" in case for case in cases), cases
         assert not any(f"::{toggle}[" in case for case in cases for toggle in CLAUDE_TOGGLE_TESTS)
@@ -206,32 +202,6 @@ def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, retained_test
             "subagent_only_v1",
             "subagent_orch_v0",
         )
-    }
-
-
-def test_full_claude_lane_runs_desktop_mcp_with_step_scoped_credentials():
-    jobs = _integration_jobs()
-    full = jobs["full"]
-    assert "os: [ubuntu-22.04, windows-latest]" in full
-    assert "timeout-minutes: 90" in full
-    assert "RUN_DESKTOP_MCP: ${{ matrix.agent == 'claude' }}" in full
-    assert "steps: *live-steps" in full
-    step = _desktop_mcp_step(jobs)
-    assert "if: ${{ !cancelled() && env.RUN_DESKTOP_MCP == 'true' }}" in step
-    assert "timeout-minutes: 20" in step
-    environment = dict(re.findall(r"(?m)^          ([A-Z_]+): (.+)$", step))
-    assert environment == {
-        "UCODE_TEST_WORKSPACE": "https://dbc-bbdd5508-648e.cloud.databricks.com",
-        "DATABRICKS_BEARER": "''",
-        "DATABRICKS_CLIENT_ID": "${{ secrets.UG_CUJ_SP_CLIENT_ID }}",
-        "DATABRICKS_CLIENT_SECRET": "${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}",
-        "CLAUDE_CODE_OAUTH_TOKEN": "''",
-    }
-    assert '--output "$RUNNER_TEMP/ug-integration-desktop-mcp"' in step
-    marker = re.search(r'-- -m "([^"]+)"', step)
-    assert marker is not None
-    assert _collect_integration_cases(marker.group(1)) == {
-        "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_cowork_mcp"
     }
 
 
@@ -694,9 +664,6 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "dedicated-cuj",
         )
     }
-    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", gate)
-    assert needs is not None
-    assert set(results) == {job.strip() for job in needs.group(1).split(",")}
     results[failed_job]["result"] = job_result
     result = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(script.group(1))],

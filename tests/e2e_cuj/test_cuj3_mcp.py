@@ -1,13 +1,11 @@
 """Managed MCP registration, connection, and tool use in both real agent TUIs."""
 
+import hashlib
 import json
 import re
-from pathlib import Path
 
-import anyio
 import pytest
 
-from tests.integration.utils.desktop import installed_cowork_servers, prepare_cowork_home
 from tests.integration.utils.evidence import (
     agent_sessions,
     assistant_answers,
@@ -15,11 +13,6 @@ from tests.integration.utils.evidence import (
     is_child_session,
 )
 from tests.integration.utils.mcp import open_claude_mcp_inventory, open_codex_mcp_inventory
-from tests.integration.utils.mcp_fixture import (
-    MCP_FIXTURE_SERVICES,
-    assert_mcp_fixture_call,
-    fixture_receipt,
-)
 
 from .base import BaseCujTest
 from .helpers.constants import CLAUDE, CODEX
@@ -31,13 +24,24 @@ CUJ_NAME = "CUJ 3 · UC MCP discovery"
 
 pytestmark = [pytest.mark.managed, pytest.mark.mcp_registration, pytest.mark.workspace_isolated]
 
-SERVICES = MCP_FIXTURE_SERVICES
+SERVICES = {
+    "ug_e2e.tools.fixture_metadata": "describe_fixture",
+    "ug_e2e.tools.fixture_reader": "read_fixture",
+}
 
 
 class McpFixtureTask:
     def __init__(self):
         self.run_id = fresh_id()
-        self.expected = {tool: fixture_receipt(tool, self.run_id) for tool in SERVICES.values()}
+        self.expected = {
+            tool: hashlib.sha256(
+                b"unity-gateway-cuj-fixture\0"
+                + tool.encode("ascii")
+                + b"\0"
+                + self.run_id.encode("ascii")
+            ).hexdigest()
+            for tool in SERVICES.values()
+        }
         calls = "; ".join(
             f"call {tool} on {registered_name(service)} with run_id={self.run_id}"
             for service, tool in SERVICES.items()
@@ -224,51 +228,6 @@ class TestMcpRegistration(BaseCujTest):
         assert _fixture_server_rows(output) == _expected_fixture_server_rows(), output
         assert "ug_e2e.other_tools" not in output, output
         assert "ug_e2e-other_tools" not in output, output
-
-    def test_generated_proxy_command_lists_and_calls_live_fixture(self, cuj):
-        """Scenario: configure UG and execute its generated MCP command without an agent UI.
-
-        Expected: the real stdio/HTTP proxy initializes, exposes each fixture tool, and returns
-        a receipt computed from a fresh run ID. This does not exercise Cowork or provider login.
-        """
-        session, workspace, _recorder = cuj
-        session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
-        config = json.loads((session.home / ".claude" / ".claude.json").read_text())
-        run_id = fresh_id()
-
-        async def scenario():
-            for service, tool in SERVICES.items():
-                registration = config["mcpServers"][registered_name(service)]
-                await assert_mcp_fixture_call(
-                    session, registration, tool, run_id, evidence_prefix="claude-code"
-                )
-
-        anyio.run(scenario)
-
-    def test_cowork_plugin_commands_list_and_call_live_fixtures(self, cuj):
-        """Scenario: configure beside an existing Cowork account and use its installed plugin.
-
-        Expected: real Claude CLI plugin installation produces commands that discover and call
-        both managed fixtures, returning receipts for a fresh run ID. No Desktop GUI is launched.
-        """
-        session, workspace, _recorder = cuj
-        root = prepare_cowork_home(session)
-        profile = "cuj3-desktop"
-        Path(session.env["DATABRICKS_CONFIG_FILE"]).write_text(
-            f"[{profile}]\nhost = {workspace.url}\nauth_type = databricks-cli\n"
-        )
-        session.configure(["configure", "--profile", profile, "--skip-upgrade"])
-        servers = installed_cowork_servers(session, root)
-        run_id = fresh_id()
-
-        async def scenario():
-            for service, tool in SERVICES.items():
-                alias = service.rsplit(".", 1)[1]
-                await assert_mcp_fixture_call(
-                    session, servers[alias], tool, run_id, evidence_prefix="cowork"
-                )
-
-        anyio.run(scenario)
 
     @pytest.mark.claude
     @pytest.mark.tui

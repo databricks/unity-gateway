@@ -273,11 +273,13 @@ requires system.ai Claude models without an MPS override and completes a real Me
 using the generated credentials and profile headers. A separate subscription-relay journey
 checks its combined credential helper and real Messages inference. Non-relay MPS Desktop
 configuration is asserted in CUJ2, alongside its existing Claude MPS configuration journey.
-The `desktop_mcp` journey installs Cowork through the real Claude CLI and calls both read-only
-fixtures using commands from the installed plugin. The existing Linux/Windows Claude
-full jobs run it in a separate step against CUJ3's workspace, with service-principal credentials
-scoped to that step and a fresh runner output directory. The general-workspace step excludes
-that marker. These cases do not launch Desktop or execute connector skills.
+Both Desktop journeys also install Cowork through the real Claude CLI, register system.ai.dbsql
+through public ug commands, and use its installed proxy command to discover tools and execute a
+read-only query with a fresh computed receipt. Each checks repeat configuration and revert
+cleanup for the profile and plugin. They run in the existing Linux/Windows Claude full jobs,
+using the same workspace as their model requests. CUJ3 additionally checks its incompatible
+scoped aliases leave existing Desktop configuration untouched, with an actionable warning.
+These cases do not launch Desktop or execute connector skills.
 The [native integration plan](../docs/claude-desktop-integration-testing.md) defines the
 separate interactive macOS and Windows coverage needed for those claims.
 
@@ -931,24 +933,3 @@ Pre-browser credential reads retry transient HTTP/network failures twice before 
 
 Credential validation rejects malformed initial responses before browser launch and non-string
 states during polling. The browser subprocess runs Python in isolated mode.
-
-`test_desktop_processes.py` executes generated Desktop helper and Cowork MCP commands
-as child processes, with fresh homes and paths containing spaces. A controlled HTTP server
-and browser boundary exercise initialization, discovery, HTTP 401/JSON-RPC -32006 recovery,
-explicit authentication, exact request replay, persistent auth errors, and permission-error
-pass-through. The helper returns token-only stdout and fails cleanly without a CLI. These
-are component tests with external boundaries controlled, not live provider login or Cowork.
-Commands come from files written by the public Desktop/Cowork setup adapters; native
-Claude plugin installation is replaced while configuration generation runs normally.
-`e2e_cuj/test_cuj3_mcp.py::TestMcpRegistration::test_generated_proxy_command_lists_and_calls_live_fixture`
-executes installed UG's generated commands through the MCP SDK, lists both fixture tools,
-and checks fresh-run receipts from real workspace calls without an agent UI.
-
-CUJ3 also configures beside pre-existing Cowork account directories, requires real Claude CLI
-plugin installation, and calls both receipt fixtures using the installed plugin's MCP commands.
-The Desktop integration journey intentionally repeats this wiring through Desktop's explicit-profile
-configure path on Linux and Windows. The Desktop lifecycle and subscription-relay journeys
-execute generated credential helpers and complete real Messages requests on system.ai and
-relayed Claude models using their output and generated profile headers. CUJ2 checks the
-Desktop configuration for its published non-relay Anthropic MPS. No GUI, browser OAuth consent,
-or connector skill execution is claimed.

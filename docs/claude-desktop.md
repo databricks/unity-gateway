@@ -288,14 +288,12 @@ and return, before UG confirms reauthentication. PROVISIONING, UPDATING, and DEL
 continue polling. Missing services fail before launching a browser; a credential 404
 means the selected user has not signed in yet and continues polling until the timeout.
 
-Automated coverage executes the helper command from the generated profile and checks its
-credential against the gateway models API using CI's supplied bearer. Separate subprocess
-component tests exercise the generated MCP command with controlled HTTP/browser boundaries;
-the MCP fixture CUJ also checks discovery and tool calls against a real workspace. Both CUJ3
-and the Desktop integration journey read commands from a Cowork plugin installed by the real
-Claude CLI and require fresh receipts from both live fixture tools. The Desktop case runs in
-the existing Linux/Windows Claude jobs in a separate step against CUJ3's workspace, with
-step-scoped credentials and isolated output. The system.ai and subscription-relay journeys
-use the generated helper credentials and profile headers for real Messages requests. CUJ2
-asserts Desktop configuration for its non-relay Anthropic MPS.
+Two automated Desktop journeys run in the existing Linux/Windows Claude integration jobs:
+system.ai models and subscription-relay MPS. Each asserts the generated profile, executes its
+credential helper, completes real Messages inference, installs Cowork through the Claude CLI,
+and discovers/calls DBSQL through the installed plugin using a read-only computed query.
+Both check repeated configuration, preservation of unrelated settings, and revert cleanup.
+All calls use the journey's existing model workspace. CUJ1 and CUJ2 assert Desktop configuration
+for system.ai models and non-relay Anthropic MPS. CUJ3 checks that its incompatible scoped
+model aliases produce a warning while preserving existing Desktop configuration.
 These checks do not launch Desktop or validate native OAuth consent, skill use, or app reconnects.

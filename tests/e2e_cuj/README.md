@@ -21,7 +21,7 @@ own schema but absent from the scoped picker. Claude's decoy catalog includes bo
 Claude discovery aliases must be enabled;
 Kimi and GPT Luna use `anthropic-aigw-<8-character SHA-256 prefix>-<service FQN>`.
 
-Eleven independently configured cases cover picker discovery, default launches, and explicit models.
+Eleven independently configured model cases cover picker discovery, default launches, and explicit models.
 Picker cases dismiss the menu without changing selection, then complete a task on the default.
 Separate cases cover bare `ug`, `ug claude`, and `ug codex` TUI first tasks and Claude print/Codex
 exec defaults. Each additional compatible model gets its own headless task case.
@@ -68,6 +68,11 @@ without `UCODE_MANAGED_CONFIG_STUB`. They enable Claude Desktop's isolated Linux
 before running installed `ug configure`, then verify the fixed profile uses either the published
 Databricks-hosted Claude models or the published Anthropic provider service and selected model.
 They do not launch Desktop or execute the credential helper.
+
+CUJ3 also configures beside an existing Desktop profile and checks the file outcome. Its scoped
+aliases use names such as `ug_e2e.models.claude_haiku`, which Desktop's Claude-family filter does
+not accept. Configure must warn and preserve all existing profile and metadata bytes rather
+than write an unusable profile. Successful Desktop profiles remain covered by CUJ1/CUJ2.
 
 ## Smart-routing CUJ
 

@@ -54,19 +54,19 @@ Messages inference using the subscription token and separate Databricks header r
 helper. Non-relay MPS Desktop configuration is asserted in CUJ2's existing MPS configuration
 journey; no dedicated Desktop MPS integration test is needed.
 
-The `desktop_mcp` journey uses the dedicated CUJ3 workspace, not the general integration
-workspace. It supplies pre-existing Desktop account directories as inputs, then requires real
-Claude CLI installation of the Cowork plugin. Commands read from that installed plugin discover
-and call both read-only fixture tools with receipts tied to a fresh run ID. CI runs this case
-in a separate step of the existing Linux/Windows **Full journeys · Claude** jobs, using the runner's
-existing M2M support with `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET` and
-`https://dbc-bbdd5508-648e.cloud.databricks.com`. These credentials are scoped to that step;
-the general-workspace bearer and subscription token are cleared there. Only the short-lived
-fixture-workspace bearer reaches its test processes. A separate output directory keeps its homes,
-reports, and evidence apart from the general run. The general-workspace step excludes `desktop_mcp`
-because its workspace has different fixtures. The fixture workspace
-uses model aliases that do not match Desktop's `claude-` filter, so this case asserts Cowork
-installation and MCP calls; the other Desktop cases assert inference profiles and credentials.
+Each of these two journeys supplies pre-existing Desktop account directories as inputs and
+requires real Claude CLI installation of the Cowork plugin. It registers system.ai.dbsql through
+`ug mcp add --names system.ai.dbsql`, then runs the command from the installed plugin with the
+MCP SDK. The check initializes the protocol, discovers execute_sql/poll_sql_result, executes
+`SELECT sha2('<fresh run id>', 256)`, polls pending statements, and requires the computed receipt
+in the successful result. This proves an actual tool call rather than an echoed query. Both
+journeys verify reconfiguration preserves the profile/plugin and revert removes UG's entries
+while retaining unrelated profiles and metadata.
+
+The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
+the same workspace as their model calls. The workspace must expose system.ai.dbsql and allow
+the test identity to run a constant read-only query on its default SQL compute. No dedicated
+Desktop MCP test, separate fixture-workspace step, or extra credentials are required.
 
 These tests do not launch Desktop or establish GUI, skill execution, or browser-consent
 coverage. See the [native testing plan](../../docs/claude-desktop-integration-testing.md) for
@@ -1495,13 +1495,9 @@ journey checks clean token-only stdout and uses that token for a live gateway mo
 It uses the supported CI bearer override, so CLI OAuth renewal and Desktop's scheduling of
 the helper remain unverified. Diagnostics and evidence redact credentials.
 
-`../test_desktop_processes.py` separately tests real helper/proxy child processes against
-controlled HTTP and browser boundaries: HTTP 401 and -32006 sign-in/replay, discovery's
-explicit authentication action, bounded persistent failures, and permission-error forwarding.
-These component tests use files written by the public setup adapters, replacing native
-Claude plugin installation. They are outside the integration suite and do not establish provider login.
-The dedicated-workspace `../e2e_cuj/test_cuj3_mcp.py` also drives generated Claude Code
-and installed Cowork plugin commands with the real MCP SDK and requires receipts from both
-live fixture tools. The Desktop integration case repeats the Cowork path through explicit-profile
-configuration on Linux and Windows. No Desktop GUI,
-Cowork skill execution, or native browser interaction is claimed by these tests.
+CUJ1/CUJ2 retain their generated Desktop configuration checks for system.ai models and non-relay
+Anthropic MPS. CUJ3 checks its scoped model aliases produce an actionable Desktop warning and
+leave existing configuration intact. The model/credential/MCP journeys live in the Desktop
+integration file; existing agent MCP CUJs and component auth tests are unchanged. These tests
+do not establish Desktop GUI behavior, connector skill execution, browser consent, credential
+renewal, or successful recovery from deliberately injected authentication failures.
