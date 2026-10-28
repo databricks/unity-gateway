@@ -69,8 +69,8 @@ before their existing installed `ug configure`, then compare the entire profile 
 JSON with the expected structure and values. This includes model labels, helper arguments and
 refresh settings, headers, discovery settings, and CUJ1's OTLP fields. The profile uses either
 the published Databricks-hosted Claude models or the Anthropic provider service and selected model.
-CUJ2 gets its expected label from an independent native-provider catalog read. Actual and
-expected profile JSON are retained in `desktop-profile.json` for failures.
+CUJ2 expects its model ID as the label. Actual and expected profile JSON are retained in
+`desktop-profile.json` for failures.
 They do not launch Desktop or execute the credential helper.
 
 CUJ3's existing Claude picker journey also configures beside a personal Desktop profile and checks
