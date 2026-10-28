@@ -1,6 +1,7 @@
 """Smart-routing CUJ: execute once, then report each contract assertion separately."""
 
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import pytest
@@ -42,6 +43,14 @@ pytestmark = pytest.mark.harness_latest
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
 AGENTS = (CLAUDE, CODEX)
 ORCHESTRATOR_CONTEXT = "Smart Router Orchestrator is on for this session."
+SMART_ROUTER_CONFIG_VERSIONS = (
+    FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+    SUBAGENT_ONLY_V0,
+    SUBAGENT_ONLY_V1,
+    SUBAGENT_ORCH_V0,
+    SUBAGENT_ORCH_V1,
+    SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+)
 
 
 def _smart_router_band_shown(tui, *, enabled, first_prompt):
@@ -64,6 +73,47 @@ def _smart_router_band_hidden(tui):
     """The band above the prompt shows only for the turn after launch or a toggle."""
     pattern = r"\s*unity gateway smart router\s+(ON|OFF)\b"
     return not any(re.match(pattern, line) for line in tui.screen.display)
+
+
+@dataclass(frozen=True)
+class PresetFlags:
+    subagent_routed: bool
+    first_prompt_routed: bool
+    orchestrator_enabled: bool
+
+
+def _preset_flags(version, agent):
+    """Resolve the preset's routing and orchestration expectations for one agent."""
+    env = resolve_environment({"SMART_ROUTER_CONFIG_VERSION": version}, agent=agent)
+    v2_enabled = env["ENABLE_SMART_ROUTING_V2"] == "1"
+    subagent_only = env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "1"
+    subagent_routed = v2_enabled or subagent_only
+    return PresetFlags(
+        subagent_routed=subagent_routed,
+        first_prompt_routed=v2_enabled and not subagent_only,
+        orchestrator_enabled=env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] == "1" and subagent_routed,
+    )
+
+
+@contextmanager
+def smart_router_preset(cuj, version):
+    """Select a preset for one fresh ug configuration, then restore env and machine-wide settings."""
+    session, workspace, recorder = cuj
+    previous = session.env.get("SMART_ROUTER_CONFIG_VERSION")
+    session.env["SMART_ROUTER_CONFIG_VERSION"] = version
+    try:
+        configs = _assert_published_config_matches_expectations(workspace.config())
+        recorder.configure_session(session, ["configure", "--disable-databricks-ai-tools"])
+        yield session, workspace, recorder, configs
+    finally:
+        if previous is None:
+            session.env.pop("SMART_ROUTER_CONFIG_VERSION", None)
+        else:
+            session.env["SMART_ROUTER_CONFIG_VERSION"] = previous
+        session.revert_machine_wide(
+            f"{version}-revert",
+            "Smart-router preset cleanup left machine-wide agent settings",
+        )
 
 
 @dataclass(frozen=True)
@@ -267,254 +317,246 @@ def completed_smart_routing_runs(cuj):
 class TestCujSmartRouting(BaseCujTest):
     WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
 
-    @pytest.mark.parametrize(
-        "SMART_ROUTER_CONFIG_VERSION",
-        [
-            FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
-            SUBAGENT_ONLY_V0,
-            SUBAGENT_ONLY_V1,
-            SUBAGENT_ORCH_V0,
-            SUBAGENT_ORCH_V1,
-            SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-        ],
-    )
-    def test_smart_router_config_version(self, cuj, SMART_ROUTER_CONFIG_VERSION):
-        """Scenario: launch both agents with a preset, then explicitly request a subagent.
+    @pytest.mark.parametrize("agent", AGENTS)
+    @pytest.mark.parametrize("SMART_ROUTER_CONFIG_VERSION", SMART_ROUTER_CONFIG_VERSIONS)
+    def test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent(
+        self, cuj, agent, SMART_ROUTER_CONFIG_VERSION
+    ):
+        """Scenario: launch one agent with a preset, run a no-delegation file task, then ask for a subagent.
 
-        Expected: each agent's resolved flags determine first-prompt routing,
-        orchestration, and child routing. One native child completes the delegated
-        task even when routing is disabled. Claude's status band shows ON and the
-        preset's routing scope, then OFF and ON after toggles; each time it hides once
-        that turn completes, so it is gone by the second turn. The prompt hint row ends with
-        smart router ON or OFF from launch and flips with each toggle.
+        Expected: the agent's resolved flags determine whether the first prompt is routed
+        (one HTTP 200 decision matching the prompt, and the routed model serves inference),
+        whether orchestrator context and the smart-router recipe header/field are present,
+        and that no child session exists after the first prompt. A second prompt then makes
+        exactly one native child complete the delegated file task even when routing is
+        disabled. When subagent routing is on, exactly one decision correlated with the child
+        task is recorded, the child's inference uses the selected model, and the recipe
+        correlates with the launch turn; when off, no decision, recipe, or orchestrator
+        context appears. Claude then reports no running background tasks and exits cleanly.
         """
-        session, workspace, recorder = cuj
-        previous = session.env.get("SMART_ROUTER_CONFIG_VERSION")
-        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
-        try:
-            configs = _assert_published_config_matches_expectations(workspace.config())
-            recorder.configure_session(session, ["configure", "--disable-databricks-ai-tools"])
-            for agent in AGENTS:
-                expected_env = resolve_environment(
-                    {"SMART_ROUTER_CONFIG_VERSION": SMART_ROUTER_CONFIG_VERSION}, agent=agent
+        with smart_router_preset(cuj, SMART_ROUTER_CONFIG_VERSION) as (
+            session,
+            workspace,
+            recorder,
+            configs,
+        ):
+            flags = _preset_flags(SMART_ROUTER_CONFIG_VERSION, agent)
+            subagent_routed = flags.subagent_routed
+            first_prompt_routed = flags.first_prompt_routed
+            orchestrator_enabled = flags.orchestrator_enabled
+            supported = workspace.model_ids(agent)
+            evidence = SessionEvidence(session.home, agent)
+            existing_sessions = set(agent_sessions(session, agent))
+            decisions_path = session.home / ".ucode" / f"{agent}-smart-routing-decisions.jsonl"
+            original_decisions = read_jsonl(decisions_path)
+            task = FileTask(session)
+            task.prompt += " Do not delegate."
+            checkpoint = recorder.checkpoint()
+            recorder.prepare_launch()
+            with Terminal(session, f"{SMART_ROUTER_CONFIG_VERSION}-{agent}", [agent]) as tui:
+                tui.boot(timeout=150)
+                tui.submit(task.prompt)
+                tui.task(evidence, task)
+                requests = recorder.requests_after(checkpoint)
+                routes = [request for request in requests if request.path == ROUTING_PATH]
+                assert len(routes) == int(first_prompt_routed), (agent, routes)
+                expected_model = configs[agent]["default_models"]["default_model"]
+                if first_prompt_routed:
+                    assert routes[0].payload["task"]["prompt"] == task.prompt
+                    response = recorder.response_for(routes[0])
+                    assert response.status_code == 200
+                    selections = response.payload["route_selection"]
+                    assert len(selections) == 1
+                    expected_model = selections[0]["route_option"]["model"]
+                    options = routes[0].payload["route_options"]
+                    offered = {canonical_model(option["model"]) for option in options}
+                    assert options and all(option["harness"] == agent for option in options)
+                    assert offered <= {canonical_model(model) for model in supported}
+                    selected = canonical_model(expected_model)
+                    assert selected in offered and selected.startswith("system.ai."), selected
+                inference = _task_inference_request(requests, agent, task.prompt)
+                inference = served_inference_request(recorder, requests, inference, agent)
+                assert canonical_model(inference.payload["model"]) == canonical_model(
+                    expected_model
                 )
-                v2_enabled = expected_env["ENABLE_SMART_ROUTING_V2"] == "1"
-                subagent_only = expected_env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "1"
-                subagent_routed = v2_enabled or subagent_only
-                first_prompt_routed = v2_enabled and not subagent_only
-                orchestrator_enabled = (
-                    expected_env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] == "1" and subagent_routed
-                )
-                supported = workspace.model_ids(agent)
-                evidence = SessionEvidence(session.home, agent)
-                existing_sessions = set(agent_sessions(session, agent))
-                decisions_path = session.home / ".ucode" / f"{agent}-smart-routing-decisions.jsonl"
-                original_decisions = read_jsonl(decisions_path)
-                task = FileTask(session)
-                task.prompt += " Do not delegate."
-                checkpoint = recorder.checkpoint()
-                recorder.prepare_launch()
-                with Terminal(session, f"{SMART_ROUTER_CONFIG_VERSION}-{agent}", [agent]) as tui:
-                    tui.boot(timeout=150)
-                    if agent == CLAUDE:
-                        tui.wait_for(
-                            lambda _, first_prompt=first_prompt_routed: _smart_router_band_shown(
-                                tui, enabled=True, first_prompt=first_prompt
-                            ),
-                            "the ON Smart Router band with the preset's routing scope",
-                        )
-                        tui.wait_for(
-                            lambda _: _smart_router_hint_shown(tui, enabled=True),
-                            "smart router ON in the prompt hint row",
-                        )
-                    tui.submit(task.prompt)
-                    tui.task(evidence, task)
-                    if agent == CLAUDE:
-                        tui.wait_for(
-                            lambda _: (
-                                _smart_router_band_hidden(tui)
-                                and _smart_router_hint_shown(tui, enabled=True)
-                            ),
-                            "the Smart Router band hidden after the launch turn, with "
-                            "smart router ON left in the prompt hint row",
-                        )
-                    requests = recorder.requests_after(checkpoint)
-                    routes = [request for request in requests if request.path == ROUTING_PATH]
-                    assert len(routes) == int(first_prompt_routed), (agent, routes)
-                    expected_model = configs[agent]["default_models"]["default_model"]
+                evidence.assert_applied(task, supported, expected=expected_model)
+                if agent == CLAUDE:
+                    launch_recipe = inference.payload.get("smart_router_recipe_name")
+                    assert (
+                        isinstance(launch_recipe, str)
+                        and launch_recipe.strip()
+                        and launch_recipe != "DISABLED"
+                    )
                     if first_prompt_routed:
-                        assert routes[0].payload["task"]["prompt"] == task.prompt
-                        response = recorder.response_for(routes[0])
-                        assert response.status_code == 200
-                        selections = response.payload["route_selection"]
-                        assert len(selections) == 1
-                        expected_model = selections[0]["route_option"]["model"]
-                        options = routes[0].payload["route_options"]
-                        offered = {canonical_model(option["model"]) for option in options}
-                        assert options and all(option["harness"] == agent for option in options)
-                        assert offered <= {canonical_model(model) for model in supported}
-                        selected = canonical_model(expected_model)
-                        assert selected in offered and selected.startswith("system.ai."), selected
-                    inference = _task_inference_request(requests, agent, task.prompt)
+                        assert routes[0].payload["route_selector"]["router_name"] == launch_recipe
+                    assert "databricks-smart-router-recipe" not in inference.headers
+                else:
+                    assert (
+                        "databricks-smart-router-recipe" in inference.headers
+                    ) == subagent_routed, agent
+                assert (ORCHESTRATOR_CONTEXT.encode() in inference.body) == orchestrator_enabled, (
+                    agent
+                )
+                assert not any(
+                    is_child_session(agent, path, records)
+                    for path, records in agent_sessions(session, agent).items()
+                    if path not in existing_sessions
+                ), agent
+
+                child_task = FileTask(session)
+                child_task.prompt = child_task.delegate_prompt
+                decision_count = len(read_jsonl(decisions_path))
+                checkpoint = recorder.checkpoint()
+                existing_sessions = set(agent_sessions(session, agent))
+                tui.submit(child_task.prompt)
+                # The parent can resume a finished child before replying; wait for its
+                # reply so /tasks sees that run.
+                tui.wait_until(
+                    lambda: (
+                        child_task.completed(session, agent, child=True)
+                        and child_task.completed(session, agent)
+                    ),
+                    "completed native subagent file task and parent reply",
+                )
+                children = {
+                    path: records
+                    for path, records in agent_sessions(session, agent).items()
+                    if path not in existing_sessions and is_child_session(agent, path, records)
+                }
+                completed_children = {
+                    path: records
+                    for path, records in children.items()
+                    if any(
+                        child_task.value in answer for answer in assistant_answers(agent, records)
+                    )
+                }
+                assert len(completed_children) == 1, (agent, children.keys())
+                decisions = read_jsonl(decisions_path)[decision_count:]
+                decision_tasks = {
+                    decision.get("task_name") for decision in decisions if decision.get("task_name")
+                }
+                requests = recorder.requests_after(checkpoint)
+                routes = [
+                    request
+                    for request in requests
+                    if request.path == ROUTING_PATH
+                    and request.payload.get("task", {}).get("prompt") in decision_tasks
+                ]
+                assert len(routes) == int(subagent_routed), (agent, routes)
+                if subagent_routed:
+                    assert_subagent_routed(
+                        session,
+                        agent,
+                        child_task,
+                        decision_ids={decision["decision_id"] for decision in decisions},
+                    )
+                    route_prompt = routes[0].payload["task"]["prompt"]
+                    assert isinstance(route_prompt, str) and route_prompt.strip()
+                    if agent == CLAUDE:
+                        assert child_task.filename in route_prompt
+                    response = recorder.response_for(routes[0])
+                    assert response.status_code == 200
+                    selections = response.payload["route_selection"]
+                    assert len(selections) == 1
+                    inference = _task_inference_request(
+                        requests,
+                        agent,
+                        route_prompt,
+                        after=routes[0].sequence,
+                    )
                     inference = served_inference_request(recorder, requests, inference, agent)
                     assert canonical_model(inference.payload["model"]) == canonical_model(
-                        expected_model
+                        selections[0]["route_option"]["model"]
                     )
-                    evidence.assert_applied(task, supported, expected=expected_model)
                     if agent == CLAUDE:
-                        launch_recipe = inference.payload.get("smart_router_recipe_name")
-                        assert (
-                            isinstance(launch_recipe, str)
-                            and launch_recipe.strip()
-                            and launch_recipe != "DISABLED"
-                        )
-                        if first_prompt_routed:
-                            assert (
-                                routes[0].payload["route_selector"]["router_name"] == launch_recipe
-                            )
+                        assert routes[0].payload["route_selector"]["router_name"] == launch_recipe
+                        assert inference.payload.get("smart_router_recipe_name") == launch_recipe
                         assert "databricks-smart-router-recipe" not in inference.headers
                     else:
-                        assert (
-                            "databricks-smart-router-recipe" in inference.headers
-                        ) == subagent_routed, agent
-                    assert (
-                        ORCHESTRATOR_CONTEXT.encode() in inference.body
-                    ) == orchestrator_enabled, agent
+                        assert "databricks-smart-router-recipe" in inference.headers
+                else:
+                    assert read_jsonl(decisions_path) == original_decisions
                     assert not any(
-                        is_child_session(agent, path, records)
-                        for path, records in agent_sessions(session, agent).items()
-                        if path not in existing_sessions
-                    ), agent
-
-                    child_task = FileTask(session)
-                    child_task.prompt = child_task.delegate_prompt
-                    decision_count = len(read_jsonl(decisions_path))
-                    checkpoint = recorder.checkpoint()
-                    existing_sessions = set(agent_sessions(session, agent))
-                    tui.submit(child_task.prompt)
-                    # The parent can resume a finished child before replying; wait for its
-                    # reply so /tasks sees that run.
-                    tui.wait_until(
-                        lambda task=child_task, agent=agent: (
-                            task.completed(session, agent, child=True)
-                            and task.completed(session, agent)
-                        ),
-                        "completed native subagent file task and parent reply",
-                    )
-                    children = {
-                        path: records
-                        for path, records in agent_sessions(session, agent).items()
-                        if path not in existing_sessions and is_child_session(agent, path, records)
-                    }
-                    completed_children = {
-                        path: records
-                        for path, records in children.items()
-                        if any(
-                            child_task.value in answer
-                            for answer in assistant_answers(agent, records)
-                        )
-                    }
-                    assert len(completed_children) == 1, (agent, children.keys())
-                    decisions = read_jsonl(decisions_path)[decision_count:]
-                    decision_tasks = {
-                        decision.get("task_name")
-                        for decision in decisions
-                        if decision.get("task_name")
-                    }
-                    requests = recorder.requests_after(checkpoint)
-                    routes = [
-                        request
+                        "databricks-smart-router-recipe" in request.headers
+                        or "smart_router_recipe_name" in request.payload
+                        or ORCHESTRATOR_CONTEXT.encode() in request.body
                         for request in requests
-                        if request.path == ROUTING_PATH
-                        and request.payload.get("task", {}).get("prompt") in decision_tasks
-                    ]
-                    assert len(routes) == int(subagent_routed), (agent, routes)
-                    if subagent_routed:
-                        assert_subagent_routed(
-                            session,
-                            agent,
-                            child_task,
-                            decision_ids={decision["decision_id"] for decision in decisions},
-                        )
-                        route_prompt = routes[0].payload["task"]["prompt"]
-                        assert isinstance(route_prompt, str) and route_prompt.strip()
-                        if agent == CLAUDE:
-                            assert child_task.filename in route_prompt
-                        response = recorder.response_for(routes[0])
-                        assert response.status_code == 200
-                        selections = response.payload["route_selection"]
-                        assert len(selections) == 1
-                        inference = _task_inference_request(
-                            requests,
-                            agent,
-                            route_prompt,
-                            after=routes[0].sequence,
-                        )
-                        inference = served_inference_request(recorder, requests, inference, agent)
-                        assert canonical_model(inference.payload["model"]) == canonical_model(
-                            selections[0]["route_option"]["model"]
-                        )
-                        if agent == CLAUDE:
-                            assert (
-                                routes[0].payload["route_selector"]["router_name"] == launch_recipe
-                            )
-                            assert (
-                                inference.payload.get("smart_router_recipe_name") == launch_recipe
-                            )
-                            assert "databricks-smart-router-recipe" not in inference.headers
-                        else:
-                            assert "databricks-smart-router-recipe" in inference.headers
-                    else:
-                        assert read_jsonl(decisions_path) == original_decisions
-                        assert not any(
-                            "databricks-smart-router-recipe" in request.headers
-                            or "smart_router_recipe_name" in request.payload
-                            or ORCHESTRATOR_CONTEXT.encode() in request.body
-                            for request in requests
-                        ), agent
-                    if agent == CLAUDE:
-                        tui.wait_for_background_tasks()
-                        for enabled in (False, True):
-                            tui.submit(f"/smart-router {'on' if enabled else 'off'}")
-                            tui.wait_for(
-                                lambda _, enabled=enabled, first_prompt=first_prompt_routed: (
-                                    _smart_router_band_shown(
-                                        tui, enabled=enabled, first_prompt=first_prompt
-                                    )
-                                ),
-                                f"the {'ON' if enabled else 'OFF'} Smart Router band",
-                            )
-                            state = "ON" if enabled else "OFF"
-                            # The hint row flips with the toggle itself, before any turn.
-                            tui.wait_for(
-                                lambda _, enabled=enabled: _smart_router_hint_shown(
-                                    tui, enabled=enabled
-                                ),
-                                f"smart router {state} in the prompt hint row after the toggle",
-                            )
-                            # The band covers the toggle's first turn and is gone by the second;
-                            # the hint row keeps the state.
-                            follow_up = _file_task(session, agent)
-                            tui.submit(follow_up.prompt)
-                            tui.task(evidence, follow_up)
-                            tui.wait_for(
-                                lambda _, enabled=enabled: (
-                                    _smart_router_band_hidden(tui)
-                                    and _smart_router_hint_shown(tui, enabled=enabled)
-                                ),
-                                f"the {state} Smart Router band hidden by the second turn, with "
-                                f"smart router {state} left in the prompt hint row",
-                            )
-                    tui.exit_normally()
-        finally:
-            if previous is None:
-                session.env.pop("SMART_ROUTER_CONFIG_VERSION", None)
-            else:
-                session.env["SMART_ROUTER_CONFIG_VERSION"] = previous
-            session.revert_machine_wide(
-                f"{SMART_ROUTER_CONFIG_VERSION}-revert",
-                "Smart-router preset cleanup left machine-wide agent settings",
-            )
+                    ), agent
+                if agent == CLAUDE:
+                    tui.wait_for_background_tasks()
+                tui.exit_normally()
+
+    @pytest.mark.parametrize("SMART_ROUTER_CONFIG_VERSION", SMART_ROUTER_CONFIG_VERSIONS)
+    def test_smart_router_preset_claude_status_band_and_hint_row_follow_launch_and_toggles(
+        self, cuj, SMART_ROUTER_CONFIG_VERSION
+    ):
+        """Scenario: launch Claude with a preset, run one file task, then toggle /smart-router off and on.
+
+        Expected: at launch the status band shows ON with the preset's routing scope and the
+        prompt hint row ends with smart router ON. After the launch turn completes the band is
+        hidden and the hint row still shows ON. Each toggle (off, then on) shows the matching
+        band, flips the hint row immediately, and after a following completed file task the
+        band is hidden again while the hint row keeps the toggled state. No delegation or
+        background-task wait is involved.
+        """
+        with smart_router_preset(cuj, SMART_ROUTER_CONFIG_VERSION) as (session, _, recorder, _):
+            first_prompt_routed = _preset_flags(
+                SMART_ROUTER_CONFIG_VERSION, CLAUDE
+            ).first_prompt_routed
+            evidence = SessionEvidence(session.home, CLAUDE)
+            task = FileTask(session)
+            task.prompt += " Do not delegate."
+            recorder.prepare_launch()
+            with Terminal(session, f"{SMART_ROUTER_CONFIG_VERSION}-claude-band", [CLAUDE]) as tui:
+                tui.boot(timeout=150)
+                tui.wait_for(
+                    lambda _: _smart_router_band_shown(
+                        tui, enabled=True, first_prompt=first_prompt_routed
+                    ),
+                    "the ON Smart Router band with the preset's routing scope",
+                )
+                tui.wait_for(
+                    lambda _: _smart_router_hint_shown(tui, enabled=True),
+                    "smart router ON in the prompt hint row",
+                )
+                tui.submit(task.prompt)
+                tui.task(evidence, task)
+                tui.wait_for(
+                    lambda _: (
+                        _smart_router_band_hidden(tui)
+                        and _smart_router_hint_shown(tui, enabled=True)
+                    ),
+                    "the Smart Router band hidden after the launch turn, with "
+                    "smart router ON left in the prompt hint row",
+                )
+                for enabled in (False, True):
+                    tui.submit(f"/smart-router {'on' if enabled else 'off'}")
+                    tui.wait_for(
+                        lambda _, enabled=enabled: _smart_router_band_shown(
+                            tui, enabled=enabled, first_prompt=first_prompt_routed
+                        ),
+                        f"the {'ON' if enabled else 'OFF'} Smart Router band",
+                    )
+                    state = "ON" if enabled else "OFF"
+                    # The hint row flips with the toggle itself, before any turn.
+                    tui.wait_for(
+                        lambda _, enabled=enabled: _smart_router_hint_shown(tui, enabled=enabled),
+                        f"smart router {state} in the prompt hint row after the toggle",
+                    )
+                    # The band covers the toggle's first turn and is gone by the second;
+                    # the hint row keeps the state.
+                    follow_up = _file_task(session, CLAUDE)
+                    tui.submit(follow_up.prompt)
+                    tui.task(evidence, follow_up)
+                    tui.wait_for(
+                        lambda _, enabled=enabled: (
+                            _smart_router_band_hidden(tui)
+                            and _smart_router_hint_shown(tui, enabled=enabled)
+                        ),
+                        f"the {state} Smart Router band hidden by the second turn, with "
+                        f"smart router {state} left in the prompt hint row",
+                    )
+                tui.exit_normally()
 
     @pytest.mark.parametrize("agent", AGENTS)
     def test_agent_completes_real_first_prompt_file_task_without_model_override(

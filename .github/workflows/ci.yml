@@ -173,7 +173,17 @@ jobs:
       # fallback EOFs instead of hanging the runner. With DATABRICKS_BEARER
       # set, the auth code path doesn't shell out at all — this is a safety
       # net for any code path we may have missed.
-      - run: uv run --no-sync pytest tests/test_e2e.py -v -k "$TEST_KEYWORD" < /dev/null
+      # Rerun a case once only for live-service timeouts and transient upstream errors;
+      # every other failure fails on the first attempt. `-rfER` lists reruns in the summary.
+      - run: |
+          uv run --no-sync pytest tests/test_e2e.py -v -rfER -k "$TEST_KEYWORD" \
+            --reruns 1 --reruns-delay 5 \
+            --only-rerun TimeoutExpired \
+            --only-rerun 'timed out after [0-9]+s' \
+            --only-rerun 'TIMEOUT after' \
+            --only-rerun TEMPORARILY_UNAVAILABLE \
+            --only-rerun REQUEST_LIMIT_EXCEEDED \
+            < /dev/null
 
   e2e:
     name: All agent tests
