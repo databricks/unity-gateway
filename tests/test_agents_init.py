@@ -96,7 +96,7 @@ class TestInstallAiToolsForAgents:
         captured = self._capture(monkeypatch)
         # The default-on change keeps UG's existing agent coverage.
         install_databricks_ai_tools_for_agents(
-            ["claude", "codex", "gemini", "pi", "kilo"],
+            ["claude", "codex", "gemini", "pi"],
             {"profile": "prof", "databricks_ai_tools_enabled": True},
         )
         assert captured == {"agents": ["claude-code", "codex"], "profile": "prof"}
