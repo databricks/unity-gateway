@@ -68,9 +68,11 @@ a tool can be absent on the first model turn. Cowork may also disconnect idle se
 alone does not establish disconnection or missing authentication. If the requested connector's
 tools are absent at startup, after resume, or while it is `pending`, the skill directs Claude
 to wait five seconds at a time using an exposed shell or wait tool, then recheck availability.
-Waiting stops as soon as tools appear, with at most thirty seconds of waiting in total. This gives asynchronous
-initialization time to finish; it does not guarantee that the client refreshes exposed tools.
-Use the tools currently exposed by the client;
+Its body starts with a numbered sequence: check exposed tools, actually wait when tools are
+missing, authenticate if only that tool appears, and report the observed limitation if tools
+remain absent. Waiting stops as soon as tools appear, with at most six pauses (thirty seconds
+of waiting). This gives asynchronous initialization time to finish; it does not guarantee
+that the client refreshes exposed tools. Use the tools currently exposed by the client;
 `ToolSearch` is an option only when available. Other discovery/status actions must support
 the requested operation in their descriptions, and plugin/catalog results do not establish
 that a service tool is callable. The resulting tool name follows
