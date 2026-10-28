@@ -40,8 +40,9 @@ Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin 
 `test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
 `native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in CI. The existing Claude
-skill-toggle integration journey checks the live recipe payload field and Agent/Task
-delegation descriptions across on/off/on. Native request-construction checks verify the
+skill-toggle integration journeys check the live recipe payload field (launch recipe at
+launch and after off/on, DISABLED after off) and Agent/Task delegation descriptions.
+Native request-construction checks verify the
 description switches after both native commands and CLI session toggles, including
 native toggles after resuming a saved prompt-snapshot fixture. The description includes
 instructions to end the current turn while awaiting a
@@ -120,7 +121,7 @@ under `e2e_cuj/` and `integration/`; no workflow edit is needed. Integration cas
 retain their agent and workspace markers, including `managed_fixture` when needed.
 See [the harness opt-in guide](integration/README.md#opting-into-harness-latest).
 
-CUJ 4's preset journeys check Claude's ON/OFF status band, routing scope, and
+CUJ 4's Claude-only preset band journey (separate from the delegation journeys) checks Claude's ON/OFF status band, routing scope, and
 updates after off/on toggles, and that the band is hidden after the launch turn and by
 the second turn after each toggle. They also check that the prompt hint row under the
 input ends with `smart router ON` from launch, flips to `OFF` and back to `ON` with each
@@ -148,8 +149,8 @@ Offline PTY checks verify that the Claude background-task wait observes "No task
 running" or a native task menu containing only completed rows before sending `/exit`, without
 stopping tasks or confirming an exit dialog. Running/scheduled sections, incomplete row counts,
 and completed-task text outside the native menu cannot satisfy the wait.
-The live Claude subagent skill-toggle journey uses this wait after its final calculation.
-CUJ4's Claude preset sessions also use it after verifying delegated file tasks: a completed
+The live Claude subagent skill-toggle journeys use this wait after their final calculation.
+CUJ4's Claude delegation sessions also use it after verifying delegated file tasks: a completed
 answer does not prove that a resumed child has stopped running.
 They cover Claude/Codex helper dispatch and rejection of routing decisions without
 the agent-specific prompt-submission evidence.
@@ -188,9 +189,9 @@ CUJ4 accepts both top-level tool definitions (Codex 0.154.0) and Responses Lite
 task name to the recipient; plaintext prompts still match exactly. Both require tools.
 The original smart-routing CUJ runs four fresh sessions: routed and explicit model for both
 Claude and Codex, with explicit-model bypass assertions enabled for both agents.
-One additional test has five `SMART_ROUTER_CONFIG_VERSION` cases.
-Each case exercises both agents and checks first-prompt routing, orchestrator context in
-inference input, and a completed explicitly requested routed subagent. It does not establish
+Per-agent tests cover six `SMART_ROUTER_CONFIG_VERSION` cases each; every case checks
+first-prompt routing, orchestrator context in inference input, and a completed explicitly
+requested routed subagent. A separate Claude-only test covers the status band and hint row. It does not establish
 automatic orchestrator delegation. Routing-disabled coverage is deferred until a separately
 preconfigured workspace is assigned.
 
@@ -607,7 +608,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_codex_app_reports_unknown_argument` | Pass an invalid option directly to `ug codex app` with legacy smart routing off/on | Real Codex parser error and status preserved |
 | `test_ug_codex_app_server_client_initializes` | Connect a stdio client, direct/`--` separator, with legacy smart routing off/on | Actual JSON-RPC initialize response; no non-JSON stdout; no routing |
 | `test_smart_routing_claude_route_subagent_hook`, `test_smart_routing_codex_route_subagent_hook` | Pipe a native spawn payload to the installed Claude mod command or Codex PreToolUse hook with legacy subagent routing or each supported routing preset | Claude returns model/rationale/updatedInput JSON naming the routed agent the mod labels; Codex returns an allow-hook decision; requested model replaced by a routed agent definition (Claude) or bundled catalog slug (Codex) from the offered models; one audited decision matching the session and task |
-| `test_smart_router_skill_toggles_claude_subagent_routing`, `test_smart_router_skill_toggles_codex_subagent_routing` | Configure, launch a real subagent-only TUI with legacy routing-only/orchestration flags or the three subagent-only presets, then spawn tagged children while invoking the installed Smart Router skill to switch routing on -> off -> on in the same session | Routing-only cases install `smart-router`; orchestration cases also install `smart-router-orchestrator`; all three native children complete; only routing-enabled phases show a native model/rationale row (Claude) or subagent banner (Codex) and produce a live routing decision correlated with the child; Claude's recorded task inference payloads carry `smart_router_recipe_name` as launch recipe -> DISABLED -> launch recipe, omit the recipe header, and receive successful gateway responses; opted-in Codex banners include `[orchestrator on]`; no first-prompt routing wrapper; the customer full-mode preset is intentionally outside this journey; normal exit |
+| `test_smart_router_routes_{claude,codex}_subagent_at_launch`, `test_smart_router_skill_turns_{claude,codex}_subagent_routing_off`, `test_smart_router_skill_turns_{claude,codex}_subagent_routing_back_on` | Configure, launch a real subagent-only TUI with legacy routing-only/orchestration flags or the three subagent-only presets, each in its own fresh session: spawn a tagged child at launch; invoke the installed Smart Router skill to turn routing off then spawn a child; or spawn a routed child, turn routing off and spawn an unrouted child, then turn routing back on and spawn a routed child | Routing-only cases install `smart-router`; orchestration cases also install `smart-router-orchestrator`; each tagged native child completes; routed children (launch, before off and after back on) show a native model/rationale row (Claude) or subagent banner (Codex) and produce a live routing decision correlated with the child, while each child after off shows neither and has no decision; Claude's recorded task inference payloads carry `smart_router_recipe_name` as the launch recipe (`at_launch`, `back_on`, where the second child must match the launch child) or DISABLED (after off), omit the recipe header, and receive successful gateway responses; opted-in Codex banners include `[orchestrator on]`; no first-prompt routing wrapper; the customer full-mode preset is intentionally outside this journey; normal exit |
 | `test_ug_configure_claude_repeat_and_revert`, `test_ug_configure_codex_repeat_and_revert` | Configure twice over user settings; complete a task; revert twice | Settings preserved; no bearer in ug state; generated config removed; status unconfigured |
 | `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | Old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
@@ -847,7 +848,7 @@ verify that neither a sudo capability probe nor a prompting worker is started.
 | Fresh provider/parent validation and mixed Bedrock filtering | Not covered after removing the duplicate model-discovery suites |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
-| Claude/Codex interactive smart routing | First-prompt routing through `first_prompt_and_subagent_no_orch_v0` is covered by the `managed_fixture` banner journeys and CUJ4's preset journeys. CUJ4's managed journeys and the managed-default skill-toggle cases verify that `smart_routing.enabled` alone leaves the first prompt unrouted and turns on Smart Router Orchestrator; `--enable-smart-routing` has component coverage only. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing on -> off -> on within one Claude/Codex session. The scheduled harness-latest workflow repeats CUJ4, routing hooks, skill toggles, and banners with both latest agents. Plugin-refresh survival and native daemon/background dispatch remain deferred. |
+| Claude/Codex interactive smart routing | First-prompt routing through `first_prompt_and_subagent_no_orch_v0` is covered by the `managed_fixture` banner journeys and CUJ4's preset journeys. CUJ4's managed journeys and the managed-default skill-toggle cases verify that `smart_routing.enabled` alone leaves the first prompt unrouted and turns on Smart Router Orchestrator; `--enable-smart-routing` has component coverage only. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing at launch, off, and off -> on in separate Claude/Codex sessions. The scheduled harness-latest workflow repeats CUJ4, routing hooks, skill toggles, and banners with both latest agents. Plugin-refresh survival and native daemon/background dispatch remain deferred. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests. Codex desktop's shared-config catalog pointer (repeat configure and a user-owned pointer) is covered by `integration/test_ug_configure_codex_desktop.py`; desktop tracing, GUI, and inference are not |
 | Native macOS/Windows live TUI, managed settings, resize/signals | Windows fresh-install, CLI, local helpers, and the Claude headless gateway journey are advisory; Codex Windows CI is blocked on npm proxy access. Live PTY/TUI, managed settings, and signal behavior still need separate platform implementation and coverage |
@@ -863,7 +864,7 @@ Native launch-option component tests (`native_claude/test_mod.py`) check two rea
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
 
-The real session-control process call is covered by the live skill-toggle journey;
+The real session-control process call is covered by the live skill-toggle journeys;
 native component tests stub the subagent routing process protocol. No component
 check asserts that the launch paths withdraw the skills.
 The TypeScript launch test also checks event/result forwarding. Separate cases cover
@@ -871,10 +872,10 @@ denied-write rollback, invalid request bodies, disabled launches, and body-merge
 no simulated subprocess success is used to claim toggle coverage.
 
 `integration/test_ug_smart_routing_hooks.py` checks `smart_router_recipe_name` in its existing
-Claude skill-toggle journey. The recorder forwards to the real workspace, configured
+Claude skill-toggle journeys. The recorder forwards to the real workspace, configured
 through public `ug configure --workspace <recorder-url>` without hand-writing ug state.
 Checkpoints and each calculation's unique marker correlate parent/child inference
-requests to the on/off/on phases. All matched tool-capable inference payloads must carry the
+requests to the launch, off, and back-on phases. All matched tool-capable inference payloads must carry the
 launch recipe, `DISABLED`, then the launch recipe again, omit the recipe header, and reach non-empty HTTP 200
 responses, with only the existing verified native compatibility retries accepted.
 The expected launch recipe comes from the recorded routing request, so a default

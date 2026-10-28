@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 from types import SimpleNamespace
@@ -156,12 +157,18 @@ def e2e_token(e2e_workspace):
     return get_databricks_token(e2e_workspace)
 
 
-@pytest.fixture(scope="session")
-def e2e_state(e2e_workspace, e2e_token):
-    """Full state dict mirroring what configure_shared_state produces."""
-    claude_models = fetch_ai_gateway_claude_models(e2e_workspace, e2e_token)
-    gemini_models = fetch_gemini_models(e2e_workspace, e2e_token)
-    codex_models = fetch_codex_models(e2e_workspace, e2e_token)
+@functools.cache
+def e2e_state_for(workspace: str) -> dict:
+    """Full state dict mirroring what configure_shared_state produces.
+
+    Cached per process so collection-time parametrization (tests/test_e2e.py) and the
+    ``e2e_state`` fixture query the live catalogs once. Keyed on the workspace only: a bearer
+    command mints a fresh token per call, so a token key would miss and fetch a second snapshot.
+    A failed fetch raises and is not cached."""
+    token = get_databricks_token(workspace)
+    claude_models = fetch_ai_gateway_claude_models(workspace, token)
+    gemini_models = fetch_gemini_models(workspace, token)
+    codex_models = fetch_codex_models(workspace, token)
 
     opencode_models: dict = {}
     if claude_models:
@@ -170,11 +177,18 @@ def e2e_state(e2e_workspace, e2e_token):
         opencode_models["gemini"] = gemini_models
 
     return {
-        "workspace": e2e_workspace,
+        "workspace": workspace,
         "claude_models": claude_models,
         "gemini_models": gemini_models,
         "codex_models": codex_models,
         "opencode_models": opencode_models,
-        "base_urls": build_shared_base_urls(e2e_workspace),
+        "base_urls": build_shared_base_urls(workspace),
         "managed_configs": {},
     }
+
+
+@pytest.fixture(scope="session")
+def e2e_state(e2e_workspace):
+    """Full state dict mirroring what configure_shared_state produces."""
+    # Copy so a test mutating its state cannot leak into the cached catalog.
+    return dict(e2e_state_for(e2e_workspace))

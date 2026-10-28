@@ -37,11 +37,10 @@ from ucode.constants import (
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
 )
-from ucode.custom_oauth import custom_oauth_cli_enabled, get_custom_client_token
+from ucode.custom_oauth import custom_oauth_cli_enabled, launch_token
 from ucode.databricks import (
     AnthropicModelCatalog,
     build_auth_token_argv,
-    get_databricks_token,
     list_anthropic_model_catalog,
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
@@ -115,19 +114,6 @@ def remove_smart_router_session_skills(agent: str) -> None:
             uninstall_agent_skill(skill, agent, config_io.APP_DIR.parent)
         except (OSError, RuntimeError, ValueError) as exc:
             print_warning(f"Could not remove the {skill} skill: {exc}")
-
-
-def _launch_token(state: dict, workspace: str) -> str:
-    custom_oauth = state.get("custom_oauth")
-    if custom_oauth_cli_enabled(custom_oauth) and isinstance(custom_oauth, dict):
-        return get_custom_client_token(
-            workspace,
-            custom_oauth["client_id"],
-            custom_oauth["redirect_url"],
-            scopes=custom_oauth["scopes"],
-            profile=custom_oauth.get("profile"),
-        )
-    return get_databricks_token(workspace, state.get("profile"))
 
 
 def _model_picker_catalog() -> AnthropicModelCatalog | None:
@@ -655,7 +641,7 @@ def launch_claude(
         raise RuntimeError(
             "Smart routing needs a configured workspace; run `ucode configure claude` first."
         )
-    token = _launch_token(state, workspace)
+    token = launch_token(state, workspace)
     os.environ[OAUTH_TOKEN_ENV_VAR] = token
     # if modelPicker is defined, then skip model discovery.
     picker_catalog = _model_picker_catalog()
@@ -835,7 +821,7 @@ def launch_codex(
             "Smart routing could not determine a starting Codex model for this workspace."
         )
 
-    os.environ[OAUTH_TOKEN_ENV_VAR] = _launch_token(state, workspace)
+    os.environ[OAUTH_TOKEN_ENV_VAR] = launch_token(state, workspace)
     catalog_models = custom_catalog_models()
     available_models = catalog_models or _cached_routing_models(state)
     if not available_models:
@@ -895,7 +881,7 @@ def launch_codex(
             app_server_url,
             available_models=available_models,
             workspace=workspace,
-            token_provider=lambda: _launch_token(state, workspace),
+            token_provider=lambda: launch_token(state, workspace),
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
         )

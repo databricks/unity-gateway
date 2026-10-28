@@ -60,6 +60,12 @@ def test_managed_integration_ci_is_blocking():
 
 
 WORKFLOW = Path(__file__).parent.parent / ".github/workflows/integration.yml"
+# The quarantined Claude Smart Router toggle journey, split into one test per toggle state.
+CLAUDE_TOGGLE_TESTS = (
+    "test_smart_router_routes_claude_subagent_at_launch",
+    "test_smart_router_skill_turns_claude_subagent_routing_off",
+    "test_smart_router_skill_turns_claude_subagent_routing_back_on",
+)
 
 
 def _workflow_job(name, next_name):
@@ -95,12 +101,7 @@ def test_soft_fail_marks_only_the_affected_claude_journey():
         for node in ast.parse(path.read_text()).body:
             if isinstance(node, ast.FunctionDef) and "soft_fail" in _markers(node.decorator_list):
                 marked.append((path.name, node.name))
-    assert marked == [
-        (
-            "test_ug_smart_routing_hooks.py",
-            "test_smart_router_skill_toggles_claude_subagent_routing",
-        )
-    ]
+    assert marked == [("test_ug_smart_routing_hooks.py", name) for name in CLAUDE_TOGGLE_TESTS]
 
 
 @pytest.mark.parametrize(
@@ -109,9 +110,9 @@ def test_soft_fail_marks_only_the_affected_claude_journey():
         ("smoke", "claude", "test_ug_claude_headless_prompt_argument"),
         ("smoke", "codex", "test_ug_codex_headless_prompt_argument"),
         ("full", "claude", "test_smart_routing_claude_route_subagent_hook"),
-        ("full", "codex", "test_smart_router_skill_toggles_codex_subagent_routing"),
+        ("full", "codex", "test_smart_router_skill_turns_codex_subagent_routing_back_on"),
         ("managed", "claude", "test_ug_configure_managed_claude"),
-        ("managed", "codex", "test_smart_router_skill_toggles_codex_subagent_routing"),
+        ("managed", "codex", "test_smart_router_skill_turns_codex_subagent_routing_back_on"),
         ("soft-fail", "claude", None),
     ],
 )
@@ -143,13 +144,13 @@ def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, retained_test
     assert result.returncode == 0, result.stdout + result.stderr
     cases = {line for line in result.stdout.splitlines() if line.startswith("test_")}
     assert cases, result.stdout
-    toggle = "test_smart_router_skill_toggles_claude_subagent_routing"
     if retained_test is not None:
         assert any(f"::{retained_test}" in case for case in cases), cases
-        assert not any(f"::{toggle}" in case for case in cases), cases
+        assert not any(f"::{toggle}[" in case for case in cases for toggle in CLAUDE_TOGGLE_TESTS)
         return
     assert cases == {
         f"test_ug_smart_routing_hooks.py::{toggle}[{variant}]"
+        for toggle in CLAUDE_TOGGLE_TESTS
         for variant in (
             "routing-only",
             "orchestration",
