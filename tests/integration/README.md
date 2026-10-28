@@ -1,5 +1,10 @@
 # Integration tests
 
+Component tests in `../test_databricks.py` and the existing configure scenario in
+`../test_cli.py` distinguish inconclusive gateway probe failures from HTTP 404. HTTP 499
+still blocks setup and never reports success. Live availability and transport recovery
+are not established by these controlled HTTP-boundary cases.
+
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls
 still routing waiting for a later reply, distinct

@@ -6091,11 +6091,13 @@ class TestConfigureSharedStateUsePat:
                 "model service access could not be verified",
             ),
             ([(None, "HTTP 401 Unauthorized")], "rejected the access token"),
+            ([(None, "HTTP 499 Unknown")], "availability could not be verified"),
         ],
         ids=[
             "model-service-unavailable",
             "model-service-forbidden",
             "invalid-token",
+            "inconclusive-http-failure",
         ],
     )
     def test_local_gateway_probe_failures_do_not_print_success(

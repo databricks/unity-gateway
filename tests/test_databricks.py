@@ -3671,20 +3671,33 @@ class TestProbeUnityGatewayCapabilities:
             "USE SCHEMA and EXECUTE on system.ai",
         )
 
-    def test_model_service_unavailable_raises(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("reason", "error_match"),
+        [
+            ("HTTP 404: model services unavailable", "not enabled"),
+            ("HTTP 499 Unknown", "availability could not be verified"),
+            ("HTTP 503 Service Unavailable", "availability could not be verified"),
+            ("Connection timed out", "availability could not be verified"),
+            ("Invalid JSON response", "availability could not be verified"),
+        ],
+    )
+    def test_model_service_unavailable_raises(self, monkeypatch, reason, error_match):
         calls: list[str] = []
 
         def fake_get(url, token):
             calls.append(url)
-            return None, "HTTP 404: model services unavailable"
+            return None, reason
 
         monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
 
-        with pytest.raises(RuntimeError, match="not enabled") as excinfo:
+        with pytest.raises(RuntimeError, match=error_match) as excinfo:
             db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
 
         message = str(excinfo.value)
-        assert "HTTP 404: model services unavailable" in message
+        assert reason in message
+        if not reason.startswith("HTTP 404"):
+            assert "not enabled" not in message
+            assert "retry" in message
         # surfaced errors must stay free of internal version vocabulary
         assert "v2" not in message.lower()
         assert "v3" not in message.lower()

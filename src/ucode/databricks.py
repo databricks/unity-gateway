@@ -3785,6 +3785,14 @@ def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe
     if _looks_like_permission_failure(reason):
         _raise_model_service_permission_failure(workspace, reason)
 
+    if not reason.startswith("HTTP 404"):
+        raise RuntimeError(
+            "Databricks Unity Gateway availability could not be verified: "
+            f"model services probe failed ({reason}). "
+            "Check the connection and service status, then retry. "
+            f"See {AI_GATEWAY_DOCS_URL}"
+        )
+
     raise RuntimeError(
         "Databricks Unity Gateway is not enabled on this workspace: model services "
         f"({reason}) are not available. See {AI_GATEWAY_DOCS_URL}"
