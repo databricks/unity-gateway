@@ -1394,6 +1394,27 @@ class TestAntigravityDispatch:
         assert installed == [True]
         run.assert_not_called()
 
+    def test_old_off_path_install_is_caught_and_upgraded_in_place(self, monkeypatch):
+        # `~/.local/bin` is not on PATH: probing bare `agy` would read "unknown" and pass.
+        installed = "/home/u/.local/bin/agy"
+        versions = iter(["1.2.14", "1.4.9"])
+        probed = []
+        monkeypatch.setattr(agents_mod.shutil, "which", lambda b: None)
+        monkeypatch.setattr(agents_mod.antigravity, "resolve_binary", lambda: installed)
+        monkeypatch.setattr(
+            agents_mod.antigravity,
+            "agent_version",
+            lambda binary: probed.append(binary) or next(versions),
+        )
+        monkeypatch.setenv(agents_mod.AUTO_UPGRADE_AGENT_ENV, "1")
+        run = MagicMock()
+        monkeypatch.setattr(agents_mod.subprocess_cross_os, "run", run)
+
+        assert agents_mod.install_tool_binary("antigravity") is True
+
+        assert run.call_args.args[0] == [installed, "update"]
+        assert probed == [installed, installed]
+
     def test_native_installer_failure_is_actionable(self, monkeypatch):
         monkeypatch.setattr(agents_mod.shutil, "which", lambda b: None)
         monkeypatch.setattr(agents_mod.antigravity, "resolve_binary", lambda: None)
