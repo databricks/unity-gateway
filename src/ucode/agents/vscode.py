@@ -23,7 +23,7 @@ from ucode.databricks import build_auth_shell_command, discover_model_services
 from ucode.managed_files import OS, current_os
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.system_cross_os import windows_program_files_dir
-from ucode.ui import print_kv, print_warning
+from ucode.ui import print_kv, print_note, print_warning
 
 EXTENSION_DIR = Path(__file__).resolve().parent.parent / "vscode" / "extension"
 EXTENSION_ID = "databricks.unity-gateway"
@@ -230,6 +230,8 @@ def configure(state: dict) -> bool:
             f"{exc} Install it from VS Code's Extensions view, or rerun `ug configure --agents vscode`."
         )
         return False
+    # Settings apply live, but an open window keeps running the extension build it loaded.
+    print_note("Reload open VS Code windows (Developer: Reload Window) to use the extension.")
     return True
 
 

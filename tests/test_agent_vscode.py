@@ -116,7 +116,7 @@ class TestConfigure:
             "unityGateway.authCommand": vscode.build_auth_shell_command(WS, "dev"),
         }
 
-    def test_creates_missing_settings_and_installs_the_packed_extension(self, code):
+    def test_creates_missing_settings_and_installs_the_packed_extension(self, code, capsys):
         assert vscode.configure(STATE)
 
         assert set(_settings_values()) == set(vscode.SETTINGS)
@@ -129,6 +129,7 @@ class TestConfigure:
             "extension/out/extension.js",
             "extension/package.json",
         ]
+        assert "Developer: Reload Window" in _printed(capsys)
 
     def test_reruns_update_values_and_reinstall_the_same_version(self, code):
         vscode.configure(STATE)
