@@ -44,8 +44,8 @@ and capability-hook activation are not covered here; interactive selection is un
 Claude Desktop has installed-CLI lifecycle and subscription-relay coverage on Linux and
 Windows. The lifecycle journey configures twice and reverts against an isolated native profile
 path, preserves an unrelated profile and metadata, then runs the exact generated credential
-helper and validates its token against the live models API. It requires system.ai Claude models
-without an MPS override and uses the profile's credentials and headers for a small Messages
+helper and validates its token against the paginated live models API. It requires system.ai
+Claude models without an MPS override and uses the profile's credentials and headers for a small Messages
 request on `system.ai.claude-haiku-4-5`, requiring HTTP 200, a nonempty response model ID,
 and the exact fresh marker. The service may return a provider model ID rather than its alias;
 this does not pin or prove its backing model revision. The relay journey selects
@@ -59,9 +59,11 @@ requires real Claude CLI installation of the Cowork plugin. It registers system.
 `ug mcp add --names system.ai.dbsql`, then runs the command from the installed plugin with the
 MCP SDK. The check initializes the protocol, discovers execute_sql/poll_sql_result, executes
 `SELECT sha2('<fresh run id>', 256)`, polls pending statements, and requires the computed receipt
-in the successful result. This proves an actual tool call rather than an echoed query. Both
-journeys verify reconfiguration preserves the profile/plugin and revert removes UG's entries
-while retaining unrelated profiles and metadata.
+in the successful result's single typed cell. This proves execution rather than an echoed query.
+Both journeys verify reconfiguration preserves the profile/plugin and revert removes UG's entries
+while retaining unrelated profiles and metadata. A separate local personal plugin is installed
+through the real Claude CLI before configuration; its registry entry must survive installation,
+reconfiguration, and revert unchanged.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.dbsql and allow

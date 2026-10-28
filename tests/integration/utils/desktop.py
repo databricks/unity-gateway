@@ -87,7 +87,9 @@ async def assert_desktop_mcp(session, registration: dict, workspace: str, run_id
                         assert result["status"]["state"] == "SUCCEEDED", result
                         assert result["manifest"]["total_row_count"] == 1, result
                         # A computed receipt proves execution rather than an echoed SQL request.
-                        assert sha256(run_id.encode()).hexdigest() in json.dumps(result["result"])
+                        assert result["result"]["data_typed_array"] == [
+                            {"values": [{"str": sha256(run_id.encode()).hexdigest()}]}
+                        ], result
         finally:
             diagnostics.seek(0)
             stderr = session.redact(diagnostics.read())

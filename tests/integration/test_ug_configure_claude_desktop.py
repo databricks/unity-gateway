@@ -20,6 +20,7 @@ from utils.desktop import (
 )
 from utils.evidence import fresh_id
 from utils.harness import process_group_options, stop_process
+from utils.provider_catalog import fetch_anthropic_parent_catalog
 from utils.terminal import ConfigureTerminal, TerminalProcess
 
 pytestmark = [pytest.mark.live, pytest.mark.claude]
@@ -28,10 +29,51 @@ UG_PROFILE_ID = "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6"
 UNRELATED_PROFILE_ID = "62de45ce-d2ad-4507-a8e2-7e59529af303"
 CLI_PROFILE = "desktop-integration"
 UNRELATED_PROFILE = {"inferenceProvider": "anthropic", "userSetting": "keep"}
+UNRELATED_PLUGIN_ID = "personal@desktop-integration"
 
 
 def _prepare_desktop(session, workspace):
     root = prepare_cowork_home(session)
+    marketplace = session.cwd / "personal-marketplace"
+    plugin = marketplace / "plugins/personal/.claude-plugin"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.json").write_text(json.dumps({"name": "personal", "version": "1.0.0"}))
+    (marketplace / ".claude-plugin").mkdir()
+    (marketplace / ".claude-plugin/marketplace.json").write_text(
+        json.dumps(
+            {
+                "name": "desktop-integration",
+                "owner": {"name": "Desktop integration"},
+                "plugins": [{"name": "personal", "source": "./plugins/personal"}],
+            }
+        )
+    )
+    # Install user-owned input through Claude so its native registry format stays authoritative.
+    claude_config_dir = session.env["CLAUDE_CONFIG_DIR"]
+    session.env["CLAUDE_CONFIG_DIR"] = str(root)
+    try:
+        session.run(
+            "plugin",
+            "marketplace",
+            "add",
+            str(marketplace),
+            "--cowork",
+            "--json",
+            binary=session.which("claude"),
+        )
+        session.run(
+            "plugin",
+            "install",
+            UNRELATED_PLUGIN_ID,
+            "--cowork",
+            "--json",
+            binary=session.which("claude"),
+        )
+    finally:
+        session.env["CLAUDE_CONFIG_DIR"] = claude_config_dir
+    installed = json.loads((root / "cowork_plugins/installed_plugins.json").read_text())
+    unrelated_plugin = installed["plugins"][UNRELATED_PLUGIN_ID]
+    assert unrelated_plugin
     config_library = desktop_config_library(session)
     config_library.mkdir(parents=True)
     (config_library / f"{UNRELATED_PROFILE_ID}.json").write_text(json.dumps(UNRELATED_PROFILE))
@@ -47,7 +89,12 @@ def _prepare_desktop(session, workspace):
     Path(session.env["DATABRICKS_CONFIG_FILE"]).write_text(
         f"[{CLI_PROFILE}]\nhost = {workspace}\nauth_type = databricks-cli\n"
     )
-    return config_library, root
+    return config_library, root, unrelated_plugin
+
+
+def _assert_unrelated_cowork_plugin(root, expected):
+    installed = json.loads((root / "cowork_plugins/installed_plugins.json").read_text())
+    assert installed["plugins"][UNRELATED_PLUGIN_ID] == expected
 
 
 def _desktop_profile(session, config_library, workspace):
@@ -76,7 +123,7 @@ def _assert_desktop_selection(config_library, *, configured):
     )
 
 
-def _revert_desktop(session, config_library, root):
+def _revert_desktop(session, config_library, root, unrelated_plugin):
     if os.name == "posix":
         with TerminalProcess(
             session, "ug", [str(session.binary), "revert"], "desktop-revert"
@@ -91,6 +138,7 @@ def _revert_desktop(session, config_library, root):
     installed = root / "cowork_plugins/installed_plugins.json"
     if installed.exists():
         assert "ug@unity-gateway-cowork" not in json.loads(installed.read_text())["plugins"]
+    _assert_unrelated_cowork_plugin(root, unrelated_plugin)
 
 
 def _run_credential_helper(session, profile):
@@ -162,11 +210,12 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     prior selection. The exact generated helper returns a credential accepted by the live models
     API and completes a Messages request on a configured system.ai Claude model. The installed
     Cowork plugin discovers DBSQL tools and executes a read-only query with a computed receipt.
-    Repeat configure preserves both configurations. This checks native Linux/Windows commands
+    Repeat configure preserves both configurations; an unrelated personal plugin survives
+    configure and revert unchanged. This checks native Linux/Windows commands
     and protocols, not Desktop GUI, skill execution, or browser login; CI supplies a bearer.
     """
     session = live_session
-    config_library, root = _prepare_desktop(session, workspace)
+    config_library, root, unrelated_plugin = _prepare_desktop(session, workspace)
 
     configure_args = (
         "configure",
@@ -193,27 +242,15 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     token_output = _run_credential_helper(session, profile)
     token_matches = token_output == session.env["DATABRICKS_BEARER"].strip() + "\n"
     assert token_matches, "Desktop helper must emit only the configured CI bearer"
-    request = urllib.request.Request(
-        profile["inferenceGatewayBaseUrl"] + "/v1/models",
-        headers={
-            **profile["inferenceCustomHeaders"],
-            "Authorization": "Bearer " + token_output.strip(),
-        },
-    )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        assert response.status == 200
-        catalog = json.load(response)["data"]
-        assert catalog
-        session.record(
-            "desktop-helper.json", {"models_status": response.status, "model_count": len(catalog)}
-        )
+    catalog = fetch_anthropic_parent_catalog(workspace, token_output.strip(), "system.ai")
+    session.record("desktop-helper.json", {"model_count": len(catalog.model_ids)})
 
     models = profile["inferenceModels"]
     assert models and all(
         model["name"].startswith("system.ai.") and "claude-" in model["name"].lower()
         for model in models
     )
-    assert {model["name"] for model in models} <= {model["id"] for model in catalog}
+    assert {model["name"] for model in models} <= set(catalog.model_ids)
     headers = {key.casefold(): value for key, value in profile["inferenceCustomHeaders"].items()}
     assert headers["x-databricks-use-coding-agent-mode"] == "true"
     assert "databricks-model-provider-service" not in headers
@@ -229,13 +266,15 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     _assert_desktop_selection(config_library, configured=True)
     session.run("mcp", "add", "--names", "system.ai.dbsql", timeout=240)
     servers = installed_cowork_servers(session, root)
+    _assert_unrelated_cowork_plugin(root, unrelated_plugin)
     anyio.run(assert_desktop_mcp, session, servers["dbsql"], workspace, fresh_id())
 
     session.run(*configure_args, timeout=240)
     assert _desktop_profile(session, config_library, workspace) == profile
     assert installed_cowork_servers(session, root) == servers
+    _assert_unrelated_cowork_plugin(root, unrelated_plugin)
     _assert_desktop_selection(config_library, configured=True)
-    _revert_desktop(session, config_library, root)
+    _revert_desktop(session, config_library, root, unrelated_plugin)
 
 
 @pytest.mark.tui
@@ -249,10 +288,11 @@ def test_ug_configure_claude_desktop_subscription_relay(
     headers complete a real Anthropic Messages request with a fresh marker on the configured
     subscription model. Its installed Cowork plugin discovers DBSQL tools and returns a computed
     query receipt. Reconfigure preserves the profile/plugin; revert restores unrelated settings
-    and unregisters the plugin. No Desktop GUI, connector skill, or browser OAuth is exercised.
+    and unregisters only UG's plugin, preserving an unrelated personal plugin. No Desktop GUI,
+    connector skill, or browser OAuth is exercised.
     """
     session = live_session
-    config_library, root = _prepare_desktop(session, workspace)
+    config_library, root, unrelated_plugin = _prepare_desktop(session, workspace)
 
     command = [
         str(session.binary),
@@ -329,6 +369,7 @@ def test_ug_configure_claude_desktop_subscription_relay(
     _assert_desktop_selection(config_library, configured=True)
     session.run("mcp", "add", "--names", "system.ai.dbsql", timeout=240)
     servers = installed_cowork_servers(session, root)
+    _assert_unrelated_cowork_plugin(root, unrelated_plugin)
     anyio.run(assert_desktop_mcp, session, servers["dbsql"], workspace, fresh_id())
 
     with ConfigureTerminal(session, "claude", command, "reconfigure-desktop-relay") as configure:
@@ -338,5 +379,6 @@ def test_ug_configure_claude_desktop_subscription_relay(
         configure.finish(timeout=240)
     assert _desktop_profile(session, config_library, workspace) == profile
     assert installed_cowork_servers(session, root) == servers
+    _assert_unrelated_cowork_plugin(root, unrelated_plugin)
     _assert_desktop_selection(config_library, configured=True)
-    _revert_desktop(session, config_library, root)
+    _revert_desktop(session, config_library, root, unrelated_plugin)
