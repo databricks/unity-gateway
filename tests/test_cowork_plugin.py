@@ -175,6 +175,24 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
     assert connector_skill.startswith(f'---\nname: {cowork.CONNECTOR_SKILL_NAME}\ndescription: "')
     assert all(f"`{name}`" in connector_skill for name in mcp["mcpServers"])
     assert "codex-only" not in connector_skill
+    assert "wait 5 seconds" in connector_skill
+    assert "wait another 5 seconds" in connector_skill
+    hooks = json.loads((plugin_root / "hooks" / "hooks.json").read_text())
+    assert set(hooks["hooks"]) == {"SessionStart"}
+    hook = hooks["hooks"]["SessionStart"][0]["hooks"][0]
+    assert hook["type"] == "command"
+    assert hook["command"] == cowork.subprocess_cross_os.shell_command(
+        [
+            str(ug_binary),
+            "cowork-session-start",
+            "--host",
+            "https://workspace.example",
+            "--profile",
+            "chosen",
+            "--server",
+            "github=https://workspace.example/api/2.0/mcp/github",
+        ]
+    )
     assert [call[0][1:3] for call in calls] == [
         ["plugin", "validate"],
         ["plugin", "marketplace"],

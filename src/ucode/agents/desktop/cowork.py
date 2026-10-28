@@ -26,6 +26,7 @@ LEGACY_PLUGIN_ID = f"unity-gateway@{MARKETPLACE_NAME}"
 STATE_FILENAME = "claude-cowork.json"
 MARKETPLACE_DIRECTORY_NAME = "claude-cowork-marketplace"
 CONNECTOR_SKILL_NAME = "unity-gateway-connectors"
+SESSION_START_HOOK_TIMEOUT_SECONDS = 30
 
 _COWORK_MARKERS = (
     "cowork_settings.json",
@@ -69,7 +70,8 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
         _remove_plugin_registration(Path(previous_root))
     marketplace_root = _marketplace_root()
     plugin_root = marketplace_root / "plugins" / PLUGIN_NAME
-    _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config)
+    hooks = _session_start_hooks(mcp_config, workspace, profile, use_pat=bool(state.get("use_pat")))
+    _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config, hooks)
     config_io.atomic_write_json(
         _state_path(),
         {"version": 1, "cowork_root": str(cowork_root)},
@@ -294,6 +296,7 @@ def _write_marketplace(
     plugin_root: Path,
     skill_records: list[dict],
     mcp_config: dict,
+    hooks: dict | None = None,
 ) -> None:
     marketplace_root.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(
@@ -325,6 +328,8 @@ def _write_marketplace(
         if mcp_config["mcpServers"]:
             plugin["mcpServers"] = "./.mcp.json"
             _write_json(staging_plugin / ".mcp.json", mcp_config)
+        if hooks:
+            _write_json(staging_plugin / "hooks" / "hooks.json", hooks)
         _write_json(staging / ".claude-plugin" / "marketplace.json", marketplace)
         _write_json(staging_plugin / ".claude-plugin" / "plugin.json", plugin)
         _copy_skills(staging_plugin / "skills", skill_records)
@@ -362,6 +367,33 @@ def _copy_skills(destination: Path, records: list[dict]) -> None:
         copied.add(bundle_name)
 
 
+def _session_start_hooks(
+    mcp_config: dict, workspace: str, profile: str, *, use_pat: bool
+) -> dict | None:
+    # Reuse each proxy entry's absolute `ug` and URL so the hook targets exactly what Cowork runs.
+    urls: dict[str, str] = {}
+    command = None
+    for name, entry in mcp_config["mcpServers"].items():
+        args = entry.get("args") or []
+        if "--url" in args[:-1]:
+            urls[name] = args[args.index("--url") + 1]
+            command = entry["command"]
+    if command is None:
+        return None
+    argv = [command, "cowork-session-start", "--host", workspace.rstrip("/")]
+    argv += ["--profile", profile]
+    if use_pat:
+        argv.append("--use-pat")
+    for name, url in urls.items():
+        argv += ["--server", f"{name}={url}"]
+    hook = {
+        "type": "command",
+        "command": subprocess_cross_os.shell_command(argv),
+        "timeout": SESSION_START_HOOK_TIMEOUT_SECONDS,
+    }
+    return {"hooks": {"SessionStart": [{"hooks": [hook]}]}}
+
+
 def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
     # Skill descriptions are in context from the first turn; plugin MCP tools connect
     # lazily, so without this Claude asks whether a connector exists instead of using it.
@@ -371,15 +403,29 @@ def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
     connectors = ", ".join(f"`{name}`" for name in server_names)
     description = (
         f"Unity Gateway connectors are available in this session: {connectors}. "
-        "Use the matching connector for any request about the user's own resources on "
-        "those services, such as their pull requests, issues, tickets, pages, mail, or "
-        "files. If its tools are not loaded yet, search for them. Do not ask whether the "
-        "service is connected or say it is unavailable before trying the connector."
+        "Use this skill whenever a request needs one of them, such as the user's own pull "
+        "requests, issues, tickets, pages, mail, or files, and always before saying a "
+        "connector is unavailable or asking whether the service is connected."
+    )
+    guidance = (
+        f"Unity Gateway connectors configured for this session: {connectors}.\n\n"
+        "These connectors start in the background when the session opens, so their tools "
+        "can be missing for the first few seconds. A missing tool is not evidence that the "
+        "connector is disconnected.\n\n"
+        "1. Search for the connector's tools by its name and call the one that fits.\n"
+        "2. If no matching tool is found, or the call fails because the tool or server is "
+        "not available, wait 5 seconds (for example, run `sleep 5` in the shell), then "
+        "search and try again.\n"
+        "3. If it is still not available, wait another 5 seconds and try once more.\n"
+        "4. If it is still not available after that, tell the user which connector did not "
+        "load and quote any error you saw. Do not guess at the cause.\n\n"
+        "Only these not-yet-loaded cases need the wait. If the tool returns a real result "
+        "or error, such as a permission denial or a sign-in request, handle that instead."
     )
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         f"---\nname: {CONNECTOR_SKILL_NAME}\ndescription: {json.dumps(description)}\n---\n\n"
-        f"{description}\n",
+        f"{guidance}\n",
         encoding="utf-8",
     )
 

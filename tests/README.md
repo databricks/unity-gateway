@@ -315,9 +315,15 @@ Desktop summary while profile and previous-selection files survive. Retry return
 exit code 0, deletes the UG profile, and restores the previous selection without
 workspace state; a repeated revert also returns 0.
 
+`test_cowork_session_start.py` covers SessionStart guidance naming every connector, reporting
+connectors whose probe failed or exceeded the time bound, skipping probes when the token cannot
+be minted, ignoring other events, and keeping CLI stdout to the hook JSON. Probes and token
+minting are faked; native Cowork hook execution remains unverified.
+
 `test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
 generated marketplace/plugin/MCP manifests, the generated connector skill naming Claude-only
-MCP servers, current-workspace managed-skill selection,
+MCP servers with its two 5-second retries, the generated `SessionStart` hook command,
+current-workspace managed-skill selection,
 Claude-only MCP filtering, absolute proxy executables, saved PAT mode, custom-OAuth refusal,
 install/update selection, idempotent cleanup, and saved-root removal. Alias checks cover
 short service-first names, unchanged proxy routing, custom-name preservation,

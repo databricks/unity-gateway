@@ -65,9 +65,19 @@ UG owns these local files:
 Start a new Cowork session after configure. Plugin MCP servers connect asynchronously and
 may take a few seconds to appear, so a tool can be absent on the first model turn. Deferred
 tool search or a retry after another tool call should find it. The resulting tool name follows
-Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern. When the plugin has MCP servers, UG
-also generates a `unity-gateway-connectors` skill whose description names them, so Claude knows
-the connectors exist on the first turn instead of asking whether they are connected.
+Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern.
+
+When the plugin has MCP servers, UG adds two things so Claude uses them on the first turn:
+
+- A `SessionStart` hook (`ug cowork-session-start`) that refreshes the profile's Databricks
+  token, sends each upstream MCP server an `initialize` and `tools/list` (15 seconds total),
+  and tells Claude which connectors exist and which did not answer. It cannot make Cowork
+  connect its own MCP servers sooner, and it never opens a browser.
+- A `unity-gateway-connectors` skill. If a connector's tools are missing, Claude searches,
+  waits 5 seconds and retries, waits another 5 seconds and retries once more, and only then
+  reports the connector as not loaded.
+
+Native Cowork execution of the hook still needs Desktop validation.
 
 Connector sign-in opens the workspace's MCP service sign-in page. Sign in with the same
 Databricks account as the selected CLI profile, then complete the provider flow. The proxy
