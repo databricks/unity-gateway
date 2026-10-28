@@ -6,6 +6,8 @@ import sqlite3
 from pathlib import Path
 
 STATE_DIRECTORY = ".gemini/antigravity-cli"
+# Structured, bounded `agy -p` output; it asks before tools it isn't allowed and answers no.
+HEADLESS_ARGS = ("--output-format", "stream-json", "--print-timeout", "240s")
 # `steps.step_type` of an agent response in Antigravity's conversation store (observed on 1.4.9;
 # 14 is the user's input and tool calls have their own types, so a tool result never counts).
 AGENT_RESPONSE_STEP = 15
@@ -64,11 +66,12 @@ def requested_urls(session) -> list[str]:
     return urls
 
 
-def requested_models(session) -> set[str]:
-    """Model names Antigravity sent; ug's proxy maps them to Databricks endpoints afterwards."""
+def requested_models(session, *, since: int = 0) -> set[str]:
+    """Model names Antigravity sent (after the first ``since`` logged requests); ug's proxy
+    maps them to Databricks endpoints afterwards."""
     return {
         url.split("/models/", 1)[1].split(":", 1)[0]
-        for url in requested_urls(session)
+        for url in requested_urls(session)[since:]
         if "/models/" in url
     }
 

@@ -11,8 +11,6 @@ from utils.evidence import FileTask, assert_no_bearer_on_disk, fresh_id
 
 pytestmark = [pytest.mark.live, pytest.mark.antigravity]
 
-# `agy -p` asks before any tool it isn't allowed to run; headless runs answer no.
-HEADLESS_ARGS = ("--output-format", "stream-json", "--print-timeout", "240s")
 AGY_SETTINGS = ".gemini/antigravity-cli/settings.json"
 
 
@@ -29,9 +27,15 @@ def _configure(session, workspace):
     )
 
 
-def _ask(session, prompt, *ug_options, timeout=300):
+def _ask(session, prompt, *ug_options, command="antigravity", timeout=300):
     return session.run(
-        "antigravity", *ug_options, "--", "-p", prompt, *HEADLESS_ARGS, timeout=timeout
+        command,
+        *ug_options,
+        "--",
+        "-p",
+        prompt,
+        *antigravity.HEADLESS_ARGS,
+        timeout=timeout,
     )
 
 
@@ -74,7 +78,8 @@ def test_ug_antigravity_headless_completes_file_task(live_session, workspace):
 
 
 def test_ug_antigravity_headless_explicit_model(live_session, workspace):
-    """Scenario: launch a headless task on a specific discovered Gemini model with `--model`.
+    """Scenario: launch a headless task on a specific discovered Gemini model with `--model`,
+    through the `ug agy` alias.
 
     Expected: ug accepts the Databricks model id, Antigravity runs on that model (every request
     names its Antigravity name, e.g. `gemini-3.8-flash` for `system.ai.gemini-3-8-flash`), and
@@ -102,10 +107,37 @@ def test_ug_antigravity_headless_explicit_model(live_session, workspace):
     expected = re.sub(r"(?<=\d)-(?=\d)", ".", model.removeprefix("system.ai."))
     session.record("model.json", {"model": model, "antigravity_name": expected})
 
-    result = _ask(session, task.prompt, "--model", model)
+    result = _ask(session, task.prompt, "--model", model, command="agy")
 
     task.assert_headless_answer("antigravity", result)
     assert antigravity.requested_models(session) == {expected}
+
+
+def test_ug_antigravity_headless_gemini_mps(
+    live_session, workspace, antigravity_provider, antigravity_provider_models
+):
+    """Scenario: after a plain Databricks Hosted configure, run a headless task on each chosen
+    target of the real Gemini Enterprise MPS with `ug antigravity --provider ... --model ...`.
+
+    Expected: each launch routes through the provider service and completes its file task
+    through ug's proxy, every Antigravity request of that launch naming the chosen target; the
+    launch saves the provider for later bare launches. This proves Antigravity's requests and
+    the saved routing, not the gateway's destination.
+    """
+    session = live_session
+    _configure(session, workspace)
+    assert len(antigravity_provider_models) >= 2, antigravity_provider_models
+
+    for model in antigravity_provider_models:
+        task = FileTask(session)
+        before = len(antigravity.requested_urls(session))
+
+        result = _ask(session, task.prompt, "--provider", antigravity_provider, "--model", model)
+
+        task.assert_headless_answer("antigravity", result)
+        assert antigravity.requested_models(session, since=before) == {model}
+    _assert_through_ug_proxy(session)
+    assert session.workspace_state()["provider_services"]["antigravity"] == antigravity_provider
 
 
 def test_ug_antigravity_mcp_sql_tool(live_session, workspace):

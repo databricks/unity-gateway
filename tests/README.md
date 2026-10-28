@@ -70,9 +70,9 @@ real local HTTP (model path rewrite, `includeThoughts` body fix, provider header
 route). `test_agents_init.py`, `test_mcp.py`, `test_cli.py` (including `ug revert` keeping
 skills.json entries added after configure) and `test_agents_commands.py` cover dispatch, the
 native installer, `agy mcp list` parsing, `ug antigravity`/`ug agy`, and
-`ug agents add antigravity`. These are unit/component checks. Automated live coverage is the six
-journeys in `integration/` (non-blocking Linux CI lane; see `integration/README.md`); Model
-Provider Service routing is covered only by unit tests.
+`ug agents add antigravity`. These are unit/component checks. Automated live coverage is the
+eight journeys in `integration/` (non-blocking Linux CI lane, Databricks Hosted and the Gemini
+Enterprise MPS; see `integration/README.md`).
 
 `test_ug_headers.py` covers the `UG_HEADERS` parser and the `--header` flag, `test_databricks.py`
 ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching a Codex launch's

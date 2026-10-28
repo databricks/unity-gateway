@@ -532,7 +532,10 @@ class TestConfigureOneGeminiProvider:
         monkeypatch.setattr(
             agents_mod,
             "resolve_gemini_provider_model",
-            lambda state, provider, model, **kw: ("gemini-3.5-flash", None),
+            lambda state, provider, model, **kw: (
+                (captured.setdefault("pick_newest", kw.get("pick_newest")) and None)
+                or ("gemini-3.5-flash", None)
+            ),
         )
         captured = {}
 
@@ -544,7 +547,12 @@ class TestConfigureOneGeminiProvider:
 
         monkeypatch.setattr(agents_mod, "configure_tool", _fake_configure_tool)
         agents_mod._configure_one("gemini", self._STATE, "c.s.g")
-        assert captured == {"tool": "gemini", "model": "gemini-3.5-flash", "provider": "c.s.g"}
+        assert captured == {
+            "pick_newest": True,
+            "tool": "gemini",
+            "model": "gemini-3.5-flash",
+            "provider": "c.s.g",
+        }
 
     def test_gemini_provider_resolution_error_raises(self, monkeypatch):
         monkeypatch.setattr(
@@ -631,6 +639,32 @@ class TestResolveGeminiProviderModel:
         )
         model, error = agents_mod.resolve_gemini_provider_model(self._STATE, "c.s.g", None)
         assert (model, error) == ("gemini-3.5-pro", None)
+
+    def test_configure_pins_the_newest_of_several_targets(self, monkeypatch):
+        # Configure has no --model; a launch would still ask for one (below).
+        self._patch(
+            monkeypatch,
+            {
+                "name": "c.s.g",
+                "targets": ["gemini-3.7-flash", "gemini-3.1-pro-preview", "gemini-4-argon"],
+            },
+            persisted=None,
+        )
+        model, error = agents_mod.resolve_gemini_provider_model(
+            self._STATE, "c.s.g", None, pick_newest=True
+        )
+        assert (model, error) == ("gemini-4-argon", None)
+
+    def test_configure_keeps_a_previously_pinned_target(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {"name": "c.s.g", "targets": ["gemini-4-argon", "gemini-3.8-flash"]},
+            persisted="gemini-3.8-flash",
+        )
+        model, _ = agents_mod.resolve_gemini_provider_model(
+            self._STATE, "c.s.g", None, pick_newest=True
+        )
+        assert model == "gemini-3.8-flash"
 
     def test_multi_target_without_choice_errors(self, monkeypatch):
         # Multiple targets, nothing pinned, no --model → ask the user to choose.

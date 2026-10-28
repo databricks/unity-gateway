@@ -234,6 +234,18 @@ def claude_bedrock_allow_all_model():
 
 
 @pytest.fixture(scope="session")
+def antigravity_provider():
+    return os.environ["UG_INTEGRATION_ANTIGRAVITY_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def antigravity_provider_models():
+    # Targets of the Gemini MPS, newest first: `ug configure` pins the first.
+    models = os.environ["UG_INTEGRATION_ANTIGRAVITY_PROVIDER_MODELS"].split(",")
+    return [model.strip() for model in models if model.strip()]
+
+
+@pytest.fixture(scope="session")
 def codex_provider():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER"]
 

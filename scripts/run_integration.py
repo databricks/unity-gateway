@@ -433,6 +433,17 @@ def arguments(
         help="AWS Bedrock Anthropic MPS with a restricted allowed-models set (Sonnet + Haiku, no Opus), selected in the configure CUJ.",
     )
     parser.add_argument(
+        "--antigravity-provider",
+        default="main.ucode.ci-gemini-mps",
+        help="Existing Gemini Enterprise MPS selected in the Antigravity External Models CUJs.",
+    )
+    parser.add_argument(
+        "--antigravity-provider-models",
+        default="gemini-4-argon,gemini-3.8-flash",
+        help="Comma-separated targets of --antigravity-provider, newest first, each run as a "
+        "task with --model; the first is the one `ug configure` pins.",
+    )
+    parser.add_argument(
         "--codex-provider",
         default="main.ucode.ci_openai_mps",
         help="Existing OpenAI MPS selected in the configure CUJ.",
@@ -710,6 +721,8 @@ def main() -> int:
             "claude_bedrock_allow_all_provider": args.claude_bedrock_allow_all_provider,
             "claude_bedrock_allow_all_model": args.claude_bedrock_allow_all_model,
             "claude_bedrock_provider": args.claude_bedrock_provider,
+            "antigravity_provider": args.antigravity_provider,
+            "antigravity_provider_models": args.antigravity_provider_models,
             "codex_provider": args.codex_provider,
             "codex_provider_model": args.codex_provider_model,
             "codex_azure_provider": args.codex_azure_provider,
@@ -1022,6 +1035,8 @@ def main() -> int:
                 "UG_INTEGRATION_CLAUDE_PROVIDER_MODEL": args.claude_provider_model,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_PROVIDER": args.claude_bedrock_allow_all_provider,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL": args.claude_bedrock_allow_all_model,
+                "UG_INTEGRATION_ANTIGRAVITY_PROVIDER": args.antigravity_provider,
+                "UG_INTEGRATION_ANTIGRAVITY_PROVIDER_MODELS": args.antigravity_provider_models,
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
                 "UG_INTEGRATION_CODEX_AZURE_PROVIDER": args.codex_azure_provider,

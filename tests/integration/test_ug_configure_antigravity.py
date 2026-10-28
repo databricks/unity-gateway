@@ -52,6 +52,49 @@ def test_ug_configure_antigravity_databricks(live_session, workspace):
         tui.check_input_and_exit()
 
 
+def test_ug_configure_antigravity_gemini_mps(
+    live_session, workspace, antigravity_provider, antigravity_provider_models
+):
+    """Scenario: choose External Models and the real Gemini Enterprise MPS in `ug configure`'s
+    pickers for Antigravity CLI, then run a headless task with a bare `ug antigravity`.
+
+    The service has several targets and configure has no `--model`, so ug starts on the
+    newest one.
+
+    Expected: ug saves the provider and pins the newest target; `ug status` shows the provider;
+    the bare launch uses the saved choice to complete a file task through ug's proxy, every
+    request naming that target.
+    """
+    session = live_session
+    task = FileTask(session)
+    newest = antigravity_provider_models[0]
+    command = [
+        str(session.binary),
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    ]
+    with ConfigureTerminal(session, "antigravity", command, "configure-provider") as configure:
+        configure.select_agent("Antigravity CLI")
+        configure.choose("How should Antigravity CLI get its models?", "External Models")
+        configure.choose("Select a model provider service:", antigravity_provider)
+        configure.finish(timeout=240)
+    state = session.workspace_state()
+    assert state["provider_services"]["antigravity"] == antigravity_provider
+    assert "antigravity" in state["available_tools"]
+    assert state["antigravity_provider_model"] == newest
+    assert antigravity_provider in session.run("status").stdout
+
+    result = session.run(
+        "antigravity", "--", "-p", task.prompt, *antigravity.HEADLESS_ARGS, timeout=300
+    )
+
+    task.assert_headless_answer("antigravity", result)
+    assert antigravity.requested_models(session) == {newest}
+
+
 def test_ug_configure_antigravity_revert_restores_user_files(live_session, workspace):
     """Scenario: a user with their own Antigravity skills.json and MCP server configures
     Antigravity and adds a Databricks MCP service through ug, then runs `ug revert`.

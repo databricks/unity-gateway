@@ -11,6 +11,7 @@ below and to `TOOL_ALIASES` if needed.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -434,6 +435,12 @@ def resolve_provider_models(
     return map_claude_family_models(service.get("targets") or []) or None, None, relayed
 
 
+def _newest_first(model: str) -> list[int]:
+    """Sort key putting the highest version first, whether dotted (`gemini-3.8-flash`, as
+    provider services name targets) or dashed (`gemini-3-8-flash`); ties keep their order."""
+    return [-int(part) for part in re.findall(r"\d+", model)]
+
+
 def resolve_gemini_provider_model(
     state: dict,
     provider: str,
@@ -441,6 +448,7 @@ def resolve_gemini_provider_model(
     *,
     service: dict | None = None,
     tool: str = "gemini",
+    pick_newest: bool = False,
 ) -> tuple[str | None, str | None]:
     """Pick the Gemini model to pin for a provider-service launch of ``tool`` (a Gemini API agent).
 
@@ -449,8 +457,9 @@ def resolve_gemini_provider_model(
     pinned. In precedence order: ``explicit_model`` (from ``--model``) when it
     names a target; the model already pinned in the env file when it is still a
     target (so a bare relaunch or reconfigure needn't re-pass ``--model``); the
-    sole target when the service declares exactly one; otherwise ask the user to
-    choose. Returns ``(model, error)``.
+    sole target when the service declares exactly one; otherwise the newest target when
+    ``pick_newest`` (`ug configure`, which has no ``--model``), else ask the user to choose.
+    Returns ``(model, error)``.
 
     Pass ``service`` to reuse an already-fetched service dict and skip the
     control-plane lookup (the launch/configure paths hold one).
@@ -482,6 +491,8 @@ def resolve_gemini_provider_model(
         return persisted, None
     if len(targets) == 1:
         return targets[0], None
+    if pick_newest:
+        return min(targets, key=_newest_first), None
     return None, (
         f"Provider service '{provider}' exposes several models "
         f"({', '.join(targets)}); pass --model to choose one."
@@ -706,7 +717,11 @@ def _configure_one(
             # Gemini pins a concrete target in the URL, so configure must resolve one now —
             # unlike claude/codex, its config writer requires a model. This also validates the
             # service in a single lookup (no resolve_provider_models family map for gemini).
-            model, error = resolve_gemini_provider_model(state, provider, None, tool=tool)
+            # Configure has no --model, so a multi-target service starts on its newest model;
+            # `--model` at launch still picks any other target.
+            model, error = resolve_gemini_provider_model(
+                state, provider, None, tool=tool, pick_newest=True
+            )
             if error:
                 raise RuntimeError(error)
             return configure_tool(tool, state, model, provider=provider)
