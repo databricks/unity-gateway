@@ -3869,9 +3869,11 @@ class TestProbeUnityGatewayCapabilities:
     @pytest.mark.parametrize(
         "reason",
         [
+            "HTTP 429 Too Many Requests",
             "HTTP 499 Unknown",
-            "HTTP 504 Gateway Timeout",
+            "HTTP 502 Bad Gateway",
             "HTTP 503 Service Unavailable: try later",
+            "HTTP 504 Gateway Timeout",
             "network error: timed out",
         ],
     )
@@ -3902,6 +3904,13 @@ class TestProbeUnityGatewayCapabilities:
 
         assert "HTTP 499 Unknown" in str(excinfo.value)
         assert len(calls) == db_mod._MODEL_SERVICE_PROBE_MAX_RETRIES + 1
+
+    def test_transient_classification_matches_retryable_statuses(self):
+        for code in db_mod._HTTP_GET_RETRYABLE_STATUS_CODES:
+            assert db_mod._looks_like_transient_failure(f"HTTP {code} Whatever")
+        assert db_mod._looks_like_transient_failure("network error: connection reset")
+        for code in (400, 404, 500, 501):
+            assert not db_mod._looks_like_transient_failure(f"HTTP {code} Whatever")
 
     def test_404_still_reports_not_enabled(self, monkeypatch):
         monkeypatch.setattr(
@@ -4009,7 +4018,7 @@ class TestHttpGetJsonRetries:
         assert reason is None
         assert sleeps == [1.25]
 
-    @pytest.mark.parametrize("code", [499, 504])
+    @pytest.mark.parametrize("code", [499, 502, 503, 504])
     def test_retries_transient_gateway_status_then_succeeds(self, monkeypatch, code):
         outcomes = iter([self._http_error(code, "Unknown"), _FakeResponse({"ok": True})])
         sleeps = []
@@ -4030,7 +4039,7 @@ class TestHttpGetJsonRetries:
         assert reason is None
         assert sleeps == [1.25]
 
-    @pytest.mark.parametrize("code", [400, 404, 500, 502, 503])
+    @pytest.mark.parametrize("code", [400, 404, 500, 501])
     def test_does_not_retry_other_statuses(self, monkeypatch, code):
         calls = []
         sleeps = []
@@ -4073,7 +4082,7 @@ class TestHttpGetJsonRetries:
 
         def fake_urlopen(request, timeout=None):
             calls.append(request)
-            raise self._http_error(503, "Service Unavailable")
+            raise self._http_error(500, "Internal Server Error")
 
         monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
         monkeypatch.setattr(
@@ -4085,7 +4094,7 @@ class TestHttpGetJsonRetries:
         payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=2)
 
         assert payload is None
-        assert reason == "HTTP 503 Service Unavailable"
+        assert reason == "HTTP 500 Internal Server Error"
         assert len(calls) == 1
 
     def test_bytes_retries_429_and_returns_undecoded_body(self, monkeypatch):
