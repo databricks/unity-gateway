@@ -361,9 +361,10 @@ A launch (`ug claude`, `ug codex`) uses the workspace's managed coding agent con
 `ug configure` last saved and does not refetch it. After an admin changes that config, run
 `ug configure` to pick it up.
 
-Databricks AI Tools are installed only by `ug configure`, never by agent launch
-commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
-with `ug configure` to control installation.
+`ug configure` installs Databricks AI Tools through the Databricks CLI for each
+supported agent by default, including on admin-managed workspaces. Agent launch
+commands do not install them. Pass `--disable-databricks-ai-tools` to
+`ug configure` to skip installation.
 
 ## Claude Routing Plugin
 

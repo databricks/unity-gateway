@@ -21,6 +21,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from typer.testing import CliRunner
 
+import ucode.agents as agents_mod
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 import ucode.managed_files as managed_files
@@ -4254,7 +4255,7 @@ class TestConfigureAgentFlag:
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(offer_optional_setup=True)
 
-    def test_optional_setup_installs_ai_tools_and_configures_mcp(self):
+    def test_optional_setup_configures_mcp(self):
         import ucode.cli as cli_mod
 
         state = {"available_tools": ["claude", "codex"]}
@@ -4270,19 +4271,14 @@ class TestConfigureAgentFlag:
         }
         with (
             patch("ucode.cli.prompt_yes_no", return_value=True) as mock_prompt,
-            patch("ucode.cli.save_state") as mock_save,
-            patch("ucode.cli.install_databricks_ai_tools_for_agents") as mock_install,
             patch("ucode.cli.configure_mcp_command") as mock_mcp,
             patch("ucode.cli.load_state", return_value=configured_state),
             patch("ucode.cli.load_managed_mcp_servers", return_value=[]),
             patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure_cowork,
         ):
-            cli_mod._configure_optional_setup(state, ["claude", "codex"])
+            cli_mod._configure_optional_setup(["claude", "codex"])
 
-        mock_prompt.assert_called_once_with("Configure MCP servers, skills, and plugins?")
-        assert state["databricks_ai_tools_enabled"] is True
-        mock_save.assert_called_once_with(state)
-        mock_install.assert_called_once_with(["claude", "codex"], state)
+        mock_prompt.assert_called_once_with("Configure MCP servers?")
         mock_mcp.assert_called_once_with()
         mock_configure_cowork.assert_called_once_with(
             configured_state, configured_state["mcp_servers"]
@@ -4375,16 +4371,10 @@ class TestConfigureAgentFlag:
 
         with (
             patch("ucode.cli.prompt_yes_no", return_value=False),
-            patch("ucode.cli.save_state") as mock_save,
-            patch("ucode.cli.install_databricks_ai_tools_for_agents") as mock_install,
             patch("ucode.cli.configure_mcp_command") as mock_mcp,
         ):
-            state = {}
-            cli_mod._configure_optional_setup(state, ["claude"])
+            cli_mod._configure_optional_setup(["claude"])
 
-        assert state["databricks_ai_tools_enabled"] is False
-        mock_save.assert_called_once_with(state)
-        mock_install.assert_not_called()
         mock_mcp.assert_not_called()
 
     def test_agents_flag_skips_mcp_prompt(self):
@@ -5120,6 +5110,7 @@ class TestConfigureAgentsSelection:
         state = {
             **MINIMAL_STATE,
             "provider_services": {"codex": "main.default.developer"},
+            "databricks_ai_tools_enabled": True,
         }
         managed = {
             "enabled_agents": {"codex": {"model_config": {"unity_catalog_location": "main.models"}}}
@@ -5132,7 +5123,7 @@ class TestConfigureAgentsSelection:
         configure = MagicMock(return_value=state)
         monkeypatch.setattr(cli_mod, "configure_single_tool", configure)
         install_ai_tools = MagicMock()
-        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", install_ai_tools)
+        monkeypatch.setattr(agents_mod, "install_ai_tools", install_ai_tools)
 
         result = runner.invoke(
             app, ["configure", "--agent", "codex", "--workspace", "https://w.com"]
@@ -5142,7 +5133,7 @@ class TestConfigureAgentsSelection:
         assert "(Provider: Databricks)" in _strip_ansi(result.output)
         refresh.assert_called_once_with(state, force_refresh=True)
         configure.assert_called_once_with("codex", state, parent_schema="main.models")
-        install_ai_tools.assert_called_once_with(["codex"], state, force_refresh=False)
+        install_ai_tools.assert_called_once_with(["codex"], None)
 
     def test_managed_copilot_parent_is_passed_to_generic_configure(self, monkeypatch):
         state = {
@@ -5205,12 +5196,10 @@ class TestConfigureAgentsSelection:
         assert "(Provider: Databricks)" in _strip_ansi(result.output)
         refresh.assert_called_once_with(state, force_refresh=False)
         configure.assert_called_once_with("copilot", state, parent_schema="main.models")
-        install_ai_tools.assert_called_once_with(["copilot"], state, force_refresh=True)
+        install_ai_tools.assert_called_once_with(["copilot"], state)
 
     @pytest.mark.parametrize("apply_managed", [True, False])
-    def test_single_copilot_agent_refreshes_ai_tools_since_it_only_reads_the_policy(
-        self, monkeypatch, apply_managed
-    ):
+    def test_single_copilot_agent_installs_ai_tools(self, monkeypatch, apply_managed):
         state = dict(MINIMAL_STATE)
         monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
         monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (None, False))
@@ -5222,7 +5211,7 @@ class TestConfigureAgentsSelection:
             [("https://w.com", None)], "copilot", apply_managed=apply_managed
         )
 
-        install_ai_tools.assert_called_once_with(["copilot"], state, force_refresh=True)
+        install_ai_tools.assert_called_once_with(["copilot"], state)
 
     def test_managed_config_fails_when_no_enabled_agent_is_available(self, monkeypatch):
         import ucode.cli as cli_mod
@@ -6340,24 +6329,23 @@ class TestConfigureSharedStateUsePat:
         )
         assert state["databricks_ai_tools_enabled"] is True
 
-    def test_ai_tools_off_by_default_no_flag(self, monkeypatch):
+    def test_ai_tools_on_by_default_no_flag(self, monkeypatch):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
         state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
-        assert state["databricks_ai_tools_enabled"] is False
+        assert state["databricks_ai_tools_enabled"] is True
 
-    def test_ai_tools_prior_enable_not_carried_forward(self, monkeypatch):
-        # A stale True from the opt-out era is not treated as a standing opt-in.
+    def test_ai_tools_prior_disable_does_not_override_default(self, monkeypatch):
         cli_mod, *_ = self._stub_deps(
             monkeypatch,
             pat_token="dapi-pat",
             existing_state={
                 "workspace": self.WS,
                 "profile": "DEFAULT",
-                "databricks_ai_tools_enabled": True,
+                "databricks_ai_tools_enabled": False,
             },
         )
         state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
-        assert state["databricks_ai_tools_enabled"] is False
+        assert state["databricks_ai_tools_enabled"] is True
 
     def test_falls_back_to_legacy_when_uc_empty(self, monkeypatch):
         # No UC model-services: each family falls back to the legacy listing.
