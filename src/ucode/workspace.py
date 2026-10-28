@@ -18,7 +18,11 @@ WORKSPACE_SELECTOR_PARAMS = ("w", "o", "workspace_id")
 # A numeric id at or above 2^53 makes the server answer an empty 503.
 _MAX_WORKSPACE_ID = 2**53
 _HOST_TYPE_TIMEOUT_SECONDS = 3
-_KEY_PATTERN = re.compile(r"^(https?://[^/?#]+)\?w=([0-9]+)$")
+# A saved key also accepts a UUID id, so a key written by a version that supports
+# disaster-recovery stable connection ids still round-trips here.
+_KEY_PATTERN = re.compile(
+    r"^(https?://[^/?#]+)\?w=([0-9]+|[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})$"
+)
 _host_types: dict[str, str | None] = {}
 _DIGITS = re.compile(r"[0-9]+")
 

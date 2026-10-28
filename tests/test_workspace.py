@@ -67,6 +67,13 @@ class TestWorkspaceKey:
         assert key == f"{SHARED}?w=123"
         assert split_workspace_key(key) == (SHARED, "123")
 
+    def test_uuid_key_round_trips(self):
+        key = f"{SHARED}?w=1b4e28ba-2fa1-11d2-883f-0016d3cca427"
+        assert split_workspace_key(key) == (SHARED, "1b4e28ba-2fa1-11d2-883f-0016d3cca427")
+
+    def test_malformed_id_key_is_not_split(self):
+        assert split_workspace_key(f"{SHARED}?w=abc") == (f"{SHARED}?w=abc", None)
+
     def test_bare_host_is_its_own_key(self):
         assert workspace_key(CLASSIC, None) == CLASSIC
         assert split_workspace_key(CLASSIC) == (CLASSIC, None)
