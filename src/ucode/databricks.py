@@ -953,10 +953,20 @@ def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
             run(["sh", "-c", f"wget -qO- {UNIX_DATABRICKS_INSTALL_URL} | sudo sh"], timeout=240)
         else:
             raise RuntimeError("Neither curl nor wget is available.")
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as exc:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, RuntimeError) as exc:
         message = "Failed to install/upgrade Databricks CLI automatically."
-        if system == "Windows" and isinstance(exc, RuntimeError):
+        if isinstance(exc, subprocess.CalledProcessError):
+            message += f"\nInstaller exited with status {exc.returncode}."
+        elif isinstance(exc, subprocess.TimeoutExpired):
+            message += f"\nInstaller timed out after {exc.timeout} seconds."
+        elif isinstance(exc, OSError):
+            message += f"\nInstaller could not start ({type(exc).__name__})."
+        elif system == "Windows":
             message += f"\n{exc}"
+        message += (
+            "\nInstall or upgrade Databricks CLI using the host's normal package manager, "
+            "verify with `databricks --version`, then retry."
+        )
         raise RuntimeError(message) from exc
     # A binary may have just been installed/upgraded at a new (or the same) path;
     # drop any stale discovery/resolution so the next lookup re-scans PATH.

@@ -1,5 +1,9 @@
 # Integration tests
 
+`../test_databricks.py::TestRunDatabricksCliInstaller` has component coverage of safe
+exit/timeout/process-start diagnostics, including a real missing-executable failure,
+recovery guidance, and preserved causes/caches. Live installer repair is not covered.
+
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls
 still routing waiting for a later reply, distinct
