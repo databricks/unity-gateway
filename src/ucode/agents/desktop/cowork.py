@@ -385,8 +385,15 @@ def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
     description = prefix + (", ".join(visible) or "configured workspace services") + suffix
     guidance = (
         f"Configured Unity Gateway connectors: {connectors}.\n\n"
-        "Configured does not mean signed in. Missing tools alone do not establish an "
-        "authentication failure. Use only tools actually discovered for the matching connector.\n\n"
+        "Configured does not mean signed in. Before calling a connector, discover its available "
+        "tools with deferred tool search. Use only the exact tool names returned for the matching "
+        "connector; never guess tool names. If a call reports an unavailable tool, do not repeat "
+        "that unavailable call. Rediscover the connector's tools and use only names confirmed by "
+        "discovery. An unavailable tool name alone does not establish an authentication failure.\n\n"
+        "If discovery exposes only the matching connector's `authenticate` tool, call that exact "
+        "discovered tool once. After successful sign-in, rediscover the connector's tools and "
+        "retry the user's original request now in this same turn. Do not ask the user to send "
+        "another message.\n\n"
         "If a connector returns a sign-in URL or asks the user to reconnect, use its discovered "
         "`authenticate` tool before falling back to manual login instructions. A warning not to "
         "retry service tools applies until sign-in succeeds; `authenticate` is the recovery "
