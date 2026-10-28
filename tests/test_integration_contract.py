@@ -396,6 +396,7 @@ SKIPPED_ON_FORK_PRS = {
     "soft-fail",
     "opencode",
     "copilot",
+    "antigravity",
     "managed",
     "managed-opencode",
     "dedicated-cuj-plan",
@@ -626,6 +627,7 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "workspace",
         "smoke",
         "full",
+        "antigravity",
         "managed",
         "dedicated-cuj-plan",
         "dedicated-cuj",
@@ -646,6 +648,7 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "workspace",
             "smoke",
             "full",
+            "antigravity",
             "managed",
             "dedicated-cuj-plan",
             "dedicated-cuj",
@@ -718,7 +721,9 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 marks = module_marks | _markers(node.decorator_list)
                 if marks & {"live", "managed_fixture", "workspace_switch"}:
-                    assert len(marks & {"claude", "codex", "opencode", "copilot"}) == 1, node.name
+                    assert (
+                        len(marks & {"claude", "codex", "opencode", "copilot", "antigravity"}) == 1
+                    ), node.name
 
 
 def test_model_discovery_cases_match_current_launch_contract():

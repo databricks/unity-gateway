@@ -1002,6 +1002,27 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         assert observed == [_version_routing_env(smart_routing_config.SUBAGENT_ONLY_V0, "claude")]
 
+    @pytest.mark.parametrize("command", ["antigravity", "agy"])
+    def test_antigravity_commands_launch_with_provider_and_model(self, command):
+        with patch("ucode.cli._launch_tool") as mock_launch:
+            result = runner.invoke(
+                app,
+                [command, "--provider", "c.s.svc", "--model", "gemini-3.8-flash", "-p", "hi"],
+            )
+
+        assert result.exit_code == 0, result.output
+        args, kwargs = mock_launch.call_args
+        assert args[0] == "antigravity"
+        assert args[1].args == ["-p", "hi"]
+        assert kwargs["provider"] == "c.s.svc"
+        assert kwargs["model"] == "gemini-3.8-flash"
+
+    def test_agy_alias_is_hidden_from_help(self):
+        result = runner.invoke(app, ["--help"])
+
+        assert "antigravity" in result.output
+        assert " agy " not in result.output
+
     def test_codex_refresh_is_consumed_by_ucode(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
             result = runner.invoke(app, ["codex", "--refresh"])
@@ -2368,7 +2389,7 @@ class TestGeminiProviderLaunch:
         monkeypatch.setattr("ucode.cli.configure_tool", lambda *a, **k: state)
         monkeypatch.setattr(
             "ucode.cli.resolve_gemini_provider_model",
-            lambda s, p, m: ("gemini-3.5-flash", None),
+            lambda s, p, m, **k: ("gemini-3.5-flash", None),
         )
         mock_launch = MagicMock()
         monkeypatch.setattr("ucode.cli.launch_agent", mock_launch)
@@ -3784,6 +3805,51 @@ class TestStatusSkillsSection:
         assert "MCP servers: 1" in re.sub(r"\s+", " ", out)
 
 
+class TestAntigravityAllowAllProviderModel:
+    _STATE = {**MINIMAL_STATE, "workspace": "https://ws.databricks.com"}
+
+    def _run(self, monkeypatch, service, answer="gemini-4-argon"):
+        monkeypatch.setattr(
+            cli_mod, "resolve_provider_service", lambda tool, name, ws, token: (service, None)
+        )
+        asked = []
+        monkeypatch.setattr(
+            cli_mod,
+            "prompt_for_text",
+            lambda message, required=False: asked.append(message) or answer,
+        )
+        monkeypatch.setattr(cli_mod, "save_state", lambda state: None)
+        state = cli_mod._prompt_allow_all_provider_model(
+            "antigravity", dict(self._STATE), "c.s.g", "token"
+        )
+        return state, asked
+
+    def test_asks_for_a_start_model_when_the_service_declares_none(self, monkeypatch):
+        state, asked = self._run(monkeypatch, {"targets": [], "allow_all_targets": True})
+
+        assert state["antigravity_provider_model"] == "gemini-4-argon"
+        assert asked and "Antigravity CLI" in asked[0]
+
+    @pytest.mark.parametrize(
+        "service",
+        [
+            {"targets": ["gemini-3.8-flash"], "allow_all_targets": True},
+            {"targets": [], "allow_all_targets": False},
+        ],
+    )
+    def test_does_not_ask_when_a_target_can_be_pinned_or_none_is_allowed(
+        self, monkeypatch, service
+    ):
+        state, asked = self._run(monkeypatch, service)
+
+        assert asked == []
+        assert "antigravity_provider_model" not in state
+
+    def test_cancelling_the_prompt_stops_configure(self, monkeypatch):
+        with pytest.raises(KeyboardInterrupt):
+            self._run(monkeypatch, {"targets": [], "allow_all_targets": True}, answer=None)
+
+
 class TestRevert:
     def test_invalid_routing_config_does_not_block_revert(self, monkeypatch):
         monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "unsupported_v99")
@@ -3815,6 +3881,51 @@ class TestRevert:
         assert result.exit_code == 0, result.output
         assert "Could not remove leftover Copilot session files" in _strip_ansi(result.output)
         assert cleared == [True]
+
+    @pytest.mark.parametrize("existed", [False, True])
+    def test_antigravity_revert_keeps_skills_entries_added_after_configure(
+        self, existed, monkeypatch, tmp_path
+    ):
+        from ucode.agents import antigravity
+
+        monkeypatch.setattr(antigravity, "UG_AGENTS_SKILLS_DIR", tmp_path / ".agents/skills")
+        skills = antigravity.AGY_SKILLS_CONFIG_PATH
+        if existed:
+            skills.parent.mkdir(parents=True)
+            skills.write_text(json.dumps({"entries": [{"path": "/mine"}]}))
+        antigravity.write_tool_config({**MINIMAL_STATE}, None)
+        # skills.json is shared with the Antigravity app: the user adds to it after configure.
+        config = json.loads(skills.read_text())
+        config["entries"].append({"path": "/later"})
+        skills.write_text(json.dumps(config))
+
+        with (
+            patch("ucode.cli.load_state", return_value=dict(MINIMAL_STATE)),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.clear_state"),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        expected = [{"path": "/mine"}, {"path": "/later"}] if existed else [{"path": "/later"}]
+        assert json.loads(skills.read_text()) == {"entries": expected}
+        assert "Antigravity CLI config: restored" in _strip_ansi(result.output)
+
+    def test_antigravity_revert_deletes_skills_file_it_created(self, monkeypatch, tmp_path):
+        from ucode.agents import antigravity
+
+        monkeypatch.setattr(antigravity, "UG_AGENTS_SKILLS_DIR", tmp_path / ".agents/skills")
+        antigravity.write_tool_config({**MINIMAL_STATE}, None)
+
+        with (
+            patch("ucode.cli.load_state", return_value=dict(MINIMAL_STATE)),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.clear_state"),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        assert not antigravity.AGY_SKILLS_CONFIG_PATH.exists()
 
     def test_reverts_mcp_configs_before_clearing_state(self):
         state = {

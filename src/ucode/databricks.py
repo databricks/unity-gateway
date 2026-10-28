@@ -2793,6 +2793,7 @@ _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
     "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle"),
     "codex": ("openai", "azure_openai", "microsoft_foundry", "amazon_bedrock", "bedrock_mantle"),
     "gemini": ("gemini_enterprise",),
+    "antigravity": ("gemini_enterprise",),
     "copilot": (
         "anthropic",
         "amazon_bedrock",
@@ -3889,7 +3890,7 @@ def build_tool_base_url(tool: str, workspace: str) -> str:
         return f"{workspace}/ai-gateway/codex/v1"
     if tool == "claude":
         return f"{workspace}/ai-gateway/anthropic"
-    if tool == "gemini":
+    if tool in ("gemini", "antigravity"):
         return f"{workspace}/ai-gateway/gemini"
     if tool == "opencode":
         raise RuntimeError(
@@ -3993,5 +3994,6 @@ def build_shared_base_urls(workspace: str) -> dict[str, str | dict[str, str]]:
         "opencode": build_opencode_base_urls(workspace),
         "copilot": build_copilot_base_url(workspace),
         "pi": build_pi_base_urls(workspace),
+        "antigravity": build_tool_base_url("antigravity", workspace),
     }
     return urls

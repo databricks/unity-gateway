@@ -34,6 +34,10 @@ on:
         description: Exact GitHub Copilot CLI version (non-blocking lane)
         default: 1.0.91
         required: true
+      antigravity_build:
+        description: Exact Antigravity CLI build, <version>-<build id> (Linux lane)
+        default: 1.4.9-4962164969177088
+        required: true
       dependency:
         description: Optional exact dependency for reproduction (e.g. tomlkit==0.14.0)
         default: ''
@@ -58,6 +62,7 @@ env:
   CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}
   OPENCODE_VERSION: ${{ inputs.opencode_version || '1.18.31' }}
   COPILOT_VERSION: ${{ inputs.copilot_version || '1.0.91' }}
+  ANTIGRAVITY_BUILD: ${{ inputs.antigravity_build || '1.4.9-4962164969177088' }}
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
 
 jobs:
@@ -213,6 +218,7 @@ jobs:
             codex) args=(--codex-version "$CODEX_VERSION") ;;
             opencode) args=(--opencode-version "$OPENCODE_VERSION") ;;
             copilot) args=(--copilot-version "$COPILOT_VERSION") ;;
+            antigravity) args=(--antigravity-build "$ANTIGRAVITY_BUILD") ;;
           esac
           if [[ -n "$DEPENDENCY" ]]; then
             args+=(--dependency "$DEPENDENCY")
@@ -394,6 +400,23 @@ jobs:
       AGENT: copilot
       TEST_MARKER: live and copilot
       ARTIFACT_NAME: integration-full-copilot-${{ matrix.os }}
+    steps: *live-steps
+
+  # Blocking: part of the cujs gate. Linux only: Antigravity CLI's gateway mode supports macOS
+  # and Linux, and ug installs no Windows build.
+  antigravity:
+    name: Full journeys · Antigravity · Linux
+    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    needs: workspace
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: antigravity
+      TEST_MARKER: live and antigravity
+      ARTIFACT_NAME: integration-full-antigravity-ubuntu-22.04
     steps: *live-steps
 
   # Non-blocking pending stabilization: continue-on-error and absent from the cujs `needs`.
@@ -605,7 +628,7 @@ jobs:
   cujs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, installation-windows, headless-windows, workspace, smoke, full, managed, dedicated-cuj-plan, dedicated-cuj]
+    needs: [installation, installation-windows, headless-windows, workspace, smoke, full, antigravity, managed, dedicated-cuj-plan, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
