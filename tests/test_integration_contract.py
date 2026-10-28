@@ -128,6 +128,14 @@ def _collect_integration_cases(expression):
     return cases
 
 
+def _desktop_mcp_step(jobs):
+    return (
+        jobs["smoke"]
+        .split("      - name: Run Desktop Cowork MCP cases against the fixture workspace\n", 1)[1]
+        .split("      - name:", 1)[0]
+    )
+
+
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 def test_smoke_and_full_together_cover_every_blocking_live_case(agent):
     jobs = _integration_jobs()
@@ -143,7 +151,14 @@ def test_smoke_and_full_together_cover_every_blocking_live_case(agent):
     assert "os: [ubuntu-22.04, windows-latest]" in jobs["smoke"]
     assert "os: [ubuntu-22.04, windows-latest]" in jobs["full"]
     assert not smoke & full
-    assert smoke | full == _collect_integration_cases(f"live and {agent} and not soft_fail")
+    covered = smoke | full
+    if agent == "claude":
+        marker = re.search(r'-- -m "([^"]+)"', _desktop_mcp_step(jobs))
+        assert marker is not None
+        cowork = _collect_integration_cases(marker.group(1))
+        assert not covered & cowork
+        covered |= cowork
+    assert covered == _collect_integration_cases(f"live and {agent} and not soft_fail")
 
 
 def test_smoke_and_full_journeys_run_every_agent_and_os_in_parallel():
@@ -201,11 +216,7 @@ def test_full_claude_lane_runs_desktop_mcp_with_step_scoped_credentials():
     assert "timeout-minutes: 90" in full
     assert "RUN_DESKTOP_MCP: ${{ matrix.agent == 'claude' }}" in full
     assert "steps: *live-steps" in full
-    step = (
-        jobs["smoke"]
-        .split("      - name: Run Desktop Cowork MCP cases against the fixture workspace\n", 1)[1]
-        .split("      - name:", 1)[0]
-    )
+    step = _desktop_mcp_step(jobs)
     assert "if: ${{ !cancelled() && env.RUN_DESKTOP_MCP == 'true' }}" in step
     assert "timeout-minutes: 20" in step
     environment = dict(re.findall(r"(?m)^          ([A-Z_]+): (.+)$", step))
