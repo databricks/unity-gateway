@@ -70,9 +70,11 @@ also generates a `unity-gateway-connectors` skill whose description names them, 
 the connectors exist on the first turn instead of asking whether they are connected.
 
 The skill distinguishes configured connectors from authenticated connections. It directs
-Claude to discover the matching tools, call a discovered `authenticate` tool when sign-in
-is required, and retry the original task after successful sign-in and tool discovery.
-Missing tools and permission denials alone do not establish an authentication failure.
+Claude to discover tools before calling them and use the exact names returned. It forbids guessing
+tool names or repeating an unavailable call; Claude must rediscover the matching connector's tools.
+If discovery exposes only `authenticate`, Claude should call that discovered tool, rediscover after
+sign-in, and retry the original request in the same turn without asking for another message.
+An unavailable tool name and permission denials alone do not establish an authentication failure.
 When access is denied and an authentication tool is available, the guidance directs Claude
 to attempt sign-in once before recommending administrator or network changes. This includes
 IP-address denials: in a reported Atlassian session, the same Jira query succeeded after
