@@ -4343,23 +4343,6 @@ class TestEnsureDatabricksCliVersion:
         assert Path(db_mod.databricks_cli_path()).parent == tmp_path
         assert len(probes) == 1
 
-    def test_cold_unparseable_cli_does_not_repeat_discovery(self, tmp_path, monkeypatch):
-        env = self._fake_databricks(tmp_path, "completely broken output")
-        monkeypatch.setattr("os.environ", env)
-        probes = []
-        original_run = db_mod.run
-
-        def record_probe(args, **kwargs):
-            probes.append(args)
-            return original_run(args, **kwargs)
-
-        monkeypatch.setattr(db_mod, "run", record_probe)
-        with pytest.raises(RuntimeError, match="Could not parse"):
-            ensure_databricks_cli_version()
-
-        # One discovery probe plus the existing raw-output read for the error message.
-        assert len(probes) == 2
-
     def test_insufficient_cached_version_rechecks_before_upgrading(self, tmp_path, monkeypatch):
         env = self._fake_databricks(tmp_path, "Databricks CLI v1.0.0")
         monkeypatch.setattr("os.environ", env)
@@ -4392,6 +4375,8 @@ class TestEnsureDatabricksCliVersion:
             installer_patch.setattr(db_mod, "run", install)
             db_mod._run_databricks_cli_installer(brew_subcommand="upgrade")
 
+        # Check before ensure's higher-floor refresh can hide stale installer state.
+        assert db_mod.databricks_cli_version() == (1, 20, 0)
         ensure_databricks_cli_version(db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
         assert db_mod.databricks_cli_version() == (1, 20, 0)
         assert installer_calls == [["brew", "upgrade", "databricks/tap/databricks"]]
@@ -4423,8 +4408,19 @@ class TestEnsureDatabricksCliVersion:
     def test_raises_when_version_unparseable(self, tmp_path, monkeypatch):
         env = self._fake_databricks(tmp_path, "completely broken output")
         monkeypatch.setattr("os.environ", env)
+        probes = []
+        original_run = db_mod.run
+
+        def record_probe(args, **kwargs):
+            probes.append(args)
+            return original_run(args, **kwargs)
+
+        monkeypatch.setattr(db_mod, "run", record_probe)
         with pytest.raises(RuntimeError, match="Could not parse"):
             ensure_databricks_cli_version()
+
+        # One discovery probe plus the existing raw-output read for the error message.
+        assert len(probes) == 2
 
     def test_custom_minimum_upgrades_version_below_it(self, tmp_path, monkeypatch):
         import ucode.databricks as db_mod

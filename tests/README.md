@@ -194,6 +194,8 @@ These are component checks, not live Windows coverage for every agent.
 `TestEnsureDatabricksCliVersion` in `test_databricks.py`
 checks that repeated launch preflights reuse a successful CLI version probe, higher
 minimums recheck insufficient cached versions, and an installer invalidates discovery.
+The installer result is checked before another version gate can refresh it, and the
+unparseable-version case preserves the cold-failure probe count.
 These component checks do not establish end-to-end launch latency.
 
 Agent configuration tests also verify `ug` auth/MCP helper commands, including

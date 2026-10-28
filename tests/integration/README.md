@@ -156,6 +156,8 @@ absent; use `--help` for the startup-import probe.
 `TestEnsureDatabricksCliVersion` in `../test_databricks.py`
 checks that repeated launch preflights reuse a successful CLI version probe, higher
 minimums recheck insufficient cached versions, and an installer invalidates discovery.
+The installer result is checked before another version gate can refresh it, and the
+unparseable-version case preserves the cold-failure probe count.
 These component checks do not establish end-to-end launch latency.
 
 Agent-specific bundled instruction selection and prompt/compaction hook content
