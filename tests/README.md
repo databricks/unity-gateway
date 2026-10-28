@@ -426,15 +426,15 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 without tier rules, applying recommendations when tiers exist, and serializing the current
 API field. These are unit/component checks; live request-count coverage is not included.
 
-`test_usage.py`, `test_budget.py`, and `test_cli.py` cover the standard usage summary
-and the opt-in expanded budget view. Tests check the five highest usage percentages
-without category grouping, stable ties, missing percentages ordered last, the full
-listing with `--all`, its help text, and the hint when more limits exist.
-They check missing usage amounts, unavailable expanded views, and lookup errors
-without reporting failures as absent budgets.
-Presentation checks cover a single list with short budget IDs on every entry, spacing,
-usage colors, over-limit values, and output without colors.
-These are unit/component tests, not live sign-in or end-to-end coverage.
+`test_usage.py`, `test_budget.py`, and `test_cli.py` cover budget usage without an
+opt-in, including the five highest usage percentages, stable ties, missing percentages
+ordered last, and the full listing with `--all`.
+They check workspace authentication, unavailable usage, and lookup errors without
+reporting failures as absent budgets.
+Presentation checks cover short budget IDs, spacing, usage colors, over-limit values,
+output without colors, and the hint when more limits exist.
+These are unit/component tests; CUJ5 checks live `ug usage --all` output against budget
+figures before and after the command.
 
 `test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
 gateway provider on Windows while Unix launch arguments stay unchanged and routing

@@ -210,9 +210,10 @@ uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
 ```
 
 All four cases submit no inference tasks. The above-tier bare-launch case checks
-`ug usage`, the Luna recommendation, and Codex startup; it does not assert that Codex
-applies Luna. The below-tier case verifies Claude/Sonnet selection and checks the
-spend percentage when the backend supplies budget figures.
+`ug usage --all` against live budget figures, the Luna recommendation, and Codex
+startup; it does not assert that Codex applies Luna. The below-tier case verifies
+Claude/Sonnet selection and checks the spend percentage when the backend supplies
+budget figures.
 
 The explicit `ug claude` case verifies that startup displays the backend's Codex/Luna
 recommendation while its generated `ANTHROPIC_MODEL` setting and native header select
@@ -232,9 +233,10 @@ publishes such a tier. This case also covers startup only, not inference.
 All four cases leave workspace and budget configuration unchanged.
 
 `../test_usage.py`, `../test_budget.py`, and `../test_cli.py` cover top-five selection
-by usage percentage without category grouping, `--all` and its help text, short IDs
-on every entry, resource-name ID extraction, unavailable expanded views, and errors.
-The expanded view has unit/component coverage only; CUJ5 tests the standard summary.
+by usage percentage, `--all` without an opt-in, short IDs on every entry,
+resource-name ID extraction, unavailable usage, and errors.
+CUJ5 compares a known personal limit's displayed spend, threshold, and percentage
+with live values before and after `ug usage --all`.
 
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
 enforced by Ruff. These component checks do not establish native Windows coverage
