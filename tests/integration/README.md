@@ -572,17 +572,18 @@ discovery and unrelated replies continue during interactive login. Metadata/pagi
 upstream tool names are preserved. A fresh listing that removes upstream `authenticate`
 restores local recovery, while continuation pages preserve ownership from earlier pages.
 PAT/non-U2M discovery, permission errors, and policy URL
-elicitation stay unchanged. `../test_databricks.py` distinguishes unsupported services from
-failed requests, while absent connection kinds return `False`. `../test_mcp.py` retains proxy
-registration for unknown classification. `../test_cowork_plugin.py` also checks generated
+elicitation stay unchanged. `../test_databricks.py` returns `False` for unsupported services
+and failed requests; later operations look up metadata again. `../test_cowork_plugin.py` also checks generated
 sign-in/retry guidance. These component tests replace external login and do not establish
 native Cowork browser recovery.
 Generated-guidance checks include one sign-in attempt for access/IP denials and stopping
 authentication retries if the denial persists. They verify the instructions, not model compliance.
 Gmail/Calendar component regressions cover service-scoped login URLs in failed tool results
 and structured login elicitations: automatic sign-in, one request replay, cancellation,
-persistent failures, and unrelated replies during login. Success results, unsupported/unknown
-metadata, PAT profiles, other/malformed URLs, and policy or mixed challenges stay unchanged.
+persistent failures, and unrelated replies during login. Direct URL-matcher tests reject
+other services/hosts and malformed URLs, with representative bridge pass-through cases for
+both error forms. Success results, unsupported services, failed
+metadata lookups, PAT profiles, and policy or mixed challenges stay unchanged.
 Discovery login elicitations expose `authenticate` without starting login. No live signed-out
 Gmail/Calendar operation or native browser flow was exercised by these component tests.
 HTTP 401 component coverage verifies no connector login during initialization, discovery,
@@ -1558,7 +1559,7 @@ states during polling. The browser subprocess runs Python in isolated mode.
 
 MCP review regressions cover bounded connector descriptions with a complete body list,
 malformed upstream tool entries and slow metadata
-discovery while unrelated replies continue. Failed metadata discovery has a short retry
-cooldown; an actual tool-call auth failure can recheck immediately. These are component
+discovery while unrelated replies continue. Failed metadata discovery retries naturally
+on the next operation, without a cache or cooldown. These are component
 checks, not native Cowork invocation or live provider sign-in.
 
