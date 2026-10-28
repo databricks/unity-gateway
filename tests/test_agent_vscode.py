@@ -129,9 +129,7 @@ class TestConfigure:
             "extension/out/extension.js",
             "extension/package.json",
         ]
-        assert "Next, in VS Code: 1. If VS Code is already open, reload each window" in _printed(
-            capsys
-        )
+        assert "Next, in VS Code: 1. If VS Code is open," in _printed(capsys)
 
     def test_reruns_update_values_and_reinstall_the_same_version(self, code):
         vscode.configure(STATE)
@@ -264,21 +262,20 @@ class TestSettingsPath:
 
 class TestNextSteps:
     @pytest.mark.parametrize(
-        ("system", "palette", "restart"),
+        ("system", "restart"),
         [
-            (OS.MACOS, "Cmd+Shift+P", "quit VS Code (Cmd+Q)"),
-            (OS.WINDOWS, "Ctrl+Shift+P", "close VS Code"),
-            (OS.LINUX, "Ctrl+Shift+P", "close VS Code"),
+            (OS.MACOS, "If VS Code is open, quit it (Cmd+Q) and open it again."),
+            (OS.WINDOWS, "If VS Code is open, close every VS Code window and open it again."),
+            (OS.LINUX, "If VS Code is open, close every VS Code window and open it again."),
         ],
     )
-    def test_uses_the_shortcuts_for_the_os(self, monkeypatch, system, palette, restart):
+    def test_says_how_to_restart_on_the_os(self, monkeypatch, system, restart):
         monkeypatch.setattr(vscode, "current_os", lambda: system)
 
-        steps = " ".join(vscode.next_steps())
-
-        assert f'press {palette}, type "Reload Window"' in steps
-        assert restart in steps
-        assert "choose a Databricks model" in steps
+        assert vscode.next_steps() == [
+            f"1. {restart}",
+            "2. Open Chat, click the model picker, and choose a Databricks model.",
+        ]
 
 
 class TestAuthCommand:

@@ -198,17 +198,16 @@ def _edit_settings(path: Path, values: dict[str, object], remove: tuple[str, ...
 
 
 def next_steps() -> list[str]:
-    """What to do in VS Code once the extension is installed, with this OS's shortcuts."""
-    if current_os() is OS.MACOS:
-        palette, restart = "Cmd+Shift+P", "Or quit VS Code (Cmd+Q) and open it again."
-    else:
-        palette, restart = "Ctrl+Shift+P", "Or close VS Code and open it again."
+    """What to do in VS Code once the extension is installed, for this OS."""
+    restart = (
+        "quit it (Cmd+Q) and open it again"
+        if current_os() is OS.MACOS
+        else "close every VS Code window and open it again"
+    )
     return [
-        # A first install shows up in an open window by itself, but a reinstall doesn't: the
-        # window keeps running the build it loaded until it reloads.
-        "1. If VS Code is already open, reload each window:",
-        f'   press {palette}, type "Reload Window", and press Enter.',
-        f"   {restart}",
+        # An open window keeps running the extension build it loaded, and configure reinstalls
+        # every time. A restart covers every open window at once.
+        f"1. If VS Code is open, {restart}.",
         "2. Open Chat, click the model picker, and choose a Databricks model.",
     ]
 
