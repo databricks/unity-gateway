@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+Gateway probe component tests in `test_databricks.py` distinguish an unavailable route
+(HTTP 404) from inconclusive HTTP, connection, or response failures. The existing configure
+scenario checks HTTP 499 stays fatal without reporting success or claiming gateway disablement.
+These checks do not establish live gateway availability or transport recovery.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered
