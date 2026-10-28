@@ -3863,51 +3863,6 @@ def _looks_like_permission_failure(reason: str) -> bool:
     return "HTTP 403" in reason
 
 
-CODING_AGENT_RECOMMEND_MODEL_PATH = "/api/ai-gateway/v2/coding-agent-configs:recommendModel"
-
-
-def resolve_current_budget_spend(
-    workspace: str,
-    token: str,
-    *,
-    timeout: int = 10,
-) -> tuple[tuple[Decimal, Decimal] | None, str | None]:
-    """Fetch the caller's coding-agent budget spend and alert threshold.
-
-    Reads them off `recommendModel`, which returns the spend its model
-    recommendation was based on. `available_models` is empty since we want the
-    spend, not the recommendation.
-
-    Returns `((spend, threshold), None)` or `(None, reason)`. Absence is
-    routine — the endpoint needs a per-org SAFE flag (default off) and a
-    coding-agent config — so it never raises.
-    """
-    url = f"https://{workspace_hostname(workspace)}{CODING_AGENT_RECOMMEND_MODEL_PATH}"
-    payload, reason = _http_post_json(url, token, {"available_models": []}, timeout=timeout)
-    if payload is None:
-        return None, reason or "unknown error"
-    if not isinstance(payload, dict):
-        return None, "response was not a JSON object"
-
-    # The threshold is what anchors the spend: a caller with a per-user threshold but no spend yet
-    # this period gets `effective_threshold` set and `current_spend` omitted (see the server's
-    # per-user spend resolution). Treat an *absent* spend as $0 rather than "no budget", so a
-    # developer who hasn't spent anything still sees their budget instead of a blank. With no
-    # threshold there is nothing to measure against, so that genuinely counts as no spend.
-    threshold = _parse_decimal(payload.get("effective_threshold"))
-    if threshold is None:
-        return None, "workspace reported no coding-agent budget spend"
-    raw_spend = payload.get("current_spend")
-    if raw_spend is None:
-        spend: Decimal | None = Decimal(0)
-    else:
-        # Present but unparseable is corrupt data, not zero spend — don't silently mask it.
-        spend = _parse_decimal(raw_spend)
-        if spend is None:
-            return None, "workspace reported no coding-agent budget spend"
-    return (spend, threshold), None
-
-
 def _parse_decimal(value: object) -> Decimal | None:
     if isinstance(value, str) and value.strip():
         try:

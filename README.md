@@ -345,17 +345,10 @@ ug skills remove --location main.default --via mcp
 | `ug revert` | Clear saved state and restore backed-up config files |
 | `ug upgrade` | Upgrade Unity Gateway |
 
-`ug usage` shows your Unity Gateway budget usage. To try the expanded budget view:
-
-```bash
-ENABLE_UG_USAGE_SPEND_API=1 ug usage
-```
-
-The expanded view shows up to five budget limits with the highest usage percentages,
-with a short budget ID on each entry. It tells you when more limits exist.
-Add `--all` to show every limit: `ENABLE_UG_USAGE_SPEND_API=1 ug usage --all`.
-It uses your configured workspace login; no separate login is needed.
-Leave `ENABLE_UG_USAGE_SPEND_API` unset to keep the standard summary.
+`ug usage` shows up to five Unity Gateway budget limits with the highest usage
+percentages, with a short budget ID on each entry. It tells you when more limits
+exist. Run `ug usage --all` to show every limit. Both commands use your configured
+workspace login.
 
 A launch (`ug claude`, `ug codex`) uses the workspace's managed coding agent config that
 `ug configure` last saved and does not refetch it. After an admin changes that config, run

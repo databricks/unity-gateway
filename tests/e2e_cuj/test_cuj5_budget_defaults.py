@@ -92,12 +92,42 @@ class TestCujBudgetDefaultsBelowTier(_BudgetDefaultsBase):
 
 
 class TestCujBudgetDefaults(_BudgetDefaultsBase):
+    def _monthly_personal_spend_status(self, workspace):
+        """Read the fixed budget's monthly per-user limit; the SDK has no typed endpoint."""
+        seen, token = set(), None
+        matches = []
+        for _ in range(100):
+            params = {"page_size": "100"}
+            if token:
+                params["page_token"] = token
+            result = workspace.client.api_client.do(
+                "GET", "/api/ai-gateway/v2/budget-spend-statuses", query=params
+            )
+            for budget in result.get("budget_spend_statuses", []):
+                if budget["name"].rsplit("/", 1)[-1] == self.BUDGET_ID:
+                    matches.extend(
+                        status
+                        for status in budget["alert_spend_statuses"]
+                        if status["scope_type"] == "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER"
+                        and status["time_period"] == "MONTH"
+                    )
+            token = result.get("next_page_token")
+            if not token:
+                break
+            assert token not in seen, "Budget pagination repeated a token"
+            seen.add(token)
+        else:
+            raise AssertionError("Budget pagination exceeded 100 pages")
+        assert len(matches) == 1, f"Expected one monthly personal limit: {matches}"
+        return matches[0]
+
     def test_bare_ug_shows_luna_recommendation_and_starts_codex(self, cuj):
         """Scenario: launch bare ``ug`` with the fixed 1% Luna budget tier active.
 
-        Expected: the read-only `usage` command reports the backend's spend and threshold, then
-        the real backend recommends Codex/Luna, the launch panel displays that recommendation, and
-        the native Codex TUI starts and exits normally, without budget writes or an inference task.
+        Expected: read-only `usage --all` reports the fixed budget's monthly personal spend,
+        threshold, and percentage within live readings before and after the command. The real
+        backend recommends Codex/Luna, the launch panel displays that recommendation, and the
+        native Codex TUI starts and exits normally, without budget writes or an inference task.
         Applying the recommended Luna model over the managed Sol default is outside this coverage.
         """
         session, workspace, _ = cuj
@@ -129,31 +159,33 @@ class TestCujBudgetDefaults(_BudgetDefaultsBase):
             ]
         )
 
-        before_usage = workspace.client.api_client.do(
+        before_usage = self._monthly_personal_spend_status(workspace)
+        # Use the full list so other budgets cannot displace the fixed budget from the top five.
+        usage = session.run("usage", "--all", timeout=120)
+        after_usage = self._monthly_personal_spend_status(workspace)
+        recommendation = workspace.client.api_client.do(
             "POST", path=config_path + ":recommendModel", body={}
         )
-        usage = session.run("usage", timeout=120)
-        after_usage = workspace.client.api_client.do(
-            "POST", path=config_path + ":recommendModel", body={}
-        )
-        for recommendation in (before_usage, after_usage):
-            assert recommendation.get("recommended_agent") == CodingAgent.CODEX, recommendation
-            assert recommendation.get("recommended_model") == self.LUNA_MODEL, recommendation
+        assert recommendation.get("recommended_agent") == CodingAgent.CODEX, recommendation
+        assert recommendation.get("recommended_model") == self.LUNA_MODEL, recommendation
 
+        output = session.redact(usage.stdout + usage.stderr, strip_ansi=True)
+        assert "Your Unity Gateway spend limits" in output, output
         match = re.search(
-            r"Budget spend:\s*\$([\d,]+\.\d{2})\s+of\s+\$([\d,]+\.\d{2})\s+\((\d+)%\)",
-            session.redact(usage.stdout + usage.stderr),
+            rf"([\d.]+)% used\s+Monthly personal limit \(budget {self.BUDGET_ID[:8]}\)"
+            r"\s+\$([\d,]+\.\d{2}) of \$([\d,]+\.\d{2}) used",
+            output,
         )
-        assert match, usage.stdout + usage.stderr
-        displayed_spend, displayed_threshold, displayed_percent = match.groups()
+        assert match, output
+        displayed_percent, displayed_spend, displayed_threshold = match.groups()
         displayed_spend = Decimal(displayed_spend.replace(",", ""))
         displayed_threshold = Decimal(displayed_threshold.replace(",", ""))
         cent = Decimal("0.01")
 
-        before_spend = Decimal(str(before_usage["current_spend"]))
-        after_spend = Decimal(str(after_usage["current_spend"]))
-        before_threshold = Decimal(str(before_usage["effective_threshold"]))
-        after_threshold = Decimal(str(after_usage["effective_threshold"]))
+        before_spend = Decimal(str(before_usage["spend"]))
+        after_spend = Decimal(str(after_usage["spend"]))
+        before_threshold = Decimal(str(before_usage["threshold"]))
+        after_threshold = Decimal(str(after_usage["threshold"]))
         assert before_spend <= after_spend, (before_usage, after_usage)
         assert before_threshold == after_threshold, (before_usage, after_usage)
         assert displayed_threshold == before_threshold.quantize(cent, rounding=ROUND_HALF_UP)
@@ -163,9 +195,9 @@ class TestCujBudgetDefaults(_BudgetDefaultsBase):
             <= after_spend.quantize(cent, rounding=ROUND_HALF_UP)
         ), (before_usage, after_usage, displayed_spend)
         assert (
-            int(format(float(before_spend / before_threshold), ".0%").removesuffix("%"))
-            <= int(displayed_percent)
-            <= int(format(float(after_spend / after_threshold), ".0%").removesuffix("%"))
+            Decimal(str(before_usage["percent_consumed"]))
+            <= Decimal(displayed_percent)
+            <= Decimal(str(after_usage["percent_consumed"]))
         ), (before_usage, after_usage, usage)
 
         with AgentTerminal(session, CODEX, [str(session.binary)], "budget-luna") as tui:
