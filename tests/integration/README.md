@@ -501,9 +501,10 @@ upstream tool names are preserved. A fresh listing that removes upstream `authen
 restores local recovery, while continuation pages preserve ownership from earlier pages.
 PAT/non-U2M discovery, permission errors, and policy URL
 elicitation stay unchanged. `../test_databricks.py` distinguishes unsupported services from
-failed or incomplete lookups; `../test_mcp.py` retains proxy registration for unknown
-classification. `../test_cowork_plugin.py` also checks generated sign-in/retry guidance. These
-component tests replace external login and do not establish native Cowork browser recovery.
+failed requests, while absent connection kinds return `False`. `../test_mcp.py` retains proxy
+registration for unknown classification. `../test_cowork_plugin.py` also checks generated
+sign-in/retry guidance. These component tests replace external login and do not establish
+native Cowork browser recovery.
 Generated-guidance checks include one sign-in attempt for access/IP denials and stopping
 authentication retries if the denial persists. They verify the instructions, not model compliance.
 Gmail/Calendar component regressions cover service-scoped login URLs in failed tool results

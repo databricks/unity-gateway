@@ -2751,22 +2751,14 @@ def mcp_service_needs_connection_login(workspace: str, token: str, full_name: st
 
     Reads the service's ``config.source_connection.securable_kind`` via a per-service GET (the
     listing omits it). No source connection (e.g. ``system.ai.web_search``) or a non-U2M kind
-    returns ``False``. Failed or incomplete lookups return ``None`` so callers can retry without
+    returns ``False``. Failed requests return ``None`` so callers can retry without
     caching an unsupported classification. Neither outcome starts an OAuth flow (AIGTWY-4856)."""
     details, err = get_mcp_service(workspace, token, full_name)
-    if err is not None or not isinstance(details, dict):
+    if err is not None:
         return None
-    config = details.get("config")
-    if not isinstance(config, dict):
-        return None
-    source = config.get("source_connection")
-    if source is None:
+    if not isinstance(details, dict):
         return False
-    if not isinstance(source, dict):
-        return None
-    kind = source.get("securable_kind")
-    if not isinstance(kind, str) or not kind:
-        return None
+    kind = ((details.get("config") or {}).get("source_connection") or {}).get("securable_kind")
     return kind in OAUTH_U2M_CONNECTION_KINDS
 
 
