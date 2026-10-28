@@ -98,10 +98,9 @@ wait for the user. Automatic login is still limited to one attempt per proxy ses
 requires confirmed U2M metadata. Canceled or failed login and persistent errors are returned
 to the client. Successful results, ordinary errors, and other URLs do not trigger this path.
 
-HTTP 401 responses first retry with a silently refreshed Databricks workspace token. Only
-an actual `tools/call` that still returns 401 can trigger connector login. Initialization,
+Only an actual `tools/call` returning HTTP 401 can trigger connector login. Initialization,
 tool discovery, notifications, and background HTTP requests never start connector sign-in;
-persistent HTTP errors remain errors. PAT mode does not refresh or open connector login.
+persistent HTTP errors remain errors. PAT mode does not open connector login.
 Databricks workspace login through the Desktop credential helper is separate from connector
 login: restoring the workspace session must not sign in unrelated connectors.
 
@@ -344,7 +343,5 @@ means the selected user has not signed in yet and continues polling until the ti
 
 The generated connector skill keeps its discovery description within 1,024 characters;
 the body lists every configured connector and carries sign-in recovery instructions.
-The proxy limits forced workspace refresh after repeated 401s to once per 30 seconds.
-If that refresh fails, the original HTTP 401 is returned; a later request can retry refresh.
 Failed metadata discovery retries after five seconds; a tool-call auth failure can
 recheck immediately. Slow metadata discovery does not delay unrelated MCP responses.

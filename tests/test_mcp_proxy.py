@@ -155,9 +155,7 @@ class TestDatabricksTokenAuth:
     @pytest.mark.parametrize(
         "method", ["initialize", "tools/list", "resources/list", "prompts/list", "ping"]
     )
-    def test_discovery_401_refreshes_workspace_token_without_connection_login(
-        self, monkeypatch, method
-    ):
+    def test_discovery_401_does_not_start_connection_login(self, monkeypatch, method):
         token_calls = []
         logins = []
         monkeypatch.setattr(
@@ -176,120 +174,11 @@ class TestDatabricksTokenAuth:
             "POST", CONN_URL, json={"jsonrpc": "2.0", "id": 1, "method": method}
         )
 
-        yielded = self._drive(auth, request, httpx.Response(401), httpx.Response(401))
+        yielded = self._drive(auth, request, httpx.Response(401))
 
         assert logins == []
-        assert token_calls == [{}, {"force_refresh": True}]
-        assert len(yielded) == 2
-
-    def test_repeated_401s_rate_limit_workspace_refresh(self, monkeypatch):
-        calls = []
-        now = [100.0]
-        monkeypatch.setattr(mcp_proxy.time, "monotonic", lambda: now[0])
-        monkeypatch.setattr(
-            mcp_proxy,
-            "get_databricks_token",
-            lambda *args, **kwargs: calls.append(kwargs.get("force_refresh", False)) or "token",
-        )
-        auth = mcp_proxy._build_token_auth(URL, WS, "p")
-        for expected_requests in (2, 1):
-            yielded = self._drive(
-                auth, httpx.Request("GET", URL), httpx.Response(401), httpx.Response(401)
-            )
-            assert len(yielded) == expected_requests
-        assert calls.count(True) == 1
-        now[0] += mcp_proxy.WORKSPACE_REFRESH_INTERVAL_SECONDS
-        self._drive(auth, httpx.Request("GET", URL), httpx.Response(401), httpx.Response(401))
-        assert calls.count(True) == 2
-
-    @pytest.mark.parametrize("method", ["initialize", "tools/call"])
-    def test_workspace_refresh_recovers_401_without_connection_login(self, monkeypatch, method):
-        token_calls = []
-        logins = []
-
-        def token(ws, profile, **kwargs):
-            token_calls.append((ws, profile, kwargs))
-            return "refreshed" if kwargs.get("force_refresh") else "cached"
-
-        monkeypatch.setattr(mcp_proxy, "get_databricks_token", token)
-        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a: True)
-        monkeypatch.setattr(
-            mcp_proxy,
-            "run_connection_login",
-            lambda *a, **k: logins.append(1) or (True, "signed in"),
-        )
-        httpx_module = mcp_proxy._httpx()
-        sent = []
-
-        def upstream(request):
-            sent.append(request.headers["Authorization"])
-            return httpx_module.Response(401 if len(sent) == 1 else 200, json={"ok": True})
-
-        async def scenario():
-            async with httpx_module.AsyncClient(
-                auth=mcp_proxy._build_token_auth(CONN_URL, WS, "p"),
-                transport=httpx_module.MockTransport(upstream),
-            ) as client:
-                return await client.post(
-                    CONN_URL, json={"jsonrpc": "2.0", "id": 1, "method": method}
-                )
-
-        response = anyio.run(scenario)
-
-        assert response.status_code == 200
-        assert sent == ["Bearer cached", "Bearer refreshed"]
-        assert token_calls == [(WS, "p", {}), (WS, "p", {"force_refresh": True})]
-        assert logins == []
-
-    @pytest.mark.parametrize("method", ["initialize", "tools/call"])
-    def test_failed_workspace_refresh_does_not_start_connection_login(self, monkeypatch, method):
-        logins = []
-        now = [100.0]
-        refreshes = []
-        monkeypatch.setattr(mcp_proxy.time, "monotonic", lambda: now[0])
-
-        def token(ws, profile, **kwargs):
-            if kwargs.get("force_refresh"):
-                refreshes.append(1)
-                if len(refreshes) == 1:
-                    raise RuntimeError("Databricks token request timed out")
-                return "refreshed"
-            return "cached"
-
-        monkeypatch.setattr(mcp_proxy, "get_databricks_token", token)
-        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a: True)
-        monkeypatch.setattr(
-            mcp_proxy,
-            "run_connection_login",
-            lambda *a, **k: logins.append(1) or (True, "signed in"),
-        )
-        httpx_module = mcp_proxy._httpx()
-
-        def upstream(request):
-            if request.headers["Authorization"] == "Bearer refreshed":
-                return httpx_module.Response(200, json={"ok": True})
-            return httpx_module.Response(401, json={"error": "workspace rejected token"})
-
-        async def scenario():
-            async with httpx_module.AsyncClient(
-                auth=mcp_proxy._build_token_auth(CONN_URL, WS, "p"),
-                transport=httpx_module.MockTransport(upstream),
-            ) as client:
-                body = {"jsonrpc": "2.0", "id": 1, "method": method}
-                failed = await client.post(CONN_URL, json=body)
-                during_cooldown = await client.post(CONN_URL, json=body)
-                now[0] += mcp_proxy.WORKSPACE_REFRESH_INTERVAL_SECONDS
-                recovered = await client.post(CONN_URL, json=body)
-                return failed, during_cooldown, recovered
-
-        failed, during_cooldown, recovered = anyio.run(scenario)
-
-        assert failed.status_code == 401
-        assert failed.json() == {"error": "workspace rejected token"}
-        assert during_cooldown.status_code == 401
-        assert recovered.status_code == 200
-        assert len(refreshes) == 2
-        assert logins == []
+        assert token_calls == [{}]
+        assert len(yielded) == 1
 
     @pytest.mark.parametrize(
         ("method", "body"),
@@ -317,16 +206,13 @@ class TestDatabricksTokenAuth:
             auth,
             httpx.Request(method, CONN_URL, content=body),
             httpx.Response(401),
-            httpx.Response(401),
         )
 
-        assert len(yielded) == 2
+        assert len(yielded) == 1
         assert logins == []
 
     @pytest.mark.parametrize("status", [403, 500])
-    def test_non_401_tool_failures_do_not_refresh_or_start_connection_login(
-        self, monkeypatch, status
-    ):
+    def test_non_401_tool_failures_do_not_start_connection_login(self, monkeypatch, status):
         token_calls = []
         logins = []
         monkeypatch.setattr(
@@ -364,10 +250,10 @@ class TestDatabricksTokenAuth:
         request = httpx.Request(
             "POST", CONN_URL, json={"jsonrpc": "2.0", "id": 1, "method": "tools/call"}
         )
-        yielded = self._drive(auth, request, httpx.Response(401), httpx.Response(401))
+        yielded = self._drive(auth, request, httpx.Response(401))
         assert logins == [(CONN_URL, "p")]
-        assert len(yielded) == 3
-        assert yielded[2].headers["Authorization"] == "Bearer tok"
+        assert len(yielded) == 2
+        assert yielded[1].headers["Authorization"] == "Bearer tok"
 
     def test_browser_connection_login_preserves_profile_and_retries_original_request(
         self, monkeypatch, tmp_path
@@ -380,20 +266,14 @@ class TestDatabricksTokenAuth:
         original_config = f"[p]\nhost = {WS}\nauth_type = databricks-cli\nclient_id = keep-client\n"
         config.write_text(original_config)
         monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
-        token_calls = []
-
-        def token_run(argv, **kwargs):
-            token_calls.append(argv)
-            return subprocess.CompletedProcess(
-                argv, 0, '{"access_token": "workspace-refreshed", "expires_in": 3600}', ""
-            )
-
-        monkeypatch.setattr(db_mod, "run", token_run)
+        monkeypatch.setattr(
+            db_mod, "run", lambda *a, **k: pytest.fail("cached workspace token should be reused")
+        )
         credential_requests = []
         browser_calls = []
 
         def urlopen(request, **kwargs):
-            assert request.get_header("Authorization") == "Bearer workspace-refreshed"
+            assert request.get_header("Authorization") == "Bearer selected-user-token"
             if request.full_url.endswith("/user-credentials"):
                 credential_requests.append(request.full_url)
                 body = {"provisioning_info": {"state": "ACTIVE" if browser_calls else "FAILED"}}
@@ -423,7 +303,7 @@ class TestDatabricksTokenAuth:
 
         def upstream(request):
             sent.append((request.headers["Authorization"], request.content))
-            return sdk_httpx.Response(401 if len(sent) <= 2 else 200, json={"result": "ok"})
+            return sdk_httpx.Response(401 if len(sent) == 1 else 200, json={"result": "ok"})
 
         async def scenario():
             async with sdk_httpx.AsyncClient(
@@ -437,19 +317,15 @@ class TestDatabricksTokenAuth:
         body = b'{"method":"tools/call","id":7}'
         assert sent == [
             ("Bearer selected-user-token", body),
-            ("Bearer workspace-refreshed", body),
-            ("Bearer workspace-refreshed", body),
+            ("Bearer selected-user-token", body),
         ]
         assert config.read_text() == original_config
-        assert len(token_calls) == 1
-        assert token_calls[0][-1] == "--force-refresh"
-        assert token_calls[0][token_calls[0].index("--profile") + 1] == "p"
         assert len(browser_calls) == 1
         assert len(credential_requests) == 2
         memo = db_mod._memoized_token(db_mod._token_memo_key(WS, "p"))
-        assert memo is not None and memo.token == "workspace-refreshed"
+        assert memo is not None and memo.token == "selected-user-token"
 
-    def test_non_connection_401_only_refreshes_workspace_token(self, monkeypatch):
+    def test_non_connection_401_is_not_retried(self, monkeypatch):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile, **k: "tok")
         logins: list = []
         monkeypatch.setattr(
@@ -457,7 +333,7 @@ class TestDatabricksTokenAuth:
         )
         auth = mcp_proxy._build_token_auth(URL, WS, "p")  # URL is not an mcp-services endpoint
         yielded = self._drive(auth, httpx.Request("POST", URL), httpx.Response(401))
-        assert logins == [] and len(yielded) == 2
+        assert logins == [] and len(yielded) == 1
 
     def test_success_response_never_logs_in(self, monkeypatch):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
@@ -483,8 +359,8 @@ class TestDatabricksTokenAuth:
         request = httpx.Request(
             "POST", ws_url, json={"jsonrpc": "2.0", "id": 1, "method": "tools/call"}
         )
-        yielded = self._drive(auth, request, httpx.Response(401), httpx.Response(401))
-        assert logins == [] and len(yielded) == 2
+        yielded = self._drive(auth, request, httpx.Response(401))
+        assert logins == [] and len(yielded) == 1
 
     def test_login_runs_at_most_once_per_session(self, monkeypatch):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile, **k: "tok")
@@ -500,7 +376,7 @@ class TestDatabricksTokenAuth:
                 CONN_URL,
                 json={"jsonrpc": "2.0", "id": request_id, "method": "tools/call"},
             )
-            self._drive(auth, request, httpx.Response(401), httpx.Response(401))
+            self._drive(auth, request, httpx.Response(401))
         assert logins == [1]
 
     def test_use_pat_never_drives_connection_login(self, monkeypatch):
@@ -524,7 +400,7 @@ class TestDatabricksTokenAuth:
             "POST", CONN_URL, json={"jsonrpc": "2.0", "id": 1, "method": "tools/call"}
         )
         with pytest.raises(mcp_proxy.ProxyAuthError, match="user cancelled"):
-            self._drive(auth, request, httpx.Response(401), httpx.Response(401))
+            self._drive(auth, request, httpx.Response(401))
 
     def test_login_failure_requires_explicit_retry(self, monkeypatch):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
@@ -594,7 +470,7 @@ class TestDatabricksTokenAuth:
 
         def upstream(request):
             bodies.append(json.loads(request.content))
-            return httpx_module.Response(401 if len(bodies) < 3 else 200, json={"ok": True})
+            return httpx_module.Response(401 if len(bodies) == 1 else 200, json={"ok": True})
 
         async def scenario():
             async with httpx_module.AsyncClient(
@@ -606,7 +482,7 @@ class TestDatabricksTokenAuth:
         response = anyio.run(scenario)
 
         assert response.status_code == 200
-        assert bodies == [body, body, body]
+        assert bodies == [body, body]
         assert logins == [1]
 
     def test_sync_auth_flow_is_rejected(self, monkeypatch):
