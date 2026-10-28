@@ -2034,16 +2034,25 @@ def request_explicit_configure(requested: bool = True) -> None:
     _explicit_configure = requested
 
 
-def _install_header_mod(root: Path | None) -> bool:
+def _install_header_mod(root: Path | None, *, managed_file_exists: bool) -> bool:
     """Install or update the header mod's files, returning whether this run did.
 
-    A failure only costs ``ug --header`` for Claude; the caller then doesn't enable the mod."""
-    if root is None or is_dry_run() or not managed_writes_allowed():
+    A headless run installs them only beside a managed file it can repair, since it can't create
+    one to enable them in. A failure only costs ``ug --header`` for Claude; the caller then doesn't
+    enable the mod."""
+    if root is None or is_dry_run():
+        return False
+    if not managed_writes_allowed(repair_existing=managed_file_exists):
         return False
     try:
         reconcile_privileged_files(_header_mod_files(root), display="Claude Code")
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-        print_warning(f"Couldn't install ug's Claude header mod at {root}: {exc}")
+        hint = (
+            ""
+            if managed_writes_allowed()
+            else " (run `ug configure` from a terminal to install it)"
+        )
+        print_warning(f"Couldn't install ug's Claude header mod at {root}: {exc}{hint}")
         return False
     return True
 
@@ -2060,20 +2069,57 @@ def _remove_header_mod() -> None:
 
 
 def header_mod_active() -> bool:
-    """Whether ug's header mod is installed and enabled, so ``UG_HEADERS`` reaches Claude."""
-    root = claude_header_mod_root()
+    """Whether the managed file enables a header mod, so ``UG_HEADERS`` reaches Claude.
+
+    That is ug's own, current with this release, or another tool's ``ug-headers`` plugin, such as
+    Isaac's. Checked even under ``UG_SKIP_OS_SETTINGS``, which stops only ug from installing one."""
     path = _managed_settings_path()
-    if root is None or path is None:
+    if path is None:
         return False
     try:
-        for file, content in _header_mod_files(root).items():
-            if not file.is_file() or file.read_text(encoding="utf-8") != content:
-                return False
         settings = _parse_managed_settings(read_managed_file(path) or "{}")
+        plugins = settings.get("enabledPlugins")
+        marketplaces = settings.get("extraKnownMarketplaces")
+        if not isinstance(plugins, dict) or not isinstance(marketplaces, dict):
+            return False
+        for plugin_id, enabled in plugins.items():
+            name, _, marketplace = plugin_id.partition("@")
+            entry = marketplaces.get(marketplace)
+            source = entry.get("source") if isinstance(entry, dict) else None
+            if name != "ug-headers" or enabled is not True or not isinstance(source, dict):
+                continue
+            if source.get("source") != "directory" or not isinstance(source.get("path"), str):
+                continue
+            root = Path(source["path"])
+            if marketplace != CLAUDE_HEADER_MOD_MARKETPLACE:
+                if (root / "ug-headers").is_dir():
+                    return True
+            elif all(
+                file.is_file() and file.read_text(encoding="utf-8") == content
+                for file, content in _header_mod_files(root).items()
+            ):
+                return True
     except (OSError, RuntimeError):
         return False
-    plugins = settings.get("enabledPlugins")
-    return isinstance(plugins, dict) and plugins.get(CLAUDE_HEADER_MOD_ID) is True
+    return False
+
+
+def _header_mod_missing_warning() -> str:
+    """Why this launch's ``UG_HEADERS`` won't reach Claude, and what fixes it."""
+    lead = "Claude Code won't send your `ug --header` / UG_HEADERS headers: "
+    if managed_settings_skipped():
+        return lead + (
+            "its OS-managed settings enable no header mod, and UG_SKIP_OS_SETTINGS or "
+            "`ug configure --user` keeps ug from installing its own. Run `ug configure` once "
+            "without either, or have the tool that manages those settings enable its header mod."
+        )
+    if claude_header_mod_root() is None:
+        return lead + "ug can't install its header mod on this platform."
+    elevated = " as an administrator" if current_os() is OS.WINDOWS else ""
+    return lead + (
+        "ug's header mod isn't installed or is out of date, and a launch never changes "
+        f"machine-wide files. Run `ug configure`{elevated} to install it."
+    )
 
 
 def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> None:
@@ -2207,7 +2253,9 @@ def _reconcile_managed_settings(
     wants_mod = _explicit_configure
     # Install the files before the settings name them, so a failed install never enables a
     # plugin that isn't there; a run that can't write as root leaves any earlier entries as is.
-    installed = wants_mod and _install_header_mod(header_mod_root)
+    installed = wants_mod and _install_header_mod(
+        header_mod_root, managed_file_exists=current_text is not None
+    )
     desired_settings = _enable_header_mod(compose(existing), header_mod_root if installed else None)
     # Only the explicit `ug configure` path adds the blanks.
     _settle_credential_blanks(desired_settings, managed_before, add=_explicit_configure)
@@ -2215,7 +2263,11 @@ def _reconcile_managed_settings(
         owned_paths = [*owned_paths, *CLAUDE_HEADER_MOD_PATHS]
     _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])
     conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
-    if not managed_writes_allowed() and not conflicts:
+    # A headless configure that installed the mod enables it too, repairing the file in place.
+    enables_mod = installed and (
+        _enable_header_mod(copy.deepcopy(managed_before), header_mod_root) != managed_before
+    )
+    if not managed_writes_allowed() and not conflicts and not enables_mod:
         warn_managed_write_skipped(path, managed_before, desired_settings)
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
         return
@@ -2655,12 +2707,7 @@ def launch(
     workspace = state.get("workspace")
     ensure_hooks_modules_gate()
     if os.environ.get(UG_HEADERS_ENV_VAR, "").strip() and not header_mod_active():
-        print_warning(
-            "Claude Code won't send your `ug --header` / UG_HEADERS headers: ug's header mod isn't "
-            "installed or is out of date, and a launch never changes machine-wide files. Run "
-            "`ug configure` from an interactive terminal on Linux or macOS, without "
-            "UG_SKIP_OS_SETTINGS."
-        )
+        print_warning(_header_mod_missing_warning())
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.
