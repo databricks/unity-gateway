@@ -190,8 +190,8 @@ def _build_token_auth(
     the gateway answers with an RFC 9728 ``401`` until the user holds the per-user
     connection credential. Rather than block startup logging in every configured
     server (which pops N browsers and stalls the agent's MCP startup), we let the
-    bridge come up immediately and only run
-    ``databricks auth login --resource`` when a request actually reports missing
+    bridge come up immediately and only open the MCP service sign-in page
+    when a request reports missing
     connection authentication. JSON-RPC authentication errors are handled by the
     bridge below because httpx auth only sees HTTP responses.
     So a browser opens only for a service you actually *use*, one at a time, and
