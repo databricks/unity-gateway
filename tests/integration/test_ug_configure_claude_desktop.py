@@ -88,9 +88,10 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
 
     Expected: installed ug writes one complete fixed-UUID gateway profile, selects it without
     changing unrelated profile data, and later removes only its own profile while restoring the
-    prior selection. The exact generated helper command returns a credential accepted by the live models API.
-    This checks native Linux/Windows file handling and helper execution, not Desktop GUI
-    or inference; authentication uses the supported CI bearer override.
+    prior selection. The exact generated helper returns a credential accepted by the live models
+    API and completes a Messages request on a configured system.ai Claude model. This checks
+    native Linux/Windows file handling and the inference protocol, not the Desktop GUI or
+    browser login; authentication uses the supported CI bearer override.
     """
     session = live_session
     config_library = desktop_config_library(session)
@@ -123,6 +124,7 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
         "--disable-databricks-ai-tools",
     )
     session.run(*configure_args, timeout=240)
+    assert not session.workspace_state().get("provider_services", {}).get("claude")
 
     ug_profile_path = config_library / f"{UG_PROFILE_ID}.json"
     profile = json.loads(ug_profile_path.read_text())
@@ -161,8 +163,21 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
         )
 
     models = profile["inferenceModels"]
-    assert models and all("claude-" in model["name"].lower() for model in models)
-    assert profile["inferenceCustomHeaders"]["x-databricks-use-coding-agent-mode"] == "true"
+    assert models and all(
+        model["name"].startswith("system.ai.") and "claude-" in model["name"].lower()
+        for model in models
+    )
+    assert {model["name"] for model in models} <= {model["id"] for model in catalog}
+    headers = {key.casefold(): value for key, value in profile["inferenceCustomHeaders"].items()}
+    assert headers["x-databricks-use-coding-agent-mode"] == "true"
+    assert "databricks-model-provider-service" not in headers
+    _assert_desktop_message(
+        session,
+        profile,
+        models[0]["name"],
+        {"Authorization": "Bearer " + token_output.strip()},
+        "desktop-system-ai-message.json",
+    )
 
     metadata = json.loads(metadata_path.read_text())
     assert metadata == {
@@ -285,55 +300,6 @@ def test_ug_configure_claude_desktop_subscription_relay(
         claude_provider_model,
         {**credential["headers"], "Authorization": "Bearer " + credential["token"]},
         "desktop-relay-message.json",
-    )
-
-
-@pytest.mark.tui
-def test_ug_configure_claude_desktop_anthropic_mps(
-    live_session, workspace, claude_provider, claude_provider_model
-):
-    """Scenario: select the real non-relayed Anthropic MPS and use its Desktop profile.
-
-    Expected: the profile carries the selected provider and its model, the generated helper
-    returns only the Databricks bearer, and those exact settings complete a real Messages
-    request with a fresh marker. This covers Desktop's protocol boundary, not its GUI.
-    """
-    session = live_session
-    config_library = desktop_config_library(session)
-    config_library.mkdir(parents=True)
-    Path(session.env["DATABRICKS_CONFIG_FILE"]).write_text(
-        f"[{CLI_PROFILE}]\nhost = {workspace}\nauth_type = databricks-cli\n"
-    )
-    command = [
-        str(session.binary),
-        "configure",
-        "--profile",
-        CLI_PROFILE,
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-    ]
-    with ConfigureTerminal(session, "claude", command, "configure-desktop-mps") as configure:
-        configure.select_agent("Claude Code")
-        configure.choose("How should Claude Code get its models?", "External Models")
-        configure.choose("Select a model provider service:", claude_provider)
-        configure.finish(timeout=240)
-
-    profile = json.loads((config_library / f"{UG_PROFILE_ID}.json").read_text())
-    assert profile["inferenceGatewayBaseUrl"] == workspace + "/ai-gateway/anthropic"
-    assert profile["inferenceGatewayAuthScheme"] == "bearer"
-    assert profile["inferenceCustomHeaders"]["Databricks-Model-Provider-Service"] == claude_provider
-    assert claude_provider_model in {model["name"] for model in profile["inferenceModels"]}
-    assert "--relay" not in profile["inferenceCredentialHelperArgs"]
-    token_output = _run_credential_helper(session, profile)
-    token_matches = token_output == session.env["DATABRICKS_BEARER"].strip() + "\n"
-    assert token_matches, "Non-relayed helper must emit only the Databricks bearer"
-
-    _assert_desktop_message(
-        session,
-        profile,
-        claude_provider_model,
-        {"Authorization": "Bearer " + token_output.strip()},
-        "desktop-mps-message.json",
     )
 
 

@@ -41,13 +41,15 @@ Claude answer delivery has offline transcript and subprocess coverage in
 streaming JSON when UG redirects diagnostics to stderr. Live model/gateway selection
 and capability-hook activation are not covered here; interactive selection is unsupported.
 
-Claude Desktop has installed-CLI lifecycle, subscription-relay, and non-relayed Anthropic MPS
-coverage on Linux and Windows. The lifecycle journey configures twice and reverts against an
-isolated native profile path, preserves an unrelated profile and metadata, then runs the exact
-generated credential helper and validates its token against the live models API. Separate
-provider journeys select each real MPS through the configure UI, run the profile's helper,
-and use its credentials and headers for a small Messages request. Relay requires the Claude
-subscription token and a separate Databricks header; non-relay requires only the Databricks bearer.
+Claude Desktop has installed-CLI lifecycle and subscription-relay coverage on Linux and
+Windows. The lifecycle journey configures twice and reverts against an isolated native profile
+path, preserves an unrelated profile and metadata, then runs the exact generated credential
+helper and validates its token against the live models API. It requires system.ai Claude models
+without an MPS override and uses the profile's credentials and headers for a small Messages
+request. The relay journey selects the real subscription provider through configure and completes
+Messages inference using the subscription token and separate Databricks header returned by its
+helper. Non-relay MPS Desktop configuration is asserted in CUJ2's existing MPS configuration
+journey; no dedicated Desktop MPS integration test is needed.
 
 The `desktop_mcp` journey uses the dedicated CUJ3 workspace, not the general integration
 workspace. It supplies pre-existing Desktop account directories as inputs, then requires real
@@ -594,7 +596,7 @@ test_ug_codex_commands.py               # command help and parser error forwardi
 test_ug_codex_app_server.py             # actual client/server initialize exchange
 test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven subagent toggles
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
-test_ug_configure_claude_desktop.py     # Desktop lifecycle, relay/MPS inference, installed Cowork MCP; no GUI
+test_ug_configure_claude_desktop.py     # Desktop lifecycle, system.ai/relay inference, installed Cowork MCP; no GUI
 test_ug_configure_codex_desktop.py      # stubbed managed Codex desktop catalog pointer, no GUI
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials

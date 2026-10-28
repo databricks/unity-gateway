@@ -268,10 +268,13 @@ native Linux and Windows profile paths. It verifies the fixed profile, gateway/h
 fields, metadata selection, and preservation of an unrelated profile. It executes the exact
 helper command from that profile, checks token-only output, and uses the credential for a
 live gateway models request. CI supplies the supported bearer override; this does not
-exercise CLI OAuth refresh or Desktop invocation of the helper. Separate relay and non-relayed
-Anthropic MPS journeys use the generated credentials and profile headers for real Messages
-requests. The `desktop_mcp` journey installs Cowork through the real Claude CLI and calls both
-read-only fixtures using commands from the installed plugin. The existing Linux/Windows Claude
+exercise CLI OAuth refresh or Desktop invocation of the helper. The lifecycle journey also
+requires system.ai Claude models without an MPS override and completes a real Messages request
+using the generated credentials and profile headers. A separate subscription-relay journey
+checks its combined credential helper and real Messages inference. Non-relay MPS Desktop
+configuration is asserted in CUJ2, alongside its existing Claude MPS configuration journey.
+The `desktop_mcp` journey installs Cowork through the real Claude CLI and calls both read-only
+fixtures using commands from the installed plugin. The existing Linux/Windows Claude
 full jobs run it in a separate step against CUJ3's workspace, with service-principal credentials
 scoped to that step and a fresh runner output directory. The general-workspace step excludes
 that marker. These cases do not launch Desktop or execute connector skills.
@@ -944,7 +947,8 @@ and checks fresh-run receipts from real workspace calls without an agent UI.
 CUJ3 also configures beside pre-existing Cowork account directories, requires real Claude CLI
 plugin installation, and calls both receipt fixtures using the installed plugin's MCP commands.
 The Desktop integration journey intentionally repeats this wiring through Desktop's explicit-profile
-configure path on Linux and Windows. Separate relay and non-relayed Anthropic MPS journeys
-execute Desktop's generated credential helpers and complete real Messages requests using their
-output and generated profile headers. No GUI, browser OAuth consent, or connector skill execution
-is claimed.
+configure path on Linux and Windows. The Desktop lifecycle and subscription-relay journeys
+execute generated credential helpers and complete real Messages requests on system.ai and
+relayed Claude models using their output and generated profile headers. CUJ2 checks the
+Desktop configuration for its published non-relay Anthropic MPS. No GUI, browser OAuth consent,
+or connector skill execution is claimed.

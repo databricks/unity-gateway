@@ -32,9 +32,12 @@ twice with an explicit CLI profile, then runs real `ug revert`. On Linux and Win
 checks the fixed UUID profile, gateway/helper/models, label and metadata, duplicate
 prevention, unrelated-profile preservation, deletion, and prior-selection restoration.
 It executes the exact generated helper and validates its credential against the live models API.
-Separate relay and non-relayed Anthropic MPS cases use the profile headers and helper output
-for real Messages inference. A dedicated MCP case installs Cowork through the real Claude CLI
-and uses commands from the installed plugin to discover and call live receipt fixtures.
+The lifecycle journey also completes real system.ai Claude Messages inference using the
+profile headers and helper output; a separate subscription-relay case checks its combined
+credential helper and Messages inference. CUJ2 asserts non-relay Anthropic MPS Desktop
+configuration within its existing configuration journey. A dedicated MCP case installs Cowork
+through the real Claude CLI and uses commands from the installed plugin to discover and call
+live receipt fixtures.
 CUJ3 also checks that installed Cowork path in its dedicated workspace. These tests do not
 launch Desktop, exercise its scheduling of the helper, execute connector skills, or run
 browser consent.
