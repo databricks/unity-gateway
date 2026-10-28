@@ -60,13 +60,19 @@ async def assert_desktop_mcp(session, registration: dict, workspace: str, run_id
 
                         async def call(name, arguments):
                             result = await client.call_tool(name, arguments)
-                            responses.append(result.model_dump(by_alias=True))
-                            session.record("desktop-mcp.json", responses)
-                            assert not result.isError, session.redact(json.dumps(responses[-1]))
+                            # MCP 1.x and 2.x expose different Python attribute names.
+                            response = result.model_dump(by_alias=True)
+                            responses.append(response)
+                            session.record(
+                                "desktop-mcp.json", {"run_id": run_id, "responses": responses}
+                            )
+                            assert not response["isError"], session.redact(json.dumps(response))
                             blocks = [
-                                block.text for block in result.content if block.type == "text"
+                                block["text"]
+                                for block in response["content"]
+                                if block["type"] == "text"
                             ]
-                            assert len(blocks) == 1, responses[-1]
+                            assert len(blocks) == 1, response
                             return json.loads(blocks[0])
 
                         result = await call(

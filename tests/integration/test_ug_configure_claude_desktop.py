@@ -11,7 +11,7 @@ from pathlib import Path
 
 import anyio
 import pytest
-from utils.constants import CLAUDE_TEST_MODEL
+from utils.constants import CLAUDE_RELAY_TEST_MODEL, CLAUDE_TEST_MODEL
 from utils.desktop import (
     assert_desktop_mcp,
     desktop_config_library,
@@ -240,7 +240,7 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
 
 @pytest.mark.tui
 def test_ug_configure_claude_desktop_subscription_relay(
-    live_session, workspace, claude_relayed_provider, claude_oauth_token, claude_provider_model
+    live_session, workspace, claude_relayed_provider, claude_oauth_token
 ):
     """Scenario: configure Desktop with relay MPS, use inference and MCPs, then revert.
 
@@ -315,16 +315,17 @@ def test_ug_configure_claude_desktop_subscription_relay(
     assert credential_matches, (
         "Relay helper must return separate subscription and gateway credentials"
     )
-    assert claude_provider_model in {model["name"] for model in profile["inferenceModels"]}
+    assert CLAUDE_RELAY_TEST_MODEL in {model["name"] for model in profile["inferenceModels"]}
 
     message = _assert_desktop_message(
         session,
         profile,
-        claude_provider_model,
+        CLAUDE_RELAY_TEST_MODEL,
         {**credential["headers"], "Authorization": "Bearer " + credential["token"]},
         "desktop-relay-message.json",
     )
-    assert message["model"] == claude_provider_model
+    # This dated native relay ID must be returned unchanged; it is not a service alias.
+    assert message["model"] == CLAUDE_RELAY_TEST_MODEL
     _assert_desktop_selection(config_library, configured=True)
     session.run("mcp", "add", "--names", "system.ai.dbsql", timeout=240)
     servers = installed_cowork_servers(session, root)
