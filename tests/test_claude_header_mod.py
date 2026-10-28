@@ -38,7 +38,7 @@ def test_launch_adds_the_mod_only_with_headers_and_keeps_configures(
     tmp_path, monkeypatch, claude_managed_env
 ):
     managed_path, root, writes = claude_managed_env()
-    monkeypatch.setattr(claude, "_header_mod_requested", False)
+    monkeypatch.setattr(claude, "_explicit_configure", False)
     state = {"workspace": WS, "codex_models": []}
 
     # Another writer of the managed file drops entries it doesn't know; a plain launch mustn't

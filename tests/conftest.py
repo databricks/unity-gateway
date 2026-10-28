@@ -230,7 +230,7 @@ def claude_managed_env(tmp_path, monkeypatch):
             lambda *a, **kw: SimpleNamespace(manifest={"claude": {}}),
         )
         # As `ug configure` runs it.
-        monkeypatch.setattr(claude, "_header_mod_requested", True)
+        monkeypatch.setattr(claude, "_explicit_configure", True)
         monkeypatch.delenv("UG_HEADERS", raising=False)
         return managed_path, root, writes
 
