@@ -89,7 +89,7 @@ def _settings_values() -> dict:
 
 
 class TestConfigure:
-    def test_merges_settings_keeping_the_users_own(self, code):
+    def test_merges_settings_keeping_the_users_own_with_claude_and_gpt_only(self, code):
         _settings().parent.mkdir(parents=True)
         _settings().write_text(USER_SETTINGS, encoding="utf-8")
 
@@ -110,8 +110,6 @@ class TestConfigure:
                     "maxOutputTokens": 128_000,
                 },
                 {"id": "system.ai.gpt-6-luna", "api": "responses"},
-                {"id": "system.ai.gpt-oss-120b", "api": "chat_completions"},
-                {"id": "system.ai.deepseek-v4-1-flash", "api": "chat_completions"},
             ],
             "unityGateway.authCommand": vscode.build_auth_shell_command(WS, "dev"),
         }

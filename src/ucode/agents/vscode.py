@@ -17,7 +17,11 @@ from typing import cast
 from xml.sax.saxutils import escape
 
 from ucode import config_io
-from ucode.agents.copilot import copilot_model_limits, uses_responses_api
+from ucode.agents.copilot import (
+    copilot_exclusion_reason,
+    copilot_model_limits,
+    uses_responses_api,
+)
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command, launch_token
 from ucode.databricks import build_auth_shell_command, discover_model_services
 from ucode.managed_files import OS, current_os
@@ -166,10 +170,15 @@ def _model_entry(model: str) -> dict[str, object]:
 
 
 def model_settings(workspace: str, token: str) -> tuple[list[dict[str, object]], str | None]:
-    """The workspace's Claude, GPT and open models, each with the API the extension calls it on."""
-    # Gemini is left out: the gateway rejects the requests Copilot sends to it.
-    claude, gpt, _gemini, oss, reason = discover_model_services(workspace, token)
-    models = dict.fromkeys([*claude.values(), *gpt, *oss])
+    """The workspace's Claude and GPT models, each with the API the extension calls it on."""
+    # The models Copilot CLI offers: Gemini and open models, gpt-oss among them, fail on Copilot's
+    # requests or aren't served on every workspace.
+    claude, gpt, _gemini, _oss, reason = discover_model_services(workspace, token)
+    models = [
+        model
+        for model in dict.fromkeys([*claude.values(), *gpt])
+        if copilot_exclusion_reason(model) is None
+    ]
     return [_model_entry(model) for model in models], reason
 
 
