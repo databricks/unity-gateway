@@ -184,13 +184,11 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
     assert "wait 5 seconds" in connector_skill
     assert "wait another 5 seconds" in connector_skill
     hooks = json.loads((plugin_root / "hooks" / "hooks.json").read_text())
-    assert set(hooks["hooks"]) == {"SessionStart"}
-    hook = hooks["hooks"]["SessionStart"][0]["hooks"][0]
-    assert hook["type"] == "command"
-    assert hook["command"] == cowork.subprocess_cross_os.shell_command(
+    assert set(hooks["hooks"]) == {"SessionStart", "UserPromptSubmit"}
+    expected_command = cowork.subprocess_cross_os.shell_command(
         [
             str(ug_binary),
-            "cowork-session-start",
+            "cowork-hook",
             "--host",
             "https://workspace.example",
             "--profile",
@@ -199,6 +197,10 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
             "github=https://workspace.example/api/2.0/mcp/github",
         ]
     )
+    for entries in hooks["hooks"].values():
+        hook = entries[0]["hooks"][0]
+        assert (hook["type"], hook["command"]) == ("command", expected_command)
+        assert hook["timeout"] <= 30
     assert [call[0][1:3] for call in calls] == [
         ["plugin", "validate"],
         ["plugin", "marketplace"],

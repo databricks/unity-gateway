@@ -7,10 +7,12 @@ reconnection. They do not establish native Cowork discovery or resume behavior.
 import json
 import secrets
 import time
+from datetime import UTC, datetime
 
 import pytest
 
 from ucode.agents.desktop.cowork import CONNECTOR_SKILL_NAME, _write_connector_skill
+from ucode.agents.desktop.cowork_hooks import idle_resume_context
 
 SLACK_TOOL_NAME = "mcp__plugin_ug_slack__search"
 SLACK_TOOL = {
@@ -45,7 +47,7 @@ WAIT_TOOL = {
 }
 
 
-def _run_resumed_request(tmp_path, claude_messages, *, availability, skill_loaded):
+def _run_resumed_request(tmp_path, claude_messages, *, availability, skill_loaded, hook_note=False):
     _write_connector_skill(tmp_path, ["slack"])
     text = (tmp_path / CONNECTOR_SKILL_NAME / "SKILL.md").read_text(encoding="utf-8")
     description = json.loads(text.splitlines()[2].removeprefix("description: "))
@@ -89,13 +91,21 @@ def _run_resumed_request(tmp_path, claude_messages, *, availability, skill_loade
                 {"role": "assistant", "content": "Ready to check coding-pod."},
             ]
         )
+    note = ""
+    if hook_note:
+        checked_at = datetime(2026, 10, 28, 14, 2, tzinfo=UTC)
+        note = (
+            "<system-reminder>UserPromptSubmit hook additional context: "
+            f"{idle_resume_context(['slack'], {'slack'}, checked_at)}</system-reminder>\n"
+        )
     conversation.append(
         {
             "role": "user",
             "content": (
                 "<system-reminder>The session resumed after an idle break. "
                 "MCP servers disconnected: slack.</system-reminder>\n"
-                "Can you check in coding-pod channel? What do I need to do for desktop app docs?"
+                + note
+                + "Can you check in coding-pod channel? What do I need to do for desktop app docs?"
             ),
         }
     )
@@ -203,3 +213,18 @@ def test_reports_missing_tools_only_after_bounded_wait(tmp_path, claude_messages
         claim in answer.lower()
         for claim in ("has disconnected", "need to reconnect", "token expired", "need to sign in")
     ), answer
+
+
+def test_idle_hook_note_overrides_stale_notice_before_skill_loads(tmp_path, claude_messages):
+    """Scenario: after an idle break, only the skill description and the prompt hook's note
+    are visible, and Slack tools reappear only after a wait.
+
+    Expected: Claude does not trust the disconnect notice; it checks, waits, and uses Slack.
+    """
+    calls, answer, marker = _run_resumed_request(
+        tmp_path, claude_messages, availability="pending", skill_loaded=False, hook_note=True
+    )
+    names = [name for name, _ in calls]
+    assert "wait" in names, (calls, answer)
+    assert SLACK_TOOL_NAME in names, answer
+    assert marker in answer, answer

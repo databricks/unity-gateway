@@ -69,10 +69,16 @@ name follows Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern.
 
 When the plugin has MCP servers, UG adds two things so Claude uses them on the first turn:
 
-- A `SessionStart` hook (`ug cowork-session-start`) that refreshes the profile's Databricks
-  token, sends each upstream MCP server an `initialize` and `tools/list` (15 seconds total),
-  and tells Claude which connectors exist and which did not answer. It cannot make Cowork
-  connect its own MCP servers sooner, and it never opens a browser.
+- Hooks running `ug cowork-hook`. They cannot make Cowork connect its own MCP servers
+  sooner, and they never open a browser or block the prompt.
+  - On `SessionStart`, the hook refreshes the profile's Databricks token, sends each upstream
+    MCP server an `initialize` and `tools/list` (15 seconds total), and tells Claude which
+    connectors exist and which did not answer.
+  - On `UserPromptSubmit`, the hook reads the session transcript. If Claude's last reply was
+    under 3 minutes ago, it does nothing. After a longer idle gap it probes every connector
+    (10 seconds total) and tells Claude that earlier "MCP servers disconnected" notices may
+    be stale, which connectors answered, and to check current tools before calling one
+    unavailable.
 - A `unity-gateway-connectors` skill. On every connector request, including after a break,
   Claude checks the tools exposed now and calls a relevant one. If only `authenticate`
   appears, it signs in. If tools are missing or `pending`, it actually waits 5 seconds
@@ -80,7 +86,7 @@ When the plugin has MCP servers, UG adds two things so Claude uses them on the f
   the tools are not exposed without guessing a cause. It acts in the same turn instead of
   asking whether to check or promising to retry.
 
-Native Cowork execution of the hook still needs Desktop validation.
+Native Cowork execution of these hooks still needs Desktop validation.
 
 Connection-status notices can become stale. The skill directs Claude to rediscover tools and
 try a relevant discovered tool before reporting a configured connector disconnected or unavailable.

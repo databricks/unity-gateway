@@ -27,6 +27,7 @@ STATE_FILENAME = "claude-cowork.json"
 MARKETPLACE_DIRECTORY_NAME = "claude-cowork-marketplace"
 CONNECTOR_SKILL_NAME = "unity-gateway-connectors"
 SESSION_START_HOOK_TIMEOUT_SECONDS = 30
+PROMPT_HOOK_TIMEOUT_SECONDS = 20
 
 _COWORK_MARKERS = (
     "cowork_settings.json",
@@ -70,7 +71,7 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
         _remove_plugin_registration(Path(previous_root))
     marketplace_root = _marketplace_root()
     plugin_root = marketplace_root / "plugins" / PLUGIN_NAME
-    hooks = _session_start_hooks(mcp_config, workspace, profile, use_pat=bool(state.get("use_pat")))
+    hooks = _connector_hooks(mcp_config, workspace, profile, use_pat=bool(state.get("use_pat")))
     _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config, hooks)
     config_io.atomic_write_json(
         _state_path(),
@@ -367,7 +368,7 @@ def _copy_skills(destination: Path, records: list[dict]) -> None:
         copied.add(bundle_name)
 
 
-def _session_start_hooks(
+def _connector_hooks(
     mcp_config: dict, workspace: str, profile: str, *, use_pat: bool
 ) -> dict | None:
     # Reuse each proxy entry's absolute `ug` and URL so the hook targets exactly what Cowork runs.
@@ -380,18 +381,22 @@ def _session_start_hooks(
             command = entry["command"]
     if command is None:
         return None
-    argv = [command, "cowork-session-start", "--host", workspace.rstrip("/")]
+    argv = [command, "cowork-hook", "--host", workspace.rstrip("/")]
     argv += ["--profile", profile]
     if use_pat:
         argv.append("--use-pat")
     for name, url in urls.items():
         argv += ["--server", f"{name}={url}"]
-    hook = {
-        "type": "command",
-        "command": subprocess_cross_os.shell_command(argv),
-        "timeout": SESSION_START_HOOK_TIMEOUT_SECONDS,
+    command_line = subprocess_cross_os.shell_command(argv)
+    return {
+        "hooks": {
+            event: [{"hooks": [{"type": "command", "command": command_line, "timeout": timeout}]}]
+            for event, timeout in (
+                ("SessionStart", SESSION_START_HOOK_TIMEOUT_SECONDS),
+                ("UserPromptSubmit", PROMPT_HOOK_TIMEOUT_SECONDS),
+            )
+        }
     }
-    return {"hooks": {"SessionStart": [{"hooks": [hook]}]}}
 
 
 def _write_connector_skill(destination: Path, server_names: list[str]) -> None:

@@ -332,10 +332,14 @@ Desktop summary while profile and previous-selection files survive. Retry return
 exit code 0, deletes the UG profile, and restores the previous selection without
 workspace state; a repeated revert also returns 0.
 
-`test_cowork_session_start.py` covers SessionStart guidance naming every connector, reporting
-connectors whose probe failed or exceeded the time bound, skipping probes when the token cannot
-be minted, ignoring other events, and keeping CLI stdout to the hook JSON. Probes and token
-minting are faked; native Cowork hook execution remains unverified.
+`test_cowork_hooks.py` covers SessionStart guidance naming every connector, reporting
+connectors whose probe failed or exceeded the time bound, and skipping probes when the token
+cannot be minted. UserPromptSubmit cases cover doing nothing after a short gap (measured from
+Claude's last reply, so an already-recorded prompt does not count), probing and flagging stale
+disconnect notices after an idle gap, keeping that guidance without a token, and doing nothing
+without a readable transcript or previous reply. Other events are ignored and CLI stdout holds
+only the hook JSON. Probes and token minting are faked; native Cowork hook execution remains
+unverified.
 
 `test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
 generated marketplace/plugin/MCP manifests, the generated connector skill naming Claude-only
@@ -360,7 +364,9 @@ waits and then uses a tool exposed after resume, and performs the bounded wait b
 tools absent. Available/pending scenarios run with both the description alone and a skill loaded
 before the break. Assertions require actual tool calls and an answer containing a random value
 returned only by the synthetic Slack tool. The missing-tools scenario requires all six real
-five-second waits and rejects invented reconnect/sign-in instructions. Model requests are not
+five-second waits and rejects invented reconnect/sign-in instructions. An idle-resume case
+shows only the skill description plus the `UserPromptSubmit` hook note and requires Claude to
+wait and use Slack instead of trusting the disconnect notice. Model requests are not
 retried. Slack tools are synthetic to isolate skill compliance from connector credentials;
 these are not native Cowork, Slack, proxy reconnect, or Desktop sleep/resume tests.
 

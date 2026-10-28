@@ -2495,8 +2495,8 @@ def mcp_proxy_cmd(
     serve(url, workspace, profile, use_pat=use_pat or bool(state.get("use_pat")))
 
 
-@app.command("cowork-session-start", hidden=True)
-def cowork_session_start_cmd(
+@app.command("cowork-hook", hidden=True)
+def cowork_hook_cmd(
     host: Annotated[str, typer.Option("--host", help="Configured workspace URL.")],
     server: Annotated[list[str], typer.Option("--server", help="Connector as `<name>=<MCP URL>`.")],
     profile: Annotated[
@@ -2504,11 +2504,11 @@ def cowork_session_start_cmd(
     ] = None,
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
 ) -> None:
-    """Run the Cowork plugin's SessionStart hook."""
+    """Run the Cowork plugin's SessionStart and UserPromptSubmit hooks."""
     import json
     import sys
 
-    from ucode.agents.desktop.cowork_session_start import session_start_output
+    from ucode.agents.desktop.cowork_hooks import hook_output
 
     try:
         payload = json.loads(sys.stdin.read() or "{}")
@@ -2516,7 +2516,7 @@ def cowork_session_start_cmd(
         return
     servers = dict(entry.split("=", 1) for entry in server if "=" in entry)
     with redirect_stdout(sys.stderr):  # stdout is reserved for the hook's JSON
-        output = session_start_output(payload, servers, host, profile, use_pat=use_pat)
+        output = hook_output(payload, servers, host, profile, use_pat=use_pat)
     if output:
         sys.stdout.write(json.dumps(output))
 
