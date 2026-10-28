@@ -249,8 +249,9 @@ retry after failed metadata lookup, PAT/non-U2M exclusion, pagination, upstream 
 and result/transport metadata preservation. If upstream removes its authentication tool on a
 fresh listing, local discovery and automatic recovery resume; pagination retains upstream
 ownership within that listing. Discovery and unrelated replies continue during
-interactive login. Metadata-helper cases distinguish unsupported services from failed or
-incomplete lookups; Claude registration retains the proxy when classification is unknown.
+interactive login. Metadata-helper cases keep failed requests retryable while absent
+connection kinds return `False`; Claude registration retains the proxy when classification
+is unknown.
 A stream scenario covers tool failure, explicit login, tool refresh, task retry, and later
 reauthentication; explicit retry also works after cancellation. Discovery auth errors and
 service-scoped login-URL challenges expose recovery after earlier success. Gmail/Calendar

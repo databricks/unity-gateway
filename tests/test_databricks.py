@@ -5784,15 +5784,15 @@ class TestMcpServiceNeedsConnectionLogin:
     @pytest.mark.parametrize(
         "details",
         [
-            None,
             {},
+            {"config": None},
             {"config": {"source_connection": {}}},
             {"config": {"source_connection": {"securable_kind": None}}},
         ],
     )
-    def test_unknown_on_incomplete_metadata(self, monkeypatch, details):
+    def test_false_when_successful_response_has_no_connection_kind(self, monkeypatch, details):
         self._mock_http(monkeypatch, details=details)
-        assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.github") is None
+        assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.github") is False
 
 
 class TestRunDecodesUtf8:
