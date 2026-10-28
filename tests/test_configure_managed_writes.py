@@ -107,7 +107,7 @@ def test_unelevated_windows_configure_asks_for_an_elevated_rerun(tmp_path, monke
 
 def test_root_runs_privileged_commands_without_sudo(monkeypatch):
     # Containers often run as root with no sudo installed.
-    monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+    monkeypatch.setattr(managed_files.os, "geteuid", lambda: 0, raising=False)
 
     assert managed_files._sudo_command("rm", "-f", "/etc/x") == ["rm", "-f", "/etc/x"]
 

@@ -1246,7 +1246,7 @@ def _sudo_replace_command(mode: str, *args: str, non_interactive: bool = False) 
         current_os().value,
         *args,
     ]
-    if os.geteuid() == 0:
+    if _running_as_root():
         # Run directly as root, the script still checks the temp source's owner against SUDO_UID,
         # which is unset (a device-management agent) or names the caller (`sudo ug configure`)
         # while root owns the source. Point it at root, as sudo itself does for root.
@@ -1277,7 +1277,7 @@ def update_workspace_policy(
     if current_text == desired_text:
         return
     # Checked before the dry-run preview, so a dry run never shows a write the real run refuses.
-    if not allow_sudo and os.geteuid() != 0:
+    if not allow_sudo and not _running_as_root():
         raise ManagedFileWriteUnavailable(
             "Workspace policy updates require an administrator or root provisioning run."
         )
@@ -1287,7 +1287,7 @@ def update_workspace_policy(
             f"{desired_text if desired_text is not None else '(remove)'}"
         )
         return
-    running_as_root = os.geteuid() == 0
+    running_as_root = _running_as_root()
     can_prompt = interactive and _sudo_may_prompt() and not running_as_root
     try:
         if desired_text is not None and can_prompt:
@@ -1675,9 +1675,14 @@ def _explicit_write_failure_message(display: str, path: Path, reason: str) -> st
     )
 
 
+def _running_as_root() -> bool:
+    """Whether this POSIX process runs as root (Windows has no effective user ID)."""
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
 def _sudo_command(*args: str) -> list[str]:
     """Run a privileged command: directly as root, otherwise through sudo, which never prompts
     when no terminal is available."""
-    if system_cross_os.is_admin():
+    if _running_as_root():
         return list(args)
     return [_SUDO, *([] if _sudo_may_prompt() else ["-n"]), *args]

@@ -2469,6 +2469,7 @@ class TestWriteToolConfigManagedSettings:
     def test_setup_outside_configure_warns_that_the_machine_file_was_not_updated(self, monkeypatch):
         # A batched setup that may not write (e.g. `ug agents add` without a terminal);
         # `ug configure` itself always attempts the write.
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
         managed_writes: list = []
         self._patch(monkeypatch, [], managed_writes)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
