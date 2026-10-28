@@ -317,8 +317,8 @@ a second discovered `system.ai.gemini-*` model and requires every request to nam
 Antigravity name (`gemini-3.8-flash`), launched through the `ug agy` alias; that is the agent's
 request, not the gateway's destination. Two journeys use the Gemini Enterprise MPS below: one
 launches `--provider` with `--model` for each listed target and requires that launch's requests to
-name it; the other picks External Models in `ug configure`, requires the newest target to be
-pinned, and completes a bare launch on it. The MCP case registers `system.ai.dbsql` with `ug mcp add` and requires a finished
+name it; the other picks External Models in `ug configure`, answers the start-model prompt an
+allow-all service gets (it declares no targets), and completes a bare launch on that model. The MCP case registers `system.ai.dbsql` with `ug mcp add` and requires a finished
 `call_mcp_tool` step and the query's `md5` in the answer. The skill case places a user skill in
 `~/.agents/skills` and requires its code word. Headless Antigravity cannot answer permission
 prompts, so those two cases start from the user's own `permissions.allow` rules
@@ -1035,8 +1035,8 @@ managed e2e workspace (`E2E_ADMIN_WORKSPACE`) with the injected `managed_workspa
 which enables Claude/Codex but not OpenCode. It is likewise outside `cujs`.
 A non-blocking **Copilot** job (`live and copilot`, sixteen cases) runs on Linux and Windows the
 same way and is likewise outside `cujs` until it is stable.
-A non-blocking **Antigravity** job (`live and antigravity`, eight cases) runs on Linux only with
-the pinned `ANTIGRAVITY_BUILD`, and is likewise outside `cujs` until it is stable.
+A blocking **Antigravity** job (`live and antigravity`, eight cases) runs on Linux only with
+the pinned `ANTIGRAVITY_BUILD`; it is part of the `cujs` gate.
 
 Each lane installs only the agent CLIs it needs (one, except the managed OpenCode lane's
 three), once, and runs all its configure, headless,

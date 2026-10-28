@@ -71,7 +71,7 @@ route). `test_agents_init.py`, `test_mcp.py`, `test_cli.py` (including `ug rever
 skills.json entries added after configure) and `test_agents_commands.py` cover dispatch, the
 native installer, `agy mcp list` parsing, `ug antigravity`/`ug agy`, and
 `ug agents add antigravity`. These are unit/component checks. Automated live coverage is the
-eight journeys in `integration/` (non-blocking Linux CI lane, Databricks Hosted and the Gemini
+eight journeys in `integration/` (blocking Linux CI lane, Databricks Hosted and the Gemini
 Enterprise MPS; see `integration/README.md`).
 
 `test_ug_headers.py` covers the `UG_HEADERS` parser and the `--header` flag, `test_databricks.py`

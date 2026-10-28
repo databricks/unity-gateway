@@ -77,8 +77,9 @@ Gemini models under the names Antigravity knows them by (`system.ai.gemini-3-8-f
 for the whole session and maps each name back to its Databricks model. `--model` accepts
 either name, or one of Antigravity's thinking tiers such as `gemini-3.8-flash-high`.
 `--provider` routes through a Gemini Enterprise Model Provider Service, as with
-`ug gemini`; choosing External Models in `ug configure` saves one. When the service has
-several models, configure starts on the newest and `--model` picks another. Claude, GPT, and open-source models aren't offered, because Antigravity runs
+`ug gemini`; choosing External Models in `ug configure` saves one. When the service declares
+several models, configure starts on the newest; when it serves any model without declaring
+one, configure asks which to start on. `--model` picks another at launch. Claude, GPT, and open-source models aren't offered, because Antigravity runs
 tools only for models it recognizes. `ug` installs the CLI with Google's installer when it
 is missing (macOS and Linux). On a workspace with a managed config, which can't enable
 Antigravity yet, run `ug agents add antigravity` to use it self-managed.
