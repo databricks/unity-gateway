@@ -553,7 +553,7 @@ class TestV2Launch:
                 model_ids=["system.ai.claude-opus-4-8"], model_id_to_display_name={}
             ),
         )
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
         if sys.platform != "win32":
             monkeypatch.setattr(
