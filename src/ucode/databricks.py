@@ -97,7 +97,11 @@ _TOKEN_MEMO_FAILURE_TTL_S = 60
 # End browser login before Codex's 180 s helper timeout.
 _BROWSER_LOGIN_TIMEOUT_SECONDS = 150
 _BROWSER_LOGIN_LOCK_PATH = APP_DIR / "auth-login.lock"
-_HTTP_GET_RETRYABLE_STATUS_CODES = frozenset({429})
+# 429 is a rate limit; 499, 502, 503 and 504 are transient gateway/proxy statuses that the
+# Unity Catalog endpoints return intermittently under load. 500 is left out: it usually means a
+# deterministic server bug that a retry won't fix. Retries back off 1 s, 2 s, 4 s (capped at
+# 5 s) plus up to 25% jitter, or honor Retry-After up to 5 s.
+_HTTP_GET_RETRYABLE_STATUS_CODES = frozenset({429, 499, 502, 503, 504})
 _HTTP_GET_RETRY_BASE_SECONDS = 1.0
 _HTTP_GET_RETRY_MAX_SECONDS = 5.0
 _HTTP_GET_RETRY_AFTER_JITTER_SECONDS = 0.25
@@ -331,9 +335,9 @@ def _http_get_bytes(
 ) -> tuple[bytes | None, str | None]:
     """GET raw bytes. Returns (body, None) on success, (None, reason) on failure.
 
-    ``max_retries`` opts individual callers into bounded retries for rate limits
-    and network failures. Other callers retain the original single-attempt
-    behavior.
+    ``max_retries`` opts individual callers into bounded retries (with backoff) for
+    rate limits (429), transient gateway statuses (499, 502, 503, 504), and network failures.
+    Other callers retain the original single-attempt behavior.
 
     Honors UCODE_DEBUG=1 to append status + truncated error body to ~/.ucode/debug.log.
     """
@@ -3730,6 +3734,9 @@ class GatewayProbe(NamedTuple):
 
 _MODEL_SERVICE_PROBE_PAGE_SIZE = 50
 _MODEL_SERVICE_PROBE_MAX_PAGES = 20
+# The endpoint intermittently returns HTTP 499/504 under load; retry so a transient blip
+# doesn't abort a launch. Two retries add about 1 s then 2 s (plus jitter) before giving up.
+_MODEL_SERVICE_PROBE_MAX_RETRIES = 2
 _MODEL_SERVICE_EMPTY_DETAIL = (
     "reachable, no accessible model services returned; "
     "check USE CATALOG on system, and USE SCHEMA and EXECUTE on system.ai"
@@ -3743,7 +3750,9 @@ def _probe_model_services(workspace: str, token: str) -> GatewayProbe:
         params: dict[str, object] = {"page_size": _MODEL_SERVICE_PROBE_PAGE_SIZE}
         if page_token:
             params["page_token"] = page_token
-        payload, reason = _http_get_json(f"{base}?{urlencode(params)}", token)
+        payload, reason = _http_get_json(
+            f"{base}?{urlencode(params)}", token, max_retries=_MODEL_SERVICE_PROBE_MAX_RETRIES
+        )
         if payload is None:
             if page == 0:
                 return GatewayProbe(False, reason or "unknown error")
@@ -3798,10 +3807,30 @@ def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe
     if _looks_like_permission_failure(reason):
         _raise_model_service_permission_failure(workspace, reason)
 
+    if _looks_like_transient_failure(reason):
+        raise RuntimeError(
+            "Could not verify Databricks Unity Gateway on this workspace: the model services "
+            f"request failed ({reason}). This is usually transient; retry the command, or pass "
+            "--skip-preflight to launch without this check."
+        )
+
     raise RuntimeError(
         "Databricks Unity Gateway is not enabled on this workspace: model services "
         f"({reason}) are not available. See {AI_GATEWAY_DOCS_URL}"
     )
+
+
+_HTTP_STATUS_REASON_RE = re.compile(r"^HTTP (\d{3})\b")
+
+
+def _looks_like_transient_failure(reason: str) -> bool:
+    """True when a failure reason is one ``_http_get_bytes`` retries (a status in
+    ``_HTTP_GET_RETRYABLE_STATUS_CODES`` or a network error), rather than a definitive
+    answer about the workspace."""
+    if reason.startswith("network error:"):
+        return True
+    match = _HTTP_STATUS_REASON_RE.match(reason)
+    return match is not None and int(match.group(1)) in _HTTP_GET_RETRYABLE_STATUS_CODES
 
 
 def _looks_like_definitive_auth_failure(reason: str) -> bool:
