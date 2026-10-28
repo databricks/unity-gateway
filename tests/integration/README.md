@@ -70,9 +70,10 @@ skill name as data; skill download and invocation are not covered.
 
 The dedicated smart-routing CUJ in `../e2e_cuj/test_cuj4_smart_routing.py` runs the original
 managed-default and explicit-model cases, with explicit-model bypass assertions enabled for
-both Claude and Codex. One parameterized test runs all six
-`SMART_ROUTER_CONFIG_VERSION` values, checking both agents' first-prompt routing, orchestrator
-context in inference input, and completed explicitly requested native subagents.
+both Claude and Codex. Two parameterized tests run all six
+`SMART_ROUTER_CONFIG_VERSION` values: one per agent checking first-prompt routing, orchestrator
+context in inference input, and a completed explicitly requested native subagent, and a
+Claude-only one checking the status band and hint row at launch and across off/on toggles.
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
 CUJ4 matches both Codex 0.154.0's top-level tools and 0.162.1's Responses Lite
 `additional_tools` input items. Encrypted child messages match the routed task name
@@ -124,7 +125,7 @@ or construct ug state files. The normal test suite checks these boundaries.
 The Claude mod entry point has separate native component checks in
 `../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
-existing Claude skill-toggle journey checks the live recipe payload field across on/off/on.
+existing Claude skill-toggle journeys check the live recipe payload field (launch recipe at launch and after off/on, DISABLED after off).
 The required Isaac feedback form, evidence submission, and background delivery
 notifications need a separate manual Isaac check. The gateway toggle journey does
 not cover the form or notification timing. Use the released Isaac skill with the
@@ -140,7 +141,7 @@ existing feedback skill without loading the router plugin.
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
-The Claude subagent skill-toggle journey opens `/tasks` after its final calculation
+The Claude subagent skill-toggle journeys open `/tasks` after its final calculation
 and waits up to 180 seconds for "No tasks currently running" or a native menu containing only
 completed task rows before submitting `/exit`. Claude 2.1.290 retains finished children in a
 `Completed (N)` list, so the empty-state message is not required when the list has exactly N
@@ -151,7 +152,7 @@ Scheduled wakeups can be absent from `/tasks` but appear in the exit dialog. Cle
 that exit request with Escape and waits before checking again, for up to 180 seconds. It
 neither stops tasks nor confirms the dialog. Each exit attempt retains its 30-second timeout.
 Offline PTY cases cover this ordering, a scheduled check finishing, and stuck work failing.
-The shared wait also runs before CUJ4's Claude preset sessions exit, after delegated-task
+The shared wait also runs before CUJ4's Claude delegation sessions exit, after delegated-task
 evidence is checked, because Claude can resume a child after its first completed answer.
 
 `../test_startup_imports.py` covers the bare version fast path, deferred imports,
@@ -663,7 +664,7 @@ combinations remain outside the integration suite.
 Preset parameterization augments only routing hooks, skill toggles, and first-prompt routing;
 their original legacy-env cases remain, and the skill toggles add a managed-default case in
 which `smart_routing.enabled` alone routes subagents with Smart Router Orchestrator and no
-first-prompt wrapper starts. The skill toggles' legacy-env cases load the `_off` copy of the
+first-prompt routing decision is made. The skill toggles' legacy-env cases load the `_off` copy of the
 workspace's routing fixture (`claude_smart_routing_off.json`, `codex_smart_routing_off.json`, or
 `codex_smart_routing_ca_off.json`): the same models without `smart_routing`, because managed
 smart routing overrides individual routing env vars.
@@ -1056,7 +1057,9 @@ existing e2e workspace/bearer. Before marking another agent's cases or tests req
 different workspace/setup, extend the advisory lanes to run them. The marker alone does
 not provide that setup or affect unit tests, installation checks, or dedicated CUJs.
 
-Only `test_smart_router_skill_toggles_claude_subagent_routing` and its six variants carry
+Only the three Claude Smart Router toggle tests (`test_smart_router_routes_claude_subagent_at_launch`,
+`test_smart_router_skill_turns_claude_subagent_routing_off` and
+`test_smart_router_skill_turns_claude_subagent_routing_back_on`) and their six variants each carry
 `soft_fail`. The **Soft-fail journeys · claude · Linux/Windows (non-blocking)** jobs run those cases
 unchanged, with the pinned Claude version and existing e2e workspace/bearer. They run after
 Full and Managed config finish, one OS at a time, to avoid adding concurrent inference load.
@@ -1415,7 +1418,7 @@ before work and after off/on toggles. Checks ignore terminal styling and trailin
 UI controls; offline cases reject stale states, wrong scope, and command confirmations.
 
 The plugin test host runs without a process capability, so the mod's session-control call
-is covered by the live skill-toggle journey rather than `claude plugin test`; native
+is covered by the live skill-toggle journeys rather than `claude plugin test`; native
 component tests stub the subagent routing process protocol. No component
 check asserts that the launch paths withdraw the skills.
 The TypeScript launch test also checks event/result forwarding. Separate cases cover
@@ -1423,10 +1426,10 @@ denied-write rollback, invalid request bodies, disabled launches, and body-merge
 no simulated subprocess success is used to claim toggle coverage.
 
 `integration/test_ug_smart_routing_hooks.py` checks `smart_router_recipe_name` in its existing
-Claude skill-toggle journey. The recorder forwards to the real workspace, configured
+Claude skill-toggle journeys. The recorder forwards to the real workspace, configured
 through public `ug configure --workspace <recorder-url>` without hand-writing ug state.
 Checkpoints and each calculation's unique marker correlate parent/child inference
-requests to the on/off/on phases. All matched tool-capable inference payloads must carry the
+requests to the launch, off, and back-on phases. All matched tool-capable inference payloads must carry the
 launch recipe, `DISABLED`, then the launch recipe again, omit the recipe header, and reach non-empty HTTP 200
 responses, with only the existing verified native compatibility retries accepted.
 The same requests must carry the orchestrator's Agent/Task guidance only while
