@@ -510,6 +510,13 @@ This policy is separate from agent-file backups and is not removed by `ug revert
 See [managed workspace policy](docs/managed-workspace-policy.md) for permissions and trade-offs.
 Managed policy headers must not contain secrets: the policy is readable by all local users.
 
+### Codex desktop ChatGPT relay
+
+For a relayed OpenAI provider, `ug configure --agents codex --provider <mps>` also points the Codex
+app's `~/.codex/config.toml` at a loopback relay served by the same login service below (plain
+`codex` then uses it too). Restart the app and sign in with ChatGPT. A provider you already set is
+left alone; `ug revert` removes ug's entries.
+
 ### Codex desktop tracing
 
 With workspace tracing enabled, run `ug configure --agents codex` on the machine
