@@ -53,10 +53,13 @@ The `desktop_mcp` journey uses the dedicated CUJ3 workspace, not the general int
 workspace. It supplies pre-existing Desktop account directories as inputs, then requires real
 Claude CLI installation of the Cowork plugin. Commands read from that installed plugin discover
 and call both read-only fixture tools with receipts tied to a fresh run ID. CI runs this case
-on Linux and Windows in required **Desktop Cowork MCP** jobs, using the runner's existing M2M
-support with `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET` and
-`https://dbc-bbdd5508-648e.cloud.databricks.com`. Only the short-lived bearer reaches test processes.
-The full lane excludes `desktop_mcp` because its workspace has different fixtures. That workspace
+in a separate step of the existing Linux/Windows **Full journeys · Claude** jobs, using the runner's
+existing M2M support with `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET` and
+`https://dbc-bbdd5508-648e.cloud.databricks.com`. These credentials are scoped to that step;
+the general-workspace bearer and subscription token are cleared there. Only the short-lived
+fixture-workspace bearer reaches its test processes. A separate output directory keeps its homes,
+reports, and evidence apart from the general run. The general-workspace step excludes `desktop_mcp`
+because its workspace has different fixtures. The fixture workspace
 uses model aliases that do not match Desktop's `claude-` filter, so this case asserts Cowork
 installation and MCP calls; the other Desktop cases assert inference profiles and credentials.
 

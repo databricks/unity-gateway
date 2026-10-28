@@ -271,9 +271,10 @@ live gateway models request. CI supplies the supported bearer override; this doe
 exercise CLI OAuth refresh or Desktop invocation of the helper. Separate relay and non-relayed
 Anthropic MPS journeys use the generated credentials and profile headers for real Messages
 requests. The `desktop_mcp` journey installs Cowork through the real Claude CLI and calls both
-read-only fixtures using commands from the installed plugin. Its required Linux/Windows CI
-jobs use the dedicated CUJ3 workspace and existing service-principal credentials; the general
-full lane excludes that marker. These cases do not launch Desktop or execute connector skills.
+read-only fixtures using commands from the installed plugin. The existing Linux/Windows Claude
+full jobs run it in a separate step against CUJ3's workspace, with service-principal credentials
+scoped to that step and a fresh runner output directory. The general-workspace step excludes
+that marker. These cases do not launch Desktop or execute connector skills.
 The [native integration plan](../docs/claude-desktop-integration-testing.md) defines the
 separate interactive macOS and Windows coverage needed for those claims.
 

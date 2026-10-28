@@ -294,6 +294,7 @@ component tests exercise the generated MCP command with controlled HTTP/browser 
 the MCP fixture CUJ also checks discovery and tool calls against a real workspace. Both CUJ3
 and the Desktop integration journey read commands from a Cowork plugin installed by the real
 Claude CLI and require fresh receipts from both live fixture tools. The Desktop case runs in
-dedicated Linux/Windows jobs against CUJ3's workspace. Separate relay and non-relayed Anthropic
+the existing Linux/Windows Claude jobs in a separate step against CUJ3's workspace, with
+step-scoped credentials and isolated output. Separate relay and non-relayed Anthropic
 MPS journeys use the generated helper credentials and profile headers for real Messages requests.
 These checks do not launch Desktop or validate native OAuth consent, skill use, or app reconnects.

@@ -194,6 +194,34 @@ def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, retained_test
     }
 
 
+def test_full_claude_lane_runs_desktop_mcp_with_step_scoped_credentials():
+    jobs = _integration_jobs()
+    full = jobs["full"]
+    assert "os: [ubuntu-22.04, windows-latest]" in full
+    assert "RUN_DESKTOP_MCP: ${{ matrix.agent == 'claude' }}" in full
+    assert "steps: *live-steps" in full
+    step = (
+        jobs["smoke"]
+        .split("      - name: Run Desktop Cowork MCP cases against the fixture workspace\n", 1)[1]
+        .split("      - name:", 1)[0]
+    )
+    assert "if: ${{ !cancelled() && env.RUN_DESKTOP_MCP == 'true' }}" in step
+    environment = dict(re.findall(r"(?m)^          ([A-Z_]+): (.+)$", step))
+    assert environment == {
+        "UCODE_TEST_WORKSPACE": "https://dbc-bbdd5508-648e.cloud.databricks.com",
+        "DATABRICKS_BEARER": "''",
+        "DATABRICKS_CLIENT_ID": "${{ secrets.UG_CUJ_SP_CLIENT_ID }}",
+        "DATABRICKS_CLIENT_SECRET": "${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}",
+        "CLAUDE_CODE_OAUTH_TOKEN": "''",
+    }
+    assert '--output "$RUNNER_TEMP/ug-integration-desktop-mcp"' in step
+    marker = re.search(r'-- -m "([^"]+)"', step)
+    assert marker is not None
+    assert _collect_integration_cases(marker.group(1)) == {
+        "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_cowork_mcp"
+    }
+
+
 def _discover_cujs(root, output):
     plan = _workflow_job("dedicated-cuj-plan", "dedicated-cuj")
     script = textwrap.dedent(plan.split("        run: |\n", 1)[1])
@@ -394,7 +422,6 @@ SKIPPED_ON_FORK_PRS = {
     "workspace",
     "smoke",
     "headless-windows",
-    "desktop-mcp",
     "full",
     "soft-fail",
     "opencode",
