@@ -46,8 +46,9 @@ Windows. The lifecycle journey configures twice and reverts against an isolated 
 path, preserves an unrelated profile and metadata, then runs the exact generated credential
 helper and validates its token against the live models API. It requires system.ai Claude models
 without an MPS override and uses the profile's credentials and headers for a small Messages
-request on `system.ai.claude-haiku-4-5`, requiring its native Bedrock response ID
-`anthropic.claude-haiku-4-5-20251001-v1:0` and exact fresh marker. The relay journey selects
+request on `system.ai.claude-haiku-4-5`, requiring HTTP 200, a nonempty response model ID,
+and the exact fresh marker. The service may return a provider model ID rather than its alias;
+this does not pin or prove its backing model revision. The relay journey selects
 the real subscription provider through configure and completes
 Messages inference using the subscription token and separate Databricks header returned by its
 helper. Non-relay MPS Desktop configuration is asserted in CUJ2's existing MPS configuration

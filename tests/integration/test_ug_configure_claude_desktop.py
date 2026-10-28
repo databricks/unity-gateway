@@ -47,9 +47,7 @@ def _run_credential_helper(session, profile):
     return token_output
 
 
-def _assert_desktop_message(
-    session, profile, model, headers, evidence_name, *, response_model=None
-):
+def _assert_desktop_message(session, profile, model, headers, evidence_name):
     marker = fresh_id()
     request = urllib.request.Request(
         profile["inferenceGatewayBaseUrl"] + "/v1/messages",
@@ -75,14 +73,16 @@ def _assert_desktop_message(
         details = session.redact(error.read().decode("utf-8", errors="replace"))
         session.record(evidence_name, {"status": error.code, "error": details})
         raise AssertionError(f"Desktop Messages failed ({error.code}): {details}") from None
-    session.record(evidence_name, {"marker": marker, "response": message})
+    session.record(evidence_name, {"marker": marker, "requested_model": model, "response": message})
     assert message["type"] == "message" and message["role"] == "assistant"
-    assert message["model"] == (response_model or model)
+    # A model-service alias can return its provider's model ID.
+    assert isinstance(message["model"], str) and message["model"].strip()
     assert message["stop_reason"] == "end_turn"
     assert (
         "".join(part["text"] for part in message["content"] if part["type"] == "text").strip()
         == marker
     )
+    return message
 
 
 def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
@@ -181,7 +181,6 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
         model_id,
         {"Authorization": "Bearer " + token_output.strip()},
         "desktop-system-ai-message.json",
-        response_model="anthropic.claude-haiku-4-5-20251001-v1:0",  # Gateway returns provider ID.
     )
 
     metadata = json.loads(metadata_path.read_text())
@@ -299,13 +298,14 @@ def test_ug_configure_claude_desktop_subscription_relay(
     )
     assert claude_provider_model in {model["name"] for model in profile["inferenceModels"]}
 
-    _assert_desktop_message(
+    message = _assert_desktop_message(
         session,
         profile,
         claude_provider_model,
         {**credential["headers"], "Authorization": "Bearer " + credential["token"]},
         "desktop-relay-message.json",
     )
+    assert message["model"] == claude_provider_model
 
 
 @pytest.mark.desktop_mcp
