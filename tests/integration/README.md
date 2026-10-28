@@ -493,6 +493,15 @@ preservation on install failure, scoped cleanup, and unrelated-plugin preservati
 cleanup. Both are mocked component coverage; the integration suite does not launch Cowork,
 connect a plugin MCP server, discover its deferred tool, or run a task through it.
 
+`../test_mcp_connection_login.py` substitutes browser, HTTP, and clock boundaries to check
+workspace sign-in URL construction and polling the selected CLI user's credential. Pending,
+FAILED, and 404 states keep waiting; transient errors can recover; denied/malformed states,
+workspace-token failures, and timeout fail. A blocked browser retains the manual URL.
+Success requires ACTIVE; browser launch alone is insufficient. Proxy coverage combines
+this browser flow with request replay, preserving the profile and token
+memo. These are component tests; live provider sign-in, popup behavior, and native
+Desktop/Cowork recovery remain unverified.
+
 `../test_cowork_skills.py` adds component coverage for user-downloaded skills reaching
 the current workspace's plugin and refreshing on named, schema, and picker add/update/remove
 commands. It preserves managed skills and excludes project-local, other-workspace, and
@@ -606,7 +615,7 @@ bypass. Plugin generation and launch arguments are covered
 by component tests in `../test_claude_smart_routing_v2.py`, not by a live registration journey.
 
 Exact candidate-model and router-name preservation in decision logs has component
-coverage in `../test_claude_routing.py`; this suite does not assert those fields.
+coverage in `../test_claude_smart_routing_v2.py`; this suite does not assert those fields.
 
 PATH conflicts for the Smart Router skill have subprocess/component coverage in
 `../test_smart_router.py`: the skill uses the launching interpreter despite a different
@@ -1422,3 +1431,14 @@ For a managed workspace other than the two CI workspaces, set
 `UCODE_TEST_CODEX_ROUTING_FIXTURE` to the basename of a checked-in fixture whose model menu has
 been validated in that workspace. The suite never guesses a model menu or silently changes the
 workspace.
+
+Browser MCP review regressions check stale ACTIVE credentials wait for a changed credential
+or an observed non-ACTIVE state, pending provisioning continues, and missing services fail
+before browser launch even with a cached workspace ID. Polling bounds each HTTP call
+by the remaining deadline and never reports success from a late response. These component tests control external boundaries
+and do not establish live browser sign-in or endpoint availability.
+
+Pre-browser credential reads retry transient HTTP/network failures twice before reporting failure.
+
+Credential validation rejects malformed initial responses before browser launch and non-string
+states during polling. The browser subprocess runs Python in isolated mode.

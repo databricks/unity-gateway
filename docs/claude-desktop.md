@@ -69,6 +69,14 @@ Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern. When the plugin has MC
 also generates a `unity-gateway-connectors` skill whose description names them, so Claude knows
 the connectors exist on the first turn instead of asking whether they are connected.
 
+Connector sign-in opens the workspace's MCP service sign-in page. Sign in with the same
+Databricks account as the selected CLI profile, then complete the provider flow. The proxy
+checks that profile user's credential for up to five minutes and retries the original request
+when it is active. Browser launch alone does not establish success. If the browser or provider
+popup does not open, follow the URL in the MCP server log and click Login. On timeout, complete
+sign-in and retry authentication in the agent. This flow does not run CLI `auth login --resource`
+or replace the workspace session.
+
 Cowork plugin support can still be disabled by Anthropic account feature flags or managed
 Desktop policy. UG treats installation as best-effort: failure warns but does not fail Claude
 Code setup. If the current workspace has no Claude-targeted MCP servers or managed skills, UG
@@ -272,3 +280,10 @@ profile after restart, completes a gateway task, refreshes credentials silently,
 opens browser login when interactive recovery is needed, and preserves unrelated
 settings through repeat configure and revert. Run these checks on the supported
 app version and packaging used by your organization.
+
+Browser connector recovery requires the workspace's `/mcp-service-login` page and
+`/api/2.1/unity-catalog/mcp-services/<service>/user-credentials` API. A credential already
+marked ACTIVE before login must change (for example its expiry metadata), or leave ACTIVE
+and return, before UG confirms reauthentication. PROVISIONING, UPDATING, and DELETING
+continue polling. Missing services fail before launching a browser; a credential 404
+means the selected user has not signed in yet and continues polling until the timeout.
