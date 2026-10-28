@@ -263,23 +263,13 @@ metadata, and previous-selection state, and verify subsequent configure is a no-
 Existing CLI URL normalization is unchanged. Native Desktop activation,
 GUI/helper/browser behavior, and inference remain untested by these component checks;
 they do not establish native Windows or Linux support.
-The installed-CLI integration suite also configures twice and reverts against isolated
-native Linux and Windows profile paths. It verifies the fixed profile, gateway/helper/model
-fields, metadata selection, and preservation of an unrelated profile. It executes the exact
-helper command from that profile, checks token-only output, and uses the credential for a
-live gateway models request. CI supplies the supported bearer override; this does not
-exercise CLI OAuth refresh or Desktop invocation of the helper. The lifecycle journey also
-requires system.ai Claude models without an MPS override and completes a real Messages request
-using the generated credentials and profile headers. A separate subscription-relay journey
-checks its combined credential helper and real Messages inference. Non-relay MPS Desktop
-configuration is asserted in CUJ2, alongside its existing Claude MPS configuration journey.
-Both Desktop journeys also install Cowork through the real Claude CLI, register system.ai.dbsql
-through public ug commands, and use its installed proxy command to discover tools and execute a
-read-only query with a fresh computed receipt. Each checks repeat configuration and revert
-cleanup for the profile and plugin. They run in the existing Linux/Windows Claude full jobs,
-using the same workspace as their model requests. CUJ3 additionally checks its incompatible
-scoped aliases leave existing Desktop configuration untouched, with an actionable warning.
-These cases do not launch Desktop or execute connector skills.
+The installed-CLI integration suite covers two complete Desktop journeys on Linux and Windows:
+system.ai models and subscription-relay Anthropic MPS. Both verify profile configuration,
+credential-helper execution, live Messages inference, installed Cowork MCP calls, preservation,
+and revert. See [integration coverage](integration/README.md) for prerequisites and evidence.
+CUJ1/CUJ2 retain Desktop configuration assertions for system.ai models and non-relay Anthropic
+MPS; CUJ3 checks its incompatible scoped aliases warn without changing existing profiles.
+These cases do not launch Desktop, execute connector skills, or exercise browser login/renewal.
 The [native integration plan](../docs/claude-desktop-integration-testing.md) defines the
 separate interactive macOS and Windows coverage needed for those claims.
 
@@ -298,8 +288,8 @@ Subscription-relay component coverage configures the combined credential helper 
 three platforms. Helper tests cover macOS Keychain, Linux and Windows credential files,
 `CLAUDE_CONFIG_DIR`, custom macOS Keychain entries, finite required expiry timestamps, silent
 refresh before interactive login, shared login budgets, malformed environment tokens, and
-credential separation. Native Desktop invocation of the helper and inference remain
-unverified.
+credential separation. These component checks do not establish native Desktop invocation
+of the helper or inference.
 CLI revert clears workspace state even when Desktop cleanup fails. A lock-failure
 regression invokes the Typer CLI and checks exit code 1, one warning, and a failed
 Desktop summary while profile and previous-selection files survive. Retry returns

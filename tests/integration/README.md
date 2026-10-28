@@ -45,8 +45,8 @@ Claude Desktop has installed-CLI lifecycle and subscription-relay coverage on Li
 Windows. The lifecycle journey configures twice and reverts against an isolated native profile
 path, preserves an unrelated profile and metadata, then runs the exact generated credential
 helper and validates its token against the paginated live models API. It requires system.ai
-Claude models without an MPS override and uses the profile's credentials and headers for a small Messages
-request on `system.ai.claude-haiku-4-5`, requiring HTTP 200, a nonempty response model ID,
+Claude models without an MPS override and uses the profile's credentials and headers for a small
+Messages request on `system.ai.claude-haiku-4-5`, requiring HTTP 200, a nonempty response model ID,
 and the exact fresh marker. The service may return a provider model ID rather than its alias;
 this does not pin or prove its backing model revision. The relay journey selects
 the real subscription provider through configure and completes
@@ -62,17 +62,19 @@ MCP SDK. The check initializes the protocol, discovers execute_sql/poll_sql_resu
 in the successful result's single typed cell. This proves execution rather than an echoed query.
 Both journeys verify reconfiguration preserves the profile/plugin and revert removes UG's entries
 while retaining unrelated profiles and metadata. A separate local personal plugin is installed
-through the real Claude CLI before configuration; its registry entry must survive installation,
-reconfiguration, and revert unchanged.
+through the real Claude CLI before configuration; its registry entry and installed manifest must
+survive installation, reconfiguration, and revert unchanged. Revert also removes UG's marketplace
+registration and generated source directory.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.dbsql and allow
 the test identity to run a constant read-only query on its default SQL compute. No dedicated
 Desktop MCP test, separate fixture-workspace step, or extra credentials are required.
 
-These tests do not launch Desktop or establish GUI, skill execution, or browser-consent
-coverage. See the [native testing plan](../../docs/claude-desktop-integration-testing.md) for
-those remaining checks. The standalone test runtime pins the MCP SDK used for protocol calls;
+These tests do not launch Desktop or establish GUI, skill execution, browser consent,
+token renewal, or injected authentication-failure/reconnect recovery. CI supplies the supported
+bearer override. See the [native testing plan](../../docs/claude-desktop-integration-testing.md)
+for those remaining checks. The standalone test runtime pins the MCP SDK used for protocol calls;
 it stays separate from the installed UG runtime and its dependencies.
 
 Codex desktop has managed-fixture coverage in `test_ug_configure_codex_desktop.py`. It
@@ -1490,16 +1492,3 @@ Pre-browser credential reads retry transient HTTP/network failures twice before 
 
 Credential validation rejects malformed initial responses before browser launch and non-string
 states during polling. The browser subprocess runs Python in isolated mode.
-
-Desktop process coverage now includes executing `inferenceCredentialHelper` and its exact
-arguments from the profile produced by `ug configure`. The native Linux/Windows lifecycle
-journey checks clean token-only stdout and uses that token for a live gateway models request.
-It uses the supported CI bearer override, so CLI OAuth renewal and Desktop's scheduling of
-the helper remain unverified. Diagnostics and evidence redact credentials.
-
-CUJ1/CUJ2 retain their generated Desktop configuration checks for system.ai models and non-relay
-Anthropic MPS. CUJ3 checks its scoped model aliases produce an actionable Desktop warning and
-leave existing configuration intact. The model/credential/MCP journeys live in the Desktop
-integration file; existing agent MCP CUJs and component auth tests are unchanged. These tests
-do not establish Desktop GUI behavior, connector skill execution, browser consent, credential
-renewal, or successful recovery from deliberately injected authentication failures.

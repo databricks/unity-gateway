@@ -30,6 +30,7 @@ UNRELATED_PROFILE_ID = "62de45ce-d2ad-4507-a8e2-7e59529af303"
 CLI_PROFILE = "desktop-integration"
 UNRELATED_PROFILE = {"inferenceProvider": "anthropic", "userSetting": "keep"}
 UNRELATED_PLUGIN_ID = "personal@desktop-integration"
+UNRELATED_PLUGIN_MANIFEST = {"name": "personal", "version": "1.0.0"}
 
 
 def _prepare_desktop(session, workspace):
@@ -37,7 +38,7 @@ def _prepare_desktop(session, workspace):
     marketplace = session.cwd / "personal-marketplace"
     plugin = marketplace / "plugins/personal/.claude-plugin"
     plugin.mkdir(parents=True)
-    (plugin / "plugin.json").write_text(json.dumps({"name": "personal", "version": "1.0.0"}))
+    (plugin / "plugin.json").write_text(json.dumps(UNRELATED_PLUGIN_MANIFEST))
     (marketplace / ".claude-plugin").mkdir()
     (marketplace / ".claude-plugin/marketplace.json").write_text(
         json.dumps(
@@ -95,6 +96,9 @@ def _prepare_desktop(session, workspace):
 def _assert_unrelated_cowork_plugin(root, expected):
     installed = json.loads((root / "cowork_plugins/installed_plugins.json").read_text())
     assert installed["plugins"][UNRELATED_PLUGIN_ID] == expected
+    for entry in expected:
+        manifest = Path(entry["installPath"]) / ".claude-plugin/plugin.json"
+        assert json.loads(manifest.read_text()) == UNRELATED_PLUGIN_MANIFEST
 
 
 def _desktop_profile(session, config_library, workspace):
@@ -135,9 +139,12 @@ def _revert_desktop(session, config_library, root, unrelated_plugin):
     _assert_desktop_selection(config_library, configured=False)
     assert not (session.home / ".ucode/claude-desktop.json").exists()
     assert not (session.home / ".ucode/claude-cowork.json").exists()
+    assert not (session.home / ".ucode/claude-cowork-marketplace").exists()
     installed = root / "cowork_plugins/installed_plugins.json"
     if installed.exists():
         assert "ug@unity-gateway-cowork" not in json.loads(installed.read_text())["plugins"]
+    marketplaces = root / "cowork_plugins/known_marketplaces.json"
+    assert "unity-gateway-cowork" not in json.loads(marketplaces.read_text())
     _assert_unrelated_cowork_plugin(root, unrelated_plugin)
 
 
