@@ -66,6 +66,10 @@ ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 MIN_DATABRICKS_CLI_VERSION = (1, 0, 0)
 # v1.11.0 fixes `fs cp` (create -> finalize), which the skills MCP uploads rely on.
 SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION = (1, 11, 0)
+# `databricks --version` is normally instant, but a wrapper binary (e.g. dbexec on
+# arca) under concurrent startups can take several seconds; a timeout reads as an
+# unparseable version and fails the launch.
+_DATABRICKS_CLI_VERSION_TIMEOUT_SECONDS = 30
 TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 # Substrings the Databricks CLI emits when it loses the token-cache write lock
 # to a concurrent `databricks auth token` (e.g. another ucode helper process
@@ -789,7 +793,13 @@ def _read_databricks_cli_version(path: str) -> tuple[int, int, int] | None:
     place — every other caller reads a version through ``databricks_cli_path()``.
     """
     try:
-        result = run([path, "--version"], check=False, capture_output=True, text=True, timeout=10)
+        result = run(
+            [path, "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_DATABRICKS_CLI_VERSION_TIMEOUT_SECONDS,
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
     raw = result.stdout or result.stderr or ""
@@ -980,7 +990,7 @@ def ensure_databricks_cli_version(
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=_DATABRICKS_CLI_VERSION_TIMEOUT_SECONDS,
             )
             raw = result.stdout or result.stderr or ""
             output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()

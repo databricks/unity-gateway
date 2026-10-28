@@ -4280,6 +4280,17 @@ class TestDatabricksCliResolution:
         monkeypatch.setattr(db_mod, "run", boom)
         assert db_mod._read_databricks_cli_version("/usr/bin/databricks") is None
 
+    def test_read_version_allows_slow_cli(self, monkeypatch):
+        seen = {}
+
+        def fake_run(*a, **kw):
+            seen["timeout"] = kw["timeout"]
+            return subprocess.CompletedProcess(a, 0, "Databricks CLI v1.20.0", "")
+
+        monkeypatch.setattr(db_mod, "run", fake_run)
+        db_mod._read_databricks_cli_version("/usr/bin/databricks")
+        assert seen["timeout"] == db_mod._DATABRICKS_CLI_VERSION_TIMEOUT_SECONDS >= 30
+
     def test_read_version_parses_output(self, monkeypatch):
         monkeypatch.setattr(
             db_mod,
