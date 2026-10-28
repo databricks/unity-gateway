@@ -372,7 +372,7 @@ def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
     prefix = "Unity Gateway connectors: "
     suffix = (
         ". Use for requests about the user's resources on these services. "
-        "Search connector tools before reporting them unavailable. "
+        "Search connector tools before reporting them disconnected or unavailable. "
         "Load this skill for the full connector list and sign-in recovery."
     )
     visible = []
@@ -385,6 +385,13 @@ def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
     description = prefix + (", ".join(visible) or "configured workspace services") + suffix
     guidance = (
         f"Configured Unity Gateway connectors: {connectors}.\n\n"
+        "Connector availability can change during a session, including through the local MCP "
+        "proxy. A prior connection-status notice may be stale. Before reporting a configured "
+        "connector disconnected or unavailable, rediscover its tools and try a relevant call "
+        "using a discovered tool, if one is available. Do not claim a disconnect, reconnection, "
+        "or authentication failure from a status reminder alone; use discovery results and tool "
+        "errors you actually observed. If discovery exposes no callable tools, report that "
+        "observed limitation without inventing a cause.\n\n"
         "Configured does not mean signed in. Before calling a connector, discover its available "
         "tools with deferred tool search. Use only the exact tool names returned for the matching "
         "connector; never guess tool names. If a call reports an unavailable tool, do not repeat "
