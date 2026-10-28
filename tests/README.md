@@ -74,6 +74,15 @@ fake API with both shell variables set: the blanks make it send the `apiKeyHelpe
 path its own OAuth token, with no empty header; without them the shell's values win (control cases). It
 skips on a machine with Claude managed settings, which would replace the fixture's.
 
+`test_claude_provider_env.py` covers the `CLAUDE_CODE_USE_*` provider flags that ug sets to `"0"`: always
+in the user file (relayed included), written to the managed file by `ug configure` only, a true value an
+admin left in the managed file kept with a warning while a false one is replaced, no privileged write after
+another writer drops them, skip mode, revert, and admin passthrough not turning one on.
+`native_claude/test_provider_env.py` runs the CI-pinned Claude with `CLAUDE_CODE_USE_BEDROCK=1` or
+`CLAUDE_CODE_USE_VERTEX=1` in the shell against a fake server that also stands in for the provider
+endpoint: the zeros keep the turn on `ANTHROPIC_BASE_URL`; without them the turn goes to the provider
+(control cases). It skips on a machine with Claude managed settings.
+
 `test_claude_header_mod.py` covers installing the Claude header mod's files and managed entries
 (no rewrite when unchanged), keeping an admin's `prependPlugins`, a failed install never enabling
 the plugin, revert removing the files and keeping the guard, the sudo allowlist, `header_mod_active`

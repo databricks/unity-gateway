@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import ucode.doctor as doctor_mod
@@ -11,6 +12,7 @@ from ucode.doctor import (
     Suggestion,
     _check_agent_clis,
     _check_anthropic_env_collision,
+    _check_claude_provider_env,
     _check_databricks_auth,
     _check_databricks_cli,
     _check_npm,
@@ -271,6 +273,49 @@ class TestAnthropicEnvCollision:
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "   ")
         assert _check_anthropic_env_collision() is None
+
+
+class TestClaudeProviderEnv:
+    @staticmethod
+    def _isolate(monkeypatch, tmp_path, managed_env=None):
+        for var in doctor_mod.claude.CLAUDE_PROVIDER_ENV_KEYS:
+            monkeypatch.delenv(var, raising=False)
+        path = tmp_path / "managed-settings.json"
+        if managed_env is not None:
+            path.write_text(json.dumps({"env": managed_env}), encoding="utf-8")
+        monkeypatch.setattr(doctor_mod.claude, "managed_settings_path", lambda: path)
+        return path
+
+    def test_none_when_unset(self, monkeypatch, tmp_path):
+        self._isolate(monkeypatch, tmp_path)
+        assert _check_claude_provider_env() is None
+
+    def test_false_values_are_ignored(self, monkeypatch, tmp_path):
+        self._isolate(monkeypatch, tmp_path, {"CLAUDE_CODE_USE_VERTEX": "false"})
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "0")
+        assert _check_claude_provider_env() is None
+
+    def test_notes_a_shell_flag_that_ug_overrides(self, monkeypatch, tmp_path):
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        check = _check_claude_provider_env()
+        assert check.status == "info"  # advisory: ug sets it to 0 for Claude Code
+        assert check.detail.startswith(
+            "CLAUDE_CODE_USE_BEDROCK is set; Claude Code launched via ug ignores it"
+        )
+        assert check.suggestion is None
+
+    def test_warns_on_a_managed_flag_that_ug_cannot_override(self, monkeypatch, tmp_path):
+        path = self._isolate(monkeypatch, tmp_path, {"CLAUDE_CODE_USE_BEDROCK": "true"})
+        monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+        check = _check_claude_provider_env()
+        assert check.status == "warn"
+        assert check.detail == (
+            f"CLAUDE_CODE_USE_BEDROCK is set in {path}, so Claude Code sends requests directly "
+            "to that provider and bypasses the gateway. Ask your administrator to remove it, or "
+            "set it to 0"
+        )
+        assert check.suggestion is None
 
 
 class TestUgCheck:
