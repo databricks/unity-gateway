@@ -31,7 +31,13 @@ The installed-CLI integration suite seeds an unrelated profile, runs real `ug co
 twice with an explicit CLI profile, then runs real `ug revert`. On Linux and Windows it
 checks the fixed UUID profile, gateway/helper/models, label and metadata, duplicate
 prevention, unrelated-profile preservation, deletion, and prior-selection restoration.
-It still does not launch Desktop or execute the generated helper.
+It executes the exact generated helper and validates its credential against the live models API.
+Separate relay and non-relayed Anthropic MPS cases use the profile headers and helper output
+for real Messages inference. A dedicated MCP case installs Cowork through the real Claude CLI
+and uses commands from the installed plugin to discover and call live receipt fixtures.
+CUJ3 also checks that installed Cowork path in its dedicated workspace. These tests do not
+launch Desktop, exercise its scheduling of the helper, execute connector skills, or run
+browser consent.
 
 The existing `windows-latest` integration jobs install and run UG and real coding
 agent CLIs on Windows Server. They are headless and do not provide the Windows 11,

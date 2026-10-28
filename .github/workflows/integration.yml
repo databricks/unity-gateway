@@ -235,6 +235,25 @@ jobs:
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
 
+  desktop-mcp:
+    name: Desktop Cowork MCP · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
+    needs: workspace
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    env:
+      UCODE_TEST_WORKSPACE: https://dbc-bbdd5508-648e.cloud.databricks.com
+      DATABRICKS_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: claude
+      TEST_MARKER: live and desktop_mcp and claude
+      ARTIFACT_NAME: integration-desktop-mcp-${{ matrix.os }}
+    steps: *live-steps
+
   headless-windows:
     name: Windows headless journey · Claude
     needs: workspace
@@ -325,7 +344,7 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       # Smoke cases already ran on this OS in the smoke job; don't repeat them here.
-      TEST_MARKER: live and ${{ matrix.agent }} and not soft_fail and not smoke
+      TEST_MARKER: live and ${{ matrix.agent }} and not soft_fail and not smoke and not desktop_mcp
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ matrix.os }}
     steps: *live-steps
 
@@ -605,7 +624,7 @@ jobs:
   cujs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, installation-windows, headless-windows, workspace, smoke, full, managed, dedicated-cuj-plan, dedicated-cuj]
+    needs: [installation, installation-windows, headless-windows, desktop-mcp, workspace, smoke, full, managed, dedicated-cuj-plan, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

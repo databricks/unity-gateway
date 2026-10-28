@@ -291,5 +291,9 @@ means the selected user has not signed in yet and continues polling until the ti
 Automated coverage executes the helper command from the generated profile and checks its
 credential against the gateway models API using CI's supplied bearer. Separate subprocess
 component tests exercise the generated MCP command with controlled HTTP/browser boundaries;
-the MCP fixture CUJ also checks discovery and tool calls against a real workspace. These
-checks do not launch Desktop or validate native OAuth consent, skill use, or app reconnects.
+the MCP fixture CUJ also checks discovery and tool calls against a real workspace. Both CUJ3
+and the Desktop integration journey read commands from a Cowork plugin installed by the real
+Claude CLI and require fresh receipts from both live fixture tools. The Desktop case runs in
+dedicated Linux/Windows jobs against CUJ3's workspace. Separate relay and non-relayed Anthropic
+MPS journeys use the generated helper credentials and profile headers for real Messages requests.
+These checks do not launch Desktop or validate native OAuth consent, skill use, or app reconnects.

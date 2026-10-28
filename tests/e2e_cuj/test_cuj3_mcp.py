@@ -1,15 +1,12 @@
 """Managed MCP registration, connection, and tool use in both real agent TUIs."""
 
-import hashlib
 import json
 import re
-import tempfile
 
 import anyio
 import pytest
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
 
+from tests.integration.utils.desktop import installed_cowork_servers, prepare_cowork_home
 from tests.integration.utils.evidence import (
     agent_sessions,
     assistant_answers,
@@ -17,6 +14,11 @@ from tests.integration.utils.evidence import (
     is_child_session,
 )
 from tests.integration.utils.mcp import open_claude_mcp_inventory, open_codex_mcp_inventory
+from tests.integration.utils.mcp_fixture import (
+    MCP_FIXTURE_SERVICES,
+    assert_mcp_fixture_call,
+    fixture_receipt,
+)
 
 from .base import BaseCujTest
 from .helpers.constants import CLAUDE, CODEX
@@ -28,24 +30,13 @@ CUJ_NAME = "CUJ 3 · UC MCP discovery"
 
 pytestmark = [pytest.mark.managed, pytest.mark.mcp_registration, pytest.mark.workspace_isolated]
 
-SERVICES = {
-    "ug_e2e.tools.fixture_metadata": "describe_fixture",
-    "ug_e2e.tools.fixture_reader": "read_fixture",
-}
+SERVICES = MCP_FIXTURE_SERVICES
 
 
 class McpFixtureTask:
     def __init__(self):
         self.run_id = fresh_id()
-        self.expected = {
-            tool: hashlib.sha256(
-                b"unity-gateway-cuj-fixture\0"
-                + tool.encode("ascii")
-                + b"\0"
-                + self.run_id.encode("ascii")
-            ).hexdigest()
-            for tool in SERVICES.values()
-        }
+        self.expected = {tool: fixture_receipt(tool, self.run_id) for tool in SERVICES.values()}
         calls = "; ".join(
             f"call {tool} on {registered_name(service)} with run_id={self.run_id}"
             for service, tool in SERVICES.items()
@@ -247,30 +238,26 @@ class TestMcpRegistration(BaseCujTest):
         async def scenario():
             for service, tool in SERVICES.items():
                 registration = config["mcpServers"][registered_name(service)]
-                parameters = StdioServerParameters(**registration)
-                parameters.env = {**session.env, **(parameters.env or {})}
-                with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as diagnostics:
-                    try:
-                        with anyio.fail_after(60):
-                            async with stdio_client(parameters, errlog=diagnostics) as streams:
-                                async with ClientSession(*streams) as client:
-                                    await client.initialize()
-                                    assert tool in {
-                                        item.name for item in (await client.list_tools()).tools
-                                    }
-                                    result = (
-                                        await client.call_tool(tool, {"run_id": task.run_id})
-                                    ).model_dump(by_alias=True)
-                                    assert not result["isError"], result
-                                    assert task.expected[tool] in json.dumps(result["content"]), (
-                                        result
-                                    )
-                    finally:
-                        diagnostics.seek(0)
-                        stderr = session.redact(diagnostics.read())
-                        session.record(f"proxy-{tool}-stderr.json", {"stderr": stderr})
-                    assert "Traceback" not in stderr
-                session.record(f"proxy-{tool}.json", {"run_id": task.run_id, "result": result})
+                await assert_mcp_fixture_call(session, registration, tool, task.run_id)
+
+        anyio.run(scenario)
+
+    def test_cowork_plugin_commands_list_and_call_live_fixtures(self, cuj):
+        """Scenario: configure beside an existing Cowork account and use its installed plugin.
+
+        Expected: real Claude CLI plugin installation produces commands that discover and call
+        both managed fixtures, returning receipts for a fresh run ID. No Desktop GUI is launched.
+        """
+        session, workspace, _recorder = cuj
+        root = prepare_cowork_home(session)
+        session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
+        servers = installed_cowork_servers(session, root)
+        run_id = fresh_id()
+
+        async def scenario():
+            for service, tool in SERVICES.items():
+                alias = service.rsplit(".", 1)[1]
+                await assert_mcp_fixture_call(session, servers[alias], tool, run_id)
 
         anyio.run(scenario)
 

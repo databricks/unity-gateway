@@ -268,7 +268,12 @@ native Linux and Windows profile paths. It verifies the fixed profile, gateway/h
 fields, metadata selection, and preservation of an unrelated profile. It executes the exact
 helper command from that profile, checks token-only output, and uses the credential for a
 live gateway models request. CI supplies the supported bearer override; this does not
-exercise CLI OAuth refresh, Desktop invocation of the helper, Cowork, or inference.
+exercise CLI OAuth refresh or Desktop invocation of the helper. Separate relay and non-relayed
+Anthropic MPS journeys use the generated credentials and profile headers for real Messages
+requests. The `desktop_mcp` journey installs Cowork through the real Claude CLI and calls both
+read-only fixtures using commands from the installed plugin. Its required Linux/Windows CI
+jobs use the dedicated CUJ3 workspace and existing service-principal credentials; the general
+full lane excludes that marker. These cases do not launch Desktop or execute connector skills.
 The [native integration plan](../docs/claude-desktop-integration-testing.md) defines the
 separate interactive macOS and Windows coverage needed for those claims.
 
@@ -934,3 +939,11 @@ Claude plugin installation is replaced while configuration generation runs norma
 `e2e_cuj/test_cuj3_mcp.py::TestMcpRegistration::test_generated_proxy_command_lists_and_calls_live_fixture`
 executes installed UG's generated commands through the MCP SDK, lists both fixture tools,
 and checks fresh-run receipts from real workspace calls without an agent UI.
+
+CUJ3 also configures beside pre-existing Cowork account directories, requires real Claude CLI
+plugin installation, and calls both receipt fixtures using the installed plugin's MCP commands.
+The Desktop integration journey intentionally repeats this wiring through Desktop's explicit-profile
+configure path on Linux and Windows. Separate relay and non-relayed Anthropic MPS journeys
+execute Desktop's generated credential helpers and complete real Messages requests using their
+output and generated profile headers. No GUI, browser OAuth consent, or connector skill execution
+is claimed.

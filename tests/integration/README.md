@@ -41,15 +41,27 @@ Claude answer delivery has offline transcript and subprocess coverage in
 streaming JSON when UG redirects diagnostics to stderr. Live model/gateway selection
 and capability-hook activation are not covered here; interactive selection is unsupported.
 
-Claude Desktop has installed-CLI profile lifecycle and subscription-relay coverage in the
-existing Linux and Windows lanes. It configures twice and reverts against each platform's
-isolated native profile path, checking the fixed profile, gateway/helper/model fields,
-metadata, prior selection, and an unrelated profile. A separate real-provider journey checks
-the relay helper arguments and runs the installed helper with real Claude and Databricks
-credentials, requiring separate bearer and gateway-header output. It does not launch Desktop. The
-[native testing plan](../../docs/claude-desktop-integration-testing.md) covers the remaining
-macOS/Windows GUI, Cowork, model-switching, and browser-authentication work; those GUI and
-virtualization prerequisites are not satisfied by the headless suite.
+Claude Desktop has installed-CLI lifecycle, subscription-relay, and non-relayed Anthropic MPS
+coverage on Linux and Windows. The lifecycle journey configures twice and reverts against an
+isolated native profile path, preserves an unrelated profile and metadata, then runs the exact
+generated credential helper and validates its token against the live models API. Separate
+provider journeys select each real MPS through the configure UI, run the profile's helper,
+and use its credentials and headers for a small Messages request. Relay requires the Claude
+subscription token and a separate Databricks header; non-relay requires only the Databricks bearer.
+
+The `desktop_mcp` journey uses the dedicated CUJ3 workspace, not the general integration
+workspace. It supplies pre-existing Desktop account directories as inputs, then requires real
+Claude CLI installation of the Cowork plugin. Commands read from that installed plugin discover
+and call both read-only fixture tools with receipts tied to a fresh run ID. CI runs this case
+on Linux and Windows in required **Desktop Cowork MCP** jobs, using the runner's existing M2M
+support with `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET` and
+`https://dbc-bbdd5508-648e.cloud.databricks.com`. Only the short-lived bearer reaches test processes.
+The full lane excludes `desktop_mcp` because its workspace has different fixtures.
+
+These tests do not launch Desktop or establish GUI, skill execution, or browser-consent
+coverage. See the [native testing plan](../../docs/claude-desktop-integration-testing.md) for
+those remaining checks. The standalone test runtime pins the MCP SDK used for protocol calls;
+it stays separate from the installed UG runtime and its dependencies.
 
 Codex desktop has managed-fixture coverage in `test_ug_configure_codex_desktop.py`. It
 configures twice beside user-owned `~/.codex/config.toml` settings and checks the stable catalog
@@ -577,7 +589,7 @@ test_ug_codex_commands.py               # command help and parser error forwardi
 test_ug_codex_app_server.py             # actual client/server initialize exchange
 test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven subagent toggles
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
-test_ug_configure_claude_desktop.py     # native-path Desktop lifecycle + relay helper, no GUI
+test_ug_configure_claude_desktop.py     # Desktop lifecycle, relay/MPS inference, installed Cowork MCP; no GUI
 test_ug_configure_codex_desktop.py      # stubbed managed Codex desktop catalog pointer, no GUI
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
@@ -1478,6 +1490,8 @@ controlled HTTP and browser boundaries: HTTP 401 and -32006 sign-in/replay, disc
 explicit authentication action, bounded persistent failures, and permission-error forwarding.
 These component tests use files written by the public setup adapters, replacing native
 Claude plugin installation. They are outside the integration suite and do not establish provider login.
-The dedicated-workspace `../e2e_cuj/test_cuj3_mcp.py` also drives generated proxy commands
-with the real MCP SDK and requires receipts from both live fixture tools. No Desktop GUI,
+The dedicated-workspace `../e2e_cuj/test_cuj3_mcp.py` also drives generated Claude Code
+and installed Cowork plugin commands with the real MCP SDK and requires receipts from both
+live fixture tools. The Desktop integration case repeats the Cowork path through explicit-profile
+configuration on Linux and Windows. No Desktop GUI,
 Cowork skill execution, or native browser interaction is claimed by these tests.
