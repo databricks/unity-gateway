@@ -1,0 +1,8 @@
+{
+  "name": "ci-agent-pi",
+  "private": true,
+  "description": "Locked Pi CLI install for the ci.yml agent launch shard.",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.3.0"
+  }
+}

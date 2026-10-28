@@ -12,3 +12,15 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 7
+  - package-ecosystem: "npm"
+    directory: "/.github/agent-locks/gemini"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+  - package-ecosystem: "npm"
+    directory: "/.github/agent-locks/pi"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7

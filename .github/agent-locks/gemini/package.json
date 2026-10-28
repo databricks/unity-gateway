@@ -1,0 +1,8 @@
+{
+  "name": "ci-agent-gemini",
+  "private": true,
+  "description": "Locked Gemini CLI install for the ci.yml agent launch shard.",
+  "dependencies": {
+    "@google/gemini-cli": "0.67.0-nightly.20261021.gd00859d6b"
+  }
+}
