@@ -1407,6 +1407,12 @@ class TestAntigravityDispatch:
             agents_mod.install_tool_binary("antigravity")
         assert agents_mod.install_tool_binary("antigravity", strict=False) is False
 
+    def test_pinned_version_is_reported_as_unsupported(self, monkeypatch, capsys):
+        monkeypatch.setattr(agents_mod.shutil, "which", lambda b: "/usr/bin/agy")
+
+        assert agents_mod._update_installed_tool_binary("antigravity", version="1.2.15") is False
+        assert "can't be installed at a specific version (1.2.15)" in capsys.readouterr().out
+
     def test_missing_binary_hint_names_installer(self, monkeypatch):
         monkeypatch.setattr(agents_mod.shutil, "which", lambda b: None)
         monkeypatch.setattr(agents_mod.antigravity, "resolve_binary", lambda: None)

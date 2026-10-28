@@ -55,13 +55,13 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     for name, path in (
         ("AGY_MCP_CONFIG_PATH", agy_dir / "mcp_config.json"),
         ("AGY_SKILLS_CONFIG_PATH", agy_dir / "skills.json"),
-        ("AGY_SKILLS_BACKUP_PATH", state_dir / "antigravity-skills.backup.json"),
+        ("AGY_SKILLS_CREATED_MARKER", state_dir / "antigravity-skills.created"),
         ("AGY_MCP_BACKUP_PATH", state_dir / "antigravity-mcp-config.backup.json"),
     ):
         monkeypatch.setattr(antigravity_mod, name, path)
     monkeypatch.setitem(antigravity_mod.SPEC, "config_path", agy_dir / "skills.json")
     monkeypatch.setitem(
-        antigravity_mod.SPEC, "backup_path", state_dir / "antigravity-skills.backup.json"
+        antigravity_mod.SPEC, "backup_path", state_dir / "antigravity-skills.created"
     )
     # The workspace policy lives outside APP_DIR; rebind it, and its user-owned refresh stamps,
     # so no test reads or installs the machine-wide copy.

@@ -30,7 +30,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import unquote
@@ -39,9 +39,9 @@ from ucode.config_io import (
     APP_DIR,
     ToolSpec,
     apply_json_mcp_diff,
-    backup_existing_file,
     read_json_safe,
     write_json_file,
+    write_text_file,
 )
 from ucode.constants import (
     AI_GATEWAY_REQUEST_TAGS_HEADER,
@@ -64,7 +64,9 @@ AGY_INSTALL_SCRIPT_URL = "https://antigravity.google/cli/install.sh"
 AGY_CONFIG_DIR = Path.home() / ".gemini" / "config"
 AGY_MCP_CONFIG_PATH = AGY_CONFIG_DIR / "mcp_config.json"
 AGY_SKILLS_CONFIG_PATH = AGY_CONFIG_DIR / "skills.json"
-AGY_SKILLS_BACKUP_PATH = APP_DIR / "antigravity-skills.backup.json"
+# skills.json is shared with the Antigravity app and IDE extensions, so ug never snapshots and
+# restores it: revert removes only ug's entry. This marker records that ug created the file.
+AGY_SKILLS_CREATED_MARKER = APP_DIR / "antigravity-skills.created"
 AGY_MCP_BACKUP_PATH = APP_DIR / "antigravity-mcp-config.backup.json"
 AGY_PROXY_LOG_PATH = APP_DIR / "logs" / "antigravity-proxy.log"
 # Where ug downloads skills for every non-Claude agent (see skills_download). Antigravity
@@ -82,7 +84,8 @@ SPEC: ToolSpec = {
     "package": AGY_INSTALL_SCRIPT_URL,
     "display": "Antigravity CLI",
     "config_path": AGY_SKILLS_CONFIG_PATH,
-    "backup_path": AGY_SKILLS_BACKUP_PATH,
+    # Never written; `ug revert` calls `revert_skills_config` for this agent instead.
+    "backup_path": AGY_SKILLS_CREATED_MARKER,
 }
 
 INSTALL_HINT = f"Install it with `curl -fsSL {AGY_INSTALL_SCRIPT_URL} | bash`"
@@ -124,8 +127,13 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
     return int(major), int(minor), int(patch)
 
 
+def _version() -> str:
+    # The installer's default directory may not be on PATH yet.
+    return agent_version(resolve_binary() or SPEC["binary"])
+
+
 def minimum_version_error() -> str | None:
-    installed = agent_version(SPEC["binary"])
+    installed = _version()
     parsed = _parse_version(installed)
     if parsed is None or parsed >= MINIMUM_AGY_VERSION:
         return None
@@ -232,12 +240,37 @@ def skills_config(existing: dict) -> dict:
     Antigravity expands no ``~`` in these paths, so the entry is absolute."""
     config = dict(existing)
     entries = config.get("entries")
-    entries = [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
-    path = str(UG_AGENTS_SKILLS_DIR)
-    if not any(entry.get("path") == path for entry in entries):
-        entries.append({"path": path})
+    entries = list(entries) if isinstance(entries, list) else []
+    if not any(_is_ug_skills_entry(entry) for entry in entries):
+        entries.append({"path": str(UG_AGENTS_SKILLS_DIR)})
     config["entries"] = entries
     return config
+
+
+def _is_ug_skills_entry(entry: object) -> bool:
+    return isinstance(entry, dict) and entry.get("path") == str(UG_AGENTS_SKILLS_DIR)
+
+
+def revert_skills_config() -> bool:
+    """Remove ug's entry from skills.json, keeping everything else the user has there.
+
+    The file is deleted only when ug created it and nothing else was added since. Returns
+    whether anything changed."""
+    created = AGY_SKILLS_CREATED_MARKER.exists()
+    AGY_SKILLS_CREATED_MARKER.unlink(missing_ok=True)
+    existing = read_json_safe(AGY_SKILLS_CONFIG_PATH)
+    entries = existing.get("entries")
+    if not isinstance(entries, list) or not any(_is_ug_skills_entry(e) for e in entries):
+        return False
+    remaining = {
+        **existing,
+        "entries": [entry for entry in entries if not _is_ug_skills_entry(entry)],
+    }
+    if created and remaining == {"entries": []}:
+        AGY_SKILLS_CONFIG_PATH.unlink(missing_ok=True)
+    else:
+        write_json_file(AGY_SKILLS_CONFIG_PATH, remaining)
+    return True
 
 
 def write_tool_config(
@@ -250,7 +283,8 @@ def write_tool_config(
 
     The gateway itself is configured per launch through environment variables, so no
     Antigravity settings file holds a URL or credential."""
-    backup_existing_file(AGY_SKILLS_CONFIG_PATH, AGY_SKILLS_BACKUP_PATH)
+    if not AGY_SKILLS_CONFIG_PATH.exists():
+        write_text_file(AGY_SKILLS_CREATED_MARKER, "")
     write_json_file(AGY_SKILLS_CONFIG_PATH, skills_config(read_json_safe(AGY_SKILLS_CONFIG_PATH)))
     if provider:
         # Persist so a later bare `ug antigravity` keeps the routing header and target;
@@ -330,9 +364,7 @@ def rewrite_request_body(path: str, body: bytes) -> bytes:
 
 def proxy_headers(provider: str | None) -> dict[str, str]:
     """Headers the proxy adds to every gateway request."""
-    headers = {
-        "User-Agent": ucode_user_agent(ug_version(), f"antigravity/{agent_version(AGY_BINARY)}")
-    }
+    headers = {"User-Agent": ucode_user_agent(ug_version(), f"antigravity/{_version()}")}
     request_tags = request_tags_header_value()
     if request_tags:
         headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
@@ -390,15 +422,18 @@ def _catalog_name(model: str, catalog: dict[str, str]) -> str | None:
     """The catalog name ``model`` (a name or one of its variants) belongs to."""
     if model in catalog:
         return model
-    return next((name for name in catalog if model.startswith(f"{name}-")), None)
+    # `gemini-3.5-flash-lite-high` belongs to `gemini-3.5-flash-lite`, not `gemini-3.5-flash`.
+    matches = [name for name in catalog if model.startswith(f"{name}-")]
+    return max(matches, key=len, default=None)
 
 
-def _selection_id(binary: str, env: dict[str, str], model: str) -> str:
+def _selection_id(binary: str, env: dict[str, str], model: str, catalog: Iterable[str] = ()) -> str:
     """The id `agy --model` accepts for ``model``, read from `agy models` in gateway mode.
 
     Antigravity selects models by its own ids, which add a thinking tier to some names
     (``gemini-3.1-pro-preview`` is selected as ``gemini-3.1-pro-low-thinking``). A model
-    offered in several tiers is also selectable by its plain name, as is any unknown one."""
+    offered in several tiers is also selectable by its plain name, as is any unknown one.
+    ``catalog`` holds the session's other model names, whose own ids are never this model's."""
     try:
         result = subprocess_cross_os.run(
             [binary, "models"], env=env, capture_output=True, text=True, timeout=30, check=False
@@ -410,7 +445,18 @@ def _selection_id(binary: str, env: dict[str, str], model: str) -> str:
         return model
     # Tiers are named after the model without its `-preview` suffix.
     base = model.removesuffix("-preview")
-    tiers = [selection for selection in ids if selection.startswith(f"{base}-")]
+    # A longer name sharing the prefix (`gemini-3.5-flash-lite`) has its own ids and tiers.
+    longer = [
+        other_base
+        for other in catalog
+        if (other_base := other.removesuffix("-preview")).startswith(f"{base}-")
+    ]
+    tiers = [
+        selection
+        for selection in ids
+        if selection.startswith(f"{base}-")
+        and not any(selection == other or selection.startswith(f"{other}-") for other in longer)
+    ]
     return tiers[0] if len(tiers) == 1 else model
 
 
@@ -462,7 +508,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         proxy_url = f"http://{LOOPBACK_HOST}:{port}{GEMINI_GATEWAY_PATH.rstrip('/')}"
         env = build_runtime_env(proxy_url, session_secret, models)
         if selected and not _is_subcommand(tool_args):
-            tool_args = _with_model_arg(tool_args, _selection_id(binary, env, selected))
+            tool_args = _with_model_arg(tool_args, _selection_id(binary, env, selected, catalog))
         proc = subprocess_cross_os.popen([binary, *tool_args], env=env)
         returncode = _wait_for_exit(proc)
     finally:

@@ -85,6 +85,75 @@ def test_antigravity_archive_url_matches_googles_release_layout(system, machine,
     )
 
 
+def _archive(tmp_path, member_name="antigravity"):
+    import io
+    import tarfile
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as bundle:
+        data = b"#!/bin/sh\necho 1.4.9\n"
+        info = tarfile.TarInfo(member_name)
+        info.size = len(data)
+        bundle.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def _serve(monkeypatch, payload):
+    import io
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", lambda url, timeout: io.BytesIO(payload))
+    monkeypatch.setattr(runner.sys, "platform", "linux")
+    monkeypatch.setattr(runner.platform, "machine", lambda: "x86_64")
+
+
+def test_antigravity_install_checks_the_pinned_sha512_before_extracting(tmp_path, monkeypatch):
+    import hashlib
+
+    payload = _archive(tmp_path)
+    _serve(monkeypatch, payload)
+    digest = hashlib.sha512(payload).hexdigest()
+
+    installed = runner.install_native_agent(
+        "antigravity", "1.4.9-4962164969177088", tmp_path / "bin", sha512=digest
+    )
+
+    assert installed["sha512"] == digest
+    assert (tmp_path / "bin/agy").read_bytes().startswith(b"#!/bin/sh")
+
+
+def test_antigravity_install_rejects_a_swapped_archive(tmp_path, monkeypatch):
+    # The real pinned digest cannot match this stand-in archive.
+    _serve(monkeypatch, _archive(tmp_path))
+
+    with pytest.raises(RuntimeError, match="expected 96a259b7"):
+        runner.install_native_agent("antigravity", "1.4.9-4962164969177088", tmp_path / "bin")
+
+    assert not (tmp_path / "bin/agy").exists()
+
+
+def test_antigravity_install_reports_a_missing_binary(tmp_path, monkeypatch):
+    import hashlib
+
+    payload = _archive(tmp_path, member_name="other")
+    _serve(monkeypatch, payload)
+
+    with pytest.raises(RuntimeError, match="has no antigravity binary"):
+        runner.install_native_agent(
+            "antigravity",
+            "1.4.9-4962164969177088",
+            tmp_path / "bin",
+            sha512=hashlib.sha512(payload).hexdigest(),
+        )
+
+
+def test_antigravity_unpinned_build_needs_an_explicit_sha512():
+    with pytest.raises(RuntimeError, match="--antigravity-sha512"):
+        runner.antigravity_expected_sha512("1.5.0-1", "linux", "x86_64")
+    assert runner.antigravity_expected_sha512("1.5.0-1", "linux", "x86_64", "AB" * 64) == (
+        "ab" * 64
+    )
+
+
 def test_antigravity_has_no_windows_build():
     with pytest.raises(RuntimeError, match="No Antigravity CLI build"):
         runner.antigravity_archive_url("1.4.9-4962164969177088", "win32", "AMD64")

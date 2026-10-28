@@ -45,6 +45,26 @@ ANTIGRAVITY_ARCHIVES = {
     ("darwin", "arm64"): "darwin-arm/cli_mac_arm64.tar.gz",
     ("darwin", "x86_64"): "darwin-x64/cli_mac_x64.tar.gz",
 }
+# Expected SHA-512 of each pinned archive, copied from Google's release manifests
+# (`<updater>/manifests/<platform>.json`). A build without an entry needs --antigravity-sha512.
+ANTIGRAVITY_SHA512 = {
+    (
+        "1.4.9-4962164969177088",
+        "linux-x64/cli_linux_x64.tar.gz",
+    ): "96a259b7475ae70a5b002ea8a83b804bba9b6ad2171af0cd0839b3959d9e6046ba36e181bc2d5597522aeceaacc06023564c46232fdb958f26f8c72267d9f0fd",
+    (
+        "1.4.9-4962164969177088",
+        "linux-arm/cli_linux_arm64.tar.gz",
+    ): "a703d10ea96d20d35c2ab6a056ce07ac196fac215cdf1ac3a8750a519fa42c3ac1bc4ac8776c98c94e0a816b6b37beaf0e5d98d30eed3e60a90d18ac9a060130",
+    (
+        "1.4.9-4962164969177088",
+        "darwin-arm/cli_mac_arm64.tar.gz",
+    ): "d7d83634b0c236659ee530f448e9aa1c5dc00a010631edd72bf11a920006892b319be7e51c8defae226f204660544e4d915bb5e733f1ceb50c065f4cbe45d3d0",
+    (
+        "1.4.9-4962164969177088",
+        "darwin-x64/cli_mac_x64.tar.gz",
+    ): "cd4df27844a6585da9af155fef02b344deb18213910cff27ddb7ea54411358318a50901a3d348997f67744c31e64fdda7ead3ab48e2c66fc10510b4d8ae9843f",
+}
 ALL_AGENTS = (*AGENT_PACKAGES, *NATIVE_AGENT_BINARIES)
 WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
 # Claude exports no spans on Windows, where ug writes no machine-wide Claude settings.
@@ -256,6 +276,12 @@ def managed_process(command, *, interrupt=False, **kwargs):
             proc.wait(timeout=5)
 
 
+def sha512_digest(value: str) -> str:
+    if not re.fullmatch(r"[0-9a-fA-F]{128}", value):
+        raise argparse.ArgumentTypeError("Use a 128-character hex SHA-512 digest.")
+    return value.lower()
+
+
 def exact_antigravity_build(value: str) -> str:
     if not re.fullmatch(r"\d+\.\d+\.\d+-\d+", value):
         raise argparse.ArgumentTypeError(
@@ -265,25 +291,59 @@ def exact_antigravity_build(value: str) -> str:
     return value
 
 
-def antigravity_archive_url(build: str, system: str, machine: str) -> str:
+def antigravity_archive_path(system: str, machine: str) -> str:
     path = ANTIGRAVITY_ARCHIVES.get((system, machine.lower()))
     if path is None:
         raise RuntimeError(f"No Antigravity CLI build for {system}/{machine}.")
-    return ANTIGRAVITY_RELEASE_URL.format(build=build, path=path)
+    return path
 
 
-def install_native_agent(agent: str, build: str, destination: Path) -> dict:
-    """Download a pinned native agent build into ``destination``; never runs an installer."""
+def antigravity_archive_url(build: str, system: str, machine: str) -> str:
+    return ANTIGRAVITY_RELEASE_URL.format(
+        build=build, path=antigravity_archive_path(system, machine)
+    )
+
+
+def antigravity_expected_sha512(
+    build: str, system: str, machine: str, override: str | None = None
+) -> str:
+    """The digest the downloaded archive must have: ``override``, else the pinned table entry."""
+    if override:
+        return override.lower()
+    expected = ANTIGRAVITY_SHA512.get((build, antigravity_archive_path(system, machine)))
+    if expected is None:
+        raise RuntimeError(
+            f"No pinned SHA-512 for Antigravity CLI {build} on {system}/{machine}. Add it to "
+            "ANTIGRAVITY_SHA512 from the release manifest, or pass --antigravity-sha512."
+        )
+    return expected
+
+
+def install_native_agent(
+    agent: str, build: str, destination: Path, *, sha512: str | None = None
+) -> dict:
+    """Download a pinned native agent build into ``destination``; never runs an installer.
+
+    The archive's SHA-512 is checked against the pinned value before anything is extracted."""
     import tarfile
 
     assert agent == "antigravity", agent
-    url = antigravity_archive_url(build, sys.platform, platform.machine())
+    system, machine = sys.platform, platform.machine()
+    url = antigravity_archive_url(build, system, machine)
+    expected = antigravity_expected_sha512(build, system, machine, sha512)
     archive = destination / "agy.tar.gz"
     destination.mkdir(parents=True)
     with urllib.request.urlopen(url, timeout=300) as response:  # noqa: S310 (pinned https URL)
         archive.write_bytes(response.read())
+    digest = hashlib.sha512(archive.read_bytes()).hexdigest()
+    if digest != expected:
+        archive.unlink()
+        raise RuntimeError(f"{url} has SHA-512 {digest}, expected {expected}.")
     with tarfile.open(archive) as bundle:
-        member = bundle.getmember("antigravity")
+        try:
+            member = bundle.getmember("antigravity")
+        except KeyError as err:
+            raise RuntimeError(f"{url} has no antigravity binary.") from err
         if not member.isfile():
             raise RuntimeError(f"{url} has no antigravity binary.")
         source = bundle.extractfile(member)
@@ -291,7 +351,6 @@ def install_native_agent(agent: str, build: str, destination: Path) -> dict:
         binary = destination / NATIVE_AGENT_BINARIES[agent]
         binary.write_bytes(source.read())
     binary.chmod(0o755)
-    digest = hashlib.sha512(archive.read_bytes()).hexdigest()
     archive.unlink()
     return {"url": url, "sha512": digest, "path": str(binary)}
 
@@ -327,6 +386,12 @@ def arguments(
         "--antigravity-build",
         type=exact_antigravity_build,
         help="Exact Antigravity CLI build to download (Linux and macOS), e.g. 1.4.9-4962164969177088.",
+    )
+    parser.add_argument(
+        "--antigravity-sha512",
+        type=sha512_digest,
+        help="Expected SHA-512 of the --antigravity-build archive, for a build not pinned in "
+        "ANTIGRAVITY_SHA512 (copy it from the release manifest).",
     )
     parser.add_argument("--claude-model", default=environment.get("UG_INTEGRATION_CLAUDE_MODEL"))
     parser.add_argument("--codex-model", default=environment.get("UG_INTEGRATION_CODEX_MODEL"))
@@ -826,7 +891,9 @@ def main() -> int:
         agent_bin = npm_prefix / "node_modules/.bin"
         native_bin = output / "native-agents"
         report["native_agents"] = {
-            agent: install_native_agent(agent, args.antigravity_build, native_bin)
+            agent: install_native_agent(
+                agent, args.antigravity_build, native_bin, sha512=args.antigravity_sha512
+            )
             for agent in agents
             if agent in NATIVE_AGENT_BINARIES
         }

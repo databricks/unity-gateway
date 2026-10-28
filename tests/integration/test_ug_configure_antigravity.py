@@ -12,7 +12,9 @@ pytestmark = [pytest.mark.live, pytest.mark.antigravity]
 
 @pytest.mark.tui
 def test_ug_configure_antigravity_databricks(live_session, workspace):
-    """Scenario: pick Antigravity CLI in `ug configure`'s agent picker, then use its TUI.
+    """Scenario: pick Antigravity CLI in `ug configure`'s agent picker and choose Databricks
+    Hosted in its model-source picker (the e2e workspace also offers a Gemini Enterprise
+    service as External Models), then use its TUI.
 
     Expected: configure succeeds with Databricks Hosted models; `ug antigravity` opens
     Antigravity without Google sign-in, first-run onboarding is answered through its visible
@@ -31,8 +33,10 @@ def test_ug_configure_antigravity_databricks(live_session, workspace):
     ]
     with ConfigureTerminal(session, "antigravity", command, "configure") as configure:
         configure.select_agent("Antigravity CLI")
+        configure.choose("How should Antigravity CLI get its models?", "Databricks Hosted")
         configure.finish(timeout=240)
     assert "antigravity" in session.workspace_state()["available_tools"]
+    assert not session.workspace_state().get("provider_services", {}).get("antigravity")
     assert "Antigravity CLI" in session.run("status").stdout
 
     command = [str(session.binary), "antigravity"]
@@ -52,9 +56,12 @@ def test_ug_configure_antigravity_revert_restores_user_files(live_session, works
     """Scenario: a user with their own Antigravity skills.json and MCP server configures
     Antigravity and adds a Databricks MCP service through ug, then runs `ug revert`.
 
+    skills.json is shared with the Antigravity app and IDE, so the user also adds an entry of
+    their own after configuring.
+
     Expected: while configured, ug's skills directory and MCP entry sit beside the user's own;
-    after revert skills.json is the user's original file again (restored from ug's backup) and
-    the MCP config holds only the user's server (ug removes its entry in place).
+    after revert both files hold only the user's content, including the entry added after
+    configure (ug removes its own entries in place rather than restoring a snapshot).
     """
     session = live_session
     config = session.home / ".gemini/config"
@@ -65,7 +72,6 @@ def test_ug_configure_antigravity_revert_restores_user_files(live_session, works
     mcp.write_text(
         json.dumps({"mcpServers": {"mine": {"serverUrl": "https://example.com/mcp"}}}, indent=2)
     )
-    original_skills = skills.read_bytes()
     original_mcp = json.loads(mcp.read_text())
 
     session.run(
@@ -79,10 +85,19 @@ def test_ug_configure_antigravity_revert_restores_user_files(live_session, works
         timeout=240,
     )
     session.run("mcp", "add", "--names", "system.ai.dbsql", "--agents", "antigravity", timeout=240)
-    assert len(json.loads(skills.read_text())["entries"]) == 2
+    configured = json.loads(skills.read_text())
+    assert configured["entries"] == [
+        {"path": str(session.home / "mine")},
+        {"path": str(session.home / ".agents/skills")},
+    ]
     assert set(json.loads(mcp.read_text())["mcpServers"]) == {"mine", "system-ai-dbsql"}
+    later = {"path": str(session.home / "added-later")}
+    configured["entries"].append(later)
+    skills.write_text(json.dumps(configured, indent=2))
 
     session.run("revert", timeout=120)
 
-    assert skills.read_bytes() == original_skills
+    assert json.loads(skills.read_text()) == {
+        "entries": [{"path": str(session.home / "mine")}, later]
+    }
     assert json.loads(mcp.read_text()) == original_mcp

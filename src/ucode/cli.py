@@ -1560,9 +1560,11 @@ def revert() -> int:
     workspace_policy_result = revert_machine_policy()
 
     results: dict[str, bool] = {
-        tool: restore_file(
-            spec["config_path"], spec["backup_path"], bool(managed_configs.get(tool))
-        )
+        # Antigravity's skills.json is shared with its app and IDE extensions, so revert
+        # removes only ug's entry rather than restoring a snapshot.
+        tool: antigravity_agent.revert_skills_config()
+        if tool == "antigravity"
+        else restore_file(spec["config_path"], spec["backup_path"], bool(managed_configs.get(tool)))
         for tool, spec in TOOL_SPECS.items()
     }
     pi_settings_restored = restore_file(
@@ -4301,26 +4303,6 @@ def pi_cmd(
     _launch_tool("pi", ctx, skip_preflight=skip_preflight)
 
 
-AntigravityProviderOption = Annotated[
-    str | None,
-    typer.Option(
-        "--provider",
-        help="Route through a Unity Catalog Model Provider Service "
-        "(<catalog>.<schema>.<name>) that serves a Gemini model. Pass before any "
-        "`--` separator.",
-    ),
-]
-AntigravityModelOption = Annotated[
-    str | None,
-    typer.Option(
-        "--model",
-        help="Gemini model to launch on: a Databricks model ID (system.ai.gemini-3-8-flash) or "
-        "its Antigravity name (gemini-3.8-flash). Under --provider, selects which of the "
-        "service's target models to use. Pass before any `--` separator.",
-    ),
-]
-
-
 @app.command(
     "antigravity",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
@@ -4328,27 +4310,36 @@ AntigravityModelOption = Annotated[
 )
 def antigravity_cmd(
     ctx: typer.Context,
-    provider: AntigravityProviderOption = None,
-    model: AntigravityModelOption = None,
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider",
+            help="Route through a Unity Catalog Model Provider Service "
+            "(<catalog>.<schema>.<name>) that serves a Gemini model. Pass before any "
+            "`--` separator.",
+        ),
+    ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help="Gemini model to launch on: a Databricks model ID (system.ai.gemini-3-8-flash) or "
+            "its Antigravity name (gemini-3.8-flash). Under --provider, selects which of the "
+            "service's target models to use. Pass before any `--` separator.",
+        ),
+    ] = None,
     skip_preflight: SkipPreflightOption = False,
 ) -> None:
     """Launch Google Antigravity CLI (agy) via Databricks."""
     _launch_tool("antigravity", ctx, provider=provider, model=model, skip_preflight=skip_preflight)
 
 
-@app.command(
+# `ug agy` matches the agent's own binary name; it is the same command, kept out of help.
+app.command(
     "agy",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     hidden=True,
-)
-def agy_cmd(
-    ctx: typer.Context,
-    provider: AntigravityProviderOption = None,
-    model: AntigravityModelOption = None,
-    skip_preflight: SkipPreflightOption = False,
-) -> None:
-    """Alias of `ug antigravity`."""
-    _launch_tool("antigravity", ctx, provider=provider, model=model, skip_preflight=skip_preflight)
+)(antigravity_cmd)
 
 
 @app.command(

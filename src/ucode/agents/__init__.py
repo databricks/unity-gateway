@@ -154,8 +154,14 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
         # Installed by its own installer into a directory PATH doesn't reach yet.
         command = [off_path, *_NATIVE_UPGRADE_COMMANDS[tool][1:]]
     elif callable(getattr(_MODULES[tool], "install_binary", None)):
-        # Not published on npm: only its own updater can upgrade it.
-        print_warning(f"`{binary}` is not available to update {spec['display']}; continuing.")
+        # Not published on npm: only its own updater can upgrade it, and only to its latest.
+        if version is not None:
+            print_warning(
+                f"{spec['display']} can't be installed at a specific version ({version}); "
+                "continuing."
+            )
+        else:
+            print_warning(f"`{binary}` is not available to update {spec['display']}; continuing.")
         return False
     else:
         if not shutil.which("npm"):

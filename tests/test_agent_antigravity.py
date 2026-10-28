@@ -46,6 +46,16 @@ class TestSpec:
         assert "1.2.15 or newer" in message
         assert "agy update" in message
 
+    def test_version_gate_checks_the_installed_binary_off_path(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(antigravity, "resolve_binary", lambda: "/home/u/.local/bin/agy")
+        monkeypatch.setattr(
+            antigravity, "agent_version", lambda binary: seen.append(binary) or "1.1.18"
+        )
+
+        assert "too old" in (antigravity.minimum_version_error() or "")
+        assert seen == ["/home/u/.local/bin/agy"]
+
     @pytest.mark.parametrize("version", ["1.2.15", "1.4.9", "unknown"])
     def test_supported_or_unknown_version_passes(self, monkeypatch, version):
         monkeypatch.setattr(antigravity, "agent_version", lambda _binary: version)
@@ -246,6 +256,16 @@ AGY_MODELS_OUTPUT = (
 )
 
 
+class TestCatalogName:
+    def test_variant_belongs_to_the_longest_matching_name(self):
+        catalog = {"gemini-3.5-flash": "a", "gemini-3.5-flash-lite": "b"}
+
+        assert antigravity._catalog_name("gemini-3.5-flash-lite-high", catalog) == (
+            "gemini-3.5-flash-lite"
+        )
+        assert antigravity._catalog_name("gemini-3.5-flash-high", catalog) == "gemini-3.5-flash"
+
+
 class TestSelectionId:
     def _select(self, monkeypatch, model, stdout=AGY_MODELS_OUTPUT):
         seen = {}
@@ -277,6 +297,27 @@ class TestSelectionId:
     def test_maps_to_agy_selection_ids(self, monkeypatch, model, expected):
         assert self._select(monkeypatch, model) == expected
 
+    def test_another_models_ids_are_not_counted_as_tiers(self, monkeypatch):
+        listing = (
+            "gemini-3.5-flash-high\tGemini 3.5 Flash (High)\n"
+            "gemini-3.5-flash-lite\tgemini-3.5-flash-lite\n"
+            "gemini-3.5-flash-lite-low\tGemini 3.5 Flash Lite (Low)\n"
+        )
+
+        def fake_run(argv, **kwargs):
+            result = MagicMock()
+            result.stdout = listing
+            return result
+
+        monkeypatch.setattr(antigravity.subprocess_cross_os, "run", fake_run)
+
+        assert (
+            antigravity._selection_id(
+                "agy", {}, "gemini-3.5-flash", ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
+            )
+            == "gemini-3.5-flash-high"
+        )
+
     def test_falls_back_to_the_name_when_listing_fails(self, monkeypatch):
         def fail(argv, **kwargs):
             raise OSError("boom")
@@ -301,7 +342,12 @@ class TestWriteToolConfig:
         monkeypatch.setattr(antigravity, "UG_AGENTS_SKILLS_DIR", skills_dir)
         antigravity.AGY_SKILLS_CONFIG_PATH.parent.mkdir(parents=True)
         antigravity.AGY_SKILLS_CONFIG_PATH.write_text(
-            json.dumps({"inherits": [{"path": "/team.json"}], "entries": [{"path": "/mine"}]})
+            json.dumps(
+                {
+                    "inherits": [{"path": "/team.json"}],
+                    "entries": [{"path": "/mine"}, "kept-as-is"],
+                }
+            )
         )
 
         antigravity.write_tool_config(_state(), None)
@@ -309,10 +355,47 @@ class TestWriteToolConfig:
 
         written = json.loads(antigravity.AGY_SKILLS_CONFIG_PATH.read_text())
         assert written["inherits"] == [{"path": "/team.json"}]
-        assert written["entries"] == [{"path": "/mine"}, {"path": str(skills_dir)}]
-        # The user's original file is kept for `ug revert`.
-        backup = json.loads(antigravity.AGY_SKILLS_BACKUP_PATH.read_text())
-        assert backup["entries"] == [{"path": "/mine"}]
+        assert written["entries"] == [{"path": "/mine"}, "kept-as-is", {"path": str(skills_dir)}]
+        assert not antigravity.AGY_SKILLS_CREATED_MARKER.exists()
+
+    def test_revert_removes_only_our_entry_and_keeps_later_user_edits(self, monkeypatch, tmp_path):
+        skills_dir = tmp_path / ".agents" / "skills"
+        monkeypatch.setattr(antigravity, "UG_AGENTS_SKILLS_DIR", skills_dir)
+        antigravity.AGY_SKILLS_CONFIG_PATH.parent.mkdir(parents=True)
+        antigravity.AGY_SKILLS_CONFIG_PATH.write_text(json.dumps({"entries": [{"path": "/mine"}]}))
+        antigravity.write_tool_config(_state(), None)
+        # The user (or the Antigravity app) edits the shared file after configure.
+        config = json.loads(antigravity.AGY_SKILLS_CONFIG_PATH.read_text())
+        config["entries"].append({"path": "/later"})
+        antigravity.AGY_SKILLS_CONFIG_PATH.write_text(json.dumps(config))
+
+        assert antigravity.revert_skills_config() is True
+
+        assert json.loads(antigravity.AGY_SKILLS_CONFIG_PATH.read_text()) == {
+            "entries": [{"path": "/mine"}, {"path": "/later"}]
+        }
+        assert antigravity.revert_skills_config() is False
+
+    def test_revert_deletes_a_file_ug_created_when_nothing_else_was_added(self):
+        antigravity.write_tool_config(_state(), None)
+        assert antigravity.AGY_SKILLS_CREATED_MARKER.exists()
+
+        assert antigravity.revert_skills_config() is True
+
+        assert not antigravity.AGY_SKILLS_CONFIG_PATH.exists()
+        assert not antigravity.AGY_SKILLS_CREATED_MARKER.exists()
+
+    def test_revert_keeps_a_file_ug_created_once_the_user_adds_to_it(self):
+        antigravity.write_tool_config(_state(), None)
+        config = json.loads(antigravity.AGY_SKILLS_CONFIG_PATH.read_text())
+        config["entries"].append({"path": "/later"})
+        antigravity.AGY_SKILLS_CONFIG_PATH.write_text(json.dumps(config))
+
+        antigravity.revert_skills_config()
+
+        assert json.loads(antigravity.AGY_SKILLS_CONFIG_PATH.read_text()) == {
+            "entries": [{"path": "/later"}]
+        }
 
     def test_provider_persists_routing_and_target(self):
         state = antigravity.write_tool_config(
@@ -489,7 +572,7 @@ class TestLaunch:
         monkeypatch.setattr(
             antigravity,
             "_selection_id",
-            lambda binary, env, model: (
+            lambda binary, env, model, catalog: (
                 "gemini-3.1-pro-low-thinking" if model == "gemini-3.1-pro-preview" else model
             ),
         )
