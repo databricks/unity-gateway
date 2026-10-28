@@ -236,11 +236,8 @@ def _provider_block(
         http_headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
     elif parent_schema:
         http_headers[MODEL_SERVICE_PARENT_SCHEMA_HEADER] = parent_schema
-    if smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CODEX):
-        http_headers[SMART_ROUTER_RECIPE_HEADER] = configured_router_name()
-    request_tags = request_tags_header_value()
-    if request_tags:
-        http_headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
+    # Smart-routing and request-tag headers come from the launching shell, so they never enter a
+    # config file; launches add them with `-c` through `_add_launch_env_headers`.
     _apply_managed_headers(http_headers, managed_http_headers)
     return {
         "name": "Databricks AI Gateway",
@@ -518,12 +515,15 @@ def write_tool_config(
         managed_http_headers=state.get("codex_http_headers"),
     )
 
-    def compose(base: dict, *, include_catalog: bool = True) -> dict:
+    def compose(base: dict, *, include_catalog: bool = True, local: bool = True) -> dict:
         prune_key_paths(base, _PROVIDER_HTTP_HEADERS_KEY_PATHS)
         deep_merge_dict(base, copy.deepcopy(overlay))
-        # deep_merge can't drop keys, so clear model preferences from an earlier run.
-        if chosen_model is None and not smart_routing_v2.smart_routing_enabled(
-            None, default=False, agent=AGENT_CODEX
+        # deep_merge can't drop keys, so clear model preferences from an earlier run. Smart
+        # routing reads the startup model from the user-local file, so only that file keeps it;
+        # the managed file must not depend on the launching shell.
+        if chosen_model is None and (
+            not local
+            or not smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CODEX)
         ):
             for key in ("model", "model_reasoning_effort"):
                 base.pop(key, None)
@@ -550,7 +550,7 @@ def write_tool_config(
         enabled=False,
     )
     write_toml_file(CODEX_CONFIG_PATH, doc)
-    _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False))
+    _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False, local=False))
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
     # The desktop proxy reads authentication from the saved workspace.
@@ -1216,9 +1216,30 @@ def _export_launch_routing_headers(config: dict) -> None:
 
 def _render_launch_overlay(*args, **kwargs) -> dict:
     overlay = render_overlay(*args, **kwargs)
+    _add_launch_env_headers(overlay, kwargs.get("managed_http_headers"))
     _export_launch_routing_headers(overlay)
     _add_launch_headers(overlay)
     return overlay
+
+
+def _add_launch_env_headers(config: dict, managed: dict[str, str] | None) -> None:
+    """Set the smart-router recipe and request-tags headers for this launch from the environment.
+
+    They reach only this launch's ``-c`` flags (and the Windows ``env_http_headers`` variables),
+    never a config file, so the OS-managed file does not change with the launching shell. Any
+    stale copy in the profile is dropped; an admin header of the same name wins."""
+    admin = {name.casefold() for name in managed or {}}
+    values = {
+        SMART_ROUTER_RECIPE_HEADER: (
+            configured_router_name()
+            if smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CODEX)
+            else None
+        ),
+        AI_GATEWAY_REQUEST_TAGS_HEADER: request_tags_header_value(),
+    }
+    for header, value in values.items():
+        if header.casefold() not in admin:
+            _set_routing_header(config, header, value)
 
 
 def _add_launch_headers(config: dict) -> None:
@@ -1527,6 +1548,7 @@ def launch(
         )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
+    _add_launch_env_headers(profile_doc, state.get("codex_http_headers"))
     _export_launch_routing_headers(profile_doc)
     _add_launch_headers(profile_doc)
     updating = tool_args[:1] == ["update"]
