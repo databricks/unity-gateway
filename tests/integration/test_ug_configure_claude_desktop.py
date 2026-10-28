@@ -11,6 +11,7 @@ from pathlib import Path
 
 import anyio
 import pytest
+from utils.constants import CLAUDE_TEST_MODEL
 from utils.desktop import desktop_config_library, installed_cowork_servers, prepare_cowork_home
 from utils.evidence import fresh_id
 from utils.harness import process_group_options, stop_process
@@ -173,12 +174,11 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     headers = {key.casefold(): value for key, value in profile["inferenceCustomHeaders"].items()}
     assert headers["x-databricks-use-coding-agent-mode"] == "true"
     assert "databricks-model-provider-service" not in headers
-    model_id = "system.ai.claude-haiku-4-5"
-    assert model_id in {model["name"] for model in models}
+    assert CLAUDE_TEST_MODEL in {model["name"] for model in models}
     _assert_desktop_message(
         session,
         profile,
-        model_id,
+        CLAUDE_TEST_MODEL,
         {"Authorization": "Bearer " + token_output.strip()},
         "desktop-system-ai-message.json",
     )
