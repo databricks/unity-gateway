@@ -47,19 +47,19 @@ path, preserves an unrelated profile and metadata, then runs the exact generated
 helper and validates its token against the paginated live models API. It requires system.ai
 Claude models without an MPS override and uses the profile's credentials and headers for a small
 Messages request on `system.ai.claude-haiku-4-5`, requiring HTTP 200, a nonempty response model ID,
-and the exact fresh marker. The service may return a provider model ID rather than its alias;
-this does not pin or prove its backing model revision. The relay journey selects
+and nonempty assistant text without matching its wording. The service may return a provider model
+ID rather than its alias; this does not pin or prove its backing model revision. The relay journey selects
 the real subscription provider through configure and completes
 Messages inference using the subscription token and separate Databricks header returned by its
 helper. Non-relay MPS Desktop configuration is asserted in CUJ2's existing MPS configuration
 journey; no dedicated Desktop MPS integration test is needed.
 
 Each of these two journeys supplies pre-existing Desktop account directories as inputs and
-requires real Claude CLI installation of the Cowork plugin. It registers system.ai.dbsql through
-`ug mcp add --names system.ai.dbsql`, then runs the command from the installed plugin with the
-MCP SDK. The check initializes the protocol, discovers execute_sql/poll_sql_result, executes
-`SELECT sha2('<fresh run id>', 256)`, polls pending statements, and requires the computed receipt
-in the successful result's single typed cell. This proves execution rather than an echoed query.
+requires real Claude CLI installation of the Cowork plugin. It registers system.ai.web_search through
+`ug mcp add --names system.ai.web_search`, then runs the command from the installed plugin with the
+MCP SDK. The check initializes the protocol, discovers web_search, and searches for Databricks'
+official website. A successful result must contain a URL on databricks.com or www.databricks.com;
+the response wording and search rankings are not asserted. No SQL compute is needed.
 Both journeys verify reconfiguration preserves the profile/plugin and revert removes UG's entries
 while retaining unrelated profiles and metadata. A separate local personal plugin is installed
 through the real Claude CLI before configuration; its registry entry and installed manifest must
@@ -67,9 +67,9 @@ survive installation, reconfiguration, and revert unchanged. Revert also removes
 registration and generated source directory.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
-the same workspace as their model calls. The workspace must expose system.ai.dbsql and allow
-the test identity to run a constant read-only query on its default SQL compute. No dedicated
-Desktop MCP test, separate fixture-workspace step, or extra credentials are required.
+the same workspace as their model calls. The workspace must expose system.ai.web_search and allow
+the test identity to invoke it. No dedicated Desktop MCP test, separate fixture-workspace step,
+or extra credentials are required.
 
 These tests do not launch Desktop or establish GUI, skill execution, browser consent,
 token renewal, or injected authentication-failure/reconnect recovery. CI supplies the supported
