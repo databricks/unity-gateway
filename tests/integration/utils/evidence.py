@@ -192,8 +192,7 @@ class FileTask:
         self.delegate_prompt = (
             f"Delegate this task to one subagent: read the local file {self.filename} in the "
             "current directory using a tool and return its contents. Do not read the file "
-            "yourself. Start the subagent exactly once, do not start another, then reply "
-            "with only the value it returned."
+            "yourself. Wait for the subagent and reply with only the value it returned."
         )
 
     def completed(self, session, agent: str, *, child: bool = False) -> bool:
