@@ -10,6 +10,8 @@ set -u
 set -f
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
+# Folders `mkdir -p` creates must stay readable to the agents whatever the caller's umask.
+umask 022
 
 mode=$1
 platform=$2
@@ -30,8 +32,18 @@ target_is_allowed() {
     case "$platform:$1" in
         "linux:/etc/claude-code/managed-settings.json"|\
         "linux:/etc/codex/managed_config.toml"|\
+        "linux:/etc/unitygateway/managed-settings.json"|\
+        "linux:/etc/claude-code/ucode-plugins/.claude-plugin/marketplace.json"|\
+        "linux:/etc/claude-code/ucode-plugins/ug-headers/.claude-plugin/plugin.json"|\
+        "linux:/etc/claude-code/ucode-plugins/ug-headers/hooks/hooks.json"|\
+        "linux:/etc/claude-code/ucode-plugins/ug-headers/hooks/register.ts"|\
         "macos:/Library/Application Support/ClaudeCode/managed-settings.json"|\
-        "macos:/etc/codex/managed_config.toml") return 0 ;;
+        "macos:/etc/codex/managed_config.toml"|\
+        "macos:/etc/unitygateway/managed-settings.json"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/.claude-plugin/marketplace.json"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-headers/.claude-plugin/plugin.json"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-headers/hooks/hooks.json"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-headers/hooks/register.ts") return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -70,12 +82,12 @@ replace_one() (
 
     source_is_valid() {
         [ -f "$source_path" ] && [ ! -L "$source_path" ] || return 1
-        [ -n "${SUDO_UID:-}" ] || return 1
         if [ "$platform" = macos ]; then
             source_owner=$(/usr/bin/stat -f %u "$source_path" 2>/dev/null) || return 1
         else
             source_owner=$(stat -c %u "$source_path" 2>/dev/null) || return 1
         fi
+        [ -n "${SUDO_UID:-}" ] || return 1
         [ "$source_owner" = "$SUDO_UID" ]
     }
 
@@ -135,6 +147,10 @@ replace_one() (
         run_step chown 0:0 "$parent"
         run_step chmod 0755 "$parent"
     fi
+    if [ "$target" = /etc/unitygateway/managed-settings.json ]; then
+        run_step chown 0:0 "$parent"
+        run_step chmod 0755 "$parent"
+    fi
 
     staging=$(mktemp "$staging_template") || exit "$?"
 
@@ -191,6 +207,10 @@ replace_one() (
         run_step chown 0:0 "$staging"
         run_step chmod 0644 "$staging"
     fi
+    if [ "$target" = /etc/unitygateway/managed-settings.json ]; then
+        run_step chown 0:0 "$staging"
+        run_step chmod 0644 "$staging"
+    fi
 
     if [ -L "$parent" ] || [ -L "$target" ] || { [ -e "$target" ] && [ ! -f "$target" ]; }; then
         printf '%s\n' "Refusing to replace symlinked managed settings: $target" >&2
@@ -203,9 +223,49 @@ replace_one() (
     clear_flags=
 )
 
+remove_one() (
+    set -eu
+    source_path=$1
+    target=$2
+    parent=${target%/*}
+    if [ "$target" != /etc/unitygateway/managed-settings.json ] || ! target_is_allowed "$target"; then
+        printf '%s\n' "Refusing unexpected workspace-policy removal: $target" >&2
+        exit 1
+    fi
+    if [ -L "$parent" ] || [ -L "$target" ] || [ ! -f "$target" ]; then
+        printf '%s\n' "Refusing unsafe workspace-policy removal: $target" >&2
+        exit 1
+    fi
+    if [ ! -f "$source_path" ] || [ -L "$source_path" ]; then
+        printf '%s\n' "Refusing invalid workspace-policy source: $source_path" >&2
+        exit 1
+    fi
+    if [ "$platform" = macos ]; then
+        source_owner=$(/usr/bin/stat -f %u "$source_path") || {
+            printf '%s\n' "Cannot inspect workspace-policy source: $source_path" >&2
+            exit 1
+        }
+    else
+        source_owner=$(stat -c %u "$source_path") || {
+            printf '%s\n' "Cannot inspect workspace-policy source: $source_path" >&2
+            exit 1
+        }
+    fi
+    if [ -z "${SUDO_UID:-}" ] || [ "$source_owner" != "$SUDO_UID" ] || ! cmp -s "$source_path" "$target"; then
+        printf '%s\n' "Workspace policy changed before removal: $target" >&2
+        exit 1
+    fi
+    rm -f "$target"
+    # The folder holds only the policy; rmdir leaves it in place if anything else is there.
+    rmdir "$(dirname "$target")" 2>/dev/null || true
+)
+
 case "$mode" in
     once)
         replace_one "$1" "$2"
+        ;;
+    remove)
+        remove_one "$1" "$2"
         ;;
     session)
         while IFS=' ' read -r operation request_id source_arg target_arg; do

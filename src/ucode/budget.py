@@ -94,13 +94,10 @@ def list_current_user_budget_spend_statuses(
         for raw_budget in raw_budgets:
             if not isinstance(raw_budget, dict):
                 return [], "budget spend status listing returned a malformed budget status"
-            budget_id = raw_budget.get("budget_id")
+            name = raw_budget.get("name")
+            budget_id = name.rsplit("/", 1)[-1] if isinstance(name, str) else ""
             raw_statuses = raw_budget.get("alert_spend_statuses")
-            if (
-                not isinstance(budget_id, str)
-                or not budget_id
-                or not isinstance(raw_statuses, list)
-            ):
+            if not budget_id or not isinstance(raw_statuses, list):
                 return [], "budget spend status listing returned a malformed budget status"
             for raw_status in raw_statuses:
                 status = _budget_limit_status(raw_status, budget_id)

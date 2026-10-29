@@ -11,6 +11,9 @@ MANAGED_PATHS = (
     Path("/etc/codex/requirements.toml"),
     Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
 )
+# Unity Gateway's installed workspace policy. Any `ug configure` may install it (with sudo), so it
+# is not a leaked agent setting; CUJ teardown removes it.
+WORKSPACE_POLICY_PATH = Path("/etc/unitygateway/managed-settings.json")
 INFERENCE_PATHS = {
     CLAUDE: "/ai-gateway/anthropic/v1/messages",
     CODEX: "/ai-gateway/codex/v1/responses",
@@ -22,6 +25,8 @@ CLAUDE_HAIKU_MODEL = "system.ai.claude-haiku-4-5"
 NATIVE_MODEL_ALIASES = {
     "system.ai.anthropic.claude-haiku-4-5-20251001-v1:0": CLAUDE_HAIKU_MODEL,
 }
+CLAUDE_GPT_LUNA_MODEL = "system.ai.gpt-6-luna"
+CLAUDE_GPT_SOL_MODEL = "system.ai.gpt-6-1-sol"
 CODEX_SOL_MODEL = "system.ai.gpt-5-6-sol"
 CODEX_LUNA_MODEL = "system.ai.gpt-5-6-luna"
 # TuiRequestRecorder lowercases recorded header names.

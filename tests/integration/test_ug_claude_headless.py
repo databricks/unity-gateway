@@ -299,7 +299,7 @@ def test_ug_claude_headless_allow_all_bedrock_provider(
     live_session, workspace, claude_bedrock_allow_all_provider, claude_bedrock_allow_all_model
 ):
     """Scenario: launch Claude through a Bedrock MPS with allow_all_targets and no declared
-    targets (issue #811), pinning an explicit Bedrock model.
+    targets (issue #811), pinning the explicit Bedrock Sonnet 4.6 model.
 
     Expected: ug accepts the provider (rather than rejecting it as "exposes no Claude models"),
     and the real file task completes through Bedrock.

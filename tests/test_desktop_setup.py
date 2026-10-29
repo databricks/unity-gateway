@@ -625,7 +625,6 @@ def test_discovery_and_native_headers_use_same_source(desktop, monkeypatch, pare
 @pytest.mark.parametrize(
     "key,value",
     [
-        ("claude_relayed", True),
         ("custom_oauth", {"client_id": "custom"}),
         ("use_pat", True),
         ("profile", None),
@@ -638,6 +637,47 @@ def test_unsupported_auth_warns_without_modifying_profiles(desktop, capsys, key,
     assert (desktop / "_meta.json").read_bytes() == before
     assert list(desktop.glob("*.json")) == [desktop / "_meta.json"]
     assert "Could not configure Claude Desktop" in capsys.readouterr().out
+
+
+def test_subscription_relay_uses_direct_gateway_and_combined_helper(desktop, monkeypatch):
+    claude_binary = os.path.abspath(os.path.join("bin", "claude"))
+    monkeypatch.setattr(desktop_setup.shutil, "which", lambda binary: claude_binary)
+    state = {
+        "workspace": "https://workspace.example",
+        "profile": "chosen-profile",
+        "claude_relayed": True,
+        "provider_services": {"claude": "main.models.subscription"},
+    }
+
+    desktop_setup.configure_claude_desktop(state)
+
+    profile = configured_profile(desktop)
+    assert profile["inferenceGatewayBaseUrl"] == ("https://workspace.example/ai-gateway/anthropic")
+    assert profile["inferenceCredentialHelperArgs"][-3:] == [
+        "--relay",
+        "--claude-binary",
+        claude_binary,
+    ]
+    assert profile["inferenceCustomHeaders"][MODEL_PROVIDER_SERVICE_HEADER] == (
+        "main.models.subscription"
+    )
+
+
+def test_subscription_relay_without_claude_code_preserves_profiles(desktop, monkeypatch, capsys):
+    before = (desktop / "_meta.json").read_bytes()
+    monkeypatch.setattr(desktop_setup.shutil, "which", lambda binary: None)
+
+    desktop_setup.configure_claude_desktop(
+        {
+            "workspace": "https://workspace.example",
+            "profile": "chosen-profile",
+            "claude_relayed": True,
+        }
+    )
+
+    assert (desktop / "_meta.json").read_bytes() == before
+    assert list(desktop.glob("*.json")) == [desktop / "_meta.json"]
+    assert "Install Claude Code" in capsys.readouterr().out
 
 
 def test_discovery_failure_is_warning_and_preserves_profile(desktop, monkeypatch, capsys):

@@ -12,7 +12,8 @@ import pytest
 
 from ucode import custom_oauth
 from ucode.agents import copilot
-from ucode.databricks import ModelServiceEntry
+from ucode.databricks import AnthropicModelCatalog, ModelServiceEntry
+from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
 PROXY = "http://127.0.0.1:4321"
@@ -308,6 +309,12 @@ class TestCopilotCatalogModelId:
             ("system.ai.claude-haiku-4-5", "claude-haiku-4.5"),
             ("system.ai.claude-haiku-5-5", "claude-sonnet-5.5"),
             ("databricks-claude-sonnet-4-6", "claude-sonnet-4.6"),
+            ("claude-sonnet-4-5-20250929", "claude-sonnet-4.5"),
+            ("us.anthropic.claude-sonnet-4-6", "claude-sonnet-4.6"),
+            ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4.5"),
+            ("global.anthropic.claude-opus-4-8", "claude-opus-4.8"),
+            ("anthropic.claude-opus-4-8", "claude-opus-4.8"),
+            ("anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4.5"),
         ],
     )
     def test_maps_claude_ids(self, model, expected):
@@ -315,6 +322,279 @@ class TestCopilotCatalogModelId:
 
     def test_other_models_have_no_catalog_id(self):
         assert copilot.copilot_catalog_model_id(GPT) is None
+
+
+class TestClassifyProviderModel:
+    @pytest.mark.parametrize(
+        ("model", "provider_type", "wire"),
+        [
+            ("claude-sonnet-5", "anthropic", "anthropic"),
+            ("us.anthropic.claude-sonnet-4-6", "amazon_bedrock", "anthropic"),
+            ("anthropic.claude-opus-4-8", "bedrock_mantle", "anthropic"),
+            ("gpt-5.5", "openai", "responses"),
+            ("gpt-5-nano", "openai", "responses"),
+            ("o3-mini", "openai", "responses"),
+            ("gpt-4o", "azure_openai", "completions"),
+            ("my-gpt4o-deployment", "azure_openai", "completions"),
+            ("claude-opus-4-8", "microsoft_foundry", "anthropic"),
+            ("gpt-5-nano", "microsoft_foundry", "responses"),
+            ("deepseek", "microsoft_foundry", "completions"),
+        ],
+    )
+    def test_provider_type_and_id_decide_the_wire(self, model, provider_type, wire):
+        assert copilot.classify_model(model, provider_type=provider_type) == (wire, None)
+
+    def test_declared_non_chat_apis_exclude(self):
+        wire, why = copilot.classify_model(
+            "embed-v-4-0", ["openai/v1/embeddings"], provider_type="openai"
+        )
+
+        assert wire is None
+        assert "isn't a chat model" in why
+        assert copilot.classify_model(
+            "gpt-5.2-chat", ["openai/v1/chat/completions"], provider_type="azure_openai"
+        ) == ("responses", None)
+
+    @pytest.mark.parametrize(
+        ("model", "provider_type", "reason"),
+        [
+            ("us.anthropic.claude-sonnet-4-6", "openai", None),
+            ("amazon.titan-text-express-v1", "amazon_bedrock", "Claude models"),
+        ],
+    )
+    def test_unusable_models_say_why(self, model, provider_type, reason):
+        wire, why = copilot.classify_model(model, provider_type=provider_type)
+        if reason is None:
+            assert wire == "completions"
+        else:
+            assert wire is None
+            assert reason in why
+
+
+def provider_models(models, provider_type, api_types=None):
+    api_types = api_types or {}
+    return copilot.build_catalog(
+        ((model, api_types.get(model, ())) for model in models), provider_type=provider_type
+    )
+
+
+class TestBuildProviderCatalog:
+    def test_keeps_usable_models_in_catalog_order_and_reports_the_rest(self):
+        models, skipped = provider_models(
+            ["gpt-4o", "text-embedding-3-small", "gpt-5.5", "gpt-5.5"],
+            "openai",
+            {"text-embedding-3-small": ["openai/v1/embeddings"]},
+        )
+
+        assert [(m.id, m.wire) for m in models] == [
+            ("gpt-5.5", "responses"),
+            ("gpt-4o", "completions"),
+        ]
+        assert skipped == [
+            ("text-embedding-3-small", "it isn't a chat model (it serves openai/v1/embeddings)")
+        ]
+
+    def test_foundry_claude_uses_anthropic_whatever_it_declares(self):
+        chat = ["openai/v1/chat/completions"]
+        models, skipped = provider_models(
+            ["deepseek", "claude-opus-4-8"],
+            "microsoft_foundry",
+            {"deepseek": chat, "claude-opus-4-8": chat},
+        )
+
+        assert [(m.id, m.wire) for m in models] == [
+            ("claude-opus-4-8", "anthropic"),
+            ("deepseek", "completions"),
+        ]
+        assert skipped == []
+
+    def test_orders_dotted_provider_versions_newest_first(self):
+        models, _ = provider_models(
+            ["gpt-5", "gpt-5.6", "gpt-5.1", "gpt-5.5", "o1", "o4-mini", "o3"], "openai"
+        )
+
+        assert [m.id for m in models] == [
+            "gpt-5.6",
+            "gpt-5.5",
+            "gpt-5.1",
+            "gpt-5",
+            "o4-mini",
+            "o3",
+            "o1",
+        ]
+
+
+def _stub_provider_service(monkeypatch, service, *, listed=(), listing_error=None):
+    monkeypatch.setattr(copilot, "launch_token", lambda state, workspace, **_: "dbx-token")
+    seen = {}
+
+    def resolve(tool, name, workspace, token):
+        seen["resolve"] = (tool, name, workspace, token)
+        return (dict(service, name=name), None) if service else (None, f"'{name}' was not found.")
+
+    def list_models(workspace, token, service_name, provider_type):
+        seen["listing"] = (service_name, provider_type)
+        return list(listed), listing_error
+
+    monkeypatch.setattr(copilot, "resolve_provider_service", resolve)
+    monkeypatch.setattr(copilot, "list_provider_service_models", list_models)
+    return seen
+
+
+MPS = "main.default.anthropic_mps"
+
+
+class TestProviderCatalog:
+    def test_uses_the_declared_targets(self, monkeypatch):
+        seen = _stub_provider_service(
+            monkeypatch,
+            {"provider_type": "anthropic", "targets": ["claude-sonnet-5", "claude-opus-5"]},
+        )
+
+        models = copilot.provider_service_catalog({"workspace": WS}, MPS, None)
+
+        assert [m.id for m in models] == ["claude-opus-5", "claude-sonnet-5"]
+        assert seen["resolve"] == ("copilot", MPS, WS, "dbx-token")
+        assert "anthropic_listing" not in seen
+
+    def test_allow_all_adds_the_gateway_listing_to_the_start_model(self, monkeypatch):
+        seen = _stub_provider_service(
+            monkeypatch,
+            {"provider_type": "amazon_bedrock", "targets": [], "allow_all_targets": True},
+            listed=["anthropic.claude-opus-4-8"],
+        )
+
+        models = copilot.provider_service_catalog(
+            {"workspace": WS}, MPS, "us.anthropic.claude-sonnet-4-6"
+        )
+
+        assert [m.id for m in models] == [
+            "anthropic.claude-opus-4-8",
+            "us.anthropic.claude-sonnet-4-6",
+        ]
+        assert seen["listing"] == (MPS, "amazon_bedrock")
+
+    def test_allow_all_openai_takes_a_provider_ref_as_the_start_model(self, monkeypatch):
+        seen = _stub_provider_service(
+            monkeypatch,
+            {"provider_type": "openai", "targets": [], "allow_all_targets": True},
+            listed=["gpt-5.5", "gpt-4o"],
+        )
+
+        models = copilot.provider_service_catalog({"workspace": WS}, MPS, "dbx-responses/gpt-5.5")
+
+        assert [(m.id, m.wire) for m in models] == [
+            ("gpt-5.5", "responses"),
+            ("gpt-4o", "completions"),
+        ]
+        assert seen["listing"] == (MPS, "openai")
+
+    def test_allow_all_starts_on_the_requested_model_when_listing_fails(self, monkeypatch, capsys):
+        _stub_provider_service(
+            monkeypatch,
+            {"provider_type": "openai", "targets": [], "allow_all_targets": True},
+            listing_error="HTTP 503 Service Unavailable",
+        )
+
+        models = copilot.provider_service_catalog({"workspace": WS}, MPS, "gpt-5.5")
+
+        assert [m.id for m in models] == ["gpt-5.5"]
+        assert "HTTP 503" in capsys.readouterr().out
+
+    def test_allow_all_without_a_start_model_registers_the_listing(self, monkeypatch):
+        _stub_provider_service(
+            monkeypatch,
+            {"provider_type": "anthropic", "targets": [], "allow_all_targets": True},
+            listed=["claude-opus-5", "claude-sonnet-5"],
+        )
+
+        models = copilot.provider_service_catalog({"workspace": WS}, MPS, None)
+
+        assert [m.id for m in models] == ["claude-opus-5", "claude-sonnet-5"]
+        assert copilot.launch_model({}, models, warn=False).id == "claude-sonnet-5"
+
+    def test_allow_all_with_an_empty_listing_asks_for_a_model(self, monkeypatch):
+        _stub_provider_service(
+            monkeypatch, {"provider_type": "anthropic", "targets": [], "allow_all_targets": True}
+        )
+
+        with pytest.raises(RuntimeError, match="has no models ug copilot can use.*--model"):
+            copilot.provider_service_catalog({"workspace": WS}, MPS, None)
+
+    def test_no_usable_model_lists_the_reasons(self, monkeypatch):
+        _stub_provider_service(
+            monkeypatch,
+            {
+                "provider_type": "openai",
+                "targets": ["text-embedding-3-large"],
+                "target_api_types": {"text-embedding-3-large": ("openai/v1/embeddings",)},
+            },
+        )
+
+        with pytest.raises(RuntimeError, match=r"text-embedding-3-large \(it isn't a chat model"):
+            copilot.provider_service_catalog({"workspace": WS}, MPS, None)
+
+    def test_warns_about_skipped_models(self, monkeypatch, capsys):
+        _stub_provider_service(
+            monkeypatch,
+            {
+                "provider_type": "openai",
+                "targets": ["gpt-5.5", "text-embedding-3-large"],
+                "target_api_types": {"text-embedding-3-large": ("openai/v1/embeddings",)},
+            },
+        )
+
+        copilot.provider_service_catalog({"workspace": WS}, MPS, None)
+
+        assert "text-embedding-3-large" in capsys.readouterr().out
+
+    def test_invalid_service_raises_its_error(self, monkeypatch):
+        _stub_provider_service(monkeypatch, None)
+
+        with pytest.raises(RuntimeError, match="was not found"):
+            copilot.provider_service_catalog({"workspace": WS}, MPS, None)
+
+
+def _stub_location(monkeypatch, model_ids, error=None):
+    monkeypatch.setattr(copilot, "launch_token", lambda state, workspace, **_: "dbx-token")
+    seen = {}
+
+    def anthropic_catalog(workspace, token, *, parent_schema):
+        seen["parent_schema"] = parent_schema
+        return AnthropicModelCatalog(
+            model_ids=list(model_ids), model_id_to_display_name={}, error_msg=error
+        )
+
+    monkeypatch.setattr(copilot, "list_anthropic_model_catalog", anthropic_catalog)
+    return seen
+
+
+class TestLocationCatalog:
+    def test_registers_the_schemas_services_by_full_name(self, monkeypatch):
+        seen = _stub_location(
+            monkeypatch,
+            [
+                "anthropic-aigw-1a2b3c4d-main.ucode.claude_haiku",
+                "main.ucode.claude-sonnet-4-6",
+                "anthropic-aigw-0f0f0f0f-main.ucode.gpt-5-6-luna",
+                "main.ucode.claude-opus-4-1",
+            ],
+        )
+
+        models = copilot.location_catalog({"workspace": WS}, "main.ucode")
+
+        assert [(m.id, m.wire) for m in models] == [
+            ("main.ucode.claude-sonnet-4-6", "anthropic"),
+            ("main.ucode.claude_haiku", "anthropic"),
+            ("main.ucode.gpt-5-6-luna", "responses"),
+        ]
+        assert seen["parent_schema"] == "main.ucode"
+
+    def test_an_empty_schema_says_so(self, monkeypatch):
+        _stub_location(monkeypatch, [], error="AI Gateway returned no Anthropic model ids")
+
+        with pytest.raises(RuntimeError, match="no model services to use in main.ucode"):
+            copilot.location_catalog({"workspace": WS}, "main.ucode")
 
 
 class TestCopilotModelLimits:
@@ -378,6 +658,57 @@ class TestRenderProvidersConfig:
                 "maxOutputTokens": 128_000,
             },
             {"id": GPT, "provider": "dbx-responses", "wireModel": GPT, "name": GPT},
+        ]
+
+    def test_provider_service_routes_every_provider_by_header(self):
+        claude, _ = provider_models(["claude-sonnet-4-6"], "anthropic")
+        gpt, _ = provider_models(["gpt-5.5", "gpt-4o"], "openai")
+
+        config = copilot.render_providers_config(
+            claude + gpt, PROXY, "secret", provider_service=MPS
+        )
+
+        assert config["providers"] == [
+            {
+                "name": "dbx-anthropic",
+                "type": "anthropic",
+                "baseUrl": f"{PROXY}/ai-gateway/anthropic",
+                "bearerToken": "secret",
+                "headers": {"Databricks-Model-Provider-Service": MPS},
+            },
+            {
+                "name": "dbx-responses",
+                "type": "openai",
+                "wireApi": "responses",
+                "baseUrl": f"{PROXY}/ai-gateway/openai/v1",
+                "bearerToken": "secret",
+                "headers": {"Databricks-Model-Provider-Service": MPS},
+            },
+            {
+                "name": "dbx-completions",
+                "type": "openai",
+                "wireApi": "completions",
+                "baseUrl": f"{PROXY}/ai-gateway/openai/v1",
+                "bearerToken": "secret",
+                "headers": {"Databricks-Model-Provider-Service": MPS},
+            },
+        ]
+
+    def test_provider_service_claude_keeps_its_id_with_200k_limits(self):
+        claude, _ = provider_models(["claude-sonnet-4-6"], "anthropic")
+
+        config = copilot.render_providers_config(claude, PROXY, "secret", provider_service=MPS)
+
+        assert config["models"] == [
+            {
+                "id": "claude-sonnet-4-6",
+                "provider": "dbx-anthropic",
+                "wireModel": "claude-sonnet-4-6",
+                "name": "claude-sonnet-4-6",
+                "modelId": "claude-sonnet-4.6",
+                "maxPromptTokens": 168_000,
+                "maxOutputTokens": 32_000,
+            }
         ]
 
 
@@ -672,7 +1003,7 @@ class TestProxyHeaders:
 
         headers = copilot.proxy_headers({})
 
-        assert headers["User-Agent"] == "ucode/0.9.0 copilot/1.0.91"
+        assert headers["User-Agent"] == f"ucode/0.9.0 copilot/1.0.91 {client_platform()}"
 
     def test_adds_request_tags(self, monkeypatch):
         monkeypatch.setattr(copilot, "agent_version", lambda binary: "1")
@@ -894,6 +1225,59 @@ class TestLaunch:
         assert not os.path.exists(seen["registry"])
         with pytest.raises(httpx.ConnectError):
             httpx.post(f"{seen['base']}/v1/messages", content=b"{}", timeout=10)
+
+    def test_provider_service_launch_registers_its_models(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        seen = _stub_launch(monkeypatch)
+        _stub_provider_service(
+            monkeypatch,
+            {"provider_type": "anthropic", "targets": ["claude-opus-5", "claude-sonnet-5"]},
+        )
+        state = dict(STATE, copilot_static_models=[GPT])
+        state[copilot.LAUNCH_PROVIDER_SERVICE_KEY] = MPS
+
+        with pytest.raises(SystemExit):
+            copilot.launch(state, [], options=copilot.LaunchOptions())
+
+        registry = seen["registry"]
+        assert [m["id"] for m in registry["models"]] == ["claude-opus-5", "claude-sonnet-5"]
+        assert registry["providers"][0]["headers"] == {"Databricks-Model-Provider-Service": MPS}
+        assert seen["env"]["COPILOT_MODEL"] == "dbx-anthropic/claude-sonnet-5"
+        assert copilot.LAUNCH_PROVIDER_SERVICE_KEY not in state
+
+    def test_model_location_launch_registers_the_schemas_services(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        seen = _stub_launch(monkeypatch)
+        _stub_location(monkeypatch, ["main.ucode.claude-sonnet-4-6", "main.ucode.claude_haiku"])
+        state = dict(STATE, copilot_static_models=[GPT])
+        state[copilot.LAUNCH_MODEL_LOCATION_KEY] = "main.ucode"
+
+        with pytest.raises(SystemExit):
+            copilot.launch(state, [], options=copilot.LaunchOptions())
+
+        registry = seen["registry"]
+        assert [m["id"] for m in registry["models"]] == [
+            "main.ucode.claude-sonnet-4-6",
+            "main.ucode.claude_haiku",
+        ]
+        assert "headers" not in registry["providers"][0]
+        assert registry["models"][0]["maxPromptTokens"] == 168_000
+        assert seen["env"]["COPILOT_MODEL"] == "dbx-anthropic/main.ucode.claude-sonnet-4-6"
+        assert copilot.LAUNCH_MODEL_LOCATION_KEY not in state
+
+    def test_provider_service_launch_rejects_a_model_it_does_not_serve(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        seen = _stub_launch(monkeypatch)
+        _stub_provider_service(
+            monkeypatch, {"provider_type": "anthropic", "targets": ["claude-opus-5"]}
+        )
+        state = dict(STATE)
+        state[copilot.LAUNCH_PROVIDER_SERVICE_KEY] = MPS
+
+        with pytest.raises(RuntimeError, match="claude-opus-5"):
+            copilot.launch(state, ["--model", SONNET], options=copilot.LaunchOptions())
+
+        assert "argv" not in seen
 
     def test_no_model_is_a_launch_error(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)

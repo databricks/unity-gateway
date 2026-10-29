@@ -5,7 +5,7 @@ import re
 import uuid
 from pathlib import Path
 
-from .agents import _evidence_id, claude, codex, copilot
+from .agents import _evidence_id, antigravity, claude, codex, copilot
 
 _AGENT_HELPERS = {"claude": claude, "codex": codex, "copilot": copilot}
 
@@ -196,11 +196,15 @@ class FileTask:
         )
 
     def completed(self, session, agent: str, *, child: bool = False) -> bool:
+        if agent == "antigravity":
+            # Antigravity keeps conversations in SQLite, not JSONL, and has no child sessions.
+            return not child and antigravity.answer_contains(session, self.value)
         return assistant_answer_contains(session, agent, self.value, child=child)
 
     def assert_completed(self, session, agent: str, *, child: bool = False) -> None:
-        sessions = agent_sessions(session, agent)
-        session.record("agent-sessions.json", sessions)
+        if agent != "antigravity":
+            sessions = agent_sessions(session, agent)
+            session.record("agent-sessions.json", sessions)
         assert self.completed(session, agent, child=child), (
             f"No {'child' if child else 'parent'} assistant answer contained the file's value; "
             "echoed prompts and tool results do not count as completed answers."
@@ -250,6 +254,17 @@ class FileTask:
                 if row.get("type") == "text"
             )
             assert self.value in answer, result.stdout
+        elif agent == "antigravity":
+            assert result.returncode == 0, result.stdout
+            events = antigravity.stream_events(result.stdout)
+            # The read must target the fixture file, not some other path.
+            reads = antigravity.completed_tools(events, "read_file")
+            assert any(
+                str((read.get("parameters") or {}).get("Path", "")).endswith(self.filename)
+                for read in reads
+            ), result.stdout
+            # The final answer, not the tool output that echoes the file.
+            assert self.value in antigravity.final_response(events), result.stdout
         elif agent == "copilot":
             assert result.returncode == 0, result.stdout
             assert any(row.get("type") == "assistant.turn_end" for row in payloads), result.stdout

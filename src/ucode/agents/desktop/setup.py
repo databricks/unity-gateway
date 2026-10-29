@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sys
 
 from ucode.agents.desktop.claude import (
@@ -66,8 +67,12 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
         raise RuntimeError("Claude Desktop profile configuration is unavailable on this platform.")
     if sys.platform != "darwin" and not directory.parent.is_dir():
         raise RuntimeError("Open Claude Desktop once, then run ug configure again.")
-    if state.get("claude_relayed"):
-        raise RuntimeError("Anthropic subscription relay is not supported for Desktop yet.")
+    relayed = bool(state.get("claude_relayed"))
+    claude_binary = None
+    if relayed:
+        claude_binary = shutil.which("claude")
+        if not claude_binary or not os.path.isabs(claude_binary):
+            raise RuntimeError("Install Claude Code before configuring subscription relay.")
     if state.get("custom_oauth") or state.get("use_pat"):
         raise RuntimeError("Desktop currently requires a Databricks CLI OAuth profile.")
     workspace = state.get("workspace")
@@ -125,6 +130,7 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
             workspace,
             "--profile",
             profile,
+            *(["--relay", "--claude-binary", claude_binary] if claude_binary else []),
         ],
         custom_headers=headers,
         otel_endpoint=(

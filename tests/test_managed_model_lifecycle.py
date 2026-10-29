@@ -332,3 +332,76 @@ def test_codex_model_source_mode_lifecycle(harness):
 
     harness.apply_codex(None)
     assert harness.codex_listed() == []
+
+
+def test_claude_configure_and_plain_launch_write_identical_files(harness, monkeypatch):
+    """Both paths build their managed inputs with `managed_model_inputs`, so a plain launch after
+    `ug configure` rewrites neither file; a launch-only model never reaches them."""
+    base = {"workspace": WS, "codex_models": [], "claude_models": dict(DISCOVERED_CLAUDE)}
+    managed = normalize_managed_config(CLAUDE_CONFIG_A)
+    state = resolve_state(managed, base, "claude")
+
+    def write(inputs=None):
+        # `ug configure` asks the writer to derive the inputs; a launch passes the helper's.
+        kwargs = (
+            {"derive_managed_model_inputs": True}
+            if inputs is None
+            else {
+                "route_root_model": inputs.route_root_model,
+                "coding_agent_config_defaults": inputs.coding_agent_config_defaults,
+                "picker_catalog": inputs.picker_catalog,
+            }
+        )
+        claude.write_tool_config(state, None, **kwargs)
+        private, managed_file = harness.claude_files()
+        return json.dumps(private, sort_keys=True), json.dumps(managed_file, sort_keys=True)
+
+    # Real manifest for configure's own derivation.
+    monkeypatch.setattr(
+        claude,
+        "refresh_managed_config",
+        lambda _state: managed_config.ManagedConfigResult(managed, False),
+    )
+    configured = write()
+    launched = write(claude.managed_model_inputs(state, managed))
+
+    assert configured == launched
+    managed_env = json.loads(configured[1])["env"]
+    assert managed_env["ANTHROPIC_MODEL"] == CLAUDE_A[0]
+    assert managed_env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == CLAUDE_A[0] + "[1m]"
+    assert managed_env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == CLAUDE_A[2]
+    # The user file keeps the family defaults too, next to the pinned root model.
+    user_env = json.loads(configured[0])["env"]
+    assert user_env["ANTHROPIC_MODEL"] == CLAUDE_A[0]
+    assert user_env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == CLAUDE_A[0] + "[1m]"
+    assert user_env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == CLAUDE_A[1] + "[1m]"
+    assert user_env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == CLAUDE_A[2]
+
+
+def test_managed_model_inputs_ignore_per_launch_choices():
+    managed = normalize_managed_config(CLAUDE_CONFIG_A)
+    inputs = claude.managed_model_inputs({"workspace": WS}, managed)
+    assert inputs.route_root_model == CLAUDE_A[0]
+    assert inputs.coding_agent_config_defaults == managed_claude_family_models(managed)
+    assert inputs.picker_catalog is not None
+    assert claude.managed_model_inputs({"workspace": WS}, None) == claude.ManagedModelInputs(
+        {}, None, None
+    )
+
+
+def test_claude_writer_without_inputs_or_derive_flag_pins_no_model(harness, monkeypatch):
+    """Omitting the inputs never silently pins ANTHROPIC_MODEL; configure must opt in."""
+    base = {"workspace": WS, "codex_models": [], "claude_models": dict(DISCOVERED_CLAUDE)}
+    managed = normalize_managed_config(CLAUDE_CONFIG_A)
+    state = resolve_state(managed, base, "claude")
+    monkeypatch.setattr(
+        claude,
+        "refresh_managed_config",
+        lambda _state: managed_config.ManagedConfigResult(managed, False),
+    )
+
+    claude.write_tool_config(state, None)
+
+    private, managed_file = harness.claude_files()
+    assert "ANTHROPIC_MODEL" not in private.get("env", {})
+    assert "ANTHROPIC_MODEL" not in managed_file.get("env", {})

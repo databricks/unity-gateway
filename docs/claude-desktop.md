@@ -13,6 +13,8 @@ headers as Claude Code. There is no separate Desktop checkbox or managed field.
 - A named Databricks CLI OAuth profile with gateway/model access. A bearer token
   alone is not enough for Desktop's credential helper.
 - At least one Claude-named model in the configured static list or gateway catalog.
+- For an Anthropic subscription relay, Claude Code installed and signed in on the
+  same OS user account.
 
 Quit Claude Desktop, configure Claude Code, then reopen Desktop normally:
 
@@ -28,29 +30,149 @@ launches and `ug agents add` do not configure Desktop.
 ## Cowork workspace skills and MCP servers
 
 Whenever Claude is configured, `ug configure` also installs a generated
-`unity-gateway@unity-gateway-cowork` plugin into that account's Cowork scope. This applies
+`ug@unity-gateway-cowork` plugin into that account's Cowork scope. This applies
 to managed and unmanaged workspaces. Start one Cowork session before configuring so Desktop
 creates its active account/organization directory. If several Cowork profiles exist and UG
 cannot identify one active profile, setup warns without changing any of them.
 
-The plugin contains the current workspace's Claude-targeted MCP servers. In a managed
-workspace, that includes both user-selected and managed MCP servers, plus managed skills.
-In an unmanaged workspace, it includes user-selected MCP servers. User, project, unmanaged
-Databricks AI Tools, and other-workspace skills are not copied. `ug configure --mcp`,
-`ug mcp add`, and `ug mcp remove` resync the plugin. MCP entries run the absolute
+The plugin contains the current workspace's Claude-targeted MCP servers and downloaded
+user-level skills, plus any managed MCP servers and skills. Add skills with `ug skills add`
+(picker, `--names`, or `--location`); omit `--path` to make them available in Cowork.
+Project-level, user-authored, unmanaged Databricks AI Tools, and other-workspace skills
+are not copied. `ug configure --mcp`, `ug mcp add`, and `ug mcp remove` resync the plugin,
+as do downloaded skill additions and removals. Start a new Cowork session
+to use the updated skills. MCP entries run the absolute
 `ug mcp-proxy` executable with the selected workspace and CLI profile; no bearer token is
 stored in the plugin. Saved PAT mode is supported. Custom OAuth is not yet supported for
 Cowork MCP servers.
+
+The plugin's name and display name are `ug`, shortening the connector prefix to
+`ug plugin:`. Reconfigure installs the new plugin before uninstalling the old
+`unity-gateway@unity-gateway-cowork` registration, if present. This also changes
+the tool namespace from `mcp__plugin_unity-gateway_...` to `mcp__plugin_ug_...`.
+
+Cowork shortens generated UC connector names, for example `system-ai-slack` becomes
+`slack`. If service names collide, aliases include their catalog/schema, such as
+`slack-system-ai` and `slack-main-team`; numeric suffixes avoid conflicts with custom
+names. Custom registration names and full proxy URLs are preserved. Reconfigure and
+start a new Cowork session to refresh connector and tool names.
 
 UG owns these local files:
 
 - Generated marketplace: `~/.ucode/claude-cowork-marketplace`
 - Selected Cowork root record: `~/.ucode/claude-cowork.json`
 
-Start a new Cowork session after configure. Plugin MCP servers connect asynchronously and
-may take a few seconds to appear, so a tool can be absent on the first model turn. Deferred
-tool search or a retry after another tool call should find it. The resulting tool name follows
-Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern.
+Start a new Cowork session after configure. Plugin MCP servers connect asynchronously, so
+a tool can be absent on the first model turn. Cowork may also disconnect idle sessions
+(observed after five minutes) and initialize connectors again on resume. The resulting tool
+name follows Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern.
+
+When the plugin has MCP servers, UG adds two things so Claude uses them on the first turn:
+
+- Hooks running `ug cowork-hook`. They cannot make Cowork connect its own MCP servers
+  sooner, and they never open a browser or block the prompt.
+  - On `SessionStart`, the hook refreshes the profile's Databricks token, sends each upstream
+    MCP server an `initialize` and `tools/list` (15 seconds total), and tells Claude which
+    connectors exist. It does not report which ones answered, because that goes stale after
+    the first turn. If a probe gets a sign-in error (`-32006`, `-32042`, or HTTP 401), the
+    note adds a timestamped line telling Claude to call that connector's `authenticate` tool.
+  - On `UserPromptSubmit`, the hook reads the session transcript. If Claude's last reply was
+    under 3 minutes ago, it does nothing. After a longer idle gap it probes every connector
+    (10 seconds total) and tells Claude that earlier "MCP servers disconnected" notices may
+    be stale, which connectors answered or needed sign-in, and to check current tools before
+    calling one unavailable.
+- A `unity-gateway-connectors` skill. On every connector request, including after a break,
+  Claude checks the tools exposed now and calls a relevant one. If only `authenticate`
+  appears, it signs in. If tools are missing or `pending`, it actually waits 5 seconds
+  (shell `sleep 5` or an exposed wait tool) and rechecks, at most twice, then reports that
+  the tools are not exposed without guessing a cause. It acts in the same turn instead of
+  asking whether to check or promising to retry.
+
+Native Cowork execution of these hooks still needs Desktop validation.
+
+Connection-status notices can become stale. The skill directs Claude to rediscover tools and
+try a relevant discovered tool before reporting a configured connector disconnected or unavailable.
+It must base availability claims on observed discovery results or tool errors, rather than a
+status reminder alone. If no callable tools are exposed after these checks, it reports that
+the connector's tools are not exposed in this session, without inventing a disconnect,
+reconnection, or authentication diagnosis.
+
+The opt-in `tests/connector_behavior/` suite sends the generated skill to a real Claude model
+with synthetic Slack tools. It checks a stale disconnect notice with tools already available,
+tools appearing after an actual wait, and tools remaining absent through both waits.
+The first two cases run both with only the skill description initially visible and with the
+skill loaded before the break. These tests measure model compliance; they do not exercise
+Desktop's native tool exposure, sleep/resume, or proxy transport recovery. See
+`tests/README.md` for the explicit workspace, profile, and model inputs.
+
+The skill distinguishes configured connectors from authenticated connections. It directs
+Claude to check exposed tools and use supported discovery actions before calling them, using
+only the exact names exposed or returned. It forbids guessing tool names, repeating an unavailable
+call, authenticating another connector, or spawning a subagent solely to make tools appear.
+If no supported wait action exists, or tools remain absent after the bounded wait, Claude
+reports that limitation without inventing its cause.
+If discovery exposes only `authenticate`, Claude should call that discovered tool, rediscover after
+sign-in, and retry the original request in the same turn without asking for another message.
+An unavailable tool name and permission denials alone do not establish an authentication failure.
+When access is denied and an authentication tool is available, the guidance directs Claude
+to attempt sign-in once before recommending administrator or network changes. This includes
+IP-address denials: in a reported Atlassian session, the same Jira query succeeded after
+fresh sign-in despite that error. If the denial persists after sign-in and retry, Claude
+must report the original error and stop retrying authentication. This guidance does not
+reclassify upstream permission/network errors or validate their root cause.
+
+For OAuth U2M services, the proxy keeps a local `authenticate` tool alongside the service's
+normal tools, including after successful login. Calling it starts a fresh login even if an
+earlier login succeeded in the same session. Discovery checks service metadata without
+opening a browser or waiting for an interactive login already in progress. Service metadata
+is looked up again on each discovery or authentication error, so failed requests can recover
+on the next operation.
+PAT and non-U2M services do not gain this action, and an upstream tool
+named `authenticate` keeps its own behavior. Discovery auth errors (`-32006`) and login-URL
+challenges (`-32042`) expose recovery, including after earlier login success. Login challenges
+must target `/mcp-service-login` on the configured workspace with this service's exact name;
+mixed challenges containing policy approval retain their upstream responses.
+
+A tool call that returns such a login challenge, or a failed tool result containing that
+service-scoped sign-in URL, triggers the existing browser-login flow and replays the original
+call once. This handles Gmail/Calendar errors that otherwise tell Claude to show a link and
+wait for the user. Automatic login is still limited to one attempt per proxy session, and
+requires confirmed U2M metadata. Canceled or failed login and persistent errors are returned
+to the client. Successful results, ordinary errors, and other URLs do not trigger this path.
+
+Only an actual `tools/call` returning HTTP 401 can trigger connector login. Initialization,
+tool discovery, notifications, and background HTTP requests never start connector sign-in;
+persistent HTTP errors remain errors. PAT mode does not open connector login.
+Databricks workspace login through the Desktop credential helper is separate from connector
+login: restoring the workspace session must not sign in unrelated connectors.
+
+The skill provides guidance; native recovery still depends on Claude discovering and using
+the action when automatic recovery is unavailable. The proxy does not infer expired credentials
+from generic error wording.
+
+Connector sign-in opens the workspace's MCP service sign-in page. Sign in with the same
+Databricks account as the selected CLI profile, then complete the provider flow. The proxy
+checks that profile user's credential for up to five minutes and retries the original request
+when it is active. Browser launch alone does not establish success. If the browser or provider
+popup does not open, follow the URL in the MCP server log and click Login. On timeout, complete
+sign-in and retry authentication in the agent. This flow does not run CLI `auth login --resource`
+or replace the workspace session.
+
+To validate recovery in native Cowork, start a fresh task with a connector that needs sign-in.
+Request a real operation and confirm Claude discovers the sign-in action, prompts for browser
+authentication, refreshes the tools, and completes the original operation without another user
+message. Repeat after credential expiry and with canceled sign-in. Record the UG/Desktop
+versions, configured proxy executable, and redacted discovery/tool errors for failures; exclude
+tokens and private tool results. Generated-plugin component tests do not validate this flow.
+Also test Gmail and Google Calendar with missing connection credentials: request mail or today's
+events and confirm the browser opens and the original operation finishes without a second message.
+To check workspace-login isolation, log out of the configured Databricks CLI session, start a
+new Cowork task, and send an unrelated prompt such as "What is 2 + 2?". The credential helper
+may restore Databricks sign-in, but no Atlassian or other connector login should open. Then
+request Jira issues and verify that connector sign-in opens only if that operation needs it.
+After sleep/wake or a connection-status notice, request another connector operation. Verify
+Claude rediscovers the tools and tries a relevant call before claiming the connector is unavailable.
+
 
 Cowork plugin support can still be disabled by Anthropic account feature flags or managed
 Desktop policy. UG treats installation as best-effort: failure warns but does not fail Claude
@@ -93,6 +215,17 @@ If authentication is missing, it opens browser login only when Desktop supplies
 `CLAUDE_HELPER_CONTEXT=interactive`. Other contexts fail with instructions to start
 a new Cowork task. Browser login has a bounded timeout and concurrent sign-ins are
 serialized. If the original message failed during login, resend it.
+
+For an Anthropic subscription relay, the same helper returns the Claude subscription
+token as Desktop's bearer token and the Databricks token in
+`X-Databricks-AI-Gateway-Token`. On macOS it reads the Claude credential from Keychain.
+On Linux and Windows it reads `.claude/.credentials.json` from the user's home directory,
+or `.credentials.json` under `CLAUDE_CONFIG_DIR` when set; macOS selects the matching custom
+Keychain entry. An expired or soon-to-expire token first runs `claude auth status --json` so
+Claude Code can use its refresh token without opening a browser. If silent refresh does not
+produce a valid token, browser login remains limited to an interactive helper context. Claude
+refresh and login share the helper time budget and lock. The profile stores neither credential,
+and no proxy or background service is needed.
 
 ## OpenTelemetry tracing
 
@@ -179,7 +312,8 @@ otherwise it clears the selection. A later selection of another profile is prese
 Only this previous-selection ID is saved in `~/.ucode/claude-desktop.json`.
 Repeated configure retains it while UG remains selected.
 
-Revert also uninstalls `unity-gateway@unity-gateway-cowork`, removes its marketplace
+Revert also uninstalls `ug@unity-gateway-cowork` and any legacy
+`unity-gateway@unity-gateway-cowork` registration, removes their marketplace
 registration, and deletes UG's generated marketplace. This removes the MCP connectors and
 skills delivered by that plugin. It also cleans up an exact UG registration left in another
 Cowork profile by an older failed revert. Unrelated Desktop plugins, connectors, and skills are
@@ -228,11 +362,13 @@ orchestration; they do not prove GUI inference on every app version.
   not remove this client restriction. UG filters Desktop's catalog to Claude-named
   models without renaming them; that name filter does not reproduce every native
   validation rule.
-- Anthropic subscription relay, custom OAuth/PAT profiles, Desktop Smart Routing,
-  and third-party connectors outside UG's generated Cowork plugin are not implemented here.
-  Cowork's MCP proxy supports saved PAT mode but not custom OAuth. Native OTEL settings are
-  generated, but native export and ingestion remain unverified; session auth limits are
-  described above.
+- Custom OAuth/PAT profiles, Desktop Smart Routing, and third-party connectors outside
+  UG's generated Cowork plugin are not implemented here. Cowork's MCP proxy supports saved
+  PAT mode but not custom OAuth. Native OTEL settings are generated, but native export and
+  ingestion remain unverified; session auth limits are described above.
+- Anthropic subscription relay has native macOS proof-of-concept validation. Windows and
+  Linux credential-file handling has component coverage, but native Desktop login, refresh,
+  and inference remain rollout gates.
 - Observed inference applies to Cowork. Ordinary Chat is not claimed to use the
   same gateway path.
 
@@ -241,3 +377,25 @@ profile after restart, completes a gateway task, refreshes credentials silently,
 opens browser login when interactive recovery is needed, and preserves unrelated
 settings through repeat configure and revert. Run these checks on the supported
 app version and packaging used by your organization.
+
+Browser connector recovery requires the workspace's `/mcp-service-login` page and
+`/api/2.1/unity-catalog/mcp-services/<service>/user-credentials` API. A credential already
+marked ACTIVE before login must change (for example its expiry metadata), or leave ACTIVE
+and return, before UG confirms reauthentication. PROVISIONING, UPDATING, and DELETING
+continue polling. Missing services fail before launching a browser; a credential 404
+means the selected user has not signed in yet and continues polling until the timeout.
+
+The generated connector skill keeps its discovery description within 1,024 characters;
+the body lists every configured connector and carries sign-in recovery instructions.
+Service metadata is looked up when needed, without caching or a retry cooldown.
+Slow metadata discovery does not delay unrelated MCP responses.
+
+Two automated Desktop journeys run in the existing Linux/Windows Claude integration jobs:
+system.ai models and subscription-relay MPS. Each asserts the generated profile, executes its
+credential helper, completes real Messages inference, installs Cowork through the Claude CLI,
+and discovers/calls DBSQL through the installed plugin using a read-only computed query.
+Both check repeated configuration, preservation of unrelated settings, and revert cleanup.
+All calls use the journey's existing model workspace. CUJ1 and CUJ2 compare complete Desktop
+profile/metadata JSON for system.ai models and non-relay Anthropic MPS. CUJ3's existing configure
+journey checks that its incompatible scoped aliases preserve all Desktop profile/metadata bytes.
+These checks do not launch Desktop or validate native OAuth consent, skill use, or app reconnects.

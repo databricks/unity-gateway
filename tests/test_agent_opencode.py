@@ -10,6 +10,7 @@ import pytest
 
 from ucode.agents import opencode
 from ucode.agents.args import LaunchOptions
+from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
 
@@ -239,7 +240,7 @@ class TestRenderOverlay:
         model_headers = overlay["provider"]["databricks-anthropic"]["models"]["claude-sonnet"][
             "headers"
         ]
-        assert model_headers["User-Agent"] == "ucode/0.1.0 opencode/0.74.0"
+        assert model_headers["User-Agent"] == f"ucode/0.1.0 opencode/0.74.0 {client_platform()}"
 
     def test_user_agent_header_gemini(self, monkeypatch):
         monkeypatch.setattr(opencode, "ug_version", lambda: "0.1.0")
@@ -247,7 +248,7 @@ class TestRenderOverlay:
         models = {"gemini": ["gemini-2"]}
         overlay, _ = opencode.render_overlay("gemini-2", "tok", _base_urls(), models)
         model_headers = overlay["provider"]["databricks-google"]["models"]["gemini-2"]["headers"]
-        assert model_headers["User-Agent"] == "ucode/0.1.0 opencode/0.74.0"
+        assert model_headers["User-Agent"] == f"ucode/0.1.0 opencode/0.74.0 {client_platform()}"
 
     def test_provider_level_headers_only_authorization(self, monkeypatch):
         # Sanity: provider-level headers should NOT include User-Agent (since
