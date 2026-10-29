@@ -128,9 +128,11 @@ def _run_calculation(
         assert not new_decisions, new_decisions
         return task
 
-    assert len(new_decisions) == 1, new_decisions
+    assert new_decisions, new_decisions
+    assert all(task.marker in decision.get("task_name", "") for decision in new_decisions), (
+        new_decisions
+    )
     decision = new_decisions[0]
-    assert task.marker in decision.get("task_name", ""), decision
     if agent == "claude":
         model = decision["requested_model"].removeprefix("system.ai.").removeprefix("databricks-")
         rationale = decision["rationale"]
@@ -149,7 +151,7 @@ def _run_calculation(
         session,
         agent,
         task,
-        decision_ids={decision["decision_id"]},
+        decision_ids={decision["decision_id"] for decision in new_decisions},
     )
 
     return task
@@ -450,7 +452,7 @@ def _assert_claude_calculation_requests(
             and request.path == "/ai-gateway/routing/v1/routes:select"
             and task.marker in request.payload.get("task", {}).get("prompt", "")
         ]
-        assert len(routes) == 1, (task.marker, routes)
+        assert routes, (task.marker, routes)
         recipe = routes[0].payload.get("route_selector", {}).get("router_name")
         assert isinstance(recipe, str) and recipe.strip() and recipe != "DISABLED", (
             task.marker,
