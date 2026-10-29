@@ -3,17 +3,23 @@
 Deploying coding agents through the Databricks AI Gateway to a fleet of macs has
 two independent layers. Keep them separate.
 
-## Layer 1 — provisioning (`jamf-provision.sh`)
+## Layer 1 — provisioning
 
-A JAMF policy script, run as root on each machine. It installs `ug` (with its own Python), the
-Databricks CLI, Claude Code and Codex under `/usr/local`, where every user can run them, then runs
-`ug configure` as root, which installs the workspace policy at
-`/etc/unitygateway/managed-settings.json`. Developers then launch with
+| Platform | Script | Setup guide |
+| --- | --- | --- |
+| macOS | `macos-provision.sh` | [macos-setup.md](macos-setup.md) |
+
+Linux and Windows scripts will follow.
+
+On macOS, `macos-provision.sh` is an MDM policy script (written for JAMF), run as root on each
+machine. It installs `ug` (with its own Python), the Databricks CLI, Claude Code and Codex under
+`/usr/local`, where every user can run them, then runs `ug configure` as root, which installs the
+workspace policy at `/etc/unitygateway/managed-settings.json`. Developers then launch with
 `UG_SKIP_OS_SETTINGS=1 ug claude`: no sudo, and inference uses their own OAuth.
 
 The script authenticates `ug configure` with a short-lived service-principal token. The service
 principal's credentials reach each Mac in a package that installs them readable only by root, and
-no token is written to disk. See [jamf-setup.md](jamf-setup.md) for the full setup.
+no token is written to disk. See [macos-setup.md](macos-setup.md) for the full setup.
 
 ## Layer 2 — enforcement (config profiles in this directory)
 

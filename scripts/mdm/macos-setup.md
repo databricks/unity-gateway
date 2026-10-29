@@ -1,6 +1,10 @@
-# Set up Unity Gateway with Jamf for developers without admin rights
+# Set up Unity Gateway on Macs with an MDM, for developers without admin rights
 
-This guide installs `ug`, the Databricks CLI, Claude Code and Codex on managed Macs, and installs
+This guide is for macOS. Its steps use Jamf Pro; other macOS MDMs need the same pieces (a package,
+and a script that runs as root with the workspace URL as its fourth argument). Linux and Windows
+setups will follow separately.
+
+The setup installs `ug`, the Databricks CLI, Claude Code and Codex on managed Macs, and installs
 your workspace's coding-agent policy machine-wide. Developers then run coding agents through Unity
 Gateway without sudo, signing in with their own Databricks account.
 
@@ -11,7 +15,7 @@ credentials reach each Mac in a package that installs them readable only by root
 
 1. A Jamf policy installs a credentials package, which puts the service principal's client id and
    secret in `/Library/Application Support/UnityGateway/provision.env` (owner root, mode 600).
-2. The same policy runs `jamf-provision.sh` as root. It installs the tools under `/usr/local`,
+2. The same policy runs `macos-provision.sh` as root. It installs the tools under `/usr/local`,
    exchanges the credentials for a short-lived token, and runs `ug configure`, which installs the
    workspace policy at `/etc/unitygateway/managed-settings.json`.
 3. Developers launch with `UG_SKIP_OS_SETTINGS=1 ug claude` (or `ug codex`). The launch reads the
@@ -94,8 +98,8 @@ rm -rf creds
 ## 4. Add the script
 
 1. Go to **Settings → Computer Management → Scripts → New** and name it `Unity Gateway provision`.
-2. On the **Script** tab, paste `jamf-provision.sh`. Copy it from the file (for example
-   `pbcopy < jamf-provision.sh`) rather than from a browser or chat, which can drop text from long
+2. On the **Script** tab, paste `macos-provision.sh`. Copy it from the file (for example
+   `pbcopy < macos-provision.sh`) rather than from a browser or chat, which can drop text from long
    lines.
 3. On the **Options** tab, label **Parameter 4** `Workspace URL`.
 4. Save.
