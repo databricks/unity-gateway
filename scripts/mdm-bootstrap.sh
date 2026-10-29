@@ -85,7 +85,7 @@ set -euo pipefail
 # ── configuration ────────────────────────────────────────────────────────────
 
 UG_INSTALL_SPEC="${UG_INSTALL_SPEC:-git+https://github.com/databricks/unity-gateway}"
-UG_NODE_VERSION="${UG_NODE_VERSION:-22.14.0}" # current LTS; overridable
+UG_NODE_VERSION="${UG_NODE_VERSION:-22.23.4}" # current LTS; overridable
 UG_AGENTS="${UG_AGENTS:-}"
 UG_SKIP_PROBE="${UG_SKIP_PROBE:-}"
 
