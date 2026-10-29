@@ -17,6 +17,7 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Unit/component | Existing `test_*.py` files | Individual behavior; dependencies may be mocked |
 | Dedicated-workspace CUJ | `e2e_cuj/test_*.py` | Real user journeys against read-only, preconfigured workspaces |
 | Existing e2e | `test_e2e*.py` | Real workspace behavior with some patched setup/internal calls |
+| Connector skill behavior | `connector_behavior/test_*.py` | Real Claude decisions with generated guidance and synthetic connector tools |
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
@@ -243,9 +244,25 @@ cover Desktop token-only stdout, explicit workspace/profile arguments, interacti
 browser recovery, bounded login/lock waits, cancellation, and lock contention.
 Recovery regressions check token recheck before browser login, lock release after
 success/failure, one shared deadline, and network/CLI failures at each recovery stage.
-Proxy bridge coverage also checks that unauthenticated tool discovery exposes a temporary
-authentication tool, advertises dynamic tool-list changes, refreshes the real tools after login,
-and tells the model to retry the original request in the same turn.
+Proxy bridge coverage checks that OAuth U2M discovery retains an authentication action
+alongside normal tools, without opening a browser. It covers per-request metadata lookup,
+recovery on the next operation after a failed lookup, PAT/non-U2M exclusion, pagination,
+upstream name collisions, and result/transport metadata preservation. If upstream removes its authentication tool on a
+fresh listing, local discovery and automatic recovery resume; pagination retains upstream
+ownership within that listing. Discovery and unrelated replies continue during
+interactive login. Metadata-helper cases return `False` for failed lookups and absent
+connection kinds; later operations look up metadata again.
+A stream scenario covers tool failure, explicit login, tool refresh, task retry, and later
+reauthentication; explicit retry also works after cancellation. Discovery auth errors and
+service-scoped login-URL challenges expose recovery after earlier success. Gmail/Calendar
+tool-error and login-elicitation regressions check automatic sign-in and one request replay,
+cancel/persistent-error pass-through, PAT/non-U2M exclusions, and nonblocking discovery.
+Direct URL-matcher tests reject other services/hosts and malformed URLs; representative
+bridge cases verify pass-through for both error forms. Success results and policy or mixed
+elicitations retain their responses. Generated guidance distinguishes authentication from
+retrying data tools.
+A refresh that still requires authentication returns a failed auth result. These
+checks replace external login and do not prove native Cowork recovery.
 Invalid token output must not appear in helper errors or stdout/stderr.
 Shared CLI discovery selects the newest absolute binary for cached tokens and every
 recovery subprocess; a missing CLI fails before token fetch or browser login.
@@ -315,9 +332,22 @@ Desktop summary while profile and previous-selection files survive. Retry return
 exit code 0, deletes the UG profile, and restores the previous selection without
 workspace state; a repeated revert also returns 0.
 
+`test_cowork_hooks.py` covers SessionStart guidance naming every connector without reporting
+unanswered or timed-out probes, a timestamped sign-in line for connectors whose probe returns a
+sign-in error, sign-in error recognition (`-32006`, `-32042`, HTTP 401, nested exception
+groups) versus other errors, and skipping probes when the token cannot be minted.
+UserPromptSubmit cases cover doing nothing after a short gap (measured from Claude's last
+reply, so an already-recorded prompt does not count), probing and flagging stale disconnect
+notices and sign-in needs after an idle gap, keeping that guidance without a token, and doing
+nothing without a readable transcript or previous reply. Other events are ignored and CLI
+stdout holds only the hook JSON. Probes and token minting are faked; native Cowork hook
+execution remains unverified.
+
 `test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
 generated marketplace/plugin/MCP manifests, the generated connector skill naming Claude-only
-MCP servers, current-workspace managed-skill selection,
+MCP servers with its two 5-second retries and one sign-in recovery attempt for access/IP
+denials with a stop on persistent denial, the generated `SessionStart` hook command,
+current-workspace managed-skill selection,
 Claude-only MCP filtering, absolute proxy executables, saved PAT mode, custom-OAuth refusal,
 install/update selection, idempotent cleanup, and saved-root removal. Alias checks cover
 short service-first names, unchanged proxy routing, custom-name preservation,
@@ -329,6 +359,26 @@ cover managed setup after successful skill/MCP reconciliation, preservation afte
 reconciliation failures, and cleanup for unmanaged or non-Claude configurations. These tests
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
 late MCP connection, tool discovery, or inference behavior.
+
+`connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
+It checks that Claude uses an available Slack tool despite a stale disconnect notice, actually
+waits and then uses a tool exposed after resume, and performs the bounded wait before reporting
+tools absent. Available/pending scenarios run with both the description alone and a skill loaded
+before the break. Assertions require actual tool calls and an answer containing a random value
+returned only by the synthetic Slack tool. The missing-tools scenario requires both real
+five-second waits and rejects invented reconnect/sign-in instructions. An idle-resume case
+shows only the skill description plus the `UserPromptSubmit` hook note and requires Claude to
+wait and use Slack instead of trusting the disconnect notice. Model requests are not
+retried. Slack tools are synthetic to isolate skill compliance from connector credentials;
+these are not native Cowork, Slack, proxy reconnect, or Desktop sleep/resume tests.
+
+The suite is excluded from default collection. Run it with an explicitly chosen workspace,
+profile, and exact Claude model-service name; missing inputs fail rather than skip:
+
+```bash
+PYTHONPATH=src uv run pytest --confcutdir=tests/connector_behavior tests/connector_behavior \
+  --workspace https://<workspace> --profile <profile> --model <catalog.schema.claude-model> -v
+```
 
 `test_cowork_skills.py` checks current-workspace managed and user-downloaded skill copies,
 project/other-workspace/user-authored exclusions, and add/update/remove CLI flows using
@@ -412,10 +462,14 @@ timeout, manual URL fallback, and workspace-token failures. Success requires an 
 credential; success, denial, and timeout preserve the workspace profile and token memo.
 These replace obsolete resource-flag support, CLI resource-login, and token-invalidation
 cases because connector browser sign-in no longer runs CLI login or replaces its session.
-`test_mcp_proxy.py` checks credential readiness, preserved workspace profile/token, and
-replay of the original HTTP request after browser sign-in. The existing MCP
-authentication-required recovery remains covered. These checks do not establish live
-provider sign-in, deployed credential API availability, or native Desktop behavior.
+`test_mcp_proxy.py` checks async post-login retries and recovery when a service returns
+the MCP authentication-required error. HTTP 401 regressions cover no browser on
+initialization/discovery/background requests, and connector login only for actual tool calls.
+Async HTTP-client checks replace the upstream network and verify unchanged tool-call bodies
+across retries. The combined browser-flow case verifies connector readiness polling,
+profile/token preservation, and replay without refreshing workspace credentials.
+PAT and non-401 errors retain their behavior.
+These checks do not establish live login or launch-time savings.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,
@@ -951,3 +1005,9 @@ Pre-browser credential reads retry transient HTTP/network failures twice before 
 
 Credential validation rejects malformed initial responses before browser launch and non-string
 states during polling. The browser subprocess runs Python in isolated mode.
+
+MCP review regressions cover bounded connector descriptions with a complete body list,
+malformed upstream tool entries and slow metadata
+discovery while unrelated replies continue. Failed metadata discovery retries naturally
+on the next operation, without a cache or cooldown. These are component
+checks, not native Cowork invocation or live provider sign-in.
