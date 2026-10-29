@@ -140,8 +140,8 @@ describe("DatabricksModels", () => {
 
   it("sends each model's turns to its API with the User-Agent", async () => {
     const requests = stubFetch(
-      [200, sse('{"choices":[{"delta":{"content":"hello"}}]}', "[DONE]")],
-      [200, sse('{"type":"response.output_text.delta","delta":"hi"}')],
+      [200, sse('{"choices":[{"delta":{"content":"hello"},"finish_reason":"stop"}]}', "[DONE]")],
+      [200, sse('{"type":"response.output_text.delta","delta":"hi"}', '{"type":"response.completed","response":{}}')],
     );
     const provider = new DatabricksModels(() => settings(tokenCommand(["t"]).command), () => {}, () => ({ "User-Agent": "ucode/0 githubcopilotchat" }));
     const [claude, gpt] = await provider.provideLanguageModelChatInformation();

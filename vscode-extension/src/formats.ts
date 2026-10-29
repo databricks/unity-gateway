@@ -48,7 +48,16 @@ const toolCall = (callId: string, name: string, args: string): vscode.LanguageMo
   return new vscode.LanguageModelToolCallPart(callId, name, input);
 };
 
-const outputLimit = () => new Error("The model stopped at its output token limit before finishing the response.");
+/** Why the model stopped short, from a Responses `incomplete_details.reason` or a Chat Completions `finish_reason`. */
+const stoppedEarly = (reason: string | undefined): Error =>
+  reason === "max_output_tokens" || reason === "length"
+    ? new Error("The model stopped at its output token limit before finishing the response.")
+    : reason === "content_filter"
+      ? new Error("The model's response was stopped by a content filter.")
+      : new Error(`The model stopped before finishing the response (${reason ?? "no reason given"}).`);
+
+// A dropped connection ends the stream like a finished answer does, so only a final event counts as done.
+const cutOff = () => new Error("The response ended before the model finished. Try again.");
 
 const toolOptions = (turn: Turn, toTool: (tool: vscode.LanguageModelChatTool) => object): object =>
   turn.tools.length ? { tools: turn.tools.map(toTool), ...(turn.toolRequired ? { tool_choice: "required" } : {}) } : {};
@@ -128,8 +137,11 @@ const deltaText = (content: ChatContent | undefined): string =>
         .map((block) => block.text ?? "")
         .join("");
 
+const CHAT_FINISHED = new Set(["stop", "tool_calls", "function_call"]);
+
 export async function* chatCompletionsReplies(events: AsyncIterable<unknown>): AsyncGenerator<Reply> {
   const calls: { id: string; name: string; args: string }[] = [];
+  let finish: string | undefined;
   for await (const event of events) {
     for (const choice of (event as ChatChunk).choices ?? []) {
       const text = deltaText(choice.delta?.content);
@@ -142,10 +154,16 @@ export async function* chatCompletionsReplies(events: AsyncIterable<unknown>): A
         call.name = fragment.function?.name || call.name;
         call.args += fragment.function?.arguments ?? "";
       }
-      if (choice.finish_reason === "length") {
-        throw outputLimit();
+      if (choice.finish_reason) {
+        finish = choice.finish_reason;
+        if (!CHAT_FINISHED.has(finish)) {
+          throw stoppedEarly(finish);
+        }
       }
     }
+  }
+  if (!finish) {
+    throw cutOff();
   }
   for (const call of calls.filter(Boolean)) {
     yield toolCall(call.id, call.name, call.args);
@@ -192,16 +210,22 @@ interface ResponseEvent {
 }
 
 export async function* responsesReplies(events: AsyncIterable<unknown>): AsyncGenerator<Reply> {
+  let completed = false;
   for await (const raw of events) {
     const event = raw as ResponseEvent;
     if (event.type === "response.output_text.delta" && event.delta) {
       yield new vscode.LanguageModelTextPart(event.delta);
     } else if (event.type === "response.output_item.done" && event.item?.type === "function_call") {
       yield toolCall(event.item.call_id ?? "", event.item.name ?? "", event.item.arguments ?? "");
-    } else if (event.type === "response.incomplete" && event.response?.incomplete_details?.reason === "max_output_tokens") {
-      throw outputLimit();
+    } else if (event.type === "response.completed") {
+      completed = true;
+    } else if (event.type === "response.incomplete") {
+      throw stoppedEarly(event.response?.incomplete_details?.reason);
     } else if (event.type === "response.failed" || event.type === "error") {
       throw new Error(event.response?.error?.message ?? event.message ?? "The model response failed.");
     }
+  }
+  if (!completed) {
+    throw cutOff();
   }
 }

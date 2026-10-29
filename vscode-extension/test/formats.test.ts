@@ -55,7 +55,7 @@ describe("Chat Completions", () => {
       chatCompletionsReplies(
         events(
           { choices: [{ delta: { content: [{ type: "reasoning", summary: [{ type: "summary_text", text: "The file may not exist." }] }] } }] },
-          { choices: [{ delta: { content: [{ type: "text", text: "Checking." }, { type: "text", text: " Done." }] } }] },
+          { choices: [{ delta: { content: [{ type: "text", text: "Checking." }, { type: "text", text: " Done." }] }, finish_reason: "stop" }] },
         ),
       ),
     );
@@ -65,9 +65,19 @@ describe("Chat Completions", () => {
   it("fails on a length stop and on arguments that aren't an object", async () => {
     await rejectsWith(collect(chatCompletionsReplies(events({ choices: [{ finish_reason: "length" }] }))), "output token limit");
     await rejectsWith(
-      collect(chatCompletionsReplies(events({ choices: [{ delta: { tool_calls: [{ index: 0, id: "c", function: { name: "t", arguments: "[1]" } }] } }] }))),
+      collect(
+        chatCompletionsReplies(
+          events({ choices: [{ delta: { tool_calls: [{ index: 0, id: "c", function: { name: "t", arguments: "[1]" } }] }, finish_reason: "tool_calls" }] }),
+        ),
+      ),
       "aren't a JSON object",
     );
+  });
+
+  it("fails when the model stops for another reason or the stream ends without a finish reason", async () => {
+    await rejectsWith(collect(chatCompletionsReplies(events({ choices: [{ finish_reason: "content_filter" }] }))), "stopped by a content filter");
+    await rejectsWith(collect(chatCompletionsReplies(events({ choices: [{ finish_reason: "insufficient_system_resource" }] }))), "(insufficient_system_resource)");
+    await rejectsWith(collect(chatCompletionsReplies(events({ choices: [{ delta: { content: "Half an ans" } }] }))), "ended before the model finished");
   });
 });
 
@@ -118,5 +128,12 @@ describe("Responses", () => {
       "output token limit",
     );
     await rejectsWith(collect(responsesReplies(events({ type: "response.failed", response: { error: { message: "overloaded" } } }))), "overloaded");
+  });
+
+  it("fails on every other incomplete reason and on a stream without response.completed", async () => {
+    const incomplete = (reason?: string) => ({ type: "response.incomplete", response: { incomplete_details: reason ? { reason } : null } });
+    await rejectsWith(collect(responsesReplies(events(incomplete("content_filter")))), "stopped by a content filter");
+    await rejectsWith(collect(responsesReplies(events(incomplete()))), "(no reason given)");
+    await rejectsWith(collect(responsesReplies(events({ type: "response.output_text.delta", delta: "Half an ans" }))), "ended before the model finished");
   });
 });
