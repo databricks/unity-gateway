@@ -8,6 +8,7 @@ import pytest
 
 from tests.integration.utils.evidence import (
     FileTask,
+    SubagentCalculation,
     agent_sessions,
     assert_subagent_routed,
     assistant_answers,
@@ -328,11 +329,11 @@ class TestCujSmartRouting(BaseCujTest):
         (one HTTP 200 decision matching the prompt, and the routed model serves inference),
         whether orchestrator context and the smart-router recipe header/field are present,
         and that no child session exists after the first prompt. A second prompt then makes
-        a native child complete the delegated file task even when routing is disabled.
-        When subagent routing is on, a decision correlated with the child task is recorded,
-        the child's inference uses the selected model, and the recipe correlates with the
-        launch turn; when off, no decision, recipe, or orchestrator context appears. Claude
-        then reports no running background tasks and exits cleanly.
+        exactly one native child complete a tagged 1+1 calculation even when routing is
+        disabled. When subagent routing is on, exactly one decision correlated with the child
+        task is recorded, the child's inference uses the selected model, and the recipe
+        correlates with the launch turn; when off, no decision, recipe, or orchestrator
+        context appears. Claude then reports no running background tasks and exits cleanly.
         """
         with smart_router_preset(cuj, SMART_ROUTER_CONFIG_VERSION) as (
             session,
@@ -403,8 +404,7 @@ class TestCujSmartRouting(BaseCujTest):
                     if path not in existing_sessions
                 ), agent
 
-                child_task = FileTask(session)
-                child_task.prompt = child_task.delegate_prompt
+                child_task = SubagentCalculation("1+1", "2")
                 decision_count = len(read_jsonl(decisions_path))
                 checkpoint = recorder.checkpoint()
                 existing_sessions = set(agent_sessions(session, agent))
@@ -416,7 +416,7 @@ class TestCujSmartRouting(BaseCujTest):
                         child_task.completed(session, agent, child=True)
                         and child_task.completed(session, agent)
                     ),
-                    "completed native subagent file task and parent reply",
+                    "completed native subagent calculation and parent reply",
                 )
                 children = {
                     path: records
@@ -430,7 +430,7 @@ class TestCujSmartRouting(BaseCujTest):
                         child_task.value in answer for answer in assistant_answers(agent, records)
                     )
                 }
-                assert completed_children, (agent, children.keys())
+                assert len(completed_children) == 1, (agent, children.keys())
                 decisions = read_jsonl(decisions_path)[decision_count:]
                 decision_tasks = {
                     decision.get("task_name") for decision in decisions if decision.get("task_name")
@@ -442,7 +442,7 @@ class TestCujSmartRouting(BaseCujTest):
                     if request.path == ROUTING_PATH
                     and request.payload.get("task", {}).get("prompt") in decision_tasks
                 ]
-                assert bool(routes) == subagent_routed, (agent, routes)
+                assert len(routes) == int(subagent_routed), (agent, routes)
                 if subagent_routed:
                     assert_subagent_routed(
                         session,
@@ -452,8 +452,6 @@ class TestCujSmartRouting(BaseCujTest):
                     )
                     route_prompt = routes[0].payload["task"]["prompt"]
                     assert isinstance(route_prompt, str) and route_prompt.strip()
-                    if agent == CLAUDE:
-                        assert child_task.filename in route_prompt
                     response = recorder.response_for(routes[0])
                     assert response.status_code == 200
                     selections = response.payload["route_selection"]

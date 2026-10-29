@@ -106,8 +106,9 @@ task name to the child message's recipient. The child's hidden-value and model c
 Parent and child requests use the same verified thinking-display recovery as CUJ3:
 only known display/safeguards rejections followed by native removal of the rejected field
 and a final non-empty 200 are accepted. Model, prompt, budget, and effort must remain unchanged.
-Each preset session then explicitly requests one child for a separate hidden-value
-file task. Assertions require a new native child transcript containing the value,
+Each preset session then explicitly requests one child for a 1+1 calculation tagged
+with a unique task name. Assertions require a new native child transcript containing
+the tagged result,
 a correlated spawn-routing decision and successful child inference on the
 router's selected model when routing is enabled. Disabled routing requires no router
 requests, new routing decisions, recipe metadata, or orchestrator context. Claude's parent
