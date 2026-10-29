@@ -12,6 +12,7 @@ import os
 import shutil
 import tempfile
 import zipfile
+from collections import Counter
 from pathlib import Path
 from typing import cast
 from xml.sax.saxutils import escape
@@ -27,6 +28,7 @@ from ucode.databricks import build_auth_shell_command, discover_model_services
 from ucode.managed_files import OS, current_os
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.system_cross_os import windows_program_files_dir
+from ucode.string_utils import model_picker_label
 from ucode.ui import console, print_heading, print_kv, print_warning
 
 EXTENSION_DIR = Path(__file__).resolve().parent.parent / "vscode" / "extension"
@@ -157,9 +159,10 @@ def install_extension(code: Path) -> str:
     return f"installed {EXTENSION_ID} {version}"
 
 
-def _model_entry(model: str) -> dict[str, object]:
+def _model_entry(model: str, name: str) -> dict[str, object]:
     entry: dict[str, object] = {
         "id": model,
+        "name": name,
         "api": "responses" if uses_responses_api(model) else "chat_completions",
     }
     # Claude's limits hold on Chat Completions too. Models without known limits get the
@@ -179,7 +182,13 @@ def model_settings(workspace: str, token: str) -> tuple[list[dict[str, object]],
         for model in dict.fromkeys([*claude.values(), *gpt])
         if copilot_exclusion_reason(model) is None
     ]
-    return [_model_entry(model) for model in models], reason
+    labels = {model: model_picker_label(model.rsplit(".", 1)[-1]) for model in models}
+    counts = Counter(labels.values())
+    # As in Codex's picker: two models with the same label show their full ids instead.
+    return [
+        _model_entry(model, model if counts[label] > 1 else label)
+        for model, label in labels.items()
+    ], reason
 
 
 def auth_command(state: dict) -> str:

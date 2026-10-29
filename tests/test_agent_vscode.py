@@ -105,14 +105,36 @@ class TestConfigure:
             "unityGateway.models": [
                 {
                     "id": "system.ai.claude-sonnet-5-5",
+                    "name": "Claude Sonnet 5.5",
                     "api": "chat_completions",
                     "maxInputTokens": 872_000,
                     "maxOutputTokens": 128_000,
                 },
-                {"id": "system.ai.gpt-6-luna", "api": "responses"},
+                {"id": "system.ai.gpt-6-luna", "name": "GPT 6 Luna", "api": "responses"},
             ],
             "unityGateway.authCommand": vscode.build_auth_shell_command(WS, "dev"),
         }
+
+    def test_models_with_the_same_label_show_their_ids(self, code, monkeypatch):
+        monkeypatch.setattr(
+            vscode,
+            "discover_model_services",
+            lambda workspace, token: (
+                {},
+                ["system.ai.gpt-6-luna", "main.models.gpt-6-luna", "system.ai.gpt-5-5"],
+                [],
+                [],
+                None,
+            ),
+        )
+
+        models, _ = vscode.model_settings(WS, "token")
+
+        assert [model["name"] for model in models] == [
+            "system.ai.gpt-6-luna",
+            "main.models.gpt-6-luna",
+            "GPT 5.5",
+        ]
 
     def test_creates_missing_settings_and_installs_the_packed_extension(self, code, capsys):
         assert vscode.configure(STATE)

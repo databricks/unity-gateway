@@ -53,6 +53,10 @@
                 "type": "string",
                 "description": "Model service name, for example system.ai.claude-sonnet-5-5."
               },
+              "name": {
+                "type": "string",
+                "description": "Name shown in the model picker, for example Claude Sonnet 5.5. Defaults to the id."
+              },
               "api": {
                 "type": "string",
                 "enum": [

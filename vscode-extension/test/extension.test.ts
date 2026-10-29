@@ -89,7 +89,7 @@ describe("userAgent", () => {
 });
 
 describe("readSettings", () => {
-  it("keeps well-formed models and token limits and trims the workspace URL", () => {
+  it("keeps well-formed models, names and token limits and trims the workspace URL", () => {
     const values: Record<string, unknown> = {
       workspace: "https://ws/",
       authCommand: "ug auth-token",
@@ -98,8 +98,8 @@ describe("readSettings", () => {
         { id: "b", api: "messages" },
         { api: "responses" },
         null,
-        { id: "c", api: "chat_completions", maxInputTokens: 936_000, maxOutputTokens: "32000", extra: true },
-        { id: "d", api: "chat_completions", maxInputTokens: 0, maxOutputTokens: 1.5 },
+        { id: "c", name: " Model C ", api: "chat_completions", maxInputTokens: 936_000, maxOutputTokens: "32000", extra: true },
+        { id: "d", name: 7, api: "chat_completions", maxInputTokens: 0, maxOutputTokens: 1.5 },
       ],
     };
     assert.deepEqual(readSettings((key) => values[key]), {
@@ -107,7 +107,7 @@ describe("readSettings", () => {
       authCommand: "ug auth-token",
       models: [
         { id: "a", api: "responses" },
-        { id: "c", api: "chat_completions", maxInputTokens: 936_000 },
+        { id: "c", name: "Model C", api: "chat_completions", maxInputTokens: 936_000 },
         { id: "d", api: "chat_completions" },
       ],
     });
@@ -119,19 +119,19 @@ describe("DatabricksModels", () => {
     workspace: "https://ws",
     authCommand: command,
     models: [
-      { id: "system.ai.claude-sonnet-5-5", api: "chat_completions", maxInputTokens: 872_000, maxOutputTokens: 128_000 },
+      { id: "system.ai.claude-sonnet-5-5", name: "Claude Sonnet 5.5", api: "chat_completions", maxInputTokens: 872_000, maxOutputTokens: 128_000 },
       { id: "system.ai.gpt-6-luna", api: "responses" },
     ],
   });
 
-  it("lists the configured models, or none with a hint when settings are missing", async () => {
+  it("lists the configured models by name, or by id without one, or none with a hint when settings are missing", async () => {
     const logs: string[] = [];
     const models = await new DatabricksModels(() => settings("cmd"), (line) => logs.push(line)).provideLanguageModelChatInformation();
     assert.deepEqual(
-      models.map((model) => [model.id, model.family, model.api, model.maxInputTokens, model.maxOutputTokens]),
+      models.map((model) => [model.id, model.name, model.family, model.api, model.maxInputTokens, model.maxOutputTokens]),
       [
-        ["system.ai.claude-sonnet-5-5", "claude-sonnet-5-5", "chat_completions", 872_000, 128_000],
-        ["system.ai.gpt-6-luna", "gpt-6-luna", "responses", 128_000, 32_000],
+        ["system.ai.claude-sonnet-5-5", "Claude Sonnet 5.5", "claude-sonnet-5-5", "chat_completions", 872_000, 128_000],
+        ["system.ai.gpt-6-luna", "system.ai.gpt-6-luna", "gpt-6-luna", "responses", 128_000, 32_000],
       ],
     );
     assert.deepEqual(await new DatabricksModels(() => ({ ...settings(""), models: [] }), (line) => logs.push(line)).provideLanguageModelChatInformation(), []);

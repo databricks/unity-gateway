@@ -6,6 +6,7 @@ import { streamEvents } from "./gateway";
 
 export interface ModelSetting {
   readonly id: string;
+  readonly name?: string;
   readonly api: "chat_completions" | "responses";
   readonly maxInputTokens?: number;
   readonly maxOutputTokens?: number;
@@ -34,7 +35,12 @@ export const readSettings = (get: (key: string) => unknown): Settings => {
         (model): model is ModelSetting =>
           typeof model?.id === "string" && model.id !== "" && (model.api === "chat_completions" || model.api === "responses"),
       )
-      .map((model) => ({ id: model.id, api: model.api, ...tokenLimits(model) })),
+      .map((model) => ({
+        id: model.id,
+        ...(typeof model.name === "string" && model.name.trim() ? { name: model.name.trim() } : {}),
+        api: model.api,
+        ...tokenLimits(model),
+      })),
     authCommand: String(get("authCommand") ?? ""),
   };
 };
@@ -68,10 +74,10 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
       this.log("No Databricks models: run `ug configure --agents vscode` to set them up.");
       return [];
     }
-    return models.map(({ id, api, maxInputTokens, maxOutputTokens }) => ({
+    return models.map(({ id, name, api, maxInputTokens, maxOutputTokens }) => ({
       id,
       api,
-      name: id,
+      name: name ?? id,
       // Copilot Chat tunes its prompts and tools by family, so this is the model's own name.
       family: id.split(".").pop() ?? id,
       version,
