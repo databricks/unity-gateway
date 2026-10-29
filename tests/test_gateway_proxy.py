@@ -9,6 +9,7 @@ import os
 import socket
 import threading
 import time
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -620,44 +621,22 @@ class TestRelayedOssRouting:
 
 
 class TestCodexRelayProxy:
-    def test_codex_relay_upstream_and_plain_handler(self, monkeypatch):
-        captured = {}
-
-        def fake_start(workspace, token_provider, port, **kwargs):
-            captured.update(kwargs)
-            return None
-
-        monkeypatch.setattr(gateway_proxy, "_start_proxy", fake_start)
-        gateway_proxy.start_relay_proxy("https://w", lambda _f: "t", 0, codex=True)
-        assert captured["upstream_path"] == "ai-gateway/codex/"
-        assert captured["handler_type"] is gateway_proxy._ProxyHandler
-        assert captured["token_header"] == gateway_proxy.AI_GATEWAY_TOKEN_HEADER
-
-    def test_codex_request_path_joins_upstream_once(self, monkeypatch):
-        class _StubCache:
-            def run_refresher(self):
-                return None
-
-            def stop(self):
-                return None
-
-        monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: _StubCache())
-        server, _cache, client = gateway_proxy.start_relay_proxy(
+    def test_relays_chatgpt_login_to_codex_upstream(self, monkeypatch):
+        cache = Mock(token="tok1")
+        monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: cache)
+        server, _cache, upstream = gateway_proxy.start_relay_proxy(
             "https://w", lambda _f: "t", 0, codex=True
         )
-        try:
-            # The handler requests the client's path minus its leading slash.
-            url = client.build_request("POST", "/v1/responses".lstrip("/")).url
-            assert str(url) == "https://w/ai-gateway/codex/v1/responses"
-        finally:
-            server.server_close()
-            client.close()
+        server.server_close()
+        upstream.close()
+        # The handler requests the client's path minus its leading slash.
+        url = upstream.build_request("POST", "v1/responses").url
+        assert str(url) == "https://w/ai-gateway/codex/v1/responses"
 
-    def test_passes_chatgpt_headers_and_swaps_databricks_token(self):
         client = _FakeClient([_FakeResp(200, b"ok")])
-        h = object.__new__(gateway_proxy._ProxyHandler)
-        h.client, h.cache = client, _FakeCache()
-        h.token_header = gateway_proxy.AI_GATEWAY_TOKEN_HEADER
+        h = object.__new__(server.RequestHandlerClass)
+        h.client = client  # the bound class keeps the real cache, token header, and handler
+        h.wfile, h.request_version, h._headers_buffer = _Collect(), "HTTP/1.1", []
         body = b'{"model": "claude-opus-4-1"}'  # not rerouted: no Anthropic hybrid logic
         h.headers = {
             "Authorization": "Bearer chatgpt-token",
@@ -666,9 +645,7 @@ class TestCodexRelayProxy:
             "Content-Length": str(len(body)),
         }
         h.rfile = io.BytesIO(body)
-        h.path, h.command = "/v1/responses", "POST"
-        h.wfile = _Collect()
-        h.request_version, h.requestline, h._headers_buffer = "HTTP/1.1", "POST /", []
+        h.path, h.command, h.requestline = "/v1/responses", "POST", "POST /v1/responses HTTP/1.1"
         h._handle()
         sent = client.sent_headers[0]
         assert sent["Authorization"] == "Bearer chatgpt-token"

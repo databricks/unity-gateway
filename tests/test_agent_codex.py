@@ -1658,7 +1658,8 @@ class TestCodexLaunch:
 
         monkeypatch.setattr(gateway_proxy, "start_relay_proxy", start_relay_proxy)
         monkeypatch.setattr(codex.subprocess_cross_os, "popen", popen)
-        monkeypatch.setattr(codex, "_has_chatgpt_login", lambda binary: True)
+        login_status = Mock(return_value=True)
+        monkeypatch.setattr(codex, "_has_chatgpt_login", login_status)
         monkeypatch.setattr(
             codex, "_fetch_codex_model_catalog", Mock(side_effect=AssertionError("no catalog"))
         )
@@ -1675,6 +1676,7 @@ class TestCodexLaunch:
                 options=LaunchOptions(),
             )
 
+        login_status.assert_called_once()
         assert started == {"workspace": WS, "token": "tok", "codex": True}
         assert "OAUTH_TOKEN" not in os.environ
         argv = popen.call_args.args[0]
@@ -1690,9 +1692,12 @@ class TestCodexLaunch:
         assert codex._has_chatgpt_login("codex") is False
         run.return_value = Mock(returncode=0, stdout="", stderr="Logged in using ChatGPT")
         assert codex._has_chatgpt_login("codex") is True
-        run.return_value = Mock(returncode=1, stdout="", stderr="Not logged in")
+        run.side_effect = [Mock(returncode=1, stdout="", stderr="Not logged in"), Mock()]
         codex._ensure_chatgpt_login("codex")
         assert run.call_args.args[0][1:] == ["login"]
+        run.side_effect = [Mock(returncode=1, stdout="", stderr=""), CalledProcessError(1, "x")]
+        with pytest.raises(RuntimeError, match="`codex login` failed"):
+            codex._ensure_chatgpt_login("codex")
 
     def test_relayed_launch_rejects_smart_routing(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
@@ -1860,6 +1865,14 @@ class TestCodexManagedConfig:
         )
 
         with pytest.raises(RuntimeError, match=r"model_provider, .*base_url.*ug revert"):
+            codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+
+        # requirements.toml replaces the whole entry, so even a name-only one would drop the relay.
+        requirements = tmp_path / "ProgramData" / "requirements.toml"
+        requirements.parent.mkdir(parents=True)
+        requirements.write_text('[model_providers.Databricks]\nname = "x"\n', encoding="utf-8")
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: requirements)
+        with pytest.raises(RuntimeError, match=r"define model_providers\.Databricks at"):
             codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
 
     def test_relayed_state_requires_relay_compatible_scope(self, tmp_path, monkeypatch):
