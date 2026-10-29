@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import errno
+import io
 import json
+import os
+from contextlib import contextmanager
 
 import pytest
 import tomlkit
@@ -171,6 +175,80 @@ class TestWriteHelpers:
         p = tmp_path / "out.json"
         write_json_file(p, {"a": 1})
         assert not p.exists()
+
+    @pytest.mark.parametrize("writer", [write_json_file, config_io.atomic_write_json])
+    @pytest.mark.parametrize("fail_write", [False, True])
+    def test_json_reader_never_sees_partial_write(self, tmp_path, monkeypatch, writer, fail_write):
+        path = tmp_path / "settings.json"
+        original = '{"apiKeyHelper": "configured-helper"}'
+        path.write_text(original, encoding="utf-8")
+        payload = {"apiKeyHelper": "new-helper", "env": {"setting": "x" * 256}}
+        observed = []
+        real_open = io.open
+
+        # Interrupt the filesystem write after real bytes reach disk; keep the writer real.
+        @contextmanager
+        def partial_write(*args, **kwargs):
+            with real_open(*args, **kwargs) as stream:
+
+                class InterruptedFile:
+                    def write(self, content):
+                        prefix_length = stream.write(content[:12])
+                        stream.flush()
+                        with real_open(path, encoding="utf-8") as reader:
+                            observed.append(reader.read())
+                        if fail_write:
+                            raise OSError(errno.ENOSPC, "No space left on device")
+                        return prefix_length + stream.write(content[12:])
+
+                yield InterruptedFile()
+
+        with monkeypatch.context() as fault:
+            fault.setattr(io, "open", partial_write)
+            if fail_write:
+                with pytest.raises(RuntimeError, match="Failed to write"):
+                    writer(path, payload)
+            else:
+                writer(path, payload)
+
+        assert observed == [original]
+        assert json.loads(path.read_text()) == (json.loads(original) if fail_write else payload)
+        assert not list(tmp_path.glob(".settings.json.*.tmp"))
+
+    @pytest.mark.parametrize("writer", [write_json_file, config_io.atomic_write_json])
+    def test_json_write_preserves_symlink_destination(self, tmp_path, writer):
+        target = tmp_path / "shared" / "settings.json"
+        target.parent.mkdir()
+        target.write_text('{"old": true}', encoding="utf-8")
+        path = tmp_path / "settings.json"
+        path.symlink_to(target.relative_to(tmp_path))
+
+        writer(path, {"new": True})
+
+        assert path.is_symlink()
+        assert json.loads(target.read_text()) == {"new": True}
+        assert not list(target.parent.glob(".settings.json.*.tmp"))
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    @pytest.mark.parametrize("writer", [write_json_file, config_io.atomic_write_json])
+    def test_json_new_files_are_private(self, tmp_path, writer):
+        path = tmp_path / "settings.json"
+
+        writer(path, {"apiKeyHelper": "configured-helper"})
+
+        assert path.stat().st_mode & 0o777 == 0o600
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    @pytest.mark.parametrize("writer", [write_json_file, config_io.atomic_write_json])
+    def test_json_write_preserves_existing_permissions(self, tmp_path, writer):
+        path = tmp_path / "settings.json"
+        path.write_text('{"old": true}', encoding="utf-8")
+        path.chmod(0o640)
+
+        writer(path, {"new": True})
+
+        assert path.stat().st_mode & 0o777 == 0o640
+        assert json.loads(path.read_text()) == {"new": True}
 
     def test_write_toml_file(self, tmp_path):
         p = tmp_path / "out.toml"

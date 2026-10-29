@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 from typing import TypedDict, cast
 
@@ -43,22 +44,37 @@ def ensure_parent_dir(path: Path) -> None:
         raise RuntimeError(f"Failed to create directory for {path}") from exc
 
 
-def atomic_write_json(path: Path, payload: object) -> None:
-    """Write ``payload`` as indented JSON to ``path`` atomically (temp file + ``os.replace``).
-
-    The temp file is created in the destination directory and renamed into place, so a crash, a
-    full disk, or a concurrent reader never sees a half-written file. This is a raw writer: unlike
-    ``write_json_file`` it does not honor dry-run, so callers that should be skipped under dry-run
-    must guard the call themselves.
-    """
-    ensure_parent_dir(path)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+def _atomic_write_text(path: Path, content: str) -> None:
+    # Resolve the target so replacing a config keeps an existing symlink intact.
+    target = path.resolve()
+    ensure_parent_dir(target)
+    try:
+        mode = target.stat().st_mode & 0o777
+    except FileNotFoundError:
+        mode = None
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, indent=2))
-        os.replace(tmp_name, path)
+            handle.write(content)
+        if mode is not None:
+            os.chmod(tmp_name, mode)
+        os.replace(tmp_name, target)
+    finally:
+        # Cleanup must not hide the write error when the filesystem is failing.
+        with suppress(OSError):
+            Path(tmp_name).unlink(missing_ok=True)
+
+
+def atomic_write_json(path: Path, payload: object) -> None:
+    """Replace JSON atomically, preserving symlink targets and existing permissions.
+
+    A failed write or concurrent reader never sees a half-written file. New files are private
+    to the user. Unlike ``write_json_file``, this raw writer does not honor dry-run.
+    """
+    content = json.dumps(payload, indent=2)
+    try:
+        _atomic_write_text(path, content)
     except OSError as exc:
-        Path(tmp_name).unlink(missing_ok=True)
         raise RuntimeError(f"Failed to write file: {path}") from exc
 
 
@@ -108,9 +124,8 @@ def write_json_file(path: Path, payload: dict) -> None:
     if _dry_run:
         console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
         return
-    ensure_parent_dir(path)
     try:
-        path.write_text(content, encoding="utf-8")
+        _atomic_write_text(path, content)
     except OSError as exc:
         raise RuntimeError(f"Failed to write config file: {path}") from exc
 

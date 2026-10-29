@@ -1,5 +1,12 @@
 # Integration tests
 
+`../test_config_io.py` and `../test_state.py` cover atomic JSON persistence:
+readers retain the previous complete document during a write, and partial-write or
+replacement failures preserve it and remove temporary files. Checks also cover
+symlink targets, existing POSIX permissions, private new files, and all four state
+mutation paths. These component checks do not establish power-loss durability,
+concurrent read-modify-write serialization, or live authentication recovery.
+
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls
 still routing waiting for a later reply, distinct

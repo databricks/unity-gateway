@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 import json
 from unittest.mock import patch
 
 import pytest
 
+import ucode.config_io as config_io
 import ucode.state as state_mod
 from ucode.state import (
     SELF_MANAGED_AGENTS_KEY,
@@ -109,6 +111,33 @@ class TestLoadFullState:
 # ---------------------------------------------------------------------------
 # save_state / load_state round-trip
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda: save_state({"workspace": FAKE_WS, "claude_models": {"sonnet": "new"}}),
+        lambda: save_config_scope("user"),
+        lambda: set_current_workspace("https://other.databricks.com"),
+        clear_state,
+    ],
+    ids=["save-state", "save-scope", "switch-workspace", "clear-state"],
+)
+def test_failed_state_replacement_preserves_previous_configuration(tmp_path, monkeypatch, mutate):
+    save_state({"workspace": FAKE_WS, "claude_models": {"sonnet": "original"}})
+    original = state_mod.STATE_PATH.read_bytes()
+
+    # Replacement failure must not discard the previously usable workspace state.
+    def fail_replace(*_args):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(config_io.os, "replace", fail_replace)
+    with pytest.raises(RuntimeError, match="Failed to (write|clear)"):
+        mutate()
+
+    assert state_mod.STATE_PATH.read_bytes() == original
+    assert load_state()["claude_models"] == {"sonnet": "original"}
+    assert not list(state_mod.STATE_PATH.parent.glob(".state.json.*.tmp"))
 
 
 class TestSaveLoadRoundTrip:

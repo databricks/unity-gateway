@@ -10,7 +10,6 @@ import re
 import signal
 import socket
 import sys
-import tempfile
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -1257,27 +1256,10 @@ def _model_catalog_path(workspace: str, scope: str) -> Path:
 
 
 def _write_model_catalog(path: Path, catalog: dict) -> None:
-    if is_dry_run():
-        write_json_file(path, catalog)
-        return
-    temp_path = None
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, raw_temp_path = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-        )
-        os.close(fd)
-        temp_path = Path(raw_temp_path)
-        write_json_file(temp_path, catalog)
-        os.replace(temp_path, path)
-    except OSError as exc:
+        write_json_file(path, catalog)
+    except RuntimeError as exc:
         raise RuntimeError(f"Could not write Codex model catalog at {path}.") from exc
-    finally:
-        if temp_path is not None:
-            try:
-                temp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
 
 
 def _is_ucode_catalog_reference(value: object) -> bool:
