@@ -26,8 +26,8 @@ _HOSTED_CAPABILITIES = {
     "glm-5-3": (["text"], ["low", "high", "max"]),
     "glm-5-3-flash": (["text", "image"], ["low", "high", "max"]),
     "kimi-k3": (["text", "image"], ["low", "high", "max"]),
-    "deepseek-v4-1-flash": (["text"], ["low", "high", "xhigh", "max"]),
-    "deepseek-v4-1-flash-1017": (["text"], ["low", "high", "xhigh", "max"]),
+    "deepseek-v4-1-flash": (["text", "image"], ["low", "high", "xhigh", "max"]),
+    "deepseek-v4-1-flash-1017": (["text", "image"], ["low", "high", "xhigh", "max"]),
 }
 _HOSTED_DEFAULTS = {
     "input_modalities": ["text"],
