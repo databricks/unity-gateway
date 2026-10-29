@@ -214,6 +214,14 @@ requested routed subagent. A separate Claude-only test covers the status band an
 automatic orchestrator delegation. Routing-disabled coverage is deferred until a separately
 preconfigured workspace is assigned.
 
+`TestEnsureDatabricksCliVersion` in `test_databricks.py` covers one bounded
+version-probe retry after timeout, process failure, or malformed output; a successful
+retry remains subject to the minimum version and is retained for subsequent CLI calls.
+Component checks also cover version output on stderr alongside unrelated stdout,
+preserve process-failure diagnostics after the retry, and refresh auth capabilities
+when a CLI changes at the same path. These checks do not establish live agent startup
+latency or explain the underlying CLI timeout.
+
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.
 `test_startup_imports.py` guards the bare `--version` / `-V` fast path and deferred
