@@ -13,10 +13,10 @@ const sse = (...data: string[]) => data.map((item) => `data: ${item}\n\n`).join(
 
 /** Replaces fetch with one that answers each request with the next status and SSE body. */
 const stubFetch = (...answers: [number, string][]) => {
-  const requests: { url: string; authorization: string; body: Record<string, unknown> }[] = [];
+  const requests: { url: string; authorization: string; userAgent: string; body: Record<string, unknown> }[] = [];
   globalThis.fetch = (async (url: string, init: RequestInit) => {
     const headers = new Headers(init.headers);
-    requests.push({ url, authorization: headers.get("authorization") ?? "", body: JSON.parse(String(init.body)) });
+    requests.push({ url, authorization: headers.get("authorization") ?? "", userAgent: headers.get("user-agent") ?? "", body: JSON.parse(String(init.body)) });
     const [status, body] = answers[Math.min(requests.length - 1, answers.length - 1)] ?? [500, ""];
     // Split the body mid-line so the reader has to join chunks.
     const bytes = new TextEncoder().encode(body);
@@ -53,7 +53,7 @@ describe("streamEvents", () => {
     requests = stubFetch([401, ""]);
     await rejectsWith(
       collect(streamEvents("https://ws", "responses", {}, new Tokens(tokenCommand(["a", "b"]).command), {}, new AbortController().signal)),
-      "Run `databricks auth login --host https://ws`",
+      "Run `ug configure --agents vscode` to sign in again",
     );
     assert.equal(requests.length, 2);
   });
@@ -157,10 +157,10 @@ describe("DatabricksModels", () => {
       );
     }
     assert.deepEqual(
-      requests.map((request) => [request.url, request.body.model]),
+      requests.map((request) => [request.url, request.body.model, request.userAgent]),
       [
-        ["https://ws/ai-gateway/mlflow/v1/chat/completions", "system.ai.claude-sonnet-5-5"],
-        ["https://ws/ai-gateway/mlflow/v1/responses", "system.ai.gpt-6-luna"],
+        ["https://ws/ai-gateway/mlflow/v1/chat/completions", "system.ai.claude-sonnet-5-5", "ucode/0 githubcopilotchat"],
+        ["https://ws/ai-gateway/mlflow/v1/responses", "system.ai.gpt-6-luna", "ucode/0 githubcopilotchat"],
       ],
     );
     assert.deepEqual(reported, [new LanguageModelTextPart("hello"), new LanguageModelTextPart("hi")]);

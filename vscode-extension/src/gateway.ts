@@ -25,7 +25,7 @@ export async function* streamEvents(
   }
   if (response.status === 401) {
     await response.body?.cancel();
-    throw new Error(`Databricks rejected the sign-in. Run \`databricks auth login --host ${workspace}\`, then retry.`);
+    throw new Error("Databricks rejected the sign-in. Run `ug configure --agents vscode` to sign in again, then retry.");
   }
   if (!response.ok || !response.body) {
     throw new Error(`AI Gateway returned ${response.status}: ${(await response.text()).slice(0, 300)}`);
