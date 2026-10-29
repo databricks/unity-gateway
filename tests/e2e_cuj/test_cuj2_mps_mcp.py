@@ -244,13 +244,15 @@ class TestCuj2Configuration(_Cuj2Base):
 
         Expected: the read-only CodingAgentConfig selects the two exact MPS resources and sandbox
         MCP; both native MPS APIs advertise their selected model, generated agent settings use
-        the exact provider/model values, and agent MCP listings exclude web_search.
+        the exact provider/model values, the complete Desktop profile/metadata match the
+        Anthropic MPS contract, and agent MCP listings exclude web_search.
         """
         session, workspace, _ = cuj
         published = workspace.config()
         _assert_cuj2_config(published)
         _assert_mps_catalog(workspace)
         _assert_mcp_services(workspace)
+        claude_mps, claude_model = MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE]
         config_library = enable_claude_desktop(session, workspace.url)
 
         configured = session.run(
@@ -263,12 +265,11 @@ class TestCuj2Configuration(_Cuj2Base):
         )
         assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
         _assert_configured_files(session, workspace.url)
-        claude_mps, claude_model = MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE]
         assert_claude_desktop_profile(
             session,
             config_library,
             workspace.url,
-            model_ids=[claude_model],
+            models=[{"name": claude_model, "labelOverride": claude_model}],
             custom_headers={
                 "x-databricks-use-coding-agent-mode": "true",
                 PROVIDER_HEADER: claude_mps,
