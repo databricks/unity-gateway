@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -15,7 +16,17 @@ from urllib.parse import urlparse
 import questionary
 from rich.table import Table
 
-from ucode.agents import antigravity, claude, codex, copilot, cursor, gemini, kilo, opencode
+from ucode.agents import (
+    antigravity,
+    claude,
+    codex,
+    copilot,
+    cursor,
+    gemini,
+    grok,
+    kilo,
+    opencode,
+)
 from ucode.config_io import read_json_safe, read_toml_safe, restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
@@ -110,6 +121,12 @@ MCP_CLIENTS = {
         "binary": "copilot",
         "display": "GitHub Copilot CLI",
         "list_command": "copilot mcp list",
+    },
+    "grok": {
+        "binary": "grok",
+        "display": "Grok Build",
+        # `mcp list` reports no health; `mcp doctor` connects to each server.
+        "list_command": "grok mcp doctor --json",
     },
     "cursor": {
         "binary": "cursor-agent",
@@ -417,6 +434,9 @@ def configure_client_mcp_server(
     if client == "copilot":
         removed = copilot.write_mcp_server_config(name, argv)
         return [MCP_USER_SCOPE] if removed else []
+    if client == "grok":
+        removed = grok.write_mcp_server_config(name, argv)
+        return [MCP_USER_SCOPE] if removed else []
     if client == "cursor":
         removed = cursor.write_mcp_server_config(name, argv)
         return [MCP_USER_SCOPE] if removed else []
@@ -441,6 +461,8 @@ def remove_client_mcp_server(client: str, name: str) -> list[str]:
         return [MCP_USER_SCOPE] if kilo.remove_mcp_server_config(name) else []
     if client == "copilot":
         return [MCP_USER_SCOPE] if copilot.remove_mcp_server_config(name) else []
+    if client == "grok":
+        return [MCP_USER_SCOPE] if grok.remove_mcp_server_config(name) else []
     if client == "cursor":
         return [MCP_USER_SCOPE] if cursor.remove_mcp_server_config(name) else []
     if client == "antigravity":
@@ -1446,6 +1468,7 @@ _MCP_CLIENT_MODULES = {
     "opencode": opencode,
     "kilo": kilo,
     "antigravity": antigravity,
+    "grok": grok,
 }
 
 
@@ -1493,6 +1516,8 @@ def _managed_mcp_entry(
         return kilo.build_mcp_server_entry(argv)
     if client == "antigravity":
         return antigravity.build_mcp_server_entry(argv)
+    if client == "grok":
+        return grok.build_mcp_server_entry(argv)
     raise RuntimeError(f"Unsupported MCP client '{client}'.")
 
 
@@ -2505,6 +2530,29 @@ def _parse_tree_mcp_list(output: str) -> dict[str, str]:
     return statuses
 
 
+def _parse_grok_mcp_doctor(output: str) -> dict[str, str]:
+    """Parse `grok mcp doctor --json` into ``{server_name: state}`` for the servers in Grok's config.
+
+    Doctor also checks the servers Grok imports from Claude Code and Cursor configs, which ug
+    doesn't register for Grok, so only `config`-sourced servers are kept."""
+    start = output.find("{")
+    if start < 0:
+        return {}
+    try:
+        report, _ = json.JSONDecoder().raw_decode(output[start:])
+    except ValueError:
+        return {}
+    servers = report.get("servers") if isinstance(report, dict) else None
+    statuses: dict[str, str] = {}
+    for server in servers if isinstance(servers, list) else []:
+        if not isinstance(server, dict) or server.get("source") != "config":
+            continue
+        name = server.get("name")
+        if isinstance(name, str) and name:
+            statuses[name] = LIVE_CONNECTED if server.get("healthy") is True else LIVE_FAILED
+    return statuses
+
+
 def parse_mcp_list_output(client: str, output: str) -> dict[str, str]:
     """Parse an agent's `mcp list` output into ``{server_name: live-state}`` (best-effort).
 
@@ -2516,6 +2564,8 @@ def parse_mcp_list_output(client: str, output: str) -> dict[str, str]:
     if client in ("codex", "antigravity"):
         # Both print a columnar table with an enabled/disabled state column.
         parsed = _parse_codex_mcp_list(output)
+    elif client == "grok":
+        return _parse_grok_mcp_doctor(output)
     elif client in ("kilo", "opencode"):
         parsed = _parse_tree_mcp_list(output)
     else:
@@ -2535,13 +2585,15 @@ def _run_mcp_list(client: str) -> str | None:
     if not spec:
         return None
     argv = str(spec["list_command"]).split()
-    # Gemini, Kilo and OpenCode read their MCP config from ug's isolated directories.
+    # Gemini, Kilo, OpenCode and Grok read their MCP config from ug's isolated directories.
     if client == "gemini":
         env = _gemini_cli_env()
     elif client == "kilo":
         env = _kilo_cli_env()
     elif client == "opencode":
         env = _opencode_cli_env()
+    elif client == "grok":
+        env = grok.mcp_cli_env()
     else:
         env = None
     try:

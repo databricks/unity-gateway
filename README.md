@@ -1,9 +1,8 @@
 # Unity Gateway (`ug`)
 
 Unity Gateway runs coding agents through Databricks AI Gateway. It configures
-Codex, Claude Code, Gemini CLI, OpenCode, GitHub Copilot CLI, Pi, and Google
-Antigravity CLI, and can
-register Databricks MCP servers for Cursor Agent.
+Codex, Claude Code, Gemini CLI, OpenCode, GitHub Copilot CLI, Pi, Google Antigravity CLI,
+and Grok Build, and can register Databricks MCP servers for Cursor Agent.
 
 The command is `ug`. Existing `ucode` commands remain supported, and the Python
 package is still named `ucode` for compatibility.
@@ -54,6 +53,7 @@ ug opencode
 ug copilot
 ug pi
 ug antigravity   # Google Antigravity CLI; `ug agy` is an alias
+ug grok
 ug cursor   # Cursor Agent, MCP-only
 ```
 
@@ -89,6 +89,19 @@ Copilot's `/model` picker, and you can switch between them mid-session. Claude
 models use the Anthropic Messages API, GPT-5 and newer use Responses, and older
 GPT models use Chat Completions. Gemini and open-source models aren't offered, except under
 `--model-location` (below).
+
+`ug grok` runs [Grok Build](https://docs.x.ai/build/overview) on the workspace's Grok, Claude,
+GPT, and open-source models, starting on the newest Grok model when the workspace serves one.
+Claude uses the Anthropic Messages API, GPT-5 and newer use Responses, and Grok, gpt-oss, and
+other open-source models use Chat Completions. Gemini models aren't offered: the gateway rejects
+the tool schemas Grok sends them. Choose the starting model with
+`ug grok --model claude-sonnet-5-5` (short names work) and switch with `/model`. xAI's own
+models are hidden, and Grok's model requests carry no Databricks token: each session reaches
+the gateway through a local proxy that adds a fresh one to every request. (Under `--use-pat` or
+`DATABRICKS_BEARER`, Grok's environment still holds that bearer for the `ug mcp-proxy` servers
+it starts.) Grok runs with its own
+home, `~/.ucode/grok-home`, so your own Grok login, settings, and sessions are kept apart.
+`ug grok --provider <catalog>.<schema>.<name>` uses a Model Provider Service's models instead.
 `ug copilot --model claude-opus-5-5` (or `system.ai.claude-opus-5-5`, or Copilot's
 own `dbx-anthropic/system.ai.claude-opus-5-5`) picks the model a session starts on;
 an unknown or unsupported model fails before Copilot starts and lists the
@@ -181,7 +194,7 @@ Nothing is written to a config file.
   launch warns and Claude doesn't send them.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
-`kilo`, `copilot`, `pi`, and `antigravity`. `cursor` can be included in `--agents` for MCP-only setup;
+`kilo`, `copilot`, `pi`, `antigravity`, and `grok`. `cursor` can be included in `--agents` for MCP-only setup;
 Cursor models still run through your Cursor account.
 
 `UG_WORKSPACE` can provide the default workspace. An explicit `--workspace` or
@@ -509,6 +522,7 @@ preferences are ignored and their files are left untouched. See the bundled
 | GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/ucode-mcp-config.json` |
 | Pi | `~/.ucode/pi-home/.pi/agent/models.json`, `~/.ucode/pi-home/.pi/agent/settings.json` |
 | Antigravity CLI | `~/.gemini/config/skills.json` (adds `~/.agents/skills`), `~/.gemini/config/mcp_config.json` (ug's MCP servers only); the gateway is set per launch through `AGY_LLM_GATEWAY_*` variables |
+| Grok Build | `~/.ucode/grok-home/config.toml` |
 | Cursor Agent | `~/.cursor/mcp.json` |
 | Unity Gateway | `/etc/unitygateway/managed-settings.json` (Linux and macOS), `~/.ucode/refresh_ts.json`, `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
 

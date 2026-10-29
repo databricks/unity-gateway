@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from ucode import custom_oauth
-from ucode.agents import copilot
+from ucode.agents import copilot, proxy_launch
 from ucode.databricks import AnthropicModelCatalog, ModelServiceEntry
 from ucode.telemetry import client_platform
 
@@ -1040,7 +1040,7 @@ class TestTokenProvider:
 
         monkeypatch.setattr(custom_oauth, "get_databricks_token", get_token)
 
-        token = copilot._token_provider({"workspace": WS, "profile": "dev"})(True)
+        token = proxy_launch.token_provider({"workspace": WS, "profile": "dev"})(True)
 
         assert token == "profile-token"
         assert calls == [(WS, "dev", True)]
@@ -1063,7 +1063,7 @@ class TestTokenProvider:
             },
         }
 
-        assert copilot._token_provider(state)(False) == "custom-token"
+        assert proxy_launch.token_provider(state)(False) == "custom-token"
         assert calls == [(WS, "cid", "http://localhost:8020", ["all-apis"], "p", False)]
 
 

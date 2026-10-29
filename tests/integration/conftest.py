@@ -30,7 +30,7 @@ def pytest_collection_modifyitems(config, items):
             raise pytest.UsageError("Use the integration runner; unit fixtures were inherited.")
         if any(
             item.get_closest_marker(a) and a not in agents
-            for a in ("claude", "codex", "opencode", "copilot", "antigravity")
+            for a in ("claude", "codex", "opencode", "copilot", "antigravity", "grok")
         ):
             deselected.append(item)
         else:

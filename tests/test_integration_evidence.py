@@ -1,11 +1,12 @@
 """Unit checks for interpreting terminal evidence, not live agent substitutes."""
 
 import json
+import subprocess
 
 import pytest
 
 from tests.integration.utils import evidence
-from tests.integration.utils.agents import claude, codex, copilot
+from tests.integration.utils.agents import claude, codex, copilot, grok
 from tests.integration.utils.evidence import (
     FileTask,
     SubagentCalculation,
@@ -189,6 +190,154 @@ def test_copilot_selected_models_follow_start_then_switches():
         {"type": "assistant.message", "data": {"model": "system.ai.gpt"}},
     ]
     assert copilot.selected_models(records) == ["dbx-anthropic/claude", "dbx-responses/gpt"]
+
+
+def test_grok_events_skip_ug_status_lines_and_non_objects():
+    stdout = '✔ Starting Grok Build\n{"type": "text", "data": "hi"}\n[1, 2]\n'
+    assert grok.events(stdout) == [{"type": "text", "data": "hi"}]
+
+
+def test_grok_completed_reads_need_a_completed_update_of_a_read_file_call():
+    records = [
+        {
+            "type": "tool_call",
+            "toolCallId": "a",
+            "toolName": "read_file",
+            "rawInput": {"path": "x"},
+        },
+        {
+            "type": "tool_call",
+            "toolCallId": "b",
+            "toolName": "read_file",
+            "rawInput": {"path": "y"},
+        },
+        {"type": "tool_call", "toolCallId": "c", "toolName": "bash", "rawInput": {"cmd": "cat"}},
+        {"type": "tool_call_update", "toolCallId": "a", "status": "completed"},
+        {"type": "tool_call_update", "toolCallId": "b", "status": "failed"},
+        {"type": "tool_call_update", "toolCallId": "c", "status": "completed"},
+        {"type": "tool_call_update", "toolCallId": "z", "status": "completed"},
+    ]
+    assert grok.completed_reads(records) == [{"path": "x"}]
+
+
+def test_grok_mcp_calls_count_completed_tool_use_not_tool_search():
+    records = [
+        {
+            "type": "tool_call",
+            "toolCallId": "s",
+            "toolName": "search_tool",
+            "rawInput": {"query": "srv"},
+        },
+        {
+            "type": "tool_call",
+            "toolCallId": "u",
+            "toolName": "use_tool",
+            "rawInput": {"tool": "srv__q"},
+        },
+        {"type": "tool_call", "toolCallId": "d", "toolName": "srv__q", "rawInput": {"sql": "1"}},
+        {
+            "type": "tool_call",
+            "toolCallId": "o",
+            "toolName": "use_tool",
+            "rawInput": {"tool": "other__q"},
+        },
+        {"type": "tool_call", "toolCallId": "f", "toolName": "srv__q", "rawInput": {"sql": "2"}},
+        *(
+            {"type": "tool_call_update", "toolCallId": call, "status": "completed"}
+            for call in ("s", "u", "d", "o")
+        ),
+        {"type": "tool_call_update", "toolCallId": "f", "status": "failed"},
+    ]
+    assert grok.completed_mcp_calls(records, "srv") == [{"tool": "srv__q"}, {"sql": "1"}]
+
+
+def test_grok_session_history_answers_and_models_come_from_assistant_messages():
+    records = [
+        {"type": "user", "content": [{"type": "text", "text": "withheld-file-value"}]},
+        {"type": "assistant", "content": "Reading it.", "model_id": "system.ai.gpt-5-5"},
+        {
+            "type": "assistant",
+            "content": [{"type": "text", "text": "withheld-file-value"}],
+            "model_id": "system.ai.claude-haiku-4-5",
+        },
+        {"type": "turn_started", "model_id": "system.ai.grok-4-7"},
+    ]
+    assert grok.assistant_answers(records) == ["Reading it.", "withheld-file-value"]
+    assert grok.completed_task_models(records, "withheld-file-value") == {
+        "system.ai.claude-haiku-4-5"
+    }
+    with pytest.raises(AssertionError, match="completed-task model"):
+        grok.completed_task_models(
+            [{"type": "assistant", "content": "withheld-file-value"}], "withheld-file-value"
+        )
+
+
+def _grok_run(task, *, read_path, read_status="completed", answer=None, stop="end_turn"):
+    events = [
+        {
+            "type": "tool_call",
+            "toolCallId": "r",
+            "toolName": "read_file",
+            "rawInput": {"target_file": read_path},
+        },
+        {"type": "tool_call_update", "toolCallId": "r", "status": read_status},
+        {"type": "text", "data": task.value if answer is None else answer},
+        {"type": "end", "stopReason": stop, "modelUsage": {"system.ai.gpt-5-5": {}}},
+    ]
+    stdout = "✔ Starting Grok Build\n" + "".join(json.dumps(event) + "\n" for event in events)
+    return subprocess.CompletedProcess(["ug", "grok"], 0, stdout, "")
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        {"read_path": "other.txt"},
+        {"read_status": "failed"},
+        {"answer": "I could not read it."},
+        {"stop": "max_turns"},
+    ],
+    ids=["other-file", "failed-read", "no-value", "unfinished-turn"],
+)
+def test_grok_headless_answer_needs_a_completed_read_of_the_fixture_and_its_value(tmp_path, case):
+    session = _Session(tmp_path)
+    session.cwd = tmp_path
+    task = FileTask(session)
+    task.assert_headless_answer("grok", _grok_run(task, read_path=task.filename))
+    with pytest.raises(AssertionError):
+        task.assert_headless_answer("grok", _grok_run(task, **{"read_path": task.filename, **case}))
+
+
+def test_grok_answer_is_only_streamed_assistant_text():
+    records = [
+        {"type": "tool_call_update", "toolCallId": "a", "content": "withheld-file-value"},
+        {"type": "text", "data": "The value is "},
+        {"type": "text", "data": None},
+        {"type": "text", "data": "withheld-file-value."},
+    ]
+    assert grok.answer(records) == "The value is withheld-file-value."
+    assert grok.answer(records[:1]) == ""
+
+
+def test_grok_turn_models_come_from_the_last_end_event():
+    records = [
+        {"type": "end", "modelUsage": {"system.ai.gpt-5-5": {}}},
+        {"type": "end", "modelUsage": {"system.ai.claude-haiku-4-5": {"inputTokens": 1}}},
+    ]
+    assert grok.turn_models(records) == {"system.ai.claude-haiku-4-5"}
+
+
+@pytest.mark.parametrize(
+    ("records", "message"),
+    [
+        ([{"type": "text", "data": "partial"}], "no end event"),
+        ([{"type": "end", "stopReason": "error"}], "no model usage"),
+        ([{"type": "end", "modelUsage": {}}], "no model usage"),
+    ],
+    ids=["interrupted", "no-usage", "empty-usage"],
+)
+def test_grok_turn_models_reject_incomplete_turns(records, message):
+    with pytest.raises(AssertionError, match=message):
+        grok.turn_models(records)
 
 
 def test_claude_model_identity_uses_assistant_answer_not_tool_output():

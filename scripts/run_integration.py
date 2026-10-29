@@ -31,6 +31,7 @@ AGENT_PACKAGES = {
     "codex": "@openai/codex",
     "opencode": "opencode-ai",
     "copilot": "@github/copilot",
+    "grok": "@xai-official/grok",
 }
 # Agents not published on npm: installed from a pinned native build (see install_native_agent).
 NATIVE_AGENT_BINARIES = {"antigravity": "agy"}
@@ -83,6 +84,7 @@ HEADLESS_TEST_NODES = {
     "opencode": "test_ug_opencode_headless.py::test_ug_opencode_headless_prompt_argument",
     "copilot": "test_ug_copilot_headless.py::test_ug_copilot_headless_completes_file_task",
     "antigravity": "test_ug_antigravity_headless.py::test_ug_antigravity_headless_completes_file_task",
+    "grok": "test_ug_grok_headless.py::test_ug_grok_headless_completes_file_task",
 }
 
 
@@ -393,6 +395,7 @@ def arguments(
         help="Expected SHA-512 of the --antigravity-build archive, for a build not pinned in "
         "ANTIGRAVITY_SHA512 (copy it from the release manifest).",
     )
+    parser.add_argument("--grok-version", type=exact_npm_version)
     parser.add_argument("--claude-model", default=environment.get("UG_INTEGRATION_CLAUDE_MODEL"))
     parser.add_argument("--codex-model", default=environment.get("UG_INTEGRATION_CODEX_MODEL"))
     parser.add_argument(
@@ -542,10 +545,11 @@ def arguments(
         or args.opencode_version
         or args.copilot_version
         or args.antigravity_build
+        or args.grok_version
     ):
         parser.error(
-            "Select --claude-version, --codex-version, --opencode-version, --copilot-version "
-            "and/or --antigravity-build explicitly."
+            "Select --claude-version, --codex-version, --opencode-version, --copilot-version, "
+            "--antigravity-build and/or --grok-version explicitly."
         )
     # The release archive names the version before its build id.
     args.antigravity_version = (
@@ -710,6 +714,7 @@ def main() -> int:
             "opencode": args.opencode_version,
             "copilot": args.copilot_version,
             "antigravity": args.antigravity_build,
+            "grok": args.grok_version,
             "claude_model": args.claude_model,
             "codex_model": args.codex_model,
             "opencode_model": args.opencode_model,

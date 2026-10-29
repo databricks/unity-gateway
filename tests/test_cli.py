@@ -25,6 +25,7 @@ import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 import ucode.managed_files as managed_files
 from ucode.agents import copilot as copilot_agent
+from ucode.agents import grok as grok_agent
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
@@ -137,7 +138,17 @@ class TestHelp:
             "Manage": output[panels["Manage"] : panels["Usage"]],
             "Usage": output[panels["Usage"] : global_options],
         }
-        for command in ("claude", "codex", "copilot", "cursor", "gemini", "opencode", "kilo", "pi"):
+        for command in (
+            "claude",
+            "codex",
+            "copilot",
+            "cursor",
+            "gemini",
+            "opencode",
+            "kilo",
+            "pi",
+            "grok",
+        ):
             assert command in sections["Launch"]
         assert "configure" in sections["Setup"]
         for command in ("mcp", "skills"):
@@ -1285,6 +1296,51 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 1
         assert "--provider and --model-location cannot be used together" in result.output
+
+    @pytest.mark.parametrize(
+        ("model_args", "start_model"),
+        [([], None), (["--model", "claude-sonnet-5"], "claude-sonnet-5")],
+        ids=["service-default", "explicit-model"],
+    )
+    def test_grok_provider_launch_marks_only_the_launch(self, model_args, start_model):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["available_tools"] = ["grok"]
+            result = runner.invoke(app, ["grok", "--provider", "main.default.mps", *model_args])
+
+        assert result.exit_code == 0, result.output
+        configure = calls["configure"].call_args
+        assert configure.args[:1] == ("grok",)
+        assert configure.args[2] == start_model
+        assert configure.kwargs["provider"] == "main.default.mps"
+        launch_state = calls["launch"].call_args.args[1]
+        assert launch_state[grok_agent.LAUNCH_PROVIDER_SERVICE_KEY] == "main.default.mps"
+
+    def test_grok_unknown_model_fails_before_grok_starts(self):
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": ["grok"],
+            grok_agent.CATALOG_STATE_KEY: ["system.ai.claude-haiku-4-5", "system.ai.gpt-5-5"],
+        }
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli._fetch_budget_recommendation", return_value=None),
+            patch("ucode.cli.get_databricks_token", return_value="token"),
+            patch("ucode.cli.get_provider_service", return_value=None),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch("ucode.gateway_proxy.start_gateway_auth_proxy") as start_proxy,
+            patch.object(grok_agent.subprocess_cross_os, "popen") as popen,
+        ):
+            result = runner.invoke(app, ["grok", "--model", "no-such-model"])
+
+        assert result.exit_code == 1, result.output
+        output = " ".join(result.output.split())
+        assert "Model 'no-such-model' isn't available in ug grok" in output
+        assert "system.ai.claude-haiku-4-5" in output
+        start_proxy.assert_not_called()
+        popen.assert_not_called()
 
     def test_copilot_launch_uses_saved_model_location(self):
         with _launch_policy_patches(None) as calls:
@@ -4793,7 +4849,7 @@ class TestConfigureAgentFlag:
             result = runner.invoke(app, ["configure", "--agents", "claude,bogus"])
         assert result.exit_code != 0
         assert "Unsupported tool 'bogus'" in result.output
-        assert "codex, claude, gemini, opencode, kilo, copilot, pi" in " ".join(
+        assert "codex, claude, gemini, opencode, kilo, copilot, pi, antigravity, grok" in " ".join(
             result.output.split()
         )
         mock_cfg.assert_not_called()
@@ -6744,6 +6800,68 @@ class TestConfigureSharedStateSkipDiscovery:
         assert state["claude_models"] == {"opus": "databricks-claude-opus-4-8"}
 
 
+class TestConfigureSharedStateGrokCatalog:
+    """Grok's catalog comes from the model-services listing, which keeps every model version."""
+
+    WS = "https://grok.databricks.com"
+
+    def _configure(self, monkeypatch, *, listed, saved=None, previous_ws=None):
+        import ucode.cli as cli_mod
+        import ucode.databricks as db_mod
+
+        TestConfigureSharedStateSkipDiscovery._stub(monkeypatch)
+        previous = {"workspace": previous_ws or self.WS}
+        if saved is not None:
+            previous["grok_catalog"] = saved
+        monkeypatch.setattr(cli_mod, "load_state", lambda: dict(previous))
+        monkeypatch.setattr(cli_mod, "load_full_state", lambda: {"workspaces": {self.WS: {}}})
+        if listed is not None:
+            db_mod._MODEL_SERVICES_CACHE[self.WS] = [
+                db_mod.ModelServiceEntry(m, ("mlflow/v1/chat/completions",)) for m in listed
+            ]
+        reason = None if listed else "HTTP 503"
+        monkeypatch.setattr(
+            cli_mod, "discover_model_services", lambda w, t: ({}, [], [], [], reason)
+        )
+        monkeypatch.setattr(cli_mod, "discover_claude_models", lambda w, t: ({}, reason))
+        monkeypatch.setattr(cli_mod, "discover_codex_models", lambda w, t: ([], reason))
+        return cli_mod.configure_shared_state(self.WS, tools=["grok"])
+
+    def test_saves_the_listing_catalog(self, monkeypatch):
+        state = self._configure(
+            monkeypatch,
+            listed=[
+                "system.ai.grok-4-6",
+                "system.ai.claude-sonnet-4-6",
+                "system.ai.gemini-3-flash",
+                "system.ai.grok-4-7",
+            ],
+        )
+
+        assert state["grok_catalog"] == [
+            "system.ai.grok-4-7",
+            "system.ai.grok-4-6",
+            "system.ai.claude-sonnet-4-6",
+        ]
+
+    def test_failed_listing_keeps_the_saved_models(self, monkeypatch):
+        state = self._configure(monkeypatch, listed=None, saved=["system.ai.grok-4-6"])
+
+        assert state["grok_catalog"] == ["system.ai.grok-4-6"]
+
+    def test_failed_listing_after_a_workspace_switch_drops_the_other_workspace_catalog(
+        self, monkeypatch
+    ):
+        state = self._configure(
+            monkeypatch,
+            listed=None,
+            saved=["system.ai.grok-4-6"],
+            previous_ws="https://other.databricks.com",
+        )
+
+        assert "grok_catalog" not in state
+
+
 class TestConfigureSharedStateCopilotCatalog:
     """Copilot's catalog comes from the same listings as the other agents' models."""
 
@@ -7923,6 +8041,22 @@ class TestChildStdoutLaunch:
     def test_other_agent_commands_keep_stdout(self):
         assert cli_mod._child_owns_stdout("claude", ["app-server"]) is False
         assert cli_mod._child_owns_stdout("gemini", []) is False
+
+    @pytest.mark.parametrize(
+        ("tool_args", "expected"),
+        [
+            (["-p", "hi"], True),
+            (["--single", "hi"], True),
+            (["--prompt-file=task.md"], True),
+            (["--prompt-json", "[]"], True),
+            (["agent", "stdio"], True),
+            ([], False),
+            (["-m", "glm-5-3"], False),
+            (["--", "-p", "hi"], False),
+        ],
+    )
+    def test_grok_headless_and_acp_launches_own_stdout(self, tool_args, expected):
+        assert cli_mod._child_owns_stdout("grok", tool_args) is expected
 
     @pytest.mark.parametrize(
         ("tool_args", "expected"),

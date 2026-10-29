@@ -27,12 +27,10 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Protocol
 from urllib.parse import unquote
 
 from ucode.config_io import (
@@ -48,12 +46,12 @@ from ucode.constants import (
     LOOPBACK_HOST,
     MODEL_PROVIDER_SERVICE_HEADER,
 )
-from ucode.custom_oauth import launch_token
 from ucode.databricks import bare_model_name
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import get_provider_service, mark_tool_managed, save_state, set_provider_service
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 
+from . import proxy_launch
 from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
 from .request_tags import request_tags_header_value
 
@@ -386,34 +384,6 @@ def build_runtime_env(proxy_url: str, session_secret: str, models: list[str]) ->
     return env
 
 
-def _token_provider(state: dict) -> Callable[[bool], str]:
-    workspace = state["workspace"]
-    return lambda force_refresh: launch_token(state, workspace, force_refresh=force_refresh)
-
-
-def _log_proxy_failure(exc: BaseException) -> None:
-    # Antigravity owns the terminal, so failures go to a file instead of stderr.
-    try:
-        AGY_PROXY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with AGY_PROXY_LOG_PATH.open("a", encoding="utf-8") as log:
-            log.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} token refresh failed: {exc}\n")
-    except OSError:
-        pass
-
-
-class _ChildProcess(Protocol):
-    def wait(self) -> int: ...
-
-
-def _wait_for_exit(proc: _ChildProcess) -> int:
-    while True:
-        try:
-            return proc.wait()
-        except KeyboardInterrupt:
-            # The terminal delivers Ctrl-C to Antigravity too; keep the proxy up until it exits.
-            continue
-
-
 def _is_subcommand(tool_args: list[str]) -> bool:
     return bool(tool_args) and tool_args[0] in _SUBCOMMANDS
 
@@ -501,11 +471,11 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     session_secret = secrets.token_urlsafe(32)
     server, cache, client = gateway_proxy.start_gateway_auth_proxy(
         workspace,
-        _token_provider(state),
+        proxy_launch.token_provider(state),
         session_secret=session_secret,
         added_headers=proxy_headers(provider),
         sign_in_hint=f"Run `databricks auth login --host {workspace}`, then restart `ug antigravity`.",
-        on_refresh_failure=_log_proxy_failure,
+        on_refresh_failure=proxy_launch.refresh_failure_logger(AGY_PROXY_LOG_PATH),
         allowed_path_prefixes=(GEMINI_GATEWAY_PATH,),
         path_rewriter=lambda path: rewrite_model_path(path, catalog),
         body_rewriter=rewrite_request_body,
@@ -518,7 +488,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         if selected and not _is_subcommand(tool_args):
             tool_args = _with_model_arg(tool_args, _selection_id(binary, env, selected, catalog))
         proc = subprocess_cross_os.popen([binary, *tool_args], env=env)
-        returncode = _wait_for_exit(proc)
+        returncode = proxy_launch.wait_for_exit(proc)
     finally:
         cache.stop()
         server.shutdown()

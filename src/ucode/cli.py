@@ -46,6 +46,7 @@ from ucode.agents import antigravity as antigravity_agent
 from ucode.agents import claude as claude_agent
 from ucode.agents import codex as codex_agent
 from ucode.agents import copilot as copilot_agent
+from ucode.agents import grok as grok_agent
 from ucode.agents import (
     launch as launch_agent,
 )
@@ -102,7 +103,6 @@ from ucode.managed_budget import (
     render_budget_panel,
 )
 from ucode.managed_config import (
-    AGENT_ENUM_TO_TOOL,
     ManagedConfigResult,
     ManagedPolicyInstallDenied,
     get_managed_config,
@@ -219,10 +219,10 @@ from ucode.usage import usage as usage_report
 CustomOAuthConfig = custom_oauth.CustomOAuthConfig
 
 _DISCOVERY_CONSUMERS: dict[str, tuple[str, ...]] = {
-    "claude": ("claude", "opencode", "kilo", "copilot", "pi"),
-    "codex": ("codex", "copilot", "pi"),
+    "claude": ("claude", "opencode", "kilo", "copilot", "pi", "grok"),
+    "codex": ("codex", "copilot", "pi", "grok"),
     "gemini": ("gemini", "opencode", "kilo", "pi", "antigravity"),
-    "oss": ("opencode", "kilo"),
+    "oss": ("opencode", "kilo", "grok"),
 }
 
 
@@ -569,11 +569,12 @@ def configure_shared_state(
         state.pop(SELF_MANAGED_AGENTS_KEY, None)
     if previous_workspace != workspace:
         dest_block = load_full_state().get("workspaces", {}).get(workspace, {})
-        dest_catalog = dest_block.get(copilot_agent.CATALOG_STATE_KEY)
-        if dest_catalog:
-            state[copilot_agent.CATALOG_STATE_KEY] = dest_catalog
-        else:
-            state.pop(copilot_agent.CATALOG_STATE_KEY, None)
+        for catalog_key in (copilot_agent.CATALOG_STATE_KEY, grok_agent.CATALOG_STATE_KEY):
+            dest_catalog = dest_block.get(catalog_key)
+            if dest_catalog:
+                state[catalog_key] = dest_catalog
+            else:
+                state.pop(catalog_key, None)
     if profile:
         state["profile"] = profile
     else:
@@ -666,6 +667,7 @@ def configure_shared_state(
         or "kilo" in tools
         or "copilot" in tools
         or "pi" in tools
+        or "grok" in tools
     )
     want_gemini = (
         fetch_all
@@ -677,12 +679,20 @@ def configure_shared_state(
     )
     # Claude's web-search server also needs a Responses-capable model.
     want_codex = (
-        fetch_all or "codex" in tools or "claude" in tools or "copilot" in tools or "pi" in tools
+        fetch_all
+        or "codex" in tools
+        or "claude" in tools
+        or "copilot" in tools
+        or "pi" in tools
+        or "grok" in tools
     )
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
     # configure must persist that discovered family too.
-    want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
+    want_oss = (
+        fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools or "grok" in tools
+    )
     want_copilot = fetch_all or "copilot" in tools
+    want_grok = fetch_all or "grok" in tools
 
     claude_reason: str | None = None
     gemini_reason: str | None = None
@@ -768,6 +778,10 @@ def configure_shared_state(
         if fetch_all or "opencode" in tools or "kilo" in tools:
             # Kilo is an OpenCode fork and consumes the same discovered view.
             state["opencode_models"] = opencode_models
+        listed_entries = cached_model_service_entries(workspace)
+        if want_grok and listed_entries is not None:
+            # A failed listing keeps the catalog found last time.
+            state[grok_agent.CATALOG_STATE_KEY] = grok_agent.catalog_from_listing(listed_entries)
     save_state(state)
     # Scrub MCP entries that ucode wrote for the previous workspace so the new
     # workspace's agent configs aren't stale.
@@ -980,12 +994,12 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     (``system.ai``), a Model Provider Service, or a custom Unity Catalog model location — and
     persist (or clear) the choice.
 
-    No-op for tools other than claude/codex/gemini/antigravity/copilot (the Gemini API agents have
-    no custom location). Falls
+    No-op for tools other than claude/codex/gemini/antigravity/copilot/grok (the Gemini API
+    agents and grok have no custom location). Falls
     back to Databricks when no matching provider services are found or the listing fails and no
     custom location is offered.
     """
-    if tool not in ("claude", "codex", "gemini", "antigravity", "copilot"):
+    if tool not in ("claude", "codex", "gemini", "antigravity", "copilot", "grok"):
         return state
     display = TOOL_SPECS[tool]["display"]
 
@@ -1344,6 +1358,8 @@ def _status_models(tool: str, state: dict) -> list[str]:
     static_models = _model_values(state.get(f"{tool}_static_models"))
     if tool == "copilot":
         models = [model.id for model in copilot_agent.copilot_catalog(state)]
+    elif tool == "grok":
+        models = [model.id for model in grok_agent.databricks_catalog(state)]
     elif static_models:
         models = static_models
     elif tool in ("claude", "codex", "gemini", "opencode"):
@@ -1367,6 +1383,8 @@ def _status_models(tool: str, state: dict) -> list[str]:
 def _status_default_model(tool: str, state: dict, models: list[str]) -> str | None:
     if tool == "copilot":
         return copilot_agent.default_model(state)
+    if tool == "grok":
+        return grok_agent.default_model(state)
     explicit = state.get(f"{tool}_default_model")
     if isinstance(explicit, str) and explicit:
         return explicit
@@ -1428,6 +1446,9 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
         )
         if copilot_models is not None:
             live[copilot_agent.CATALOG_STATE_KEY] = copilot_agent.catalog_state(copilot_models)
+    listed_entries = cached_model_service_entries(workspace)
+    if "grok" in tools and listed_entries is not None:
+        live[grok_agent.CATALOG_STATE_KEY] = grok_agent.catalog_from_listing(listed_entries)
     live["_status_model_reasons"] = {
         family: reason or shared_reason for family, reason in reasons.items()
     }
@@ -1634,6 +1655,7 @@ _HELP_COMMAND_ORDER = (
     "kilo",
     "pi",
     "antigravity",
+    "grok",
     "configure",
     "mcp",
     "skills",
@@ -1742,9 +1764,10 @@ app.add_typer(
     rich_help_panel="Tools and Skills",
 )
 
-# Tool keys that a managed config can govern — sourced from the same enum map managed_config uses —
-# plus Antigravity, which the managed config can't name yet and so only runs self-managed.
-_MANAGEABLE_AGENTS: frozenset[str] = frozenset(AGENT_ENUM_TO_TOOL.values()) | {"antigravity"}
+# Tool keys `ug agents` accepts: every agent ug launches. A managed config that enables agents
+# blocks the rest, including those it has no enum for (Kilo, Antigravity, Grok), until they're
+# self-managed.
+_MANAGEABLE_AGENTS: frozenset[str] = frozenset(TOOL_SPECS)
 
 
 def _valid_agent_or_raise(agent: str) -> str:
@@ -3226,6 +3249,12 @@ def _child_owns_stdout(tool: str, tool_args: list[str]) -> bool:
         return any(arg in {"-p", "--print"} for arg in tool_args)
     if tool == "copilot":
         return any(arg in {"-p", "--prompt"} or arg.startswith("--prompt=") for arg in tool_args)
+    if tool == "grok":
+        headless = ("-p", "--single", "--prompt-file", "--prompt-json")
+        return any(
+            arg in headless or arg.startswith(tuple(f"{flag}=" for flag in headless[1:]))
+            for arg in tool_args
+        ) or bool(tool_args and tool_args[0] == "agent")
     return tool == "codex" and any(arg in {"exec", "e", "app-server"} for arg in tool_args)
 
 
@@ -3680,6 +3709,9 @@ def _launch_tool(
                 )
                 if gemini_error:
                     raise RuntimeError(gemini_error)
+            if provider and tool == "grok":
+                # Grok starts on the service model --model names (or its first Claude model).
+                resolved_model = model
         else:
             # A managed default_model is the model the admin wants sessions to start on, so it goes
             # in as the explicit model rather than being applied afterwards: for codex the proto has
@@ -3818,6 +3850,8 @@ def _launch_tool(
                 state[copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY] = provider
             elif parent_schema:
                 state[copilot_agent.LAUNCH_MODEL_LOCATION_KEY] = parent_schema
+        elif tool == "grok" and provider:
+            state[grok_agent.LAUNCH_PROVIDER_SERVICE_KEY] = provider
         launch_options = _launch_options(
             tool,
             ctx.args,
@@ -4365,6 +4399,44 @@ app.command(
 
 
 @app.command(
+    "grok",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    rich_help_panel="Launch",
+)
+def grok_cmd(
+    ctx: typer.Context,
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider",
+            help="Route through a Unity Catalog Model Provider Service "
+            "(<catalog>.<schema>.<name>); `/model` then lists that service's models.",
+        ),
+    ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            "-m",
+            help="Model to start on, by id or short name (e.g. claude-sonnet-5-5). Pass before "
+            "any `--` separator.",
+        ),
+    ] = None,
+    skip_preflight: SkipPreflightOption = False,
+    workspace: WorkspaceOption = None,
+) -> None:
+    """Launch Grok Build via Databricks."""
+    _launch_tool(
+        "grok",
+        ctx,
+        provider=provider,
+        model=model,
+        skip_preflight=skip_preflight,
+        workspace_url=workspace,
+    )
+
+
+@app.command(
     "cursor",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     rich_help_panel="Launch",
@@ -4412,7 +4484,7 @@ def configure(
         typer.Option(
             "--agent",
             help="Configure only the named agent (e.g. claude, codex, gemini, opencode, kilo, "
-            "copilot, pi, antigravity).",
+            "copilot, pi, antigravity, grok).",
         ),
     ] = None,
     agents: Annotated[

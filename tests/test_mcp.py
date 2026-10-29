@@ -155,6 +155,65 @@ class TestCursorMcpClient:
         assert "cursor" not in clients
 
 
+class TestGrokMcpClient:
+    def test_registered_with_health_reporting_command(self):
+        assert mcp.MCP_CLIENTS["grok"]["binary"] == "grok"
+        # `grok mcp list` reports no health; `mcp doctor` connects to each server.
+        assert mcp.MCP_CLIENTS["grok"]["list_command"] == "grok mcp doctor --json"
+        assert mcp._MCP_CLIENT_MODULES["grok"] is mcp.grok
+
+    def test_parses_doctor_json_for_config_servers_only(self):
+        output = (
+            "warning: something on stderr\n"
+            '{"sources": [], "servers": ['
+            '{"name": "system-ai-dbsql", "source": "config", "healthy": true},'
+            '{"name": "system-ai-atlassian", "source": "config", "healthy": false},'
+            '{"name": "github", "source": "~/.claude.json", "healthy": true}]}'
+        )
+        assert mcp.parse_mcp_list_output("grok", output) == {
+            "system-ai-dbsql": mcp.LIVE_CONNECTED,
+            "system-ai-atlassian": mcp.LIVE_FAILED,
+        }
+
+    @pytest.mark.parametrize("output", ["", "not json", '{"servers": "nope"}', "[]"])
+    def test_unparseable_doctor_output_reports_nothing(self, output):
+        assert mcp.parse_mcp_list_output("grok", output) == {}
+
+    def test_run_mcp_list_reads_grok_private_home(self, monkeypatch):
+        captured: dict = {}
+
+        class _Result:
+            stdout = '{"servers": []}'
+            stderr = ""
+
+        def _fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["env"] = kwargs.get("env")
+            return _Result()
+
+        monkeypatch.setattr(mcp.subprocess_cross_os, "run", _fake_run)
+        mcp._run_mcp_list("grok")
+
+        assert captured["argv"] == ["grok", "mcp", "doctor", "--json"]
+        assert captured["env"]["GROK_HOME"] == str(mcp.grok.GROK_HOME_DIR)
+
+    def test_configure_and_remove_write_grok_config(self):
+        assert mcp.configure_client_mcp_server("grok", "github", GH_URL, WS, "p") == []
+        servers = mcp.grok.read_toml_safe(mcp.grok.GROK_CONFIG_PATH)["mcp_servers"]
+        assert [servers["github"]["command"], *servers["github"]["args"]] == _proxy_argv()
+        assert mcp.configure_client_mcp_server("grok", "github", GH_URL, WS, "p") == [
+            mcp.MCP_USER_SCOPE
+        ]
+        assert mcp.remove_client_mcp_server("grok", "github") == [mcp.MCP_USER_SCOPE]
+        assert mcp.remove_client_mcp_server("grok", "github") == []
+
+    def test_managed_entry_is_the_stdio_proxy(self):
+        entry = mcp._managed_mcp_entry(
+            "grok", GH_URL, WS, "p", use_pat=False, always_load=False, http_client=None
+        )
+        assert [entry["command"], *entry["args"]] == _proxy_argv()
+
+
 class TestKiloMcpClient:
     def test_kilo_registered_in_mcp_clients(self):
         assert "kilo" in mcp.MCP_CLIENTS

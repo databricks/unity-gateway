@@ -66,6 +66,7 @@ class TestToolSpecs:
             "copilot",
             "pi",
             "antigravity",
+            "grok",
         }
 
     def test_each_spec_has_required_keys(self):

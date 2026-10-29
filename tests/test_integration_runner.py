@@ -159,6 +159,23 @@ def test_antigravity_has_no_windows_build():
         runner.antigravity_archive_url("1.4.9-4962164969177088", "win32", "AMD64")
 
 
+def test_grok_headless_target_and_exact_version(tmp_path):
+    assert runner.integration_test_targets(
+        tmp_path,
+        ["grok"],
+        platform_name="posix",
+        installation_only=False,
+        headless_only=True,
+    ) == [f"{tmp_path / 'test_ug_grok_headless.py'}::test_ug_grok_headless_completes_file_task"]
+    args = runner.arguments(["--grok-version", "1.0.67", "--installation-only"], environment={})
+    assert args.grok_version == "1.0.67"
+    assert runner.AGENT_PACKAGES["grok"] == "@xai-official/grok"
+    # `grok --version` prints the build hash too; the exact-version match still finds the pin.
+    assert runner.agent_version_output("grok", "grok 1.0.67 (2fe064390d07)") == (
+        "grok 1.0.67 (2fe064390d07)"
+    )
+
+
 def test_copilot_version_output_matches_the_pinned_version():
     output = "GitHub Copilot CLI 1.0.91.\nRun 'copilot update' to check for updates.\n"
     assert runner.agent_version_output("copilot", output) == "GitHub Copilot CLI 1.0.91"

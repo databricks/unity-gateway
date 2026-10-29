@@ -2787,8 +2787,8 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
 # OpenAI surface); gemini speaks Google's, served by a Gemini Enterprise
 # provider. copilot speaks Anthropic's for the Claude targets of anthropic, Bedrock and
 # microsoft_foundry services, and OpenAI's for the other targets of openai, azure_openai and
-# microsoft_foundry services, on the gateway's native route for each API. Tags are the short form produced by `_provider_type_tag`
-# (e.g. `amazon_bedrock`).
+# microsoft_foundry services, on the gateway's native route for each API; grok routes the same way.
+# Tags are the short form produced by `_provider_type_tag` (e.g. `amazon_bedrock`).
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
     "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle"),
     "codex": ("openai", "azure_openai", "microsoft_foundry", "amazon_bedrock", "bedrock_mantle"),
@@ -2802,10 +2802,18 @@ _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
         "azure_openai",
         "microsoft_foundry",
     ),
+    "grok": (
+        "anthropic",
+        "amazon_bedrock",
+        "bedrock_mantle",
+        "openai",
+        "azure_openai",
+        "microsoft_foundry",
+    ),
 }
 
 # Agents that can only use a Bedrock service's Claude targets.
-_CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot")
+_CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot", "grok")
 
 # Provider types that expose Bedrock-style model ids (e.g.
 # `us.anthropic.claude-sonnet-4-6`, or region-less `anthropic.claude-*` on
@@ -3902,6 +3910,8 @@ def build_tool_base_url(tool: str, workspace: str) -> str:
         )
     if tool == "pi":
         raise RuntimeError("Pi has multiple base URLs — use build_pi_base_urls() instead.")
+    if tool == "grok":
+        raise RuntimeError("Grok has multiple base URLs — use build_grok_base_urls() instead.")
     raise RuntimeError(f"Unsupported tool '{tool}'.")
 
 
@@ -3981,6 +3991,15 @@ def build_pi_base_urls(workspace: str) -> dict[str, str]:
     }
 
 
+def build_grok_base_urls(workspace: str) -> dict[str, str]:
+    # Grok appends `/messages`, `/responses`, or `/chat/completions`. `ug grok` points these routes
+    # at its session proxy; the workspace URLs are shown by `ug status`.
+    return {
+        "anthropic": build_tool_base_url("claude", workspace) + "/v1",
+        "mlflow": build_copilot_base_url(workspace),
+    }
+
+
 def build_copilot_base_url(workspace: str) -> str:
     # Copilot appends `/responses` or `/chat/completions`; both use this gateway base.
     return f"{workspace}/ai-gateway/mlflow/v1"
@@ -3995,5 +4014,6 @@ def build_shared_base_urls(workspace: str) -> dict[str, str | dict[str, str]]:
         "copilot": build_copilot_base_url(workspace),
         "pi": build_pi_base_urls(workspace),
         "antigravity": build_tool_base_url("antigravity", workspace),
+        "grok": build_grok_base_urls(workspace),
     }
     return urls

@@ -15,5 +15,16 @@ COPILOT_HEADLESS_FLAGS = (
     "--disable-builtin-mcps",
 )
 
+# Least privilege for a headless file task: Grok may read files and is refused everything else.
+GROK_HEADLESS_FLAGS = (
+    "--no-auto-update",
+    "--permission-mode",
+    "dontAsk",
+    "--allow",
+    "Read",
+    "--output-format",
+    "streaming-json",
+)
+
 MANAGED_CLAUDE_PROVIDER_SERVICE = "main.default.ci_e2e_anthropic_mps"
 MANAGED_CODEX_PROVIDER_SERVICE = "main.default.ci_e2e_openai_mps"

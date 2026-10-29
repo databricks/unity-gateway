@@ -45,7 +45,7 @@ from ucode.ui import (
     status_subprocess_stdout,
 )
 
-from . import antigravity, claude, codex, copilot, gemini, kilo, opencode, pi
+from . import antigravity, claude, codex, copilot, gemini, grok, kilo, opencode, pi
 from .args import LaunchOptions as LaunchOptions
 from .args import explicit_model_arg_value as explicit_model_arg_value
 
@@ -58,6 +58,7 @@ _MODULES = {
     "copilot": copilot,
     "pi": pi,
     "antigravity": antigravity,
+    "grok": grok,
 }
 
 TOOL_SPECS: dict[str, ToolSpec] = {name: module.SPEC for name, module in _MODULES.items()}
@@ -81,6 +82,8 @@ TOOL_ALIASES = {
     "antigravity": "antigravity",
     "agy": "antigravity",
     "antigravity-cli": "antigravity",
+    "grok": "grok",
+    "grok-build": "grok",
 }
 
 DEFAULT_TOOL = "codex"
@@ -137,7 +140,7 @@ def normalize_tool(tool: str) -> str:
     if not normalized:
         raise RuntimeError(
             f"Unsupported tool '{tool}'. Use one of: codex, claude, gemini, opencode, kilo, copilot, "
-            "pi, antigravity."
+            "pi, antigravity, grok."
         )
     return normalized
 
@@ -584,6 +587,11 @@ def configure_tool(
         if not model and not provider and not parent_schema:
             raise RuntimeError(f"A {tool} model must be selected before configuration.")
         result = copilot.write_tool_config(state, model)
+    elif tool == "grok":
+        # Under a Model Provider Service, Grok starts on one of the service's models.
+        if not model and not provider:
+            raise RuntimeError(f"A {tool} model must be selected before configuration.")
+        result = grok.write_tool_config(state, model, provider=provider)
     else:
         # Every tool in this branch needs a model — including gemini under a provider,
         # which still pins the service's target model in the URL.
@@ -599,7 +607,8 @@ def configure_tool(
             result = kilo.write_tool_config(state, model)
         else:
             result = opencode.write_tool_config(state, model)
-    # gemini/opencode/kilo/pi return (state, token); codex/claude/copilot/antigravity return state
+    # gemini/opencode/kilo/pi return (state, token); codex/claude/copilot/antigravity/grok
+    # return state
     if isinstance(result, tuple):
         return result[0]
     return result
@@ -648,6 +657,8 @@ def check_gateway_endpoint(state: dict, tool: str) -> bool:
         return bool(antigravity.model_catalog(state))
     if tool == "copilot":
         return bool(copilot.copilot_catalog(state))
+    if tool == "grok":
+        return bool(grok.databricks_catalog(state))
     if tool == "pi":
         return (
             bool(state.get("claude_models"))
@@ -666,6 +677,7 @@ _TOOL_DISCOVERY_SOURCES: dict[str, tuple[str, ...]] = {
     "copilot": ("copilot",),
     "pi": ("claude", "codex", "gemini"),
     "antigravity": ("gemini",),
+    "grok": ("claude", "codex", "oss"),
 }
 
 
