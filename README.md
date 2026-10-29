@@ -358,6 +358,7 @@ ug skills remove --location main.default --via mcp
 | `ug export` | Print or write portable managed config JSON |
 | `ug doctor` | Diagnose local setup and offer fixes |
 | `ug usage` | Show Unity Gateway spend and budget |
+| `ug ui` | Open the Unity Gateway page for your workspace in a browser |
 | `ug revert` | Clear saved state and restore backed-up config files |
 | `ug upgrade` | Upgrade Unity Gateway |
 

@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import webbrowser
 from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stdout
 from enum import StrEnum
@@ -4815,6 +4816,19 @@ def usage_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
+
+
+@app.command("ui", rich_help_panel="Usage")
+def ui_cmd() -> None:
+    """Open the Unity Gateway page for the configured workspace in your browser."""
+    workspace = load_state().get("workspace")
+    if not workspace:
+        print_err("Workspace is not configured. Run `ug configure` first.")
+        raise typer.Exit(1)
+    url = f"{normalize_workspace_url(workspace)}/ml/ai-gateway"
+    print_kv("Unity Gateway", url)
+    if not webbrowser.open(url):
+        print_note("Could not open a browser. Open the URL above manually.")
 
 
 @app.command("upgrade", rich_help_panel="Manage")
