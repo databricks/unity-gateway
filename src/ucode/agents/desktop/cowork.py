@@ -81,7 +81,7 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
             resources = anthropic_cowork.load_resources(_claude_binary())
         except RuntimeError as exc:
             print_warning(f"Could not sync Anthropic Cowork resources: {exc}")
-    if resources is None:
+    if resources is None and not relayed:
         _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config, hooks)
     else:
         _write_marketplace(
@@ -92,6 +92,7 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
             hooks,
             anthropic_resources=resources,
             workspace=workspace,
+            preserve_anthropic=relayed,
         )
     config_io.atomic_write_json(
         _state_path(),
@@ -326,8 +327,9 @@ def _write_marketplace(
     mcp_config: dict,
     hooks: dict | None = None,
     *,
-    anthropic_resources: anthropic_cowork.DocsResources | None = None,
+    anthropic_resources: anthropic_cowork.AccountResources | None = None,
     workspace: str = "",
+    preserve_anthropic: bool = False,
 ) -> None:
     marketplace_root.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(
@@ -361,8 +363,9 @@ def _write_marketplace(
             _write_json(staging_plugin / ".mcp.json", mcp_config)
         if hooks:
             _write_json(staging_plugin / "hooks" / "hooks.json", hooks)
-        if anthropic_resources is not None:
-            name = anthropic_cowork.PLUGIN_NAME
+        name = anthropic_cowork.PLUGIN_NAME
+        previous_account = marketplace_root / "plugins" / name
+        if anthropic_resources is not None or (preserve_anthropic and previous_account.is_dir()):
             marketplace["plugins"].append(
                 {
                     "name": name,
@@ -370,12 +373,16 @@ def _write_marketplace(
                     "source": f"./plugins/{name}",
                 }
             )
-            anthropic_cowork.write_plugin(
-                staging / "plugins" / name,
-                anthropic_resources,
-                os.path.abspath(sys.executable),
-                workspace,
-            )
+            if anthropic_resources is None:
+                shutil.copytree(previous_account, staging / "plugins" / name)
+            else:
+                anthropic_cowork.write_plugin(
+                    staging / "plugins" / name,
+                    anthropic_resources,
+                    os.path.abspath(sys.executable),
+                    workspace,
+                    previous_root=previous_account,
+                )
         _write_json(staging / ".claude-plugin" / "marketplace.json", marketplace)
         _write_json(staging_plugin / ".claude-plugin" / "plugin.json", plugin)
         _copy_skills(staging_plugin / "skills", skill_records)

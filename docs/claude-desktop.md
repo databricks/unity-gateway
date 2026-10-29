@@ -186,9 +186,9 @@ below.
 ## Anthropic account resources in relay mode
 
 When `claude_relayed` is enabled, Cowork setup additionally installs
-`ug-account-docs@unity-gateway-cowork`. This first integration includes only the account's
-eligible **Claude Docs** connector and enabled **docs** skill. Other Anthropic
-connectors and skills are not imported yet. The ordinary `ug` workspace plugin and its
+`ug-account-docs@unity-gateway-cowork`. The ID is retained from the Docs-only prototype;
+the plugin now imports all eligible connectors and enabled skills returned by the
+account APIs, including custom skills. The ordinary `ug` workspace plugin and its
 `system.ai` MCPs remain available, and Desktop stays in gateway/third-party mode.
 
 The additional plugin uses Anthropic's internal account APIs with the same Claude
@@ -196,29 +196,40 @@ subscription credential as relay authentication. Connector discovery needs the r
 `user:mcp_servers` grant; account skill access uses the account's existing permissions.
 UG stores no bearer in plugin files. Its stdio proxy reads or silently refreshes the
 credential for each HTTP request and forwards MCP instructions, tool schemas, and tool
-results unchanged. It accepts only the connector selected at configure time; changing
-accounts or connector installation requires reconfigure. Account API and proxy requests
+results unchanged. Each proxy checks that its configured connector ID remains eligible
+for the current account. Connector additions, removals, or account changes require
+reconfigure and a fresh task. Account API and proxy requests
 do not follow redirects. These APIs are undocumented and can change.
 
-Configure downloads `docs/SKILL.md` and its supporting files into the separate plugin.
+Configure downloads each enabled skill's `SKILL.md` and supporting files into the separate
+plugin. Files retain their executable permission when provided by the archive. Skill and
+connector names are normalized to safe names, with deterministic suffixes for collisions;
+the account namespace keeps them separate from workspace skills/connectors of the same name.
 Its SessionStart handler uses the existing hidden `ug cowork-hook` command to refresh
-that skill and request `reloadSkills` before the first turn. Confirmed disabled skills
-are removed from that plugin. Refresh failures warn and retain the last downloaded
-skill. Both proxy and hook bind to configure's original Claude configuration directory;
+enabled skills and request `reloadSkills` before the first turn. Downloads run with up to
+four workers; the hook has a 180-second timeout. Confirmed disabled or deleted skills
+are removed using an ownership manifest. Individual download failures warn and preserve
+prior copies for the same organization and skill ID; other downloads still proceed.
+A failed or explicitly incomplete catalog leaves existing resources intact. ZIP archives
+are limited to 32 MiB of unpacked files and 512 files per skill; unsafe paths, symlinks,
+case-colliding files, and invalid skill roots are rejected.
+Both proxy and hook bind to configure's original Claude configuration directory;
 Cowork's inherited `CLAUDE_CONFIG_DIR` cannot select a different Keychain entry. Hook
 refresh never opens an interactive sign-in flow. Disabling relay removes this additional
 plugin on reconfigure; revert cleans up both plugins.
 
 The API path was checked manually on macOS: account connector listing, MCP initialization,
 tool discovery, a read-only `guide` invocation, account skill listing, and `docs` ZIP
-download all succeeded with the saved subscription credential. Component tests cover
-the new plugin and bridge with isolated HTTP/authentication boundaries. **The generated
-plugin's hook execution, skill reload, and MCP use inside a real third-party Cowork
-session still require native validation.** Start a fresh task and ask it to load the
-`ug-account-docs` docs skill and call Claude Docs' read-only `guide` tool, then verify a
-workspace `system.ai` tool is available in the same task. Do not create or edit a document
-for this check. Importing a skill does not provide any missing native browser, artifact,
-or computer-use capabilities.
+download all succeeded with the saved subscription credential. A manual third-party
+Cowork smoke check also loaded the imported docs skill, called its read-only `guide`,
+and discovered workspace tools in the same task. Component tests cover multi-connector
+generation and skill refresh with isolated HTTP/authentication boundaries.
+**Broader account skill downloads, other account connectors, and repeated same-session
+skill reload still need native validation.** After reconfigure, start a fresh task and
+discover both account and workspace connector tools, load an imported skill other than
+docs, and check a read-only account connector operation. Do not create or edit content
+for this check. Importing a skill does not provide missing native browser, artifact,
+computer-use, or other tools; skills that depend on those capabilities may be unusable.
 
 ## Models and authentication
 

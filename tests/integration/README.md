@@ -559,8 +559,10 @@ emits one warning and a failed Desktop summary, and preserves profile and select
 files. Retry restores the previous selection without workspace state and returns 0;
 a repeated revert also returns 0. This does not establish native Desktop coverage.
 
-`../test_anthropic_cowork.py` adds component checks for the relay-only Claude Docs
-plugin, account API/credential boundaries, skill archives and refresh, mode cleanup, and
+`../test_anthropic_cowork.py` adds component checks for relay-only multi-connector and
+enabled/custom-skill import, stable aliases, supporting-file permissions, per-skill failure
+retention, catalog-failure preservation, organization isolation, disabled/deleted-skill
+removal, account API/credential boundaries, skill refresh, mode cleanup, and
 MCP instruction/schema/result forwarding. HTTP and stdio transports are isolated in these
 checks. Native Cowork hook execution, `reloadSkills`, gateway inference, and coexisting
 Anthropic/workspace tool calls remain unverified by the automated suite.

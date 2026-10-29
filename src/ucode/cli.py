@@ -2518,7 +2518,7 @@ def anthropic_mcp_proxy_cmd(
     claude_binary: Annotated[str, typer.Option("--claude-binary")],
     claude_config_dir: Annotated[str, typer.Option("--claude-config-dir")] = "",
 ) -> None:
-    """Bridge the relay-only Claude Docs connector without storing its bearer."""
+    """Bridge a relay-only account connector without storing its bearer."""
     import sys
 
     from ucode.agents.desktop.anthropic_cowork import credential_source
@@ -2580,7 +2580,7 @@ def cowork_hook_cmd(
                 with credential_source(claude_config_dir):
                     output = sync_hook(payload, Path(root), claude_binary)
             except (RuntimeError, OSError) as exc:
-                print_warning(f"Could not refresh Anthropic Cowork skill: {exc}")
+                print_warning(f"Could not refresh Anthropic Cowork skills: {exc}")
                 return
         else:
             output = hook_output(payload, servers, host, profile, use_pat=use_pat)

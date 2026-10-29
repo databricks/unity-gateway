@@ -20,6 +20,7 @@ from ucode.cli import app
 
 WORKSPACE = "https://workspace.example"
 MARKDOWN = b"---\nname: docs\ndescription: Edit docs\n---\nUse Claude Docs.\n"
+SKILL_FILES = {"SKILL.md": account.SkillFile(MARKDOWN)}
 
 
 def skill_zip(name="docs/SKILL.md", content=MARKDOWN, mode=0):
@@ -31,7 +32,16 @@ def skill_zip(name="docs/SKILL.md", content=MARKDOWN, mode=0):
     return output.getvalue()
 
 
-def api_response(request, *, enabled=True):
+def api_response(
+    request,
+    *,
+    enabled=True,
+    skills=None,
+    connectors=None,
+    failed=(),
+    archives=None,
+    catalog_status=200,
+):
     assert request.url.host == "api.anthropic.com"
     assert request.headers["Authorization"] == "Bearer fixture-token"
     if request.url.path == "/api/oauth/profile":
@@ -41,7 +51,9 @@ def api_response(request, *, enabled=True):
         return httpx.Response(
             200,
             json={
-                "data": [
+                "data": connectors
+                if connectors is not None
+                else [
                     {
                         "display_name": "Claude Docs",
                         "id": "server-id",
@@ -52,9 +64,16 @@ def api_response(request, *, enabled=True):
         )
     assert request.headers["x-organization-uuid"] == "org-id"
     if request.url.path.endswith("/list-skills"):
-        return httpx.Response(200, json={"skills": [{"id": "docs", "enabled": enabled}]})
-    assert request.url.path.endswith("/skills/docs/download")
-    return httpx.Response(200, content=skill_zip())
+        return httpx.Response(
+            catalog_status,
+            json={"skills": skills if skills is not None else [{"id": "docs", "enabled": enabled}]},
+        )
+    assert request.url.path.endswith("/download")
+    skill_id = request.url.path.split("/")[-2]
+    if skill_id in failed:
+        return httpx.Response(503)
+    content = (archives or {}).get(skill_id, skill_zip(f"{skill_id}/SKILL.md"))
+    return httpx.Response(200, content=content)
 
 
 @pytest.fixture
@@ -69,9 +88,7 @@ def account_http(monkeypatch):
         lambda **kwargs: original(
             **{
                 **kwargs,
-                "transport": httpx.MockTransport(
-                    lambda request: api_response(request, enabled=handler["enabled"])
-                ),
+                "transport": httpx.MockTransport(lambda request: api_response(request, **handler)),
             }
         ),
     )
@@ -80,14 +97,192 @@ def account_http(monkeypatch):
 
 def test_account_loads_enabled_docs_and_connector_from_same_credential(account_http):
     resources = account.load_resources("/opt/claude")
-    assert resources.server_id == "server-id"
-    assert resources.files == {"SKILL.md": MARKDOWN}
+    assert resources.connectors == {"claude-docs": "server-id"}
+    assert resources.skills == [account.AccountSkill("docs", "docs", SKILL_FILES)]
     assert resources.claude_binary == "/opt/claude"
 
 
 def test_disabled_docs_is_not_downloaded(account_http):
     account_http["enabled"] = False
-    assert account.load_resources("/opt/claude").files == {}
+    assert account.load_resources("/opt/claude").skills == []
+
+
+def test_imports_all_eligible_connectors_and_enabled_skills(account_http, tmp_path):
+    account_http["connectors"] = [
+        {"id": "server-id", "display_name": "Claude Docs", "eligible": True},
+        {"id": "drive-id", "display_name": "Google Drive", "eligible": True},
+        {"id": "blocked", "display_name": "Blocked", "eligible": False},
+        {"id": "unknown", "display_name": "Unknown"},
+    ]
+    account_http["skills"] = [
+        {"id": "docs", "name": "docs", "enabled": True},
+        {"id": "google-workspace", "name": "google-workspace", "enabled": True},
+        {"id": "custom-id", "name": "my-team", "enabled": True},
+        {"id": "disabled", "enabled": False},
+        {"id": "unknown"},
+    ]
+    account_http["archives"] = {"custom-id": skill_zip("custom-name/SKILL.md")}
+    account_http["failed"] = ("disabled", "unknown")
+    resources = account.load_resources("/opt/claude")
+    assert resources.connectors == {"claude-docs": "server-id", "google-drive": "drive-id"}
+    assert {skill.id for skill in resources.skills} == {"docs", "google-workspace", "custom-id"}
+    root = tmp_path / "plugin"
+    account.write_plugin(root, resources, "/opt/python", WORKSPACE)
+    config = json.loads((root / ".mcp.json").read_text())["mcpServers"]
+    assert set(config) == {"claude-docs", "google-drive"}
+    assert config["google-drive"]["args"][6] == "drive-id"
+    assert {p.name for p in (root / "skills").iterdir()} == {"docs", "google-workspace", "my-team"}
+    assert (root / "skills/my-team/SKILL.md").read_bytes() == MARKDOWN
+
+
+def test_skills_import_does_not_require_claude_docs_connector(account_http):
+    account_http["connectors"] = []
+    resources = account.load_resources("/opt/claude")
+    assert resources.connectors == {}
+    assert resources.skills[0].name == "docs"
+
+
+def test_resource_aliases_handle_duplicate_and_unsafe_names_without_order_dependence():
+    catalog = [
+        {"id": "a", "name": "../same name"},
+        {"id": "b", "name": "Same Name"},
+        {"id": "c", "name": "../../"},
+        {"id": "d", "name": "x" * 200},
+    ]
+    aliases = account._aliases(catalog, "name")
+    assert aliases == account._aliases(list(reversed(catalog)), "name")
+    assert len(set(aliases.values())) == 4
+    assert aliases["a"].startswith("same-name-")
+    assert aliases["c"] == "resource"
+    assert all(len(name) <= 64 and "/" not in name for name in aliases.values())
+
+
+def test_hook_refreshes_all_skills_retains_failed_and_removes_disabled(account_http, tmp_path):
+    account_http["skills"] = [
+        {"id": name, "name": name, "enabled": True}
+        for name in ("docs", "google-workspace", "custom", "deleted")
+    ]
+    root = tmp_path / "plugin"
+    account.write_plugin(root, account.load_resources("/opt/claude"), "/opt/python", WORKSPACE)
+    custom = root / "skills/custom/SKILL.md"
+    custom.write_text("last good skill")
+    account_http["skills"] = [
+        {"id": "docs", "enabled": False},
+        {"id": "google-workspace", "enabled": True},
+        {"id": "custom", "enabled": True},
+        {"id": "new", "enabled": True},
+    ]
+    account_http["failed"] = ("custom",)
+    account.sync_hook({"hook_event_name": "SessionStart"}, root, "/opt/claude")
+    assert custom.read_text() == "last good skill"
+    assert not (root / "skills/docs").exists()
+    assert not (root / "skills/deleted").exists()
+    assert (root / "skills/new/SKILL.md").read_bytes() == MARKDOWN
+
+
+def test_skill_failure_does_not_block_connectors_or_other_skills(account_http, tmp_path):
+    account_http["skills"] = [{"id": name, "enabled": True} for name in ("docs", "bad")]
+    account_http["failed"] = ("bad",)
+    root = tmp_path / "plugin"
+    resources = account.load_resources("/opt/claude")
+    account.write_plugin(root, resources, "/opt/python", WORKSPACE)
+    assert (root / "skills/docs/SKILL.md").exists()
+    assert not (root / "skills/bad").exists()
+    assert "claude-docs" in json.loads((root / ".mcp.json").read_text())["mcpServers"]
+
+
+def test_failed_skill_is_not_retained_across_organizations(tmp_path):
+    root = tmp_path / "plugin"
+    resources = account.AccountResources(
+        {}, [account.AccountSkill("id", "custom", SKILL_FILES)], "old", "/opt/claude", ""
+    )
+    account.write_plugin(root, resources, "/opt/python", WORKSPACE)
+    resources.org = "new"
+    resources.skills[0].files = None
+    account.write_plugin(root, resources, "/opt/python", WORKSPACE)
+    assert not (root / "skills/custom").exists()
+
+
+def test_failed_skill_retains_previous_copy_when_alias_changes(tmp_path):
+    root = tmp_path / "plugin"
+    resources = account.AccountResources(
+        {}, [account.AccountSkill("id", "old-name", SKILL_FILES)], "org", "/opt/claude", ""
+    )
+    account.write_plugin(root, resources, "/opt/python", WORKSPACE)
+    resources.skills = [account.AccountSkill("id", "new-name", None)]
+    account.write_plugin(root, resources, "/opt/python", WORKSPACE)
+    assert (root / "skills/new-name/SKILL.md").read_bytes() == MARKDOWN
+    assert not (root / "skills/old-name").exists()
+
+
+def test_discovery_failure_preserves_existing_account_plugin(tmp_path, account_http):
+    marketplace = tmp_path / "marketplace"
+    workspace_plugin = marketplace / "plugins" / cowork.PLUGIN_NAME
+    config = {"mcpServers": {}}
+    cowork._write_marketplace(
+        marketplace,
+        workspace_plugin,
+        [],
+        config,
+        anthropic_resources=account.load_resources("/opt/claude"),
+        workspace=WORKSPACE,
+    )
+    account_root = marketplace / "plugins" / account.PLUGIN_NAME
+    original = (account_root / ".mcp.json").read_bytes()
+    cowork._write_marketplace(marketplace, workspace_plugin, [], config, preserve_anthropic=True)
+    assert (account_root / ".mcp.json").read_bytes() == original
+    assert (account_root / "skills/docs/SKILL.md").read_bytes() == MARKDOWN
+    manifest = json.loads((marketplace / ".claude-plugin/marketplace.json").read_text())
+    assert account.PLUGIN_NAME in {plugin["name"] for plugin in manifest["plugins"]}
+
+
+def test_hook_catalog_failure_preserves_all_installed_skills(tmp_path, account_http):
+    root = tmp_path / "plugin"
+    account.write_plugin(root, account.load_resources("/opt/claude"), "/opt/python", WORKSPACE)
+    account_http["catalog_status"] = 503
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        account.sync_hook({"hook_event_name": "SessionStart"}, root, "/opt/claude")
+    assert (root / "skills/docs/SKILL.md").read_bytes() == MARKDOWN
+
+
+def test_upgrades_docs_only_layout_and_removes_disabled_docs(tmp_path, account_http):
+    root = tmp_path / "plugin"
+    account.write_plugin(root, account.load_resources("/opt/claude"), "/opt/python", WORKSPACE)
+    (root / account.SKILL_MANIFEST).unlink()
+    sibling = root / "skills/unowned"
+    sibling.mkdir()
+    (sibling / "SKILL.md").write_text("keep")
+    account_http["enabled"] = False
+    account.sync_hook({"hook_event_name": "SessionStart"}, root, "/opt/claude")
+    assert not (root / "skills/docs").exists()
+    assert (sibling / "SKILL.md").read_text() == "keep"
+
+
+def test_hook_rolls_back_skills_if_manifest_replacement_fails(tmp_path, account_http, monkeypatch):
+    root = tmp_path / "plugin"
+    account.write_plugin(root, account.load_resources("/opt/claude"), "/opt/python", WORKSPACE)
+    (root / "skills/docs/SKILL.md").write_text("last good skill")
+    previous_manifest = (root / account.SKILL_MANIFEST).read_bytes()
+    replace = os.replace
+
+    def fail_manifest(source, destination):
+        if Path(destination) == root / account.SKILL_MANIFEST:
+            raise OSError("disk unavailable")
+        return replace(source, destination)
+
+    monkeypatch.setattr(account.os, "replace", fail_manifest)
+    with pytest.raises(OSError, match="disk unavailable"):
+        account.sync_hook({"hook_event_name": "SessionStart"}, root, "/opt/claude")
+    assert (root / "skills/docs/SKILL.md").read_text() == "last good skill"
+    assert (root / account.SKILL_MANIFEST).read_bytes() == previous_manifest
+
+
+@pytest.mark.parametrize(
+    "result", [{"skills": [{}], "has_more": True}, {"skills": "bad"}, {"skills": [None]}]
+)
+def test_incomplete_or_malformed_catalog_is_not_treated_as_deletions(result):
+    with pytest.raises(RuntimeError):
+        account._catalog(result, "skills")
 
 
 def test_api_reads_fresh_token_per_request_and_does_not_follow_redirects():
@@ -121,7 +316,7 @@ def test_api_error_does_not_include_response_body_or_credential():
         transport=transport,
     ) as client:
         with pytest.raises(RuntimeError) as error:
-            client.docs_connector()
+            client.connectors()
     assert str(error.value) == "Anthropic account API returned HTTP 403."
 
 
@@ -134,19 +329,43 @@ def test_api_error_does_not_include_response_body_or_credential():
         "docs/..\\outside",
         "C:/outside",
         "docs/.hidden/SKILL.md",
-        "docs",
     ],
 )
 def test_archive_rejects_paths_outside_owned_skill_files(name):
     with pytest.raises(RuntimeError, match="unsafe path"):
-        account.unpack_docs_skill(skill_zip(name))
+        account.unpack_skill(skill_zip(name))
 
 
 def test_archive_rejects_symlinks_and_invalid_markdown():
     with pytest.raises(RuntimeError, match="unsafe path"):
-        account.unpack_docs_skill(skill_zip(mode=stat.S_IFLNK | 0o777))
+        account.unpack_skill(skill_zip(mode=stat.S_IFLNK | 0o777))
     with pytest.raises(RuntimeError, match="valid SKILL.md"):
-        account.unpack_docs_skill(skill_zip(content=b"not a skill"))
+        account.unpack_skill(skill_zip(content=b"not a skill"))
+
+
+def test_archive_preserves_support_files_and_executable_permissions(tmp_path):
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("team-skill/SKILL.md", MARKDOWN)
+        script = zipfile.ZipInfo("team-skill/scripts/run.sh")
+        script.external_attr = (stat.S_IFREG | 0o755) << 16
+        archive.writestr(script, b"#!/bin/sh\ntrue\n")
+        archive.writestr("team-skill/references/guide.md", b"reference")
+    account.write_skill(tmp_path, account.unpack_skill(output.getvalue()))
+    assert (tmp_path / "references/guide.md").read_bytes() == b"reference"
+    assert (tmp_path / "scripts/run.sh").stat().st_mode & 0o111
+
+
+@pytest.mark.parametrize(
+    "names", [("SKILL.md", "skill.md"), ("scripts", "scripts/run.sh"), ("docs",)]
+)
+def test_archive_rejects_conflicting_paths_and_missing_skill_root(names):
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        for name in names:
+            archive.writestr(name, MARKDOWN)
+    with pytest.raises(RuntimeError):
+        account.unpack_skill(output.getvalue())
 
 
 def test_relay_plugin_coexists_with_workspace_docs_and_mcp(tmp_path):
@@ -155,7 +374,13 @@ def test_relay_plugin_coexists_with_workspace_docs_and_mcp(tmp_path):
     workspace_skill.mkdir(parents=True)
     (workspace_skill / "SKILL.md").write_text("workspace docs")
     config = {"mcpServers": {"system-ai": {"type": "stdio", "command": "/opt/ug"}}}
-    resources = account.DocsResources("server-id", {"SKILL.md": MARKDOWN}, "/opt/claude", "")
+    resources = account.AccountResources(
+        {"claude-docs": "server-id"},
+        [account.AccountSkill("docs", "docs", SKILL_FILES)],
+        "org-id",
+        "/opt/claude",
+        "",
+    )
     cowork._write_marketplace(
         marketplace,
         marketplace / "plugins" / cowork.PLUGIN_NAME,
@@ -261,6 +486,28 @@ def test_non_relay_workspace_cannot_start_anthropic_proxy():
     )
     assert result.exit_code == 1
     assert "configured relay workspace" in result.output
+
+
+def test_proxy_allows_other_eligible_connectors(account_http, monkeypatch):
+    account_http["connectors"] = [
+        {"id": "drive-id", "display_name": "Google Drive", "eligible": True}
+    ]
+    calls = []
+    # The stdio process boundary is not started in this eligibility check.
+    monkeypatch.setattr(
+        anthropic_mcp_proxy.anyio, "run", lambda function, *args: calls.append(args)
+    )
+    anthropic_mcp_proxy.serve("drive-id", "/opt/claude")
+    assert calls == [("drive-id", "/opt/claude")]
+
+
+def test_proxy_rejects_removed_or_ineligible_connector(account_http):
+    account_http["connectors"] = [
+        {"id": "server-id", "display_name": "Claude Docs", "eligible": False}
+    ]
+    with pytest.raises(SystemExit) as error:
+        anthropic_mcp_proxy.serve("server-id", "/opt/claude")
+    assert error.value.code == 2
 
 
 def test_stdio_bridge_preserves_instructions_schemas_and_tool_results(monkeypatch):

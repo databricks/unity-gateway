@@ -343,9 +343,11 @@ nothing without a readable transcript or previous reply. Other events are ignore
 stdout holds only the hook JSON. Probes and token minting are faked; native Cowork hook
 execution remains unverified.
 
-`test_anthropic_cowork.py` covers relay-only Claude Docs/account-skill discovery,
+`test_anthropic_cowork.py` covers relay-only multi-connector/account-skill discovery,
 credential-source binding, per-request token rotation, HTTP error redaction and redirect
-refusal, archive validation, disabled-skill cleanup, a separate generated plugin alongside
+refusal, custom archive roots and supporting-file executable modes, alias collisions,
+partial-download retention, organization isolation, disabled/deleted-skill cleanup,
+discovery-failure preservation, eligibility checks, a separate generated plugin alongside
 workspace resources, relay-mode cleanup, and a real MCP SDK exchange over isolated HTTP
 and stdio transports. It checks forwarding of instructions, tool schemas and call results.
 HTTP, credential storage, and plugin CLI boundaries are replaced; these are component

@@ -62,8 +62,10 @@ async def _run(server_id: str, claude_binary: str) -> None:
 def serve(server_id: str, claude_binary: str) -> None:
     try:
         with AccountClient(claude_binary) as client:
-            if client.docs_connector() != server_id:
-                raise RuntimeError("Claude Docs account changed. Run `ug configure` again.")
+            if server_id not in client.connectors().values():
+                raise RuntimeError(
+                    "Anthropic connector is no longer eligible. Run `ug configure` again."
+                )
         anyio.run(_run, server_id, claude_binary)
     except ClaudeDesktopAuthError as exc:
         print(f"ug anthropic-mcp-proxy: {exc}", file=sys.stderr)
