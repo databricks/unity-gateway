@@ -741,6 +741,23 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         assert captured == [("1", ["fix the parser"])]
 
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_claude_server_side_web_search_flag_is_launch_scoped(self, monkeypatch, flag):
+        env_var = "UG_CLAUDE_SERVER_SIDE_WEB_SEARCH"
+        monkeypatch.delenv(env_var, raising=False)
+        seen = []
+
+        def capture(_tool, _ctx, **_kwargs):
+            seen.append(os.environ.get(env_var))
+
+        args = ["claude", *(["--enable-server-side-web-search"] if flag else [])]
+        with patch("ucode.cli._launch_tool", side_effect=capture):
+            result = runner.invoke(app, args)
+
+        assert result.exit_code == 0, result.output
+        assert seen == ["1" if flag else None]
+        assert env_var not in os.environ
+
     @pytest.mark.parametrize(
         ("args", "forwarded", "has_separator"),
         [

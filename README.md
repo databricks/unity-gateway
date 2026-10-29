@@ -164,6 +164,21 @@ and `ug revert` return to `--global`.
 `--user` also fails for a workspace that publishes a managed config, which must be installed
 machine-wide; use `--global` for it.
 
+### Server-side web search for one Claude Code session
+
+By default ug denies Claude Code's native `WebSearch` and registers its own `web_search` MCP server.
+To use the AI Gateway's server-side web search for one launch instead:
+
+```bash
+ug claude --enable-server-side-web-search
+UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1 ug claude
+```
+
+The launch drops the bare `WebSearch` deny (scoped `WebSearch(...)` rules stay) and hides ug's
+`web_search` MCP server through `deniedMcpServers`. ug writes no config file for this: `ucode-settings.json` and the OS-managed settings are untouched. A
+`WebSearch` deny in the OS-managed settings or `~/.claude/settings.json` outranks a launch, so ug
+warns and the tool stays denied. Relayed launches are unaffected.
+
 ### Extra headers for one session
 
 ```bash

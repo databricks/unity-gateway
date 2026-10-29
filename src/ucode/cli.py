@@ -59,6 +59,7 @@ from ucode.constants import (
     AGENT_COPILOT,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
+    UG_CLAUDE_SERVER_SIDE_WEB_SEARCH_ENV_VAR,
     UG_HEADERS_ENV_VAR,
 )
 from ucode.custom_oauth import (
@@ -2993,6 +2994,23 @@ CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
 
 
 @contextmanager
+def _launch_env_flag(name: str, enabled: bool) -> Iterator[None]:
+    """Set a launch-scoped env flag for a CLI switch without leaking into an embedding process."""
+    if not enabled:
+        yield
+        return
+    previous = os.environ.get(name)
+    os.environ[name] = "1"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = previous
+
+
+@contextmanager
 def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[bool]:
     """Apply an explicit routing choice without leaking into an embedding process.
 
@@ -4220,6 +4238,14 @@ def claude_cmd(
         str | None,
         typer.Option("--smart-router-feedback", hidden=True),
     ] = None,
+    enable_server_side_web_search: Annotated[
+        bool,
+        typer.Option(
+            "--enable-server-side-web-search",
+            help="Use the AI Gateway's server-side web search instead of ug's `web_search` MCP "
+            f"for this launch. Same as {UG_CLAUDE_SERVER_SIDE_WEB_SEARCH_ENV_VAR}=1.",
+        ),
+    ] = False,
 ) -> None:
     """Launch Claude Code via Databricks."""
     if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
@@ -4229,9 +4255,12 @@ def claude_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from exc
-    with _smart_routing_v2_flag(
-        enable_smart_routing_flag, agent=AGENT_CLAUDE
-    ) as routing_already_chosen:
+    with (
+        _launch_env_flag(UG_CLAUDE_SERVER_SIDE_WEB_SEARCH_ENV_VAR, enable_server_side_web_search),
+        _smart_routing_v2_flag(
+            enable_smart_routing_flag, agent=AGENT_CLAUDE
+        ) as routing_already_chosen,
+    ):
         with _disable_smart_routing_for_subcommand("claude", ctx):
             _launch_tool(
                 "claude",

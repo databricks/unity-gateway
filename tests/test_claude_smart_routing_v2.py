@@ -236,6 +236,63 @@ class TestV2Launch:
         claude.exec_or_spawn.assert_not_called()
 
     @requires_pty
+    def test_server_side_web_search_reaches_launched_routing_settings(self, tmp_path, monkeypatch):
+        ucode_settings = tmp_path / "ucode-settings.json"
+        ucode_settings.write_text(
+            json.dumps(
+                {
+                    "env": {"ANTHROPIC_BASE_URL": "https://gw"},
+                    "permissions": {"deny": ["WebSearch", "WebSearch(domain:evil.test)"]},
+                }
+            )
+        )
+        before = ucode_settings.read_bytes()
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv("UG_CLAUDE_SERVER_SIDE_WEB_SEARCH", "1")
+        monkeypatch.setattr(claude, "APP_DIR", tmp_path)
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", ucode_settings)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(v2, "CLAUDE_PTY_LOG", tmp_path / "v2.log")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
+        monkeypatch.setattr(
+            v2,
+            "list_anthropic_model_catalog",
+            lambda *_args: AnthropicModelCatalog(
+                model_ids=["system.ai.claude-opus-4-8"], model_id_to_display_name={}
+            ),
+        )
+        captured: dict = {}
+
+        def fake_run(argv, **_kwargs):
+            generated = Path(argv[argv.index("--settings") + 1])
+            captured["settings"] = json.loads(generated.read_text())
+            return 0
+
+        monkeypatch.setattr(claude_pty, "run_claude_pty", fake_run)
+        caller = json.dumps({"deniedMcpServers": [{"serverName": "web-search"}]})
+        with pytest.raises(SystemExit):
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                ["--settings", caller],
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=None,
+                compose_settings=claude._compose_v2_settings,
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+
+        settings = captured["settings"]
+        assert settings["permissions"]["deny"] == ["WebSearch(domain:evil.test)"]
+        assert settings["deniedMcpServers"] == [
+            {"serverName": "web-search"},
+            {"serverName": claude.WEB_SEARCH_MCP_NAME},
+        ]
+        assert ucode_settings.read_bytes() == before
+
+    @requires_pty
     def test_restores_model_captured_immediately_before_switch(self, tmp_path, monkeypatch):
         ucode_settings = tmp_path / "ucode-settings.json"
         user_settings = tmp_path / "settings.json"
