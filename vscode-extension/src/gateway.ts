@@ -9,26 +9,36 @@ export async function* streamEvents(
   headers: Record<string, string>,
   signal: AbortSignal,
 ): AsyncGenerator<unknown> {
-  const post = (token: string) =>
+  const post = (token: string, payload: object) =>
     fetch(`${workspace}${path}`, {
       method: "POST",
       headers: { ...headers, Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
       signal,
     });
   let token = await tokens.get();
-  let response = await post(token);
+  let response = await post(token, body);
   if (response.status === 401) {
     await response.body?.cancel();
     token = await tokens.renew(token);
-    response = await post(token);
+    response = await post(token, body);
   }
   if (response.status === 401) {
     await response.body?.cancel();
     throw new Error("Databricks rejected the sign-in. Run `ug configure --agents vscode` to sign in again, then retry.");
   }
   if (!response.ok || !response.body) {
-    throw new Error(`AI Gateway returned ${response.status}: ${(await response.text()).slice(0, 300)}`);
+    const detail = (await response.text()).slice(0, 300);
+    // A model's real output limit can be below the one ug configured, and Anthropic Messages
+    // requires us to send one; the gateway's refusal names the limit to use instead.
+    const allowed = Number(/max_tokens: \d+ > (\d+)/.exec(detail)?.[1]);
+    if (!allowed) {
+      throw new Error(`AI Gateway returned ${response.status}: ${detail}`);
+    }
+    response = await post(token, { ...body, max_tokens: allowed });
+    if (!response.ok || !response.body) {
+      throw new Error(`AI Gateway returned ${response.status}: ${(await response.text()).slice(0, 300)}`);
+    }
   }
   const decoder = new TextDecoder();
   let buffer = "";

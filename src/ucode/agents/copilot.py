@@ -245,16 +245,26 @@ def uses_responses_api(model: str) -> bool:
     return _wire_from_name(bare_model_name(model)) == WIRE_RESPONSES
 
 
+def claude_model_name(model: str) -> str:
+    """A Claude model's own name, without its catalog/schema and release suffix:
+    ``us.anthropic.claude-sonnet-4-5-20250929-v1:0`` -> ``claude-sonnet-4-5``.
+
+    Other models keep their bare name."""
+    name = bare_model_name(model)
+    if not name.startswith("claude-"):
+        return name
+    return _CLAUDE_RELEASE_SUFFIX_PATTERN.sub("", name, count=1)
+
+
 def copilot_catalog_model_id(model: str) -> str | None:
     """Copilot's catalog id for a Claude model, e.g. ``system.ai.claude-sonnet-5-5`` -> ``claude-sonnet-5.5``.
 
     Copilot applies Claude request settings to any ``claude-*`` id, so ids missing from its catalog still work.
     Returns None for anything other than Claude.
     """
-    tail = bare_model_name(model)
+    tail = claude_model_name(model)
     if not tail.startswith("claude-"):
         return None
-    tail = _CLAUDE_RELEASE_SUFFIX_PATTERN.sub("", tail, count=1)
     catalog_id = _CLAUDE_DASHED_VERSION_PATTERN.sub(r"-\1.\2", tail)
     # Copilot sends budget thinking for any Haiku it doesn't know, which Haiku 5+ rejects; Sonnet
     # ids get the adaptive thinking those models require.

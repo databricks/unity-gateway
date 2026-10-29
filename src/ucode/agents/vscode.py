@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -31,11 +30,12 @@ from ucode.agents.copilot import (
     CopilotModel,
     build_copilot_catalog,
     catalog_model_limits,
+    claude_model_name,
     location_catalog,
     provider_service_catalog,
 )
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command, launch_token
-from ucode.databricks import bare_model_name, build_auth_shell_command, discover_model_services
+from ucode.databricks import build_auth_shell_command, discover_model_services
 from ucode.managed_files import OS, current_os
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.system_cross_os import windows_program_files_dir
@@ -55,8 +55,6 @@ _APIS = {
     WIRE_RESPONSES: "responses",
     WIRE_COMPLETIONS: "chat_completions",
 }
-# Anthropic and Bedrock Claude ids end in a release date and, on Bedrock, a version.
-_RELEASE_SUFFIX = re.compile(r"(?:-\d{8})?(?:-v\d+(?::\d+)?)?$")
 
 
 def _install_locations(command: str) -> list[Path]:
@@ -178,18 +176,11 @@ def install_extension(code: Path, config: dict[str, object]) -> str:
     return f"installed {EXTENSION_ID} {version}"
 
 
-def _family(model: str) -> str:
-    """The model's own name, e.g. ``us.anthropic.claude-sonnet-4-5-20250929-v1:0`` ->
-    ``claude-sonnet-4-5``."""
-    name = bare_model_name(model)
-    return _RELEASE_SUFFIX.sub("", name, count=1) if name.startswith("claude-") else name
-
-
 def _model_entry(model: CopilotModel, name: str, *, external: bool) -> dict[str, object]:
     entry: dict[str, object] = {
         "id": model.id,
         "name": name,
-        "family": _family(model.id),
+        "family": claude_model_name(model.id),
         "api": _APIS[model.wire],
     }
     # Models without known limits get the extension's 128K-in, 32K-out default.
@@ -223,7 +214,7 @@ def model_entries(
 ) -> list[dict[str, object]]:
     """The models of the chosen source, each with the API the extension calls it on."""
     catalog = _catalog(state, provider, location)
-    labels = {model: model_picker_label(_family(model.id)) for model in catalog}
+    labels = {model: model_picker_label(claude_model_name(model.id)) for model in catalog}
     counts = Counter(labels.values())
     # As in Codex's picker: two models with the same label show their full ids instead.
     return [

@@ -4644,9 +4644,15 @@ def configure(
         if agent is not None and agents is not None:
             raise RuntimeError("Use either --agent or --agents, not both.")
         if provider is not None or model_location is not None:
-            if "vscode" not in [a.strip().lower() for a in (agents or "").split(",")]:
+            requested_agents = [a.strip().lower() for a in (agents or "").split(",") if a.strip()]
+            # Both flags choose VS Code's models alone, so another model agent in the same run
+            # would silently keep the workspace's own. Cursor has no models to choose.
+            if "vscode" not in requested_agents or [
+                a for a in requested_agents if a not in ("vscode", "cursor")
+            ]:
                 raise RuntimeError(
-                    "--provider and --model-location work only with --agents vscode."
+                    "--provider and --model-location work only with `--agents vscode`. "
+                    "Configure the other agents in a separate run."
                 )
             if provider is not None and model_location is not None:
                 raise RuntimeError("--provider and --model-location cannot be used together.")

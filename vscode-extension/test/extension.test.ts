@@ -64,6 +64,26 @@ describe("streamEvents", () => {
     assert.equal(requests.length, 2);
   });
 
+  it("retries once with the output limit the gateway allows, and reports any other error", async () => {
+    const tooBig = [400, '{"message":"max_tokens: 32000 > 8192, which is the maximum allowed number of output tokens for claude-3-5-sonnet"}'] as [number, string];
+    let requests = stubFetch(tooBig, [200, sse('{"a":1}', "[DONE]")]);
+    const events = await collect(
+      streamEvents("https://ws", "/m", { model: "claude-3-5-sonnet", max_tokens: 32_000 }, new Tokens(tokenCommand(["t"]).command), {}, new AbortController().signal),
+    );
+    assert.deepEqual(events, [{ a: 1 }]);
+    assert.deepEqual(
+      requests.map((request) => request.body.max_tokens),
+      [32_000, 8_192],
+    );
+
+    requests = stubFetch(tooBig, tooBig);
+    await rejectsWith(
+      collect(streamEvents("https://ws", "/m", { max_tokens: 32_000 }, new Tokens(tokenCommand(["t"]).command), {}, new AbortController().signal)),
+      "AI Gateway returned 400: {\"message\":\"max_tokens: 32000 > 8192",
+    );
+    assert.equal(requests.length, 2);
+  });
+
   it("reports other gateway errors with their body", async () => {
     stubFetch([400, '{"message":"bad tools"}']);
     await rejectsWith(

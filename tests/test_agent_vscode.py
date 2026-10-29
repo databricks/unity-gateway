@@ -514,8 +514,13 @@ def test_configure_agents_vscode_sets_up_the_workspace_then_vscode(monkeypatch, 
 @pytest.mark.parametrize(
     ("args", "error"),
     [
-        (["--agents", "claude", "--provider", "a.b.c"], "work only with --agents vscode"),
-        (["--provider", "a.b.c"], "work only with --agents vscode"),
+        (["--agents", "claude", "--provider", "a.b.c"], "work only with `--agents vscode`"),
+        (["--provider", "a.b.c"], "work only with `--agents vscode`"),
+        # A model agent alongside VS Code would silently keep the workspace's own models.
+        (
+            ["--agents", "claude,vscode", "--provider", "a.b.c"],
+            "work only with `--agents vscode`",
+        ),
         (
             ["--agents", "vscode", "--provider", "a.b.c", "--model-location", "a.b"],
             "cannot be used together",

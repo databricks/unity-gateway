@@ -134,18 +134,18 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
       streamEvents(workspace, path, body, tokens, { ...headers, ...extra }, abort.signal);
     // The gateway serves a Model Provider Service's OpenAI models only on its OpenAI route.
     const openai = provider ? "/ai-gateway/openai/v1" : "/ai-gateway/mlflow/v1";
+    const apis: Record<ModelSetting["api"], () => AsyncIterable<Reply>> = {
+      anthropic_messages: () =>
+        anthropicMessagesReplies(
+          stream("/ai-gateway/anthropic/v1/messages", anthropicMessagesRequest(turn, model.maxOutputTokens), {
+            "anthropic-version": "2023-06-01",
+          }),
+        ),
+      responses: () => responsesReplies(stream(`${openai}/responses`, responsesRequest(turn))),
+      chat_completions: () => chatCompletionsReplies(stream(`${openai}/chat/completions`, chatCompletionsRequest(turn))),
+    };
     try {
-      const replies: AsyncIterable<Reply> =
-        model.api === "anthropic_messages"
-          ? anthropicMessagesReplies(
-              stream("/ai-gateway/anthropic/v1/messages", anthropicMessagesRequest(turn, model.maxOutputTokens), {
-                "anthropic-version": "2023-06-01",
-              }),
-            )
-          : model.api === "responses"
-            ? responsesReplies(stream(`${openai}/responses`, responsesRequest(turn)))
-            : chatCompletionsReplies(stream(`${openai}/chat/completions`, chatCompletionsRequest(turn)));
-      for await (const reply of replies) {
+      for await (const reply of apis[model.api]()) {
         progress.report(reply);
       }
     } catch (error) {
