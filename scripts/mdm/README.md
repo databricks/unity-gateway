@@ -3,23 +3,17 @@
 Deploying coding agents through the Databricks AI Gateway to a fleet of macs has
 two independent layers. Keep them separate.
 
-## Layer 1 — provisioning (`../mdm-bootstrap.sh`)
+## Layer 1 — provisioning (`jamf-provision.sh`)
 
-A JAMF policy script, run as root on each machine. It ensures prerequisites
-(`uv`, `node`), installs `ug`, mints a short-lived service-principal (OAuth M2M)
-token from `UG_CLIENT_ID`/`UG_CLIENT_SECRET` and hands it to `ug` via
-`DATABRICKS_BEARER_COMMAND` (never written to disk), runs `ug configure
---workspace` **non-interactively**, and probes each enabled agent. Because it
-runs non-interactively, `ug` writes only its **local** settings and never touches
-the OS-managed files, so there is no `sudo` password prompt. `ug claude` /
-`ug codex` work off those local settings.
+A JAMF policy script, run as root on each machine. It installs `ug` (with its own Python), the
+Databricks CLI, Claude Code and Codex under `/usr/local`, where every user can run them, then runs
+`ug configure` as root, which installs the workspace policy at
+`/etc/unitygateway/managed-settings.json`. Developers then launch with
+`UG_SKIP_OS_SETTINGS=1 ug claude`: no sudo, and inference uses their own OAuth.
 
-That service-principal token is a scoped, ephemeral **provisioning** credential:
-`ug configure` persists the workspace and model lists but no token, so once the
-script exits, real developer launches authenticate with their own per-developer
-OAuth for inference. The bootstrap never becomes the fleet's standing identity.
-
-See `../mdm-bootstrap.sh` for inputs (env vars) and the JAMF wrapper snippet.
+The script authenticates `ug configure` with a short-lived service-principal token. The service
+principal's credentials reach each Mac in a package that installs them readable only by root, and
+no token is written to disk. See [jamf-setup.md](jamf-setup.md) for the full setup.
 
 ## Layer 2 — enforcement (config profiles in this directory)
 
@@ -47,15 +41,15 @@ References:
 
 Claude Code and Codex both treat OS-managed settings as **externally owned and
 read-only** — an external tool writes them once and the agent only reads them.
-Having the bootstrap (or `ug` per launch) rewrite them via `sudo` fights that
-model and prompts non-admin users. Let MDM own the enforcement layer; let the
-bootstrap own provisioning + local settings.
+Having `ug` rewrite them via `sudo` on each launch fights that model and prompts
+non-admin users. Let MDM own the enforcement layer; let the provisioning script
+own installation and the workspace policy.
 
 ## Known gap
 
 `ug` cannot yet **emit** these profile payloads for MDM packaging — it only writes
 the OS-managed files in place via an interactive `sudo` reconciliation. Until it
-can, generate accurate content from a reference machine (run the bootstrap once as
+can, generate accurate content from a reference machine (run `ug configure` once as
 admin, then read `/Library/Application Support/ClaudeCode/managed-settings.json`
 and `/etc/codex/managed_config.toml`) and transcribe it into these templates. See
 the "ug MDM gaps" note for the requested `ug` changes.
