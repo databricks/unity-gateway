@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from ucode import mcp
+from ucode import managed_files, mcp
 from ucode.agents import claude
 
 WS = "https://example.databricks.com"
@@ -3579,6 +3579,40 @@ class TestReconcileManagedMcpServers:
 
         monkeypatch.setattr(mcp.claude, "reconcile_managed_mcp", claude_reconcile)
         monkeypatch.setattr(mcp.codex, "reconcile_managed_mcp", codex_reconcile)
+
+    @pytest.mark.parametrize("explicit", [True, False], ids=["configure", "other-run"])
+    def test_denied_managed_file_write_fails_only_configure(self, monkeypatch, explicit):
+        # `ug configure` must leave the machine-wide file correct, as for agent settings; other
+        # runs warn and fall back to user scope.
+        state = {"workspace": WS, "profile": None, "managed_mcp_servers": []}
+        applied: dict = {}
+        self._wire(
+            monkeypatch,
+            state=state,
+            configured=["codex"],
+            resolved=[{"name": "system-ai-github", "url": "u", "auth": "proxy"}],
+            applied=applied,
+            saved={},
+            setup_calls=[],
+        )
+        self._wire_managed_file(
+            monkeypatch, claude_eligible=False, codex_eligible=True, captured={}
+        )
+
+        def denied(state, servers):
+            raise managed_files.ManagedFileWriteUnavailable("sudo: a password is required")
+
+        monkeypatch.setattr(mcp.codex, "reconcile_managed_mcp", denied)
+        if explicit:
+            managed_files.request_explicit_managed_writes()
+
+        selector = {"mcp_servers": {"names": ["system.ai.github"]}}
+        if explicit:
+            with pytest.raises(managed_files.ManagedFileWriteUnavailable):
+                mcp.reconcile_managed_mcp_servers(selector, {"codex"})
+        else:
+            mcp.reconcile_managed_mcp_servers(selector, {"codex"})
+            assert [server["name"] for server in applied["working"]] == ["system-ai-github"]
 
     def test_eligible_agents_use_managed_file_not_user_scope(self, monkeypatch):
         # A qualifying claude/codex gets its resolved servers written to the OS-managed file and is

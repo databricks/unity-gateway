@@ -443,6 +443,15 @@ authorization, and one-shot `sudo -n` with disconnected stdin. These are compone
 privileged writes replaced by temporary-file operations, not automated Isaac, real sudo-policy, or
 live telemetry-export coverage.
 
+`test_configure_managed_writes.py` covers a headless `ug configure` writing Claude's managed
+`apiKeyHelper`, `ANTHROPIC_BASE_URL`, and custom headers (new and existing file) and installing the
+header mod, a headless launch still leaving the file alone, a denied write failing configure with
+root/sudo/`--user` guidance, the write policy on each OS, root running privileged commands without
+sudo, and `ug configure`/`ug revert` requesting explicit writes. `test_agent_codex.py` covers the
+same write and failure for Codex. The CUJ `Session.configure` helper runs headless and so now
+writes machine-wide settings with the runner's passwordless sudo, which the `cuj` teardown reverts.
+No automated test runs a real root configure.
+
 Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 `test_managed_setup.py`, `test_databricks.py`, and `test_managed_budget.py`: parsing the
 `smart_defaults` wire field, reading older `spend_tiers` caches, skipping recommendations

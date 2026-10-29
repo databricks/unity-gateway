@@ -114,7 +114,14 @@ from ucode.managed_config import (
     refresh_managed_config,
     revert_machine_policy,
 )
-from ucode.managed_files import config_scope, managed_write_session, set_config_scope
+from ucode.managed_files import (
+    ManagedFileWriteUnavailable,
+    config_scope,
+    explicit_managed_writes,
+    managed_write_session,
+    request_explicit_managed_writes,
+    set_config_scope,
+)
 from ucode.managed_resolve import (
     managed_claude_family_models,
     managed_default_model,
@@ -3185,6 +3192,9 @@ def _configure_managed_mcp_servers(managed: dict | None) -> list[dict] | None:
         )
         return None
     except RuntimeError as exc:
+        # A denied machine-wide write fails `ug configure`, like the agents' own settings.
+        if isinstance(exc, ManagedFileWriteUnavailable) and explicit_managed_writes():
+            raise
         print_warning(f"Could not register your workspace's MCP servers: {exc}")
         return None
     names = [str(server["name"]) for server in registered if server.get("name")]
@@ -4575,6 +4585,7 @@ def configure(
         scope = "user" if user_scope else "global"
         set_config_scope(scope)
         claude_agent.request_explicit_configure()
+        request_explicit_managed_writes()
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
@@ -4782,6 +4793,7 @@ def status_cmd() -> None:
 @app.command("revert", rich_help_panel="Manage")
 def revert_cmd() -> None:
     """Clear ug state and restore backed-up agent config files."""
+    request_explicit_managed_writes("ug revert")
     try:
         result = revert()
     except RuntimeError as exc:
