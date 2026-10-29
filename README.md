@@ -164,6 +164,11 @@ and `ug revert` return to `--global`.
 `--user` also fails for a workspace that publishes a managed config, which must be installed
 machine-wide; use `--global` for it.
 
+A wrapper that starts `ug` in a terminal nobody watches (an unattended relaunch) can set
+`UG_NONINTERACTIVE=1`: sudo then never prompts for a password, as when no terminal is attached, and
+a launch whose managed file can't be updated continues with the per-user settings when they are
+compatible.
+
 ### Extra headers for one session
 
 ```bash

@@ -21,6 +21,7 @@ from ucode.databricks import (
     run,
     save_databricks_cli_oauth_profile,
 )
+from ucode.env import unattended_terminal
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
     release_file_lock,
@@ -32,6 +33,9 @@ DEFAULT_REDIRECT_URL = f"http://{LOCALHOST}:8020"
 DEFAULT_CLI_SCOPES = ("offline_access", "all-apis")
 # Custom OAuth may need a human to finish browser consent, not just a token fetch.
 CUSTOM_OAUTH_TIMEOUT_MS = 180_000
+# An unattended terminal (UG_NONINTERACTIVE) has nobody to finish consent within that budget. The
+# login stays open this long so the person can sign in from the printed link once they return.
+UNATTENDED_CUSTOM_OAUTH_LOGIN_TIMEOUT_S = 30 * 60
 CUSTOM_OAUTH_CLI_MIN_VERSION = (1, 17, 0)
 CUSTOM_OAUTH_CLI_ENV_VAR = "ENABLE_CUSTOM_OAUTH_FROM_CLI"
 
@@ -162,8 +166,15 @@ def ensure_custom_oauth_cli_token(
         "--scopes",
         ",".join(scope for scope in config["scopes"] if scope != "offline_access"),
     ]
+    timeout = CUSTOM_OAUTH_TIMEOUT_MS // 1000
+    env = None
+    if unattended_terminal():
+        # BROWSER=none makes the CLI print the sign-in link instead of opening a browser on a
+        # screen nobody watches, so the wrapper can offer the link to the person.
+        timeout = UNATTENDED_CUSTOM_OAUTH_LOGIN_TIMEOUT_S
+        env = {**os.environ, "BROWSER": "none"}
     try:
-        run(login_args, timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000)
+        run(login_args, env=env, timeout=timeout)
     finally:
         clear_databricks_token_cache()
     return get_databricks_token(workspace, profile)

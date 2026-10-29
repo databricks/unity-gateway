@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from ucode.config_io import APP_DIR, is_dry_run
-from ucode.env import env_bool
+from ucode.env import env_bool, unattended_terminal
 from ucode.os_compatibility import subprocess_cross_os, system_cross_os
 from ucode.ui import console, print_note, print_success, print_warning
 
@@ -269,8 +269,11 @@ def managed_file_scope(state: dict, tool: str) -> str:
 
 
 def _sudo_may_prompt() -> bool:
-    """A terminal is attached, so sudo can prompt and the persistent worker is usable."""
-    return current_os() is not OS.WINDOWS and sys.stdin.isatty()
+    """A person is at an attached terminal, so sudo can prompt and the persistent worker is usable.
+
+    ``UG_NONINTERACTIVE`` marks a terminal nobody watches: a password prompt there would block the
+    launch until its caller gives up."""
+    return current_os() is not OS.WINDOWS and sys.stdin.isatty() and not unattended_terminal()
 
 
 def request_explicit_managed_writes(command: str | None = "ug configure") -> None:
