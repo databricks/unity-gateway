@@ -10,8 +10,8 @@ from utils.terminal import AgentTerminal, ConfigureTerminal
 
 pytestmark = [pytest.mark.live, pytest.mark.tui, pytest.mark.claude]
 
-# Bedrock reports the bare Anthropic id, not the us.anthropic.*-v1:0 slug the MPS targets.
-BEDROCK_SONNET_RESPONSE_MODEL = "claude-sonnet-4-5-20250929"
+# Bedrock reports the bare Anthropic id, not the us.anthropic.* slug the MPS targets.
+BEDROCK_SONNET_RESPONSE_MODEL = "claude-sonnet-4-6"
 
 
 @pytest.mark.smoke
@@ -54,7 +54,9 @@ def test_ug_configure_claude_databricks(live_session, workspace):
         tui.boot()
         tui.submit(task.prompt)
         tui.wait_for_task(task)
-        screen = tui.open_model_picker()
+        screen = tui.open_model_picker(
+            model_visible=lambda _text: session.claude_gateway_cache_ready()
+        )
         cache = json.loads((session.home / ".claude/cache/gateway-models.json").read_text())
         assert cache["baseUrl"] == workspace.rstrip("/") + "/ai-gateway/anthropic", cache
         models = cache["models"]
@@ -113,14 +115,14 @@ def test_ug_configure_claude_anthropic_mps(live_session, workspace, claude_provi
 
 def test_ug_configure_claude_bedrock_mps(live_session, workspace, claude_bedrock_provider):
     """Scenario: pick the real AWS Bedrock (amazon_bedrock) Anthropic MPS in the provider picker.
-    This MPS allows only a restricted set of models (its explicit targets: Sonnet + Haiku, no
-    Opus), unlike an allow_all_targets service, so discovery must surface exactly that allow-list.
+    This MPS allows only a restricted set of models (its explicit targets: Sonnet + Opus), unlike
+    an allow_all_targets service, so discovery must surface exactly that allow-list.
 
     Expected: ug saves that provider, and launching Claude without --provider completes a
-    file-reading task. With Opus outside the allow-list, the launch tier preference
-    (sonnet > opus > haiku) resolves to Sonnet. This is the live check that the real ug + Claude
-    Code binary resolve a region-prefixed Bedrock slug (us.anthropic.claude-...) into a working
-    launch -- the model-id pinning that unit tests only cover against mocked listings.
+    file-reading task. The launch tier preference (sonnet > opus > haiku) resolves to Sonnet 4.6.
+    This is the live check that the real ug +
+    Claude Code binary resolve a region-prefixed Bedrock slug (us.anthropic.claude-...) into a
+    working launch -- the model-id pinning that unit tests only cover against mocked listings.
     """
     session = live_session
     task = FileTask(session)

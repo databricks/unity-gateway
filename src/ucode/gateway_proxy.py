@@ -34,7 +34,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
 from urllib.parse import unquote
@@ -270,6 +270,10 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
         return self.token_header, frozenset(), "forward"
 
+    def _request_body(self, body: bytes | None) -> bytes | None:
+        """The body to forward; ``body`` unchanged unless a subclass rewrites it."""
+        return body
+
     def _added_headers(self) -> dict[str, str]:
         return {}
 
@@ -282,7 +286,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         diagnostic_id = uuid.uuid4().hex[:12]
         started = time.monotonic()
         length = int(self.headers.get("Content-Length", 0) or 0)
-        body = self.rfile.read(length) if length else None
+        body = self._request_body(self.rfile.read(length) if length else None)
         url = self.path.lstrip("/")
         token_header, extra_strip, route_label = self._forward_target(body)
         log_proxy_diagnostic(
@@ -487,6 +491,28 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     added_headers: Mapping[str, str]
     allowed_path_prefixes: tuple[str, ...]
     sign_in_hint: str
+    dropped_chat_completions_fields: frozenset[str]
+    path_rewriter: Callable[[str], str] | None = None
+    body_rewriter: Callable[[str, bytes], bytes] | None = None
+
+    def _request_body(self, body: bytes | None) -> bytes | None:
+        if body and self.body_rewriter is not None:
+            body = self.body_rewriter(self.path, body)
+        if not body or not self.dropped_chat_completions_fields:
+            return body
+        if not self.path.split("?", 1)[0].endswith("/chat/completions"):
+            return body
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            return body
+        if not isinstance(payload, dict) or self.dropped_chat_completions_fields.isdisjoint(
+            payload
+        ):
+            return body
+        for field in self.dropped_chat_completions_fields:
+            payload.pop(field, None)
+        return json.dumps(payload).encode()
 
     def _has_session_secret(self) -> bool:
         expected = self.session_secret.encode()
@@ -529,6 +555,13 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
         if not self._has_session_secret():
             self._reject(401, "Missing or invalid Unity Gateway session credential.")
             return
+        if self.path_rewriter is not None:
+            rewritten = self.path_rewriter(self.path)
+            # A rewrite must stay on a path the session may reach.
+            if not _is_allowed_gateway_path(rewritten, self.allowed_path_prefixes):
+                self._reject(404, "This path is not served by the Unity Gateway proxy.")
+                return
+            self.path = rewritten
         super()._handle()
 
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
@@ -658,12 +691,19 @@ def start_gateway_auth_proxy(
     added_headers: Mapping[str, str],
     sign_in_hint: str,
     on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
+    dropped_chat_completions_fields: Iterable[str] = (),
+    allowed_path_prefixes: tuple[str, ...] = GATEWAY_MODEL_PATH_PREFIXES,
+    path_rewriter: Callable[[str], str] | None = None,
+    body_rewriter: Callable[[str, bytes], bytes] | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start a per-session proxy for agents that only hold a static credential.
 
     The agent sends ``session_secret`` as its API key; the proxy accepts it only on
-    gateway model paths and forwards with a fresh Databricks token plus
-    ``added_headers``. Binds an OS-assigned port, read from ``server.server_address[1]``.
+    ``allowed_path_prefixes`` and forwards with a fresh Databricks token plus
+    ``added_headers``, after removing ``dropped_chat_completions_fields`` from Chat
+    Completions request bodies. ``path_rewriter`` maps an accepted request path to the
+    gateway path it is forwarded to, and ``body_rewriter(path, body)`` adjusts a request
+    body for the gateway. Binds an OS-assigned port, read from ``server.server_address[1]``.
     """
     return _start_proxy(
         workspace,
@@ -677,8 +717,12 @@ def start_gateway_auth_proxy(
         handler_attrs={
             "session_secret": session_secret,
             "added_headers": dict(added_headers),
-            "allowed_path_prefixes": GATEWAY_MODEL_PATH_PREFIXES,
+            "allowed_path_prefixes": allowed_path_prefixes,
             "sign_in_hint": sign_in_hint,
+            "dropped_chat_completions_fields": frozenset(dropped_chat_completions_fields),
+            # staticmethod: a plain function on the handler class would bind as a method.
+            "path_rewriter": staticmethod(path_rewriter) if path_rewriter else None,
+            "body_rewriter": staticmethod(body_rewriter) if body_rewriter else None,
         },
         on_refresh_failure=on_refresh_failure,
     )

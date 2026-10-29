@@ -16,7 +16,7 @@ from typing import Any
 from ucode.databricks import _http_post_json, workspace_hostname
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_api import SkillRef
-from ucode.telemetry import ug_version
+from ucode.telemetry import ucode_user_agent, ug_version
 
 _REPORT_SKILL_USAGE_PATH = "/ai-gateway/skills:reportSkillUsage"
 _REPORT_REQUEST_ENV_VAR = "UCODE_SKILL_USAGE_REPORT"
@@ -62,7 +62,7 @@ def main() -> None:
     token = sys.stdin.read()
     request = json.loads(os.environ[_REPORT_REQUEST_ENV_VAR])
     url = f"https://{workspace_hostname(request['workspace'])}{_REPORT_SKILL_USAGE_PATH}"
-    headers = {"User-Agent": f"ucode/{ug_version()}"}
+    headers = {"User-Agent": ucode_user_agent(ug_version())}
     skills = request["skills"]
     for start in range(0, len(skills), _MAX_SKILLS_PER_REPORT):
         report = {"skills": skills[start : start + _MAX_SKILLS_PER_REPORT]}
