@@ -1582,7 +1582,12 @@ def revert() -> int:
     workspace_policy_result = revert_machine_policy()
     from ucode.agents import vscode
 
-    vscode_result = vscode.revert()
+    try:
+        vscode_result = vscode.revert()
+    except Exception as exc:  # noqa: BLE001 -- Preserve other revert operations on failure
+        # VS Code's revert reads its settings files, not ug state, so a later run still finds them.
+        print_warning(f"Could not revert VS Code: {exc}. Fix it, then run ug revert again.")
+        vscode_result = "failed"
 
     results: dict[str, bool] = {
         # Antigravity's skills.json is shared with its app and IDE extensions, so revert
@@ -4670,7 +4675,10 @@ def configure(
             else:
                 # Neither model agents nor cursor -> empty/invalid --agents list.
                 _parse_agents_option(agents)
-            if wants_vscode:
+            if wants_vscode and is_dry_run():
+                # A dry run saves no workspace, so the state on disk isn't the one being configured.
+                print_note("Dry run: VS Code's settings and extension aren't changed.")
+            elif wants_vscode:
                 from ucode.agents import vscode
 
                 vscode.configure(load_state())

@@ -18,6 +18,7 @@ from ucode.managed_files import OS
 # The conftest fixture stubs these out for every test; the ones here exercise the real lookups.
 REAL_FIND_CODE = vscode.find_code
 REAL_SETTINGS_PATH = vscode.settings_path
+REAL_RUN_CODE = vscode._run_code
 
 WS = "https://ws.cloud.databricks.com"
 STATE = {"workspace": WS, "profile": "dev"}
@@ -176,6 +177,34 @@ class TestConfigure:
         assert "`code` command wasn't found" in _printed(capsys)
         assert not _settings().exists()
 
+    @pytest.mark.parametrize("reason", ["the listing failed", None])
+    def test_keeps_settings_when_no_models_are_found(self, code, monkeypatch, capsys, reason):
+        vscode.configure(STATE)
+        before = _settings().read_text(encoding="utf-8")
+        code.calls.clear()
+        monkeypatch.setattr(
+            vscode, "discover_model_services", lambda workspace, token: ({}, [], [], [], reason)
+        )
+
+        assert not vscode.configure({**STATE, "workspace": "https://other.cloud.databricks.com"})
+
+        assert _settings().read_text(encoding="utf-8") == before
+        assert code.calls == []
+        assert f"No Claude or GPT models for VS Code ({reason or 'the workspace has none'})" in (
+            _printed(capsys)
+        )
+
+    def test_reports_a_code_command_that_cant_run(self, code, monkeypatch, capsys):
+        def hang(*args, **kwargs):
+            raise subprocess.TimeoutExpired("code", 120)
+
+        monkeypatch.setattr(vscode, "_run_code", REAL_RUN_CODE)
+        monkeypatch.setattr(vscode.subprocess_cross_os, "run", hang)
+
+        assert not vscode.configure(STATE)
+
+        assert "`/fake/bin/code --install-extension` failed" in _printed(capsys)
+
     def test_reports_a_failed_install(self, code, capsys):
         code.fail = "--install-extension"
 
@@ -206,7 +235,7 @@ class TestRevert:
         assert vscode.revert() == "unchanged"
 
         assert _settings().read_text(encoding="utf-8") == USER_SETTINGS
-        assert [call[0] for call in code.calls] == ["--list-extensions"]
+        assert code.calls == []
 
 
 class TestFindCode:
@@ -228,15 +257,28 @@ class TestFindCode:
 
         assert vscode.find_code() == (Path("/opt/bin/code-insiders"), "Code - Insiders")
 
-    def test_finds_the_macos_app_when_code_isnt_on_path(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(vscode.shutil, "which", lambda name: None)
+    def test_looks_in_both_macos_application_folders(self, monkeypatch, tmp_path):
         monkeypatch.setattr(vscode, "current_os", lambda: OS.MACOS)
         monkeypatch.setattr(vscode.Path, "home", lambda: tmp_path)
-        app_code = tmp_path / "Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
-        app_code.parent.mkdir(parents=True)
-        app_code.touch()
+        app = "Visual Studio Code.app/Contents/Resources/app/bin/code"
 
-        assert vscode.find_code() == (app_code, "Code")
+        assert vscode._install_locations("code") == [
+            Path("/Applications") / app,
+            tmp_path / "Applications" / app,
+        ]
+
+    def test_falls_back_to_the_first_install_location_that_exists(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(vscode.shutil, "which", lambda name: None)
+        installed = tmp_path / "bin/code"
+        installed.parent.mkdir()
+        installed.touch()
+        monkeypatch.setattr(
+            vscode,
+            "_install_locations",
+            lambda command: [tmp_path / "missing/code", installed] if command == "code" else [],
+        )
+
+        assert vscode.find_code() == (installed, "Code")
 
     def test_finds_the_windows_user_install(self, monkeypatch, tmp_path):
         monkeypatch.setattr(vscode.shutil, "which", lambda name: None)
@@ -310,7 +352,8 @@ class TestAuthCommand:
         assert "--profile custom" in vscode.auth_command({"workspace": WS, "custom_oauth": custom})
 
 
-def test_configure_agents_vscode_sets_up_the_workspace_then_vscode(monkeypatch):
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_configure_agents_vscode_sets_up_the_workspace_then_vscode(monkeypatch, dry_run):
     configured: list[dict] = []
     shared: list[dict] = []
     monkeypatch.setattr(
@@ -324,8 +367,18 @@ def test_configure_agents_vscode_sets_up_the_workspace_then_vscode(monkeypatch):
     monkeypatch.setattr("ucode.cli.load_state", lambda: STATE)
     monkeypatch.setattr(vscode, "configure", lambda state: configured.append(state) or True)
 
-    result = CliRunner().invoke(app, ["configure", "--agents", "vscode", "--workspace", WS])
+    args = [
+        "configure",
+        "--agents",
+        "vscode",
+        "--workspace",
+        WS,
+        *(["--dry-run"] if dry_run else []),
+    ]
+    result = CliRunner().invoke(app, args)
 
     assert result.exit_code == 0, result.output
     assert shared[0]["tools"] == []
-    assert configured == [STATE]
+    # A dry run saves no workspace, so VS Code would be set up from stale or missing state.
+    assert configured == ([] if dry_run else [STATE])
+    assert ("VS Code's settings and extension aren't changed" in result.output) == dry_run

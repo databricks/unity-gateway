@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import zipfile
 from collections import Counter
@@ -132,9 +133,12 @@ def pack_vsix(directory: Path) -> Path:
 
 
 def _run_code(code: Path, *args: str):
-    return subprocess_cross_os.run(
-        [str(code), *args], capture_output=True, text=True, timeout=_CODE_TIMEOUT_S, check=False
-    )
+    try:
+        return subprocess_cross_os.run(
+            [str(code), *args], capture_output=True, text=True, timeout=_CODE_TIMEOUT_S, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"`{code} {args[0]}` failed: {exc}") from exc
 
 
 def installed_version(code: Path) -> str | None:
@@ -202,16 +206,14 @@ def auth_command(state: dict) -> str:
 
 
 def _edit_settings(path: Path, values: dict[str, object], remove: tuple[str, ...] = ()) -> bool:
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
     try:
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
         updated = config_io.update_jsonc_keys(text, values, remove)
-    except ValueError as exc:
-        print_warning(
-            f"Couldn't update {path}: {exc}. Fix the file, then rerun `ug configure --agents vscode`."
-        )
+        if updated != text:
+            config_io.write_text_file(path, updated)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print_warning(f"Couldn't update {path}: {exc}. Fix the file, then rerun this command.")
         return False
-    if updated != text:
-        config_io.write_text_file(path, updated)
     return True
 
 
@@ -244,7 +246,12 @@ def configure(state: dict) -> bool:
     workspace = state["workspace"]
     models, reason = model_settings(workspace, launch_token(state, workspace))
     if not models:
-        print_warning(f"No models for VS Code: {reason}")
+        # Keep what an earlier configure wrote: a failed listing shouldn't wipe a working setup.
+        print_warning(
+            f"No Claude or GPT models for VS Code ({reason or 'the workspace has none'}). "
+            "VS Code was left unchanged."
+        )
+        return False
     path = settings_path(product)
     values = {
         WORKSPACE_SETTING: workspace,
@@ -254,8 +261,6 @@ def configure(state: dict) -> bool:
     if not _edit_settings(path, values):
         return False
     print_kv("VS Code settings", f"{len(models)} models in {path}")
-    if config_io.is_dry_run():
-        return True
     try:
         print_kv("VS Code extension", install_extension(code))
     except RuntimeError as exc:
@@ -271,19 +276,22 @@ def configure(state: dict) -> bool:
 
 def revert() -> str:
     """Remove ug's settings and uninstall the extension: "removed" or "unchanged"."""
-    changed = False
+    changed = configured = False
     for _, product in CODE_COMMANDS:
         path = settings_path(product)
         if not path.exists():
             continue
         try:
             current = config_io.loads_jsonc(path.read_text(encoding="utf-8"))
-        except ValueError:
+        except (OSError, ValueError):
             print_warning(f"Couldn't read {path}; remove its unityGateway settings by hand.")
             continue
         if isinstance(current, dict) and any(key in current for key in SETTINGS):
+            configured = True
             changed = _edit_settings(path, {}, SETTINGS) or changed
-    found = find_code()
+    # Configure writes the settings before it installs, so without them there's nothing to
+    # uninstall, and revert doesn't run `code` for people who never set up VS Code.
+    found = find_code() if configured else None
     if found is not None and installed_version(found[0]) is not None:
         result = _run_code(found[0], "--uninstall-extension", EXTENSION_ID)
         if result.returncode == 0:

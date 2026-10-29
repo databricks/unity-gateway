@@ -3971,6 +3971,28 @@ class TestRevert:
         assert "ug state retained" in result.output
         assert "Fix the Claude Desktop error and run ug revert again" in result.output
 
+    def test_vscode_revert_failure_is_reported_and_the_rest_still_reverts(self):
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.agents.desktop.setup.revert_desktop", return_value="unchanged"),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.claude_agent.revert_managed_settings", return_value="unchanged"),
+            patch("ucode.cli.codex_agent.revert_managed_config", return_value="unchanged"),
+            patch("ucode.cli.revert_machine_policy", return_value="unchanged"),
+            patch("ucode.cli.restore_file", return_value=False) as restore_file,
+            patch("ucode.cli.revert_legacy_shared_config", return_value=False),
+            patch("ucode.agents.vscode.revert", side_effect=RuntimeError("code timed out")),
+            patch("ucode.cli.clear_state") as clear_state,
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        output = " ".join(result.output.split())
+        assert result.exit_code == 0, result.output
+        assert "Could not revert VS Code: code timed out" in output
+        assert "VS Code extension and settings: failed" in output
+        assert restore_file.called
+        clear_state.assert_called_once()
+
 
 @pytest.mark.parametrize("args", [[], ["claude"], ["codex"]])
 def test_unknown_routing_config_does_not_block_launch(monkeypatch, args):
