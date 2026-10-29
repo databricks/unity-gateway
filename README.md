@@ -179,6 +179,11 @@ The launch drops the bare `WebSearch` deny (scoped `WebSearch(...)` rules stay) 
 `WebSearch` deny in the OS-managed settings or `~/.claude/settings.json` outranks a launch, so ug
 warns and the tool stays denied. Relayed launches are unaffected.
 
+`ug configure` no longer adds the `WebSearch` deny to the OS-managed settings, but never removes one
+already there (written by an older ug, or by an admin). To remove it, delete `"WebSearch"` from
+`permissions.deny` in the managed file (Isaac users: Isaac's template rewrite does this), or run
+`ug revert` then `ug configure` (revert resets all ug setup).
+
 ### Extra headers for one session
 
 ```bash

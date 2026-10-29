@@ -1604,6 +1604,10 @@ def write_tool_config(
         # Otherwise omit these paths from the overlay so the live managed values pass through.
         if should_preserve_managed_tracing:
             prune_key_paths(overlay_for_merge, [list(path) for path in CLAUDE_OTEL_TRACE_PATHS])
+        if managed_settings_snapshots is not None:
+            # The managed file outranks every launch scope, so a deny there could never be lifted
+            # by a launch that opts into server-side web search; only ucode-settings.json has it.
+            overlay_for_merge.pop("permissions", None)
         if enforce_model_default_hierarchy:
             settings_file_env = base_env if isinstance(base_env, dict) else {}
             target_env = overlay_for_merge["env"]

@@ -2377,7 +2377,37 @@ class TestWriteToolConfigManagedSettings:
         state = {"workspace": WS, "codex_models": ["databricks-gpt-5"]}
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
         _, text = managed_writes[0]
-        assert json.loads(text)["permissions"]["deny"] == ["Bash(rm:*)", "WebSearch"]
+        assert json.loads(text)["permissions"]["deny"] == ["Bash(rm:*)"]
+
+    def test_fresh_configure_keeps_web_search_deny_out_of_managed_file(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": ["databricks-gpt-5"]}, "databricks-claude-sonnet-4"
+        )
+        assert "permissions" not in json.loads(managed_writes[0][1])
+        assert private_writes[0][1]["permissions"]["deny"] == ["WebSearch"]
+
+    @pytest.mark.parametrize("explicit", [True, False])
+    def test_existing_managed_web_search_deny_is_left_in_place(
+        self, tmp_path, monkeypatch, explicit
+    ):
+        # A legacy ug write, Isaac, or an admin: ug never removes a deny from the managed file.
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            managed_files, "_explicit_managed_command", "ug configure" if explicit else None
+        )
+        managed_path.write_text(
+            json.dumps({"permissions": {"deny": ["WebSearch", "Bash(rm:*)"]}}), encoding="utf-8"
+        )
+        state = {"workspace": WS, "codex_models": [], "claude_http_headers": {"x-team": "a"}}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        state["claude_http_headers"] = {"x-team": "b"}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        doc = json.loads(managed_path.read_text())
+        assert doc["permissions"]["deny"] == ["WebSearch", "Bash(rm:*)"]
+        assert doc["env"]["ANTHROPIC_CUSTOM_HEADERS"].count("x-team: b") == 1
 
     def test_relayed_skips_managed_write(self, monkeypatch):
         private_writes: list = []
