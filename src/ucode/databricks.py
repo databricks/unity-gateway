@@ -74,6 +74,18 @@ TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 # we retry rather than treat them as an expired session.
 _TOKEN_CACHE_LOCK_MARKERS = ("cache update", "exit status 45")
 _TOKEN_FETCH_MAX_ATTEMPTS = 4
+_TOKEN_FETCH_TIMEOUT_SECONDS = 15
+_TOKEN_TRANSIENT_FAILURE_MARKERS = (
+    "connection refused",
+    "connection reset by peer",
+    "temporary failure in name resolution",
+    "tls handshake timeout",
+    "i/o timeout",
+    "429 too many requests",
+    "502 bad gateway",
+    "503 service unavailable",
+    "504 gateway timeout",
+)
 # Only explicit credential refusals justify a negative memo; unknown CLI errors
 # can be network, VPN, or service failures that the next call should retry.
 _TOKEN_CREDENTIAL_FAILURE_MARKERS = (
@@ -675,7 +687,7 @@ def run(
     capture_output: bool = False,
     text: Literal[True],
     env: dict[str, str] | None = None,
-    timeout: int | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]: ...
 
 
@@ -687,7 +699,7 @@ def run(
     capture_output: bool = False,
     text: Literal[False] = False,
     env: dict[str, str] | None = None,
-    timeout: int | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[bytes]: ...
 
 
@@ -698,7 +710,7 @@ def run(
     capture_output: bool = False,
     text: bool = False,
     env: dict[str, str] | None = None,
-    timeout: int | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
     return subprocess_cross_os.run(
         args,
@@ -1719,7 +1731,7 @@ def _fetch_databricks_token_for_profile(
     # invalid or missing credentials.
     transient_failure = True
 
-    def _fetch() -> tuple[str, float | None, str]:
+    def _fetch(timeout: float) -> tuple[str, float | None, str]:
         """Return (access_token, lifetime_s, diagnostics). token is '' on failure."""
         nonlocal transient_failure
         transient_failure = True
@@ -1730,7 +1742,7 @@ def _fetch_databricks_token_for_profile(
                 capture_output=True,
                 text=True,
                 env=env,
-                timeout=15,
+                timeout=timeout,
             )
             _debug("auth token", _format_subprocess_result(result))
             if result.returncode == 0:
@@ -1747,31 +1759,41 @@ def _fetch_databricks_token_for_profile(
             _debug("auth token", f"exception: {type(exc).__name__}: {exc}")
             return "", None, str(exc)
 
-    def _fetch_with_lock_retry() -> tuple[str, float | None]:
-        """Mint a token, retrying transient token-cache lock contention.
-
-        Concurrent `databricks auth token` calls racing on the shared cache fail
-        fast with a lock error (see ``_TOKEN_CACHE_LOCK_MARKERS``). The lock is
-        held only for the brief cache write, so a short jittered backoff almost
-        always wins the next attempt. A non-lock failure returns '' immediately
-        so the caller can fall through to the re-auth path."""
-        nonlocal transient_failure
+    def _fetch_with_retry() -> tuple[str, float | None]:
+        """Retry recognized temporary mint failures within one fetch timeout."""
+        deadline = time.monotonic() + _TOKEN_FETCH_TIMEOUT_SECONDS
+        remaining = _TOKEN_FETCH_TIMEOUT_SECONDS
         for attempt in range(_TOKEN_FETCH_MAX_ATTEMPTS):
-            token, lifetime_s, diagnostics = _fetch()
+            token, lifetime_s, diagnostics = _fetch(remaining)
             if token:
                 return token, lifetime_s
-            if not any(marker in diagnostics.lower() for marker in _TOKEN_CACHE_LOCK_MARKERS):
+            lowered = diagnostics.lower()
+            cache_lock = any(marker in lowered for marker in _TOKEN_CACHE_LOCK_MARKERS)
+            retryable = cache_lock or any(
+                marker in lowered for marker in _TOKEN_TRANSIENT_FAILURE_MARKERS
+            )
+            if not transient_failure or not retryable:
                 return "", None
-            _debug("auth token", f"cache-lock contention (attempt {attempt + 1}); retrying")
-            transient_failure = True
-            if attempt < _TOKEN_FETCH_MAX_ATTEMPTS - 1:
-                time.sleep(random.uniform(0.05, 0.1 * (2**attempt)))
+            if attempt == _TOKEN_FETCH_MAX_ATTEMPTS - 1:
+                break
+            pause = (
+                random.uniform(0.05, 0.1 * (2**attempt))
+                if cache_lock
+                else random.uniform(0.25, 0.5) * (2**attempt)
+            )
+            if time.monotonic() + pause >= deadline:
+                break
+            _debug("auth token", f"temporary mint failure (attempt {attempt + 1}); retrying")
+            time.sleep(pause)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
         return "", None
 
-    token, lifetime_s = _fetch_with_lock_retry()
+    token, lifetime_s = _fetch_with_retry()
     if not token and browser_login and not transient_failure:
         # A desktop app's helper has no terminal to finish a non-browser login.
-        token, lifetime_s = _browser_login(workspace, profile, env, _fetch_with_lock_retry)
+        token, lifetime_s = _browser_login(workspace, profile, env, _fetch_with_retry)
     elif not token and _auth_login_supports_no_browser(cli):
         # Session may have expired — attempt non-interactive re-auth and retry once.
         _debug("auth token", "empty on first fetch; attempting auth login --no-browser")
@@ -1799,7 +1821,7 @@ def _fetch_databricks_token_for_profile(
             _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
         else:
             if reauth.returncode == 0:
-                token, lifetime_s = _fetch_with_lock_retry()
+                token, lifetime_s = _fetch_with_retry()
             else:
                 _debug("auth login", f"returned non-zero status {reauth.returncode}")
     elif not token:

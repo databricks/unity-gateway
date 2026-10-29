@@ -2647,6 +2647,103 @@ class TestGetDatabricksToken:
         token = get_databricks_token(WS)
         assert token == "won-the-lock"
 
+    @pytest.mark.parametrize(
+        "diagnostics",
+        [
+            "dial tcp: connection refused",
+            "read: connection reset by peer",
+            "lookup host: temporary failure in name resolution",
+            "net/http: TLS handshake timeout",
+            "read tcp: i/o timeout",
+            "429 Too Many Requests",
+            "502 Bad Gateway",
+            "503 Service Unavailable",
+            "504 Gateway Timeout",
+        ],
+    )
+    def test_retryable_token_failure_recovers_in_one_call(self, monkeypatch, diagnostics):
+        calls = []
+        pauses = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            assert command[1:3] == ["auth", "token"]
+            if len(calls) == 1:
+                return subprocess.CompletedProcess(command, 1, "", diagnostics)
+            return subprocess.CompletedProcess(
+                command, 0, '{"access_token": "recovered", "expires_in": 3600}', ""
+            )
+
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "run", fake_run)
+        monkeypatch.setattr(db_mod.time, "sleep", pauses.append)
+
+        assert get_databricks_token(WS, "p", force_refresh=True) == "recovered"
+        assert len(calls) == 2
+        assert calls[0] == calls[1]
+        assert "--force-refresh" in calls[0]
+        assert len(pauses) == 1 and 0 < pauses[0] <= 0.5
+        assert get_databricks_token(WS, "p") == "recovered"
+        assert len(calls) == 2
+
+    @pytest.mark.parametrize("first_duration,expected_calls", [(0, 4), (7, 2), (14.8, 1), (15, 1)])
+    def test_token_retry_exhaustion_is_bounded(self, monkeypatch, first_duration, expected_calls):
+        elapsed = [0.0]
+        timeouts = []
+
+        def fake_run(command, **kwargs):
+            timeouts.append(kwargs["timeout"])
+            elapsed[0] += min(first_duration, kwargs["timeout"])
+            return subprocess.CompletedProcess(command, 1, "", "connection reset by peer")
+
+        def sleep(seconds):
+            elapsed[0] += seconds
+
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "run", fake_run)
+        monkeypatch.setattr(db_mod, "_auth_login_supports_no_browser", lambda _cli: False)
+        monkeypatch.setattr(db_mod.time, "monotonic", lambda: elapsed[0])
+        monkeypatch.setattr(db_mod.time, "sleep", sleep)
+        monkeypatch.setattr(db_mod.random, "uniform", lambda _low, high: high)
+
+        with pytest.raises(RuntimeError, match="Retry the request"):
+            get_databricks_token(WS, "p")
+        assert len(timeouts) == expected_calls
+        assert elapsed[0] <= 15
+        assert all(timeout <= 15 for timeout in timeouts)
+
+    @pytest.mark.parametrize(
+        "diagnostics",
+        [
+            "invalid_grant: connection reset by peer",
+            "Error: unknown flag: --force-refresh",
+            "tls: failed to verify certificate: x509: certificate signed by unknown authority",
+            '{"error_code":"PERMISSION_DENIED"}',
+            "401 Unauthorized",
+        ],
+    )
+    def test_nonretryable_token_failure_is_not_retried(self, monkeypatch, diagnostics):
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 1, "", diagnostics)
+
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "run", fake_run)
+        monkeypatch.setattr(db_mod, "_auth_login_supports_no_browser", lambda _cli: False)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda _s: pytest.fail("unexpected retry"))
+
+        with pytest.raises(RuntimeError, match="no access token"):
+            get_databricks_token(WS, "p")
+        assert len(calls) == 1
+
     def test_raises_when_reauth_also_fails(self, tmp_path, monkeypatch):
         env = self._fake_databricks(
             tmp_path,
@@ -2760,7 +2857,6 @@ class TestGetDatabricksToken:
     @pytest.mark.parametrize(
         ("returncode", "stdout", "stderr"),
         [
-            (1, "", "dial tcp: connection refused"),
             (1, "", "lookup host: no such host"),
             (1, "temporary VPN failure", ""),
             (1, "", ""),
@@ -2772,7 +2868,6 @@ class TestGetDatabricksToken:
             (0, "null", ""),
         ],
         ids=[
-            "network",
             "dns",
             "vpn-stdout",
             "unknown",

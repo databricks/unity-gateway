@@ -2516,6 +2516,33 @@ class TestAuthTokenCommand:
             "https://override", "prod", force_refresh=False, browser_login=False
         )
 
+    def test_temporary_mint_failure_recovers_with_token_only_stdout(self, monkeypatch):
+        calls = []
+
+        def mint(command, **kwargs):
+            calls.append(command)
+            assert command[1:3] == ["auth", "token"]
+            if len(calls) == 1:
+                return subprocess.CompletedProcess(command, 1, "", "503 Service Unavailable")
+            return subprocess.CompletedProcess(command, 0, '{"access_token":"recovered"}', "")
+
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setattr(cli_mod, "get_databricks_token", db_mod.get_databricks_token)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {})
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "run", mint)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda _seconds: None)
+
+        result = runner.invoke(
+            app, ["auth-token", "--host", "https://workspace.example.com", "--profile", "p"]
+        )
+
+        assert result.exit_code == 0
+        assert result.stdout == "recovered\n"
+        assert result.stderr == ""
+        assert len(calls) == 2
+        assert calls[0] == calls[1]
+
     def test_force_refresh_is_forwarded(self):
         with (
             patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),

@@ -448,8 +448,13 @@ live search, parent/child discovery, or classifier permission behavior.
 `test_databricks.py` also covers process-local CLI token memoization, expiry
 margins on both wall and monotonic clocks (including suspend and clock rollback),
 short-lived failure entries only for confirmed invalid/missing credentials,
-forced refresh, and login invalidation. Unknown CLI failures, network errors,
-and malformed token responses retry on the next call without a stale-profile hint.
+forced refresh, and login invalidation. Recognized temporary network and service
+failures retry in the same call, at most four attempts within each 15-second mint phase.
+Checks cover successful recovery, bounded exhaustion, and permanent failures without
+retries. `test_cli.py` verifies recovered helpers emit only the token on stdout.
+Unknown CLI failures and malformed token responses retry on the next call without
+a stale-profile hint. The existing sign-in flow may start a new mint phase.
+These are component checks, not live outage recovery coverage.
 Concurrent callers share a per-profile fetch, and an in-flight result cannot
 restore a memo invalidated by login.
 Fake CLI subprocesses check that re-auth runs only when a successful help probe

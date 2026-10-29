@@ -295,7 +295,12 @@ CLI token memoization and capability-gated `--no-browser` re-auth are covered by
 component tests in `../test_databricks.py` and `../test_mcp_web_search.py`, including
 wall/monotonic expiry across suspend or clock rollback, forced refresh, concurrent
 fetches, login invalidation, confirmed credential-error caching, and transient-failure
-recovery. Connection-login component tests also check invalidation on every login
+recovery. Recognized network/service mint failures have component coverage for
+recovery in one call, four attempts within each 15-second mint phase, and permanent
+failures without retries; `../test_cli.py` checks token-only stdout after recovery.
+The existing sign-in flow may start a new mint phase; these checks do not establish
+live outage recovery.
+Connection-login component tests also check invalidation on every login
 attempt and fresh tokens on async proxy retries. This suite
 does not assert live token-fetch counts, stale-profile recovery, or launch-time
 savings; credential/profile routing is unchanged.
