@@ -229,7 +229,7 @@ class TerminalProcess:
                 "normal_exit_observed": self.ended and self.child.exitstatus == 0,
                 "routing_log": routing_log.read_text() if routing_log.is_file() else None,
                 "agent_sessions": agent_sessions(self.session, self.agent)
-                if self.agent in ("claude", "codex", "copilot")
+                if self.agent in ("claude", "codex", "copilot", "grok")
                 else {},
             },
         )
@@ -373,6 +373,19 @@ class AgentTerminal(TerminalProcess):
                     continue
                 ready_since = None
             if (
+                self.agent == "grok"
+                and "Do you trust the contents of this directory" not in text
+                and "Grok Build" in text
+                # ug's models read the session secret as an API key, so Grok skips xAI sign-in.
+                and "Logged in with API key" in text
+                and re.search(r"(?m)^\s*│\s*❯", text)
+            ):
+                ready_since = ready_since or time.monotonic()
+                if time.monotonic() - ready_since >= 1:
+                    self.actions.append({"reason": "prompt-ready", "screen": text})
+                    return
+                continue
+            if (
                 self.agent != "antigravity"
                 and "Accessing workspace:" in text
                 and self.session.cwd.name in text
@@ -432,6 +445,14 @@ class AgentTerminal(TerminalProcess):
                     and "Terms of Service & Data Use" in text
                     and bool(re.search(r">\s*Done", text)),
                     "\r",
+                ),
+                (
+                    "grok-trust-directory",
+                    self.agent == "grok"
+                    and "Do you trust the contents of this directory" in text
+                    and self.session.cwd.name in text
+                    and "Yes, proceed" in text,
+                    "y",
                 ),
                 (
                     "trust-folder",

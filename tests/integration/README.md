@@ -329,16 +329,28 @@ trust screens through visible choices, and reads the answer from a finished agen
 revert journey checks the user's own skills.json (including an entry added after configure) and
 MCP server survive `ug revert`. Not covered: UC skill download into the declared directory, a
 TUI `/model` switch, and Windows (no Antigravity gateway build).
-Grok Build has four live headless journeys in `test_ug_grok_headless.py`, run with
-`--permission-mode dontAsk --allow Read` so Grok can only read files: a Claude task (Anthropic
-Messages, on a model older than its family's newest, which only the full catalog registers), a
-GPT task (Responses), and a plain launch on the default `ug configure` wrote (the workspace's
-newest Grok model when it serves one, on Chat Completions), each through the session's loopback
-proxy; and an unknown model that fails before Grok starts. The task journeys check that ug's
-models in `~/.ucode/grok-home/config.toml` name only the session proxy and secret, and that no
-file under the session home holds the Databricks credential. Answer and model evidence come
-from Grok's `--output-format streaming-json` events (`utils/agents/grok.py`): a completed
-`read_file` of the fixture, the streamed answer text, and the end event's per-model usage.
+Grok Build has eight live headless journeys in `test_ug_grok_headless.py` and three in
+`test_ug_configure_grok.py`. Headless runs use `--permission-mode dontAsk --allow Read`, so Grok
+can only read files unless a case allows more. The Databricks tasks run on a Claude model older
+than its family's newest (Anthropic Messages; only the full catalog registers it), a GPT model
+(Responses), and the default `ug configure` wrote (the workspace's newest Grok model when it
+serves one, on Chat Completions). The provider tasks use `--provider` on the API-key Anthropic
+service and, with `--model`, on the OpenAI and Microsoft Foundry services; ug's config must then
+hold only the service's models. The MCP case registers `system.ai.dbsql` with `ug mcp add`,
+allows only `MCPTool(system-ai-dbsql__*)`, and requires a completed call of that server's tool
+and the query's `md5` in the answer; the skill case places a skill in `~/.agents/skills` and
+requires its code word. Task cases check that ug's models in `~/.ucode/grok-home/config.toml`
+name only the session proxy and secret, and that no file under the session home holds the
+Databricks credential. Headless evidence comes from Grok's `--output-format streaming-json`
+events (`utils/agents/grok.py`): completed tool calls, the streamed answer text, and the end
+event's per-model usage. The TUI journey picks Grok Build and Databricks Hosted in `ug
+configure`'s pickers, waits for Grok's prompt to report the API-key login ug's session secret
+provides (no xAI sign-in), and reads the answer from an assistant message in Grok's saved chat
+history (`sessions/<cwd>/<id>/chat_history.jsonl`); it exits with `/exit` and reopens. The
+External Models journey saves the Anthropic service in `ug configure` and runs a bare launch on
+it; the revert journey checks that a user's own `~/.grok/config.toml` stays byte-identical and
+that revert deletes ug's private config. Not covered: Bedrock and Azure OpenAI services, a TUI
+`/model` switch, and Windows.
 
 The managed saved-config journey installs `/etc/unitygateway/managed-settings.json` through real
 configure, checks root ownership and readable modes, and checks the user-owned
@@ -610,7 +622,8 @@ test_ug_copilot_providers.py            # Copilot via Model Provider Services: A
 test_ug_copilot_model_location.py       # Copilot on a Unity Catalog model location: fresh --model-location file task
 test_ug_antigravity_headless.py         # Antigravity via ug's proxy: file task, --model (ug agy), Gemini MPS targets, MCP SQL tool, skill dir
 test_ug_configure_antigravity.py        # Antigravity: configure picker + TUI task + reopen; External Models picker; revert keeps user files
-test_ug_grok_headless.py                # Grok Build via the session proxy: Claude, GPT, default-model tasks; unknown model; no token on disk
+test_ug_grok_headless.py                # Grok Build via the session proxy: Claude, GPT, default-model tasks; Anthropic/OpenAI/Foundry MPS; MCP SQL tool; skill dir
+test_ug_configure_grok.py               # Grok Build: configure picker + TUI task + reopen; External Models picker; revert keeps the user's ~/.grok
 test_ug_codex_tracing.py                # Codex OTLP export reaches the configured trace table
 test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
@@ -819,7 +832,7 @@ cases instead complete real file tasks through `--workspace` and `--model-locati
 journeys check setup and launch with existing services, without inference.
 
 There are **88 live cases** (including 12 marked TUI journeys) and **7 installation
-checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds seventeen live cases; selecting Antigravity adds eight live cases (one TUI); selecting Grok Build adds four live cases. One
+checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds seventeen live cases; selecting Antigravity adds eight live cases (one TUI); selecting Grok Build adds eleven live cases (one TUI). One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
 Claude task. A further **44 `managed_fixture` cases** (twelve of them also `live`) run on the
 managed workspace with a checked-in JSON CodingAgentConfig from `tests/fixtures/managed_config/`
@@ -1049,7 +1062,7 @@ A non-blocking **Copilot** job (`live and copilot`, sixteen cases) runs on Linux
 same way and is likewise outside `cujs` until it is stable.
 A blocking **Antigravity** job (`live and antigravity`, eight cases) runs on Linux only with
 the pinned `ANTIGRAVITY_BUILD`; it is part of the `cujs` gate.
-A non-blocking **Grok Build** job (`live and grok`, four cases) runs on Linux only until its
+A non-blocking **Grok Build** job (`live and grok`, eleven cases) runs on Linux only until its
 Windows build is exercised, and is also outside `cujs`.
 
 Each lane installs only the agent CLIs it needs (one, except the managed OpenCode lane's

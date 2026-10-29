@@ -96,8 +96,10 @@ Claude uses the Anthropic Messages API, GPT-5 and newer use Responses, and Grok,
 other open-source models use Chat Completions. Gemini models aren't offered: the gateway rejects
 the tool schemas Grok sends them. Choose the starting model with
 `ug grok --model claude-sonnet-5-5` (short names work) and switch with `/model`. xAI's own
-models are hidden, and Grok never receives a Databricks token: each session reaches the
-gateway through a local proxy that adds a fresh one to every request. Grok runs with its own
+models are hidden, and Grok's model requests carry no Databricks token: each session reaches
+the gateway through a local proxy that adds a fresh one to every request. (Under `--use-pat` or
+`DATABRICKS_BEARER`, Grok's environment still holds that bearer for the `ug mcp-proxy` servers
+it starts.) Grok runs with its own
 home, `~/.ucode/grok-home`, so your own Grok login, settings, and sessions are kept apart.
 `ug grok --provider <catalog>.<schema>.<name>` uses a Model Provider Service's models instead.
 `ug copilot --model claude-opus-5-5` (or `system.ai.claude-opus-5-5`, or Copilot's

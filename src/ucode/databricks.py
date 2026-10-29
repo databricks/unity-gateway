@@ -3995,8 +3995,8 @@ def build_grok_base_urls(workspace: str) -> dict[str, str]:
     # Grok appends `/messages`, `/responses`, or `/chat/completions`. `ug grok` points these routes
     # at its session proxy; the workspace URLs are shown by `ug status`.
     return {
-        "anthropic": f"{workspace}/ai-gateway/anthropic/v1",
-        "mlflow": f"{workspace}/ai-gateway/mlflow/v1",
+        "anthropic": build_tool_base_url("claude", workspace) + "/v1",
+        "mlflow": build_copilot_base_url(workspace),
     }
 
 

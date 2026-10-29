@@ -116,6 +116,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(grok_mod, "GROK_PROXY_LOG_PATH", state_dir / "logs" / "grok-proxy.log")
     monkeypatch.setitem(grok_mod.SPEC, "config_path", grok_home / "config.toml")
     monkeypatch.setitem(grok_mod.SPEC, "backup_path", state_dir / "grok-config.backup.toml")
+    monkeypatch.setattr(grok_mod, "_written", None)
 
     def reject_privileged_write(path, _desired_text):
         pytest.fail(

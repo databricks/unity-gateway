@@ -402,7 +402,6 @@ def arguments(
         "--opencode-model", default=environment.get("UG_INTEGRATION_OPENCODE_MODEL")
     )
     parser.add_argument("--copilot-model", default=environment.get("UG_INTEGRATION_COPILOT_MODEL"))
-    parser.add_argument("--grok-model", default=environment.get("UG_INTEGRATION_GROK_MODEL"))
     parser.add_argument(
         "--antigravity-model", default=environment.get("UG_INTEGRATION_ANTIGRAVITY_MODEL")
     )
@@ -721,7 +720,6 @@ def main() -> int:
             "opencode_model": args.opencode_model,
             "copilot_model": args.copilot_model,
             "antigravity_model": args.antigravity_model,
-            "grok_model": args.grok_model,
             "claude_provider": args.claude_provider,
             "claude_relayed_provider": args.claude_relayed_provider,
             "claude_provider_model": args.claude_provider_model,

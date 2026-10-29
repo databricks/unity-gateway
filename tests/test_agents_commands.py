@@ -169,21 +169,15 @@ class TestAgentsAdd:
         assert "ug configure" in result.output
         assert not setup_spy.called
 
-    def test_all_valid_agent_names_accepted(self):
-        managed = {"enabled_agents": {"claude": {}}}
-        for tool in ("codex", "gemini", "copilot", "pi", "opencode"):
-            result, setup_spy, add_spy, _ = self._run([tool], managed=managed)
-            assert result.exit_code == 0, f"{tool}: {result.output}"
-            assert setup_spy.called
-            assert add_spy.called
-
-    @pytest.mark.parametrize("tool", ["grok", "kilo"])
-    def test_agents_a_managed_config_cannot_name_are_accepted(self, tool):
-        """A managed config that enables agents blocks Grok and Kilo, which it has no enum for, and
-        the launch error points at `ug agents add`, so that command must accept them."""
+    # Includes agents a managed config has no enum for (Kilo, Antigravity, Grok): it blocks them
+    # when it enables agents, and the launch error points at `ug agents add`.
+    @pytest.mark.parametrize(
+        "tool", ["codex", "gemini", "copilot", "pi", "opencode", "kilo", "antigravity", "grok"]
+    )
+    def test_all_valid_agent_names_accepted(self, tool):
         managed = {"enabled_agents": {"claude": {}}}
         result, setup_spy, add_spy, _ = self._run([tool], managed=managed)
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 0, f"{tool}: {result.output}"
         assert setup_spy.called
         assert add_spy.called
 

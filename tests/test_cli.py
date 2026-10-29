@@ -25,6 +25,7 @@ import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 import ucode.managed_files as managed_files
 from ucode.agents import copilot as copilot_agent
+from ucode.agents import grok as grok_agent
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
@@ -1295,6 +1296,51 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 1
         assert "--provider and --model-location cannot be used together" in result.output
+
+    @pytest.mark.parametrize(
+        ("model_args", "start_model"),
+        [([], None), (["--model", "claude-sonnet-5"], "claude-sonnet-5")],
+        ids=["service-default", "explicit-model"],
+    )
+    def test_grok_provider_launch_marks_only_the_launch(self, model_args, start_model):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["available_tools"] = ["grok"]
+            result = runner.invoke(app, ["grok", "--provider", "main.default.mps", *model_args])
+
+        assert result.exit_code == 0, result.output
+        configure = calls["configure"].call_args
+        assert configure.args[:1] == ("grok",)
+        assert configure.args[2] == start_model
+        assert configure.kwargs["provider"] == "main.default.mps"
+        launch_state = calls["launch"].call_args.args[1]
+        assert launch_state[grok_agent.LAUNCH_PROVIDER_SERVICE_KEY] == "main.default.mps"
+
+    def test_grok_unknown_model_fails_before_grok_starts(self):
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": ["grok"],
+            grok_agent.CATALOG_STATE_KEY: ["system.ai.claude-haiku-4-5", "system.ai.gpt-5-5"],
+        }
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli._fetch_budget_recommendation", return_value=None),
+            patch("ucode.cli.get_databricks_token", return_value="token"),
+            patch("ucode.cli.get_provider_service", return_value=None),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch("ucode.gateway_proxy.start_gateway_auth_proxy") as start_proxy,
+            patch.object(grok_agent.subprocess_cross_os, "popen") as popen,
+        ):
+            result = runner.invoke(app, ["grok", "--model", "no-such-model"])
+
+        assert result.exit_code == 1, result.output
+        output = " ".join(result.output.split())
+        assert "Model 'no-such-model' isn't available in ug grok" in output
+        assert "system.ai.claude-haiku-4-5" in output
+        start_proxy.assert_not_called()
+        popen.assert_not_called()
 
     def test_copilot_launch_uses_saved_model_location(self):
         with _launch_policy_patches(None) as calls:

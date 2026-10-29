@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,7 +11,9 @@ import tomlkit
 
 from ucode.agents import grok
 from ucode.agents.args import LaunchOptions
+from ucode.config_io import read_toml_safe, write_toml_file
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER
+from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock, release_file_lock
 
 WS = "https://example.databricks.com"
 
@@ -65,8 +69,13 @@ class TestDatabricksCatalog:
     def test_uses_the_saved_listing(self):
         assert _ids(grok.databricks_catalog(STATE)) == STATE["grok_catalog"]
 
-    def test_falls_back_to_family_lists_without_a_listing(self):
-        assert _ids(grok.databricks_catalog(BUCKETS)) == [
+    @pytest.mark.parametrize(
+        "listing",
+        [{}, {"grok_catalog": []}, {"grok_catalog": ["system.ai.gemini-3-1-pro"]}],
+        ids=["failed", "empty", "nothing-usable"],
+    )
+    def test_falls_back_to_family_lists_without_a_usable_listing(self, listing):
+        assert _ids(grok.databricks_catalog({**BUCKETS, **listing})) == [
             "system.ai.claude-opus-5-5",
             "system.ai.claude-sonnet-5-5",
             "system.ai.claude-haiku-5-5",
@@ -75,10 +84,6 @@ class TestDatabricksCatalog:
             "system.ai.gpt-oss-120b",
             "system.ai.kimi-k3",
         ]
-
-    def test_excludes_gemini(self):
-        for state in (STATE, BUCKETS):
-            assert not any("gemini" in m for m in _ids(grok.databricks_catalog(state)))
 
     def test_wires_and_routes(self):
         by_id = {m.id: m for m in grok.databricks_catalog(STATE)}
@@ -304,17 +309,6 @@ class TestWriteToolConfig:
             grok.write_tool_config(dict(STATE), "nope")
         assert not grok.GROK_CONFIG_PATH.exists()
 
-    def test_configured_catalog_round_trips(self):
-        grok.write_tool_config(dict(STATE), None)
-        assert grok.configured_catalog() == grok.databricks_catalog(STATE)
-
-    def test_configured_catalog_ignores_models_ug_did_not_write(self):
-        grok.GROK_CONFIG_PATH.parent.mkdir(parents=True)
-        grok.GROK_CONFIG_PATH.write_text(
-            '[model.mine]\nmodel = "m"\nbase_url = "https://x"\nenv_key = "K"\n', encoding="utf-8"
-        )
-        assert grok.configured_catalog() == []
-
 
 def _service(**overrides):
     service = {
@@ -405,13 +399,16 @@ class TestMcpConfig:
         assert removed == set()
         assert grok.write_user_mcp_servers({}, {"a", "missing"}) == {"a"}
 
-    def test_cli_env_reads_private_home(self):
-        assert grok.mcp_cli_env()["GROK_HOME"] == str(grok.GROK_HOME_DIR)
-
 
 class TestRuntime:
     def test_env_points_at_session_proxy_and_drops_off_gateway_settings(self, monkeypatch):
-        for key in ("XAI_API_KEY", "GROK_AUTH_PROVIDER_COMMAND", "GROK_MODELS_BASE_URL"):
+        for key in (
+            "XAI_API_KEY",
+            "GROK_AUTH_PROVIDER_COMMAND",
+            "GROK_DEFAULT_MODEL",
+            "GROK_MODELS_BASE_URL",
+            "GROK_MODELS_LIST_URL",
+        ):
             monkeypatch.setenv(key, "x")
         monkeypatch.setenv("KEEP_ME", "1")
         env = grok.build_runtime_env("http://127.0.0.1:1234", "secret")
@@ -419,7 +416,13 @@ class TestRuntime:
         assert env["UG_GROK_PROXY_URL"] == "http://127.0.0.1:1234"
         assert env["UG_GROK_SESSION_SECRET"] == "secret"
         assert env["KEEP_ME"] == "1"
-        for key in ("XAI_API_KEY", "GROK_AUTH_PROVIDER_COMMAND", "GROK_MODELS_BASE_URL"):
+        for key in (
+            "XAI_API_KEY",
+            "GROK_AUTH_PROVIDER_COMMAND",
+            "GROK_DEFAULT_MODEL",
+            "GROK_MODELS_BASE_URL",
+            "GROK_MODELS_LIST_URL",
+        ):
             assert key not in env
 
     def test_rewrites_model_args_before_separator(self):
@@ -498,6 +501,97 @@ class TestLaunch:
         _, popen, _, _ = self._launch(dict(STATE), [])
         assert popen.called
         assert _read_config()["models"]["default"] == "system.ai.grok-4-7"
+
+    def test_overlapping_launch_starts_grok_on_its_own_models(self):
+        # A configures, then another launch replaces the shared models before A starts Grok.
+        state = grok.write_tool_config(dict(STATE), None)
+        gpt = grok.GrokModel("gpt-5.6", grok.WIRE_RESPONSES, "/ai-gateway/openai/v1")
+        write_toml_file(
+            grok.GROK_CONFIG_PATH,
+            grok.render_config(read_toml_safe(grok.GROK_CONFIG_PATH), [gpt], gpt),
+        )
+        seen = {}
+
+        def start_grok(argv, env):
+            seen["config"] = _read_config()
+            return self._exited()
+
+        with self._patched(popen=start_grok):
+            grok.launch(state, ["-m", "glm-5-3"], options=LaunchOptions())
+
+        assert seen["config"]["models"]["default"] == "system.ai.grok-4-7"
+        assert seen["config"]["models"]["allowed_models"] == STATE["grok_catalog"]
+        assert "gpt-5.6" not in seen["config"]["model"]
+
+    def test_holds_the_config_lock_until_grok_opens_a_session(self):
+        state = grok.write_tool_config(dict(STATE), None)
+        sessions = grok.GROK_CONFIG_PATH.with_name("active_sessions.json")
+        # A session another Grok left open doesn't count; the one this launch opens does.
+        sessions.write_text(json.dumps([{"session_id": "earlier", "pid": 1}]), encoding="utf-8")
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.wait.return_value = 0
+        polls = []
+
+        def poll():
+            # Another writer is locked out until Grok lists this process.
+            polls.append(self._config_locked())
+            if len(polls) == 3:
+                opened = [{"session_id": "earlier", "pid": 1}, {"session_id": "new", "pid": 2}]
+                sessions.write_text(json.dumps(opened), encoding="utf-8")
+            return None
+
+        proc.poll.side_effect = poll
+        with self._patched(popen=lambda argv, env: proc):
+            grok.launch(state, [], options=LaunchOptions())
+
+        assert len(polls) == 3 and all(polls)
+        assert not self._config_locked()
+
+    def test_startup_wait_is_bounded(self, monkeypatch):
+        monkeypatch.setattr(grok, "_STARTUP_TIMEOUT_SECONDS", 0.2)
+        state = grok.write_tool_config(dict(STATE), None)
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.wait.return_value = 3
+        with self._patched(popen=lambda argv, env: proc), pytest.raises(SystemExit) as exit_info:
+            grok.launch(state, [], options=LaunchOptions())
+        assert exit_info.value.code == 3
+        assert not self._config_locked()
+
+    @staticmethod
+    def _exited():
+        proc = MagicMock()
+        proc.poll.return_value = 0
+        proc.wait.return_value = 0
+        return proc
+
+    @staticmethod
+    def _config_locked() -> bool:
+        lock_path = grok.GROK_CONFIG_PATH.with_name(".ug-config.lock")
+        with lock_path.open("a+b") as lock_file:
+            try:
+                acquire_exclusive_file_lock(lock_file, timeout=0)
+            except (TimeoutError, OSError):
+                return True
+            release_file_lock(lock_file)
+            return False
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _patched(*, popen):
+        server = MagicMock()
+        server.server_address = ("127.0.0.1", 4321)
+        with (
+            patch(
+                "ucode.gateway_proxy.start_gateway_auth_proxy",
+                return_value=(server, MagicMock(), MagicMock()),
+            ),
+            patch.object(grok.subprocess_cross_os, "popen", side_effect=popen),
+            patch.object(grok, "agent_version", return_value="1.0.67"),
+            contextlib.suppress(SystemExit),
+        ):
+            yield
 
     def test_bad_model_fails_before_starting_proxy(self):
         state = grok.write_tool_config(dict(STATE), None)

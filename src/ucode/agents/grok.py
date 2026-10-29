@@ -17,9 +17,13 @@ and forwards each request with a fresh Databricks token. Grok expands the variab
 the config, so the file holds no per-session value and concurrent sessions each reach their own
 proxy.
 
-`ug grok --provider` registers a Model Provider Service's models instead: Claude targets on the
-Anthropic route, the rest on the gateway's native OpenAI route, with the proxy adding the service's
-routing header to every request.
+`ug grok --provider` registers a Model Provider Service's models instead; the proxy adds the
+service's routing header.
+
+Every launch writes its own models into the shared config, which Grok reads once at startup. Grok
+has no per-session config (with `GROK_CONFIG_PATH` set, 1.0.67 lists no models from that file and
+starts on xAI's default), so a launch rewrites its models under a lock and holds it until Grok has
+loaded them; a concurrent launch waits rather than replacing them first.
 
 The private home keeps a user's own Grok login, settings, and sessions apart from ug's. Grok still
 discovers skills in ~/.agents/skills and ~/.claude/skills, where `ug skills` downloads them.
@@ -27,12 +31,14 @@ discovers skills in ~/.agents/skills and ~/.claude/skills, where `ug skills` dow
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import secrets
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -61,6 +67,7 @@ from ucode.custom_oauth import launch_token
 from ucode.databricks import (
     ANTHROPIC_API_PROVIDER_TYPES,
     ANTHROPIC_FAMILIES,
+    MICROSOFT_FOUNDRY_PROVIDER_TYPE,
     ModelServiceEntry,
     bare_model_name,
     classify_model_family,
@@ -70,10 +77,15 @@ from ucode.databricks import (
     resolve_provider_service,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility.file_lock_cross_os import (
+    acquire_exclusive_file_lock,
+    release_file_lock,
+)
 from ucode.state import is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_warning
 
+from . import proxy_launch
 from .args import LaunchOptions
 from .request_tags import request_tags_header_value
 
@@ -135,8 +147,13 @@ _CHAT_API_TYPES = frozenset(
 )
 _GPT_MAJOR_PATTERN = re.compile(r"^gpt-(\d+)")
 _O_SERIES_PATTERN = re.compile(r"^o\d")
-_MICROSOFT_FOUNDRY = "microsoft_foundry"
 _CLAUDE_MAX_OUTPUT_TOKENS = 32_000
+# How long a launch holds the config lock waiting for Grok to load its models.
+_STARTUP_TIMEOUT_SECONDS = 15.0
+
+# The models and start model this process's last `write_tool_config` wrote; `launch` starts Grok on
+# exactly these, whatever another launch has written since.
+_written: tuple[list[GrokModel], GrokModel] | None = None
 
 
 @dataclass(frozen=True)
@@ -194,21 +211,24 @@ def catalog_from_listing(entries: Iterable[ModelServiceEntry]) -> list[str]:
 
 def databricks_catalog(state: dict) -> list[GrokModel]:
     """The workspace's models Grok can use: those of the model-services listing `ug configure`
-    saved, else the per-family discovery lists (when the listing failed)."""
-    listed = state.get(CATALOG_STATE_KEY)
-    if isinstance(listed, list):
-        models = _string_list(listed)
-    else:
+    saved, else the per-family discovery lists (when the listing failed or offered none)."""
+    catalog = _classified(_string_list(state.get(CATALOG_STATE_KEY)))
+    if not catalog:
         claude_models = state.get("claude_models")
         claude = list(claude_models.values()) if isinstance(claude_models, dict) else []
-        models = [
-            *_string_list(claude),
-            *_string_list(state.get("codex_models")),
-            *_string_list(state.get("oss_models")),
-        ]
-    catalog = [entry for model in models if (entry := classify_databricks_model(model))]
-    catalog = list({model.id: model for model in catalog}.values())
+        catalog = _classified(
+            [
+                *_string_list(claude),
+                *_string_list(state.get("codex_models")),
+                *_string_list(state.get("oss_models")),
+            ]
+        )
     return sorted(catalog, key=_catalog_sort_key)
+
+
+def _classified(models: list[str]) -> list[GrokModel]:
+    catalog = [entry for model in models if (entry := classify_databricks_model(model))]
+    return list({model.id: model for model in catalog}.values())
 
 
 def _string_list(value: object) -> list[str]:
@@ -232,7 +252,10 @@ def classify_provider_target(
         return None, f"it isn't a chat model (it serves {', '.join(declared)})"
     name = bare_model_name(model)
     if name.startswith("claude-"):
-        if provider_type in ANTHROPIC_API_PROVIDER_TYPES or provider_type == _MICROSOFT_FOUNDRY:
+        if (
+            provider_type in ANTHROPIC_API_PROVIDER_TYPES
+            or provider_type == MICROSOFT_FOUNDRY_PROVIDER_TYPE
+        ):
             return GrokModel(model, WIRE_MESSAGES, _ANTHROPIC_ROUTE), None
     elif provider_type in ANTHROPIC_API_PROVIDER_TYPES:
         return None, "ug grok uses only the Claude models of this service"
@@ -418,15 +441,35 @@ def _session_catalog(state: dict, provider: str | None, requested: str | None) -
     return catalog
 
 
+@contextmanager
+def _config_lock() -> Iterator[None]:
+    """Serialize ug's writes to Grok's config, and each launch's write through Grok's startup."""
+    lock_path = GROK_CONFIG_PATH.with_name(".ug-config.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        acquire_exclusive_file_lock(lock_file)
+        try:
+            yield
+        finally:
+            release_file_lock(lock_file)
+
+
+def _write_models(catalog: list[GrokModel], start: GrokModel) -> None:
+    write_toml_file(
+        GROK_CONFIG_PATH, render_config(read_toml_safe(GROK_CONFIG_PATH), catalog, start)
+    )
+
+
 def write_tool_config(state: dict, model: str | None, *, provider: str | None = None) -> dict:
     """Write ug's models into Grok's private config, starting sessions on ``model`` when given."""
+    global _written
     catalog = _session_catalog(state, provider, model)
     start = launch_model(catalog, model)
     if not is_tool_managed(state, "grok"):
         backup_existing_file(GROK_CONFIG_PATH, GROK_BACKUP_PATH)
-    write_toml_file(
-        GROK_CONFIG_PATH, render_config(read_toml_safe(GROK_CONFIG_PATH), catalog, start)
-    )
+    with _config_lock():
+        _write_models(catalog, start)
+    _written = (catalog, start)
     state = mark_tool_managed(state, "grok", MANAGED_KEYS)
     save_state(state)
     return state
@@ -434,22 +477,6 @@ def write_tool_config(state: dict, model: str | None, *, provider: str | None = 
 
 def configured_paths(state: dict) -> list[str]:
     return [str(GROK_CONFIG_PATH)]
-
-
-def configured_catalog() -> list[GrokModel]:
-    """The models ug last wrote into Grok's config: the `[model.*]` tables that read its secret."""
-    models_super = read_toml_safe(GROK_CONFIG_PATH).get("model")
-    if not isinstance(models_super, dict):
-        return []
-    prefix = f"${{{PROXY_URL_ENV}}}"
-    catalog = []
-    for name, entry in models_super.items():
-        if not isinstance(entry, dict) or entry.get("env_key") != SESSION_SECRET_ENV:
-            continue
-        base_url, wire = entry.get("base_url"), entry.get("api_backend")
-        if isinstance(base_url, str) and base_url.startswith(prefix) and isinstance(wire, str):
-            catalog.append(GrokModel(str(name), wire, base_url[len(prefix) :]))
-    return catalog
 
 
 def build_mcp_server_entry(argv: list[str]) -> dict:
@@ -461,23 +488,24 @@ def build_mcp_server_entry(argv: list[str]) -> dict:
 def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     """Apply ``add``/``remove`` to `[mcp_servers]` in Grok's private config in a single
     read-modify-write. Returns the names actually removed."""
-    doc = read_toml_safe(GROK_CONFIG_PATH)
-    servers = doc.get("mcp_servers")
-    removed = {name for name in remove if isinstance(servers, dict) and name in servers}
-    if not add and not removed:
-        return removed
-    if not isinstance(servers, dict):
-        servers = tomlkit.table(is_super_table=True)
-        doc["mcp_servers"] = servers
-    for name in removed:
-        del servers[name]
-    for name, entry in add.items():
-        if name in servers:
+    with _config_lock():
+        doc = read_toml_safe(GROK_CONFIG_PATH)
+        servers = doc.get("mcp_servers")
+        removed = {name for name in remove if isinstance(servers, dict) and name in servers}
+        if not add and not removed:
+            return removed
+        if not isinstance(servers, dict):
+            servers = tomlkit.table(is_super_table=True)
+            doc["mcp_servers"] = servers
+        for name in removed:
             del servers[name]
-        table = tomlkit.table()
-        table.update(entry)
-        servers[name] = table
-    write_toml_file(GROK_CONFIG_PATH, doc)
+        for name, entry in add.items():
+            if name in servers:
+                del servers[name]
+            table = tomlkit.table()
+            table.update(entry)
+            servers[name] = table
+        write_toml_file(GROK_CONFIG_PATH, doc)
     return removed
 
 
@@ -535,11 +563,6 @@ def rewrite_model_args(tool_args: list[str], catalog: list[GrokModel]) -> list[s
     return rewritten
 
 
-def _token_provider(state: dict) -> Callable[[bool], str]:
-    workspace = state["workspace"]
-    return lambda force_refresh: launch_token(state, workspace, force_refresh=force_refresh)
-
-
 def proxy_headers(provider: str | None) -> dict[str, str]:
     """Headers the proxy adds to every gateway request."""
     headers = {
@@ -553,36 +576,47 @@ def proxy_headers(provider: str | None) -> dict[str, str]:
     return headers
 
 
-def _log_proxy_failure(exc: BaseException) -> None:
-    # Grok owns the terminal, so failures go to a file instead of stderr.
+def _open_sessions() -> set[str]:
+    """The ids of the sessions Grok lists as open; its TUI adds one on startup."""
     try:
-        GROK_PROXY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with GROK_PROXY_LOG_PATH.open("a", encoding="utf-8") as log:
-            log.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} token refresh failed: {exc}\n")
-    except OSError:
-        pass
+        sessions = json.loads(
+            GROK_CONFIG_PATH.with_name("active_sessions.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(sessions, list):
+        return set()
+    return {
+        str(entry["session_id"])
+        for entry in sessions
+        if isinstance(entry, dict) and entry.get("session_id")
+    }
 
 
-class _ChildProcess(Protocol):
-    def wait(self) -> int: ...
+class _StartingProcess(proxy_launch.ChildProcess, Protocol):
+    def poll(self) -> int | None: ...
 
 
-def _wait_for_exit(proc: _ChildProcess) -> int:
-    while True:
-        try:
-            return proc.wait()
-        except KeyboardInterrupt:
-            # The terminal delivers Ctrl-C to Grok too; keep the proxy up until it exits.
-            continue
+def _wait_until_started(
+    proc: _StartingProcess, requested: threading.Event, before: set[str]
+) -> None:
+    """Return once Grok has loaded its config: the TUI opens a session (any new one is this
+    launch's, since the lock holds other launches back), a headless run sends its first model
+    request, and a subcommand exits. Bounded, so an unrecognized startup only delays a concurrent
+    launch."""
+    deadline = time.monotonic() + _STARTUP_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if requested.wait(0.05) or proc.poll() is not None or _open_sessions() - before:
+            return
 
 
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
     """Launch Grok on the models `configure_tool` just wrote, behind this session's proxy."""
     provider = state.pop(LAUNCH_PROVIDER_SERVICE_KEY, None)
-    catalog = configured_catalog()
-    if not catalog:
+    if _written is None:
         state = write_tool_config(state, options.user_pinned_model, provider=provider)
-        catalog = configured_catalog()
+    assert _written is not None
+    catalog, start = _written
     # Resolve before the proxy starts so a bad model fails without starting Grok.
     tool_args = rewrite_model_args(tool_args, catalog)
 
@@ -591,26 +625,39 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
 
     workspace = state["workspace"]
     session_secret = secrets.token_urlsafe(32)
+    requested = threading.Event()
+
+    def note_request(_path: str, body: bytes) -> bytes:
+        # A request means Grok has loaded its models; the body is forwarded unchanged.
+        requested.set()
+        return body
+
     server, cache, client = gateway_proxy.start_gateway_auth_proxy(
         workspace,
-        _token_provider(state),
+        proxy_launch.token_provider(state),
         session_secret=session_secret,
         added_headers=proxy_headers(provider),
         sign_in_hint=f"Run `databricks auth login --host {workspace}`, then restart `ug grok`.",
-        on_refresh_failure=_log_proxy_failure,
+        on_refresh_failure=proxy_launch.refresh_failure_logger(GROK_PROXY_LOG_PATH),
         # On Chat Completions the gateway can't route requests whose tool schemas declare
         # `$schema`, as all of Grok's do, and rejects the backend `model_id` Grok echoes back in
         # earlier assistant messages.
         dropped_message_fields=("model_id",),
         dropped_tool_parameter_keys=("$schema",),
+        body_rewriter=note_request,
     )
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         env = build_runtime_env(
             f"http://{LOOPBACK_HOST}:{server.server_address[1]}", session_secret
         )
-        proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
-        returncode = _wait_for_exit(proc)
+        with _config_lock():
+            # Another launch may have replaced the models since configure; Grok reads them once.
+            _write_models(catalog, start)
+            before = _open_sessions()
+            proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
+            _wait_until_started(proc, requested, before)
+        returncode = proxy_launch.wait_for_exit(proc)
     finally:
         cache.stop()
         server.shutdown()

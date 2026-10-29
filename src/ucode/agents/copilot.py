@@ -30,13 +30,12 @@ import os
 import re
 import secrets
 import threading
-import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from ucode.config_io import (
     APP_DIR,
@@ -83,6 +82,7 @@ from ucode.state import is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_warning
 
+from . import proxy_launch
 from .args import LaunchOptions, explicit_model_arg_value
 from .request_tags import request_tags_header_value
 
@@ -839,11 +839,6 @@ def write_tool_config(state: dict, model: str | None) -> dict:
     return state
 
 
-def _token_provider(state: dict) -> Callable[[bool], str]:
-    workspace = state["workspace"]
-    return lambda force_refresh: launch_token(state, workspace, force_refresh=force_refresh)
-
-
 def proxy_headers(state: dict) -> dict[str, str]:
     """Headers the proxy adds to every gateway request; admin-managed headers win by name."""
     headers = {
@@ -862,29 +857,6 @@ def proxy_headers(state: dict) -> dict[str, str]:
             headers.pop(existing)
         headers[name.strip()] = value
     return headers
-
-
-def _log_proxy_failure(exc: BaseException) -> None:
-    # Copilot owns the terminal, so failures go to a file instead of stderr.
-    try:
-        COPILOT_PROXY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with COPILOT_PROXY_LOG_PATH.open("a", encoding="utf-8") as log:
-            log.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} token refresh failed: {exc}\n")
-    except OSError:
-        pass
-
-
-class _ChildProcess(Protocol):
-    def wait(self) -> int: ...
-
-
-def _wait_for_exit(proc: _ChildProcess) -> int:
-    while True:
-        try:
-            return proc.wait()
-        except KeyboardInterrupt:
-            # The terminal delivers Ctrl-C to Copilot too; keep the proxy up until it exits.
-            continue
 
 
 def _session_catalog(
@@ -930,11 +902,11 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     session_secret = secrets.token_urlsafe(32)
     server, cache, client = gateway_proxy.start_gateway_auth_proxy(
         workspace,
-        _token_provider(state),
+        proxy_launch.token_provider(state),
         session_secret=session_secret,
         added_headers=proxy_headers(state),
         sign_in_hint=f"Run `databricks auth login --host {workspace}`, then restart `ug copilot`.",
-        on_refresh_failure=_log_proxy_failure,
+        on_refresh_failure=proxy_launch.refresh_failure_logger(COPILOT_PROXY_LOG_PATH),
         # Copilot sends `reasoning_effort` on Chat Completions, but only models that aren't GPT 5+
         # or o-series use that wire, and OpenAI and Azure reject the field for them.
         dropped_chat_completions_fields=("reasoning_effort",),
@@ -959,7 +931,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
             proc = subprocess_cross_os.popen(
                 [SPEC["binary"], *mcp_config_args(), *tool_args], env=env
             )
-            returncode = _wait_for_exit(proc)
+            returncode = proxy_launch.wait_for_exit(proc)
     finally:
         cache.stop()
         server.shutdown()

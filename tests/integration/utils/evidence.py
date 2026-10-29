@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .agents import _evidence_id, antigravity, claude, codex, copilot, grok
 
-_AGENT_HELPERS = {"claude": claude, "codex": codex, "copilot": copilot}
+_AGENT_HELPERS = {"claude": claude, "codex": codex, "copilot": copilot, "grok": grok}
 
 
 def assert_no_terminal_api_error(screen: str) -> None:
