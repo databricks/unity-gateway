@@ -36,7 +36,8 @@
           "type": "string",
           "default": "",
           "description": "Databricks workspace URL, for example https://my-workspace.cloud.databricks.com. Set by `ug configure`.",
-          "scope": "application"
+          "scope": "application",
+          "ignoreSync": true
         },
         "unityGateway.models": {
           "type": "array",
@@ -77,13 +78,15 @@
               }
             }
           },
-          "scope": "application"
+          "scope": "application",
+          "ignoreSync": true
         },
         "unityGateway.authCommand": {
           "type": "string",
           "default": "",
           "description": "Command that prints a Databricks access token. Set by `ug configure`.",
-          "scope": "application"
+          "scope": "application",
+          "ignoreSync": true
         }
       }
     },

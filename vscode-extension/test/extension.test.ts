@@ -73,6 +73,12 @@ describe("settings", () => {
     const properties = Object.values(packageJson.contributes.configuration.properties);
     assert.deepEqual(properties.map((property) => property.scope), ["application", "application", "application"]);
   });
+
+  // ug writes them per machine (the auth command holds this machine's ug path and profile).
+  it("stay out of Settings Sync", () => {
+    const properties = Object.values(packageJson.contributes.configuration.properties);
+    assert.deepEqual(properties.map((property) => property.ignoreSync), [true, true, true]);
+  });
 });
 
 describe("provider", () => {
