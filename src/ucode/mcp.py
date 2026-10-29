@@ -296,13 +296,17 @@ def _native_oauth_http_entry(
     sign-in (e.g. ``system.ai.github``). A no-login service like ``system.ai.web_search`` has no such
     connection, so it (and non-mcp-services URLs) uses the stdio proxy, which injects the Databricks
     token with no sign-in prompt. Giving a no-login service the native entry would push the agent into
-    a connection-login OAuth flow it can't complete (AIGTWY-4856). A missing token or lookup failure
-    also falls back to the proxy — the safe default, since the proxy works for every service."""
+    a connection-login OAuth flow it can't complete (AIGTWY-4856). Codex is the exception: it gets the
+    native entry for every mcp-service. A missing token or lookup failure also falls back to the
+    proxy — the safe default, since the proxy works for every service."""
     if oauth_client is None:
         return None
     connection = connection_from_url(url)
     if connection is None:
         return None
+    # Codex labels every stdio server "Auth unsupported", so it signs in to no-login services too.
+    if oauth_client == CODEX_CIMD_CLIENT_ID:
+        return oauth_client
     try:
         token = get_databricks_token(workspace, profile)
     except RuntimeError:
