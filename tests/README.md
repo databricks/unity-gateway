@@ -74,6 +74,11 @@ native installer, `agy mcp list` parsing, `ug antigravity`/`ug agy`, and
 eight journeys in `integration/` (blocking Linux CI lane, Databricks Hosted and the Gemini
 Enterprise MPS; see `integration/README.md`).
 
+`test_integration_contract.py` checks that isolated test sessions set Antigravity's
+`AGY_CLI_DISABLE_AUTO_UPDATE` to the required literal `true`, overriding an inherited `1`.
+This component check does not run the native updater; the integration runner retains its
+before/after agent-version check.
+
 `test_ug_headers.py` covers the `UG_HEADERS` parser and the `--header` flag, `test_databricks.py`
 ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching a Codex launch's
 `-c` headers (plain and smart-routed) without writing its profile. No automated test checks the
