@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import ucode.doctor as doctor_mod
@@ -316,6 +317,17 @@ class TestClaudeProviderEnv:
             "set it to 0"
         )
         assert check.suggestion is None
+
+    def test_unreadable_managed_file_reads_as_absent(self, monkeypatch, tmp_path):
+        # Stat-ing a file under a root-locked dir raises PermissionError; doctor must not crash.
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+
+        def denied(self, *args, **kwargs):
+            raise PermissionError(13, "Permission denied", str(self))
+
+        monkeypatch.setattr(Path, "stat", denied)
+        assert _check_claude_provider_env().status == "info"
 
 
 class TestUgCheck:

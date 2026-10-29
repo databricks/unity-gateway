@@ -7,7 +7,18 @@ from tests.test_claude_header_mod import _managed_env
 from ucode.agents import claude
 
 WS = "https://example.cloud.databricks.com"
-ZEROS = dict.fromkeys(claude.CLAUDE_PROVIDER_ENV_KEYS, "0")
+# Spelled out, not taken from claude.CLAUDE_PROVIDER_ENV_KEYS, so a flag dropped there fails here.
+ZEROS = dict.fromkeys(
+    (
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+        "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+        "CLAUDE_CODE_USE_MANTLE",
+    ),
+    "0",
+)
 MODEL = "databricks-claude-sonnet-4"
 STATE = {"workspace": WS, "codex_models": []}
 

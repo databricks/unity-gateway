@@ -283,19 +283,19 @@ def _check_claude_provider_env() -> Check | None:
     file still wins; that one needs the administrator. Advisory (no fix). Returns None when
     nothing is set.
     """
-    truthy = claude.CLAUDE_TRUTHY_ENV_VALUES
     shell = [
         name
         for name in claude.CLAUDE_PROVIDER_ENV_KEYS
-        if os.environ.get(name, "").strip().lower() in truthy
+        if claude.provider_flag_enabled(os.environ.get(name))
     ]
     path = claude.managed_settings_path()
-    managed_env = read_json_safe(path).get("env") if path is not None and path.exists() else None
+    # read_json_safe reads a missing or unreadable file as {}; `path.exists()` would raise there.
+    managed_env = read_json_safe(path).get("env") if path is not None else None
     managed_env = managed_env if isinstance(managed_env, dict) else {}
     managed = [
         name
         for name in claude.CLAUDE_PROVIDER_ENV_KEYS
-        if isinstance(managed_env.get(name), str) and managed_env[name].strip().lower() in truthy
+        if claude.provider_flag_enabled(managed_env.get(name))
     ]
     if managed:
         return Check(

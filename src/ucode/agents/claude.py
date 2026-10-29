@@ -251,10 +251,9 @@ CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 # settings `env` value beats the shell's, so ug blanks them for the Claude process only.
 CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
 CLAUDE_BLANKED_CREDENTIAL_PATHS = [["env", key] for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS]
-# Claude Code picks Bedrock, Vertex, Foundry, etc. from these flags before it reads
-# `ANTHROPIC_BASE_URL`, so one left over from a direct-provider setup sends every request to that
-# provider instead of the gateway (ES-2317318). ug sets each to "0" the same way it blanks the
-# credentials above.
+# Pin direct-provider flags off so inherited shell flags cannot bypass the gateway: Claude Code
+# picks Bedrock, Vertex, Foundry, etc. from them before it reads `ANTHROPIC_BASE_URL`. ug sets each
+# to "0" the same way it blanks the credentials above.
 CLAUDE_PROVIDER_ENV_KEYS = (
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
@@ -2096,10 +2095,15 @@ def header_mod_active() -> bool:
     return isinstance(plugins, dict) and plugins.get(CLAUDE_HEADER_MOD_ID) is True
 
 
+def provider_flag_enabled(value: object) -> bool:
+    """Whether Claude Code reads a provider flag value (e.g. `CLAUDE_CODE_USE_BEDROCK`) as true."""
+    return isinstance(value, str) and value.strip().lower() in CLAUDE_TRUTHY_ENV_VALUES
+
+
 def _takes_claude_off_gateway(key: str, value: str) -> bool:
     """Whether a managed-file value for one of ug's neutral env keys would beat the gateway."""
     if key in CLAUDE_PROVIDER_ENV_KEYS:
-        return value.strip().lower() in CLAUDE_TRUTHY_ENV_VALUES
+        return provider_flag_enabled(value)
     return bool(value.strip())
 
 
