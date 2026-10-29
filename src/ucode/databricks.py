@@ -3792,10 +3792,11 @@ def _raise_model_service_permission_failure(workspace: str, model_service_reason
     )
 
 
-# Successful probes for this process, keyed by workspace. `ucode codex` configures once for
-# auto-setup and again on the launch path; re-probing a gateway that just answered only gives the
-# flaky listing another chance to fail. Failures are never cached.
-_GATEWAY_PROBE_CACHE: dict[str, GatewayProbe] = {}
+# Probes that returned an accessible model service, keyed by (workspace, token) so a re-login or a
+# different credential probes again. `ucode codex` configures once for auto-setup and again on the
+# launch path; re-probing a gateway that just answered only gives the flaky listing another chance
+# to fail. Failures, empty listings, and inconclusive results are never cached.
+_GATEWAY_PROBE_CACHE: dict[tuple[str, str], GatewayProbe] = {}
 
 
 def clear_gateway_probe_cache() -> None:
@@ -3805,12 +3806,14 @@ def clear_gateway_probe_cache() -> None:
 
 def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe:
     """Return the model service probe, raising if model service access can't be verified."""
-    cached = _GATEWAY_PROBE_CACHE.get(workspace)
+    cache_key = (workspace, token)
+    cached = _GATEWAY_PROBE_CACHE.get(cache_key)
     if cached is not None:
         return cached
     model_service_probe = _probe_model_services(workspace, token)
+    if model_service_probe.resource_available:
+        _GATEWAY_PROBE_CACHE[cache_key] = model_service_probe
     if model_service_probe.reachable:
-        _GATEWAY_PROBE_CACHE[workspace] = model_service_probe
         # resource_available, reachable-but-empty, and inconclusive are all non-fatal: the
         # caller surfaces the detail as a warning when no accessible model service came back.
         return model_service_probe

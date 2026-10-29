@@ -3728,6 +3728,31 @@ class TestProbeUnityGatewayCapabilities:
         assert second == first
         assert len(calls) == 2
 
+    def test_probe_cache_is_keyed_by_token_and_skips_empty_listings(self, monkeypatch):
+        calls: list[str] = []
+        outcomes = iter(
+            [
+                ({"model_services": []}, None),
+                ({"model_services": []}, None),
+                ({"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None),
+                ({"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None),
+            ]
+        )
+
+        def fake_get(url, token, **kwargs):
+            calls.append(token)
+            return next(outcomes)
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        assert not db_mod.probe_unity_gateway_capabilities(WS, "token-a").resource_available
+        assert not db_mod.probe_unity_gateway_capabilities(WS, "token-a").resource_available
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token-a").resource_available
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token-a").resource_available
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token-b").resource_available
+
+        assert calls == ["token-a", "token-a", "token-a", "token-b"]
+
     def test_model_service_auth_failure_raises(self, monkeypatch):
         calls: list[str] = []
 
