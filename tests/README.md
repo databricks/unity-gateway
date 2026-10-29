@@ -373,6 +373,9 @@ Launches without a matching token retain stdout for status messages.
 for Databricks and agent installers/upgraders, asserting real stdout/stderr routing
 on success and failure, preserved version-output capture, and clean native handoff.
 These are component checks, not live installer, Isaac, or inference coverage.
+`TestRunDatabricksCliInstaller` also covers safe exit/timeout/process-start diagnostics,
+including a real missing-executable failure, package-manager recovery guidance, and
+preserved failure causes and CLI caches. It does not repair conflicting installations.
 The live Claude/Codex headless prompt-argument and stdin journeys also require raw stdout to
 parse as JSON/JSONL without stripping UG messages; those assertions still require a live run.
 

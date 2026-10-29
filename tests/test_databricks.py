@@ -4721,14 +4721,73 @@ class TestRunDatabricksCliInstaller:
         # unrelated `databricks` cask.
         assert calls == [["brew", brew_subcommand, "databricks/tap/databricks"]]
 
-    def _fail_installer(self, monkeypatch):
+    def _fail_installer(self, monkeypatch, error=None):
         monkeypatch.setattr(db_mod.platform, "system", lambda: "Darwin")
         monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: "/opt/homebrew/bin/brew")
 
         def boom(cmd, **kw):
-            raise subprocess.CalledProcessError(1, cmd)
+            raise error if error is not None else subprocess.CalledProcessError(1, cmd)
 
         monkeypatch.setattr(db_mod, "run", boom)
+
+    @pytest.mark.parametrize(
+        ("error", "detail"),
+        [
+            (
+                subprocess.CalledProcessError(
+                    23, ["private-command"], output=b"private-output", stderr=b"private-error"
+                ),
+                "Installer exited with status 23.",
+            ),
+            (
+                subprocess.TimeoutExpired(
+                    ["private-command"], 240, output=b"private-output", stderr=b"private-error"
+                ),
+                "Installer timed out after 240 seconds.",
+            ),
+            (
+                FileNotFoundError(2, "private-error", "private-command"),
+                "Installer could not start (FileNotFoundError).",
+            ),
+            (
+                PermissionError(13, "private-error", "private-command"),
+                "Installer could not start (PermissionError).",
+            ),
+        ],
+        ids=["exit", "timeout", "missing-executable", "permission"],
+    )
+    def test_failure_retains_safe_reason_and_recovery(self, monkeypatch, error, detail):
+        self._fail_installer(monkeypatch, error)
+        monkeypatch.setattr(
+            db_mod,
+            "clear_databricks_cli_cache",
+            lambda: pytest.fail("failed installer cleared cache"),
+        )
+
+        with pytest.raises(RuntimeError) as failure:
+            _run_databricks_cli_installer(brew_subcommand="upgrade")
+
+        message = str(failure.value)
+        assert detail in message
+        assert "host's normal package manager" in message
+        assert "`databricks --version`" in message
+        assert "private-" not in message
+        assert failure.value.__cause__ is error
+
+    def test_missing_installer_process_uses_normal_error(self, monkeypatch, tmp_path):
+        real_run = db_mod.run
+        self._fail_installer(monkeypatch)
+        missing_installer = tmp_path / "private-missing-installer"
+        monkeypatch.setattr(
+            db_mod, "run", lambda command, **kwargs: real_run([str(missing_installer)], **kwargs)
+        )
+
+        with pytest.raises(RuntimeError, match="Installer could not start") as failure:
+            _run_databricks_cli_installer()
+
+        assert isinstance(failure.value.__cause__, FileNotFoundError)
+        assert str(missing_installer) not in str(failure.value)
+        assert not missing_installer.exists()
 
     def test_failure_message_never_advises_removing_a_shadowing_binary(self, monkeypatch, tmp_path):
         # `databricks_cli_path` picks the databricks binary by absolute path, so a
@@ -4746,9 +4805,15 @@ class TestRunDatabricksCliInstaller:
         with pytest.raises(RuntimeError) as exc:
             _run_databricks_cli_installer()
 
-        assert str(exc.value) == "Failed to install/upgrade Databricks CLI automatically."
+        assert str(exc.value) == (
+            "Failed to install/upgrade Databricks CLI automatically.\n"
+            "Installer exited with status 1.\n"
+            "Install or upgrade Databricks CLI using the host's normal package manager, "
+            "verify with `databricks --version`, then retry."
+        )
         assert "remove it" not in str(exc.value)
         assert str(local_bin) not in str(exc.value)
+        assert local_bin.read_text() == "stale"
 
 
 class TestHttpGetJsonTimeout:
