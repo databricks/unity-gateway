@@ -67,6 +67,7 @@ from ucode.managed_files import (
     apply_settings_passthrough,
     claude_header_mod_root,
     current_os,
+    explicit_managed_writes,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -1092,8 +1093,9 @@ def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
     The OS-managed ``managedMcpServers`` key is additive (it never touches the developer's own
     servers) but Claude Code reads it only from a real managed source, and only as a remote HTTP
     server it can drive OAuth against itself. So it fits only when the platform supports the sudo
-    reconcile, the run is interactive, the developer is not on PAT auth (which needs the stdio
-    proxy), and the workspace publishes the pinned CIMD client. Other cases use user scope."""
+    reconcile, the run may write it (``ug configure``, or an interactive run), the developer is not
+    on PAT auth (which needs the stdio proxy), and the workspace publishes the pinned CIMD client.
+    Other cases use user scope."""
     return (
         managed_files_supported()
         and managed_writes_allowed()
@@ -1124,7 +1126,8 @@ def reconcile_managed_mcp(
     managed file is the source of truth, so this is a wipe-and-rewrite, not a diff. Every other
     managed key is preserved, including the model configuration ug wrote earlier this run and any
     admin-authored policy. Returns True when the managed file is the delivery mechanism (written or
-    already current), False when it cannot be used (unsupported platform or a non-interactive run),
+    already current), False when it cannot be used (unsupported platform, or a run that may not
+    write it),
     so the caller routes those servers to the user-scope registration instead.
 
     ``also_registered`` names the servers ug registers in Claude outside this file this run (the
@@ -2229,7 +2232,8 @@ def _reconcile_managed_settings(
             parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
-        if conflicts:
+        # `ug configure` must leave the machine-wide file correct, so it never degrades silently.
+        if conflicts or explicit_managed_writes():
             raise
         print_warning(
             f"Claude Code OS-managed settings could not be updated at {path}; continuing with "

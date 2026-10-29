@@ -214,11 +214,11 @@ class TestLaunchCodex:
 
         monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
 
-        def get_token(workspace, profile):
+        def get_token(workspace, profile, **_kw):
             token_calls.append((workspace, profile))
             return f"token-{len(token_calls)}"
 
-        monkeypatch.setattr(v2, "get_databricks_token", get_token)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", get_token)
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
 
@@ -336,7 +336,7 @@ class TestLaunchCodex:
                 pass
 
         monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_a, **_k: "token")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_k: "token")
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
         monkeypatch.setattr(
@@ -369,7 +369,7 @@ class TestLaunchCodex:
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr(
             v2.subprocess,
             "Popen",
@@ -473,7 +473,9 @@ class TestLaunchCodex:
 
     def test_missing_cached_models_starts_with_bootstrap_model(self, monkeypatch):
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        monkeypatch.setattr(v2, "get_databricks_token", lambda workspace, profile: "token")
+        monkeypatch.setattr(
+            custom_oauth, "get_databricks_token", lambda workspace, profile, **_kw: "token"
+        )
         monkeypatch.setattr(codex, "agent_version", lambda binary: "unknown")
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
@@ -615,7 +617,7 @@ class TestCustomCatalogModels:
             cli=self._catalog(tmp_path / "cli.json", ["gpt-6-astra", "gpt-6-b"]),
         )
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "token")
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.145.0")

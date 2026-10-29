@@ -63,6 +63,7 @@ CLAUDE_DEFAULT = CLAUDE_SONNET_MODEL
 CLAUDE_PROVIDER, CLAUDE_PROVIDER_MODEL = BEDROCK_PROVIDER_SERVICE_FIXTURE
 CODEX_MODEL_LOCATION, CODEX_UC_MODEL = UC_MODEL_LOCATION_FIXTURE
 MANAGED_MCP_ENTRY = registered_name(FIXTURE_READER_MCP_SERVICE_NAME)
+CLAUDE_OS_MANAGED_SETTINGS = MANAGED_PATHS[0]
 CODEX_OS_MANAGED_CONFIG = MANAGED_PATHS[1]
 PARENT_SCHEMA_HEADER = "databricks-model-service-parent-schema"
 CONFIGURE_ARGS = ["configure", "--skip-upgrade", "--disable-databricks-ai-tools"]
@@ -163,6 +164,9 @@ class AgentFiles:
     codex_model_catalog: dict
     claude_mcp: dict
     codex_mcp: dict
+    # ug's managed MCP servers in the OS-managed files, where `ug configure` writes them.
+    claude_managed_mcp: dict
+    codex_managed_mcp: dict
     claude_mcp_list: tuple[str, ...]
     codex_mcp_list: tuple[str, ...]
     skill_files: dict[str, str]
@@ -307,6 +311,8 @@ class Journey:
             codex_model_catalog=read_json(self.home / ".ucode/codex-model-catalog.json"),
             claude_mcp=claude_mcp,
             codex_mcp=codex_config.get("mcp_servers", {}),
+            claude_managed_mcp=read_json(CLAUDE_OS_MANAGED_SETTINGS).get("managedMcpServers", {}),
+            codex_managed_mcp=read_toml(CODEX_OS_MANAGED_CONFIG).get("mcp_servers", {}),
             claude_mcp_list=self.mcp_list(CLAUDE),
             codex_mcp_list=self.mcp_list(CODEX),
             skill_files=self.skill_files(),
@@ -606,8 +612,13 @@ class TestCujRepeatedConfig(BaseCujTest):
 
     def test_phase_a_registers_managed_and_user_mcp_once(self, phase_a):
         files = phase_a.second
-        for registrations in (files.claude_mcp, files.codex_mcp):
-            assert {MANAGED_MCP_ENTRY, USER_MCP} <= set(registrations)
+        # The developer's own server stays in user scope. Codex always takes the managed server
+        # from its OS-managed file on Linux; Claude does only when it can drive the server's OAuth
+        # from there, and otherwise in user scope.
+        assert USER_MCP in files.claude_mcp and USER_MCP in files.codex_mcp
+        assert MANAGED_MCP_ENTRY in files.codex_managed_mcp
+        assert MANAGED_MCP_ENTRY not in files.codex_mcp
+        assert MANAGED_MCP_ENTRY in {*files.claude_mcp, *files.claude_managed_mcp}
         for listed in (files.claude_mcp_list, files.codex_mcp_list):
             assert {MANAGED_MCP_ENTRY, USER_MCP} <= set(listed)
             assert len(listed) == len(set(listed)), listed
@@ -707,6 +718,8 @@ class TestCujRepeatedConfig(BaseCujTest):
             for registered in (
                 files.claude_mcp,
                 files.codex_mcp,
+                files.claude_managed_mcp,
+                files.codex_managed_mcp,
                 files.claude_mcp_list,
                 files.codex_mcp_list,
             ):
@@ -797,7 +810,6 @@ class TestCujRepeatedConfig(BaseCujTest):
 # sets none. A denylist, not an allowlist, so the shared admin setting can't block CUJ 6's own MCPs.
 DENIED_MCP = "ug-e2e-denied"
 NATIVE_SETTINGS = {"deniedMcpServers": [{"serverName": DENIED_MCP}]}
-CLAUDE_OS_MANAGED_SETTINGS = MANAGED_PATHS[0]
 BLOCKED_BY_POLICY = "blocked by enterprise policy"
 
 

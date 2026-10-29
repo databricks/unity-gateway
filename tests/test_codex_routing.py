@@ -206,7 +206,6 @@ def test_spawn_rewrite_uses_codex_model_id_for_uc_endpoint(monkeypatch, tmp_path
     monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "1")
     monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
     monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
-    monkeypatch.delenv("ISAAC_LAUNCH_MODE", raising=False)
     monkeypatch.setattr(
         codex_routing,
         "request_routing_decision",

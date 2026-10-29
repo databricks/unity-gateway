@@ -771,8 +771,6 @@ class TestSubcommandRouting:
             (["fix this"], True, None, None, True),
             (["fix this"], False, None, None, False),
             (["update"], False, None, None, False),
-            (["--model", "fixed"], False, None, None, False),
-            ([], False, "fixed", None, False),
             ([], False, None, "catalog.schema.service", False),
         ],
     )
@@ -791,6 +789,40 @@ class TestSubcommandRouting:
         assert options.launch_smart_routing is expected
 
     @pytest.mark.parametrize(
+        ("tool", "tool_args", "model"),
+        [
+            ("claude", ["--model", "fixed"], None),
+            ("claude", ["-p", "hi", "--model", "fixed"], None),
+            ("claude", [], "fixed"),
+            ("codex", [], "fixed"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("routing_env", "expected"),
+        [
+            ({"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}, True),
+            ({"ENABLE_SMART_ROUTING_V2": "1"}, False),
+        ],
+        ids=["subagent-only", "first-prompt"],
+    )
+    def test_explicit_model_keeps_only_subagent_routing(
+        self, monkeypatch, tool, tool_args, model, routing_env, expected
+    ):
+        for name, value in routing_env.items():
+            monkeypatch.setenv(name, value)
+
+        options = cli_mod._launch_options(
+            tool,
+            tool_args,
+            smart_routing_enabled=True,
+            explicit_prompt=False,
+            user_pinned_model=model,
+            provider=None,
+        )
+
+        assert options.launch_smart_routing is expected
+
+    @pytest.mark.parametrize(
         ("tool_args", "expected"),
         [
             (["--session-id"], True),
@@ -802,7 +834,10 @@ class TestSubcommandRouting:
             (["--session-id", "session-123", "--model", "fixed"], False),
         ],
     )
-    def test_claude_options_allow_smart_routing_except_model(self, tool_args, expected):
+    def test_claude_options_allow_smart_routing_except_model(
+        self, monkeypatch, tool_args, expected
+    ):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
         options = cli_mod._launch_options(
             "claude",
             tool_args,
@@ -922,6 +957,37 @@ class TestSubcommandRouting:
         assert observed == [(tool in routed_tools, expected_env)]
         assert _routing_env() == env_before
 
+    @pytest.mark.parametrize(
+        ("version", "launch_args", "routed"),
+        [
+            (smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, [], True),
+            (None, [], True),
+            (smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, ["--disable-smart-routing"], False),
+            (smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, [], False),
+        ],
+        ids=["subagent-version", "managed", "disable-flag", "first-prompt-version"],
+    )
+    def test_forwarded_model_keeps_subagent_routing(
+        self, monkeypatch, version, launch_args, routed
+    ):
+        managed = None
+        if version is None:
+            managed = {"enabled_agents": {"claude": {"smart_routing_enabled": True}}}
+        else:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
+        observed = []
+
+        with _launch_policy_patches(managed) as calls:
+            calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
+                options.launch_smart_routing
+            )
+            result = runner.invoke(
+                app, ["claude", *launch_args, "--", "--model", "system.ai.claude-opus-5-5"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert observed == [routed]
+
     def test_bare_launch_keeps_a_known_version_over_managed_smart_routing(self, monkeypatch):
         monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ONLY_V0)
         managed = {"enabled_agents": {"claude": {"smart_routing_enabled": True}}}
@@ -935,6 +1001,27 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 0, result.output
         assert observed == [_version_routing_env(smart_routing_config.SUBAGENT_ONLY_V0, "claude")]
+
+    @pytest.mark.parametrize("command", ["antigravity", "agy"])
+    def test_antigravity_commands_launch_with_provider_and_model(self, command):
+        with patch("ucode.cli._launch_tool") as mock_launch:
+            result = runner.invoke(
+                app,
+                [command, "--provider", "c.s.svc", "--model", "gemini-3.8-flash", "-p", "hi"],
+            )
+
+        assert result.exit_code == 0, result.output
+        args, kwargs = mock_launch.call_args
+        assert args[0] == "antigravity"
+        assert args[1].args == ["-p", "hi"]
+        assert kwargs["provider"] == "c.s.svc"
+        assert kwargs["model"] == "gemini-3.8-flash"
+
+    def test_agy_alias_is_hidden_from_help(self):
+        result = runner.invoke(app, ["--help"])
+
+        assert "antigravity" in result.output
+        assert " agy " not in result.output
 
     def test_codex_refresh_is_consumed_by_ucode(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
@@ -1332,7 +1419,9 @@ class TestSubcommandRouting:
             }
         }
         with (
-            patch("ucode.cli.get_databricks_token", return_value="fresh-token") as mock_token,
+            patch(
+                "ucode.custom_oauth.get_databricks_token", return_value="fresh-token"
+            ) as mock_token,
             patch(
                 "ucode.smart_routing.codex_routing.route_pre_tool_use",
                 return_value=routed,
@@ -1421,7 +1510,7 @@ class TestSubcommandRouting:
                     "system.ai.claude-opus-4-8",
                 ],
                 input='{"tool_name":"Agent","tool_input":{"prompt":"fix it"}}',
-                env={"OAUTH_TOKEN": "token"},
+                env={"OAUTH_TOKEN": _jwt(time.time() + 300)},
             )
 
         assert result.exit_code == 0, result.output
@@ -1433,6 +1522,7 @@ class TestSubcommandRouting:
     @pytest.mark.parametrize("enabled", [False, True])
     def test_claude_mod_route_respects_session_controls(self, tmp_path, monkeypatch, enabled):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        launch_token = _jwt(time.time() + 300)
         session_file = tmp_path / "env.json"
         session_file.write_text(
             json.dumps(
@@ -1463,7 +1553,7 @@ class TestSubcommandRouting:
                     "system.ai.claude-opus-4-8",
                 ],
                 input='{"session_id":"s1","tool_name":"Agent","tool_input":{"prompt":"fix it"}}',
-                env={"OAUTH_TOKEN": "token", "UCODE_SESSION_ENV_FILE": str(session_file)},
+                env={"OAUTH_TOKEN": launch_token, "UCODE_SESSION_ENV_FILE": str(session_file)},
             )
         assert result.exit_code == 0, result.output
         if enabled:
@@ -1471,7 +1561,7 @@ class TestSubcommandRouting:
             route.assert_called_once_with(
                 {"session_id": "s1", "tool_name": "Agent", "tool_input": {"prompt": "fix it"}},
                 workspace="https://example.com",
-                token="token",
+                token=launch_token,
                 available_models=["system.ai.claude-opus-4-8"],
                 audit_decision=True,
                 hook_output=False,
@@ -1479,6 +1569,55 @@ class TestSubcommandRouting:
         else:
             assert result.output == ""
             route.assert_not_called()
+
+    def test_claude_mod_route_refreshes_through_custom_oauth_client(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
+        custom = {
+            "client_id": "custom-client",
+            "redirect_url": "http://localhost:8020",
+            "scopes": ["offline_access", "all-apis"],
+            "profile": "custom-profile",
+        }
+        with (
+            patch(
+                "ucode.cli.load_full_state",
+                return_value={"workspaces": {"https://example.com": {"custom_oauth": custom}}},
+            ),
+            patch("ucode.custom_oauth.get_databricks_token") as default_token,
+            patch(
+                "ucode.custom_oauth.get_custom_client_token", return_value="custom-token"
+            ) as custom_token,
+            patch(
+                "ucode.cli.smart_routing_v2.route_claude_subagent", return_value={"model": "m"}
+            ) as route,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "claude-router-hook",
+                    "route-subagent-mod",
+                    "--host",
+                    "https://example.com",
+                    "--profile",
+                    "my-profile",
+                ],
+                input='{"tool_name":"Agent","tool_input":{"prompt":"fix it"}}',
+                env={"OAUTH_TOKEN": _jwt(time.time() - 60)},
+            )
+        assert result.exit_code == 0, result.output
+        default_token.assert_not_called()
+        custom_token.assert_called_once_with(
+            "https://example.com",
+            "custom-client",
+            "http://localhost:8020",
+            scopes=["offline_access", "all-apis"],
+            profile="custom-profile",
+            force_refresh=True,
+        )
+        assert route.call_args.kwargs["token"] == "custom-token"
 
 
 class TestManagedConfigLaunchSourceGuard:
@@ -2250,7 +2389,7 @@ class TestGeminiProviderLaunch:
         monkeypatch.setattr("ucode.cli.configure_tool", lambda *a, **k: state)
         monkeypatch.setattr(
             "ucode.cli.resolve_gemini_provider_model",
-            lambda s, p, m: ("gemini-3.5-flash", None),
+            lambda s, p, m, **k: ("gemini-3.5-flash", None),
         )
         mock_launch = MagicMock()
         monkeypatch.setattr("ucode.cli.launch_agent", mock_launch)
@@ -3666,6 +3805,51 @@ class TestStatusSkillsSection:
         assert "MCP servers: 1" in re.sub(r"\s+", " ", out)
 
 
+class TestAntigravityAllowAllProviderModel:
+    _STATE = {**MINIMAL_STATE, "workspace": "https://ws.databricks.com"}
+
+    def _run(self, monkeypatch, service, answer="gemini-4-argon"):
+        monkeypatch.setattr(
+            cli_mod, "resolve_provider_service", lambda tool, name, ws, token: (service, None)
+        )
+        asked = []
+        monkeypatch.setattr(
+            cli_mod,
+            "prompt_for_text",
+            lambda message, required=False: asked.append(message) or answer,
+        )
+        monkeypatch.setattr(cli_mod, "save_state", lambda state: None)
+        state = cli_mod._prompt_allow_all_provider_model(
+            "antigravity", dict(self._STATE), "c.s.g", "token"
+        )
+        return state, asked
+
+    def test_asks_for_a_start_model_when_the_service_declares_none(self, monkeypatch):
+        state, asked = self._run(monkeypatch, {"targets": [], "allow_all_targets": True})
+
+        assert state["antigravity_provider_model"] == "gemini-4-argon"
+        assert asked and "Antigravity CLI" in asked[0]
+
+    @pytest.mark.parametrize(
+        "service",
+        [
+            {"targets": ["gemini-3.8-flash"], "allow_all_targets": True},
+            {"targets": [], "allow_all_targets": False},
+        ],
+    )
+    def test_does_not_ask_when_a_target_can_be_pinned_or_none_is_allowed(
+        self, monkeypatch, service
+    ):
+        state, asked = self._run(monkeypatch, service)
+
+        assert asked == []
+        assert "antigravity_provider_model" not in state
+
+    def test_cancelling_the_prompt_stops_configure(self, monkeypatch):
+        with pytest.raises(KeyboardInterrupt):
+            self._run(monkeypatch, {"targets": [], "allow_all_targets": True}, answer=None)
+
+
 class TestRevert:
     def test_invalid_routing_config_does_not_block_revert(self, monkeypatch):
         monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "unsupported_v99")
@@ -3697,6 +3881,51 @@ class TestRevert:
         assert result.exit_code == 0, result.output
         assert "Could not remove leftover Copilot session files" in _strip_ansi(result.output)
         assert cleared == [True]
+
+    @pytest.mark.parametrize("existed", [False, True])
+    def test_antigravity_revert_keeps_skills_entries_added_after_configure(
+        self, existed, monkeypatch, tmp_path
+    ):
+        from ucode.agents import antigravity
+
+        monkeypatch.setattr(antigravity, "UG_AGENTS_SKILLS_DIR", tmp_path / ".agents/skills")
+        skills = antigravity.AGY_SKILLS_CONFIG_PATH
+        if existed:
+            skills.parent.mkdir(parents=True)
+            skills.write_text(json.dumps({"entries": [{"path": "/mine"}]}))
+        antigravity.write_tool_config({**MINIMAL_STATE}, None)
+        # skills.json is shared with the Antigravity app: the user adds to it after configure.
+        config = json.loads(skills.read_text())
+        config["entries"].append({"path": "/later"})
+        skills.write_text(json.dumps(config))
+
+        with (
+            patch("ucode.cli.load_state", return_value=dict(MINIMAL_STATE)),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.clear_state"),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        expected = [{"path": "/mine"}, {"path": "/later"}] if existed else [{"path": "/later"}]
+        assert json.loads(skills.read_text()) == {"entries": expected}
+        assert "Antigravity CLI config: restored" in _strip_ansi(result.output)
+
+    def test_antigravity_revert_deletes_skills_file_it_created(self, monkeypatch, tmp_path):
+        from ucode.agents import antigravity
+
+        monkeypatch.setattr(antigravity, "UG_AGENTS_SKILLS_DIR", tmp_path / ".agents/skills")
+        antigravity.write_tool_config({**MINIMAL_STATE}, None)
+
+        with (
+            patch("ucode.cli.load_state", return_value=dict(MINIMAL_STATE)),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.clear_state"),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        assert not antigravity.AGY_SKILLS_CONFIG_PATH.exists()
 
     def test_reverts_mcp_configs_before_clearing_state(self):
         state = {
@@ -3741,6 +3970,28 @@ class TestRevert:
         clear_state.assert_not_called()
         assert "ug state retained" in result.output
         assert "Fix the Claude Desktop error and run ug revert again" in result.output
+
+    def test_vscode_revert_failure_is_reported_and_the_rest_still_reverts(self):
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.agents.desktop.setup.revert_desktop", return_value="unchanged"),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.claude_agent.revert_managed_settings", return_value="unchanged"),
+            patch("ucode.cli.codex_agent.revert_managed_config", return_value="unchanged"),
+            patch("ucode.cli.revert_machine_policy", return_value="unchanged"),
+            patch("ucode.cli.restore_file", return_value=False) as restore_file,
+            patch("ucode.cli.revert_legacy_shared_config", return_value=False),
+            patch("ucode.agents.vscode.revert", side_effect=RuntimeError("code timed out")),
+            patch("ucode.cli.clear_state") as clear_state,
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        output = " ".join(result.output.split())
+        assert result.exit_code == 0, result.output
+        assert "Could not revert VS Code: code timed out" in output
+        assert "VS Code extension: failed" in output
+        assert restore_file.called
+        clear_state.assert_called_once()
 
 
 @pytest.mark.parametrize("args", [[], ["claude"], ["codex"]])
@@ -6076,7 +6327,9 @@ class TestConfigureSharedStateUsePat:
     ):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
         response_iter = iter(responses)
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token: next(response_iter))
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, **kwargs: next(response_iter)
+        )
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
         )
@@ -6114,7 +6367,9 @@ class TestConfigureSharedStateUsePat:
     ):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
         response_iter = iter(responses)
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token: next(response_iter))
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, **kwargs: next(response_iter)
+        )
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
         )

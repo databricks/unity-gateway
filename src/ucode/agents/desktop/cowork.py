@@ -26,6 +26,8 @@ LEGACY_PLUGIN_ID = f"unity-gateway@{MARKETPLACE_NAME}"
 STATE_FILENAME = "claude-cowork.json"
 MARKETPLACE_DIRECTORY_NAME = "claude-cowork-marketplace"
 CONNECTOR_SKILL_NAME = "unity-gateway-connectors"
+SESSION_START_HOOK_TIMEOUT_SECONDS = 30
+PROMPT_HOOK_TIMEOUT_SECONDS = 20
 
 _COWORK_MARKERS = (
     "cowork_settings.json",
@@ -69,7 +71,8 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
         _remove_plugin_registration(Path(previous_root))
     marketplace_root = _marketplace_root()
     plugin_root = marketplace_root / "plugins" / PLUGIN_NAME
-    _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config)
+    hooks = _connector_hooks(mcp_config, workspace, profile, use_pat=bool(state.get("use_pat")))
+    _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config, hooks)
     config_io.atomic_write_json(
         _state_path(),
         {"version": 1, "cowork_root": str(cowork_root)},
@@ -294,6 +297,7 @@ def _write_marketplace(
     plugin_root: Path,
     skill_records: list[dict],
     mcp_config: dict,
+    hooks: dict | None = None,
 ) -> None:
     marketplace_root.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(
@@ -325,6 +329,8 @@ def _write_marketplace(
         if mcp_config["mcpServers"]:
             plugin["mcpServers"] = "./.mcp.json"
             _write_json(staging_plugin / ".mcp.json", mcp_config)
+        if hooks:
+            _write_json(staging_plugin / "hooks" / "hooks.json", hooks)
         _write_json(staging / ".claude-plugin" / "marketplace.json", marketplace)
         _write_json(staging_plugin / ".claude-plugin" / "plugin.json", plugin)
         _copy_skills(staging_plugin / "skills", skill_records)
@@ -362,6 +368,37 @@ def _copy_skills(destination: Path, records: list[dict]) -> None:
         copied.add(bundle_name)
 
 
+def _connector_hooks(
+    mcp_config: dict, workspace: str, profile: str, *, use_pat: bool
+) -> dict | None:
+    # Reuse each proxy entry's absolute `ug` and URL so the hook targets exactly what Cowork runs.
+    urls: dict[str, str] = {}
+    command = None
+    for name, entry in mcp_config["mcpServers"].items():
+        args = entry.get("args") or []
+        if "--url" in args[:-1]:
+            urls[name] = args[args.index("--url") + 1]
+            command = entry["command"]
+    if command is None:
+        return None
+    argv = [command, "cowork-hook", "--host", workspace.rstrip("/")]
+    argv += ["--profile", profile]
+    if use_pat:
+        argv.append("--use-pat")
+    for name, url in urls.items():
+        argv += ["--server", f"{name}={url}"]
+    command_line = subprocess_cross_os.shell_command(argv)
+    return {
+        "hooks": {
+            event: [{"hooks": [{"type": "command", "command": command_line, "timeout": timeout}]}]
+            for event, timeout in (
+                ("SessionStart", SESSION_START_HOOK_TIMEOUT_SECONDS),
+                ("UserPromptSubmit", PROMPT_HOOK_TIMEOUT_SECONDS),
+            )
+        }
+    }
+
+
 def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
     # Skill descriptions are in context from the first turn; plugin MCP tools connect
     # lazily, so without this Claude asks whether a connector exists instead of using it.
@@ -369,17 +406,67 @@ def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
     if skill_dir.exists():
         return
     connectors = ", ".join(f"`{name}`" for name in server_names)
-    description = (
-        f"Unity Gateway connectors are available in this session: {connectors}. "
-        "Use the matching connector for any request about the user's own resources on "
-        "those services, such as their pull requests, issues, tickets, pages, mail, or "
-        "files. If its tools are not loaded yet, search for them. Do not ask whether the "
-        "service is connected or say it is unavailable before trying the connector."
+    prefix = (
+        "Use for requests about these Unity Gateway connectors, including after a break. "
+        "Check current tools and call a relevant available tool before answering. "
+        "Load this skill for missing tools or sign-in recovery; never stop at a promise to retry. "
+        "Connectors: "
+    )
+    suffix = "."
+    visible = []
+    # Skill descriptions have a 1,024-character limit; the full list stays in the body.
+    for name in server_names:
+        candidate = ", ".join([*visible, f"`{name}`"])
+        if len(prefix + candidate + suffix) > 1024:
+            break
+        visible.append(f"`{name}`")
+    description = prefix + (", ".join(visible) or "configured workspace services") + suffix
+    guidance = (
+        "Act on the requested connector in this turn, including after a break. Do not ask "
+        "whether to check or retry. Never end the turn promising to wait or retry: perform "
+        "the action. Old connection-status notices do not establish current availability.\n\n"
+        "1. Check the tools exposed now. Use supported discovery if available (`ToolSearch` only "
+        "if exposed). Use exact exposed or discovered tool names only; plugin/catalog search "
+        "results alone do not make service tools callable. Call a relevant service tool if present, "
+        "even if an earlier notice says the connector disconnected.\n"
+        "2. If only the connector's `authenticate` tool appears, call that exact tool once.\n"
+        "3. If no matching tools are exposed at startup, after resume, or while `pending`, your "
+        "next action is an actual wait: wait 5 seconds by running `sleep 5` through an exposed "
+        "shell or an exposed wait tool, then recheck tools. If they are still missing, wait "
+        "another 5 seconds and recheck once more. Stop waiting as soon as tools appear.\n"
+        "4. If tools remain absent after both waits, or no supported wait action exists, report "
+        "only that the connector's tools are not exposed in this session. Do not infer "
+        "disconnection, missing sign-in, or expired credentials.\n\n"
+        f"Configured Unity Gateway connectors: {connectors}. Configured does not mean signed in.\n\n"
+        "Connectors start in the background when the session opens, and a session-start note "
+        "may list ones that had not answered yet. Tools may appear asynchronously after startup "
+        "or resume. Missing tools or `pending` "
+        "alone do not identify the cause. Base connection and sign-in claims on current discovery "
+        "and actual tool errors. Never claim to have waited or refreshed tools without doing so. "
+        "Do not guess tool names, authenticate another connector, or spawn a subagent to make "
+        "tools appear. If a call reports an unavailable tool, do not repeat it; recheck tools. "
+        "An unavailable name alone does not establish an authentication failure.\n\n"
+        "If a connector returns a sign-in URL or asks the user to reconnect, use its discovered "
+        "`authenticate` tool before falling back to manual login instructions. A warning not to "
+        "retry service tools applies until sign-in succeeds; `authenticate` is the recovery "
+        "action. Do not ask the user to report back after signing in.\n\n"
+        "On an access denial, including an IP-address denial, try the connector's discovered "
+        "`authenticate` tool once before recommending administrator or network changes. Describe "
+        "this as a sign-in recovery attempt; the error alone does not establish its root cause. "
+        "If the denial persists after successful sign-in and retry, report the original error "
+        "and stop retrying authentication. Do not recommend disabling access controls.\n\n"
+        "After any successful sign-in, rediscover tools and continue the original task in the "
+        "same turn. Do not ask the user to send another message. If sign-in is canceled, fails, "
+        "or times out, explain the observed failure and the "
+        "recovery instructions returned by the tool. Do not claim success.\n\n"
+        "If no authentication tool is available, relay any sign-in link or recovery instructions "
+        "returned by the connector. Do not invent a settings path or assume an access denial or "
+        "generic tool failure means the user's token expired."
     )
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         f"---\nname: {CONNECTOR_SKILL_NAME}\ndescription: {json.dumps(description)}\n---\n\n"
-        f"{description}\n",
+        f"{guidance}\n",
         encoding="utf-8",
     )
 

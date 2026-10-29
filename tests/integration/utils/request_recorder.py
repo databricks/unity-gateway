@@ -33,6 +33,8 @@ _SECRET_HEADERS = {
     "x-api-key",
     "x-databricks-ai-gateway-token",
 }
+# How long teardown waits for in-flight forwards before leaving their connections to them.
+_DRAIN_SECONDS = 10
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,7 @@ class TuiRequestRecorder:
         self._condition = threading.Condition()
         self._requests: list[RecordedRequest] = []
         self._responses: dict[int, RecordedResponse] = {}
+        self._in_flight = 0
         self._client: httpx.Client | None = None
         self._server: _Server | None = None
         self._thread: threading.Thread | None = None
@@ -87,7 +90,14 @@ class TuiRequestRecorder:
         return f"http://127.0.0.1:{self._server.server_address[1]}"
 
     def __enter__(self) -> Self:
-        self._client = httpx.Client(timeout=None, follow_redirects=False)
+        # One connection per forwarded request: a pooled keep-alive connection that the gateway
+        # or a load balancer closed while idle fails on reuse with "Server disconnected without
+        # sending a response". The request is never resent; this only avoids reuse.
+        self._client = httpx.Client(
+            timeout=None,
+            follow_redirects=False,
+            limits=httpx.Limits(max_keepalive_connections=0),
+        )
         recorder = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -95,7 +105,14 @@ class TuiRequestRecorder:
                 pass
 
             def forward(self) -> None:
-                recorder._forward(self)
+                with recorder._condition:
+                    recorder._in_flight += 1
+                try:
+                    recorder._forward(self)
+                finally:
+                    with recorder._condition:
+                        recorder._in_flight -= 1
+                        recorder._condition.notify_all()
 
             do_GET = forward
             do_POST = forward
@@ -115,7 +132,15 @@ class TuiRequestRecorder:
         self._server.shutdown()
         self._server.server_close()
         self._thread.join()
-        self._client.close()
+        # Handler threads are daemons, so a forward can still be streaming here. Closing its
+        # socket from this thread frees the descriptor while OpenSSL keeps reading the old
+        # number, which a later connection in this process may reuse: that thread then reads
+        # (and corrupts) the new connection's bytes. Close only once forwards have drained;
+        # a forward that outlives the wait closes its own connection when it finishes.
+        with self._condition:
+            drained = self._condition.wait_for(lambda: self._in_flight == 0, timeout=_DRAIN_SECONDS)
+        if drained:
+            self._client.close()
 
     def checkpoint(self) -> int:
         with self._condition:
@@ -220,7 +245,19 @@ class TuiRequestRecorder:
                         body=bytes(response_body),
                     )
                     self._condition.notify_all()
-        except httpx.HTTPError:
+        except httpx.HTTPError as error:
+            # Record the transport failure so a waiter sees the 502 the agent saw
+            # instead of timing out for a response that can never arrive.
+            with self._condition:
+                self._responses.setdefault(
+                    request.sequence,
+                    RecordedResponse(
+                        status_code=502,
+                        headers={},
+                        body=f"upstream request failed: {type(error).__name__}: {error}".encode(),
+                    ),
+                )
+                self._condition.notify_all()
             handler.send_error(502, "upstream request failed")
 
 

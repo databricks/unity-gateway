@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 import questionary
 from rich.table import Table
 
-from ucode.agents import claude, codex, copilot, cursor, gemini, kilo, opencode
+from ucode.agents import antigravity, claude, codex, copilot, cursor, gemini, kilo, opencode
 from ucode.config_io import read_json_safe, read_toml_safe, restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
@@ -35,6 +35,7 @@ from ucode.databricks import (
     raise_for_invalid_access_token,
     workspace_hostname,
 )
+from ucode.managed_files import ManagedFileWriteUnavailable, explicit_managed_writes
 from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
     CLAUDE_CODE_CIMD_CLIENT_ID,
@@ -115,6 +116,11 @@ MCP_CLIENTS = {
         "binary": "cursor-agent",
         "display": "Cursor",
         "list_command": "cursor-agent mcp list",
+    },
+    "antigravity": {
+        "binary": "agy",
+        "display": "Antigravity CLI",
+        "list_command": "agy mcp list",
     },
 }
 SKILLS_MCP_KIND = "skills"
@@ -415,6 +421,9 @@ def configure_client_mcp_server(
     if client == "cursor":
         removed = cursor.write_mcp_server_config(name, argv)
         return [MCP_USER_SCOPE] if removed else []
+    if client == "antigravity":
+        removed = antigravity.write_mcp_server_config(name, argv)
+        return [MCP_USER_SCOPE] if removed else []
     raise RuntimeError(f"Unsupported MCP client '{client}'.")
 
 
@@ -435,6 +444,8 @@ def remove_client_mcp_server(client: str, name: str) -> list[str]:
         return [MCP_USER_SCOPE] if copilot.remove_mcp_server_config(name) else []
     if client == "cursor":
         return [MCP_USER_SCOPE] if cursor.remove_mcp_server_config(name) else []
+    if client == "antigravity":
+        return [MCP_USER_SCOPE] if antigravity.remove_mcp_server_config(name) else []
     raise RuntimeError(f"Unsupported MCP client '{client}'.")
 
 
@@ -1116,7 +1127,8 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
     Returns the servers resolved this run. Propagates the distinct
     :class:`McpServiceListingRateLimited` when discovery is rate-limited (HTTP 429), so the caller
     can skip MCP setup for the run without treating it as a hard failure; any other discovery
-    failure raises plain ``RuntimeError``. Either way the caller keeps it best-effort.
+    failure raises plain ``RuntimeError``. Either way the caller keeps it best-effort, except that
+    ``ug configure`` fails on a denied machine-wide write (:class:`ManagedFileWriteUnavailable`).
     """
     selector = managed.get("mcp_servers")
     selector = selector if isinstance(selector, dict) else {}
@@ -1179,6 +1191,9 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
         try:
             written = module.reconcile_managed_mcp(state, entries, **extra)
         except RuntimeError as exc:
+            # `ug configure` must leave the machine-wide file correct, as for agent settings.
+            if isinstance(exc, ManagedFileWriteUnavailable) and explicit_managed_writes():
+                raise
             print_warning(f"Could not update {MCP_CLIENTS[agent]['display']} managed MCP: {exc}")
             written = False
         if is_eligible and written:
@@ -1435,6 +1450,7 @@ _MCP_CLIENT_MODULES = {
     "cursor": cursor,
     "opencode": opencode,
     "kilo": kilo,
+    "antigravity": antigravity,
 }
 
 
@@ -1480,6 +1496,8 @@ def _managed_mcp_entry(
         return opencode.build_mcp_server_entry(argv)
     if client == "kilo":
         return kilo.build_mcp_server_entry(argv)
+    if client == "antigravity":
+        return antigravity.build_mcp_server_entry(argv)
     raise RuntimeError(f"Unsupported MCP client '{client}'.")
 
 
@@ -2455,7 +2473,8 @@ def _parse_codex_mcp_list(output: str) -> dict[str, str]:
         name = fields[0].strip()
         # Registered MCP server names are single tokens (the health parser assumes the same), so a
         # first column with a space is prose: the header, or the "no servers configured" message.
-        if not name or name == "Name" or " " in name:
+        # Antigravity's header is upper-case (`NAME  TYPE  STATUS  COMMAND/URL`).
+        if not name or name.lower() == "name" or " " in name:
             continue
         state = LIVE_UNKNOWN
         for field in fields[1:]:
@@ -2499,7 +2518,8 @@ def parse_mcp_list_output(client: str, output: str) -> dict[str, str]:
     failure detail (``Failed to connect - HTTP 404 Not Found``), so checking it up front would
     let one broken server empty the whole listing.
     """
-    if client == "codex":
+    if client in ("codex", "antigravity"):
+        # Both print a columnar table with an enabled/disabled state column.
         parsed = _parse_codex_mcp_list(output)
     elif client in ("kilo", "opencode"):
         parsed = _parse_tree_mcp_list(output)
