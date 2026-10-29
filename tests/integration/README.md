@@ -559,6 +559,12 @@ emits one warning and a failed Desktop summary, and preserves profile and select
 files. Retry restores the previous selection without workspace state and returns 0;
 a repeated revert also returns 0. This does not establish native Desktop coverage.
 
+`../test_anthropic_cowork.py` adds component checks for the relay-only Claude Docs
+plugin, account API/credential boundaries, skill archives and refresh, mode cleanup, and
+MCP instruction/schema/result forwarding. HTTP and stdio transports are isolated in these
+checks. Native Cowork hook execution, `reloadSkills`, gateway inference, and coexisting
+Anthropic/workspace tool calls remain unverified by the automated suite.
+
 `../test_cowork_plugin.py` covers Cowork-root discovery, generated plugin contents,
 scoped Claude plugin commands, install/update selection, PAT/custom-OAuth behavior, and
 owned-file cleanup. Alias checks cover short UC names, unchanged proxy routing, custom-name

@@ -171,6 +171,12 @@ custom registration names and full proxy URLs are preserved. Its name and displa
 are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old
 `unity-gateway@unity-gateway-cowork` registration only after installing/updating `ug`;
 revert removes both IDs. New sessions use the `mcp__plugin_ug_...` tool namespace.
+Relay mode additionally owns `ug-account-docs@unity-gateway-cowork` in that marketplace.
+The initial account integration is limited to Claude Docs and the enabled docs skill.
+The existing hidden `cowork-hook` command refreshes that plugin's skill on SessionStart;
+its dedicated stdio proxy uses the subscription token refresh helper without Databricks
+credential minting. Tokens are never stored in generated configuration. Non-relay mode
+removes the additional plugin on configure; native Cowork validation remains required.
 See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>

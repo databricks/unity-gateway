@@ -183,6 +183,43 @@ state, setup skips silently. Only `ug revert` removes the plugin registration an
 marketplace. The native Desktop gateway profile is separate and remains under the cleanup rules
 below.
 
+## Anthropic account resources in relay mode
+
+When `claude_relayed` is enabled, Cowork setup additionally installs
+`ug-account-docs@unity-gateway-cowork`. This first integration includes only the account's
+eligible **Claude Docs** connector and enabled **docs** skill. Other Anthropic
+connectors and skills are not imported yet. The ordinary `ug` workspace plugin and its
+`system.ai` MCPs remain available, and Desktop stays in gateway/third-party mode.
+
+The additional plugin uses Anthropic's internal account APIs with the same Claude
+subscription credential as relay authentication. Connector discovery needs the recorded
+`user:mcp_servers` grant; account skill access uses the account's existing permissions.
+UG stores no bearer in plugin files. Its stdio proxy reads or silently refreshes the
+credential for each HTTP request and forwards MCP instructions, tool schemas, and tool
+results unchanged. It accepts only the connector selected at configure time; changing
+accounts or connector installation requires reconfigure. Account API and proxy requests
+do not follow redirects. These APIs are undocumented and can change.
+
+Configure downloads `docs/SKILL.md` and its supporting files into the separate plugin.
+Its SessionStart handler uses the existing hidden `ug cowork-hook` command to refresh
+that skill and request `reloadSkills` before the first turn. Confirmed disabled skills
+are removed from that plugin. Refresh failures warn and retain the last downloaded
+skill. Both proxy and hook bind to configure's original Claude configuration directory;
+Cowork's inherited `CLAUDE_CONFIG_DIR` cannot select a different Keychain entry. Hook
+refresh never opens an interactive sign-in flow. Disabling relay removes this additional
+plugin on reconfigure; revert cleans up both plugins.
+
+The API path was checked manually on macOS: account connector listing, MCP initialization,
+tool discovery, a read-only `guide` invocation, account skill listing, and `docs` ZIP
+download all succeeded with the saved subscription credential. Component tests cover
+the new plugin and bridge with isolated HTTP/authentication boundaries. **The generated
+plugin's hook execution, skill reload, and MCP use inside a real third-party Cowork
+session still require native validation.** Start a fresh task and ask it to load the
+`ug-account-docs` docs skill and call Claude Docs' read-only `guide` tool, then verify a
+workspace `system.ai` tool is available in the same task. Do not create or edit a document
+for this check. Importing a skill does not provide any missing native browser, artifact,
+or computer-use capabilities.
+
 ## Models and authentication
 
 UG uses an admin's static model list when supplied. Otherwise it obtains the
