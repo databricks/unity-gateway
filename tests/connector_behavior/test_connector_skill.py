@@ -141,7 +141,7 @@ def _run_resumed_request(tmp_path, claude_messages, *, availability, skill_loade
                 assert not ready, "Claude waited even though the Slack tool was exposed"
                 assert arguments == {"seconds": 5}
                 waits += 1
-                assert waits <= 6, "Claude exceeded the skill's bounded wait"
+                assert waits <= 2, "Claude exceeded the skill's bounded wait"
                 time.sleep(5)
                 result = "Waited 5 seconds."
             elif name == SLACK_TOOL_NAME:
@@ -199,13 +199,13 @@ def test_waits_then_calls_slack_when_tools_appear_after_resume(
 def test_reports_missing_tools_only_after_bounded_wait(tmp_path, claude_messages):
     """Scenario: a resumed session never exposes Slack tools.
 
-    Expected: Claude performs six waits before reporting missing tools without invented auth.
+    Expected: Claude performs two waits before reporting missing tools without invented auth.
     """
     calls, answer, _ = _run_resumed_request(
         tmp_path, claude_messages, availability="absent", skill_loaded=True
     )
     names = [name for name, _ in calls]
-    assert names.count("wait") == 6, (calls, answer)
+    assert names.count("wait") == 2, (calls, answer)
     assert "ToolSearch" in names, answer
     assert SLACK_TOOL_NAME not in names, calls
     assert "tools" in answer.lower(), answer

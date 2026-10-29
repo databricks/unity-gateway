@@ -365,7 +365,7 @@ It checks that Claude uses an available Slack tool despite a stale disconnect no
 waits and then uses a tool exposed after resume, and performs the bounded wait before reporting
 tools absent. Available/pending scenarios run with both the description alone and a skill loaded
 before the break. Assertions require actual tool calls and an answer containing a random value
-returned only by the synthetic Slack tool. The missing-tools scenario requires all six real
+returned only by the synthetic Slack tool. The missing-tools scenario requires both real
 five-second waits and rejects invented reconnect/sign-in instructions. An idle-resume case
 shows only the skill description plus the `UserPromptSubmit` hook note and requires Claude to
 wait and use Slack instead of trusting the disconnect notice. Model requests are not
@@ -1002,4 +1002,3 @@ malformed upstream tool entries and slow metadata
 discovery while unrelated replies continue. Failed metadata discovery retries naturally
 on the next operation, without a cache or cooldown. These are component
 checks, not native Cowork invocation or live provider sign-in.
-

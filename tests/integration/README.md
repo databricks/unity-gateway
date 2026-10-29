@@ -1567,4 +1567,3 @@ malformed upstream tool entries and slow metadata
 discovery while unrelated replies continue. Failed metadata discovery retries naturally
 on the next operation, without a cache or cooldown. These are component
 checks, not native Cowork invocation or live provider sign-in.
-
