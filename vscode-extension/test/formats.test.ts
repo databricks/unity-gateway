@@ -28,6 +28,14 @@ describe("Chat Completions", () => {
     });
   });
 
+  it("sends a tool's images in the user message after its result, since a tool message can't carry them", () => {
+    const request = chatCompletionsRequest({ ...turn, messages: [message(USER, result("c1", text("Screenshot:"), image(9)))] });
+    assert.deepEqual((request as { messages: unknown[] }).messages, [
+      { role: "tool", tool_call_id: "c1", content: "Screenshot:" },
+      { role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,CQ==" } }] },
+    ]);
+  });
+
   it("gives a tool without an input schema an empty one, and omits tools when there are none", () => {
     const noSchema = chatCompletionsRequest({ ...turn, tools: [{ name: "list", description: "List", inputSchema: undefined }], toolRequired: false });
     assert.deepEqual((noSchema as { tools: unknown[] }).tools, [
@@ -55,7 +63,7 @@ describe("Chat Completions", () => {
       chatCompletionsReplies(
         events(
           { choices: [{ delta: { content: [{ type: "reasoning", summary: [{ type: "summary_text", text: "The file may not exist." }] }] } }] },
-          { choices: [{ delta: { content: [{ type: "text", text: "Checking." }, { type: "text", text: " Done." }] } }] },
+          { choices: [{ delta: { content: [{ type: "text", text: "Checking." }, { type: "text", text: " Done." }] }, finish_reason: "stop" }] },
         ),
       ),
     );
@@ -65,9 +73,24 @@ describe("Chat Completions", () => {
   it("fails on a length stop and on arguments that aren't an object", async () => {
     await rejectsWith(collect(chatCompletionsReplies(events({ choices: [{ finish_reason: "length" }] }))), "output token limit");
     await rejectsWith(
-      collect(chatCompletionsReplies(events({ choices: [{ delta: { tool_calls: [{ index: 0, id: "c", function: { name: "t", arguments: "[1]" } }] } }] }))),
+      collect(
+        chatCompletionsReplies(
+          events({ choices: [{ delta: { tool_calls: [{ index: 0, id: "c", function: { name: "t", arguments: "[1]" } }] }, finish_reason: "tool_calls" }] }),
+        ),
+      ),
       "aren't a JSON object",
     );
+  });
+
+  it("fails on an error event in the stream", async () => {
+    await rejectsWith(collect(chatCompletionsReplies(events({ error: { message: "overloaded" } }))), "overloaded");
+    await rejectsWith(collect(chatCompletionsReplies(events({ error: "rate limited" }))), "rate limited");
+  });
+
+  it("fails when the model stops for another reason or the stream ends without a finish reason", async () => {
+    await rejectsWith(collect(chatCompletionsReplies(events({ choices: [{ finish_reason: "content_filter" }] }))), "stopped by a content filter");
+    await rejectsWith(collect(chatCompletionsReplies(events({ choices: [{ finish_reason: "insufficient_system_resource" }] }))), "(insufficient_system_resource)");
+    await rejectsWith(collect(chatCompletionsReplies(events({ choices: [{ delta: { content: "Half an ans" } }] }))), "ended before the model finished");
   });
 });
 
@@ -98,6 +121,34 @@ describe("Responses", () => {
     });
   });
 
+  it("sends a tool's images inside its output", () => {
+    const request = responsesRequest({ ...turn, messages: [message(USER, result("c1", text("Screenshot:"), image(9)))] });
+    assert.deepEqual((request as { input: unknown[] }).input, [
+      {
+        type: "function_call_output",
+        call_id: "c1",
+        output: [
+          { type: "input_text", text: "Screenshot:" },
+          { type: "input_image", image_url: "data:image/png;base64,CQ==", detail: "auto" },
+        ],
+      },
+    ]);
+  });
+
+  it("holds function calls back until the response completes", async () => {
+    const seen: unknown[] = [];
+    const call = { type: "response.output_item.done", item: { type: "function_call", call_id: "c1", name: "get_weather", arguments: "{}" } };
+    await rejectsWith(
+      (async () => {
+        for await (const reply of responsesReplies(events({ type: "response.output_text.delta", delta: "Checking." }, call))) {
+          seen.push(reply);
+        }
+      })(),
+      "ended before the model finished",
+    );
+    assert.deepEqual(seen, [new LanguageModelTextPart("Checking.")]);
+  });
+
   it("streams text and each finished function call", async () => {
     const replies = await collect(
       responsesReplies(
@@ -118,5 +169,12 @@ describe("Responses", () => {
       "output token limit",
     );
     await rejectsWith(collect(responsesReplies(events({ type: "response.failed", response: { error: { message: "overloaded" } } }))), "overloaded");
+  });
+
+  it("fails on every other incomplete reason and on a stream without response.completed", async () => {
+    const incomplete = (reason?: string) => ({ type: "response.incomplete", response: { incomplete_details: reason ? { reason } : null } });
+    await rejectsWith(collect(responsesReplies(events(incomplete("content_filter")))), "stopped by a content filter");
+    await rejectsWith(collect(responsesReplies(events(incomplete()))), "(no reason given)");
+    await rejectsWith(collect(responsesReplies(events({ type: "response.output_text.delta", delta: "Half an ans" }))), "ended before the model finished");
   });
 });

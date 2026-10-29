@@ -1587,6 +1587,14 @@ def revert() -> int:
     claude_managed_result = claude_agent.revert_managed_settings()
     codex_managed_result = codex_agent.revert_managed_config()
     workspace_policy_result = revert_machine_policy()
+    from ucode.agents import vscode
+
+    try:
+        vscode_result = vscode.revert()
+    except Exception as exc:  # noqa: BLE001 -- Preserve other revert operations on failure
+        # VS Code's revert looks at the installed extension, not ug state, so a later run still finds it.
+        print_warning(f"Could not revert VS Code: {exc}. Fix it, then run ug revert again.")
+        vscode_result = "failed"
 
     results: dict[str, bool] = {
         # Antigravity's skills.json is shared with its app and IDE extensions, so revert
@@ -1613,6 +1621,7 @@ def revert() -> int:
     print_kv("Codex OS-managed settings", codex_managed_result)
     print_kv("Unity Gateway workspace policy", workspace_policy_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
+    print_kv("VS Code extension", vscode_result)
     for client, spec in MCP_CLIENTS.items():
         print_kv(
             f"{spec['display']} MCP config",
@@ -4455,7 +4464,7 @@ def configure(
         str | None,
         typer.Option(
             "--agents",
-            help="Configure a comma-separated list of agents without prompting (e.g. claude,codex).",
+            help="Configure a comma-separated list of agents without prompting (e.g. claude,codex,vscode).",
         ),
     ] = None,
     workspace: Annotated[
@@ -4673,9 +4682,11 @@ def configure(
             # (which picks cursor up through MCP_ONLY_CLIENTS). If cursor is the
             # only agent, do a workspace-only configure so that a later `ug mcp
             # add` run has a current workspace to target.
+            # VS Code is configure-only too: it needs the workspace, then its own setup below.
             requested = [a.strip().lower() for a in agents.split(",") if a.strip()]
             wants_cursor = "cursor" in requested
-            model_agent_names = ",".join(a for a in requested if a != "cursor")
+            wants_vscode = "vscode" in requested
+            model_agent_names = ",".join(a for a in requested if a not in ("cursor", "vscode"))
             if model_agent_names:
                 selected_tools = _parse_agents_option(model_agent_names)
                 if workspace_entries is None:
@@ -4689,8 +4700,8 @@ def configure(
                         workspaces=workspace_entries,
                         **skip_kwargs,
                     )
-            elif wants_cursor:
-                # Cursor-only: establish workspace state without the model picker.
+            elif wants_cursor or wants_vscode:
+                # Cursor/VS Code only: establish workspace state without the model picker.
                 _configure_shared_workspace_states(
                     workspace_entries or [_prompt_for_configuration(None)],
                     tools=[],
@@ -4701,6 +4712,17 @@ def configure(
             else:
                 # Neither model agents nor cursor -> empty/invalid --agents list.
                 _parse_agents_option(agents)
+            if wants_vscode and is_dry_run():
+                # A dry run saves no workspace, so the state on disk isn't the one being configured.
+                print_note("Dry run: VS Code isn't changed.")
+            elif wants_vscode:
+                from ucode.agents import vscode
+
+                # VS Code sends model traffic, so it gets the managed-workspace check other agents get.
+                state = load_state()
+                managed, _ = _read_policy_for_other_agent(state)
+                refuse_user_scope_over_managed_config(state.get("workspace"), managed)
+                vscode.configure(state)
         elif mcp is not None:
             # MCP-only: `--mcp` without --agent(s) (e.g. Cursor, which isn't a
             # model agent, or adding MCP servers to an already-configured setup).
