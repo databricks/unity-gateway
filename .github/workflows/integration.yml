@@ -38,7 +38,7 @@ on:
         description: Exact Antigravity CLI build, <version>-<build id> (Linux lane)
         default: 1.4.9-4962164969177088
       grok_version:
-        description: Exact Grok Build version (non-blocking lane)
+        description: Exact Grok Build version (Linux lane)
         default: 1.0.67
         required: true
       dependency:
@@ -424,18 +424,12 @@ jobs:
       ARTIFACT_NAME: integration-full-antigravity-ubuntu-22.04
     steps: *live-steps
 
-  # Non-blocking pending stabilization, like Copilot: continue-on-error and absent from the
-  # cujs `needs`. Linux only until the Windows build is exercised.
+  # Blocking: part of the cujs gate. Linux only until the Windows build is exercised.
   grok:
-    name: Full journeys · Grok Build · Linux (non-blocking)
+    name: Full journeys · Grok Build · Linux
     if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
-    continue-on-error: true
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-22.04]
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
@@ -443,7 +437,7 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: grok
       TEST_MARKER: live and grok
-      ARTIFACT_NAME: integration-full-grok-${{ matrix.os }}
+      ARTIFACT_NAME: integration-full-grok-ubuntu-22.04
     steps: *live-steps
 
   # Non-blocking pending stabilization: continue-on-error and absent from the cujs `needs`.
@@ -655,7 +649,7 @@ jobs:
   cujs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, installation-windows, headless-windows, workspace, smoke, full, antigravity, managed, dedicated-cuj-plan, dedicated-cuj]
+    needs: [installation, installation-windows, headless-windows, workspace, smoke, full, antigravity, grok, managed, dedicated-cuj-plan, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

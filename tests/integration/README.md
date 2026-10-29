@@ -1062,8 +1062,8 @@ A non-blocking **Copilot** job (`live and copilot`, sixteen cases) runs on Linux
 same way and is likewise outside `cujs` until it is stable.
 A blocking **Antigravity** job (`live and antigravity`, eight cases) runs on Linux only with
 the pinned `ANTIGRAVITY_BUILD`; it is part of the `cujs` gate.
-A non-blocking **Grok Build** job (`live and grok`, eleven cases) runs on Linux only until its
-Windows build is exercised, and is also outside `cujs`.
+A blocking **Grok Build** job (`live and grok`, eleven cases) runs on Linux only, with the
+pinned `GROK_VERSION`, until its Windows build is exercised; it is part of the `cujs` gate.
 
 Each lane installs only the agent CLIs it needs (one, except the managed OpenCode lane's
 three), once, and runs all its configure, headless,
