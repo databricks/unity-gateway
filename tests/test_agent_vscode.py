@@ -182,7 +182,7 @@ class TestConfigure:
 
         assert not vscode.configure(STATE)
 
-        assert "`/fake/bin/code --install-extension` failed" in _printed(capsys)
+        assert f"`{Path('/fake/bin/code')} --install-extension` failed" in _printed(capsys)
 
     def test_reports_a_failed_install(self, code, capsys):
         code.fail = "--install-extension"
