@@ -825,7 +825,13 @@ class TestAnthropicNonRelayMps:
         resp = self._messages_request(e2e_workspace, e2e_token, CI_ANTHROPIC_MODEL)
         self._skip_if_unusable(resp)
         assert resp.status_code == 200, f"HTTP {resp.status_code}: {resp.text[:300]}"
-        assert resp.json().get("model") == CI_ANTHROPIC_MODEL
+        message = resp.json()
+        assert message["type"] == "message" and message["role"] == "assistant"
+        assert message["model"] == CI_ANTHROPIC_MODEL
+        assert message["stop_reason"] == "end_turn"
+        assert "".join(
+            part["text"] for part in message["content"] if part["type"] == "text"
+        ).strip()
 
     def test_rejects_model_outside_allowlist(self, e2e_workspace, e2e_token):
         # The MPS enforces its allowlist up front: a model it doesn't declare is refused.

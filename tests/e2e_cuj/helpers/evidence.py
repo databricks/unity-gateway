@@ -190,7 +190,8 @@ class ClaudeCujHelper(BaseCujHelper):
         last = responses[-1]
         answer = message_text(last.get("content"))
         if (
-            task.value not in answer
+            not answer.strip()
+            or (task.value is not None and task.value not in answer)
             or not last.get("id")
             or any(part.get("type") == "tool_use" for part in last.get("content", []))
             or last.get("stop_reason") not in (None, "end_turn", "stop_sequence")
@@ -275,7 +276,11 @@ class CodexCujHelper(BaseCujHelper):
         if not prompt_sources or not target_turn or started_turn != target_turn or answer is None:
             return None
         models = contexts.get(target_turn)
-        if task.value not in answer or not models:
+        if (
+            not answer.strip()
+            or (task.value is not None and task.value not in answer)
+            or not models
+        ):
             return None
         assert all(models), "Missing native turn model metadata"
         return CompletedTurn(meta[0]["id"], target_turn, models, answer)
@@ -291,6 +296,7 @@ def get_cuj_helper(agent):
 
 
 def completed_turn(agent, records, task):
+    """Match a completed turn; task.value=None accepts any nonempty final answer."""
     return get_cuj_helper(agent)._completed_turn(records, task)
 
 
