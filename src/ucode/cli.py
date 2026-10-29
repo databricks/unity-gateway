@@ -145,6 +145,7 @@ from ucode.mcp import (
     configure_bare_skills_mcp_command,
     configure_mcp_command,
     configure_skills_mcp_picker_command,
+    configured_mcp_clients,
     configured_mcp_servers_by_name,
     list_mcp_command,
     purge_cross_workspace_mcp_residue,
@@ -2014,7 +2015,7 @@ def mcp_add(
         str | None,
         typer.Option(
             "--workspace",
-            help="Workspace URL to register --agents against, without changing the launch "
+            help="Workspace URL to register MCP servers against, without changing the launch "
             "workspace or model settings. Defaults to the UG_WORKSPACE "
             "environment variable when set.",
         ),
@@ -2023,7 +2024,7 @@ def mcp_add(
         str | None,
         typer.Option(
             "--profile",
-            help="Existing Databricks CLI profile to register --agents against, like "
+            help="Existing Databricks CLI profile to register MCP servers against, like "
             "--workspace. The profile's host supplies the workspace URL, and the profile is "
             "saved as that workspace's profile.",
         ),
@@ -2057,19 +2058,33 @@ def mcp_add(
             workspace = root_workspace
         if workspace is not None and profile is not None:
             raise RuntimeError("Use either --workspace or --profile, not both.")
-        if (workspace is not None or profile is not None) and not requested_agents:
-            raise RuntimeError("--workspace and --profile only apply with --agents.")
-        if workspace is None and profile is None and requested_agents:
+        if workspace is None and profile is None:
             workspace = os.environ.get("UG_WORKSPACE") or None
         workspace_entries = None
         if profile is not None:
             workspace_entries = _parse_profile_option(profile)
         elif workspace is not None:
             workspace_entries = _parse_workspace_option(workspace)
+        existing_scope = None
+        if workspace_entries and not requested_agents:
+            target = workspace_entries[0][0]
+            bucket = (load_full_state().get("workspaces") or {}).get(target)
+            recorded = set((bucket or {}).get("available_tools") or []) | set(
+                (bucket or {}).get("mcp_clients") or []
+            )
+            existing_scope = (
+                set(configured_mcp_clients(bucket or {}, available_mcp_clients())) & recorded
+            )
+            if not existing_scope:
+                raise RuntimeError(
+                    f"No MCP clients are configured for {target}. "
+                    "Pass --agents to select the clients for this workspace."
+                )
+            _configure_agents_for_mcp([], workspace_entries)
         scope = (
             _configure_agents_for_mcp(sorted(requested_agents), workspace_entries)
             if requested_agents
-            else None
+            else existing_scope
         )
         add_mcp_command(location=location, services=selected, agents=scope)
         if not workspace_entries or workspace_entries[0][0] == previous_workspace:
@@ -2081,7 +2096,7 @@ def mcp_add(
         print_err("Interrupted.")
         raise typer.Exit(130) from None
     finally:
-        if requested_agents and workspace_entries:
+        if workspace_entries:
             set_current_workspace(previous_workspace)
 
 

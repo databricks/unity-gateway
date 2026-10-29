@@ -3319,14 +3319,14 @@ class TestMcpAddWorkspace:
         assert result.exit_code == 0, result.output
         configure.assert_called_once_with(["cursor"], [("https://ws", None)])
 
-    def test_workspace_without_agents_exit_1(self):
+    def test_new_workspace_without_agents_explains_selection(self):
         with patch("ucode.cli.add_mcp_command") as mock_add:
             result = runner.invoke(
                 app, ["mcp", "add", "--names", "a.b.c", "--workspace", "https://ws"]
             )
 
         assert result.exit_code == 1
-        assert "only apply with --agents" in _strip_ansi(result.output)
+        assert "Pass --agents to select" in _strip_ansi(result.output)
         mock_add.assert_not_called()
 
     def test_workspace_and_profile_together_exit_1(self):
@@ -3439,6 +3439,32 @@ class TestMcpAddWorkspaceState:
         assert full["workspaces"][self.WS_B]["mcp_clients"] == ["claude", "codex"]
         assert full["workspaces"][self.WS_B].get("available_tools") is None
 
+    @pytest.mark.parametrize("use_env", [False, True])
+    def test_second_workspace_without_agents_uses_its_existing_mcp_clients(
+        self, monkeypatch, use_env
+    ):
+        from ucode.state import load_full_state
+
+        self._save_workspace(self.WS_B, mcp_clients=["codex"])
+        self._save_workspace(self.WS_A)
+        if use_env:
+            monkeypatch.setenv("UG_WORKSPACE", self.WS_B)
+        args = ["mcp", "add", "--names", "a.b.c"]
+        if not use_env:
+            args += ["--workspace", self.WS_B]
+        with (
+            patch("ucode.cli.available_mcp_clients", return_value=["codex"]),
+            patch("ucode.cli.add_mcp_command") as add_mcp,
+            patch("ucode.cli.configure_workspace_command") as configure_models,
+        ):
+            result = runner.invoke(app, args)
+
+        assert result.exit_code == 0, result.output
+        add_mcp.assert_called_once_with(location=None, services={"a.b.c"}, agents={"codex"})
+        configure_models.assert_not_called()
+        assert load_full_state()["current_workspace"] == self.WS_A
+        assert load_full_state()["workspaces"][self.WS_B]["mcp_clients"] == ["codex"]
+
     def test_failed_setup_with_no_previous_workspace_clears_current(self):
         from ucode.state import load_full_state
 
@@ -3526,7 +3552,7 @@ class TestMcpAddRootWorkspace:
         [
             (["--agents", "codex", "--workspace", "https://other"], "two different --workspace"),
             (["--agents", "codex", "--profile", "P"], "not both"),
-            (["--names", "a.b.c"], "only apply with --agents"),
+            (["--names", "a.b.c"], "Pass --agents to select"),
         ],
     )
     def test_root_workspace_conflicts_exit_1(self, extra, message):
