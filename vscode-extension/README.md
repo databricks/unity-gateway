@@ -21,3 +21,20 @@ Token fetches and failed requests are logged to the **Unity Gateway** output cha
 
 `npm ci`, then `npm run typecheck`, `npm test` and `npm run build`. The build writes the bundle and
 `package.json` to `../src/ucode/vscode/extension/`, which ug packs from; commit them (`just vscode-build`).
+
+`npm run live` sends the requests this extension builds to a real AI Gateway and checks the replies,
+covering what a mocked test can't: the gateway accepting each route's request shape, tool calls,
+images inside tool results, prompt caching, and that a Model Provider Service's models need its
+routing header. It takes the workspace and models from the environment:
+
+```
+UG_LIVE_WORKSPACE=https://<workspace> \
+UG_LIVE_AUTH_COMMAND='ug auth-token --host https://<workspace>' \
+UG_LIVE_CLAUDE_MODEL=system.ai.claude-haiku-4-5 \
+UG_LIVE_GPT_MODEL=system.ai.gpt-5-nano \
+npm run live
+```
+
+`UG_LIVE_TOKEN` works instead of `UG_LIVE_AUTH_COMMAND`. Setting `UG_LIVE_MPS` and `UG_LIVE_MPS_MODEL`
+(and `UG_LIVE_OPENAI_MPS` / `UG_LIVE_OPENAI_MPS_MODEL`) adds the Model Provider Service cases; a case
+whose variables are unset isn't registered. The models cost a few cents per run.
