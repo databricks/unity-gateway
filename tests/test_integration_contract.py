@@ -153,6 +153,19 @@ def test_smoke_and_full_journeys_run_every_agent_and_os_in_parallel():
     assert "max-parallel: 4" in jobs["full"]
 
 
+def test_full_claude_lane_includes_both_desktop_journeys():
+    full = _integration_jobs()["full"]
+    marker = re.search(r"(?m)^      TEST_MARKER: (.+)$", full)
+    assert marker is not None
+    cases = _collect_integration_cases(marker.group(1).replace("${{ matrix.agent }}", "claude"))
+    assert {
+        "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_profile_lifecycle",
+        "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_subscription_relay",
+    } <= cases
+    assert "os: [ubuntu-22.04, windows-latest]" in full
+    assert "CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" in full
+
+
 @pytest.mark.parametrize(
     ("job_name", "agent", "retained_test"),
     [

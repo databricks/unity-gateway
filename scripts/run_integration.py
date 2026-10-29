@@ -1006,7 +1006,7 @@ def main() -> int:
             if client_id and client_secret:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
-        test_dependencies = ["pytest==9.0.3", "httpx==0.28.1", "pyte==0.8.2"]
+        test_dependencies = ["pytest==9.0.3", "httpx==0.28.1", "pyte==0.8.2", "mcp==2.1.1"]
         test_dependencies.append("pexpect==4.9.0" if os.name == "posix" else "pywinpty==3.0.5")
         run(
             [

@@ -287,3 +287,13 @@ marked ACTIVE before login must change (for example its expiry metadata), or lea
 and return, before UG confirms reauthentication. PROVISIONING, UPDATING, and DELETING
 continue polling. Missing services fail before launching a browser; a credential 404
 means the selected user has not signed in yet and continues polling until the timeout.
+
+Two automated Desktop journeys run in the existing Linux/Windows Claude integration jobs:
+system.ai models and subscription-relay MPS. Each asserts the generated profile, executes its
+credential helper, completes real Messages inference, installs Cowork through the Claude CLI,
+and discovers/calls DBSQL through the installed plugin using a read-only computed query.
+Both check repeated configuration, preservation of unrelated settings, and revert cleanup.
+All calls use the journey's existing model workspace. CUJ1 and CUJ2 compare complete Desktop
+profile/metadata JSON for system.ai models and non-relay Anthropic MPS. CUJ3's existing configure
+journey checks that its incompatible scoped aliases preserve all Desktop profile/metadata bytes.
+These checks do not launch Desktop or validate native OAuth consent, skill use, or app reconnects.
