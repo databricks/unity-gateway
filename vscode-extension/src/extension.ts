@@ -1,0 +1,150 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import * as vscode from "vscode";
+import { version } from "../package.json";
+import { Tokens } from "./auth";
+import { chatCompletionsReplies, chatCompletionsRequest, estimateTokens, responsesReplies, responsesRequest, type Reply } from "./formats";
+import { streamEvents } from "./gateway";
+
+export interface ModelSetting {
+  readonly id: string;
+  readonly name?: string;
+  readonly api: "chat_completions" | "responses";
+  readonly maxInputTokens?: number;
+  readonly maxOutputTokens?: number;
+}
+
+export interface Settings {
+  readonly workspace: string;
+  readonly models: readonly ModelSetting[];
+  readonly authCommand: string;
+}
+
+const tokenLimits = (model: ModelSetting): Partial<ModelSetting> =>
+  Object.fromEntries(
+    (["maxInputTokens", "maxOutputTokens"] as const).flatMap((key) => {
+      const value: unknown = model[key];
+      return typeof value === "number" && Number.isInteger(value) && value > 0 ? [[key, value]] : [];
+    }),
+  );
+
+/** `ug configure` writes this file into the extension it packs, so each install carries its own setup. */
+export const CONFIG_FILE = "ug-config.json";
+
+/** Reads the config file's text; a missing or malformed file gives no models. */
+export const readConfig = (text: string | undefined): Settings => {
+  let config: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(text ?? "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      config = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Treated like a missing file.
+  }
+  const get = (key: string) => config[key];
+  const models = get("models");
+  return {
+    workspace: String(get("workspace") ?? "").replace(/\/+$/, ""),
+    models: (Array.isArray(models) ? models : [])
+      .filter(
+        (model): model is ModelSetting =>
+          typeof model?.id === "string" && model.id !== "" && (model.api === "chat_completions" || model.api === "responses"),
+      )
+      .map((model) => ({
+        id: model.id,
+        ...(typeof model.name === "string" && model.name.trim() ? { name: model.name.trim() } : {}),
+        api: model.api,
+        ...tokenLimits(model),
+      })),
+    authCommand: String(get("authCommand") ?? ""),
+  };
+};
+
+/** The gateway attributes requests by this User-Agent. */
+export const userAgent = (copilotChatVersion: unknown): string =>
+  `ucode/${version} githubcopilotchat${typeof copilotChatVersion === "string" ? `/${copilotChatVersion}` : ""}`;
+
+type Model = vscode.LanguageModelChatInformation & { readonly api: ModelSetting["api"] };
+
+export class DatabricksModels implements vscode.LanguageModelChatProvider<Model> {
+  private tokens: Tokens | undefined;
+
+  constructor(
+    private readonly settings: () => Settings,
+    private readonly log: (line: string) => void,
+    private readonly headers: () => Record<string, string> = () => ({}),
+  ) {}
+
+  async provideLanguageModelChatInformation(): Promise<Model[]> {
+    const { workspace, models, authCommand } = this.settings();
+    if (!workspace || !authCommand || models.length === 0) {
+      this.log("No Databricks models: run `ug configure --agents vscode` to set them up.");
+      return [];
+    }
+    return models.map(({ id, name, api, maxInputTokens, maxOutputTokens }) => ({
+      id,
+      api,
+      name: name ?? id,
+      // Copilot Chat tunes its prompts and tools by family, so this is the model's own name.
+      family: id.split(".").pop() ?? id,
+      version,
+      detail: "Databricks",
+      // The gateway reports no limits, so a model ug configure has none for gets Copilot's 128K default.
+      maxInputTokens: maxInputTokens ?? 128_000,
+      maxOutputTokens: maxOutputTokens ?? 32_000,
+      capabilities: { toolCalling: true, imageInput: api === "responses" || id.includes("claude") },
+    }));
+  }
+
+  async provideLanguageModelChatResponse(
+    model: Model,
+    messages: readonly vscode.LanguageModelChatRequestMessage[],
+    options: vscode.ProvideLanguageModelChatResponseOptions,
+    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+    token: vscode.CancellationToken,
+  ): Promise<void> {
+    const { workspace, authCommand } = this.settings();
+    this.tokens ??= new Tokens(authCommand, (expiresAt) => this.log(`Fetched a Databricks token (expires ${new Date(expiresAt).toISOString()})`));
+    const turn = { model: model.id, messages, tools: options.tools ?? [], toolRequired: options.toolMode === vscode.LanguageModelChatToolMode.Required };
+    const abort = new AbortController();
+    const cancelled = token.onCancellationRequested(() => abort.abort());
+    try {
+      const replies: AsyncIterable<Reply> =
+        model.api === "responses"
+          ? responsesReplies(streamEvents(workspace, "responses", responsesRequest(turn), this.tokens, this.headers(), abort.signal))
+          : chatCompletionsReplies(streamEvents(workspace, "chat/completions", chatCompletionsRequest(turn), this.tokens, this.headers(), abort.signal));
+      for await (const reply of replies) {
+        progress.report(reply);
+      }
+    } catch (error) {
+      if (!token.isCancellationRequested) {
+        this.log(`${model.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+        throw error;
+      }
+    } finally {
+      cancelled.dispose();
+    }
+  }
+
+  async provideTokenCount(_model: Model, input: string | vscode.LanguageModelChatRequestMessage): Promise<number> {
+    return estimateTokens(input);
+  }
+}
+
+const readConfigFile = (path: string): string | undefined => {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+};
+
+export function activate(context: vscode.ExtensionContext): void {
+  const output = vscode.window.createOutputChannel("Unity Gateway", { log: true });
+  // Read once: ug changes the file only by reinstalling the extension, which takes a restart to load.
+  const settings = readConfig(readConfigFile(join(context.extensionPath, CONFIG_FILE)));
+  const headers = () => ({ "User-Agent": userAgent(vscode.extensions.getExtension("GitHub.copilot-chat")?.packageJSON?.version) });
+  const provider = new DatabricksModels(() => settings, (line) => output.info(line), headers);
+  context.subscriptions.push(output, vscode.lm.registerLanguageModelChatProvider("databricks-unity-gateway", provider));
+}

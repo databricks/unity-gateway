@@ -24,6 +24,7 @@ from .catalog_discovery_expectations import (
     OTHER_MODEL_SCHEMA,
 )
 from .helpers.constants import CLAUDE, CODEX
+from .helpers.desktop import assert_claude_desktop_unchanged, enable_claude_desktop
 from .helpers.evidence import (
     SessionEvidence,
     assert_claude_headless_model,
@@ -91,9 +92,13 @@ class TestCatalogDiscovery(BaseCujTest):
 
         Expected: only Sonnet/Haiku/Kimi/GPT Luna appear; Gemini and decoys are absent.
         Dismissing the picker without a selection preserves Sonnet for the completed task.
+        Existing Desktop files remain unchanged: scoped aliases such as claude_haiku do not
+        match Desktop's Claude-family filter. CUJ1/CUJ2 check complete compatible profiles.
         """
         session, workspace, recorder = cuj
+        config_library = enable_claude_desktop(session, workspace.url)
         recorder.configure_session(session, ["configure", "--skip-upgrade"])
+        assert_claude_desktop_unchanged(session, config_library)
 
         parent_catalog = _catalog_display_names(workspace, CLAUDE, MODEL_SCHEMA)
         decoy_catalog = _catalog_display_names(workspace, CLAUDE, OTHER_MODEL_SCHEMA)

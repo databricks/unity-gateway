@@ -68,9 +68,8 @@ from ucode.managed_files import (
     CODEX_REQUIREMENTS_FILE,
     OS,
     ManagedFileWriteUnavailable,
-    check_skipped_managed_overrides,
-    config_scope,
     current_os,
+    explicit_managed_writes,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -901,14 +900,7 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
     if path is not None and path.name == CODEX_REQUIREMENTS_FILE:
         compose = _as_requirements(compose)
     if managed_settings_skipped():
-        if config_scope() != "user":
-            check_skipped_managed_overrides(
-                path,
-                parser=_parse_managed_config,
-                compose=compose,
-                owned_paths=MANAGED_KEYS,
-                display="Codex",
-            )
+        # Opted out: trust whatever OS-managed file exists and leave it untouched.
         return
     if path is None:
         print_warning_err(
@@ -946,7 +938,8 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
             parser=_parse_managed_config,
         )
     except ManagedFileWriteUnavailable:
-        if conflicts:
+        # `ug configure` must leave the machine-wide file correct, so it never degrades silently.
+        if conflicts or explicit_managed_writes():
             raise
         print_warning_err(
             f"Codex OS-managed settings could not be updated at {path}; continuing with local "
@@ -1006,11 +999,7 @@ def managed_mcp_entry(argv: list[str]) -> dict:
 
 
 def managed_mcp_http_entry(url: str, client_id: str) -> dict:
-    """A ``[mcp_servers.<name>]`` **direct HTTP+OAuth** entry: Codex is the OAuth client and drives
-    the connection login itself (the batched analogue of ``add_codex_http_mcp_server``). ``url`` is
-    both the server URL and the RFC 8707 ``oauth_resource``; ``client_id`` is the published
-    ``codex-cli`` app. Codex derives its per-server loopback ``/callback/<hash>`` redirect at login,
-    so no callback need be written here."""
+    """A native HTTP MCP entry using Codex's published CIMD client."""
     return {"url": url, "oauth_resource": url, "oauth": {"client_id": client_id}}
 
 
@@ -1040,25 +1029,19 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     per server. Other tables and the developer's own servers are preserved. Returns the subset of
     ``remove`` names that were actually present (so callers can report only real removals).
 
-    If the file exists but can't be parsed, defer to the per-server ``codex`` CLI rather than
-    overwrite it."""
-    from ucode.mcp import (
-        add_codex_http_mcp_server,
-        add_codex_mcp_server,
-        remove_codex_mcp_server,
-    )
+    If the file exists but can't be parsed, defer entries to the per-server ``codex`` CLI."""
+    from ucode.mcp import add_codex_mcp_server, remove_codex_mcp_server
 
     path = user_mcp_config_path()
     doc = _read_user_config_for_rewrite(path)
     if doc is None:
+        if any("url" in entry for entry in add.values()):
+            raise RuntimeError(
+                f"Cannot register native OAuth MCP server: Codex config is invalid TOML at {path}."
+            )
         removed = {name for name in remove if remove_codex_mcp_server(name)}
         for name, entry in add.items():
-            # Dispatch on entry shape: a native HTTP+OAuth entry has `url` (+ `oauth.client_id`)
-            # and no `command`, so it must go through the HTTP CLI path, not the stdio proxy one.
-            if "url" in entry:
-                add_codex_http_mcp_server(name, entry["url"], entry["oauth"]["client_id"])
-            else:
-                add_codex_mcp_server(name, [entry["command"], *entry.get("args", [])])
+            add_codex_mcp_server(name, [entry["command"], *entry.get("args", [])])
         return removed
 
     table = doc.get(MANAGED_MCP_CONFIG_KEY)
@@ -1082,7 +1065,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
     The managed file is the source of truth, so this is a wipe-and-rewrite, not a diff. Every other
     managed key is preserved, including the model configuration ug wrote earlier this run. Returns
     True when the managed file is the delivery mechanism, False when it cannot be used (unsupported
-    platform or a non-interactive run), so the caller routes those servers to the user-scope
+    platform, or a run that may not write it), so the caller routes those servers to the user-scope
     registration instead."""
     path = codex_managed_config_path()
     if (

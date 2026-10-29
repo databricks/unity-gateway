@@ -140,6 +140,14 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
 
     plugin_root = app_dir / cowork.MARKETPLACE_DIRECTORY_NAME / "plugins" / cowork.PLUGIN_NAME
     plugin = json.loads((plugin_root / ".claude-plugin" / "plugin.json").read_text())
+    assert (plugin["name"], plugin["displayName"]) == ("ug", "ug")
+    marketplace = json.loads(
+        (
+            app_dir / cowork.MARKETPLACE_DIRECTORY_NAME / ".claude-plugin" / "marketplace.json"
+        ).read_text()
+    )
+    entry = marketplace["plugins"][0]
+    assert (entry["name"], entry["displayName"]) == ("ug", "ug")
     assert plugin["mcpServers"] == "./.mcp.json"
     mcp = json.loads((plugin_root / ".mcp.json").read_text())
     assert mcp == {
@@ -161,6 +169,38 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
     }
     assert (plugin_root / "skills" / "review" / "SKILL.md").read_text() == "managed skill"
     assert not (plugin_root / "skills" / "foreign").exists()
+    connector_skill = (
+        plugin_root / "skills" / cowork.CONNECTOR_SKILL_NAME / "SKILL.md"
+    ).read_text()
+    assert connector_skill.startswith(f'---\nname: {cowork.CONNECTOR_SKILL_NAME}\ndescription: "')
+    assert all(f"`{name}`" in connector_skill for name in mcp["mcpServers"])
+    assert "codex-only" not in connector_skill
+    description_line = connector_skill.splitlines()[2]
+    description = json.loads(description_line.removeprefix("description: "))
+    assert len(description) <= 1024
+    assert "sign-in recovery" in description
+    assert "`authenticate` is the recovery action" in connector_skill
+    assert "task in the same turn" in connector_skill
+    assert "wait 5 seconds" in connector_skill
+    assert "wait another 5 seconds" in connector_skill
+    hooks = json.loads((plugin_root / "hooks" / "hooks.json").read_text())
+    assert set(hooks["hooks"]) == {"SessionStart", "UserPromptSubmit"}
+    expected_command = cowork.subprocess_cross_os.shell_command(
+        [
+            str(ug_binary),
+            "cowork-hook",
+            "--host",
+            "https://workspace.example",
+            "--profile",
+            "chosen",
+            "--server",
+            "github=https://workspace.example/api/2.0/mcp/github",
+        ]
+    )
+    for entries in hooks["hooks"].values():
+        hook = entries[0]["hooks"][0]
+        assert (hook["type"], hook["command"]) == ("command", expected_command)
+        assert hook["timeout"] <= 30
     assert [call[0][1:3] for call in calls] == [
         ["plugin", "validate"],
         ["plugin", "marketplace"],
@@ -169,6 +209,13 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
         ["plugin", "install"],
     ]
     assert all(call[1]["env"]["CLAUDE_CONFIG_DIR"] == str(cowork_root) for call in calls)
+    assert calls[-1][0][1:] == [
+        "plugin",
+        "install",
+        "ug@unity-gateway-cowork",
+        "--cowork",
+        "--json",
+    ]
     assert json.loads((app_dir / cowork.STATE_FILENAME).read_text())["cowork_root"] == str(
         cowork_root
     )
@@ -198,12 +245,201 @@ def test_configure_updates_installed_plugin(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cowork.subprocess_cross_os, "run", run)
 
-    assert cowork.configure_cowork(
-        {"workspace": "https://workspace.example", "profile": "chosen"},
-        [{"name": "github", "url": "https://mcp.example", "clients": ["claude"]}],
+    plugin_root = (
+        tmp_path / ".ucode" / cowork.MARKETPLACE_DIRECTORY_NAME / "plugins" / cowork.PLUGIN_NAME
     )
+    plugin_root.mkdir(parents=True)
+    mcp_path = plugin_root / ".mcp.json"
+    mcp_path.write_text(json.dumps({"mcpServers": {"system-ai-github": {"type": "stdio"}}}))
+    for _ in range(2):
+        assert cowork.configure_cowork(
+            {"workspace": "https://workspace.example", "profile": "chosen"},
+            [
+                {
+                    "name": "system-ai-github",
+                    "url": "https://workspace.example/ai-gateway/mcp-services/system.ai.github",
+                    "clients": ["claude"],
+                }
+            ],
+        )
+        assert list(json.loads(mcp_path.read_text())["mcpServers"]) == ["github"]
 
     assert calls[-1][1:3] == ["plugin", "update"]
+    assert all(argv[1:3] != ["plugin", "uninstall"] for argv in calls)
+
+
+@pytest.mark.parametrize(
+    "legacy_entry",
+    [
+        cowork.LEGACY_PLUGIN_ID,
+        {"pluginId": cowork.LEGACY_PLUGIN_ID},
+        {"id": cowork.LEGACY_PLUGIN_ID},
+        {"name": "unity-gateway", "marketplace": cowork.MARKETPLACE_NAME},
+    ],
+)
+@pytest.mark.parametrize("already_installed", [False, True])
+def test_install_replaces_legacy_registration_after_success(
+    tmp_path, monkeypatch, legacy_entry, already_installed
+):
+    cowork_root = tmp_path / "cowork"
+    monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
+    installed = {cowork.LEGACY_PLUGIN_ID, "other@unrelated"}
+    if already_installed:
+        installed.add(cowork.PLUGIN_ID)
+    calls = []
+
+    # Keep the external Claude CLI isolated from the developer's plugin registrations.
+    def run(argv, **kwargs):
+        assert kwargs["env"]["CLAUDE_CONFIG_DIR"] == str(cowork_root)
+        calls.append(argv[1:])
+        stdout = '{"outcome":"ok"}'
+        if argv[1:3] == ["plugin", "validate"]:
+            stdout = "valid"
+        elif argv[1:3] == ["plugin", "list"]:
+            entries = [legacy_entry, {"id": "other@unrelated"}]
+            if already_installed:
+                entries.append({"pluginId": cowork.PLUGIN_ID})
+            stdout = json.dumps({"plugins": entries})
+        elif argv[1:3] in (["plugin", "install"], ["plugin", "update"]):
+            installed.add(argv[3])
+        elif argv[1:3] == ["plugin", "uninstall"]:
+            assert cowork.PLUGIN_ID in installed
+            installed.remove(argv[3])
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(cowork.subprocess_cross_os, "run", run)
+
+    cowork._install_plugin(cowork_root, tmp_path / "marketplace")
+
+    assert installed == {"ug@unity-gateway-cowork", "other@unrelated"}
+    assert calls[-2:] == [
+        [
+            "plugin",
+            "update" if already_installed else "install",
+            cowork.PLUGIN_ID,
+            "--cowork",
+            "--json",
+        ],
+        ["plugin", "uninstall", cowork.LEGACY_PLUGIN_ID, "--cowork", "--json"],
+    ]
+
+
+def test_install_failure_preserves_legacy_registration(tmp_path, monkeypatch):
+    monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv[1:])
+        stdout = '{"outcome":"ok"}'
+        if argv[1:3] == ["plugin", "validate"]:
+            stdout = "valid"
+        elif argv[1:3] == ["plugin", "list"]:
+            stdout = json.dumps([{"pluginId": cowork.LEGACY_PLUGIN_ID}])
+        elif argv[1:3] == ["plugin", "install"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="installation failed")
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(cowork.subprocess_cross_os, "run", run)
+
+    with pytest.raises(RuntimeError, match="installation failed"):
+        cowork._install_plugin(tmp_path / "cowork", tmp_path / "marketplace")
+
+    assert calls[-1] == ["plugin", "install", cowork.PLUGIN_ID, "--cowork", "--json"]
+    assert all(argv[:2] != ["plugin", "uninstall"] for argv in calls)
+
+
+def test_cowork_mcp_config_shortens_uc_names_and_preserves_routing(tmp_path, monkeypatch):
+    ug_binary = tmp_path / "bin" / "ug"
+    monkeypatch.setattr(cowork.shutil, "which", lambda name: str(ug_binary.parent / name))
+    services = ["slack", "gmail", "github", "atlassian", "sales-tools"]
+    servers = [
+        {
+            "name": f"system-ai-{service}",
+            "url": f"https://workspace.example/ai-gateway/mcp-services/system.ai.{service}",
+            "clients": ["claude"],
+        }
+        for service in services
+    ]
+    servers.append(
+        {
+            "name": "main-team-slack",
+            "url": "https://workspace.example/ai-gateway/mcp-services/main.team.slack",
+            "clients": ["codex"],
+        }
+    )
+
+    config = cowork._cowork_mcp_config(servers, "https://workspace.example", "chosen")
+
+    assert list(config["mcpServers"]) == services
+    for service, server in zip(services, servers, strict=False):
+        assert config["mcpServers"][service] == {
+            "type": "stdio",
+            "command": str(ug_binary),
+            "args": [
+                "mcp-proxy",
+                "--url",
+                server["url"],
+                "--host",
+                "https://workspace.example",
+                "--profile",
+                "chosen",
+            ],
+        }
+
+
+@pytest.mark.parametrize(
+    ("name", "url"),
+    [
+        ("work-slack", "https://workspace.example/ai-gateway/mcp-services/system.ai.slack"),
+        ("system-ai-slack", "https://external.example/mcp"),
+        ("system-slack", "https://workspace.example/ai-gateway/mcp-services/system.slack"),
+    ],
+)
+def test_cowork_mcp_config_preserves_custom_names(tmp_path, monkeypatch, name, url):
+    monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
+
+    config = cowork._cowork_mcp_config(
+        [{"name": name, "url": url, "clients": ["claude"]}],
+        "https://workspace.example",
+        "chosen",
+    )
+
+    assert list(config["mcpServers"]) == [name]
+
+
+def test_cowork_mcp_config_disambiguates_names_independently_of_order(tmp_path, monkeypatch):
+    monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
+    servers = [
+        {
+            "name": "system-ai-slack",
+            "url": "https://workspace.example/ai-gateway/mcp-services/system.ai.slack",
+            "clients": ["claude"],
+        },
+        {
+            "name": "main-team-slack",
+            "url": "https://workspace.example/ai-gateway/mcp-services/main.team.slack",
+            "clients": ["claude"],
+        },
+        {"name": "slack", "url": "https://custom.example/mcp", "clients": ["claude"]},
+        {
+            "name": "slack-system-ai",
+            "url": "https://other.example/mcp",
+            "clients": ["claude"],
+        },
+    ]
+    expected_urls = {
+        "slack-system-ai-2": servers[0]["url"],
+        "slack-main-team": servers[1]["url"],
+        "slack": servers[2]["url"],
+        "slack-system-ai": servers[3]["url"],
+    }
+
+    for ordered in [servers, list(reversed(servers))]:
+        config = cowork._cowork_mcp_config(ordered, "https://workspace.example", "chosen")
+        assert {
+            name: entry["args"][entry["args"].index("--url") + 1]
+            for name, entry in config["mcpServers"].items()
+        } == expected_urls
 
 
 def test_configure_records_root_before_plugin_command_failure(tmp_path, monkeypatch):
@@ -373,7 +609,12 @@ def test_revert_uses_saved_root_and_removes_owned_files(tmp_path, monkeypatch):
     assert cowork.revert_cowork()
     assert [call[0][1:3] for call in calls] == [
         ["plugin", "uninstall"],
+        ["plugin", "uninstall"],
         ["plugin", "marketplace"],
+    ]
+    assert [call[0][3] for call in calls[:2]] == [
+        "ug@unity-gateway-cowork",
+        "unity-gateway@unity-gateway-cowork",
     ]
     assert all(call[1]["env"]["CLAUDE_CONFIG_DIR"] == str(cowork_root) for call in calls)
     assert not marketplace.exists()
@@ -427,7 +668,7 @@ def test_revert_removes_orphaned_registration_without_saved_state(tmp_path, monk
     monkeypatch.setattr(cowork.subprocess_cross_os, "run", run)
 
     assert cowork.revert_cowork()
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert all(call[1]["env"]["CLAUDE_CONFIG_DIR"] == str(orphaned_root) for call in calls)
     assert all(call[1]["env"]["CLAUDE_CONFIG_DIR"] != str(unrelated_root) for call in calls)
 
@@ -447,3 +688,12 @@ def test_revert_retains_owned_files_when_claude_cli_is_missing(tmp_path, monkeyp
 
     assert marketplace.exists()
     assert state_path.exists()
+
+
+def test_connector_skill_description_is_bounded_with_many_connectors(tmp_path):
+    names = [f"connector_{i:03}_with_a_long_service_name" for i in range(100)]
+    cowork._write_connector_skill(tmp_path, names)
+    text = (tmp_path / cowork.CONNECTOR_SKILL_NAME / "SKILL.md").read_text()
+    description = json.loads(text.splitlines()[2].removeprefix("description: "))
+    assert len(description) <= 1024
+    assert all(f"`{name}`" in text.split("---\n", 2)[2] for name in names)

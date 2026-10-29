@@ -11,6 +11,9 @@ MANAGED_PATHS = (
     Path("/etc/codex/requirements.toml"),
     Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
 )
+# Unity Gateway's installed workspace policy. Any `ug configure` may install it (with sudo), so it
+# is not a leaked agent setting; CUJ teardown removes it.
+WORKSPACE_POLICY_PATH = Path("/etc/unitygateway/managed-settings.json")
 INFERENCE_PATHS = {
     CLAUDE: "/ai-gateway/anthropic/v1/messages",
     CODEX: "/ai-gateway/codex/v1/responses",
