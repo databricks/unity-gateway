@@ -162,8 +162,8 @@ def test_antigravity_has_no_windows_build():
 def test_bedrock_defaults_use_personal_credential_fixtures_and_sonnet_4_6():
     args = runner.arguments(["--claude-version", "2.1.290", "--installation-only"], environment={})
 
-    assert args.claude_bedrock_provider == "main.ucode.bedrock_e2e"
-    assert args.claude_bedrock_allow_all_provider == "main.ucode.e2e_bedrock_all_models_enabled"
+    assert args.claude_bedrock_provider == "main.ucode.ci_bedrock_mason_filtered_models"
+    assert args.claude_bedrock_allow_all_provider == "main.ucode.ci_bedrock_mason_all_models"
     assert args.claude_bedrock_allow_all_model == "us.anthropic.claude-sonnet-4-6"
 
 

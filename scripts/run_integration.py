@@ -419,7 +419,7 @@ def arguments(
     )
     parser.add_argument(
         "--claude-bedrock-allow-all-provider",
-        default="main.ucode.e2e_bedrock_all_models_enabled",
+        default="main.ucode.ci_bedrock_mason_all_models",
         help="Bedrock MPS with allow_all_targets and no declared targets, for the #811 CUJ.",
     )
     parser.add_argument(
@@ -429,8 +429,8 @@ def arguments(
     )
     parser.add_argument(
         "--claude-bedrock-provider",
-        default="main.ucode.bedrock_e2e",
-        help="AWS Bedrock Anthropic MPS with a restricted allowed-models set (Sonnet + Haiku, no Opus), selected in the configure CUJ.",
+        default="main.ucode.ci_bedrock_mason_filtered_models",
+        help="AWS Bedrock Anthropic MPS with a restricted allowed-models set (Sonnet + Opus), selected in the configure CUJ.",
     )
     parser.add_argument(
         "--antigravity-provider",
