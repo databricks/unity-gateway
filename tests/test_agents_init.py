@@ -603,6 +603,20 @@ class TestPersistedModelLocation:
         assert calls[0][1]["provider"] == "main.default.mps"
         assert "parent_schema" not in calls[0][1]
 
+    def test_explicit_provider_wins_over_saved_location(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        monkeypatch.setattr(
+            agents_mod, "resolve_provider_models", lambda *_a: ({"opus": "x"}, None, False)
+        )
+        state = {**self._STATE, "model_locations": {"claude": "main.models"}}
+
+        agents_mod.configure_selected_tools(
+            state, ["claude"], install_ai_tools=False, providers={"claude": "main.default.mps"}
+        )
+
+        assert calls[0][1]["provider"] == "main.default.mps"
+        assert "parent_schema" not in calls[0][1]
+
     def test_gemini_ignores_saved_location(self):
         state = {**self._STATE, "model_locations": {"gemini": "main.models"}}
         assert agents_mod._persisted_model_location("gemini", state, None) is None

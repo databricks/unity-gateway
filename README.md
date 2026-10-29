@@ -150,7 +150,15 @@ ug configure --agents claude,codex
 ug configure --workspace https://first.databricks.com
 ug configure --profile DEFAULT --agents claude,codex
 ug configure --user
+ug configure --agent claude --model-location main.models
+ug configure --agents claude,codex --provider main.default.anthropic
 ```
+
+`--model-location <catalog>.<schema>` and `--provider <catalog>.<schema>.<name>` pick the model
+source without the interactive picker, so a script can configure it. `--model-location` applies to
+Claude Code and Codex, `--provider` to those two and Gemini CLI; either needs `--agent`/`--agents`,
+and they cannot be combined. The choice is saved for later launches, and each one replaces the
+other. A managed config that enables agents names the source itself and rejects both flags.
 
 `--global` (the default) writes the machine-wide Claude Code and Codex managed settings with sudo,
 with or without a terminal: run headless as root (or with passwordless sudo), since a write that

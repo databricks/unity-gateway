@@ -755,6 +755,7 @@ def configure_selected_tools(
     *,
     install_ai_tools: bool = True,
     parent_schemas: dict[str, str] | None = None,
+    providers: dict[str, str] | None = None,
 ) -> dict:
     """Configure the given tools. Caller is responsible for ensuring each tool
     is available on the workspace.
@@ -770,10 +771,14 @@ def configure_selected_tools(
     configured: list[str] = []
     with managed_write_batch(_managed_settings_displays(tools)):
         for tool in tools:
+            # An explicit provider displaces a saved model location, as on the picker.
+            explicit_provider = (providers or {}).get(tool)
             parent_schema = (parent_schemas or {}).get(tool) or _persisted_model_location(
-                tool, state, None
+                tool, state, explicit_provider
             )
-            provider = None if parent_schema else get_provider_service(state, tool)
+            provider = (
+                None if parent_schema else explicit_provider or get_provider_service(state, tool)
+            )
             try:
                 state = _configure_one(tool, state, provider, parent_schema=parent_schema)
             except Exception as exc:  # noqa: BLE001 -- surface any harness failure as a warning

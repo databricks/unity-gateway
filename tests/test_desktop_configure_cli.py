@@ -1,5 +1,6 @@
 """Desktop hooks on successful configure paths, not ordinary agent launches."""
 
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -37,7 +38,7 @@ def configuration(monkeypatch):
 def test_successful_claude_setup_configures_desktop_once(configuration, monkeypatch, flow):
     configure = Mock()
     monkeypatch.setattr(desktop_setup, "configure_claude_desktop", configure)
-    args = {"selected_tools": ["claude"]}
+    args: dict[str, Any] = {"selected_tools": ["claude"]}
     if flow == "single":
         args = {"tool": "claude"}
     if flow == "managed":
@@ -181,7 +182,7 @@ def test_desktop_failure_preserves_successful_configure_exit(
 
     monkeypatch.setattr(desktop_setup, "_configure_desktop", fail)
     monkeypatch.setattr(desktop_setup.sys, "platform", "darwin")
-    args = {"selected_tools": ["claude"]}
+    args: dict[str, Any] = {"selected_tools": ["claude"]}
     if flow == "single":
         args = {"tool": "claude"}
     if flow == "managed":
