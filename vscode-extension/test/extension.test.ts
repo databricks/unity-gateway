@@ -76,8 +76,9 @@ describe("settings", () => {
 });
 
 describe("provider", () => {
+  // The icon lives only in the folder ug ships, next to the built bundle.
   it("ships the icon it names", () => {
-    assert.ok(packageJson.contributes.languageModelChatProviders.every((provider) => existsSync(provider.icon)));
+    assert.ok(packageJson.contributes.languageModelChatProviders.every((provider) => existsSync(`../src/ucode/vscode/extension/${provider.icon}`)));
   });
 });
 
