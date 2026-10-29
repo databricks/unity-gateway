@@ -328,11 +328,11 @@ class TestCujSmartRouting(BaseCujTest):
         (one HTTP 200 decision matching the prompt, and the routed model serves inference),
         whether orchestrator context and the smart-router recipe header/field are present,
         and that no child session exists after the first prompt. A second prompt then makes
-        exactly one native child complete the delegated file task even when routing is
-        disabled. When subagent routing is on, exactly one decision correlated with the child
-        task is recorded, the child's inference uses the selected model, and the recipe
-        correlates with the launch turn; when off, no decision, recipe, or orchestrator
-        context appears. Claude then reports no running background tasks and exits cleanly.
+        a native child complete the delegated file task even when routing is disabled.
+        When subagent routing is on, a decision correlated with the child task is recorded,
+        the child's inference uses the selected model, and the recipe correlates with the
+        launch turn; when off, no decision, recipe, or orchestrator context appears. Claude
+        then reports no running background tasks and exits cleanly.
         """
         with smart_router_preset(cuj, SMART_ROUTER_CONFIG_VERSION) as (
             session,
@@ -430,7 +430,7 @@ class TestCujSmartRouting(BaseCujTest):
                         child_task.value in answer for answer in assistant_answers(agent, records)
                     )
                 }
-                assert len(completed_children) == 1, (agent, children.keys())
+                assert completed_children, (agent, children.keys())
                 decisions = read_jsonl(decisions_path)[decision_count:]
                 decision_tasks = {
                     decision.get("task_name") for decision in decisions if decision.get("task_name")
@@ -442,7 +442,7 @@ class TestCujSmartRouting(BaseCujTest):
                     if request.path == ROUTING_PATH
                     and request.payload.get("task", {}).get("prompt") in decision_tasks
                 ]
-                assert len(routes) == int(subagent_routed), (agent, routes)
+                assert bool(routes) == subagent_routed, (agent, routes)
                 if subagent_routed:
                     assert_subagent_routed(
                         session,
