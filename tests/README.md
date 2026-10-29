@@ -548,7 +548,11 @@ Bedrock integration journey still supplies live Windows/Claude coverage.
 These are actual argv/configuration assertions, not native classifier acceptance
 coverage.
 `test_databricks.py` checks bounded Anthropic catalog requests with `limit=1000`, including
-scoped routing headers and model display metadata. It also verifies that Windows CLI install
+scoped routing headers and model display metadata. HTTP component cases cover truncated or
+malformed responses, successful GET recovery, and exhausted retry budgets. Write-response
+failures return a reason without replaying a potentially committed request. These cases
+inject transport failures; they do not establish live gateway recovery.
+It also verifies that Windows CLI install
 and upgrade use WinGet and report an actionable error when WinGet is unavailable. Windows
 PATH refresh regressions prime a cached missing CLI, then verify that existing WinGet aliases
 and persisted user PATH entries are discovered without reinstalling, including repeated bootstrap.

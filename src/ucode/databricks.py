@@ -26,6 +26,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, NoReturn, cast, overload
 from urllib import error as urllib_error
@@ -378,11 +379,9 @@ def _http_get_bytes(
             if attempt == max_retries:
                 return None, reason
             retry_after = None
-        except OSError as exc:
-            # A socket read timeout raises a bare TimeoutError (an OSError), not a
-            # URLError, so it must be caught explicitly or it escapes the whole
-            # discovery flow. Surface it as a reason like every other failure.
-            _debug(f"GET {url}", f"OSError: {exc}")
+        except (OSError, HTTPException) as exc:
+            # Socket timeouts and truncated HTTP responses can escape urllib unwrapped.
+            _debug(f"GET {url}", f"{type(exc).__name__}: {exc}")
             reason = f"network error: {exc}"
             if attempt == max_retries:
                 return None, reason
@@ -486,10 +485,9 @@ def _http_send_json(
     except urllib_error.URLError as exc:
         _debug(f"{method} {url}", f"URLError: {exc.reason}")
         return None, f"network error: {exc.reason}"
-    except OSError as exc:
-        # See `_http_get_json`: a bare socket timeout is an OSError, not a
-        # URLError, and would otherwise escape the caller's error handling.
-        _debug(f"{method} {url}", f"OSError: {exc}")
+    except (OSError, HTTPException) as exc:
+        # A failed response read does not establish whether the write committed.
+        _debug(f"{method} {url}", f"{type(exc).__name__}: {exc}")
         return None, f"network error: {exc}"
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import subprocess
@@ -10,6 +11,7 @@ import threading
 import time
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import Mock
 from urllib.parse import parse_qs
 
 import pytest
@@ -4074,6 +4076,59 @@ class TestHttpGetJsonRetries:
         assert reason == "HTTP 429 Too Many Requests"
         assert len(calls) == 3
         assert sleeps == [1.25, 2.5]
+
+    @pytest.mark.parametrize("max_retries", [0, 2])
+    @pytest.mark.parametrize(
+        "failure",
+        [http.client.IncompleteRead(b'{"partial":', 100), http.client.BadStatusLine("bad status")],
+        ids=["truncated-body", "bad-status"],
+    )
+    def test_http_protocol_failure_returns_reason_after_retry_budget(
+        self, monkeypatch, max_retries, failure
+    ):
+        response = _FakeResponse(b"")
+        response.read = Mock(side_effect=failure)
+        opener = Mock(return_value=response)
+        sleeps = Mock()
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", opener)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps)
+
+        payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=max_retries)
+
+        assert payload is None
+        assert reason == f"network error: {failure}"
+        assert opener.call_count == max_retries + 1
+        assert sleeps.call_count == max_retries
+
+    def test_retries_truncated_body_and_returns_only_the_complete_response(self, monkeypatch):
+        truncated = _FakeResponse(b"")
+        truncated.read = Mock(side_effect=http.client.IncompleteRead(b'{"data":', 100))
+        opener = Mock(side_effect=[truncated, _FakeResponse({"data": ["complete"]})])
+        sleeps = []
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", opener)
+        monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+
+        payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=2)
+
+        assert payload == {"data": ["complete"]}
+        assert reason is None
+        assert opener.call_count == 2
+        assert sleeps == [1.25]
+
+    @pytest.mark.parametrize("method", ["POST", "PATCH", "DELETE"])
+    def test_truncated_write_response_returns_reason_without_replaying(self, monkeypatch, method):
+        failure = http.client.IncompleteRead(b'{"partial":', 100)
+        response = _FakeResponse(b"")
+        response.read = Mock(side_effect=failure)
+        opener = Mock(return_value=response)
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", opener)
+
+        payload, reason = db_mod._http_send_json(method, "https://x/y", "tok", {"key": "value"})
+
+        assert payload is None
+        assert reason == f"network error: {failure}"
+        assert opener.call_count == 1
 
     def test_does_not_retry_other_http_error(self, monkeypatch):
         calls = []
