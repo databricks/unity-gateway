@@ -1,8 +1,10 @@
 """VS Code: install ug's model extension so Copilot Chat can use the workspace's AI Gateway models.
 
 Configure-only, like Cursor (it stays out of `agents.__init__._MODULES`): `ug configure --agents
-vscode` packs the extension that ships with ug into a vsix, installs it with VS Code's `code`
-command, and writes the extension's settings into the user settings.json. `ug revert` undoes both.
+vscode` packs the extension that ships with ug into a vsix, together with a `ug-config.json` that
+holds the workspace, its models and the auth command, and installs it with VS Code's `code` command.
+The extension reads that file from its own folder, so ug never edits the user's settings.json.
+`ug revert` uninstalls the extension.
 """
 
 from __future__ import annotations
@@ -18,7 +20,6 @@ from pathlib import Path
 from typing import cast
 from xml.sax.saxutils import escape
 
-from ucode import config_io
 from ucode.agents.copilot import (
     copilot_exclusion_reason,
     copilot_model_limits,
@@ -34,12 +35,10 @@ from ucode.ui import console, print_heading, print_kv, print_warning
 
 EXTENSION_DIR = Path(__file__).resolve().parent.parent / "vscode" / "extension"
 EXTENSION_ID = "databricks.unity-gateway"
-WORKSPACE_SETTING = "unityGateway.workspace"
-MODELS_SETTING = "unityGateway.models"
-AUTH_COMMAND_SETTING = "unityGateway.authCommand"
-SETTINGS = (WORKSPACE_SETTING, MODELS_SETTING, AUTH_COMMAND_SETTING)
-# Each `code` command and the folder its user settings live in.
-CODE_COMMANDS = (("code", "Code"), ("code-insiders", "Code - Insiders"))
+# Read by the extension from its install folder; see CONFIG_FILE in vscode-extension/src/extension.ts.
+CONFIG_FILE = "ug-config.json"
+# Each `code` command and the folder in the home directory it installs extensions under.
+CODE_COMMANDS = (("code", ".vscode"), ("code-insiders", ".vscode-insiders"))
 _CODE_TIMEOUT_S = 120
 
 
@@ -67,35 +66,31 @@ def _install_locations(command: str) -> list[Path]:
     return [Path("/usr/bin") / command, Path("/snap/bin") / command]
 
 
-def find_code() -> tuple[Path, str] | None:
-    """VS Code's `code` command (or Insiders') and its settings folder name, or None."""
-    for command, product in CODE_COMMANDS:
-        if found := shutil.which(command):
-            return Path(found), product
-    for command, product in CODE_COMMANDS:
-        for path in _install_locations(command):
-            if path.is_file():
-                return path, product
+def _find_command(command: str) -> Path | None:
+    if found := shutil.which(command):
+        return Path(found)
+    return next((path for path in _install_locations(command) if path.is_file()), None)
+
+
+def find_code() -> Path | None:
+    """VS Code's `code` command, or Insiders' when only that is installed."""
+    for command, _ in CODE_COMMANDS:
+        if found := _find_command(command):
+            return found
     return None
 
 
-def settings_path(product: str) -> Path:
-    system = current_os()
-    if system is OS.MACOS:
-        base = Path.home() / "Library" / "Application Support"
-    elif system is OS.WINDOWS:
-        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
-    else:
-        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    return base / product / "User" / "settings.json"
+def extensions_dir(folder: str) -> Path:
+    return Path.home() / folder / "extensions"
 
 
 def _package() -> dict:
     return json.loads((EXTENSION_DIR / "package.json").read_text(encoding="utf-8"))
 
 
-def pack_vsix(directory: Path) -> Path:
-    """Zip the bundled extension into a vsix in ``directory``, with no Node or `vsce` needed."""
+def pack_vsix(directory: Path, config: dict[str, object]) -> Path:
+    """Zip the bundled extension and its ``config`` into a vsix in ``directory``, with no Node or
+    `vsce` needed."""
     package = _package()
     manifest = f"""<?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
@@ -129,6 +124,7 @@ def pack_vsix(directory: Path) -> Path:
         for path in sorted(EXTENSION_DIR.rglob("*")):
             if path.is_file():
                 archive.write(path, f"extension/{path.relative_to(EXTENSION_DIR).as_posix()}")
+        archive.writestr(f"extension/{CONFIG_FILE}", json.dumps(config, indent=2) + "\n")
     return vsix
 
 
@@ -150,12 +146,14 @@ def installed_version(code: Path) -> str | None:
     return None
 
 
-def install_extension(code: Path) -> str:
-    """Install the bundled extension over whatever is installed; returns what happened."""
-    # Always reinstall: a ug upgrade can change the bundle without changing its version.
+def install_extension(code: Path, config: dict[str, object]) -> str:
+    """Install the bundled extension with ``config`` over whatever is installed; returns what
+    happened."""
+    # Always reinstall: the config changes with each configure, and a ug upgrade can change the
+    # bundle without changing its version.
     version = _package()["version"]
     with tempfile.TemporaryDirectory(prefix="ug-vscode-") as directory:
-        vsix = pack_vsix(Path(directory))
+        vsix = pack_vsix(Path(directory), config)
         result = _run_code(code, "--install-extension", str(vsix), "--force")
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()[:300]
@@ -176,7 +174,7 @@ def _model_entry(model: str, name: str) -> dict[str, object]:
     return entry
 
 
-def model_settings(workspace: str, token: str) -> tuple[list[dict[str, object]], str | None]:
+def model_entries(workspace: str, token: str) -> tuple[list[dict[str, object]], str | None]:
     """The workspace's Claude and GPT models, each with the API the extension calls it on."""
     # The models Copilot CLI offers: Gemini and open models, gpt-oss among them, fail on Copilot's
     # requests or aren't served on every workspace.
@@ -205,18 +203,6 @@ def auth_command(state: dict) -> str:
     )
 
 
-def _edit_settings(path: Path, values: dict[str, object], remove: tuple[str, ...] = ()) -> bool:
-    try:
-        text = path.read_text(encoding="utf-8") if path.exists() else ""
-        updated = config_io.update_jsonc_keys(text, values, remove)
-        if updated != text:
-            config_io.write_text_file(path, updated)
-    except (OSError, RuntimeError, ValueError) as exc:
-        print_warning(f"Couldn't update {path}: {exc}. Fix the file, then rerun this command.")
-        return False
-    return True
-
-
 def next_steps() -> list[str]:
     """What to do in VS Code once the extension is installed, for this OS."""
     restart = (
@@ -233,40 +219,31 @@ def next_steps() -> list[str]:
 
 
 def configure(state: dict) -> bool:
-    """Write the extension's settings and install it. Returns False, after a warning, when VS
-    Code isn't found or the settings can't be updated."""
-    found = find_code()
-    if found is None:
+    """Install the extension with this workspace's setup. Returns False, after a warning, if any
+    step fails."""
+    code = find_code()
+    if code is None:
         print_warning(
             "VS Code's `code` command wasn't found. Install VS Code (on macOS, also run "
             "\"Shell Command: Install 'code' command in PATH\"), then rerun `ug configure --agents vscode`."
         )
         return False
-    code, product = found
     workspace = state["workspace"]
-    models, reason = model_settings(workspace, launch_token(state, workspace))
+    models, reason = model_entries(workspace, launch_token(state, workspace))
     if not models:
-        # Keep what an earlier configure wrote: a failed listing shouldn't wipe a working setup.
+        # Keep what an earlier configure installed: a failed listing shouldn't wipe a working setup.
         print_warning(
             f"No Claude or GPT models for VS Code ({reason or 'the workspace has none'}). "
             "VS Code was left unchanged."
         )
         return False
-    path = settings_path(product)
-    values = {
-        WORKSPACE_SETTING: workspace,
-        MODELS_SETTING: models,
-        AUTH_COMMAND_SETTING: auth_command(state),
-    }
-    if not _edit_settings(path, values):
-        return False
-    print_kv("VS Code settings", f"{len(models)} models in {path}")
+    config = {"workspace": workspace, "authCommand": auth_command(state), "models": models}
     try:
-        print_kv("VS Code extension", install_extension(code))
-    except RuntimeError as exc:
-        print_warning(
-            f"{exc} Install it from VS Code's Extensions view, or rerun `ug configure --agents vscode`."
+        print_kv(
+            "VS Code extension", f"{install_extension(code, config)} with {len(models)} models"
         )
+    except RuntimeError as exc:
+        print_warning(f"{exc} Rerun `ug configure --agents vscode` to try again.")
         return False
     print_heading("Next, in VS Code:")
     for line in next_steps():
@@ -275,29 +252,21 @@ def configure(state: dict) -> bool:
 
 
 def revert() -> str:
-    """Remove ug's settings and uninstall the extension: "removed" or "unchanged"."""
-    changed = configured = False
-    for _, product in CODE_COMMANDS:
-        path = settings_path(product)
-        if not path.exists():
+    """Uninstall the extension, and its config with it: "removed" or "unchanged"."""
+    removed = False
+    for command, folder in CODE_COMMANDS:
+        # Look on disk first, so revert runs `code` only for people who set VS Code up.
+        if not any(extensions_dir(folder).glob(f"{EXTENSION_ID}-*")):
             continue
-        try:
-            current = config_io.loads_jsonc(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            print_warning(f"Couldn't read {path}; remove its unityGateway settings by hand.")
+        code = _find_command(command)
+        # VS Code can leave an uninstalled extension's folder behind until it next starts.
+        if code is None or installed_version(code) is None:
             continue
-        if isinstance(current, dict) and any(key in current for key in SETTINGS):
-            configured = True
-            changed = _edit_settings(path, {}, SETTINGS) or changed
-    # Configure writes the settings before it installs, so without them there's nothing to
-    # uninstall, and revert doesn't run `code` for people who never set up VS Code.
-    found = find_code() if configured else None
-    if found is not None and installed_version(found[0]) is not None:
-        result = _run_code(found[0], "--uninstall-extension", EXTENSION_ID)
+        result = _run_code(code, "--uninstall-extension", EXTENSION_ID)
         if result.returncode == 0:
-            changed = True
+            removed = True
         else:
             print_warning(
                 f"Couldn't uninstall {EXTENSION_ID}: {(result.stderr or '').strip()[:300]}"
             )
-    return "removed" if changed else "unchanged"
+    return "removed" if removed else "unchanged"

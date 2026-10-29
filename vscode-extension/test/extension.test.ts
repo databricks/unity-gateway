@@ -4,7 +4,7 @@ import { afterEach, describe, it } from "node:test";
 import type * as vscode from "vscode";
 import packageJson from "../package.json";
 import { Tokens } from "../src/auth";
-import { DatabricksModels, readSettings, userAgent, type Settings } from "../src/extension";
+import { DatabricksModels, readConfig, userAgent, type Settings } from "../src/extension";
 import { streamEvents } from "../src/gateway";
 import { collect, message, rejectsWith, text, tokenCommand, USER } from "./support";
 import { LanguageModelChatToolMode, LanguageModelTextPart } from "./vscode";
@@ -67,20 +67,6 @@ describe("streamEvents", () => {
   });
 });
 
-describe("settings", () => {
-  // Workspace settings mustn't redirect the token or choose the command that prints it.
-  it("are read from user settings only", () => {
-    const properties = Object.values(packageJson.contributes.configuration.properties);
-    assert.deepEqual(properties.map((property) => property.scope), ["application", "application", "application"]);
-  });
-
-  // ug writes them per machine (the auth command holds this machine's ug path and profile).
-  it("stay out of Settings Sync", () => {
-    const properties = Object.values(packageJson.contributes.configuration.properties);
-    assert.deepEqual(properties.map((property) => property.ignoreSync), [true, true, true]);
-  });
-});
-
 describe("provider", () => {
   // The icon lives only in the folder ug ships, next to the built bundle.
   it("ships the icon it names", () => {
@@ -95,9 +81,9 @@ describe("userAgent", () => {
   });
 });
 
-describe("readSettings", () => {
+describe("readConfig", () => {
   it("keeps well-formed models, names and token limits and trims the workspace URL", () => {
-    const values: Record<string, unknown> = {
+    const config = {
       workspace: "https://ws/",
       authCommand: "ug auth-token",
       models: [
@@ -109,7 +95,7 @@ describe("readSettings", () => {
         { id: "d", name: 7, api: "chat_completions", maxInputTokens: 0, maxOutputTokens: 1.5 },
       ],
     };
-    assert.deepEqual(readSettings((key) => values[key]), {
+    assert.deepEqual(readConfig(JSON.stringify(config)), {
       workspace: "https://ws",
       authCommand: "ug auth-token",
       models: [
@@ -118,6 +104,13 @@ describe("readSettings", () => {
         { id: "d", api: "chat_completions" },
       ],
     });
+  });
+
+  it("gives no models for a missing or malformed file", () => {
+    const none = { workspace: "", authCommand: "", models: [] };
+    for (const text of [undefined, "", "{", "[]", "null", '"text"']) {
+      assert.deepEqual(readConfig(text), none, String(text));
+    }
   });
 });
 

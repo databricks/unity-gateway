@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import * as vscode from "vscode";
 import { version } from "../package.json";
 import { Tokens } from "./auth";
@@ -26,7 +28,21 @@ const tokenLimits = (model: ModelSetting): Partial<ModelSetting> =>
     }),
   );
 
-export const readSettings = (get: (key: string) => unknown): Settings => {
+/** `ug configure` writes this file into the extension it packs, so each install carries its own setup. */
+export const CONFIG_FILE = "ug-config.json";
+
+/** Reads the config file's text; a missing or malformed file gives no models. */
+export const readConfig = (text: string | undefined): Settings => {
+  let config: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(text ?? "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      config = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Treated like a missing file.
+  }
+  const get = (key: string) => config[key];
   const models = get("models");
   return {
     workspace: String(get("workspace") ?? "").replace(/\/+$/, ""),
@@ -52,8 +68,6 @@ export const userAgent = (copilotChatVersion: unknown): string =>
 type Model = vscode.LanguageModelChatInformation & { readonly api: ModelSetting["api"] };
 
 export class DatabricksModels implements vscode.LanguageModelChatProvider<Model> {
-  private readonly changed = new vscode.EventEmitter<void>();
-  readonly onDidChangeLanguageModelChatInformation = this.changed.event;
   private tokens: Tokens | undefined;
 
   constructor(
@@ -61,12 +75,6 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
     private readonly log: (line: string) => void,
     private readonly headers: () => Record<string, string> = () => ({}),
   ) {}
-
-  /** Re-reads the settings: drops the cached token and asks VS Code to list the models again. */
-  refresh(): void {
-    this.tokens = undefined;
-    this.changed.fire();
-  }
 
   async provideLanguageModelChatInformation(): Promise<Model[]> {
     const { workspace, models, authCommand } = this.settings();
@@ -124,22 +132,19 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
   }
 }
 
+const readConfigFile = (path: string): string | undefined => {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+};
+
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Unity Gateway", { log: true });
-  const settings = () => {
-    const configuration = vscode.workspace.getConfiguration("unityGateway");
-    return readSettings((key) => configuration.get(key));
-  };
+  // Read once: ug changes the file only by reinstalling the extension, which takes a restart to load.
+  const settings = readConfig(readConfigFile(join(context.extensionPath, CONFIG_FILE)));
   const headers = () => ({ "User-Agent": userAgent(vscode.extensions.getExtension("GitHub.copilot-chat")?.packageJSON?.version) });
-  const provider = new DatabricksModels(settings, (line) => output.info(line), headers);
-  context.subscriptions.push(
-    output,
-    vscode.lm.registerLanguageModelChatProvider("databricks-unity-gateway", provider),
-    vscode.commands.registerCommand("unityGateway.refreshModels", () => provider.refresh()),
-    vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration("unityGateway")) {
-        provider.refresh();
-      }
-    }),
-  );
+  const provider = new DatabricksModels(() => settings, (line) => output.info(line), headers);
+  context.subscriptions.push(output, vscode.lm.registerLanguageModelChatProvider("databricks-unity-gateway", provider));
 }

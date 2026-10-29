@@ -1585,7 +1585,7 @@ def revert() -> int:
     try:
         vscode_result = vscode.revert()
     except Exception as exc:  # noqa: BLE001 -- Preserve other revert operations on failure
-        # VS Code's revert reads its settings files, not ug state, so a later run still finds them.
+        # VS Code's revert looks at the installed extension, not ug state, so a later run still finds it.
         print_warning(f"Could not revert VS Code: {exc}. Fix it, then run ug revert again.")
         vscode_result = "failed"
 
@@ -1614,7 +1614,7 @@ def revert() -> int:
     print_kv("Codex OS-managed settings", codex_managed_result)
     print_kv("Unity Gateway workspace policy", workspace_policy_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
-    print_kv("VS Code extension and settings", vscode_result)
+    print_kv("VS Code extension", vscode_result)
     for client, spec in MCP_CLIENTS.items():
         print_kv(
             f"{spec['display']} MCP config",
@@ -4677,7 +4677,7 @@ def configure(
                 _parse_agents_option(agents)
             if wants_vscode and is_dry_run():
                 # A dry run saves no workspace, so the state on disk isn't the one being configured.
-                print_note("Dry run: VS Code's settings and extension aren't changed.")
+                print_note("Dry run: VS Code isn't changed.")
             elif wants_vscode:
                 from ucode.agents import vscode
 

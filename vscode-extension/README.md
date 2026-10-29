@@ -1,20 +1,16 @@
 # Unity Gateway for VS Code
 
 Adds Databricks AI Gateway models to the VS Code chat model picker, for Copilot Chat in Ask and Agent
-mode. The extension calls the workspace's AI Gateway directly: Chat Completions for Claude and open
-models, Responses for GPT-5 and later.
+mode. The extension calls the workspace's AI Gateway directly: Chat Completions for Claude, Responses
+for GPT-5 and later.
 
-`ug configure` installs it and writes its settings:
-
-| Setting | Value |
-|---|---|
-| `unityGateway.workspace` | The workspace URL |
-| `unityGateway.models` | `[{"id": "<model service>", "api": "chat_completions" \| "responses"}]` |
-| `unityGateway.authCommand` | A command that prints a Databricks access token (`ug auth-token --host ...`) |
+`ug configure --agents vscode` packs the extension with a `ug-config.json` that holds the workspace URL,
+the models (id, picker name, `chat_completions` or `responses`, token limits) and a command that prints
+a Databricks access token (`ug auth-token --host ...`), then installs it. To change the models or the
+workspace, run `ug configure --agents vscode` again and restart VS Code.
 
 The token is kept in memory until it nears expiry, and fetched again when the gateway answers 401.
-Run **Unity Gateway: Refresh Models** after changing the settings by hand. Token fetches and failed
-requests are logged to the **Unity Gateway** output channel.
+Token fetches and failed requests are logged to the **Unity Gateway** output channel.
 
 ## Development
 

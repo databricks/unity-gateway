@@ -3989,7 +3989,7 @@ class TestRevert:
         output = " ".join(result.output.split())
         assert result.exit_code == 0, result.output
         assert "Could not revert VS Code: code timed out" in output
-        assert "VS Code extension and settings: failed" in output
+        assert "VS Code extension: failed" in output
         assert restore_file.called
         clear_state.assert_called_once()
 
