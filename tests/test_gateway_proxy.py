@@ -43,6 +43,15 @@ class TestForwardedRequestHeaders:
         out = gateway_proxy.forwarded_request_headers(handler, "dbx-token")
         assert out["Authorization"] == "Bearer anthropic-oauth"
 
+    def test_requests_identity_encoding_unless_client_asks(self):
+        # Codex sends no Accept-Encoding and can't decode gzip; httpx would otherwise ask for it.
+        out = gateway_proxy.forwarded_request_headers(_FakeHandler({}), "t")
+        assert out["Accept-Encoding"] == "identity"
+        handler = _FakeHandler({"accept-encoding": "gzip, br"})
+        out = gateway_proxy.forwarded_request_headers(handler, "t")
+        assert out["accept-encoding"] == "gzip, br"
+        assert "Accept-Encoding" not in out
+
     def test_overwrites_client_supplied_swap_header(self):
         # A stale settings.json value must not survive; the proxy replaces it.
         handler = _FakeHandler({"X-Databricks-AI-Gateway-Token": "Bearer stale"})

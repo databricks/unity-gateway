@@ -215,6 +215,10 @@ def forwarded_request_headers(
         key: value for key, value in handler.headers.items() if key.lower() not in strip_on_forward
     }
     headers[token_header] = f"Bearer {token}"
+    # Don't let httpx's default `Accept-Encoding: gzip, deflate` ask for a compressed body the
+    # client never requested: the response is relayed raw, and Codex can't decode gzip.
+    if not any(key.lower() == "accept-encoding" for key in headers):
+        headers["Accept-Encoding"] = "identity"
     return headers
 
 
