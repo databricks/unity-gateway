@@ -431,7 +431,12 @@ Copilot CLI is opt-in the same way: pass `--copilot-version` (for example `1.0.9
 Antigravity CLI is not on npm: pass `--antigravity-build` with the exact `<version>-<build id>`
 from Google's release manifest (for example `1.4.9-4962164969177088`). The runner downloads that
 archive for the host platform into the run directory, records its URL and SHA-512 in
-`versions.json`, and sets `AGY_CLI_DISABLE_AUTO_UPDATE=1` so the CLI cannot replace itself.
+`versions.json`, and sets `AGY_CLI_DISABLE_AUTO_UPDATE=true` in the runner and isolated test
+sessions. Antigravity requires the literal `true`; `1` leaves background updates enabled
+([upstream documentation](https://antigravity.google/docs/cli/troubleshooting/#resolve-self-updater-locks-and-failures)).
+The runner still fails if an agent's version changes during the suite.
+`../test_integration_contract.py` checks that isolated sessions use this documented value,
+including when the caller supplied `1`; this component check does not run the native updater.
 
 ```bash
 # Constrain the suspected dependency while keeping the real CLI and gateway.

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.integration.utils.harness import clean_environment
 from tests.integration.utils.managed import assert_no_managed_config
 
 
@@ -29,6 +30,12 @@ def _markers(nodes):
         and node.value.value.id == "pytest"
         and node.value.attr == "mark"
     }
+
+
+def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
+
+    assert clean_environment(tmp_path)["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
 
 
 def test_integration_ci_pins_a_skills_capable_databricks_cli():

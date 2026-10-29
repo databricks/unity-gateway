@@ -959,8 +959,8 @@ def main() -> int:
         runtime_env["PATH"] = os.pathsep.join(map(str, runtime_paths))
         report["agents"] = {}
         if "antigravity" in agents:
-            # Antigravity CLI otherwise self-updates in the background mid-suite.
-            runtime_env["AGY_CLI_DISABLE_AUTO_UPDATE"] = "1"
+            # agy requires the literal "true"; "1" leaves background updates enabled.
+            runtime_env["AGY_CLI_DISABLE_AUTO_UPDATE"] = "true"
         for agent in agents:
             agent_command = agent_commands[agent]
             version = agent_version_output(
