@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from ucode import config_io
 from ucode.agents import vscode
 from ucode.cli import app
 from ucode.managed_files import OS
@@ -334,6 +335,8 @@ def test_configure_agents_vscode_refuses_a_workspace_the_machine_isnt_managed_fo
 
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_configure_agents_vscode_sets_up_the_workspace_then_vscode(monkeypatch, dry_run):
+    # `--dry-run` sets a module-wide flag; this puts it back so later tests write files again.
+    monkeypatch.setattr(config_io, "_dry_run", False)
     configured: list[dict] = []
     shared: list[dict] = []
     monkeypatch.setattr(
