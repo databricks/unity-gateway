@@ -26,6 +26,7 @@ from .helpers.constants import (
     PROVIDER_HEADER,
     SANDBOX_MCP_SERVICE_NAME,
     WEB_SEARCH_MCP_SERVICE_NAME,
+    WORKSPACE_POLICY_PATH,
 )
 from .helpers.desktop import assert_claude_desktop_profile, enable_claude_desktop
 from .helpers.evidence import assert_served
@@ -37,6 +38,8 @@ from .helpers.workspace import Workspace
 CUJ_NAME = "CUJ 2 · MPS and named MCP"
 
 WORKSPACE_URL = "https://dbc-0dcf95cf-e357.cloud.databricks.com"
+# One budget for the inference request to appear and for its response to complete.
+INFERENCE_WAIT_SECONDS = 240
 
 
 def expected_agent_config(agent: str) -> dict:
@@ -113,11 +116,9 @@ def _assert_mcp_services(workspace) -> None:
 
 
 def _assert_configured_files(session, workspace_url: str) -> None:
-    managed_cache = json.loads(
-        (session.home / ".ucode" / "managed-config.json").read_text(encoding="utf-8")
-    )
-    managed_config = managed_cache.get("config")
-    assert isinstance(managed_config, dict), managed_cache
+    installed = json.loads(WORKSPACE_POLICY_PATH.read_text(encoding="utf-8"))
+    managed_config = installed.get("config")
+    assert isinstance(managed_config, dict), installed
     _assert_cuj2_config(managed_config)
 
     claude_settings = session.home / ".claude" / "ucode-settings.json"
@@ -204,6 +205,29 @@ def _agent_prompt(marker: str) -> str:
     return f"Reply with the exact marker `{marker}` and no other text. Do not use tools."
 
 
+def _served_marker_request(recorder, checkpoint: int, agent: str, marker: str):
+    """The marker-bearing inference request the gateway answered with HTTP 200.
+
+    Claude retries a request whose proxy-to-gateway connection failed (the recorder then
+    records a 502 for the first attempt), so the first marker request is not always the
+    one that was served. With no 200, return the first so its failure is asserted.
+    """
+    candidates = [
+        request
+        for request in recorder.requests_after(checkpoint)
+        if request.method == "POST"
+        and request.path == INFERENCE_PATHS[agent]
+        and marker.encode() in request.body
+    ]
+    assert candidates, f"No {agent} inference request carried marker {marker}"
+    # Stop at the first success: later requests resend the history (and so the marker),
+    # and one the agent abandoned at exit never records a response to wait for.
+    for request in candidates:
+        if recorder.response_for(request, timeout=INFERENCE_WAIT_SECONDS).status_code == 200:
+            return request
+    return candidates[0]
+
+
 def _assert_inference_request(recorder, request, *, provider: str, model: str, marker: str) -> None:
     assert request.headers[PROVIDER_HEADER] == provider
     assert marker.encode() in request.body, request.payload
@@ -220,13 +244,15 @@ class TestCuj2Configuration(_Cuj2Base):
 
         Expected: the read-only CodingAgentConfig selects the two exact MPS resources and sandbox
         MCP; both native MPS APIs advertise their selected model, generated agent settings use
-        the exact provider/model values, and agent MCP listings exclude web_search.
+        the exact provider/model values, the complete Desktop profile/metadata match the
+        Anthropic MPS contract, and agent MCP listings exclude web_search.
         """
         session, workspace, _ = cuj
         published = workspace.config()
         _assert_cuj2_config(published)
         _assert_mps_catalog(workspace)
         _assert_mcp_services(workspace)
+        claude_mps, claude_model = MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE]
         config_library = enable_claude_desktop(session, workspace.url)
 
         configured = session.run(
@@ -239,12 +265,11 @@ class TestCuj2Configuration(_Cuj2Base):
         )
         assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
         _assert_configured_files(session, workspace.url)
-        claude_mps, claude_model = MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE]
         assert_claude_desktop_profile(
             session,
             config_library,
             workspace.url,
-            model_ids=[claude_model],
+            models=[{"name": claude_model, "labelOverride": claude_model}],
             custom_headers={
                 "x-databricks-use-coding-agent-mode": "true",
                 PROVIDER_HEADER: claude_mps,
@@ -291,7 +316,7 @@ class TestCuj2CodexInference(_Cuj2Base):
             method="POST",
             path=INFERENCE_PATHS[CODEX],
             after=checkpoint,
-            timeout=240,
+            timeout=INFERENCE_WAIT_SECONDS,
         )
         _assert_inference_request(
             recorder,
@@ -337,12 +362,13 @@ class TestCuj2ClaudeInference(_Cuj2Base):
             tui.wait_until(lambda: _task_complete(session, CLAUDE, marker), "completed Claude task")
             tui.exit_normally()
 
-        request = recorder.expect_request(
+        recorder.expect_request(
             method="POST",
             path=INFERENCE_PATHS[CLAUDE],
             after=checkpoint,
-            timeout=240,
+            timeout=INFERENCE_WAIT_SECONDS,
         )
+        request = _served_marker_request(recorder, checkpoint, CLAUDE, marker)
         _assert_inference_request(
             recorder,
             request,

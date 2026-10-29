@@ -27,6 +27,7 @@ from .helpers.constants import (
     CODEX_SOL_MODEL,
     INFERENCE_PATHS,
     RUN_HEADER,
+    WORKSPACE_POLICY_PATH,
 )
 from .helpers.desktop import assert_claude_desktop_profile, enable_claude_desktop
 from .helpers.evidence import SessionEvidence
@@ -117,10 +118,10 @@ def _assert_inference_requests(
 
 
 def _managed_config(session) -> dict:
-    cache_path = session.home / ".ucode" / "managed-config.json"
-    cache = json.loads(cache_path.read_text())
-    raw = cache.get("config")
-    assert isinstance(raw, dict), cache
+    """The policy `ug configure` installed for this machine."""
+    installed = json.loads(WORKSPACE_POLICY_PATH.read_text())
+    raw = installed.get("config")
+    assert isinstance(raw, dict), installed
     return raw
 
 
@@ -394,7 +395,8 @@ class TestCujManagedConfiguration(BaseCujTest):
         """Scenario: configure a fresh session against the published two-agent policy.
 
         Expected: configure selects both agents without a picker and writes their managed settings
-        and a Desktop profile containing the policy's Databricks-hosted Claude models.
+        and the complete Desktop profile/metadata for its Databricks-hosted Claude models,
+        including the expected OTLP fields.
         """
         session, workspace, _ = cuj
         config_library = enable_claude_desktop(session, workspace.url)
@@ -415,11 +417,16 @@ class TestCujManagedConfiguration(BaseCujTest):
             session,
             config_library,
             workspace.url,
-            model_ids=CLAUDE_FAMILY_MODELS,
+            models=[
+                {"name": option["model"], "labelOverride": option["label"]}
+                for option in CLAUDE_PICKER_OPTIONS
+                if option["model"] in CLAUDE_FAMILY_MODELS
+            ],
             custom_headers={
                 "x-databricks-use-coding-agent-mode": "true",
                 **claude_headers,
             },
+            otel_enabled=True,
         )
         codex_models = session.codex_model_ids(
             ["app-server", "--listen", "stdio://"], name="managed-sentinel-codex-models"

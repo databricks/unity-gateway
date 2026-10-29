@@ -21,7 +21,7 @@ own schema but absent from the scoped picker. Claude's decoy catalog includes bo
 Claude discovery aliases must be enabled;
 Kimi and GPT Luna use `anthropic-aigw-<8-character SHA-256 prefix>-<service FQN>`.
 
-Eleven independently configured cases cover picker discovery, default launches, and explicit models.
+Eleven independently configured model cases cover picker discovery, default launches, and explicit models.
 Picker cases dismiss the menu without changing selection, then complete a task on the default.
 Separate cases cover bare `ug`, `ug claude`, and `ug codex` TUI first tasks and Claude print/Codex
 exec defaults. Each additional compatible model gets its own headless task case.
@@ -63,20 +63,36 @@ uv run pytest -c tests/e2e_cuj/pytest.ini --confcutdir=tests/e2e_cuj \
   --collect-only tests/e2e_cuj
 ```
 
-CUJ1 and CUJ2's configuration cases read their dedicated workspaces' published CodingAgentConfig
-without `UCODE_MANAGED_CONFIG_STUB`. They enable Claude Desktop's isolated Linux profile path
-before running installed `ug configure`, then verify the fixed profile uses either the published
-Databricks-hosted Claude models or the published Anthropic provider service and selected model.
+CUJ1, CUJ2 and CUJ3 share Desktop setup that seeds the same personal profile and metadata in an
+isolated Linux profile path. CUJ1 and CUJ2's configuration cases read their dedicated workspaces'
+published CodingAgentConfig without `UCODE_MANAGED_CONFIG_STUB`. They enable this profile path
+before their existing installed `ug configure`, then compare the entire profile and metadata
+JSON with the expected structure and values. This includes model labels, helper arguments and
+refresh settings, headers, discovery settings, and CUJ1's OTLP fields. The profile uses either
+the published Databricks-hosted Claude models or the Anthropic provider service and selected model.
+CUJ2 expects its model ID as the label. Actual and expected profile JSON are retained in
+`desktop-profile.json` for failures.
+Both also require the personal profile's bytes to survive and metadata to retain its entry.
 They do not launch Desktop or execute the credential helper.
+
+CUJ3's existing Claude picker journey also configures beside a personal Desktop profile and checks
+every profile/metadata byte after its existing configure call. Its scoped
+aliases use names such as `ug_e2e.models.claude_haiku`, which Desktop's Claude-family filter does
+not accept, so existing files must remain unchanged and UG must not save selection state.
+Successful Desktop profiles remain covered by CUJ1/CUJ2. No extra CUJ test or configure is added.
 
 ## Smart-routing CUJ
 
 `test_cuj4_smart_routing.py` uses its own read-only workspace with managed smart routing enabled.
 It runs the managed-default and explicit-model journeys and six
-`SMART_ROUTER_CONFIG_VERSION` cases using the shared version constants; each launches Claude
-and Codex once. With no selector, managed smart routing leaves the first prompt unrouted: the
-admin's default model completes the file task, no `routes:select` request is sent, and the
-Smart Router Orchestrator context reaches that inference request.
+`SMART_ROUTER_CONFIG_VERSION` presets using the shared version constants. With no selector,
+managed smart routing leaves the first prompt unrouted: the admin's default model completes the
+file task, no `routes:select` request is sent, and the Smart Router Orchestrator context reaches
+that inference request. Each preset runs as independent tests so a slow live subagent call
+cannot fail unrelated assertions: one first-prompt-then-explicit-subagent journey per agent
+(12 cases, with Claude ending in the native background-task wait) and one Claude-only status
+band/hint row/toggle journey per preset (6 cases, which needs no delegation or background-task
+wait).
 The CUJ derives routing and orchestration assertions from each agent's resolved preset flags.
 Component tests independently verify the preset values. The resulting expectations are:
 
@@ -137,5 +153,5 @@ With the same live prerequisites:
 ```bash
 uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
   --confcutdir=tests/e2e_cuj tests/e2e_cuj/test_cuj4_smart_routing.py \
-  -k test_smart_router_config_version -v
+  -k test_smart_router_preset -v
 ```

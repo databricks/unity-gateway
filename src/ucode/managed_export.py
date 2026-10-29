@@ -52,12 +52,12 @@ def build_export_payload() -> dict:
     ``name`` stripped. Reads only local state — no network, no auth. Raises RuntimeError with an
     actionable message when no config is authored locally or the config fails structural validation.
     """
-    workspace = load_state().get("workspace") or managed_state_workspace()
+    workspace = load_state().get("workspace") or managed_state_workspace(include_user_cache=True)
     config = load_managed_configuration(workspace)
     if not config:
         raise RuntimeError(
-            "No managed configuration found locally. Run `ug` against a workspace that "
-            "publishes one, then re-run `ug export`."
+            "No managed configuration found locally. Run `ug configure` against a workspace that "
+            "publishes one to install its policy, then re-run `ug export`."
         )
     errors = validate_manifest(normalize_managed_config(config), None)
     if errors:

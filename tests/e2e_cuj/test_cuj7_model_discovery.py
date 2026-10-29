@@ -25,6 +25,7 @@ from .helpers.constants import (
     CODEX_LUNA_MODEL_SERVICE,
     MANAGED_PATHS,
     MODEL_SERVICE_SCHEMA,
+    WORKSPACE_POLICY_PATH,
 )
 from .helpers.evidence import (
     SessionEvidence,
@@ -70,6 +71,9 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
     def live_session(self, unmanaged_workspace, tmp_path, request):
         """Keep each launch unconfigured; the class-scoped cuj fixture requires a published config."""
         assert os.name == "posix", "CUJ7 requires a disposable POSIX runner"
+        assert not WORKSPACE_POLICY_PATH.exists(), (
+            f"Existing workspace policy {WORKSPACE_POLICY_PATH}; use a clean disposable runner."
+        )
         assert not any(path.exists() for path in MANAGED_PATHS), dirty_runner_message(
             request.config.stash.get(MACHINE_WIDE_LEAK, None)
         )

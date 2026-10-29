@@ -1803,31 +1803,25 @@ class TestCodexManagedConfig:
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
         assert not managed_path.exists()
 
-    def test_skip_env_errors_on_stale_managed_override(self, tmp_path, monkeypatch):
+    def test_skip_env_trusts_a_stale_managed_file(self, tmp_path, monkeypatch):
+        """The opt-out trusts whatever OS-managed file exists: no check, no write, no error."""
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
-        # A managed file left from an earlier workspace still points at that workspace's gateway.
         managed_path.parent.mkdir(parents=True, exist_ok=True)
-        managed_path.write_text(
+        stale = (
             'model_provider = "Databricks"\n'
             "[model_providers.Databricks]\n"
-            'base_url = "https://old-workspace.databricks.com/ai-gateway/openai/v1"\n',
-            encoding="utf-8",
+            'base_url = "https://old-workspace.databricks.com/ai-gateway/openai/v1"\n'
         )
+        managed_path.write_text(stale, encoding="utf-8")
         monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
         monkeypatch.setattr(
             codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
         )
 
-        # A stale override silently defeats the reconfigure, so launching must fail loudly.
-        with pytest.raises(RuntimeError) as excinfo:
-            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
 
-        # The stale managed file is left in place and the user is told how to clear it.
-        assert managed_path.exists()
-        message = str(excinfo.value)
-        assert managed_files.SKIP_OS_SETTINGS_ENV in message
-        assert "stale" in message
-        assert "ug revert" in message
+        assert config_path.exists()
+        assert managed_path.read_text(encoding="utf-8") == stale
 
     def test_user_scope_launches_over_stale_managed_override(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
@@ -2067,9 +2061,10 @@ class TestCodexManagedConfig:
         assert state["managed_file_fingerprints"]["codex"]["scope"] == "local-compatible"
         assert codex.managed_config_is_current(state)
 
-    def test_headless_configure_warns_that_the_machine_file_was_not_updated(
+    def test_headless_setup_outside_configure_warns_that_the_machine_file_was_not_updated(
         self, tmp_path, monkeypatch
     ):
+        # `ug configure` itself always attempts the write; see the explicit-configure tests below.
         managed_path, sudo_writes = self._sudo_counting_env(
             tmp_path, monkeypatch, non_interactive=True
         )
@@ -2081,9 +2076,51 @@ class TestCodexManagedConfig:
 
         assert sudo_writes == []
         assert not managed_path.exists()
-        assert f"{managed_path} wasn't updated because no admin privileges were detected." in (
-            warnings
+        assert (
+            f"{managed_path} wasn't updated: this run has no terminal to approve sudo. Run `ug configure` to update it."
+            in warnings
         )
+
+    def _headless_configure(self, tmp_path, monkeypatch):
+        """A headless `ug configure`: no terminal, and the real write policy."""
+        managed_path, sudo_writes = self._sudo_counting_env(
+            tmp_path, monkeypatch, non_interactive=True
+        )
+        monkeypatch.setattr(codex, "managed_writes_allowed", managed_files.managed_writes_allowed)
+        managed_files.request_explicit_managed_writes()
+        return managed_path, sudo_writes
+
+    def test_headless_configure_writes_the_machine_file(self, tmp_path, monkeypatch):
+        # Same path as an interactive configure; the write itself settles privilege.
+        managed_path, sudo_writes = self._headless_configure(tmp_path, monkeypatch)
+
+        with managed_files.managed_write_batch(["Codex"]):
+            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        assert len(sudo_writes) == 1
+        assert read_toml_safe(managed_path)["model_provider"] == codex.CODEX_MODEL_PROVIDER_NAME
+
+    def test_headless_configure_fails_when_the_machine_file_cannot_be_written(
+        self, tmp_path, monkeypatch
+    ):
+        # No silent fallback to per-user settings: the error names the ways to make it work.
+        managed_path, _sudo_writes = self._headless_configure(tmp_path, monkeypatch)
+
+        def denied(target, _text):
+            raise CalledProcessError(1, ["sudo", "-n"], stderr="sudo: a password is required")
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", denied)
+
+        with (
+            pytest.raises(managed_files.ManagedFileWriteUnavailable) as raised,
+            managed_files.managed_write_batch(["Codex"]),
+        ):
+            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        message = str(raised.value)
+        assert str(managed_path) in message
+        assert "sudo: a password is required" in message
+        assert "as root" in message and "`--user`" in message
 
     def test_noninteractive_repairs_conflicting_managed_config_without_prompting(
         self, tmp_path, monkeypatch
@@ -2592,6 +2629,29 @@ class TestOtelTokenProvider:
 class TestWriteUserMcpServers:
     """Batched user-scope `[mcp_servers]` writes for the workspace-managed reconcile path."""
 
+    def test_replaces_proxy_entry_without_starting_cli(self, tmp_path, monkeypatch):
+        path = tmp_path / "config.toml"
+        path.write_text(
+            'model = "gpt-5"\n\n[mcp_servers.mine]\ncommand = "x"\n\n'
+            '[mcp_servers.github]\ncommand = "old-proxy"\n'
+        )
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
+        import ucode.mcp as mcp_mod
+
+        monkeypatch.setattr(
+            mcp_mod,
+            "add_codex_mcp_server",
+            lambda *args: pytest.fail("batched write should not invoke Codex CLI"),
+        )
+        entry = codex.managed_mcp_entry(["ug", "mcp-proxy", "https://ws/x"])
+        removed = codex.write_user_mcp_servers({"github": entry}, {"github"})
+
+        doc = read_toml_safe(path)
+        assert removed == {"github"}
+        assert doc["model"] == "gpt-5"
+        assert doc["mcp_servers"]["mine"]["command"] == "x"
+        assert dict(doc["mcp_servers"]["github"]) == entry
+
     def test_adds_and_preserves_other_tables(self, tmp_path, monkeypatch):
         path = tmp_path / "config.toml"
         path.write_text('model = "gpt-5"\n\n[mcp_servers.mine]\ncommand = "x"\nargs = []\n')
@@ -2640,38 +2700,34 @@ class TestWriteUserMcpServers:
         path.write_text("this is = = not valid toml [[[")
         monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
         added: list[tuple[str, list]] = []
-        http_added: list[tuple[str, str, str]] = []
         removed: list[str] = []
         import ucode.mcp as mcp_mod
 
         monkeypatch.setattr(
             mcp_mod, "add_codex_mcp_server", lambda n, argv: added.append((n, argv))
         )
-        monkeypatch.setattr(
-            mcp_mod,
-            "add_codex_http_mcp_server",
-            lambda n, url, client_id: http_added.append((n, url, client_id)),
-        )
         monkeypatch.setattr(mcp_mod, "remove_codex_mcp_server", lambda n: removed.append(n) or True)
 
-        # An HTTP+OAuth entry (no `command`) alongside a stdio one: the fallback must dispatch on
-        # shape, not blindly read entry["command"] (which KeyError'd), and register HTTP as HTTP.
+        # A malformed file is left intact while stdio registration uses the CLI fallback.
         codex.write_user_mcp_servers(
-            {
-                "svc": {"command": "ug", "args": ["mcp-proxy", "u"]},
-                "gh": {
-                    "url": "https://ws/x",
-                    "oauth_resource": "https://ws/x",
-                    "oauth": {"client_id": "codex-cli"},
-                },
-            },
+            {"svc": {"command": "ug", "args": ["mcp-proxy", "u"]}},
             {"old"},
         )
 
         assert path.read_text() == "this is = = not valid toml [[["  # never overwritten
         assert added == [("svc", ["ug", "mcp-proxy", "u"])]
-        assert http_added == [("gh", "https://ws/x", "codex-cli")]
         assert removed == ["old"]
+
+    def test_unparseable_file_does_not_start_native_oauth_login(self, tmp_path, monkeypatch):
+        path = tmp_path / "config.toml"
+        path.write_text("this is = = not valid toml [[[", encoding="utf-8")
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
+        with pytest.raises(RuntimeError, match="invalid TOML"):
+            codex.write_user_mcp_servers(
+                {"github": codex.managed_mcp_http_entry("https://ws/mcp", "https://client/id")},
+                {"github"},
+            )
+        assert path.read_text(encoding="utf-8") == "this is = = not valid toml [[["
 
     @pytest.fixture(autouse=True)
     def _clear_codex_home_env(self, monkeypatch):

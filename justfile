@@ -26,3 +26,7 @@ ty:
 fix:
     uv run ruff check --fix src/ tests/
     uv run ruff format src/ tests/
+
+# Rebuild the VS Code extension bundle ug packs at configure time. Commit the result.
+vscode-build:
+    cd vscode-extension && npm ci --no-audit --no-fund && npm run build
