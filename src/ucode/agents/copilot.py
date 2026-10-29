@@ -213,7 +213,7 @@ def classify_model(
     wire = _wire_from_name(tail)
     if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
         if wire != WIRE_ANTHROPIC:
-            return None, "ug copilot uses only the Claude models of this service"
+            return None, "only the Claude models of this service can be used"
         return wire, None
     if provider_type is not None:
         # Foundry serves its Claude targets on the Anthropic route but not on Chat Completions,
@@ -277,6 +277,17 @@ def copilot_model_limits(model: str) -> tuple[int, int] | None:
     family, major, minor = version.group(1), int(version.group(2)), int(version.group(3) or 0)
     one_million = major >= 5 or (family in ("opus", "sonnet") and (major, minor) >= (4, 6))
     return _CLAUDE_1M_LIMITS if one_million else _CLAUDE_200K_LIMITS
+
+
+def catalog_model_limits(model: CopilotModel, *, external: bool) -> tuple[int, int] | None:
+    """:func:`copilot_model_limits` for a Claude ``model`` of the catalog, or None for others.
+
+    ``external`` (a Model Provider Service, or a location's model service) caps them at 200K, which
+    such a service may serve instead of the 1M window."""
+    limits = copilot_model_limits(model.id) if model.wire == WIRE_ANTHROPIC else None
+    if limits is not None and external and sum(limits) > _CLAUDE_200K_WINDOW:
+        return _CLAUDE_200K_LIMITS
+    return limits
 
 
 @dataclass(frozen=True)
@@ -347,30 +358,36 @@ def _without_registry_prefix(model: str) -> str:
 
 
 def provider_service_catalog(
-    state: dict, service_name: str, requested: str | None
+    state: dict, service_name: str, requested: str | None, *, tool: str = "copilot"
 ) -> list[CopilotModel]:
     """The models of Model Provider Service ``service_name`` that this launch registers.
 
     A service that allows every model registers what the gateway lists for it, plus ``requested``
-    (the launch's ``--model``) or the managed default, so a model the listing omits can be named."""
+    (the launch's ``--model``) or the managed default, so a model the listing omits can be named.
+    ``tool`` is ``vscode`` for Copilot Chat in VS Code, which has neither."""
     workspace = state["workspace"]
     token = launch_token(state, workspace)
-    service, error = resolve_provider_service("copilot", service_name, workspace, token)
+    service, error = resolve_provider_service(tool, service_name, workspace, token)
     if error or service is None:
         raise RuntimeError(error or f"Model provider service '{service_name}' was not found.")
+    agent = "ug copilot" if tool == "copilot" else "VS Code"
     provider_type = service["provider_type"]
     named = list(service.get("targets") or [])
     listed: list[str] = []
     allow_all = bool(service.get("allow_all_targets"))
     if allow_all:
         start = _without_registry_prefix(requested) if requested else None
-        managed_default = state.get("copilot_default_model")
+        managed_default = state.get("copilot_default_model") if tool == "copilot" else None
         start = start or (managed_default if isinstance(managed_default, str) else None)
         listed, reason = list_provider_service_models(workspace, token, service_name, provider_type)
         if reason and not start:
             raise RuntimeError(
-                f"Could not list the models of '{service_name}': {reason}. Name the one to start "
-                "on with `ug copilot --model <id>`."
+                f"Could not list the models of '{service_name}': {reason}."
+                + (
+                    " Name the one to start on with `ug copilot --model <id>`."
+                    if tool == "copilot"
+                    else ""
+                )
             )
         if reason:
             print_warning(f"Could not list the models of {service_name}: {reason}.")
@@ -386,12 +403,16 @@ def provider_service_catalog(
     if not catalog:
         detail = "".join(f" {model} ({reason})." for model, reason in skipped)
         raise RuntimeError(
-            f"Model provider service '{service_name}' has no models ug copilot can use.{detail}"
-            + (" Name one it serves with `ug copilot --model <id>`." if allow_all else "")
+            f"Model provider service '{service_name}' has no models {agent} can use.{detail}"
+            + (
+                " Name one it serves with `ug copilot --model <id>`."
+                if allow_all and tool == "copilot"
+                else ""
+            )
         )
     if skipped:
         print_warning(
-            f"Skipping models of {service_name} that ug copilot can't use: "
+            f"Skipping models of {service_name} that {agent} can't use: "
             + "; ".join(f"{model} ({reason})" for model, reason in skipped)
             + "."
         )
@@ -649,14 +670,7 @@ def render_providers_config(
         catalog_id = copilot_catalog_model_id(model.id) if model.wire == WIRE_ANTHROPIC else None
         if catalog_id is not None:
             entry["modelId"] = catalog_id
-        limits = copilot_model_limits(model.id) if model.wire == WIRE_ANTHROPIC else None
-        if (
-            limits is not None
-            and (provider_service or model_location)
-            and sum(limits) > _CLAUDE_200K_WINDOW
-        ):
-            # A Model Provider Service, or a location's model service, may not serve the 1M window.
-            limits = _CLAUDE_200K_LIMITS
+        limits = catalog_model_limits(model, external=bool(provider_service or model_location))
         if limits is not None:
             entry["maxPromptTokens"], entry["maxOutputTokens"] = limits
         models.append(entry)

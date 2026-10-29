@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { chatCompletionsReplies, chatCompletionsRequest, estimateTokens, responsesReplies, responsesRequest } from "../src/formats";
+import {
+  anthropicMessagesReplies,
+  anthropicMessagesRequest,
+  chatCompletionsReplies,
+  chatCompletionsRequest,
+  estimateTokens,
+  responsesReplies,
+  responsesRequest,
+} from "../src/formats";
 import { ASSISTANT, call, collect, events, image, message, rejectsWith, result, SYSTEM, text, USER, weatherTool } from "./support";
 import { LanguageModelDataPart, LanguageModelTextPart, LanguageModelToolCallPart } from "./vscode";
 
@@ -176,5 +184,130 @@ describe("Responses", () => {
     await rejectsWith(collect(responsesReplies(events(incomplete("content_filter")))), "stopped by a content filter");
     await rejectsWith(collect(responsesReplies(events(incomplete()))), "(no reason given)");
     await rejectsWith(collect(responsesReplies(events({ type: "response.output_text.delta", delta: "Half an ans" }))), "ended before the model finished");
+  });
+});
+
+describe("Anthropic Messages", () => {
+  const cached = { cache_control: { type: "ephemeral" } };
+
+  it("sends the system prompt, conversation, images and tools, with cache points after the system prompt and the last message", () => {
+    assert.deepEqual(anthropicMessagesRequest(turn, 32_000), {
+      model: "m",
+      max_tokens: 32_000,
+      stream: true,
+      system: [{ type: "text", text: "Be brief.", ...cached }],
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Weather?" },
+            { type: "image", source: { type: "base64", media_type: "image/png", data: "Bw==" } },
+          ],
+        },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Checking." },
+            { type: "tool_use", id: "c1", name: "get_weather", input: { city: "Paris" } },
+          ],
+        },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: [{ type: "text", text: "Sunny" }], ...cached }] },
+      ],
+      tools: [{ name: "get_weather", description: "Weather for a city", input_schema: weatherTool.inputSchema }],
+      tool_choice: { type: "any" },
+    });
+  });
+
+  it("puts a tool's images in its result, results before text, and joins messages of the same role", () => {
+    const request = anthropicMessagesRequest(
+      {
+        ...turn,
+        messages: [
+          message(ASSISTANT, call("c1", "screenshot", {}), call("c2", "list", {})),
+          message(USER, text("Then say."), result("c1", text("Screenshot:"), image(9)), result("c2")),
+          message(USER, text("Briefly.")),
+        ],
+      },
+      100,
+    );
+    assert.deepEqual((request as { messages: unknown[] }).messages, [
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "c1", name: "screenshot", input: {} },
+          { type: "tool_use", id: "c2", name: "list", input: {} },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "c1",
+            content: [
+              { type: "text", text: "Screenshot:" },
+              { type: "image", source: { type: "base64", media_type: "image/png", data: "CQ==" } },
+            ],
+          },
+          { type: "tool_result", tool_use_id: "c2" },
+          { type: "text", text: "Then say." },
+          { type: "text", text: "Briefly.", ...cached },
+        ],
+      },
+    ]);
+  });
+
+  it("leaves out empty messages, the system prompt and tools when there are none", () => {
+    const request = anthropicMessagesRequest({ ...turn, messages: [message(USER, text("Hi")), message(ASSISTANT, text(""))], tools: [] }, 100);
+    assert.deepEqual(request, { model: "m", max_tokens: 100, stream: true, messages: [{ role: "user", content: [{ type: "text", text: "Hi", ...cached }] }] });
+  });
+
+  it("streams text, drops thinking, and assembles tool calls from their fragments once the message stops", async () => {
+    const replies = await collect(
+      anthropicMessagesReplies(
+        events(
+          { type: "message_start", message: {} },
+          { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+          { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "The user wants the weather." } },
+          { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },
+          { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Checking." } },
+          { type: "content_block_start", index: 2, content_block: { type: "tool_use", id: "c1", name: "get_weather", input: {} } },
+          { type: "content_block_delta", index: 2, delta: { type: "input_json_delta", partial_json: '{"ci' } },
+          { type: "content_block_delta", index: 2, delta: { type: "input_json_delta", partial_json: 'ty":"Paris"}' } },
+          { type: "content_block_start", index: 3, content_block: { type: "tool_use", id: "c2", name: "list", input: {} } },
+          { type: "ping" },
+          { type: "message_delta", delta: { stop_reason: "tool_use" } },
+          { type: "message_stop" },
+        ),
+      ),
+    );
+    assert.deepEqual(replies, [
+      new LanguageModelTextPart("Checking."),
+      new LanguageModelToolCallPart("c1", "get_weather", { city: "Paris" }),
+      new LanguageModelToolCallPart("c2", "list", {}),
+    ]);
+  });
+
+  it("fails on a token-limit stop, a refusal, any other stop reason, an error event, and a stream without message_stop", async () => {
+    const stop = (reason: string) => events({ type: "message_delta", delta: { stop_reason: reason } }, { type: "message_stop" });
+    await rejectsWith(collect(anthropicMessagesReplies(stop("max_tokens"))), "output token limit");
+    await rejectsWith(collect(anthropicMessagesReplies(stop("refusal"))), "stopped by a content filter");
+    await rejectsWith(collect(anthropicMessagesReplies(stop("pause_turn"))), "(pause_turn)");
+    await rejectsWith(collect(anthropicMessagesReplies(events({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }))), "Overloaded");
+    const seen: unknown[] = [];
+    await rejectsWith(
+      (async () => {
+        for await (const reply of anthropicMessagesReplies(
+          events(
+            { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Half" } },
+            { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "c1", name: "list", input: {} } },
+          ),
+        )) {
+          seen.push(reply);
+        }
+      })(),
+      "ended before the model finished",
+    );
+    assert.deepEqual(seen, [new LanguageModelTextPart("Half")]);
   });
 });

@@ -2803,9 +2803,11 @@ _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
         "microsoft_foundry",
     ),
 }
+# Copilot Chat in VS Code can use the same provider types as Copilot CLI.
+_TOOL_PROVIDER_TYPES["vscode"] = _TOOL_PROVIDER_TYPES["copilot"]
 
 # Agents that can only use a Bedrock service's Claude targets.
-_CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot")
+_CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot", "vscode")
 
 # Provider types that expose Bedrock-style model ids (e.g.
 # `us.anthropic.claude-sonnet-4-6`, or region-less `anthropic.claude-*` on

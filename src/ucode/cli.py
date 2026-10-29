@@ -4561,6 +4561,22 @@ def configure(
             "workspace has an admin-managed config.",
         ),
     ] = None,
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider",
+            help="With --agents vscode: give VS Code the models of this Model Provider Service "
+            "(`<catalog>.<schema>.<name>`) instead of the Databricks-hosted ones.",
+        ),
+    ] = None,
+    model_location: Annotated[
+        str | None,
+        typer.Option(
+            "--model-location",
+            help="With --agents vscode: give VS Code the model services in this Unity Catalog "
+            "schema (`<catalog>.<schema>`) instead of the Databricks-hosted ones.",
+        ),
+    ] = None,
     mcp: Annotated[
         str | None,
         typer.Option(
@@ -4627,6 +4643,15 @@ def configure(
         install_databricks_cli()
         if agent is not None and agents is not None:
             raise RuntimeError("Use either --agent or --agents, not both.")
+        if provider is not None or model_location is not None:
+            if "vscode" not in [a.strip().lower() for a in (agents or "").split(",")]:
+                raise RuntimeError(
+                    "--provider and --model-location work only with --agents vscode."
+                )
+            if provider is not None and model_location is not None:
+                raise RuntimeError("--provider and --model-location cannot be used together.")
+            if model_location is not None and not is_valid_catalog_schema(model_location):
+                raise RuntimeError("--model-location must be `<catalog>.<schema>`.")
         # --workspaces / --profiles are deprecated aliases of the singular flags.
         if workspace is not None and workspaces is not None:
             raise RuntimeError("Use either --workspace or --workspaces, not both.")
@@ -4722,7 +4747,7 @@ def configure(
                 state = load_state()
                 managed, _ = _read_policy_for_other_agent(state)
                 refuse_user_scope_over_managed_config(state.get("workspace"), managed)
-                vscode.configure(state)
+                vscode.configure(state, provider=provider, location=model_location)
         elif mcp is not None:
             # MCP-only: `--mcp` without --agent(s) (e.g. Cursor, which isn't a
             # model agent, or adding MCP servers to an already-configured setup).

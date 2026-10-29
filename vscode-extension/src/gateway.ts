@@ -1,16 +1,16 @@
 import type { Tokens } from "./auth";
 
-/** POSTs a streaming request to the workspace's AI Gateway and yields each server-sent event's JSON. */
+/** POSTs a streaming request to `path` on the workspace's AI Gateway and yields each server-sent event's JSON. */
 export async function* streamEvents(
   workspace: string,
-  path: "chat/completions" | "responses",
+  path: string,
   body: object,
   tokens: Tokens,
   headers: Record<string, string>,
   signal: AbortSignal,
 ): AsyncGenerator<unknown> {
   const post = (token: string) =>
-    fetch(`${workspace}/ai-gateway/mlflow/v1/${path}`, {
+    fetch(`${workspace}${path}`, {
       method: "POST",
       headers: { ...headers, Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),

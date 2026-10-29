@@ -27,10 +27,15 @@ const textOf = (part: unknown): string => {
   return "";
 };
 
-const imageUrl = (part: unknown): string | undefined =>
+const imageData = (part: unknown): { mimeType: string; data: string } | undefined =>
   part instanceof vscode.LanguageModelDataPart && part.mimeType.startsWith("image/")
-    ? `data:${part.mimeType};base64,${Buffer.from(part.data).toString("base64")}`
+    ? { mimeType: part.mimeType, data: Buffer.from(part.data).toString("base64") }
     : undefined;
+
+const imageUrl = (part: unknown): string | undefined => {
+  const image = imageData(part);
+  return image && `data:${image.mimeType};base64,${image.data}`;
+};
 
 // The gateway requires a schema on every function tool; VS Code omits it for tools that take no input.
 const parametersOf = (tool: vscode.LanguageModelChatTool): object => tool.inputSchema ?? { type: "object", properties: {} };
@@ -48,11 +53,12 @@ const toolCall = (callId: string, name: string, args: string): vscode.LanguageMo
   return new vscode.LanguageModelToolCallPart(callId, name, input);
 };
 
-/** Why the model stopped short, from a Responses `incomplete_details.reason` or a Chat Completions `finish_reason`. */
+/** Why the model stopped short, from a Responses `incomplete_details.reason`, a Chat Completions
+ * `finish_reason` or an Anthropic `stop_reason`. */
 const stoppedEarly = (reason: string | undefined): Error =>
-  reason === "max_output_tokens" || reason === "length"
+  reason === "max_output_tokens" || reason === "length" || reason === "max_tokens"
     ? new Error("The model stopped at its output token limit before finishing the response.")
-    : reason === "content_filter"
+    : reason === "content_filter" || reason === "refusal"
       ? new Error("The model's response was stopped by a content filter.")
       : new Error(`The model stopped before finishing the response (${reason ?? "no reason given"}).`);
 
@@ -247,4 +253,110 @@ export async function* responsesReplies(events: AsyncIterable<unknown>): AsyncGe
     throw cutOff();
   }
   yield* calls;
+}
+
+const textBlocks = (text: string): object[] => (text ? [{ type: "text", text }] : []);
+
+const imageBlocks = (parts: readonly unknown[]): object[] =>
+  parts.flatMap((part) => {
+    const image = imageData(part);
+    return image ? [{ type: "image", source: { type: "base64", media_type: image.mimeType, data: image.data } }] : [];
+  });
+
+const CACHE_POINT = { cache_control: { type: "ephemeral" } };
+
+/** Marks the last block, so the gateway caches the prompt up to it for the next turn. */
+const cacheUpTo = (blocks: object[]): void => {
+  if (blocks.length) {
+    blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], ...CACHE_POINT };
+  }
+};
+
+export function anthropicMessagesRequest(turn: Turn, maxTokens: number): object {
+  const system: object[] = [];
+  const messages: { role: "user" | "assistant"; content: object[] }[] = [];
+  for (const message of turn.messages) {
+    const { results, calls, text } = sortParts(message.content);
+    if (Number(message.role) === SYSTEM_ROLE) {
+      system.push(...textBlocks(text));
+      continue;
+    }
+    const role = message.role === vscode.LanguageModelChatMessageRole.Assistant ? "assistant" : "user";
+    const content =
+      role === "assistant"
+        ? [...textBlocks(text), ...calls.map((call) => ({ type: "tool_use", id: call.callId, name: call.name, input: call.input }))]
+        : [
+            // Tool results have to come first in the user message that follows the calls.
+            ...results.map((result) => {
+              const blocks = [...textBlocks(result.content.map(textOf).join("")), ...imageBlocks(result.content)];
+              return { type: "tool_result", tool_use_id: result.callId, ...(blocks.length ? { content: blocks } : {}) };
+            }),
+            ...textBlocks(text),
+            ...imageBlocks(message.content),
+          ];
+    const last = messages[messages.length - 1];
+    if (!content.length) {
+      continue;
+    } else if (last?.role === role) {
+      last.content.push(...content);
+    } else {
+      messages.push({ role, content });
+    }
+  }
+  cacheUpTo(system);
+  cacheUpTo(messages[messages.length - 1]?.content ?? []);
+  return {
+    model: turn.model,
+    max_tokens: maxTokens,
+    ...(system.length ? { system } : {}),
+    messages,
+    stream: true,
+    ...(turn.tools.length
+      ? {
+          tools: turn.tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: parametersOf(tool) })),
+          ...(turn.toolRequired ? { tool_choice: { type: "any" } } : {}),
+        }
+      : {}),
+  };
+}
+
+interface AnthropicEvent {
+  type: string;
+  index?: number;
+  content_block?: { type?: string; id?: string; name?: string };
+  delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string | null };
+  error?: { message?: string };
+}
+
+const ANTHROPIC_FINISHED = new Set(["end_turn", "tool_use", "stop_sequence"]);
+
+export async function* anthropicMessagesReplies(events: AsyncIterable<unknown>): AsyncGenerator<Reply> {
+  // Held back until the message stops, so a cut-off stream runs no tool.
+  const calls = new Map<number, { id: string; name: string; args: string }>();
+  let stopped = false;
+  for await (const raw of events) {
+    const event = raw as AnthropicEvent;
+    if (event.type === "content_block_start" && event.content_block?.type === "tool_use") {
+      calls.set(event.index ?? 0, { id: event.content_block.id ?? "", name: event.content_block.name ?? "", args: "" });
+    } else if (event.type === "content_block_delta" && event.delta?.type === "text_delta" && event.delta.text) {
+      yield new vscode.LanguageModelTextPart(event.delta.text);
+    } else if (event.type === "content_block_delta" && event.delta?.type === "input_json_delta") {
+      const call = calls.get(event.index ?? 0);
+      if (call) {
+        call.args += event.delta.partial_json ?? "";
+      }
+    } else if (event.type === "message_delta" && event.delta?.stop_reason && !ANTHROPIC_FINISHED.has(event.delta.stop_reason)) {
+      throw stoppedEarly(event.delta.stop_reason);
+    } else if (event.type === "message_stop") {
+      stopped = true;
+    } else if (event.type === "error") {
+      throw new Error(event.error?.message ?? "The model response failed.");
+    }
+  }
+  if (!stopped) {
+    throw cutOff();
+  }
+  for (const call of calls.values()) {
+    yield toolCall(call.id, call.name, call.args);
+  }
 }
