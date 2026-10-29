@@ -194,6 +194,13 @@ Not supported yet on these hosts: disaster-recovery stable connection ids, signi
 service connection that needs your own login, and the MDM bootstrap script. MCP servers are
 registered through `ug mcp-proxy`, never as the agent's own OAuth connection.
 
+### Server-side web search for Claude Code
+
+ug denies Claude Code's native `WebSearch` and registers its own `web_search` MCP. For one launch,
+`UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1 ug claude` instead uses the AI Gateway's server-side search,
+writing no file. If the OS-managed settings, their `managed-settings.d`
+drop-ins, or the user settings deny `WebSearch`, ug warns and keeps its MCP for that launch.
+
 ### Extra headers for one session
 
 ```bash
