@@ -938,6 +938,9 @@ def _managed_relayed_conflicts(path: Path) -> list[str]:
         ) from exc
     conflicts = ["model_provider"] if "model_provider" in doc else []
     provider = (doc.get("model_providers") or {}).get(CODEX_MODEL_PROVIDER_NAME) or {}
+    if provider and path.name == CODEX_REQUIREMENTS_FILE:
+        # requirements.toml replaces the whole provider entry, dropping the relay's `-c` keys.
+        return [*conflicts, f"model_providers.{CODEX_MODEL_PROVIDER_NAME}"]
     return conflicts + [
         f"model_providers.{CODEX_MODEL_PROVIDER_NAME}.{key}"
         for key in ("base_url", "auth")
