@@ -16,6 +16,7 @@ from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
 from ucode import claude_answer_delivery, config_io
+from ucode.claude_launch_settings import write_launch_settings
 from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
@@ -720,7 +721,6 @@ def launch_claude(
         APP_DIR.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix="claude-v2-", dir=APP_DIR) as directory:
             launch_dir = Path(directory)
-            settings_path = launch_dir / "settings.json"
             socket_path = launch_dir / "first.sock"
             plugin_dir = launch_dir / "plugin"
             if route_first_prompt:
@@ -736,7 +736,7 @@ def launch_claude(
                 "options"
             ] = mod_options
             try:
-                write_json_file(settings_path, settings)
+                settings_path = write_launch_settings(launch_dir, settings)
                 _write_routed_claude_plugin(plugin_dir, model_ids)
             except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
                 raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc

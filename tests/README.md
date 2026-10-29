@@ -537,13 +537,16 @@ default, a family default, or both, while preserving startup selection and famil
 native-search deny in direct, relayed, and routing settings composition. Inline/file
 inputs, repeated settings, and empty launch overrides retain restrictions and leave
 source files unchanged. `test_claude_launch_settings.py` drives normal and relayed
-launches with oversized Windows settings, preserving merged values and literal
+launches on simulated Linux, macOS, and Windows, preserving merged values and literal
 prompt arguments while keeping the settings file alive until the child exits.
 Success, nonzero exit, interruption, and spawn failures clean up temporary files;
 relayed failures also stop the proxy. Separate launches use separate files, and
-short Windows commands and POSIX keep their existing argv. Real Python children
-read the file for large catalogs and commands containing non-BMP characters.
-Windows command limits and child lifecycle are otherwise simulated; the native
+small merged settings use the same file path mechanism as large settings on every OS.
+Launches without overrides reuse the saved settings file. Real Python children
+read the file for large catalogs and commands containing non-BMP characters;
+`test_launcher.py` also checks child exit codes and cleanup with real processes.
+Smart-routing launch checks verify private settings permissions and file lifetime.
+Windows command limits and most child lifecycle cases are simulated; the native
 Bedrock integration journey still supplies live Windows/Claude coverage.
 These are actual argv/configuration assertions, not native classifier acceptance
 coverage.

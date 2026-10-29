@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from ucode.claude_launch_settings import write_launch_settings
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -2472,9 +2473,9 @@ def _build_claude_argv(
     ``--settings`` (e.g. an integration injecting hooks) would have exactly one
     of the two silently dropped. To let ucode compose with any prior command,
     we merge a caller-supplied ``--settings`` with ucode's — ucode's gateway
-    keys win, hooks and denies from both are unioned — and hand Claude a single merged
-    ``--settings`` (inline JSON). The merge is per-launch and is never written
-    back to the shared ucode settings file, so concurrent launches cannot
+    keys win, hooks and denies from both are unioned — and build a single merged
+    ``--settings`` value. ``_claude_launch_argv`` writes it to a per-launch file.
+    The merge is never written back to the shared ucode settings file, so concurrent launches cannot
     accumulate one another's hooks. A caller ``--settings`` value ucode cannot
     resolve raises (see :func:`_load_caller_settings`) rather than being passed
     through as a second, colliding flag.
@@ -2523,21 +2524,14 @@ def _claude_launch_argv(
     relayed: bool = False,
     settings_override: dict | None = None,
 ) -> Iterator[list[str]]:
-    """Keep oversized Windows settings off the command line for the child's lifetime."""
+    """Keep merged settings in a private file for the child's lifetime on every OS."""
     argv = _build_claude_argv(binary, tool_args, relayed, settings_override)
     settings_index = argv.index("--settings") + 1
-    if current_os() != OS.WINDOWS or not argv[settings_index].startswith("{"):
-        yield argv
-        return
-    command_line = subprocess.list2cmdline(argv)
-    # CreateProcess includes the terminating NUL in its 32,767 UTF-16 code unit limit.
-    if len(command_line.encode("utf-16-le", errors="surrogatepass")) // 2 < 32_767:
+    if not argv[settings_index].startswith("{"):
         yield argv
         return
     with TemporaryDirectory(prefix="ug-claude-") as directory:
-        settings_path = Path(directory) / "settings.json"
-        settings_path.touch(mode=0o600)
-        settings_path.write_text(argv[settings_index], encoding="utf-8")
+        settings_path = write_launch_settings(Path(directory), json.loads(argv[settings_index]))
         argv[settings_index] = str(settings_path)
         yield argv
 
@@ -2751,7 +2745,8 @@ def launch(
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
     with _claude_launch_argv(binary, launch_args, settings_override=settings_override) as argv:
-        exec_or_spawn(argv)
+        settings_path = argv[argv.index("--settings") + 1]
+        exec_or_spawn(argv, replace_process=settings_path == str(CLAUDE_SETTINGS_PATH))
 
 
 def validate_cmd(binary: str) -> list[str]:

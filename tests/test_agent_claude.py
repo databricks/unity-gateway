@@ -23,11 +23,11 @@ from ucode.telemetry import client_platform
 
 
 def _capture_claude_launch(calls: list[list[str]], argv: list[str]) -> None:
-    """Snapshot temporary Windows settings before the mocked launcher returns."""
+    """Snapshot per-launch settings before the mocked launcher returns."""
     captured = list(argv)
     if "--settings" in captured:
         index = captured.index("--settings") + 1
-        if "ug-claude-settings-" in captured[index]:
+        if captured[index] != str(claude.CLAUDE_SETTINGS_PATH):
             captured[index] = Path(captured[index]).read_text(encoding="utf-8")
     calls.append(captured)
 
@@ -3279,7 +3279,7 @@ class TestClaudeLaunch:
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(
-            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+            claude, "exec_or_spawn", lambda argv, **_kwargs: _capture_claude_launch(calls, argv)
         )
 
         claude.launch({"workspace": WS, "profile": "test"}, ["--debug"], options=LaunchOptions())
@@ -3295,7 +3295,7 @@ class TestClaudeLaunch:
         monkeypatch.setattr(claude.os, "name", "nt")
         monkeypatch.setattr(claude.shutil, "which", lambda _binary: str(native_binary))
         monkeypatch.setattr(
-            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+            claude, "exec_or_spawn", lambda argv, **_kwargs: _capture_claude_launch(calls, argv)
         )
 
         claude.launch({}, ["--print", prompt], options=LaunchOptions())
@@ -3316,7 +3316,7 @@ class TestClaudeLaunch:
         monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(
-            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+            claude, "exec_or_spawn", lambda argv, **_kwargs: _capture_claude_launch(calls, argv)
         )
 
         claude.launch(
@@ -3340,7 +3340,7 @@ class TestClaudeLaunch:
         monkeypatch.setenv("ANTHROPIC_MODEL", "stale-model")
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(
-            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+            claude, "exec_or_spawn", lambda argv, **_kwargs: _capture_claude_launch(calls, argv)
         )
         settings_path = tmp_path / "ucode-settings.json"
         saved_model = "system.ai.claude-haiku-4-5"
@@ -3426,7 +3426,7 @@ class TestClaudeLaunch:
         monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(
-            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+            claude, "exec_or_spawn", lambda argv, **_kwargs: _capture_claude_launch(calls, argv)
         )
 
         claude.launch(
@@ -3452,7 +3452,7 @@ class TestClaudeLaunch:
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(
-            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+            claude, "exec_or_spawn", lambda argv, **_kwargs: _capture_claude_launch(calls, argv)
         )
 
         custom_model = "system.ai.claude-opus-4-8"
@@ -3533,7 +3533,7 @@ class TestClaudeLaunch:
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(
-            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+            claude, "exec_or_spawn", lambda argv, **_kwargs: _capture_claude_launch(calls, argv)
         )
 
         claude.launch(
@@ -3586,7 +3586,7 @@ class TestClaudeLaunch:
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(
-            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+            claude, "exec_or_spawn", lambda argv, **_kwargs: _capture_claude_launch(calls, argv)
         )
 
         claude.launch(
@@ -3617,7 +3617,7 @@ class TestClaudeLaunch:
         monkeypatch.setattr(v2, "launch_claude", Mock())
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(
-            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+            claude, "exec_or_spawn", lambda argv, **_kwargs: _capture_claude_launch(calls, argv)
         )
 
         claude.launch({"workspace": WS}, tool_args, options=LaunchOptions())
@@ -3655,7 +3655,7 @@ class TestClaudeLaunch:
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(
-            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+            claude, "exec_or_spawn", lambda argv, **_kwargs: _capture_claude_launch(calls, argv)
         )
 
         claude.launch({"workspace": WS, "profile": "test"}, ["--debug"], options=LaunchOptions())
@@ -3671,7 +3671,7 @@ class TestClaudeLaunch:
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(
-            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+            claude, "exec_or_spawn", lambda argv, **_kwargs: _capture_claude_launch(calls, argv)
         )
 
         claude.launch(
