@@ -10,8 +10,8 @@ from utils.terminal import AgentTerminal, ConfigureTerminal
 
 pytestmark = [pytest.mark.live, pytest.mark.tui, pytest.mark.claude]
 
-# Bedrock reports the bare Anthropic id, not the us.anthropic.*-v1:0 slug the MPS targets.
-BEDROCK_SONNET_RESPONSE_MODEL = "claude-sonnet-4-5-20250929"
+# Bedrock reports the bare Anthropic id, not the us.anthropic.* slug the MPS targets.
+BEDROCK_SONNET_RESPONSE_MODEL = "claude-sonnet-4-6"
 
 
 @pytest.mark.smoke
@@ -120,9 +120,9 @@ def test_ug_configure_claude_bedrock_mps(live_session, workspace, claude_bedrock
 
     Expected: ug saves that provider, and launching Claude without --provider completes a
     file-reading task. With Opus outside the allow-list, the launch tier preference
-    (sonnet > opus > haiku) resolves to Sonnet. This is the live check that the real ug + Claude
-    Code binary resolve a region-prefixed Bedrock slug (us.anthropic.claude-...) into a working
-    launch -- the model-id pinning that unit tests only cover against mocked listings.
+    (sonnet > opus > haiku) resolves to Sonnet 4.6. This is the live check that the real ug +
+    Claude Code binary resolve a region-prefixed Bedrock slug (us.anthropic.claude-...) into a
+    working launch -- the model-id pinning that unit tests only cover against mocked listings.
     """
     session = live_session
     task = FileTask(session)

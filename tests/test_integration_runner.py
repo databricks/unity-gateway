@@ -159,6 +159,14 @@ def test_antigravity_has_no_windows_build():
         runner.antigravity_archive_url("1.4.9-4962164969177088", "win32", "AMD64")
 
 
+def test_bedrock_defaults_use_personal_credential_fixtures_and_sonnet_4_6():
+    args = runner.arguments(["--claude-version", "2.1.290", "--installation-only"], environment={})
+
+    assert args.claude_bedrock_provider == "main.ucode.bedrock_e2e"
+    assert args.claude_bedrock_allow_all_provider == "main.ucode.e2e_bedrock_all_models_enabled"
+    assert args.claude_bedrock_allow_all_model == "us.anthropic.claude-sonnet-4-6"
+
+
 def test_copilot_version_output_matches_the_pinned_version():
     output = "GitHub Copilot CLI 1.0.91.\nRun 'copilot update' to check for updates.\n"
     assert runner.agent_version_output("copilot", output) == "GitHub Copilot CLI 1.0.91"
