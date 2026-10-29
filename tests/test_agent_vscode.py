@@ -352,6 +352,27 @@ class TestAuthCommand:
         assert "--profile custom" in vscode.auth_command({"workspace": WS, "custom_oauth": custom})
 
 
+def test_configure_agents_vscode_refuses_a_workspace_the_machine_isnt_managed_for(monkeypatch):
+    selected: list[str] = []
+    monkeypatch.setattr(
+        "ucode.cli._configure_shared_workspace_states", lambda *args, **kwargs: [STATE]
+    )
+    monkeypatch.setattr("ucode.cli.load_state", lambda: STATE)
+    monkeypatch.setattr(
+        "ucode.cli.managed_state_workspace", lambda: "https://managed.cloud.databricks.com"
+    )
+    monkeypatch.setattr("ucode.cli.set_current_workspace", selected.append)
+    monkeypatch.setattr(vscode, "configure", lambda state: pytest.fail("VS Code was set up"))
+
+    result = CliRunner().invoke(app, ["configure", "--agents", "vscode", "--workspace", WS])
+
+    assert result.exit_code == 1
+    assert "This machine is managed for https://managed.cloud.databricks.com" in " ".join(
+        result.output.split()
+    )
+    assert selected == ["https://managed.cloud.databricks.com"]
+
+
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_configure_agents_vscode_sets_up_the_workspace_then_vscode(monkeypatch, dry_run):
     configured: list[dict] = []

@@ -4681,7 +4681,11 @@ def configure(
             elif wants_vscode:
                 from ucode.agents import vscode
 
-                vscode.configure(load_state())
+                # VS Code sends model traffic, so it gets the managed-workspace check other agents get.
+                state = load_state()
+                managed, _ = _read_policy_for_other_agent(state)
+                refuse_user_scope_over_managed_config(state.get("workspace"), managed)
+                vscode.configure(state)
         elif mcp is not None:
             # MCP-only: `--mcp` without --agent(s) (e.g. Cursor, which isn't a
             # model agent, or adding MCP servers to an already-configured setup).
