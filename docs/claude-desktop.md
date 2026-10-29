@@ -190,6 +190,8 @@ When `claude_relayed` is enabled, Cowork setup additionally installs
 the plugin now imports all eligible connectors and enabled skills returned by the
 account APIs, including custom skills. The ordinary `ug` workspace plugin and its
 `system.ai` MCPs remain available, and Desktop stays in gateway/third-party mode.
+Managed configure uses Claude's newly configured relay state for Cowork and carries it
+forward when configuring other agents, so an earlier mode cannot remove account resources.
 
 The additional plugin uses Anthropic's internal account APIs with the same Claude
 subscription credential as relay authentication. Connector discovery needs the recorded

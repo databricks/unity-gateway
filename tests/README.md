@@ -366,7 +366,10 @@ the `ug` name and display name in both manifests. Legacy-registration checks cov
 replacement after successful install/update, preservation on install failure, scoped
 cleanup, and unrelated-plugin preservation. CLI component tests
 cover managed setup after successful skill/MCP reconciliation, preservation after transient
-reconciliation failures, and cleanup for unmanaged or non-Claude configurations. These tests
+reconciliation failures, and cleanup for unmanaged or non-Claude configurations.
+Managed configure checks also cover enabling, disabling, and retaining Claude relay mode
+across agent ordering, so Cowork and later agents use the newly configured relay state.
+These tests
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
 late MCP connection, tool discovery, or inference behavior.
 

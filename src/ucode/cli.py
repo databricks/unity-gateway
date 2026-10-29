@@ -1203,6 +1203,11 @@ def _configure_workspace_command(
                 if last is None or tool_name in last:
                     configured_tools.append(tool_name)
                     if tool_name == "claude":
+                        for key in ("claude_relayed", "relayed_proxy_port"):
+                            if key in configured:
+                                state[key] = configured[key]
+                            else:
+                                state.pop(key, None)
                         from ucode.agents.desktop.setup import configure_claude_desktop
 
                         configure_claude_desktop(configured, parent_schema=parent_schema)

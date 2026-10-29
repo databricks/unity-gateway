@@ -574,8 +574,9 @@ preservation, order-independent collisions, and repeated replacement of old keys
 Manifest checks require the `ug` name and display name in both manifests.
 Legacy-registration component checks cover replacement after successful install/update,
 preservation on install failure, scoped cleanup, and unrelated-plugin preservation.
-`../test_desktop_configure_cli.py` covers managed orchestration and
-cleanup. Both are mocked component coverage; the integration suite does not launch Cowork,
+`../test_desktop_configure_cli.py` covers managed orchestration, relay-state transitions
+and retention across agent ordering, and cleanup. Both are mocked component coverage;
+the integration suite does not launch Cowork,
 connect a plugin MCP server, discover its deferred tool, or run a task through it.
 
 `../test_mcp_proxy.py` covers persistent OAuth U2M authentication-tool discovery, explicit
