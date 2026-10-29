@@ -393,7 +393,7 @@ Slow metadata discovery does not delay unrelated MCP responses.
 Two automated Desktop journeys run in the existing Linux/Windows Claude integration jobs:
 system.ai models and subscription-relay MPS. Each asserts the generated profile, executes its
 credential helper, completes real Messages inference, installs Cowork through the Claude CLI,
-and discovers/calls DBSQL through the installed plugin using a read-only computed query.
+and discovers/calls web_search through the installed plugin to find Databricks' official website.
 Both check repeated configuration, preservation of unrelated settings, and revert cleanup.
 All calls use the journey's existing model workspace. CUJ1 and CUJ2 compare complete Desktop
 profile/metadata JSON for system.ai models and non-relay Anthropic MPS. CUJ3's existing configure

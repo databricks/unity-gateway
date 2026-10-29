@@ -301,7 +301,9 @@ they do not establish native Windows or Linux support.
 The installed-CLI integration suite covers two complete Desktop journeys on Linux and Windows:
 system.ai models and subscription-relay Anthropic MPS. Both verify profile configuration,
 credential-helper execution, live Messages inference, installed Cowork MCP calls, preservation,
-and revert. See [integration coverage](integration/README.md) for prerequisites and evidence.
+and revert. Inference requires HTTP 200 and nonempty assistant text; MCP calls use web_search
+to find Databricks' official website without SQL compute. See
+[integration coverage](integration/README.md) for prerequisites and evidence.
 CUJ1/CUJ2 compare complete Desktop profile/metadata JSON for system.ai models and non-relay
 Anthropic MPS. CUJ3's existing picker journey checks its incompatible scoped aliases preserve
 all Desktop profile/metadata bytes after its existing configure call.
