@@ -309,6 +309,17 @@ class TestConfigureClientMcpServer:
         assert http_calls == []
         assert len(proxy_calls) == 1
 
+    def test_codex_no_login_service_uses_native_oauth(self, monkeypatch):
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: False)
+        url = f"{WS}/ai-gateway/mcp-services/system.ai.web_search"
+        assert (
+            mcp._native_oauth_http_entry(mcp.CODEX_CIMD_CLIENT_ID, url, WS, "p")
+            == mcp.CODEX_CIMD_CLIENT_ID
+        )
+        assert (
+            mcp._native_oauth_http_entry(mcp.CODEX_CIMD_CLIENT_ID, "https://x/mcp", WS, "p") is None
+        )
+
     def test_claude_aigw_service_falls_back_to_proxy_without_client(self, monkeypatch):
         http_calls, proxy_calls = self._capture_claude(monkeypatch, claude_code_available=False)
         mcp.configure_client_mcp_server("claude", "github", AIGW_MCP_URL, WS, "p")
