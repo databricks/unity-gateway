@@ -261,7 +261,7 @@ def configured_mcp_clients(state: dict, installed_clients: list[str]) -> list[st
     configured_tools = state.get("available_tools") or []
     if not isinstance(configured_tools, list):
         configured_tools = []
-    configured = set(configured_tools)
+    configured = set(configured_tools) | set(state.get("mcp_clients") or [])
     return [
         client
         for client in MCP_CLIENTS
@@ -1882,6 +1882,7 @@ def setup_mcp_clients(
     action_note: str = "Configuring for",
     agents: set[str] | None = None,
     quiet: bool = False,
+    purge_foreign: bool = True,
 ) -> tuple[str, str | None, list[str]]:
     """Validate the workspace, resolve configured MCP clients, and prepare auth.
 
@@ -1904,7 +1905,8 @@ def setup_mcp_clients(
     if not workspace:
         raise RuntimeError("Workspace is not configured. Run `ug configure` first.")
 
-    purge_cross_workspace_mcp_residue(state, workspace)
+    if purge_foreign:
+        purge_cross_workspace_mcp_residue(state, workspace)
 
     installed_clients = available_mcp_clients()
     if not installed_clients:
@@ -1957,6 +1959,25 @@ def _union_missing(base: list[dict], selected: list[dict]) -> list[dict]:
     return [*selected, *extra]
 
 
+def _namespace_foreign_mcp_names(servers: list[dict], workspace: str) -> list[dict]:
+    """Keep a second workspace from replacing an agent's same-named MCP server."""
+    foreign_names = {
+        name
+        for other_workspace, bucket in (load_full_state().get("workspaces") or {}).items()
+        if other_workspace != workspace and isinstance(bucket, dict)
+        for key in ("mcp_servers", "managed_mcp_servers")
+        for entry in bucket.get(key) or []
+        if (name := _server_name(entry))
+    }
+    suffix = _normalize_workspace_title(workspace_hostname(workspace))
+    return [
+        {**server, "name": f"{server['name']}-{suffix}"}
+        if server.get("name") in foreign_names and not server["name"].endswith(f"-{suffix}")
+        else server
+        for server in servers
+    ]
+
+
 def add_mcp_command(
     location: str | None = None,
     services: set[str] | None = None,
@@ -1998,7 +2019,10 @@ def _configure_v2_mcp_selectors(
     exact replacement otherwise (replace mode), always preserving the skills connection."""
     state = load_state()
     workspace, profile, clients = setup_mcp_clients(
-        state, "Add MCP Servers" if append else "MCP Servers", agents=agents
+        state,
+        "Add MCP Servers" if append else "MCP Servers",
+        agents=agents,
+        purge_foreign=not append,
     )
 
     # `app:` selectors need the app's off-workspace URL, which only discovery knows. A 403 here
@@ -2040,6 +2064,7 @@ def _configure_v2_mcp_selectors(
         )
 
     if append:
+        working_mcp_servers = _namespace_foreign_mcp_names(working_mcp_servers, workspace)
         working_mcp_servers = _union_missing(original_mcp_servers, working_mcp_servers)
 
     changed = apply_mcp_server_changes(
@@ -2109,7 +2134,10 @@ def configure_mcp_command(
         location = next(iter(schemas))
     state = load_state()
     workspace, profile, clients = setup_mcp_clients(
-        state, "Add MCP Servers" if append else "MCP Servers", agents=agents
+        state,
+        "Add MCP Servers" if append else "MCP Servers",
+        agents=agents,
+        purge_foreign=not append,
     )
 
     managed_names = managed_mcp_server_names(state, set(clients))
@@ -2121,6 +2149,7 @@ def configure_mcp_command(
         )
         working_mcp_servers = _drop_managed_servers(working_mcp_servers, managed_names)
         if append:
+            working_mcp_servers = _namespace_foreign_mcp_names(working_mcp_servers, workspace)
             working_mcp_servers = _union_missing(
                 original_mcp_servers_for_location, working_mcp_servers
             )
@@ -2222,6 +2251,7 @@ def configure_mcp_command(
         working_names.add(entry_name)
 
     if append:
+        working_mcp_servers = _namespace_foreign_mcp_names(working_mcp_servers, workspace)
         working_mcp_servers = _union_missing(original_mcp_servers, working_mcp_servers)
 
     changed = apply_mcp_server_changes(

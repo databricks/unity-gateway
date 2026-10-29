@@ -33,6 +33,25 @@ class TestMcpChangeSummary:
         assert mcp._mcp_change_summary([], [], ["claude"]) == "Saved"
 
 
+def test_mcp_only_client_is_available_without_model_configuration():
+    state = {"workspace": WS, "mcp_clients": ["claude"]}
+    assert mcp.configured_mcp_clients(state, ["claude", "codex"]) == ["claude"]
+
+
+def test_second_workspace_mcp_name_does_not_replace_first(monkeypatch):
+    other = "https://first.cloud.databricks.com"
+    current = "https://second.cloud.databricks.com"
+    monkeypatch.setattr(
+        mcp,
+        "load_full_state",
+        lambda: {"workspaces": {other: {"mcp_servers": [{"name": "system-ai-github"}]}}},
+    )
+    selected = [{"name": "system-ai-github", "url": f"{current}/mcp"}]
+    result = mcp._namespace_foreign_mcp_names(selected, current)
+    assert result[0]["name"] == "system-ai-github-second-cloud-databricks-com"
+    assert selected[0]["name"] == "system-ai-github"
+
+
 # The proxy argv every client registers as a stdio command. The leading element
 # is the resolved `ug` binary path, so tests assert the tail (the stable part).
 GH_URL = f"{WS}/api/2.0/mcp/external/github"
@@ -1893,6 +1912,38 @@ class TestConfigureMcpFromLocation:
 
 class TestAddMcpCommand:
     """`ucode mcp add` (append) registers new servers without removing existing ones."""
+
+    def test_second_workspace_keeps_first_workspace_server(self, monkeypatch):
+        other = "https://first.cloud.databricks.com"
+        saved: list[dict] = []
+        registered: list[str] = []
+        _stub_location_base(monkeypatch, {**CLAUDE_STATE, "mcp_servers": []})
+        monkeypatch.setattr(
+            mcp,
+            "load_full_state",
+            lambda: {
+                "workspaces": {
+                    other: {"mcp_servers": [{"name": "system-ai-github", "clients": ["claude"]}]}
+                }
+            },
+        )
+        monkeypatch.setattr(
+            mcp,
+            "purge_cross_workspace_mcp_residue",
+            lambda *a: pytest.fail("purged other workspace"),
+        )
+        monkeypatch.setattr(mcp, "list_mcp_services", lambda *a, **kw: (["system.ai.github"], None))
+        monkeypatch.setattr(
+            mcp,
+            "configure_client_mcp_server",
+            lambda client, name, *a, **kw: registered.append(name) or [],
+        )
+        monkeypatch.setattr(mcp, "save_state", lambda state: saved.append(state.copy()))
+
+        assert mcp.add_mcp_command(location="system.ai", agents={"claude"}) == 0
+        expected = "system-ai-github-example-databricks-com"
+        assert registered == [expected]
+        assert saved[-1]["mcp_servers"][0]["name"] == expected
 
     def test_keeps_servers_outside_location(self, monkeypatch):
         """Unlike a replace-mode `--location` run, `mcp add --location` preserves any
