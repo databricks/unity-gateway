@@ -4113,6 +4113,79 @@ class TestHttpGetJsonRetries:
         assert reason is None
 
 
+class TestHttpIncompleteRead:
+    @staticmethod
+    def _truncated_response():
+        import io
+        from http.client import HTTPResponse
+        from types import SimpleNamespace
+
+        body = b'{"private-response": "must-not-be-logged"}'
+        wire = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n" + body
+        response = HTTPResponse(SimpleNamespace(makefile=lambda mode: io.BytesIO(wire)))
+        response.begin()
+        return response
+
+    @pytest.mark.parametrize("as_bytes", [False, True], ids=["json", "bytes"])
+    @pytest.mark.parametrize(
+        ("max_retries", "failed_attempts", "recovers"),
+        [(0, 1, False), (1, 1, True), (2, 3, False)],
+        ids=["no-retry", "recovery", "exhausted"],
+    )
+    def test_get_discards_partial_body_and_obeys_retry_budget(
+        self, monkeypatch, as_bytes, max_retries, failed_attempts, recovers
+    ):
+        calls = []
+        sleeps = []
+        diagnostics = []
+
+        def fake_urlopen(request, timeout=None):
+            calls.append(request)
+            if len(calls) <= failed_attempts:
+                return self._truncated_response()
+            return _FakeResponse(b'{"ok": true}')
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+        monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
+        monkeypatch.setattr(db_mod, "_debug", lambda *parts: diagnostics.append(str(parts)))
+        get = db_mod._http_get_bytes if as_bytes else db_mod._http_get_json
+
+        payload, reason = get(f"{WS}/catalog", "tok", max_retries=max_retries)
+
+        if recovers:
+            assert payload == (b'{"ok": true}' if as_bytes else {"ok": True})
+            assert reason is None
+        else:
+            assert payload is None
+            assert reason is not None and "IncompleteRead" in reason
+        assert len(calls) == max_retries + 1
+        assert sleeps == [1.25, 2.5][:max_retries]
+        assert "must-not-be-logged" not in str(diagnostics) + str(reason)
+
+    @pytest.mark.parametrize("method", ["POST", "PATCH", "DELETE"])
+    def test_mutation_reports_incomplete_response_without_replay(self, monkeypatch, method):
+        calls = []
+
+        def fake_urlopen(request, timeout=None):
+            calls.append(request.get_method())
+            return self._truncated_response()
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(
+            db_mod.time, "sleep", lambda delay: pytest.fail("mutation must not retry")
+        )
+
+        payload, reason = db_mod._http_send_json(
+            method, f"{WS}/resource", "tok", {"key": "value"}, allow_empty_body=method == "DELETE"
+        )
+
+        assert payload is None
+        assert reason is not None and "IncompleteRead" in reason
+        assert "must-not-be-logged" not in reason
+        assert calls == [method]
+
+
 class TestHttpUgHeaders:
     def test_get_and_send_carry_ug_headers(self, monkeypatch):
         monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/abc")
