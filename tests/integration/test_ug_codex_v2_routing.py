@@ -45,8 +45,8 @@ def _seed_user_owned_native_codex_settings(session) -> tuple[Path, bytes, bytes]
     hook_input = codex_home / "native-pre-tool-use.jsonl"
     observer.write_text(
         "import json, sys\n"
-        f"with open({str(hook_input)!r}, 'a') as output:\n"
-        "    output.write(json.dumps(json.load(sys.stdin)) + '\\n')\n"
+        f"with open({str(hook_input)!r}, 'a', encoding='utf-8') as output:\n"
+        "    output.write(json.dumps(json.load(sys.stdin.buffer)) + '\\n')\n"
         "print('{}')\n"
     )
     config = codex_home / "config.toml"

@@ -4,7 +4,8 @@
 0.165.0 with code-mode collaboration and direct Responses transport. It requires
 exact plaintext hook/child inputs, real routed execution, follow-ups across
 compaction and native `/resume`, on/off/on behavior, preserved settings, and normal
-exits. The native verification workflow selects this case on macOS and Windows.
+exits. Unicode assignments cover the native hook's UTF-8 input on Windows. The
+native verification workflow selects this case on macOS and Windows.
 
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls
