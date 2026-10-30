@@ -83,7 +83,7 @@ from ucode.os_compatibility.file_lock_cross_os import (
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
-from ucode.ui import print_warning
+from ucode.ui import print_note, print_warning
 
 from .args import LaunchOptions, explicit_model_arg_value
 from .request_tags import request_tags_header_value
@@ -95,6 +95,7 @@ COPILOT_BACKUP_PATH = APP_DIR / "copilot-ucode-env.backup"
 # Older ug versions kept their servers in a side file loaded with `--additional-mcp-config`.
 LEGACY_MCP_CONFIG_PATH = COPILOT_CONFIG_DIR / "ucode-mcp-config.json"
 LEGACY_MCP_BACKUP_PATH = APP_DIR / "copilot-ucode-mcp-config.backup.json"
+MCP_CONFIG_ORIGINAL_PATH = APP_DIR / "copilot-mcp-config.original.json"
 COPILOT_PROXY_LOG_PATH = APP_DIR / "logs" / "copilot-proxy.log"
 _REGISTRY_PREFIX = "ug-providers-"
 _REGISTRY_LOCK_NAME = "ug-providers.lock"
@@ -897,7 +898,14 @@ def _apply_mcp_diff(add: dict[str, dict], remove: set[str]) -> set[str]:
                 "agent also skips the file while it has them."
             )
         # Defer to the copilot CLI, which reads the file the way Copilot does, for exactly the
-        # changed entries.
+        # changed entries. It saves the file as plain JSON, dropping its comments, so the
+        # original is kept once for the developer to recover them.
+        first_cli_edit = (upserts or remove) and not MCP_CONFIG_ORIGINAL_PATH.exists()
+        if first_cli_edit and backup_existing_file(path, MCP_CONFIG_ORIGINAL_PATH):
+            print_note(
+                f"The Copilot CLI saves {path} without its comments; the original is at "
+                f"{MCP_CONFIG_ORIGINAL_PATH}."
+            )
         removed = {name for name in remove if _remove_mcp_server_via_cli(name) or name in legacy}
         for name, entry in upserts.items():
             _add_mcp_server_via_cli(name, entry)
