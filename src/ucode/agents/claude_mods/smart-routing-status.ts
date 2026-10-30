@@ -54,6 +54,8 @@ async function readRoutingState($: any): Promise<RoutingState> {
 }
 
 export const registerStatusBand = (on: On): void => {
+  let running = 0
+  let refresh: { cancel: () => void } | undefined
   on('prompt.submit', ($, e, next) => {
     if (band.isVisible) band.isHideArmed = true
     return next(e)
@@ -63,7 +65,14 @@ export const registerStatusBand = (on: On): void => {
   // the band hides and flips as soon as a toggle succeeds.
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     const { enabled } = await readRoutingState($)
-    const state = `smart router ${enabled ? 'ON' : 'OFF'}`
+    running = (await $.agent.list()).filter((agent) => agent.status === 'running').length
+    // Background agents can change state without changing Claude's cached hint props.
+    if (!refresh) refresh = $.clock.every(1000, async () => {
+      const count = (await $.agent.list()).filter((agent) => agent.status === 'running').length
+      if (count !== running) $.ui.invalidate('ui.render')
+    })
+    const agents = running ? ` · ${running} subagent${running === 1 ? '' : 's'} running` : ''
+    const state = `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
     const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
     return next({ ...e, props: { ...e.props, tail } })
   })

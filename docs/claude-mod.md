@@ -8,7 +8,10 @@ The existing `_write_routed_claude_plugin()` copies the packaged TypeScript entr
 from `src/ucode/agents/claude_mods/` and writes `hooks/hooks.json` into that plugin.
 Every routed launch includes the status band above the prompt. It shows at launch and after
 each `/smart-router on|off`, and hides once the next prompt's turn completes. The prompt hint row (the line under the
-input with the permission mode) always ends with `smart router ON` or `smart router OFF`. Both full and subagent-only smart
+input with the permission mode) carries `smart router ON` or `smart router OFF`, followed by
+` · N subagents running` while Claude's native agent list has running agents (singular for one).
+The count also includes background agents after the parent turn ends and refreshes within
+one second; unchanged counts do not trigger redraws. Both full and subagent-only smart
 routing launches use this path, and the existing temporary-directory lifecycle
 cleans up the files when Claude exits.
 
