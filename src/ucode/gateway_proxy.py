@@ -669,6 +669,7 @@ def start_relay_proxy(
     port: int,
     *,
     codex: bool = False,
+    fallback_on_bind_error: bool = True,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start the subscription relay proxy: Claude's, or Codex's with ``codex`` (plain forwarding,
     since the Anthropic hybrid reroute doesn't apply)."""
@@ -680,6 +681,7 @@ def start_relay_proxy(
         token_header=AI_GATEWAY_TOKEN_HEADER,
         handler_type=_ProxyHandler if codex else _RelayProxyHandler,
         force_refresh_near_expiry=False,
+        fallback_on_bind_error=fallback_on_bind_error,
     )
 
 
