@@ -304,6 +304,10 @@ credential-helper execution, live Messages inference, installed Cowork MCP calls
 and revert. Inference requires HTTP 200 and nonempty assistant text; MCP calls use web_search
 to find Databricks' official website without SQL compute. See
 [integration coverage](integration/README.md) for prerequisites and evidence.
+`test_integration_contract.py` checks the Desktop test helper's Windows marketplace
+path with missing or empty Program Files variables in the isolated environment,
+and prefers `ProgramW6432` over `ProgramFiles`. These are component checks, not
+native Windows integration runs.
 CUJ1/CUJ2 compare complete Desktop profile/metadata JSON for system.ai models and non-relay
 Anthropic MPS. CUJ3's existing picker journey checks its incompatible scoped aliases preserve
 all Desktop profile/metadata bytes after its existing configure call.
@@ -361,6 +365,16 @@ cover managed setup after successful skill/MCP reconciliation, preservation afte
 reconciliation failures, and cleanup for unmanaged or non-Claude configurations. These tests
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
 late MCP connection, tool discovery, or inference behavior.
+
+`test_desktop_marketplace.py` covers identical user/root source publication, one active
+registration across repeated configure and scope switches, explicit cached-plugin refresh,
+stable content versions, binary/executable assets, initialized-account requirements,
+permission and registration failures, rollback, retry, concurrent-command exclusion, scoped revert, previous-account
+cleanup, legacy org-loader conflicts, and foreign/edited-bundle preservation.
+Filesystem transactions run in temporary directories: the macOS shell worker uses host OS
+command adapters without sudo; Windows filesystem logic runs with simulated elevation.
+Only the external Claude CLI registry/cache is simulated. These component checks do not
+establish native Desktop sync, Windows ACLs, fresh-user provisioning, or connector runtime.
 
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
 It checks that Claude uses an available Slack tool despite a stale disconnect notice, actually

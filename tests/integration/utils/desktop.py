@@ -30,15 +30,43 @@ def prepare_cowork_home(session) -> Path:
 
 def installed_cowork_servers(session, root: Path) -> dict:
     state = json.loads((session.home / ".ucode/claude-cowork.json").read_text())
+    user_source = session.home / ".ucode/claude-cowork-marketplace"
+    system_source = system_desktop_marketplace()
+    source = system_source or user_source
     assert Path(state["cowork_root"]) == root
+    assert Path(state["marketplace_root"]) == source
+    known = json.loads((root / "cowork_plugins/known_marketplaces.json").read_text())
+    assert Path(known["unity-gateway-cowork"]["source"]["path"]) == source
+    if system_source is not None:
+        assert state["system_digest"]
+        contents = {p.relative_to(source): p.read_bytes() for p in source.rglob("*") if p.is_file()}
+        assert contents == {
+            p.relative_to(user_source): p.read_bytes()
+            for p in user_source.rglob("*")
+            if p.is_file()
+        }
     installed = json.loads((root / "cowork_plugins/installed_plugins.json").read_text())
     entries = installed["plugins"]["ug@unity-gateway-cowork"]
     assert len(entries) == 1, entries
+    assert "unity-gateway@unity-gateway-cowork" not in installed["plugins"]
     plugin = Path(entries[0]["installPath"])
     manifest = json.loads((plugin / ".claude-plugin/plugin.json").read_text())
+    assert manifest == json.loads((source / "plugins/ug/.claude-plugin/plugin.json").read_text())
+    assert "installationPreference" not in manifest
     assert manifest["name"] == "ug"
     assert manifest["mcpServers"] == "./.mcp.json"
     return json.loads((plugin / manifest["mcpServers"]).read_text())["mcpServers"]
+
+
+def system_desktop_marketplace() -> Path | None:
+    if os.name == "nt":
+        program_files = (
+            os.environ.get("ProgramW6432") or os.environ.get("ProgramFiles") or r"C:\Program Files"
+        )
+        return Path(program_files) / "UnityGateway/claude-cowork-marketplace"
+    if sys.platform == "darwin":
+        return Path("/Library/Application Support/UnityGateway/claude-cowork-marketplace")
+    return None
 
 
 async def assert_desktop_mcp(session, registration: dict, workspace: str) -> None:

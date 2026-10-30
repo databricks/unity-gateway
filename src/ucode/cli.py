@@ -4663,7 +4663,8 @@ def configure(
         bool,
         typer.Option(
             "--global",
-            help="Write machine-wide Claude Code and Codex managed settings with sudo (default). "
+            help="Write machine-wide Claude Code/Codex settings and Claude Desktop marketplace sources "
+            "(default; requires administrator rights). "
             "The choice is saved for later commands.",
         ),
     ] = False,
@@ -4671,7 +4672,7 @@ def configure(
         bool,
         typer.Option(
             "--user",
-            help="Skip the machine-wide Claude Code and Codex managed settings, without sudo. "
+            help="Use user settings and Claude Desktop marketplace sources, without machine-wide writes. "
             "The choice is saved for later commands.",
         ),
     ] = False,
