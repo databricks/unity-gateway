@@ -122,6 +122,6 @@ launches do not poll; the installed workspace selects the remote source for `ug 
 For fleet-managed installations, schedule root/MDM provisioning about every **four hours**
 (`14400` seconds) rather than once daily. This bounds the usual stale-policy window without requiring
 developer elevation; offline/sleeping machines can still lag. This is separate from a developer's
-`ug configure`. The PR's baseline has no MDM scheduler, and current main's
-`scripts/mdm-bootstrap.sh` is a one-shot bootstrap with no 24-hour refresh default. The deployment's
-actual scheduler must set the four-hour interval; this change does not invent a background daemon.
+`ug configure`. On macOS, `scripts/mdm/macos-provision.sh` runs once per policy execution and has no
+scheduler of its own, so the deployment's scheduler must set the interval; JAMF's shortest recurring
+policy frequency is once a day.
