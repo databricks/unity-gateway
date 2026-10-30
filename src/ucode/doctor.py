@@ -16,11 +16,13 @@ from dataclasses import dataclass
 
 from ucode.agents import (
     TOOL_SPECS,
+    claude,
     copilot,
     tool_binary_installed,
     tool_version_error,
     update_tool_binary,
 )
+from ucode.config_io import read_json_safe
 from ucode.databricks import (
     MIN_DATABRICKS_CLI_VERSION,
     check_databricks_auth,
@@ -273,6 +275,46 @@ def _check_anthropic_env_collision() -> Check | None:
     )
 
 
+def _check_claude_provider_env() -> Check | None:
+    """Note a Claude Code provider flag (e.g. `CLAUDE_CODE_USE_BEDROCK`) that bypasses the gateway.
+
+    Claude Code picks the provider from these flags before it reads `ANTHROPIC_BASE_URL`. ug sets
+    each to "0" in ucode's Claude settings, which beats the shell, so only a value in the OS-managed
+    file still wins; that one needs the administrator. Advisory (no fix). Returns None when
+    nothing is set.
+    """
+    shell = [
+        name
+        for name in claude.CLAUDE_PROVIDER_ENV_KEYS
+        if claude.provider_flag_enabled(os.environ.get(name))
+    ]
+    path = claude.managed_settings_path()
+    # read_json_safe reads a missing or unreadable file as {}; `path.exists()` would raise there.
+    managed_env = read_json_safe(path).get("env") if path is not None else None
+    managed_env = managed_env if isinstance(managed_env, dict) else {}
+    managed = [
+        name
+        for name in claude.CLAUDE_PROVIDER_ENV_KEYS
+        if claude.provider_flag_enabled(managed_env.get(name))
+    ]
+    if managed:
+        return Check(
+            "Claude provider env",
+            "warn",
+            f"{', '.join(managed)} is set in {path}, so Claude Code sends requests directly to "
+            "that provider and bypasses the gateway. Ask your administrator to remove it, or set "
+            "it to 0",
+        )
+    if shell:
+        return Check(
+            "Claude provider env",
+            "info",
+            f"{', '.join(shell)} is set; Claude Code launched via ug ignores it (re-run "
+            "`ug configure` if bare `claude` still bypasses the gateway)",
+        )
+    return None
+
+
 def _check_ug() -> Check:
     """Report the installed build. Explicit updates are available via `ug upgrade`."""
     version = ug_version()
@@ -286,7 +328,12 @@ def _gather_checks() -> list[Check]:
     checks: list[Check] = [_check_uv(), _check_npm(), _check_databricks_cli(), _check_workspace()]
     # These return None when they don't apply (no workspace, no env collision),
     # so drop the Nones before display.
-    optional = [_check_databricks_auth(), _check_anthropic_env_collision(), _check_copilot_models()]
+    optional = [
+        _check_databricks_auth(),
+        _check_anthropic_env_collision(),
+        _check_claude_provider_env(),
+        _check_copilot_models(),
+    ]
     checks.extend(c for c in optional if c is not None)
     checks.extend(_check_agent_clis())
     checks.append(_check_ug())

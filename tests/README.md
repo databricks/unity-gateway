@@ -85,13 +85,21 @@ ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching
 `-c` headers (plain and smart-routed) without writing its profile. No automated test checks the
 header at the gateway.
 
-`test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
-the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
-making no privileged write after another writer drops them, skip mode, revert, and admin passthrough
-not overriding them. `native_claude/test_credentials.py` runs the CI-pinned Claude (2.1.290) against a
+`test_claude_credential_blanks.py` covers the values ug pins so a stray shell or settings value can't
+take Claude off the gateway: the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks and the `CLAUDE_CODE_USE_*`
+provider flags set to `"0"`. They are always in the user file (relayed included), written to the managed
+file by `ug configure` only, with no privileged write by a plain launch after another writer drops them;
+it also covers skip mode, revert, and admin passthrough not overriding them. A credential or a true
+provider flag an admin left in the managed file is kept with a warning, while a false provider flag is
+replaced. `native_claude/test_credentials.py` runs the CI-pinned Claude (2.1.290) against a
 fake API with both shell variables set: the blanks make it send the `apiKeyHelper` token, or on the relayed
 path its own OAuth token, with no empty header; without them the shell's values win (control cases). It
 skips on a machine with Claude managed settings, which would replace the fixture's.
+
+`native_claude/test_provider_env.py` runs the CI-pinned Claude with `CLAUDE_CODE_USE_BEDROCK=1` or
+`CLAUDE_CODE_USE_VERTEX=1` in the shell against a fake server that also stands in for the provider
+endpoint: the zeros keep the turn on `ANTHROPIC_BASE_URL`; without them the turn goes to the provider
+(control cases). It skips on a machine with Claude managed settings.
 
 `test_claude_header_mod.py` covers installing the Claude header mod's files and managed entries
 (no rewrite when unchanged), keeping an admin's `prependPlugins`, a failed install never enabling

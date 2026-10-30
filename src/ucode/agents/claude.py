@@ -252,6 +252,25 @@ CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 # settings `env` value beats the shell's, so ug blanks them for the Claude process only.
 CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
 CLAUDE_BLANKED_CREDENTIAL_PATHS = [["env", key] for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS]
+# Pin direct-provider flags off so inherited shell flags cannot bypass the gateway: Claude Code
+# picks Bedrock, Vertex, Foundry, etc. from them before it reads `ANTHROPIC_BASE_URL`. ug sets each
+# to "0" the same way it blanks the credentials above.
+CLAUDE_PROVIDER_ENV_KEYS = (
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+    "CLAUDE_CODE_USE_MANTLE",
+)
+# Values Claude Code reads as true for the provider flags.
+CLAUDE_TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
+# Every env value ug pins so the shell or the user's settings can't take Claude off the gateway.
+CLAUDE_NEUTRAL_ENV = {
+    **dict.fromkeys(CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS, ""),
+    **dict.fromkeys(CLAUDE_PROVIDER_ENV_KEYS, "0"),
+}
+CLAUDE_NEUTRAL_ENV_PATHS = [["env", key] for key in CLAUDE_NEUTRAL_ENV]
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
 CLAUDE_PERMISSIONS_DENY_PATH = ["permissions", "deny"]
 CLAUDE_ALLOWED_MCP_SERVERS_KEY = "allowedMcpServers"
@@ -581,8 +600,8 @@ def render_overlay(
         "ENABLE_PROMPT_CACHING_1H": "1",
         "ENABLE_TOOL_SEARCH": "true",
         "CLAUDE_CODE_USE_GATEWAY": "1",
-        # Also outrank the subscription login, so relayed launches blank them too.
-        **dict.fromkeys(CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS, ""),
+        # Also outrank the subscription login, so relayed launches pin them too.
+        **CLAUDE_NEUTRAL_ENV,
     }
     # Intentionally NOT setting ANTHROPIC_MODEL by default. Setting it produces a
     # duplicate catalog row in Claude Code's /model picker (e.g. "Opus 4.8 (1M
@@ -1902,7 +1921,7 @@ def _managed_settings_conflicts(
     owned_paths = [
         path
         for path in owned_paths
-        if path not in CLAUDE_HEADER_MOD_PATHS and path not in CLAUDE_BLANKED_CREDENTIAL_PATHS
+        if path not in CLAUDE_HEADER_MOD_PATHS and path not in CLAUDE_NEUTRAL_ENV_PATHS
     ]
     conflicts = managed_file_conflicts(existing, desired, owned_paths)
     header_path = f"env.{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}"
@@ -2079,30 +2098,52 @@ def header_mod_active() -> bool:
     return isinstance(plugins, dict) and plugins.get(CLAUDE_HEADER_MOD_ID) is True
 
 
-def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> None:
-    """Add ug's credential blanks to the managed file only when asked; otherwise keep it as found.
+def provider_flag_enabled(value: object) -> bool:
+    """Whether Claude Code reads a provider flag value (e.g. `CLAUDE_CODE_USE_BEDROCK`) as true."""
+    return isinstance(value, str) and value.strip().lower() in CLAUDE_TRUTHY_ENV_VALUES
 
-    Like the header mod, they are written by ``ug configure`` and never by a plain launch: another
-    writer of the file drops keys it doesn't template, and re-adding them would rewrite the
-    root-owned file (and prompt for sudo) on every launch. ``ucode-settings.json`` always has them.
+
+def _takes_claude_off_gateway(key: str, value: str) -> bool:
+    """Whether a managed-file value for one of ug's neutral env keys would beat the gateway."""
+    if key in CLAUDE_PROVIDER_ENV_KEYS:
+        return provider_flag_enabled(value)
+    return bool(value.strip())
+
+
+def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> None:
+    """Add ug's neutral env values to the managed file only when asked; otherwise keep it as found.
+
+    Covers the credential blanks and the provider flags. Like the header mod, they are written by
+    ``ug configure`` and never by a plain launch: another writer of the file drops keys it doesn't
+    template, and re-adding them would rewrite the root-owned file (and prompt for sudo) on every
+    launch. ``ucode-settings.json`` always has them.
     """
     env = desired.get("env")
     if not isinstance(env, dict):
         return
     existing_env = existing.get("env")
     existing_env = existing_env if isinstance(existing_env, dict) else {}
-    for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS:
+    for key, neutral in CLAUDE_NEUTRAL_ENV.items():
         held = existing_env.get(key)
-        if add and isinstance(held, str) and held.strip():
+        if add and isinstance(held, str) and _takes_claude_off_gateway(key, held):
             # Someone else's explicit value (e.g. IT's): never replace it silently.
             env[key] = held
+            if key in CLAUDE_PROVIDER_ENV_KEYS:
+                effect = (
+                    "Claude sends requests directly to that provider and bypasses the gateway. "
+                    "Ask your administrator to remove it, or set it to 0."
+                )
+            else:
+                effect = (
+                    "Claude may use it instead of the gateway credential and fail with a 401. "
+                    "Ask your administrator to remove it, or blank it yourself."
+                )
             print_warning(
                 f"Claude Code managed settings at {_managed_settings_path()} set env.{key}; "
-                f"ug left it as is, so Claude may use it instead of the gateway credential and "
-                f"fail with a 401. Ask your administrator to remove it, or blank it yourself."
+                f"ug left it as is, so {effect}"
             )
         elif add:
-            env[key] = ""
+            env[key] = neutral
         elif key in existing_env:
             env[key] = existing_env[key]
         else:
