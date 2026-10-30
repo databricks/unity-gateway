@@ -13,15 +13,22 @@ from ucode.constants import AGENT_CLAUDE
 from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.v2 import (
     CLAUDE_ROUTING_PLUGIN_NAME,
+    _claude_mod_launch_args,
     _claude_mod_launch_options,
     _write_routed_claude_plugin,
 )
 
 
 class Session:
-    def __init__(self, binary, root, env, api="http://127.0.0.1:1", route_command=()):
+    def __init__(self, binary, root, env, api="http://127.0.0.1:1", route_command=(), resume=None):
         self.root = root
         root.mkdir()
+        resume_args = []
+        if resume is not None:
+            target = root / "resume" / resume.name
+            target.parent.mkdir()
+            shutil.copyfile(resume, target)
+            resume_args = ["--resume", str(target)]
         self.plugin = root / "plugin"
         _write_routed_claude_plugin(self.plugin, [])
         shutil.copyfile(Path(__file__).with_name("observe.ts"), self.plugin / "hooks/observe.ts")
@@ -31,19 +38,13 @@ class Session:
         shutil.copyfile(
             Path(__file__).parents[2] / "skills/smart-router/SKILL.md", skill / "SKILL.md"
         )
+        options = {**_claude_mod_launch_options(env), "routeCommand": list(route_command)}
         settings = {
             "env": {
                 **resolve_environment(env, agent=AGENT_CLAUDE),
                 "CLAUDE_CODE_EXTRA_BODY": '{"caller_field":"keep"}',
             },
-            "pluginConfigs": {
-                CLAUDE_ROUTING_PLUGIN_NAME: {
-                    "options": {
-                        **_claude_mod_launch_options(env),
-                        "routeCommand": list(route_command),
-                    }
-                }
-            },
+            "pluginConfigs": {CLAUDE_ROUTING_PLUGIN_NAME: {"options": options}},
         }
         process_env = {
             **{
@@ -56,6 +57,8 @@ class Session:
             "ANTHROPIC_BASE_URL": api,
             "ANTHROPIC_API_KEY": "fixture-dummy-key",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "CLAUDE_CODE_MAX_RETRIES": "0",
+            "CLAUDE_CODE_ELEGANT_MEADOW": "1",
             "DISABLE_AUTOUPDATER": "1",
         }
         self.proc = subprocess.Popen(
@@ -67,6 +70,8 @@ class Session:
                 "--output-format",
                 "stream-json",
                 "--verbose",
+                *resume_args,
+                *_claude_mod_launch_args(options),
                 "--setting-sources",
                 "user",
                 "--settings",
@@ -98,7 +103,7 @@ class Session:
         for reader in self.readers:
             reader.start()
 
-    def send(self, prompt):
+    def send(self, prompt, *, expect_error=False):
         self.proc.stdin.write(
             json.dumps({"type": "user", "message": {"role": "user", "content": prompt}}) + "\n"
         )
@@ -107,7 +112,7 @@ class Session:
         while True:
             event = json.loads(self.lines.get(timeout=max(0, deadline - time.monotonic())))
             if event.get("type") == "result":
-                assert not event.get("is_error"), event.get("result")
+                assert bool(event.get("is_error")) == expect_error, event.get("result")
                 return event
 
     def observe(self):

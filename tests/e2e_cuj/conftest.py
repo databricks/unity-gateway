@@ -9,7 +9,7 @@ import pytest
 from databricks.sdk.errors import DatabricksError
 
 from .base import bearer
-from .helpers.constants import CLAUDE, CODEX, MANAGED_PATHS
+from .helpers.constants import CLAUDE, CODEX, MANAGED_PATHS, WORKSPACE_POLICY_PATH
 from .helpers.session import (
     MACHINE_WIDE_LEAK,
     UserSession,
@@ -34,6 +34,11 @@ def _scrubbed(error: DatabricksError) -> RuntimeError:
 @pytest.fixture(scope="class")
 def cuj(request, setup_workspace, tmp_path_factory):
     assert os.name == "posix", "Full TUI CUJs require a disposable POSIX runner"
+    # Teardown removes the workspace policy, so never start on one this run didn't install.
+    assert not WORKSPACE_POLICY_PATH.exists(), (
+        f"Existing workspace policy {WORKSPACE_POLICY_PATH}; use a clean disposable runner. "
+        "Nothing was changed."
+    )
     assert not any(path.exists() for path in MANAGED_PATHS), dirty_runner_message(
         request.config.stash.get(MACHINE_WIDE_LEAK, None)
     )

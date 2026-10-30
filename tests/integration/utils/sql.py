@@ -6,6 +6,13 @@ import json
 import time
 import urllib.request
 
+# Statement Execution API returns after at most 50s (`wait_timeout`); a cold warehouse can
+# take minutes to start, so a statement is then polled until this overall budget.
+STATEMENT_DEADLINE_SECONDS = 300
+# Spans reach the table asynchronously after the agent exits; poll for the row this long.
+TRACE_ROW_DEADLINE_SECONDS = 300
+TRACE_ROW_POLL_INTERVAL_SECONDS = 15
+
 DEFAULT_TRACE_TABLE_PREFIX = "unity_gateway"
 TRACE_TABLE_SUFFIX = "_otel_spans"
 
@@ -71,7 +78,10 @@ def query_count(
     warehouse_id: str,
     statement: str,
     parameters: list[dict[str, str]],
+    *,
+    timeout: float = STATEMENT_DEADLINE_SECONDS,
 ) -> int:
+    started = time.monotonic()
     request = urllib.request.Request(
         f"{workspace.rstrip('/')}/api/2.0/sql/statements",
         data=json.dumps(
@@ -88,9 +98,13 @@ def query_count(
     with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
         result = json.load(response)
 
-    deadline = time.monotonic() + 180
+    deadline = started + timeout
     while result.get("status", {}).get("state") in {"PENDING", "RUNNING"}:
-        assert time.monotonic() < deadline, "SQL statement did not finish within 180 seconds"
+        assert time.monotonic() < deadline, (
+            f"SQL statement did not finish within {timeout:g} seconds "
+            f"(elapsed {time.monotonic() - started:.0f}s, "
+            f"state {result.get('status', {}).get('state')})"
+        )
         time.sleep(2)
         poll = urllib.request.Request(
             f"{workspace.rstrip('/')}/api/2.0/sql/statements/{result['statement_id']}",
@@ -103,3 +117,29 @@ def query_count(
     rows = result.get("result", {}).get("data_array", [])
     assert rows and rows[0], "SQL count query returned no row"
     return int(rows[0][0])
+
+
+def wait_for_count(
+    workspace: str,
+    bearer: str,
+    warehouse_id: str,
+    statement: str,
+    parameters: list[dict[str, str]],
+    *,
+    timeout: float = TRACE_ROW_DEADLINE_SECONDS,
+    interval: float = TRACE_ROW_POLL_INTERVAL_SECONDS,
+) -> int:
+    """Poll a COUNT query until it is positive or `timeout` elapses; return the last count.
+
+    Callers assert on the result, so a count that never appears still fails honestly.
+    """
+    started = time.monotonic()
+    deadline = started + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        count = query_count(
+            workspace, bearer, warehouse_id, statement, parameters, timeout=max(remaining, 60)
+        )
+        if count > 0 or time.monotonic() + interval >= deadline:
+            return count
+        time.sleep(interval)

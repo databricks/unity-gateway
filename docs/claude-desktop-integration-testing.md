@@ -31,7 +31,19 @@ The installed-CLI integration suite seeds an unrelated profile, runs real `ug co
 twice with an explicit CLI profile, then runs real `ug revert`. On Linux and Windows it
 checks the fixed UUID profile, gateway/helper/models, label and metadata, duplicate
 prevention, unrelated-profile preservation, deletion, and prior-selection restoration.
-It still does not launch Desktop or execute the generated helper.
+It executes the exact generated helper and validates its credential against the live models API.
+Both the system.ai and subscription-relay journeys use the generated helper credentials and
+profile headers for real Messages inference. Each installs Cowork through the real Claude CLI,
+adds system.ai.web_search through public ug commands, and uses the installed plugin's command to
+discover tools and find Databricks' official website. Both require HTTP 200 and nonempty assistant
+text for inference, without matching generated wording. Both check repeat
+configure, preservation of unrelated settings, and profile/plugin cleanup on revert, within
+the existing Linux/Windows integration lanes and their model workspace.
+CUJ1 and CUJ2 compare complete Desktop profile/metadata JSON for system.ai models and non-relay
+Anthropic MPS. CUJ3's existing configure journey checks its incompatible scoped model aliases
+leave every existing Desktop profile/metadata byte untouched. These tests do not
+launch Desktop, exercise its scheduling of the helper, execute connector skills, or run
+browser consent.
 
 The existing `windows-latest` integration jobs install and run UG and real coding
 agent CLIs on Windows Server. They are headless and do not provide the Windows 11,

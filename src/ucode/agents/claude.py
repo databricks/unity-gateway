@@ -13,14 +13,20 @@ import subprocess
 import sys
 import threading
 import traceback
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
+    atomic_write_json,
     backup_existing_file,
     deep_merge_dict,
+    ensure_parent_dir,
+    is_dry_run,
     prune_key_paths,
     read_json_safe,
     write_json_file,
@@ -33,6 +39,7 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     SMART_ROUTER_RECIPE_HEADER,
+    UG_HEADERS_ENV_VAR,
 )
 from ucode.custom_oauth import (
     CustomOAuthConfig,
@@ -58,9 +65,9 @@ from ucode.managed_files import (
     ManagedFileWriteUnavailable,
     SettingsPassthrough,
     apply_settings_passthrough,
-    check_skipped_managed_overrides,
-    config_scope,
+    claude_header_mod_root,
     current_os,
+    explicit_managed_writes,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -73,18 +80,22 @@ from ucode.managed_files import (
     plan_settings_passthrough,
     read_managed_file,
     reconcile_managed_file,
+    reconcile_privileged_files,
     record_settings_passthrough,
     record_ug_picker,
+    remove_privileged_tree,
     revert_managed_file,
     warn_managed_write_skipped,
     warn_skipped_settings_passthrough,
     windows_claude_managed_settings_path,
     withdrawn_list_items,
 )
+from ucode.managed_resolve import managed_claude_family_models, managed_default_model
 from ucode.mcp_oauth import (
     CLAUDE_CODE_CIMD_CLIENT_ID,
     MCP_OAUTH_CALLBACK_PORT,
-    first_available_oauth_client,
+    oauth_client_available,
+    workspace_supports_cimd,
 )
 from ucode.mcp_web_search import (
     AUTOMATIC_PROVIDER,
@@ -94,6 +105,10 @@ from ucode.mcp_web_search import (
     external_provider_selected,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility.file_lock_cross_os import (
+    acquire_exclusive_file_lock,
+    release_file_lock,
+)
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -101,6 +116,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
+from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_note, print_success, print_warning
 
@@ -112,7 +128,10 @@ GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
 CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 CLAUDE_CONFIG_DIR = Path.home() / ".claude"
 CLAUDE_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "ucode-settings.json"
-CLAUDE_MCP_CONFIG_PATH = Path.home() / ".claude.json"
+CLAUDE_CODE_CONFIG_PATH = Path.home() / ".claude.json"
+# Claude Code locks `.claude.json` with its own `<file>.lock`; ug's flock must use another name.
+CLAUDE_CONFIG_LOCK_SUFFIX = ".ug.lock"
+CLAUDE_CONFIG_LOCK_TIMEOUT_SECONDS = 5
 # The default model is stored in Claude's default user settings, not the ucode settings.
 CLAUDE_USER_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "settings.json"
 CLAUDE_BACKUP_PATH = APP_DIR / "claude-ucode-settings.backup.json"
@@ -228,6 +247,11 @@ CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
 # Env keys ucode used to write but no longer does; stripped from the managed
 # settings file on every launch so stale values never linger.
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
+# Claude Code ranks these shell variables above `apiKeyHelper` and the subscription login, so a
+# stray one (e.g. a LiteLLM key) would be sent to the gateway instead of ug's credential. A
+# settings `env` value beats the shell's, so ug blanks them for the Claude process only.
+CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
+CLAUDE_BLANKED_CREDENTIAL_PATHS = [["env", key] for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS]
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
 CLAUDE_PERMISSIONS_DENY_PATH = ["permissions", "deny"]
 CLAUDE_ALLOWED_MCP_SERVERS_KEY = "allowedMcpServers"
@@ -394,12 +418,34 @@ def managed_settings_status(state: dict) -> tuple[Path | None, str, str]:
 
 
 def revert_managed_settings() -> str:
-    return revert_managed_file(
-        "claude",
-        display="Claude Code",
-        parser=_parse_managed_settings,
-        dumper=_dump_managed_settings,
+    # ug lists the built-in guard to keep it when it creates `prependPlugins`, so revert takes it
+    # out with ug's entries. When an admin has since added to the list, put the guard back: a
+    # non-empty list without it turns the guard off.
+    guard_listed = _CLAUDE_GUARD_MOD_ID in _managed_prepend_plugins()
+
+    def dump(settings: dict) -> str:
+        prepend = settings.get("prependPlugins")
+        if guard_listed and isinstance(prepend, list) and prepend:
+            if _CLAUDE_GUARD_MOD_ID not in prepend:
+                settings["prependPlugins"] = [_CLAUDE_GUARD_MOD_ID, *prepend]
+        return _dump_managed_settings(settings)
+
+    status = revert_managed_file(
+        "claude", display="Claude Code", parser=_parse_managed_settings, dumper=dump
     )
+    _remove_header_mod()
+    return status
+
+
+def _managed_prepend_plugins() -> list:
+    """The managed file's ``prependPlugins`` list, or an empty one."""
+    path = _managed_settings_path()
+    try:
+        text = read_managed_file(path) if path is not None else None
+        prepend = _parse_managed_settings(text).get("prependPlugins") if text else None
+    except RuntimeError:
+        return []
+    return prepend if isinstance(prepend, list) else []
 
 
 def _managed_relayed_conflicts(path: Path) -> list[str]:
@@ -535,6 +581,8 @@ def render_overlay(
         "ENABLE_PROMPT_CACHING_1H": "1",
         "ENABLE_TOOL_SEARCH": "true",
         "CLAUDE_CODE_USE_GATEWAY": "1",
+        # Also outrank the subscription login, so relayed launches blank them too.
+        **dict.fromkeys(CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS, ""),
     }
     # Intentionally NOT setting ANTHROPIC_MODEL by default. Setting it produces a
     # duplicate catalog row in Claude Code's /model picker (e.g. "Opus 4.8 (1M
@@ -553,7 +601,7 @@ def render_overlay(
     # A Bedrock-backed provider needs its provider-side ids pinned verbatim
     # (Claude Code's canonical names aren't routable there). These come from the
     # service's targets, already de-duped to one id per family upstream.
-    elif provider and provider_models:
+    if provider and provider_models and not route_root_model:
         if provider_models.get("opus"):
             env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = provider_models["opus"]
         if provider_models.get("sonnet"):
@@ -563,7 +611,8 @@ def render_overlay(
     # With an Anthropic Model Provider Service, the header routes to the external
     # provider and Claude Code's own canonical model names are sent verbatim —
     # pinning a Databricks model id here would mislabel the picker and isn't
-    # routable.
+    # routable. A pinned root model (ANTHROPIC_MODEL) does not displace the family defaults:
+    # configure and a plain launch must write the same ones.
     elif claude_models and not provider and not parent_schema:
         # Picker rows show the raw routable id (e.g. "system.ai.claude-opus-4-8[1m]")
         # so users can see which gateway-routable model is behind each shortcut.
@@ -609,7 +658,7 @@ def render_overlay(
         overlay["modelPicker"] = {
             "replaceBuiltInOptions": True,
             "options": [
-                {"model": maybe_add_gpt_1m_suffix(m), "label": _picker_label(m)}
+                {"model": maybe_add_gpt_1m_suffix(m), "label": model_picker_label(m)}
                 for m in static_models
             ],
         }
@@ -620,7 +669,7 @@ def render_overlay(
             "options": [
                 _picker_option(
                     maybe_add_gpt_1m_suffix(model),
-                    picker_catalog.model_id_to_display_name.get(model) or _picker_label(model),
+                    picker_catalog.model_id_to_display_name.get(model) or model_picker_label(model),
                     picker_catalog.model_id_to_description.get(model),
                 )
                 for model in picker_catalog.model_ids
@@ -639,30 +688,9 @@ def render_overlay(
     return overlay, keys
 
 
-_MODEL_LABEL_ACRONYMS = frozenset({"glm", "gpt"})
 _CLAUDE_PICKER_LABEL_RE = re.compile(
     r"^Claude (Fable|Opus|Sonnet|Haiku) (\d+(?:\.\d+)*)$", re.IGNORECASE
 )
-
-
-def _picker_label(model: str) -> str:
-    """A human-friendly picker label for a model id (e.g. ``system.ai.claude-haiku-4-5`` ->
-    ``Claude Haiku 4.5``): keep the vendor and name words title-cased, uppercase known acronyms,
-    and join a run of numeric segments into a dotted version."""
-    stem = model.removeprefix("system.ai.")
-    parts: list[str] = []
-    version: list[str] = []
-    for token in stem.split("-"):
-        if token.isdigit():
-            version.append(token)
-            continue
-        if version:
-            parts.append(".".join(version))
-            version = []
-        parts.append(token.upper() if token in _MODEL_LABEL_ACRONYMS else token.title())
-    if version:
-        parts.append(".".join(version))
-    return " ".join(parts) if parts else stem
 
 
 def _picker_option(model: str, label: str, description: str | None = None) -> dict[str, str]:
@@ -707,7 +735,7 @@ def default_model_picker_catalog(
     descriptions: dict[str, str] = {}
     for family, raw_model in defaults.items():
         model = raw_model
-        label = _picker_label(model.removesuffix("[1m]"))
+        label = model_picker_label(model.removesuffix("[1m]"))
         if provider is not None:
             # Family shortcuts stay distinct from catalog rows for the same target.
             model = family
@@ -739,6 +767,47 @@ def default_model_picker_catalog(
         model_id_to_description=descriptions,
         error_msg=discovered_catalog.error_msg if discovered_catalog is not None else None,
     )
+
+
+@dataclass(frozen=True)
+class ManagedModelInputs:
+    """Model inputs ``write_tool_config`` derives from a managed config for the plain source.
+
+    ``ug configure`` and a plain launch both build this, so the files Claude reads cannot differ
+    between them. Per-launch choices (budget recommendation, ``--model``) are not part of it.
+    """
+
+    coding_agent_config_defaults: dict[str, str]
+    route_root_model: str | None
+    picker_catalog: AnthropicModelCatalog | None
+
+
+def managed_model_inputs(state: dict, managed: dict | None) -> ManagedModelInputs:
+    """The managed-file model inputs for a Claude source with no provider or UC location.
+
+    The root model is the admin's ``default_model`` only. A budget recommendation or ``--model``
+    must reach the session through Claude Code's own ``--model`` flag, never the managed file.
+    """
+    if managed is None:
+        return ManagedModelInputs({}, None, None)
+    defaults = managed_claude_family_models(managed) or {}
+    root_model = managed_default_model(managed, "claude")
+    picker_catalog = None
+    if defaults and not state.get("claude_static_models"):
+        picker_catalog = default_model_picker_catalog(defaults, launch_model=root_model)
+    return ManagedModelInputs(defaults, root_model, picker_catalog)
+
+
+def picker_row_model(catalog: AnthropicModelCatalog | None, model: str) -> str:
+    """``model`` as the picker catalog lists it, so Claude Code matches that row and adds none.
+
+    A family row may carry a ``[1m]`` suffix the model lacks; only the exact id counts as a match.
+    """
+    if catalog is not None:
+        for row in catalog.model_ids:
+            if row.removesuffix("[1m]") == model.removesuffix("[1m]"):
+                return row
+    return model
 
 
 def _enforce_model_default_hierarchy(
@@ -826,10 +895,8 @@ def add_claude_http_mcp_server(
     per-user connection state), a direct HTTP server lets Claude Code do MCP OAuth
     against ``/oidc`` with the ``resource`` indicator: on a missing/expired
     connection credential, ``/mcp`` shows "needs authentication" and Authenticate
-    runs the login (``/oidc`` -> ``/mcp-service-login``). ``client_id`` is the
-    published CIMD URL client ID. It has the loopback ``/callback`` redirect registered; the port
-    is arbitrary because ``/oidc`` ignores the port
-    for loopback redirects."""
+    runs the login (``/oidc`` -> ``/mcp-service-login``). The callback port is
+    arbitrary because ``/oidc`` ignores it for loopback redirects."""
     cmd = [
         "claude",
         "mcp",
@@ -838,8 +905,7 @@ def add_claude_http_mcp_server(
         "http",
         "-s",
         scope,
-        "--client-id",
-        client_id,
+        *(["--client-id", client_id] if client_id else []),
         "--callback-port",
         str(callback_port),
         name,
@@ -893,13 +959,14 @@ def user_stdio_mcp_entry(argv: list[str], *, always_load: bool = False) -> dict:
     return entry
 
 
-def claude_mcp_config_path() -> Path:
-    """The file Claude Code reads user-scope ``mcpServers`` from: ``$CLAUDE_CONFIG_DIR/.claude.json``
-    when that env var is set (the ``claude`` CLI honors it), else the default ``~/.claude.json``. ug
-    elsewhere shells out to the CLI, which resolves this itself; a direct write must resolve the same
-    path or it silently writes to a file Claude never reads."""
+def claude_code_config_path() -> Path:
+    """Claude Code's global config file (user-scope ``mcpServers``, feature cache, auth state):
+    ``$CLAUDE_CONFIG_DIR/.claude.json`` when that env var is set (the ``claude`` CLI honors it),
+    else the default ``~/.claude.json``. ug elsewhere shells out to the CLI, which resolves this
+    itself; a direct write must resolve the same path or it silently writes to a file Claude never
+    reads."""
     config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-    return Path(config_dir) / ".claude.json" if config_dir else CLAUDE_MCP_CONFIG_PATH
+    return Path(config_dir) / ".claude.json" if config_dir else CLAUDE_CODE_CONFIG_PATH
 
 
 def _read_claude_config_for_rewrite(path: Path) -> dict | None:
@@ -915,6 +982,70 @@ def _read_claude_config_for_rewrite(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _update_claude_config(path: Path, mutate: Callable[[dict], bool]) -> bool:
+    """Read-modify-write Claude's ``.claude.json`` at ``path`` under an exclusive file lock.
+
+    ``mutate`` edits the loaded dict in place (``{}`` when the file is absent) and returns True to
+    write it back. The re-read happens inside the lock, so concurrent ug processes don't lose each
+    other's changes; the write is atomic and keeps the file's mode, since the file also holds
+    Claude's auth state. Returns False, without writing, when the file isn't a JSON object. Raises
+    ``RuntimeError`` on a lock timeout or a failed write. Claude Code's own writes don't take this
+    lock, so a race with it remains possible."""
+    if is_dry_run():
+        config = _read_claude_config_for_rewrite(path)
+        if config is not None and mutate(config):
+            write_json_file(path, config)
+        return config is not None
+    ensure_parent_dir(path)
+    try:
+        with path.with_name(path.name + CLAUDE_CONFIG_LOCK_SUFFIX).open("a+b") as lock_file:
+            acquire_exclusive_file_lock(lock_file, timeout=CLAUDE_CONFIG_LOCK_TIMEOUT_SECONDS)
+            try:
+                config = _read_claude_config_for_rewrite(path)
+                if config is not None and mutate(config):
+                    mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
+                    atomic_write_json(path, config)
+                    os.chmod(path, mode)
+                return config is not None
+            finally:
+                release_file_lock(lock_file)
+    except TimeoutError as exc:
+        raise RuntimeError(f"Timed out waiting for another ug process to update {path}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"Failed to write config file: {path}") from exc
+
+
+CLAUDE_HOOKS_MODULES_GATE = "tengu_plugin_hooks_modules"
+
+
+def ensure_hooks_modules_gate() -> None:
+    """Force Claude Code's mods rollout gate on in its cached feature flags.
+
+    Claude Code loads hooks modules (mods) from installed plugins only when the
+    ``tengu_plugin_hooks_modules`` gate is on, and no settings key can force it on. The only
+    source is the feature cache in ``.claude.json``, so seed ``true`` there before each launch.
+    A stale top-level copy of the gate is dropped. Best-effort: an unreadable file is left alone
+    and a write failure never blocks the launch."""
+
+    def mutate(config: dict) -> bool:
+        features = config.get("cachedGrowthBookFeatures")
+        if not isinstance(features, dict):
+            features = config["cachedGrowthBookFeatures"] = {}
+        if (
+            features.get(CLAUDE_HOOKS_MODULES_GATE) is True
+            and CLAUDE_HOOKS_MODULES_GATE not in config
+        ):
+            return False
+        config.pop(CLAUDE_HOOKS_MODULES_GATE, None)
+        features[CLAUDE_HOOKS_MODULES_GATE] = True
+        return True
+
+    try:
+        _update_claude_config(claude_code_config_path(), mutate)
+    except RuntimeError:
+        _debug("Could not enable the Claude Code mods gate", traceback.format_exc())
+
+
 def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     """Apply ``add``/``remove`` to Claude's user-scope ``mcpServers`` (``~/.claude.json``, or under
     ``$CLAUDE_CONFIG_DIR``) in a single read-modify-write, instead of one ``claude mcp`` subprocess
@@ -924,10 +1055,20 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
 
     If the file exists but can't be parsed as a JSON object, we must not clobber it, so we defer to
     the per-server ``claude`` CLI (which edits the file in place) for exactly the changed entries."""
-    path = claude_mcp_config_path()
-    config = _read_claude_config_for_rewrite(path)
-    if config is None:
-        removed: set[str] = set()
+    removed: set[str] = set()
+
+    def mutate(config: dict) -> bool:
+        servers = config.get("mcpServers")
+        if not isinstance(servers, dict):
+            servers = {}
+        removed.update(name for name in remove if name in servers)
+        for name in remove:
+            servers.pop(name, None)
+        servers.update(add)
+        config["mcpServers"] = servers
+        return True
+
+    if not _update_claude_config(claude_code_config_path(), mutate):
         for name in remove:
             # Clean every scope (not short-circuited), recording the name if any scope had it.
             if [scope for scope in MCP_CLEANUP_SCOPES if remove_claude_mcp_server(name, scope)]:
@@ -943,17 +1084,6 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
                 )
             else:
                 add_claude_mcp_server(name, entry, MCP_USER_SCOPE)
-        return removed
-
-    servers = config.get("mcpServers")
-    if not isinstance(servers, dict):
-        servers = {}
-    removed = {name for name in remove if name in servers}
-    for name in remove:
-        servers.pop(name, None)
-    servers.update(add)
-    config["mcpServers"] = servers
-    write_json_file(path, config)
     return removed
 
 
@@ -963,28 +1093,27 @@ def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
     The OS-managed ``managedMcpServers`` key is additive (it never touches the developer's own
     servers) but Claude Code reads it only from a real managed source, and only as a remote HTTP
     server it can drive OAuth against itself. So it fits only when the platform supports the sudo
-    reconcile, the run is interactive, the developer is not on PAT auth (which needs the stdio
-    proxy), and the workspace publishes a Claude Code OAuth client. Every other case falls back to the user-scope registration."""
+    reconcile, the run may write it (``ug configure``, or an interactive run), the developer is not
+    on PAT auth (which needs the stdio proxy), and the workspace publishes the pinned CIMD client.
+    Other cases use user scope."""
     return (
         managed_files_supported()
         and managed_writes_allowed()
         and not use_pat
-        and first_available_oauth_client(workspace, (CLAUDE_CODE_CIMD_CLIENT_ID,)) is not None
+        and workspace_supports_cimd(workspace)
+        and oauth_client_available(workspace, CLAUDE_CODE_CIMD_CLIENT_ID)
     )
 
 
 def managed_mcp_entry(url: str, *, client_id: str = CLAUDE_CODE_CIMD_CLIENT_ID) -> dict:
     """A ``managedMcpServers`` entry: a direct HTTP server Claude Code drives OAuth against itself.
 
-    Mirrors :func:`add_claude_http_mcp_server`: a published Claude Code OAuth client and an
-    arbitrary loopback callback port, which ``/oidc`` ignores for loopback redirects."""
+    Mirrors :func:`add_claude_http_mcp_server` with the pinned CIMD client."""
+    oauth = {"callbackPort": MCP_OAUTH_CALLBACK_PORT, "clientId": client_id}
     return {
         "type": "http",
         "url": url,
-        "oauth": {
-            "clientId": client_id,
-            "callbackPort": MCP_OAUTH_CALLBACK_PORT,
-        },
+        "oauth": oauth,
     }
 
 
@@ -997,7 +1126,8 @@ def reconcile_managed_mcp(
     managed file is the source of truth, so this is a wipe-and-rewrite, not a diff. Every other
     managed key is preserved, including the model configuration ug wrote earlier this run and any
     admin-authored policy. Returns True when the managed file is the delivery mechanism (written or
-    already current), False when it cannot be used (unsupported platform or a non-interactive run),
+    already current), False when it cannot be used (unsupported platform, or a run that may not
+    write it),
     so the caller routes those servers to the user-scope registration instead.
 
     ``also_registered`` names the servers ug registers in Claude outside this file this run (the
@@ -1095,7 +1225,7 @@ def _register_web_search_mcp(
     Returns True if registration succeeded. Failures are non-blocking: we warn
     and return False so the rest of `ucode claude` setup can complete.
     """
-    config = _read_claude_config_for_rewrite(claude_mcp_config_path())
+    config = _read_claude_config_for_rewrite(claude_code_config_path())
     servers = config.get("mcpServers", {}) if config is not None else None
     existing = servers.get(WEB_SEARCH_MCP_NAME) if isinstance(servers, dict) else None
     if not isinstance(servers, dict) or (
@@ -1129,7 +1259,7 @@ def _web_search_mcp_is_current(state: dict, entry: dict) -> bool:
     """
     if state.get(WEB_SEARCH_MCP_STATE_KEY) != entry:
         return False
-    config = read_json_safe(claude_mcp_config_path())
+    config = read_json_safe(claude_code_config_path())
     servers = config.get("mcpServers")
     return isinstance(servers, dict) and servers.get(WEB_SEARCH_MCP_NAME) == entry
 
@@ -1204,7 +1334,7 @@ def _prepare_external_web_search_args(state: dict, tool_args: list[str]) -> list
     options = tool_args[:end]
     if "--strict-mcp-config" in options:
         return tool_args
-    config = _search_config(claude_mcp_config_path())
+    config = _search_config(claude_code_config_path())
     entry = _search_servers(config).get(WEB_SEARCH_MCP_NAME)
     if entry is None:
         return tool_args
@@ -1366,7 +1496,15 @@ def write_tool_config(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
+    derive_managed_model_inputs: bool = False,
 ) -> dict:
+    """Write Claude's config.
+
+    The model inputs (``coding_agent_config_defaults``, ``route_root_model``, ``picker_catalog``)
+    are used as given, so a caller passing none gets no managed model keys. ``ug configure`` sets
+    ``derive_managed_model_inputs`` to build them from the managed config read below; a launch
+    passes them explicitly (see ``managed_model_inputs``).
+    """
     external_search = external_provider_selected()
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
@@ -1375,9 +1513,15 @@ def write_tool_config(
         backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
     # A managed config makes ug authoritative over the whole custom-header value, so it is
     # overwritten wholesale; without one, preserve the developer's own pre-existing headers. Reuses
-    # this launch's warm managed-config cache (no extra round trip); a failed fetch degrades to None
-    # (treated as unmanaged), never blocking the write.
-    managed_config_present = refresh_managed_config(state).manifest is not None
+    # the managed config `ug configure` saved (no network round trip unless none is saved yet).
+    managed_manifest = refresh_managed_config(state).manifest
+    managed_config_present = managed_manifest is not None
+    if derive_managed_model_inputs and not (provider or parent_schema or relayed):
+        # `ug configure` supplies no model inputs; derive the ones a plain launch passes explicitly.
+        derived = managed_model_inputs(state, managed_manifest)
+        coding_agent_config_defaults = derived.coding_agent_config_defaults
+        route_root_model = derived.route_root_model
+        picker_catalog = derived.picker_catalog
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
     should_write_tracing_settings = (
@@ -1755,6 +1899,11 @@ def _required_custom_headers(value: object) -> dict[str, str] | None:
 def _managed_settings_conflicts(
     existing: dict, desired: dict, owned_paths: list[list[str]]
 ) -> list[str]:
+    owned_paths = [
+        path
+        for path in owned_paths
+        if path not in CLAUDE_HEADER_MOD_PATHS and path not in CLAUDE_BLANKED_CREDENTIAL_PATHS
+    ]
     conflicts = managed_file_conflicts(existing, desired, owned_paths)
     header_path = f"env.{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}"
     if header_path in conflicts:
@@ -1820,6 +1969,146 @@ def _allow_ug_mcp_servers(settings: dict, admin_allowlist: list | None, names: s
     return settings
 
 
+CLAUDE_HEADER_MOD_MARKETPLACE = "ucode-managed"
+CLAUDE_HEADER_MOD_ID = f"ug-headers@{CLAUDE_HEADER_MOD_MARKETPLACE}"
+_CLAUDE_GUARD_MOD_ID = "sec-default@builtin"
+# The header mod's managed-file entries. Revert removes them; they never count as conflicts, since
+# nothing in ug's own settings file can be overridden by them.
+CLAUDE_HEADER_MOD_PATHS = [
+    ["extraKnownMarketplaces", CLAUDE_HEADER_MOD_MARKETPLACE],
+    ["enabledPlugins", CLAUDE_HEADER_MOD_ID],
+    ["prependPlugins"],
+]
+
+
+def _header_mod_files(root: Path) -> dict[Path, str]:
+    """The marketplace and plugin ug installs at ``root`` for its Claude header mod."""
+    description = "Adds `ug --header` / UG_HEADERS to Claude's gateway requests."
+    docs = {
+        ".claude-plugin/marketplace.json": {
+            "name": CLAUDE_HEADER_MOD_MARKETPLACE,
+            "owner": {"name": "Unity Gateway"},
+            # A relative source loads in place, which Claude requires of an organization's mod.
+            "plugins": [
+                {"name": "ug-headers", "source": "./ug-headers", "description": description}
+            ],
+        },
+        "ug-headers/.claude-plugin/plugin.json": {"name": "ug-headers", "description": description},
+        "ug-headers/hooks/hooks.json": {"modules": ["./register.ts"]},
+    }
+    files = {root / name: json.dumps(doc, indent=2) + "\n" for name, doc in docs.items()}
+    mod = Path(__file__).with_name("claude_header_mod") / "register.ts"
+    files[root / "ug-headers/hooks/register.ts"] = mod.read_text(encoding="utf-8")
+    return files
+
+
+def _enable_header_mod(settings: dict, root: Path | None) -> dict:
+    """Enable ug's header mod in the managed file and run it ahead of every user's mod."""
+    if root is None:
+        return settings
+    marketplaces = settings.setdefault("extraKnownMarketplaces", {})
+    plugins = settings.setdefault("enabledPlugins", {})
+    if not isinstance(marketplaces, dict) or not isinstance(plugins, dict):
+        return settings
+    marketplaces[CLAUDE_HEADER_MOD_MARKETPLACE] = {
+        "source": {"source": "directory", "path": str(root)}
+    }
+    plugins[CLAUDE_HEADER_MOD_ID] = True
+    # An unset list means the built-in guard alone, which a set list has to name to keep it.
+    prepend = settings.get("prependPlugins")
+    prepend = prepend if isinstance(prepend, list) else [_CLAUDE_GUARD_MOD_ID]
+    settings["prependPlugins"] = [
+        CLAUDE_HEADER_MOD_ID,
+        *(entry for entry in prepend if entry != CLAUDE_HEADER_MOD_ID),
+    ]
+    return settings
+
+
+_explicit_configure = False
+
+
+def request_explicit_configure(requested: bool = True) -> None:
+    """Mark this run as an explicit ``ug configure`` (``False`` clears it).
+
+    Only an explicit configure adds the header mod without ``UG_HEADERS`` and writes the credential
+    blanks into the managed file; a plain launch never re-adds either.
+    """
+    global _explicit_configure
+    _explicit_configure = requested
+
+
+def _install_header_mod(root: Path | None) -> bool:
+    """Install or update the header mod's files, returning whether this run did.
+
+    A failure only costs ``ug --header`` for Claude; the caller then doesn't enable the mod."""
+    if root is None or is_dry_run() or not managed_writes_allowed():
+        return False
+    try:
+        reconcile_privileged_files(_header_mod_files(root), display="Claude Code")
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        print_warning(f"Couldn't install ug's Claude header mod at {root}: {exc}")
+        return False
+    return True
+
+
+def _remove_header_mod() -> None:
+    """Remove the header mod's root-owned folder, for ``ug revert``."""
+    root = claude_header_mod_root()
+    if root is None or is_dry_run():
+        return
+    try:
+        remove_privileged_tree(root)
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        print_warning(f"Couldn't remove ug's Claude header mod at {root}: {exc}")
+
+
+def header_mod_active() -> bool:
+    """Whether ug's header mod is installed and enabled, so ``UG_HEADERS`` reaches Claude."""
+    root = claude_header_mod_root()
+    path = _managed_settings_path()
+    if root is None or path is None:
+        return False
+    try:
+        for file, content in _header_mod_files(root).items():
+            if not file.is_file() or file.read_text(encoding="utf-8") != content:
+                return False
+        settings = _parse_managed_settings(read_managed_file(path) or "{}")
+    except (OSError, RuntimeError):
+        return False
+    plugins = settings.get("enabledPlugins")
+    return isinstance(plugins, dict) and plugins.get(CLAUDE_HEADER_MOD_ID) is True
+
+
+def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> None:
+    """Add ug's credential blanks to the managed file only when asked; otherwise keep it as found.
+
+    Like the header mod, they are written by ``ug configure`` and never by a plain launch: another
+    writer of the file drops keys it doesn't template, and re-adding them would rewrite the
+    root-owned file (and prompt for sudo) on every launch. ``ucode-settings.json`` always has them.
+    """
+    env = desired.get("env")
+    if not isinstance(env, dict):
+        return
+    existing_env = existing.get("env")
+    existing_env = existing_env if isinstance(existing_env, dict) else {}
+    for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS:
+        held = existing_env.get(key)
+        if add and isinstance(held, str) and held.strip():
+            # Someone else's explicit value (e.g. IT's): never replace it silently.
+            env[key] = held
+            print_warning(
+                f"Claude Code managed settings at {_managed_settings_path()} set env.{key}; "
+                f"ug left it as is, so Claude may use it instead of the gateway credential and "
+                f"fail with a 401. Ask your administrator to remove it, or blank it yourself."
+            )
+        elif add:
+            env[key] = ""
+        elif key in existing_env:
+            env[key] = existing_env[key]
+        else:
+            env.pop(key, None)
+
+
 def _is_shared_claude_list(path: list[str]) -> bool:
     """Lists IT and ug also write to in the managed file, so the admin's entries merge into them."""
     return path == CLAUDE_PERMISSIONS_DENY_PATH or (len(path) == 2 and path[0] == "hooks")
@@ -1880,14 +2169,7 @@ def _reconcile_managed_settings(
     during `ucode claude`, so a bare `claude` could not reach the gateway anyway.
     """
     if managed_settings_skipped():
-        if config_scope() != "user":
-            check_skipped_managed_overrides(
-                _managed_settings_path(),
-                parser=_parse_managed_settings,
-                compose=compose,
-                owned_paths=owned_paths,
-                display="Claude Code",
-            )
+        # Opted out: trust whatever OS-managed file exists and leave it untouched.
         return
     path = _managed_settings_path()
     if path is None:
@@ -1922,7 +2204,18 @@ def _reconcile_managed_settings(
             "ucode did not modify the file. Repair it or contact your administrator."
         ) from exc
     managed_before = copy.deepcopy(existing)
-    desired_settings = compose(existing)
+    header_mod_root = claude_header_mod_root()
+    # Only `ug configure` installs, upgrades, or enables the mod. A launch, even with
+    # UG_HEADERS, never writes machine-wide files; `launch` warns when the mod is missing.
+    wants_mod = _explicit_configure
+    # Install the files before the settings name them, so a failed install never enables a
+    # plugin that isn't there; a run that can't write as root leaves any earlier entries as is.
+    installed = wants_mod and _install_header_mod(header_mod_root)
+    desired_settings = _enable_header_mod(compose(existing), header_mod_root if installed else None)
+    # Only the explicit `ug configure` path adds the blanks.
+    _settle_credential_blanks(desired_settings, managed_before, add=_explicit_configure)
+    if header_mod_root is not None:
+        owned_paths = [*owned_paths, *CLAUDE_HEADER_MOD_PATHS]
     _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])
     conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
     if not managed_writes_allowed() and not conflicts:
@@ -1939,7 +2232,8 @@ def _reconcile_managed_settings(
             parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
-        if conflicts:
+        # `ug configure` must leave the machine-wide file correct, so it never degrades silently.
+        if conflicts or explicit_managed_writes():
             raise
         print_warning(
             f"Claude Code OS-managed settings could not be updated at {path}; continuing with "
@@ -2146,6 +2440,23 @@ def _resolve_launch_binary(binary: str) -> str:
     )
 
 
+def _relayed_mcp_config_args(tool_args: list[str]) -> list[str]:
+    """``--mcp-config`` args that re-supply Claude's user-scope MCP servers to a relayed launch.
+
+    ``--setting-sources project,local`` excludes the user scope, which is where ``ug mcp add``
+    registers every managed server (``~/.claude.json`` top-level ``mcpServers``), so without this a
+    relayed session starts none of them while ``claude mcp list`` still reports them Connected.
+    Only ``mcpServers`` is passed back, never user settings, so the apiKeyHelper exclusion holds.
+    Skipped when the caller passes ``--strict-mcp-config``, which asks for only its own servers.
+    The flag is variadic, so callers must place it before another option (``--settings``)."""
+    if "--strict-mcp-config" in tool_args:
+        return []
+    servers = read_json_safe(claude_code_config_path()).get("mcpServers")
+    if not isinstance(servers, dict) or not servers:
+        return []
+    return ["--mcp-config", json.dumps({"mcpServers": servers}, separators=(",", ":"))]
+
+
 def _build_claude_argv(
     binary: str,
     tool_args: list[str],
@@ -2170,9 +2481,15 @@ def _build_claude_argv(
 
     ``relayed`` adds ``--setting-sources`` to exclude the user scope (see
     :data:`_RELAYED_SETTING_SOURCES`), so a stale user-scope apiKeyHelper cannot
-    filter through and shadow the subscription OAuth.
+    filter through and shadow the subscription OAuth. That also drops the user-scope
+    MCP servers, so they are handed back via ``--mcp-config`` (see
+    :func:`_relayed_mcp_config_args`).
     """
-    source_args = ["--setting-sources", _RELAYED_SETTING_SOURCES] if relayed else []
+    source_args = (
+        ["--setting-sources", _RELAYED_SETTING_SOURCES, *_relayed_mcp_config_args(tool_args)]
+        if relayed
+        else []
+    )
     caller_values, remaining = _extract_caller_settings(tool_args)
     if not caller_values and settings_override is None:
         # No caller --settings: hand Claude ucode's settings file directly (the
@@ -2196,6 +2513,33 @@ def _build_claude_argv(
         json.dumps(merged, separators=(",", ":")),
         *remaining,
     ]
+
+
+@contextmanager
+def _claude_launch_argv(
+    binary: str,
+    tool_args: list[str],
+    *,
+    relayed: bool = False,
+    settings_override: dict | None = None,
+) -> Iterator[list[str]]:
+    """Keep oversized Windows settings off the command line for the child's lifetime."""
+    argv = _build_claude_argv(binary, tool_args, relayed, settings_override)
+    settings_index = argv.index("--settings") + 1
+    if current_os() != OS.WINDOWS or not argv[settings_index].startswith("{"):
+        yield argv
+        return
+    command_line = subprocess.list2cmdline(argv)
+    # CreateProcess includes the terminating NUL in its 32,767 UTF-16 code unit limit.
+    if len(command_line.encode("utf-16-le", errors="surrogatepass")) // 2 < 32_767:
+        yield argv
+        return
+    with TemporaryDirectory(prefix="ug-claude-") as directory:
+        settings_path = Path(directory) / "settings.json"
+        settings_path.touch(mode=0o600)
+        settings_path.write_text(argv[settings_index], encoding="utf-8")
+        argv[settings_index] = str(settings_path)
+        yield argv
 
 
 def _has_subscription_login() -> bool:
@@ -2289,12 +2633,14 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    proc = subprocess_cross_os.popen(_build_claude_argv(binary, tool_args, relayed=True))
     try:
-        returncode = proc.wait()
-    except KeyboardInterrupt:
-        proc.send_signal(signal.SIGINT)
-        returncode = proc.wait()
+        with _claude_launch_argv(binary, tool_args, relayed=True) as argv:
+            proc = subprocess_cross_os.popen(argv)
+            try:
+                returncode = proc.wait()
+            except KeyboardInterrupt:
+                proc.send_signal(signal.SIGINT)
+                returncode = proc.wait()
     finally:
         cache.stop()
         server.shutdown()
@@ -2311,6 +2657,14 @@ def launch(
     tool_args = _external_web_search_args(state, tool_args)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
+    ensure_hooks_modules_gate()
+    if os.environ.get(UG_HEADERS_ENV_VAR, "").strip() and not header_mod_active():
+        print_warning(
+            "Claude Code won't send your `ug --header` / UG_HEADERS headers: ug's header mod isn't "
+            "installed or is out of date, and a launch never changes machine-wide files. Run "
+            "`ug configure` from an interactive terminal on Linux or macOS, without "
+            "UG_SKIP_OS_SETTINGS."
+        )
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.
@@ -2326,6 +2680,14 @@ def launch(
     pinned_model = (
         maybe_add_gpt_1m_suffix(options.user_pinned_model) if options.user_pinned_model else None
     )
+    # Launch-only start model (e.g. a budget recommendation) that differs from the model `ug
+    # configure` wrote to ANTHROPIC_MODEL. A managed ANTHROPIC_MODEL outranks the process env and
+    # --settings, so only Claude Code's own `--model` flag can override it without a file write.
+    session_model = (
+        maybe_add_gpt_1m_suffix(options.launch_model)
+        if options.launch_model and not pinned_model
+        else None
+    )
     routing_setup_failed = False
     if options.launch_smart_routing:
         try:
@@ -2337,7 +2699,11 @@ def launch(
                 # With no user pin, let Claude resolve its starting model from its own settings.
                 launch_model=pinned_model,
                 compose_settings=_compose_v2_settings,
-                launch_model_args=_launch_model_args,
+                launch_model_args=(
+                    _launch_model_args
+                    if not session_model
+                    else lambda args, model: _launch_model_args(args, model or session_model)
+                ),
                 model_name=_maybe_add_1m_suffix,
             )
         except smart_routing_v2.ClaudeRoutingSetupError:
@@ -2349,12 +2715,12 @@ def launch(
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
     launch_args = list(tool_args)
-    if pinned_model:
+    if start_model := pinned_model or session_model:
         # Pass the exact ID: managed family defaults can override temporary aliases.
-        os.environ["ANTHROPIC_MODEL"] = pinned_model
-        settings_override = {"env": {"ANTHROPIC_MODEL": pinned_model}}
+        os.environ["ANTHROPIC_MODEL"] = start_model
+        settings_override = {"env": {"ANTHROPIC_MODEL": start_model}}
         launch_args = [
-            *_launch_model_args(tool_args, pinned_model),
+            *_launch_model_args(tool_args, start_model),
             *tool_args,
         ]
     else:
@@ -2384,7 +2750,8 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
-    exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
+    with _claude_launch_argv(binary, launch_args, settings_override=settings_override) as argv:
+        exec_or_spawn(argv)
 
 
 def validate_cmd(binary: str) -> list[str]:

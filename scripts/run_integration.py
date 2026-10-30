@@ -32,6 +32,40 @@ AGENT_PACKAGES = {
     "opencode": "opencode-ai",
     "copilot": "@github/copilot",
 }
+# Agents not published on npm: installed from a pinned native build (see install_native_agent).
+NATIVE_AGENT_BINARIES = {"antigravity": "agy"}
+# Antigravity CLI release archives, keyed by (sys.platform, machine); `{build}` is
+# `<version>-<build id>`, e.g. 1.4.9-4962164969177088 (the path in Google's release manifest).
+ANTIGRAVITY_RELEASE_URL = (
+    "https://storage.googleapis.com/antigravity-public/antigravity-cli/{build}/{path}"
+)
+ANTIGRAVITY_ARCHIVES = {
+    ("linux", "x86_64"): "linux-x64/cli_linux_x64.tar.gz",
+    ("linux", "aarch64"): "linux-arm/cli_linux_arm64.tar.gz",
+    ("darwin", "arm64"): "darwin-arm/cli_mac_arm64.tar.gz",
+    ("darwin", "x86_64"): "darwin-x64/cli_mac_x64.tar.gz",
+}
+# Expected SHA-512 of each pinned archive, copied from Google's release manifests
+# (`<updater>/manifests/<platform>.json`). A build without an entry needs --antigravity-sha512.
+ANTIGRAVITY_SHA512 = {
+    (
+        "1.4.9-4962164969177088",
+        "linux-x64/cli_linux_x64.tar.gz",
+    ): "96a259b7475ae70a5b002ea8a83b804bba9b6ad2171af0cd0839b3959d9e6046ba36e181bc2d5597522aeceaacc06023564c46232fdb958f26f8c72267d9f0fd",
+    (
+        "1.4.9-4962164969177088",
+        "linux-arm/cli_linux_arm64.tar.gz",
+    ): "a703d10ea96d20d35c2ab6a056ce07ac196fac215cdf1ac3a8750a519fa42c3ac1bc4ac8776c98c94e0a816b6b37beaf0e5d98d30eed3e60a90d18ac9a060130",
+    (
+        "1.4.9-4962164969177088",
+        "darwin-arm/cli_mac_arm64.tar.gz",
+    ): "d7d83634b0c236659ee530f448e9aa1c5dc00a010631edd72bf11a920006892b319be7e51c8defae226f204660544e4d915bb5e733f1ceb50c065f4cbe45d3d0",
+    (
+        "1.4.9-4962164969177088",
+        "darwin-x64/cli_mac_x64.tar.gz",
+    ): "cd4df27844a6585da9af155fef02b344deb18213910cff27ddb7ea54411358318a50901a3d348997f67744c31e64fdda7ead3ab48e2c66fc10510b4d8ae9843f",
+}
+ALL_AGENTS = (*AGENT_PACKAGES, *NATIVE_AGENT_BINARIES)
 WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
 # Claude exports no spans on Windows, where ug writes no machine-wide Claude settings.
 WINDOWS_UNSUPPORTED_MODULES = {"test_ug_claude_tracing.py"}
@@ -39,13 +73,16 @@ WINDOWS_UNSUPPORTED_NODES = {
     # Seeds machine-wide managed settings, which ug has no Windows path for.
     "test_ug_configure_claude_lifecycle.py::test_unmanaged_claude_preserves_preexisting_family_defaults",
     # Codex's Windows sandbox can't read ug's owner-only session-env dir yet.
-    "test_ug_smart_routing_hooks.py::test_smart_router_skill_toggles_codex_subagent_routing",
+    "test_ug_smart_routing_hooks.py::test_smart_router_routes_codex_subagent_at_launch",
+    "test_ug_smart_routing_hooks.py::test_smart_router_skill_turns_codex_subagent_routing_off",
+    "test_ug_smart_routing_hooks.py::test_smart_router_skill_turns_codex_subagent_routing_back_on",
 }
 HEADLESS_TEST_NODES = {
     "claude": "test_ug_claude_headless.py::test_ug_claude_headless_prompt_argument",
     "codex": "test_ug_codex_headless.py::test_ug_codex_headless_prompt_argument",
     "opencode": "test_ug_opencode_headless.py::test_ug_opencode_headless_prompt_argument",
     "copilot": "test_ug_copilot_headless.py::test_ug_copilot_headless_completes_file_task",
+    "antigravity": "test_ug_antigravity_headless.py::test_ug_antigravity_headless_completes_file_task",
 }
 
 
@@ -93,6 +130,8 @@ def managed_policy_paths(
                 )
             paths.append(Path(program_files) / "ClaudeCode" / "managed-settings.json")
     elif platform_name == "posix":
+        # Unity Gateway's installed workspace policy affects every agent.
+        paths.append(Path("/etc/unitygateway/managed-settings.json"))
         if "codex" in selected:
             paths.extend(
                 [Path("/etc/codex/managed_config.toml"), Path("/etc/codex/requirements.toml")]
@@ -237,6 +276,85 @@ def managed_process(command, *, interrupt=False, **kwargs):
             proc.wait(timeout=5)
 
 
+def sha512_digest(value: str) -> str:
+    if not re.fullmatch(r"[0-9a-fA-F]{128}", value):
+        raise argparse.ArgumentTypeError("Use a 128-character hex SHA-512 digest.")
+    return value.lower()
+
+
+def exact_antigravity_build(value: str) -> str:
+    if not re.fullmatch(r"\d+\.\d+\.\d+-\d+", value):
+        raise argparse.ArgumentTypeError(
+            "Use an exact Antigravity build, <version>-<build id>, for example "
+            "1.4.9-4962164969177088 (from the release manifest's url)."
+        )
+    return value
+
+
+def antigravity_archive_path(system: str, machine: str) -> str:
+    path = ANTIGRAVITY_ARCHIVES.get((system, machine.lower()))
+    if path is None:
+        raise RuntimeError(f"No Antigravity CLI build for {system}/{machine}.")
+    return path
+
+
+def antigravity_archive_url(build: str, system: str, machine: str) -> str:
+    return ANTIGRAVITY_RELEASE_URL.format(
+        build=build, path=antigravity_archive_path(system, machine)
+    )
+
+
+def antigravity_expected_sha512(
+    build: str, system: str, machine: str, override: str | None = None
+) -> str:
+    """The digest the downloaded archive must have: ``override``, else the pinned table entry."""
+    if override:
+        return override.lower()
+    expected = ANTIGRAVITY_SHA512.get((build, antigravity_archive_path(system, machine)))
+    if expected is None:
+        raise RuntimeError(
+            f"No pinned SHA-512 for Antigravity CLI {build} on {system}/{machine}. Add it to "
+            "ANTIGRAVITY_SHA512 from the release manifest, or pass --antigravity-sha512."
+        )
+    return expected
+
+
+def install_native_agent(
+    agent: str, build: str, destination: Path, *, sha512: str | None = None
+) -> dict:
+    """Download a pinned native agent build into ``destination``; never runs an installer.
+
+    The archive's SHA-512 is checked against the pinned value before anything is extracted."""
+    import tarfile
+
+    assert agent == "antigravity", agent
+    system, machine = sys.platform, platform.machine()
+    url = antigravity_archive_url(build, system, machine)
+    expected = antigravity_expected_sha512(build, system, machine, sha512)
+    archive = destination / "agy.tar.gz"
+    destination.mkdir(parents=True)
+    with urllib.request.urlopen(url, timeout=300) as response:  # noqa: S310 (pinned https URL)
+        archive.write_bytes(response.read())
+    digest = hashlib.sha512(archive.read_bytes()).hexdigest()
+    if digest != expected:
+        archive.unlink()
+        raise RuntimeError(f"{url} has SHA-512 {digest}, expected {expected}.")
+    with tarfile.open(archive) as bundle:
+        try:
+            member = bundle.getmember("antigravity")
+        except KeyError as err:
+            raise RuntimeError(f"{url} has no antigravity binary.") from err
+        if not member.isfile():
+            raise RuntimeError(f"{url} has no antigravity binary.")
+        source = bundle.extractfile(member)
+        assert source is not None
+        binary = destination / NATIVE_AGENT_BINARIES[agent]
+        binary.write_bytes(source.read())
+    binary.chmod(0o755)
+    archive.unlink()
+    return {"url": url, "sha512": digest, "path": str(binary)}
+
+
 def exact_npm_version(value: str) -> str:
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", value):
         raise argparse.ArgumentTypeError(
@@ -264,12 +382,26 @@ def arguments(
     parser.add_argument("--codex-version", type=exact_npm_version)
     parser.add_argument("--opencode-version", type=exact_npm_version)
     parser.add_argument("--copilot-version", type=exact_npm_version)
+    parser.add_argument(
+        "--antigravity-build",
+        type=exact_antigravity_build,
+        help="Exact Antigravity CLI build to download (Linux and macOS), e.g. 1.4.9-4962164969177088.",
+    )
+    parser.add_argument(
+        "--antigravity-sha512",
+        type=sha512_digest,
+        help="Expected SHA-512 of the --antigravity-build archive, for a build not pinned in "
+        "ANTIGRAVITY_SHA512 (copy it from the release manifest).",
+    )
     parser.add_argument("--claude-model", default=environment.get("UG_INTEGRATION_CLAUDE_MODEL"))
     parser.add_argument("--codex-model", default=environment.get("UG_INTEGRATION_CODEX_MODEL"))
     parser.add_argument(
         "--opencode-model", default=environment.get("UG_INTEGRATION_OPENCODE_MODEL")
     )
     parser.add_argument("--copilot-model", default=environment.get("UG_INTEGRATION_COPILOT_MODEL"))
+    parser.add_argument(
+        "--antigravity-model", default=environment.get("UG_INTEGRATION_ANTIGRAVITY_MODEL")
+    )
     parser.add_argument(
         "--claude-provider",
         default="main.ucode.ci_e2e_anthropic_nonrelay_mps",
@@ -287,18 +419,29 @@ def arguments(
     )
     parser.add_argument(
         "--claude-bedrock-allow-all-provider",
-        default="main.ucode.e2e_bedrock_all_models_enabled",
+        default="main.ucode.ci_bedrock_mason_all_models",
         help="Bedrock MPS with allow_all_targets and no declared targets, for the #811 CUJ.",
     )
     parser.add_argument(
         "--claude-bedrock-allow-all-model",
-        default="global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        default="us.anthropic.claude-sonnet-4-6",
         help="Explicit Bedrock model id the allow_all CUJ pins (the service declares no targets).",
     )
     parser.add_argument(
         "--claude-bedrock-provider",
-        default="main.ucode.bedrock_e2e",
-        help="AWS Bedrock Anthropic MPS with a restricted allowed-models set (Sonnet + Haiku, no Opus), selected in the configure CUJ.",
+        default="main.ucode.ci_bedrock_mason_filtered_models",
+        help="AWS Bedrock Anthropic MPS with a restricted allowed-models set (Sonnet + Opus), selected in the configure CUJ.",
+    )
+    parser.add_argument(
+        "--antigravity-provider",
+        default="main.ucode.ci-gemini-mps",
+        help="Existing Gemini Enterprise MPS selected in the Antigravity External Models CUJs.",
+    )
+    parser.add_argument(
+        "--antigravity-provider-models",
+        default="gemini-4-argon,gemini-3.8-flash",
+        help="Comma-separated targets of --antigravity-provider, newest first, each run as a "
+        "task with --model; the first is the one `ug configure` pins.",
     )
     parser.add_argument(
         "--codex-provider",
@@ -394,12 +537,20 @@ def arguments(
     if selected.x:
         args.pytest_args.append("-x")
     if not (
-        args.claude_version or args.codex_version or args.opencode_version or args.copilot_version
+        args.claude_version
+        or args.codex_version
+        or args.opencode_version
+        or args.copilot_version
+        or args.antigravity_build
     ):
         parser.error(
-            "Select --claude-version, --codex-version, --opencode-version and/or "
-            "--copilot-version explicitly."
+            "Select --claude-version, --codex-version, --opencode-version, --copilot-version "
+            "and/or --antigravity-build explicitly."
         )
+    # The release archive names the version before its build id.
+    args.antigravity_version = (
+        args.antigravity_build.rsplit("-", 1)[0] if args.antigravity_build else None
+    )
     if args.ug_version != "checkout" and not re.fullmatch(
         r"[0-9][0-9A-Za-z.!+_-]*", args.ug_version
     ):
@@ -437,7 +588,8 @@ def main() -> int:
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, terminate)
-    agents = [agent for agent in AGENT_PACKAGES if getattr(args, f"{agent}_version")]
+    agents = [agent for agent in ALL_AGENTS if getattr(args, f"{agent}_version")]
+    npm_agents = [agent for agent in agents if agent in AGENT_PACKAGES]
     binaries = {name: shutil.which(name) for name in ("uv", "npm", "node", "databricks")}
     required = ["uv", "npm", "node"] + ([] if args.installation_only else ["databricks"])
     missing = [name for name in required if not binaries[name]]
@@ -557,16 +709,20 @@ def main() -> int:
             "codex": args.codex_version,
             "opencode": args.opencode_version,
             "copilot": args.copilot_version,
+            "antigravity": args.antigravity_build,
             "claude_model": args.claude_model,
             "codex_model": args.codex_model,
             "opencode_model": args.opencode_model,
             "copilot_model": args.copilot_model,
+            "antigravity_model": args.antigravity_model,
             "claude_provider": args.claude_provider,
             "claude_relayed_provider": args.claude_relayed_provider,
             "claude_provider_model": args.claude_provider_model,
             "claude_bedrock_allow_all_provider": args.claude_bedrock_allow_all_provider,
             "claude_bedrock_allow_all_model": args.claude_bedrock_allow_all_model,
             "claude_bedrock_provider": args.claude_bedrock_provider,
+            "antigravity_provider": args.antigravity_provider,
+            "antigravity_provider_models": args.antigravity_provider_models,
             "codex_provider": args.codex_provider,
             "codex_provider_model": args.codex_provider_model,
             "codex_azure_provider": args.codex_azure_provider,
@@ -691,12 +847,14 @@ def main() -> int:
 
         npm_prefix = output / "agents"
         npm_prefix.mkdir()
-        if args.npm_lock:
+        if not npm_agents:
+            pass
+        elif args.npm_lock:
             (npm_prefix / "package.json").write_text(
                 json.dumps(
                     {
                         "dependencies": {
-                            AGENT_PACKAGES[a]: getattr(args, f"{a}_version") for a in agents
+                            AGENT_PACKAGES[a]: getattr(args, f"{a}_version") for a in npm_agents
                         }
                     }
                 )
@@ -726,23 +884,40 @@ def main() -> int:
                     "--save-exact",
                     "--registry",
                     args.npm_registry,
-                    *[f"{AGENT_PACKAGES[a]}@{getattr(args, f'{a}_version')}" for a in agents],
+                    *[f"{AGENT_PACKAGES[a]}@{getattr(args, f'{a}_version')}" for a in npm_agents],
                 ],
             )
-        shutil.copyfile(npm_prefix / "package-lock.json", output / "npm-lock.json")
-        report["npm_packages"] = json.loads(
-            run(
-                [
-                    binaries["npm"],
-                    "ls",
-                    "--prefix",
-                    npm_prefix,
-                    "--depth=0",
-                    "--json",
-                ]
-            )
-        )["dependencies"]
+        if npm_agents:
+            shutil.copyfile(npm_prefix / "package-lock.json", output / "npm-lock.json")
+            report["npm_packages"] = json.loads(
+                run(
+                    [
+                        binaries["npm"],
+                        "ls",
+                        "--prefix",
+                        npm_prefix,
+                        "--depth=0",
+                        "--json",
+                    ]
+                )
+            )["dependencies"]
         agent_bin = npm_prefix / "node_modules/.bin"
+        native_bin = output / "native-agents"
+        report["native_agents"] = {
+            agent: install_native_agent(
+                agent, args.antigravity_build, native_bin, sha512=args.antigravity_sha512
+            )
+            for agent in agents
+            if agent in NATIVE_AGENT_BINARIES
+        }
+        agent_commands = {
+            agent: (
+                native_bin / NATIVE_AGENT_BINARIES[agent]
+                if agent in NATIVE_AGENT_BINARIES
+                else npm_executable(agent_bin, agent)
+            )
+            for agent in agents
+        }
         # Expose only selected executables to tested programs; other installed
         # developer agents cannot be discovered accidentally via inherited PATH.
         tool_bin = output / "tools"
@@ -762,7 +937,7 @@ def main() -> int:
                 else:
                     (tool_bin / name).symlink_to(source)
         runtime_env = dict(base_env)
-        runtime_paths = [runtime_bin, agent_bin, tool_bin]
+        runtime_paths = [runtime_bin, agent_bin, native_bin, tool_bin]
         if os.name == "nt":
             system_root = Path(base_env["SYSTEMROOT"])
             # Copilot's shell tool tries pwsh first; Windows PowerShell alone can miss its 40s
@@ -783,8 +958,11 @@ def main() -> int:
             runtime_paths.extend([Path("/usr/bin"), Path("/bin")])
         runtime_env["PATH"] = os.pathsep.join(map(str, runtime_paths))
         report["agents"] = {}
+        if "antigravity" in agents:
+            # agy requires the literal "true"; "1" leaves background updates enabled.
+            runtime_env["AGY_CLI_DISABLE_AUTO_UPDATE"] = "true"
         for agent in agents:
-            agent_command = npm_executable(agent_bin, agent)
+            agent_command = agent_commands[agent]
             version = agent_version_output(
                 agent, run([agent_command, "--version"], env=runtime_env, timeout=30)
             )
@@ -828,7 +1006,7 @@ def main() -> int:
             if client_id and client_secret:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
-        test_dependencies = ["pytest==9.0.3", "httpx==0.28.1", "pyte==0.8.2"]
+        test_dependencies = ["pytest==9.0.3", "httpx==0.28.1", "pyte==0.8.2", "mcp==2.1.1"]
         test_dependencies.append("pexpect==4.9.0" if os.name == "posix" else "pywinpty==3.0.5")
         run(
             [
@@ -857,6 +1035,8 @@ def main() -> int:
                 "UG_INTEGRATION_CLAUDE_PROVIDER_MODEL": args.claude_provider_model,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_PROVIDER": args.claude_bedrock_allow_all_provider,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL": args.claude_bedrock_allow_all_model,
+                "UG_INTEGRATION_ANTIGRAVITY_PROVIDER": args.antigravity_provider,
+                "UG_INTEGRATION_ANTIGRAVITY_PROVIDER_MODELS": args.antigravity_provider_models,
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
                 "UG_INTEGRATION_CODEX_AZURE_PROVIDER": args.codex_azure_provider,
@@ -941,7 +1121,7 @@ def main() -> int:
             after = agent_version_output(
                 agent,
                 run(
-                    [npm_executable(agent_bin, agent), "--version"],
+                    [agent_commands[agent], "--version"],
                     env=runtime_env,
                     timeout=30,
                 ),

@@ -43,6 +43,7 @@ from ucode.constants import (
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
 from ucode.telemetry import ucode_user_agent, ug_version
+from ucode.ug_headers import ug_headers
 from ucode.ui import (
     err_console,
     normalize_workspace_url,
@@ -96,7 +97,11 @@ _TOKEN_MEMO_FAILURE_TTL_S = 60
 # End browser login before Codex's 180 s helper timeout.
 _BROWSER_LOGIN_TIMEOUT_SECONDS = 150
 _BROWSER_LOGIN_LOCK_PATH = APP_DIR / "auth-login.lock"
-_HTTP_GET_RETRYABLE_STATUS_CODES = frozenset({429})
+# 429 is a rate limit; 499, 502, 503 and 504 are transient gateway/proxy statuses that the
+# Unity Catalog endpoints return intermittently under load. 500 is left out: it usually means a
+# deterministic server bug that a retry won't fix. Retries back off 1 s, 2 s, 4 s (capped at
+# 5 s) plus up to 25% jitter, or honor Retry-After up to 5 s.
+_HTTP_GET_RETRYABLE_STATUS_CODES = frozenset({429, 499, 502, 503, 504})
 _HTTP_GET_RETRY_BASE_SECONDS = 1.0
 _HTTP_GET_RETRY_MAX_SECONDS = 5.0
 _HTTP_GET_RETRY_AFTER_JITTER_SECONDS = 0.25
@@ -324,22 +329,22 @@ def _http_get_bytes(
     url: str,
     token: str,
     *,
-    timeout: int = 10,
+    timeout: float = 10,
     max_retries: int = 0,
     headers: dict[str, str] | None = None,
 ) -> tuple[bytes | None, str | None]:
     """GET raw bytes. Returns (body, None) on success, (None, reason) on failure.
 
-    ``max_retries`` opts individual callers into bounded retries for rate limits
-    and network failures. Other callers retain the original single-attempt
-    behavior.
+    ``max_retries`` opts individual callers into bounded retries (with backoff) for
+    rate limits (429), transient gateway statuses (499, 502, 503, 504), and network failures.
+    Other callers retain the original single-attempt behavior.
 
     Honors UCODE_DEBUG=1 to append status + truncated error body to ~/.ucode/debug.log.
     """
     if max_retries < 0:
         raise ValueError("max_retries must be non-negative")
 
-    request_headers = {"Authorization": f"Bearer {token}"}
+    request_headers = {**ug_headers(), "Authorization": f"Bearer {token}"}
     request_headers.update(headers or {})
     request = urllib_request.Request(url, headers=request_headers)
     for attempt in range(max_retries + 1):
@@ -397,7 +402,7 @@ def _http_get_json(
     url: str,
     token: str,
     *,
-    timeout: int = 10,
+    timeout: float = 10,
     max_retries: int = 0,
     headers: dict[str, str] | None = None,
 ) -> tuple[dict | list | None, str | None]:
@@ -443,7 +448,11 @@ def _http_send_json(
     empty body there is the expected result, not a decode failure.
     """
     body_bytes = json.dumps(payload).encode("utf-8") if payload is not None else None
-    request_headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    request_headers = {
+        **ug_headers(),
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
     if body_bytes is not None:
         request_headers["Content-Type"] = "application/json"
     request_headers.update(headers or {})
@@ -2726,6 +2735,20 @@ OAUTH_U2M_CONNECTION_KINDS = frozenset(
 )
 
 
+def get_mcp_service(
+    workspace: str, token: str, full_name: str
+) -> tuple[dict | list | None, str | None]:
+    url = f"{workspace_origin(workspace)}/api/2.1/unity-catalog/mcp-services/{quote(full_name, safe='')}"
+    return _http_get_json(url, token)
+
+
+def get_mcp_service_user_credential(
+    workspace: str, token: str, full_name: str, *, timeout: float = 10
+) -> tuple[dict | list | None, str | None]:
+    url = f"{workspace_origin(workspace)}/api/2.1/unity-catalog/mcp-services/{quote(full_name, safe='')}/user-credentials"
+    return _http_get_json(url, token, timeout=timeout)
+
+
 def mcp_service_needs_connection_login(workspace: str, token: str, full_name: str) -> bool:
     """Whether an AI Gateway mcp-service is backed by a per-user OAuth (U2M) connection, and so
     needs a one-time connection sign-in before it vends tools.
@@ -2735,8 +2758,7 @@ def mcp_service_needs_connection_login(workspace: str, token: str, full_name: st
     failed lookup all return ``False`` — the safe default: such services work with only the
     Databricks token that ``ug mcp-proxy`` injects, and must not be pushed into a connection-login
     OAuth flow they can't complete (AIGTWY-4856)."""
-    prefix = f"https://{workspace_hostname(workspace)}/api/2.1/unity-catalog"
-    details, err = _http_get_json(f"{prefix}/mcp-services/{quote(full_name, safe='')}", token)
+    details, err = get_mcp_service(workspace, token, full_name)
     if err is not None or not isinstance(details, dict):
         return False
     kind = ((details.get("config") or {}).get("source_connection") or {}).get("securable_kind")
@@ -2763,25 +2785,36 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
 # the `openai`, `azure_openai`, `microsoft_foundry`, `amazon_bedrock`, and
 # `bedrock_mantle` provider types all serve (the gateway fronts them with the
 # OpenAI surface); gemini speaks Google's, served by a Gemini Enterprise
-# provider. copilot speaks Anthropic's for the Claude targets of anthropic and
-# Bedrock services, and OpenAI's for openai and azure_openai services, on the
-# gateway's native route for each API. Tags are the short form produced by `_provider_type_tag`
+# provider. copilot speaks Anthropic's for the Claude targets of anthropic, Bedrock and
+# microsoft_foundry services, and OpenAI's for the other targets of openai, azure_openai and
+# microsoft_foundry services, on the gateway's native route for each API. Tags are the short form produced by `_provider_type_tag`
 # (e.g. `amazon_bedrock`).
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
     "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle"),
     "codex": ("openai", "azure_openai", "microsoft_foundry", "amazon_bedrock", "bedrock_mantle"),
     "gemini": ("gemini_enterprise",),
-    "copilot": ("anthropic", "amazon_bedrock", "bedrock_mantle", "openai", "azure_openai"),
+    "antigravity": ("gemini_enterprise",),
+    "copilot": (
+        "anthropic",
+        "amazon_bedrock",
+        "bedrock_mantle",
+        "openai",
+        "azure_openai",
+        "microsoft_foundry",
+    ),
 }
+# Copilot Chat in VS Code can use the same provider types as Copilot CLI.
+_TOOL_PROVIDER_TYPES["vscode"] = _TOOL_PROVIDER_TYPES["copilot"]
 
 # Agents that can only use a Bedrock service's Claude targets.
-_CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot")
+_CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot", "vscode")
 
 # Provider types that expose Bedrock-style model ids (e.g.
 # `us.anthropic.claude-sonnet-4-6`, or region-less `anthropic.claude-*` on
 # Mantle) instead of the agent's canonical model names, so ucode must pin them
 # explicitly.
 BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock", "bedrock_mantle")
+MICROSOFT_FOUNDRY_PROVIDER_TYPE = "microsoft_foundry"
 # Provider types the gateway serves on its Anthropic Messages route.
 ANTHROPIC_API_PROVIDER_TYPES: tuple[str, ...] = ("anthropic", *BEDROCK_PROVIDER_TYPES)
 
@@ -3574,8 +3607,9 @@ def fetch_ai_gateway_claude_models(workspace: str, token: str) -> dict[str, str]
 #   system.ai.claude-opus-4-7[1m]   -> claude-opus-4-7
 #   main.ucode.claude_haiku         -> claude_haiku
 #   gpt-5.5                         -> gpt-5.5 (one dot is a version, not a schema)
+# A region prefix is dotted on Bedrock (`us.anthropic.`) and slashed on Azure (`eu/gpt-5.6-luna`).
 _BARE_MODEL_NAME_PATTERN = re.compile(
-    r"^(?:[^.\[]+\.[^.\[]+\.)?(?:anthropic\.)?(?:databricks-)?(?P<name>[^\[]*)"
+    r"^(?:[^.\[]+\.[^.\[]+\.)?(?:[^/.\[]+/)?(?:anthropic\.)?(?:databricks-)?(?P<name>[^\[]*)"
 )
 
 
@@ -3704,6 +3738,9 @@ class GatewayProbe(NamedTuple):
 
 _MODEL_SERVICE_PROBE_PAGE_SIZE = 50
 _MODEL_SERVICE_PROBE_MAX_PAGES = 20
+# The endpoint intermittently returns HTTP 499/504 under load; retry so a transient blip
+# doesn't abort a launch. Two retries add about 1 s then 2 s (plus jitter) before giving up.
+_MODEL_SERVICE_PROBE_MAX_RETRIES = 2
 _MODEL_SERVICE_EMPTY_DETAIL = (
     "reachable, no accessible model services returned; "
     "check USE CATALOG on system, and USE SCHEMA and EXECUTE on system.ai"
@@ -3717,7 +3754,9 @@ def _probe_model_services(workspace: str, token: str) -> GatewayProbe:
         params: dict[str, object] = {"page_size": _MODEL_SERVICE_PROBE_PAGE_SIZE}
         if page_token:
             params["page_token"] = page_token
-        payload, reason = _http_get_json(f"{base}?{urlencode(params)}", token)
+        payload, reason = _http_get_json(
+            f"{base}?{urlencode(params)}", token, max_retries=_MODEL_SERVICE_PROBE_MAX_RETRIES
+        )
         if payload is None:
             if page == 0:
                 return GatewayProbe(False, reason or "unknown error")
@@ -3756,9 +3795,27 @@ def _raise_model_service_permission_failure(workspace: str, model_service_reason
     )
 
 
+# Probes that returned an accessible model service, keyed by (workspace, token) so a re-login or a
+# different credential probes again. `ucode codex` configures once for auto-setup and again on the
+# launch path; re-probing a gateway that just answered only gives the flaky listing another chance
+# to fail. Failures, empty listings, and inconclusive results are never cached.
+_GATEWAY_PROBE_CACHE: dict[tuple[str, str], GatewayProbe] = {}
+
+
+def clear_gateway_probe_cache() -> None:
+    """Forget successful gateway probes (used by tests)."""
+    _GATEWAY_PROBE_CACHE.clear()
+
+
 def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe:
     """Return the model service probe, raising if model service access can't be verified."""
+    cache_key = (workspace, token)
+    cached = _GATEWAY_PROBE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     model_service_probe = _probe_model_services(workspace, token)
+    if model_service_probe.resource_available:
+        _GATEWAY_PROBE_CACHE[cache_key] = model_service_probe
     if model_service_probe.reachable:
         # resource_available, reachable-but-empty, and inconclusive are all non-fatal: the
         # caller surfaces the detail as a warning when no accessible model service came back.
@@ -3772,10 +3829,35 @@ def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe
     if _looks_like_permission_failure(reason):
         _raise_model_service_permission_failure(workspace, reason)
 
+    if _looks_like_transient_failure(reason):
+        raise RuntimeError(
+            "Could not verify Databricks Unity Gateway on this workspace: the model services "
+            f"request failed ({reason}). This is usually transient; retry the command, or pass "
+            "--skip-preflight to launch without this check."
+        )
+
+    if _is_not_found_reason(reason):
+        raise RuntimeError(
+            "Databricks Unity Gateway is not enabled on this workspace: model services "
+            f"({reason}) are not available. See {AI_GATEWAY_DOCS_URL}"
+        )
     raise RuntimeError(
-        "Databricks Unity Gateway is not enabled on this workspace: model services "
-        f"({reason}) are not available. See {AI_GATEWAY_DOCS_URL}"
+        f"Could not verify Databricks Unity Gateway model services on {workspace} "
+        f"({reason}). See {AI_GATEWAY_DOCS_URL}"
     )
+
+
+_HTTP_STATUS_REASON_RE = re.compile(r"^HTTP (\d{3})\b")
+
+
+def _looks_like_transient_failure(reason: str) -> bool:
+    """True when a failure reason is one ``_http_get_bytes`` retries (a status in
+    ``_HTTP_GET_RETRYABLE_STATUS_CODES`` or a network error), rather than a definitive
+    answer about the workspace."""
+    if reason.startswith("network error:"):
+        return True
+    match = _HTTP_STATUS_REASON_RE.match(reason)
+    return match is not None and int(match.group(1)) in _HTTP_GET_RETRYABLE_STATUS_CODES
 
 
 def _looks_like_definitive_auth_failure(reason: str) -> bool:
@@ -3808,51 +3890,6 @@ def _looks_like_permission_failure(reason: str) -> bool:
     return "HTTP 403" in reason
 
 
-CODING_AGENT_RECOMMEND_MODEL_PATH = "/api/ai-gateway/v2/coding-agent-configs:recommendModel"
-
-
-def resolve_current_budget_spend(
-    workspace: str,
-    token: str,
-    *,
-    timeout: int = 10,
-) -> tuple[tuple[Decimal, Decimal] | None, str | None]:
-    """Fetch the caller's coding-agent budget spend and alert threshold.
-
-    Reads them off `recommendModel`, which returns the spend its model
-    recommendation was based on. `available_models` is empty since we want the
-    spend, not the recommendation.
-
-    Returns `((spend, threshold), None)` or `(None, reason)`. Absence is
-    routine — the endpoint needs a per-org SAFE flag (default off) and a
-    coding-agent config — so it never raises.
-    """
-    url = f"https://{workspace_hostname(workspace)}{CODING_AGENT_RECOMMEND_MODEL_PATH}"
-    payload, reason = _http_post_json(url, token, {"available_models": []}, timeout=timeout)
-    if payload is None:
-        return None, reason or "unknown error"
-    if not isinstance(payload, dict):
-        return None, "response was not a JSON object"
-
-    # The threshold is what anchors the spend: a caller with a per-user threshold but no spend yet
-    # this period gets `effective_threshold` set and `current_spend` omitted (see the server's
-    # per-user spend resolution). Treat an *absent* spend as $0 rather than "no budget", so a
-    # developer who hasn't spent anything still sees their budget instead of a blank. With no
-    # threshold there is nothing to measure against, so that genuinely counts as no spend.
-    threshold = _parse_decimal(payload.get("effective_threshold"))
-    if threshold is None:
-        return None, "workspace reported no coding-agent budget spend"
-    raw_spend = payload.get("current_spend")
-    if raw_spend is None:
-        spend: Decimal | None = Decimal(0)
-    else:
-        # Present but unparseable is corrupt data, not zero spend — don't silently mask it.
-        spend = _parse_decimal(raw_spend)
-        if spend is None:
-            return None, "workspace reported no coding-agent budget spend"
-    return (spend, threshold), None
-
-
 def _parse_decimal(value: object) -> Decimal | None:
     if isinstance(value, str) and value.strip():
         try:
@@ -3879,7 +3916,7 @@ def build_tool_base_url(tool: str, workspace: str) -> str:
         return f"{workspace}/ai-gateway/codex/v1"
     if tool == "claude":
         return f"{workspace}/ai-gateway/anthropic"
-    if tool == "gemini":
+    if tool in ("gemini", "antigravity"):
         return f"{workspace}/ai-gateway/gemini"
     if tool == "opencode":
         raise RuntimeError(
@@ -3983,5 +4020,6 @@ def build_shared_base_urls(workspace: str) -> dict[str, str | dict[str, str]]:
         "opencode": build_opencode_base_urls(workspace),
         "copilot": build_copilot_base_url(workspace),
         "pi": build_pi_base_urls(workspace),
+        "antigravity": build_tool_base_url("antigravity", workspace),
     }
     return urls
