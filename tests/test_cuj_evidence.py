@@ -405,6 +405,60 @@ def test_cuj_codex_encrypted_child_inference_matches_routed_task_name():
         _task_inference_request([request], CODEX, "read_file", after=2)
 
 
+@pytest.mark.parametrize("lite", [False, True], ids=["top-level-tools", "responses-lite"])
+def test_cuj_codex_plaintext_child_inference_matches_routed_task(lite):
+    prompt = "Read input-file.txt using a tool.\nReturn only its contents. Do not delegate."
+    request = _inference_request(CODEX, 3, "parent prompt", [{"name": "exec"}])
+    tool_holder = request.payload
+    if lite:
+        tool_holder = {
+            "type": "additional_tools",
+            "role": "developer",
+            "tools": request.payload.pop("tools"),
+        }
+        request.payload["input"].insert(0, tool_holder)
+    assignment = (
+        "Message Type: NEW_TASK\nTask name: /root/read_file\nSender: /root\nPayload:\n" + prompt
+    )
+    message = {
+        "type": "agent_message",
+        "author": "/root",
+        "recipient": "/root/read_file",
+        "content": [{"type": "input_text", "text": assignment}],
+    }
+    request.payload["input"].append(message)
+
+    assert _task_inference_request([request], CODEX, prompt, after=2) is request
+    for expected, after in (
+        ("read_file", 2),
+        (prompt + " Different task.", 2),
+        (prompt, 0),
+        (prompt, 3),
+    ):
+        with pytest.raises(AssertionError, match="No tool-capable"):
+            _task_inference_request([request], CODEX, expected, after=after)
+    for change in (
+        {"type": "message", "role": "user"},
+        {"author": "/root/another_parent"},
+        {"author": None},
+        {"recipient": "/root/another_task"},
+        {"recipient": None},
+        {"content": [{"type": "input_text", "text": prompt}]},
+        {"content": [{"type": "input_text", "text": assignment + "\n"}]},
+        {"content": [{"type": "input_text", "text": assignment.replace("NEW_TASK", "MESSAGE")}]},
+    ):
+        original = message.copy()
+        message.update(change)
+        with pytest.raises(AssertionError, match="No tool-capable"):
+            _task_inference_request([request], CODEX, prompt, after=2)
+        message.clear()
+        message.update(original)
+    for invalid_tools in ([], {}, None):
+        tool_holder["tools"] = invalid_tools
+        with pytest.raises(AssertionError, match="No tool-capable"):
+            _task_inference_request([request], CODEX, prompt, after=2)
+
+
 def test_cuj_evidence_ignores_existing_session(tmp_path):
     task = FileTask(SimpleNamespace(cwd=tmp_path))
     first = SessionEvidence(tmp_path, CLAUDE)

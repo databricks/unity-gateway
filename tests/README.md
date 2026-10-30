@@ -205,7 +205,9 @@ notifications alone, Claude title requests, and parent continuations do not qual
 Unrelated and pre-checkpoint request bodies are excluded before JSON decoding.
 CUJ4 accepts both top-level tool definitions (Codex 0.154.0) and Responses Lite
 `additional_tools` input items (0.162.1). Encrypted child messages match the routed
-task name to the recipient; plaintext prompts still match exactly. Both require tools.
+task name to the recipient. Codex 0.165.0 plaintext child messages match the exact
+`NEW_TASK` envelope, including sender, recipient, and routed prompt. Both child formats
+require tools and follow the routing checkpoint. User prompts still match exactly.
 The original smart-routing CUJ runs four fresh sessions: routed and explicit model for both
 Claude and Codex, with explicit-model bypass assertions enabled for both agents.
 Per-agent tests cover six `SMART_ROUTER_CONFIG_VERSION` cases each; every case checks
