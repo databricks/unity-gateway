@@ -148,7 +148,11 @@ toggle, and keeps that state after the band hides. Checks ignore terminal stylin
 trailing UI controls; offline cases reject stale states, wrong routing scope, and command
 confirmations, and keep the band, the hint row, and the toggle reply apart.
 The mod's own tests (`native_claude/mod_tests`) cover the same rules for both toggles
-without a live agent.
+without a live agent. They also cover the hint row's ` · N subagents running` suffix:
+only native `running` statuses count, one uses singular wording, background work survives
+parent-turn completion and routing toggles, existing tails are preserved, and zero hides
+the count. A mounted row updates on the one-second timer without another prompt or a
+redraw when the count is unchanged. This count has no live TUI coverage.
 
 CUJ3 expects GPT Luna in both agents' catalogs and pickers, including Claude's gateway alias,
 and covers an explicit Claude headless task on that model.
