@@ -18,7 +18,7 @@ from rich.table import Table
 
 from ucode.agents import antigravity, claude, codex, copilot, cursor, gemini, kilo, opencode
 from ucode.config_io import read_json_safe, read_toml_safe
-from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
+from ucode.constants import AGENT_COPILOT, AGENT_VSCODE, MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
     AIGW_MCP_SERVICES_SEGMENT,
     AuthTokenError,
@@ -108,7 +108,7 @@ MCP_CLIENTS = {
         "display": "Kilo",
         "list_command": "kilo mcp list",
     },
-    "copilot": {
+    AGENT_COPILOT: {
         "binary": "copilot",
         "display": "GitHub Copilot CLI",
         "list_command": "copilot mcp list --json",
@@ -265,17 +265,17 @@ def _with_vscode_copilot(state: dict, clients: list[str]) -> list[str]:
     """``clients`` plus ``copilot`` when VS Code is set up for this workspace."""
     if not state.get(VSCODE_CONFIGURED_KEY):
         return clients
-    return [client for client in MCP_CLIENTS if client in clients or client == "copilot"]
+    return [client for client in MCP_CLIENTS if client in clients or client == AGENT_COPILOT]
 
 
 def mcp_clients_for_agents(agents: set[str]) -> set[str]:
     """``--agents`` names as MCP clients."""
-    return {"copilot" if agent == "vscode" else agent for agent in agents}
+    return {AGENT_COPILOT if agent == AGENT_VSCODE else agent for agent in agents}
 
 
 def mcp_client_display(client: str, state: dict) -> str:
     if (
-        client == "copilot"
+        client == AGENT_COPILOT
         and state.get(VSCODE_CONFIGURED_KEY)
         and not shutil.which(str(MCP_CLIENTS[client]["binary"]))
     ):
@@ -289,7 +289,7 @@ def configured_mcp_clients(state: dict, installed_clients: list[str]) -> list[st
         configured_tools = []
     configured = set(configured_tools)
     if state.get(VSCODE_CONFIGURED_KEY):
-        configured.add("copilot")
+        configured.add(AGENT_COPILOT)
     installed_clients = _with_vscode_copilot(state, installed_clients)
     return [
         client
@@ -444,7 +444,7 @@ def configure_client_mcp_server(
     if client == "kilo":
         removed = kilo.write_mcp_server_config(name, argv)
         return [MCP_USER_SCOPE] if removed else []
-    if client == "copilot":
+    if client == AGENT_COPILOT:
         removed = copilot.write_mcp_server_config(name, argv)
         return [MCP_USER_SCOPE] if removed else []
     if client == "cursor":
@@ -469,7 +469,7 @@ def remove_client_mcp_server(client: str, name: str) -> list[str]:
         return [MCP_USER_SCOPE] if opencode.remove_mcp_server_config(name) else []
     if client == "kilo":
         return [MCP_USER_SCOPE] if kilo.remove_mcp_server_config(name) else []
-    if client == "copilot":
+    if client == AGENT_COPILOT:
         return [MCP_USER_SCOPE] if copilot.remove_mcp_server_config(name) else []
     if client == "cursor":
         return [MCP_USER_SCOPE] if cursor.remove_mcp_server_config(name) else []
@@ -488,7 +488,7 @@ def revert_mcp_configs(state: dict) -> dict[str, bool]:
     # One agent's unreadable config must not stop the revert of the others.
     try:
         if copilot.remove_legacy_mcp_config():
-            results["copilot"] = True
+            results[AGENT_COPILOT] = True
     except RuntimeError as exc:
         print_warning(f"Could not remove ug's old Copilot MCP file: {exc}")
     for server in all_servers:
@@ -1476,7 +1476,7 @@ _MCP_CLIENT_MODULES = {
     "claude": claude,
     "codex": codex,
     "gemini": gemini,
-    "copilot": copilot,
+    AGENT_COPILOT: copilot,
     "cursor": cursor,
     "opencode": opencode,
     "kilo": kilo,
@@ -1520,7 +1520,7 @@ def _managed_mcp_entry(
         return cursor.build_mcp_server_entry(argv)
     if client == "gemini":
         return gemini.build_mcp_server_entry(argv)
-    if client == "copilot":
+    if client == AGENT_COPILOT:
         return copilot.build_mcp_server_entry(argv)
     if client == "opencode":
         return opencode.build_mcp_server_entry(argv)
@@ -2574,7 +2574,7 @@ def parse_mcp_list_output(client: str, output: str) -> dict[str, str]:
     if client in ("codex", "antigravity"):
         # Both print a columnar table with an enabled/disabled state column.
         parsed = _parse_codex_mcp_list(output)
-    elif client == "copilot":
+    elif client == AGENT_COPILOT:
         parsed = _parse_copilot_mcp_list(output)
     elif client in ("kilo", "opencode"):
         parsed = _parse_tree_mcp_list(output)
@@ -2620,7 +2620,7 @@ def _run_mcp_list(client: str) -> str | None:
 
 def query_live_mcp_status(client: str) -> dict[str, str]:
     """Live ``{server_name: state}`` for one installed agent (empty if its listing can't be read)."""
-    if client == "copilot" and not shutil.which(str(MCP_CLIENTS[client]["binary"])):
+    if client == AGENT_COPILOT and not shutil.which(str(MCP_CLIENTS[client]["binary"])):
         # VS Code only: no Copilot CLI to ask, so report what Copilot's user config holds.
         return dict.fromkeys(copilot.user_mcp_server_names(), LIVE_ENABLED)
     output = _run_mcp_list(client)
@@ -2853,7 +2853,7 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
     # Only mention the enabled/disabled caveat for the agents actually in the reported set.
     config_state_clients = [
         mcp_client_display(client, state)
-        for client in ("codex", "copilot")
+        for client in ("codex", AGENT_COPILOT)
         if client in probe_clients
     ]
     if config_state_clients:
