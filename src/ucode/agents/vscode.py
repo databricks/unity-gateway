@@ -207,13 +207,15 @@ def model_entries(
 ) -> list[dict[str, object]]:
     """The models of the chosen source, each with the API the extension calls it on."""
     catalog = _catalog(state, provider, location)
+    if provider:
+        # A service's targets are the provider's own ids, which is what its users know it by, and
+        # several of them differ only by a region the label would drop.
+        return [_model_entry(model, model.id, external=True) for model in catalog]
     labels = {model: model_picker_label(claude_model_name(model.id)) for model in catalog}
     counts = Counter(labels.values())
     # As in Codex's picker: two models with the same label show their full ids instead.
     return [
-        _model_entry(
-            model, model.id if counts[label] > 1 else label, external=bool(provider or location)
-        )
+        _model_entry(model, model.id if counts[label] > 1 else label, external=bool(location))
         for model, label in labels.items()
     ]
 

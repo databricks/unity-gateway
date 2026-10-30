@@ -149,7 +149,7 @@ class TestConfigure:
             "GPT 5.5",
         ]
 
-    def test_a_provider_services_claude_targets_with_a_200k_cap_and_its_name(
+    def test_a_provider_services_claude_targets_keep_their_ids_and_get_a_200k_cap(
         self, code, monkeypatch, capsys
     ):
         service = {
@@ -171,7 +171,7 @@ class TestConfigure:
         assert code.config["models"] == [
             {
                 "id": "global.anthropic.claude-opus-4-8",
-                "name": "Claude Opus 4.8",
+                "name": "global.anthropic.claude-opus-4-8",
                 "family": "claude-opus-4-8",
                 "api": "anthropic",
                 "maxInputTokens": 168_000,
@@ -179,7 +179,7 @@ class TestConfigure:
             },
             {
                 "id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-                "name": "Claude Sonnet 4.5",
+                "name": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                 "family": "claude-sonnet-4-5",
                 "api": "anthropic",
                 "maxInputTokens": 168_000,
@@ -211,8 +211,8 @@ class TestConfigure:
         assert vscode.configure(STATE, provider="main.default.openai")
 
         assert code.config["models"] == [
-            {"id": "gpt-5.5", "name": "GPT 5.5", "family": "gpt-5.5", "api": "responses"},
-            {"id": "gpt-4.1", "name": "GPT 4.1", "family": "gpt-4.1", "api": "completions"},
+            {"id": "gpt-5.5", "name": "gpt-5.5", "family": "gpt-5.5", "api": "responses"},
+            {"id": "gpt-4.1", "name": "gpt-4.1", "family": "gpt-4.1", "api": "completions"},
         ]
 
     @pytest.mark.parametrize(
