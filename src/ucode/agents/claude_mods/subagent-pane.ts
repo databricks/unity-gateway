@@ -4,6 +4,7 @@ import type { EngineInterface, On, PluginState } from 'claude-code'
 type Subagent = PluginState['ug-smart-router']['paneAgents'][number]
 
 const PANE = 'subagents'
+const CLOSE_DELAY_MS = 5000
 // shortcut: track observed spawns only; hydrate from agent.list when resume/reload recovery is needed.
 const agents = atom({ plugin: 'ug-smart-router', key: 'paneAgents' } as const, [] as Subagent[])
 const isCollapsed = atom({ plugin: 'ug-smart-router', key: 'paneCollapsed' } as const, false)
@@ -58,7 +59,7 @@ async function reconcile($: EngineInterface) {
   }))
   await update($, now, () => at)
   if ((await read($, agents)).every(agent => agent.isDone)) {
-    closeAt = at + 5000
+    closeAt = at + CLOSE_DELAY_MS
   }
 }
 
