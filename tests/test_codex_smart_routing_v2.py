@@ -322,7 +322,8 @@ class TestLaunchCodex:
         assert stopped == [True]
         assert processes[0].terminated is True
         provider = tomllib.loads(processes[0].argv[7])["model_providers"][provider_name]
-        with pytest.raises(httpx.ConnectError):
+        # Windows may time out connecting to a closed port instead of refusing it.
+        with pytest.raises((httpx.ConnectError, httpx.ConnectTimeout)):
             httpx.get(provider["base_url"], timeout=1, trust_env=False)
 
     def test_managed_http_headers_reach_app_server_config(self, monkeypatch):
