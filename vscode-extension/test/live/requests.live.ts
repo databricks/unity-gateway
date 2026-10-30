@@ -1,8 +1,9 @@
 // Sends the requests the extension builds to a real AI Gateway and checks the replies it gets back.
 // Run with `npm run live`; the offline suite globs `test/*.test.ts` and never collects this.
 //
-// Needs UG_LIVE_WORKSPACE and either UG_LIVE_AUTH_COMMAND or UG_LIVE_TOKEN. The models and Model
-// Provider Services come from the UG_LIVE_* variables below; a case whose variables are unset isn't
+// Needs UCODE_TEST_WORKSPACE and DATABRICKS_BEARER, as the Python e2e tests do; without them the
+// suite skips rather than fails, so a fork's pull request stays green. The models and Model Provider
+// Services come from the UG_LIVE_* variables below; a case whose variables are unset isn't
 // registered, so the CI job decides what gets covered.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -24,11 +25,10 @@ import { LanguageModelDataPart, LanguageModelTextPart, LanguageModelToolCallPart
 
 const env = (name: string): string => process.env[name] ?? "";
 
-const WORKSPACE = env("UG_LIVE_WORKSPACE").replace(/\/+$/, "");
-const AUTH_COMMAND = env("UG_LIVE_AUTH_COMMAND") || (env("UG_LIVE_TOKEN") && `printf %s "$UG_LIVE_TOKEN"`);
-if (!WORKSPACE || !AUTH_COMMAND) {
-  throw new Error("Set UG_LIVE_WORKSPACE and UG_LIVE_AUTH_COMMAND (or UG_LIVE_TOKEN) to run the live tests.");
-}
+// The same variables the Python e2e tests take, with UG_LIVE_* overrides for running one by hand.
+const WORKSPACE = (env("UG_LIVE_WORKSPACE") || env("UCODE_TEST_WORKSPACE")).replace(/\/+$/, "");
+const TOKEN_VAR = env("UG_LIVE_TOKEN") ? "UG_LIVE_TOKEN" : "DATABRICKS_BEARER";
+const AUTH_COMMAND = env("UG_LIVE_AUTH_COMMAND") || (env(TOKEN_VAR) && `printf %s "$${TOKEN_VAR}"`);
 
 const MLFLOW = "/ai-gateway/mlflow/v1";
 const OPENAI = "/ai-gateway/openai/v1";
@@ -100,8 +100,12 @@ const MPS_MODEL = env("UG_LIVE_MPS_MODEL");
 const OPENAI_MPS = env("UG_LIVE_OPENAI_MPS");
 const OPENAI_MPS_MODEL = env("UG_LIVE_OPENAI_MPS_MODEL");
 
+if (!WORKSPACE || !AUTH_COMMAND) {
+  it.skip("set UCODE_TEST_WORKSPACE and DATABRICKS_BEARER to run the live tests", () => {});
+}
+
 describe("the workspace's own models", () => {
-  if (CLAUDE) {
+  if (CLAUDE && WORKSPACE && AUTH_COMMAND) {
     it("streams a Claude answer on Anthropic Messages, and reads the prompt cache on a repeat", async () => {
       const mark = marker();
       // Long enough that the gateway caches it; the cache point is on the system prompt.
@@ -138,7 +142,7 @@ describe("the workspace's own models", () => {
     });
   }
 
-  if (GPT) {
+  if (GPT && WORKSPACE && AUTH_COMMAND) {
     it("streams a GPT answer and a tool call on Responses", async () => {
       const mark = marker();
       assert.match(textOf(await responses(echoTurn(GPT, mark))), new RegExp(mark));
@@ -153,7 +157,7 @@ describe("the workspace's own models", () => {
     });
   }
 
-  if (CHAT_GPT) {
+  if (CHAT_GPT && WORKSPACE && AUTH_COMMAND) {
     it("streams an answer on Chat Completions", async () => {
       const mark = marker();
       assert.match(textOf(await chat(echoTurn(CHAT_GPT, mark))), new RegExp(mark));
@@ -162,7 +166,7 @@ describe("the workspace's own models", () => {
 });
 
 describe("a Model Provider Service", () => {
-  if (MPS && MPS_MODEL) {
+  if (MPS && MPS_MODEL && WORKSPACE && AUTH_COMMAND) {
     const header = { [PROVIDER_HEADER]: MPS };
 
     it("serves its Claude models on Anthropic Messages, with tool calls", async () => {
@@ -182,7 +186,7 @@ describe("a Model Provider Service", () => {
     });
   }
 
-  if (OPENAI_MPS && OPENAI_MPS_MODEL) {
+  if (OPENAI_MPS && OPENAI_MPS_MODEL && WORKSPACE && AUTH_COMMAND) {
     const header = { [PROVIDER_HEADER]: OPENAI_MPS };
 
     it("serves its OpenAI models on the gateway's OpenAI route", async () => {
