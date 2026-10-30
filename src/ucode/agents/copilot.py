@@ -380,7 +380,7 @@ def provider_service_catalog(
     service, error = resolve_provider_service(tool, service_name, workspace, token)
     if error or service is None:
         raise RuntimeError(error or f"Model provider service '{service_name}' was not found.")
-    agent = "ug copilot" if tool == "copilot" else "VS Code"
+    agent = "Copilot" if tool == "copilot" else "VS Code"
     provider_type = service["provider_type"]
     named = list(service.get("targets") or [])
     listed: list[str] = []
