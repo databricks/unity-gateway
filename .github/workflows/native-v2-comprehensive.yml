@@ -1,4 +1,4 @@
-name: Native Codex Windows controls diagnostic
+name: Native Codex v2 verification
 
 on:
   workflow_dispatch:
@@ -10,16 +10,15 @@ permissions:
 
 jobs:
   native:
-    name: Controls on ${{ matrix.source }}
+    name: Codex ${{ matrix.codex }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
       max-parallel: 2
       matrix:
-        os: [windows-latest]
-        codex: [0.165.0]
-        source: [candidate, baseline]
+        os: [macos-15, windows-latest]
+        codex: [0.164.0, 0.165.0]
     env:
       PYTHONUTF8: 1
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
@@ -49,44 +48,37 @@ jobs:
           Split-Path -Parent $databricks | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           & $databricks version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Build and test the selected source
+      - name: Run native lifecycle on macOS
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          CODEX_VERSION: ${{ matrix.codex }}
+        run: |
+          uv run --no-project --python 3.12 python scripts/run_integration.py \
+            --python 3.12 --ug-version checkout --codex-version "$CODEX_VERSION" \
+            --default-index https://pypi.org/simple --output "$RUNNER_TEMP/native-v2" \
+            -- -k test_ug_codex_native_v2_comprehensive_lifecycle
+      - name: Run native lifecycle on Windows
+        if: runner.os == 'Windows'
         shell: pwsh
         env:
           CODEX_VERSION: ${{ matrix.codex }}
-          SOURCE_VARIANT: ${{ matrix.source }}
         run: |
-          $output = Join-Path $env:RUNNER_TEMP "native-controls"
-          $sourceArgs = @("--ug-version", "checkout")
-          $sourceRef = $env:GITHUB_SHA
-          if ($env:SOURCE_VARIANT -eq "baseline") {
-            $sourceRef = "3426837be53ef53db705619c35a4e6f4122b828d"
-            $baseline = Join-Path $env:RUNNER_TEMP "baseline-source"
-            git worktree add --detach $baseline 3426837be53ef53db705619c35a4e6f4122b828d
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $wheels = Join-Path $env:RUNNER_TEMP "baseline-wheels"
-            uv build --wheel --out-dir $wheels $baseline
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $wheel = @(Get-ChildItem -LiteralPath $wheels -Filter *.whl)
-            if ($wheel.Count -ne 1) { throw "Expected exactly one baseline wheel" }
-            $sourceArgs = @("--ug-wheel", $wheel[0].FullName)
-          }
+          $output = Join-Path $env:RUNNER_TEMP "native-v2"
           uv run --no-project --python 3.12 python scripts/run_integration.py `
-            --python 3.12 @sourceArgs --codex-version $env:CODEX_VERSION `
+            --python 3.12 --ug-version checkout --codex-version $env:CODEX_VERSION `
             --default-index https://pypi.org/simple --output $output `
-            -- -k test_ug_codex_windows_session_controls
-          $testExit = $LASTEXITCODE
-          @{ source = $env:SOURCE_VARIANT; installed_source = $sourceRef; suite_source = $env:GITHUB_SHA } |
-            ConvertTo-Json | Set-Content -Path (Join-Path $output "source-variant.json") -Encoding utf8
-          exit $testExit
+            -- -k test_ug_codex_native_v2_comprehensive_lifecycle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload native evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: native-controls-${{ matrix.source }}-${{ matrix.codex }}
+          name: native-v2-${{ matrix.os }}-${{ matrix.codex }}
           include-hidden-files: true
           path: |
-            ${{ runner.temp }}/native-controls/*.json
-            ${{ runner.temp }}/native-controls/*.txt
-            ${{ runner.temp }}/native-controls/*.xml
-            ${{ runner.temp }}/native-controls/*.log
-            ${{ runner.temp }}/native-controls/artifacts/
+            ${{ runner.temp }}/native-v2/*.json
+            ${{ runner.temp }}/native-v2/*.txt
+            ${{ runner.temp }}/native-v2/*.xml
+            ${{ runner.temp }}/native-v2/*.log
+            ${{ runner.temp }}/native-v2/artifacts/

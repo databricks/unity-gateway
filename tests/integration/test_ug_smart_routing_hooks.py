@@ -230,12 +230,13 @@ def _toggle_with_skill(
     tui.submit(invocation)
     approval_sent = False
     flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
-    command = f'"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex {flag}'
+    python = (
+        '& "$env:UCODE_SMART_ROUTER_PYTHON"' if os.name == "nt" else '"$UCODE_SMART_ROUTER_PYTHON"'
+    )
+    command = f"{python} -m ucode.cli codex {flag}"
 
     def toggled(screen):
         nonlocal approval_sent
-        if os.name == "nt" and tui.approve_windows_command(screen):
-            return False
         # Fresh remote Codex sessions can be read-only. Approve only this
         # requested toggle through the native dialog, keeping the sandbox intact.
         if not approval_sent and _codex_command_approval_pending(screen, command):

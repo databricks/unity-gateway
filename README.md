@@ -485,6 +485,9 @@ Once opted in, orchestration follows the existing smart-routing launch eligibili
 and session controls. Turning Smart Router off through its skill stops new automatic delegation;
 turning it on restores orchestration only in opted-in sessions. Explicit user
 requests for subagents still use normal harness behavior while routing is off.
+If Codex cannot read the private session controls, the skill requests native
+approval for the exact toggle command. Declining leaves routing unchanged;
+the directory permissions and sandbox configuration are preserved.
 Stored skill files do not activate orchestration without an opted-in configuration,
 or in non-routed sessions. Existing Isaac pilot gating
 and UG launch exclusions still apply.
