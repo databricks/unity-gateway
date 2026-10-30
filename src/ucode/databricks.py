@@ -3607,8 +3607,9 @@ def fetch_ai_gateway_claude_models(workspace: str, token: str) -> dict[str, str]
 #   system.ai.claude-opus-4-7[1m]   -> claude-opus-4-7
 #   main.ucode.claude_haiku         -> claude_haiku
 #   gpt-5.5                         -> gpt-5.5 (one dot is a version, not a schema)
+# A region prefix is dotted on Bedrock (`us.anthropic.`) and slashed on Azure (`eu/gpt-5.6-luna`).
 _BARE_MODEL_NAME_PATTERN = re.compile(
-    r"^(?:[^.\[]+\.[^.\[]+\.)?(?:anthropic\.)?(?:databricks-)?(?P<name>[^\[]*)"
+    r"^(?:[^.\[]+\.[^.\[]+\.)?(?:[^/.\[]+/)?(?:anthropic\.)?(?:databricks-)?(?P<name>[^\[]*)"
 )
 
 

@@ -1474,6 +1474,12 @@ class TestListProviderServiceModels:
         ("main.ucode.claude_haiku", "claude_haiku"),
         ("gpt-5.5", "gpt-5.5"),
         ("main.default.gpt-5.5", "gpt-5.5"),
+        # An Azure deployment names its region with a slash.
+        ("eu/gpt-5.6-luna", "gpt-5.6-luna"),
+        ("us/gpt-4o-mini-2024-07-18", "gpt-4o-mini-2024-07-18"),
+        ("mistralai/Mistral-7B", "mistral-7b"),
+        # Only the leading segment is a region; anything deeper is left alone.
+        ("publishers/google/models/gemini-4", "google/models/gemini-4"),
     ],
 )
 def test_bare_model_name(model, name):
