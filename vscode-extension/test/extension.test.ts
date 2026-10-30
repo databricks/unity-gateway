@@ -4,7 +4,7 @@ import { afterEach, describe, it } from "node:test";
 import type * as vscode from "vscode";
 import packageJson from "../package.json";
 import { Tokens } from "../src/auth";
-import { DatabricksModels, readConfig, userAgent, type Settings } from "../src/extension";
+import { DatabricksModels, PROVIDER_HEADER, readConfig, userAgent, type Settings } from "../src/extension";
 import { streamEvents } from "../src/gateway";
 import { collect, message, rejectsWith, text, tokenCommand, USER } from "./support";
 import { LanguageModelChatToolMode, LanguageModelTextPart } from "./vscode";
@@ -13,10 +13,16 @@ const sse = (...data: string[]) => data.map((item) => `data: ${item}\n\n`).join(
 
 /** Replaces fetch with one that answers each request with the next status and SSE body. */
 const stubFetch = (...answers: [number, string][]) => {
-  const requests: { url: string; authorization: string; userAgent: string; body: Record<string, unknown> }[] = [];
+  const requests: { url: string; authorization: string; userAgent: string; provider: string | null; body: Record<string, unknown> }[] = [];
   globalThis.fetch = (async (url: string, init: RequestInit) => {
     const headers = new Headers(init.headers);
-    requests.push({ url, authorization: headers.get("authorization") ?? "", userAgent: headers.get("user-agent") ?? "", body: JSON.parse(String(init.body)) });
+    requests.push({
+      url,
+      authorization: headers.get("authorization") ?? "",
+      userAgent: headers.get("user-agent") ?? "",
+      provider: headers.get(PROVIDER_HEADER),
+      body: JSON.parse(String(init.body)),
+    });
     const [status, body] = answers[Math.min(requests.length - 1, answers.length - 1)] ?? [500, ""];
     // Split the body mid-line so the reader has to join chunks.
     const bytes = new TextEncoder().encode(body);
@@ -35,25 +41,45 @@ describe("streamEvents", () => {
   it("yields each event's JSON until [DONE]", async () => {
     stubFetch([200, sse('{"a":1}', '{"b":2}', "[DONE]", '{"c":3}')]);
     const tokens = new Tokens(tokenCommand(["t"]).command);
-    assert.deepEqual(await collect(streamEvents("https://ws", "responses", {}, tokens, {}, new AbortController().signal)), [{ a: 1 }, { b: 2 }]);
+    assert.deepEqual(await collect(streamEvents("https://ws", "/r", {}, tokens, {}, new AbortController().signal)), [{ a: 1 }, { b: 2 }]);
   });
 
   it("keeps a last event that has no trailing newline", async () => {
     stubFetch([200, `data: {"a":1}\n\ndata: {"b":2}`]);
     const tokens = new Tokens(tokenCommand(["t"]).command);
-    assert.deepEqual(await collect(streamEvents("https://ws", "responses", {}, tokens, {}, new AbortController().signal)), [{ a: 1 }, { b: 2 }]);
+    assert.deepEqual(await collect(streamEvents("https://ws", "/r", {}, tokens, {}, new AbortController().signal)), [{ a: 1 }, { b: 2 }]);
   });
 
   it("retries once with a new token after a 401, then asks the user to sign in", async () => {
     let requests = stubFetch([401, ""], [200, sse("[DONE]")]);
-    await collect(streamEvents("https://ws", "chat/completions", {}, new Tokens(tokenCommand(["fresh"], "rejected").command), {}, new AbortController().signal));
+    await collect(streamEvents("https://ws", "/ai-gateway/mlflow/v1/chat/completions", {}, new Tokens(tokenCommand(["fresh"], "rejected").command), {}, new AbortController().signal));
     assert.deepEqual(requests.map((request) => request.authorization), ["Bearer rejected", "Bearer fresh"]);
     assert.equal(requests[0]?.url, "https://ws/ai-gateway/mlflow/v1/chat/completions");
 
     requests = stubFetch([401, ""]);
     await rejectsWith(
-      collect(streamEvents("https://ws", "responses", {}, new Tokens(tokenCommand(["a", "b"]).command), {}, new AbortController().signal)),
+      collect(streamEvents("https://ws", "/r", {}, new Tokens(tokenCommand(["a", "b"]).command), {}, new AbortController().signal)),
       "Run `ug configure --agents vscode` to sign in again",
+    );
+    assert.equal(requests.length, 2);
+  });
+
+  it("retries once with the output limit the gateway allows, and reports any other error", async () => {
+    const tooBig = [400, '{"message":"max_tokens: 32000 > 8192, which is the maximum allowed number of output tokens for claude-3-5-sonnet"}'] as [number, string];
+    let requests = stubFetch(tooBig, [200, sse('{"a":1}', "[DONE]")]);
+    const events = await collect(
+      streamEvents("https://ws", "/m", { model: "claude-3-5-sonnet", max_tokens: 32_000 }, new Tokens(tokenCommand(["t"]).command), {}, new AbortController().signal),
+    );
+    assert.deepEqual(events, [{ a: 1 }]);
+    assert.deepEqual(
+      requests.map((request) => request.body.max_tokens),
+      [32_000, 8_192],
+    );
+
+    requests = stubFetch(tooBig, tooBig);
+    await rejectsWith(
+      collect(streamEvents("https://ws", "/m", { max_tokens: 32_000 }, new Tokens(tokenCommand(["t"]).command), {}, new AbortController().signal)),
+      "AI Gateway returned 400: {\"message\":\"max_tokens: 32000 > 8192",
     );
     assert.equal(requests.length, 2);
   });
@@ -61,7 +87,7 @@ describe("streamEvents", () => {
   it("reports other gateway errors with their body", async () => {
     stubFetch([400, '{"message":"bad tools"}']);
     await rejectsWith(
-      collect(streamEvents("https://ws", "responses", {}, new Tokens(tokenCommand(["t"]).command), {}, new AbortController().signal)),
+      collect(streamEvents("https://ws", "/r", {}, new Tokens(tokenCommand(["t"]).command), {}, new AbortController().signal)),
       'AI Gateway returned 400: {"message":"bad tools"}',
     );
   });
@@ -82,32 +108,38 @@ describe("userAgent", () => {
 });
 
 describe("readConfig", () => {
-  it("keeps well-formed models, names and token limits and trims the workspace URL", () => {
+  it("keeps well-formed models, names, families and token limits, the provider, and trims the workspace URL", () => {
     const config = {
       workspace: "https://ws/",
       authCommand: "ug auth-token",
+      provider: "main.default.mps",
       models: [
         { id: "a", api: "responses" },
+        { id: "gpt-5.5", family: "gpt-5.5", api: "responses" },
+        { id: "e", api: "anthropic" },
         { id: "b", api: "messages" },
         { api: "responses" },
         null,
-        { id: "c", name: " Model C ", api: "chat_completions", maxInputTokens: 936_000, maxOutputTokens: "32000", extra: true },
-        { id: "d", name: 7, api: "chat_completions", maxInputTokens: 0, maxOutputTokens: 1.5 },
+        { id: "c", name: " Model C ", api: "completions", maxInputTokens: 936_000, maxOutputTokens: "32000", extra: true },
+        { id: "d", name: 7, api: "completions", maxInputTokens: 0, maxOutputTokens: 1.5 },
       ],
     };
     assert.deepEqual(readConfig(JSON.stringify(config)), {
       workspace: "https://ws",
       authCommand: "ug auth-token",
+      provider: "main.default.mps",
       models: [
         { id: "a", api: "responses" },
-        { id: "c", name: "Model C", api: "chat_completions", maxInputTokens: 936_000 },
-        { id: "d", api: "chat_completions" },
+        { id: "gpt-5.5", family: "gpt-5.5", api: "responses" },
+        { id: "e", api: "anthropic" },
+        { id: "c", name: "Model C", api: "completions", maxInputTokens: 936_000 },
+        { id: "d", api: "completions" },
       ],
     });
   });
 
   it("gives no models for a missing or malformed file", () => {
-    const none = { workspace: "", authCommand: "", models: [] };
+    const none = { workspace: "", authCommand: "", models: [], provider: "" };
     for (const text of [undefined, "", "{", "[]", "null", '"text"']) {
       assert.deepEqual(readConfig(text), none, String(text));
     }
@@ -115,12 +147,14 @@ describe("readConfig", () => {
 });
 
 describe("DatabricksModels", () => {
-  const settings = (command: string): Settings => ({
+  const settings = (command: string, provider = ""): Settings => ({
     workspace: "https://ws",
     authCommand: command,
+    provider,
     models: [
-      { id: "system.ai.claude-sonnet-5-5", name: "Claude Sonnet 5.5", api: "chat_completions", maxInputTokens: 872_000, maxOutputTokens: 128_000 },
+      { id: "system.ai.claude-sonnet-5-5", name: "Claude Sonnet 5.5", api: "anthropic", maxInputTokens: 872_000, maxOutputTokens: 128_000 },
       { id: "system.ai.gpt-6-luna", api: "responses" },
+      { id: "gpt-4.1", family: "gpt-4.1", api: "completions" },
     ],
   });
 
@@ -130,23 +164,24 @@ describe("DatabricksModels", () => {
     assert.deepEqual(
       models.map((model) => [model.id, model.name, model.family, model.api, model.maxInputTokens, model.maxOutputTokens]),
       [
-        ["system.ai.claude-sonnet-5-5", "Claude Sonnet 5.5", "claude-sonnet-5-5", "chat_completions", 872_000, 128_000],
+        ["system.ai.claude-sonnet-5-5", "Claude Sonnet 5.5", "claude-sonnet-5-5", "anthropic", 872_000, 128_000],
         ["system.ai.gpt-6-luna", "system.ai.gpt-6-luna", "gpt-6-luna", "responses", 128_000, 32_000],
+        ["gpt-4.1", "gpt-4.1", "gpt-4.1", "completions", 128_000, 32_000],
       ],
     );
     assert.deepEqual(await new DatabricksModels(() => ({ ...settings(""), models: [] }), (line) => logs.push(line)).provideLanguageModelChatInformation(), []);
     assert.deepEqual(logs, ["No Databricks models: run `ug configure --agents vscode` to set them up."]);
   });
 
-  it("sends each model's turns to its API with the User-Agent", async () => {
-    const requests = stubFetch(
-      [200, sse('{"choices":[{"delta":{"content":"hello"},"finish_reason":"stop"}]}', "[DONE]")],
-      [200, sse('{"type":"response.output_text.delta","delta":"hi"}', '{"type":"response.completed","response":{}}')],
-    );
-    const provider = new DatabricksModels(() => settings(tokenCommand(["t"]).command), () => {}, () => ({ "User-Agent": "ucode/0 githubcopilotchat" }));
-    const [claude, gpt] = await provider.provideLanguageModelChatInformation();
+  const answers: [number, string][] = [
+    [200, sse('{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}', '{"type":"message_stop"}')],
+    [200, sse('{"type":"response.output_text.delta","delta":"hi"}', '{"type":"response.completed","response":{}}')],
+    [200, sse('{"choices":[{"delta":{"content":"hey"},"finish_reason":"stop"}]}', "[DONE]")],
+  ];
+
+  const askEach = async (provider: DatabricksModels) => {
     const reported: unknown[] = [];
-    for (const model of [claude!, gpt!]) {
+    for (const model of await provider.provideLanguageModelChatInformation()) {
       await provider.provideLanguageModelChatResponse(
         model,
         [message(USER, text("hi"))],
@@ -155,13 +190,35 @@ describe("DatabricksModels", () => {
         { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) } as unknown as vscode.CancellationToken,
       );
     }
+    return reported;
+  };
+
+  it("sends each model's turns to its API with the User-Agent and its output limit", async () => {
+    const requests = stubFetch(...answers);
+    const provider = new DatabricksModels(() => settings(tokenCommand(["t"]).command), () => {}, () => ({ "User-Agent": "ucode/0 githubcopilotchat" }));
+    const reported = await askEach(provider);
     assert.deepEqual(
-      requests.map((request) => [request.url, request.body.model, request.userAgent]),
+      requests.map((request) => [request.url, request.body.model, request.userAgent, request.provider]),
       [
-        ["https://ws/ai-gateway/mlflow/v1/chat/completions", "system.ai.claude-sonnet-5-5", "ucode/0 githubcopilotchat"],
-        ["https://ws/ai-gateway/mlflow/v1/responses", "system.ai.gpt-6-luna", "ucode/0 githubcopilotchat"],
+        ["https://ws/ai-gateway/anthropic/v1/messages", "system.ai.claude-sonnet-5-5", "ucode/0 githubcopilotchat", null],
+        ["https://ws/ai-gateway/mlflow/v1/responses", "system.ai.gpt-6-luna", "ucode/0 githubcopilotchat", null],
+        ["https://ws/ai-gateway/mlflow/v1/chat/completions", "gpt-4.1", "ucode/0 githubcopilotchat", null],
       ],
     );
-    assert.deepEqual(reported, [new LanguageModelTextPart("hello"), new LanguageModelTextPart("hi")]);
+    assert.equal(requests[0]?.body.max_tokens, 128_000);
+    assert.deepEqual(reported, [new LanguageModelTextPart("hello"), new LanguageModelTextPart("hi"), new LanguageModelTextPart("hey")]);
+  });
+
+  it("routes a Model Provider Service's models with its header, and OpenAI ones on the OpenAI route", async () => {
+    const requests = stubFetch(...answers);
+    await askEach(new DatabricksModels(() => settings(tokenCommand(["t"]).command, "main.default.mps"), () => {}));
+    assert.deepEqual(
+      requests.map((request) => [request.url, request.provider]),
+      [
+        ["https://ws/ai-gateway/anthropic/v1/messages", "main.default.mps"],
+        ["https://ws/ai-gateway/openai/v1/responses", "main.default.mps"],
+        ["https://ws/ai-gateway/openai/v1/chat/completions", "main.default.mps"],
+      ],
+    );
   });
 });

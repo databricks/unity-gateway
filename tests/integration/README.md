@@ -47,19 +47,19 @@ path, preserves an unrelated profile and metadata, then runs the exact generated
 helper and validates its token against the paginated live models API. It requires system.ai
 Claude models without an MPS override and uses the profile's credentials and headers for a small
 Messages request on `system.ai.claude-haiku-4-5`, requiring HTTP 200, a nonempty response model ID,
-and the exact fresh marker. The service may return a provider model ID rather than its alias;
-this does not pin or prove its backing model revision. The relay journey selects
+and nonempty assistant text without matching its wording. The service may return a provider model
+ID rather than its alias; this does not pin or prove its backing model revision. The relay journey selects
 the real subscription provider through configure and completes
 Messages inference using the subscription token and separate Databricks header returned by its
 helper. Non-relay MPS Desktop configuration is asserted in CUJ2's existing MPS configuration
 journey; no dedicated Desktop MPS integration test is needed.
 
 Each of these two journeys supplies pre-existing Desktop account directories as inputs and
-requires real Claude CLI installation of the Cowork plugin. It registers system.ai.dbsql through
-`ug mcp add --names system.ai.dbsql`, then runs the command from the installed plugin with the
-MCP SDK. The check initializes the protocol, discovers execute_sql/poll_sql_result, executes
-`SELECT sha2('<fresh run id>', 256)`, polls pending statements, and requires the computed receipt
-in the successful result's single typed cell. This proves execution rather than an echoed query.
+requires real Claude CLI installation of the Cowork plugin. It registers system.ai.web_search through
+`ug mcp add --names system.ai.web_search`, then runs the command from the installed plugin with the
+MCP SDK. The check initializes the protocol, discovers web_search, and searches for Databricks'
+official website. A successful result must contain a URL on databricks.com or www.databricks.com;
+the response wording and search rankings are not asserted. No SQL compute is needed.
 Both journeys verify reconfiguration preserves the profile/plugin and revert removes UG's entries
 while retaining unrelated profiles and metadata. A separate local personal plugin is installed
 through the real Claude CLI before configuration; its registry entry and installed manifest must
@@ -67,9 +67,9 @@ survive installation, reconfiguration, and revert unchanged. Revert also removes
 registration and generated source directory.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
-the same workspace as their model calls. The workspace must expose system.ai.dbsql and allow
-the test identity to run a constant read-only query on its default SQL compute. No dedicated
-Desktop MCP test, separate fixture-workspace step, or extra credentials are required.
+the same workspace as their model calls. The workspace must expose system.ai.web_search and allow
+the test identity to invoke it. No dedicated Desktop MCP test, separate fixture-workspace step,
+or extra credentials are required.
 
 These tests do not launch Desktop or establish GUI, skill execution, browser consent,
 token renewal, or injected authentication-failure/reconnect recovery. CI supplies the supported
@@ -91,7 +91,11 @@ Its Claude/Codex evidence helpers keep scenario-specific assertions separate fro
 Workspace config/catalog reads use its base class's Databricks SDK client. Configuration
 is read-only and checked for changes at teardown; concurrent readers need no reservation.
 CUJ2 adds three separately collected cases for exact published MPS/MCP configuration, Codex
-inference, and Claude inference. The config equality also accounts for the workspace's fixture
+inference, and Claude inference. Both inference cases ask for a short greeting and require a
+completed parent turn matching the submitted prompt with a nonempty answer, plus the expected
+provider/model and paired HTTP 200. Random IDs correlate requests; answers need not repeat them.
+File, skill, MCP and subagent tasks retain their expected-value checks.
+The config equality also accounts for the workspace's fixture
 skill name as data; skill download and invocation are not covered.
 
 The dedicated smart-routing CUJ in `../e2e_cuj/test_cuj4_smart_routing.py` runs the original
@@ -851,6 +855,9 @@ Default row names the model in the scoped fixture catalog, selected through the 
 `ANTHROPIC_DEFAULT_MODEL` environment variable. Unit tests cover the existing Opus, Sonnet,
 then Haiku preference for catalogs with multiple families. Plain Claude launches replace the
 picker with the gateway catalog (saved family defaults first) but keep Claude's own starting model.
+Repeated UG-owned picker refresh and preservation of unrecorded or edited admin pickers
+have component coverage in `../test_managed_model_lifecycle.py` and `../test_agent_claude.py`;
+these discovery journeys do not validate repeated live `/model` launches.
 Obsolete disable-flag scenarios and duplicate managed variants are
 removed, not skipped; managed discovery and rejection remain covered by Cases
 1–6. Repository scenario numbers run consecutively from 01 to 14, with

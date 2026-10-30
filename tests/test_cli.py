@@ -3377,6 +3377,24 @@ class TestMcpAddWorkspaceState:
         add_mcp.assert_called_once()
         assert load_full_state()["current_workspace"] == self.WS_B
 
+    def test_mcp_add_preserves_selected_workspace_id_without_workspace_flag(self):
+        from ucode.state import current_workspace_key, load_full_state
+
+        key = f"{self.WS_A}?w=111"
+        self._save_workspace(self.WS_A, workspace_id="111")
+        with (
+            patch("ucode.cli.available_mcp_clients", return_value=["codex"]),
+            patch("ucode.cli.add_mcp_command") as add_mcp,
+            patch("ucode.cli._sync_claude_cowork_plugin"),
+        ):
+            result = runner.invoke(app, ["mcp", "add", "--agents", "codex", "--names", "a.b.c"])
+
+        assert result.exit_code == 0, result.output
+        add_mcp.assert_called_once()
+        full = load_full_state()
+        assert current_workspace_key(full) == key
+        assert full["workspaces"][key]["mcp_clients"] == ["codex"]
+
     def test_profile_used_for_auth_when_workspace_already_ready(self):
         from ucode.mcp import setup_mcp_clients
         from ucode.state import load_state
@@ -5885,6 +5903,55 @@ class TestParseProfileOption:
         with pytest.raises(RuntimeError, match="no host configured"):
             cli_mod._parse_profile_option("DEFAULT")
 
+    def test_profile_workspace_id_selects_the_workspace_on_a_shared_host(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        cli_mod = self._patch_profiles(
+            monkeypatch,
+            [
+                {
+                    "name": "acme",
+                    "host": "https://acme.cloud.databricks.com",
+                    "account_id": "acct",
+                    "workspace_id": "111",
+                }
+            ],
+        )
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        assert cli_mod._parse_profile_option("acme") == [
+            ("https://acme.cloud.databricks.com?w=111", "acme"),
+        ]
+
+    def test_profile_workspace_id_on_a_single_workspace_host_is_ignored(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        cli_mod = self._patch_profiles(
+            monkeypatch,
+            [{"name": "ws", "host": "https://dbc-1.cloud.databricks.com", "workspace_id": "111"}],
+        )
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "workspace")
+        assert cli_mod._parse_profile_option("ws") == [("https://dbc-1.cloud.databricks.com", "ws")]
+
+
+class TestParseWorkspaceOptionSelectors:
+    def test_bare_url_is_unchanged(self, monkeypatch):
+        import ucode.cli as cli_mod
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: pytest.fail("probed"))
+        assert cli_mod._parse_workspace_option("https://first.databricks.com/") == [
+            ("https://first.databricks.com", None)
+        ]
+
+    def test_selector_on_a_shared_host(self, monkeypatch):
+        import ucode.cli as cli_mod
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        assert cli_mod._parse_workspace_option("https://acme.cloud.databricks.com/?o=111") == [
+            ("https://acme.cloud.databricks.com?w=111", None)
+        ]
+
 
 class TestConfigureProfilesFlag:
     PROFILE_ENTRIES = [
@@ -6479,6 +6546,24 @@ class TestConfigureSharedStateUsePat:
         assert "v2" not in message.lower()
         assert "v3" not in message.lower()
 
+    def test_second_configure_in_process_does_not_reprobe_the_gateway(self, monkeypatch):
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        calls: list[str] = []
+
+        def fake_get(url, token, **kwargs):
+            calls.append(url)
+            return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        monkeypatch.setattr(
+            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
+        )
+
+        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
+        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
+
+        assert len(calls) == 1
+
     def test_use_pat_without_pat_profile_raises(self, monkeypatch):
         cli_mod, logins, _, _ = self._stub_deps(monkeypatch, pat_token=None)
 
@@ -6720,9 +6805,10 @@ class TestConfigureSharedStateMcpCleanup:
         import ucode.cli as cli_mod
 
         monkeypatch.setattr(cli_mod, "normalize_workspace_url", lambda w: w)
-        monkeypatch.setattr(cli_mod, "run_databricks_login", lambda w, p: None)
-        monkeypatch.setattr(cli_mod, "ensure_databricks_auth", lambda w, p=None: None)
+        monkeypatch.setattr(cli_mod, "run_databricks_login", lambda w, p, **kwargs: None)
+        monkeypatch.setattr(cli_mod, "ensure_databricks_auth", lambda w, p=None, **kwargs: None)
         monkeypatch.setattr(cli_mod, "find_profile_name_for_host", lambda w: None)
+        monkeypatch.setattr(cli_mod, "find_profile_name_for_workspace", lambda w, i: None)
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda w, p: "token")
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", lambda w, t: MODEL_SERVICE_PROBE
@@ -6790,7 +6876,10 @@ class TestConfigureSharedStateMcpCleanup:
         assert changes == [([managed], [], ["claude"]), ([], [selected], ["claude"])]
 
     @pytest.mark.parametrize("same_name", [False, True])
-    def test_explicit_configure_switch_restores_saved_mcp_entries(self, monkeypatch, same_name):
+    @pytest.mark.parametrize("same_host", [False, True])
+    def test_explicit_configure_switch_restores_saved_mcp_entries(
+        self, monkeypatch, same_name, same_host
+    ):
         from ucode import mcp
         from ucode import state as state_mod
 
@@ -6836,33 +6925,40 @@ class TestConfigureSharedStateMcpCleanup:
 
         monkeypatch.setattr(mcp.codex, "write_user_mcp_servers", write)
         a = "https://a.databricks.com"
-        b = "https://b.databricks.com"
-        a_entry = {"name": "a-tools", "url": f"{a}/mcp", "clients": ["codex"]}
+        b = a if same_host else "https://b.databricks.com"
+        a_key = f"{a}?w=111" if same_host else a
+        b_key = f"{b}?w=222" if same_host else b
+        a_entry = {"name": "a-tools", "url": f"{a}/mcp/a", "clients": ["codex"]}
         b_entry = {
             "name": "a-tools" if same_name else "b-tools",
-            "url": f"{b}/mcp",
+            "url": f"{b}/mcp/b",
             "clients": ["codex"],
         }
-        mcp.save_state({"workspace": b, "mcp_servers": [b_entry]})
-        mcp.save_state({"workspace": a, "mcp_servers": [a_entry]})
+        mcp.save_state(
+            {"workspace": b, "workspace_id": "222" if same_host else None, "mcp_servers": [b_entry]}
+        )
+        mcp.save_state(
+            {"workspace": a, "workspace_id": "111" if same_host else None, "mcp_servers": [a_entry]}
+        )
         actual["a-tools"] = {"url": a_entry["url"]}
 
-        cli_mod._configure_workspace_command(selected_tools=["codex"], workspaces=[(b, None)])
+        cli_mod._configure_workspace_command(selected_tools=["codex"], workspaces=[(b_key, None)])
         assert actual == {b_entry["name"]: {"url": b_entry["url"]}}
-        assert state_mod.load_full_state()["current_workspace"] == b
+        assert state_mod.current_workspace_key(state_mod.load_full_state()) == b_key
 
-        cli_mod._configure_workspace_command(selected_tools=["codex"], workspaces=[(a, None)])
+        cli_mod._configure_workspace_command(selected_tools=["codex"], workspaces=[(a_key, None)])
         assert actual == {"a-tools": {"url": a_entry["url"]}}
         full = state_mod.load_full_state()
         assert full["current_workspace"] == a
-        assert full["workspaces"][a]["mcp_servers"] == [a_entry]
-        assert full["workspaces"][b]["mcp_servers"] == [b_entry]
+        assert state_mod.current_workspace_key(full) == a_key
+        assert full["workspaces"][a_key]["mcp_servers"] == [a_entry]
+        assert full["workspaces"][b_key]["mcp_servers"] == [b_entry]
 
         # Revert clears only A's active bucket. B's saved choice should return when
         # configure selects B again, even though there is no current workspace.
         state_mod.clear_state()
         actual.clear()
-        cli_mod._configure_workspace_command(selected_tools=["codex"], workspaces=[(b, None)])
+        cli_mod._configure_workspace_command(selected_tools=["codex"], workspaces=[(b_key, None)])
         assert actual == {b_entry["name"]: {"url": b_entry["url"]}}
 
     def test_workspace_switch_continues_after_skills_cleanup_timeout(self, monkeypatch, capsys):
@@ -7143,6 +7239,79 @@ class TestConfigureSharedStateSkipPreflight:
         # find_profile_name_for_host is a local ~/.databrickscfg lookup (no network).
         assert state["profile"] == "resolved"
 
+    def test_shared_host_key_saves_the_workspace_id(self, monkeypatch):
+        cli_mod, saved = self._stub(monkeypatch)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {})
+        monkeypatch.setattr(cli_mod, "find_profile_name_for_workspace", lambda w, i: f"p-{i}")
+
+        state = cli_mod.configure_shared_state(
+            "https://acme.cloud.databricks.com?w=111", profile=None, skip_preflight=True
+        )
+
+        assert state["workspace"] == "https://acme.cloud.databricks.com"
+        assert state["workspace_id"] == "111"
+        assert state["profile"] == "p-111"
+        assert saved[-1]["workspace_id"] == "111"
+
+    def test_reconfigure_with_the_bare_host_keeps_the_saved_workspace(self, monkeypatch):
+        cli_mod, _ = self._stub(monkeypatch)
+        shared = "https://acme.cloud.databricks.com"
+        monkeypatch.setattr(
+            cli_mod,
+            "load_state",
+            lambda: {"workspace": shared, "workspace_id": "111", "use_pat": True},
+        )
+        monkeypatch.setattr(cli_mod, "find_profile_name_for_workspace", lambda w, i: "acme")
+
+        state = cli_mod.configure_shared_state(shared, profile="acme", skip_preflight=True)
+
+        assert state["workspace_id"] == "111"
+        assert state["use_pat"] is True
+
+    def test_switching_workspaces_on_one_host_purges_previous_mcp_entries(self, monkeypatch):
+        cli_mod, _ = self._stub(monkeypatch)
+        shared = "https://acme.cloud.databricks.com"
+        monkeypatch.setattr(
+            cli_mod, "load_state", lambda: {"workspace": shared, "workspace_id": "111"}
+        )
+        monkeypatch.setattr(cli_mod, "find_profile_name_for_workspace", lambda w, i: "acme")
+        purges = []
+        monkeypatch.setattr(
+            cli_mod,
+            "purge_cross_workspace_mcp_residue",
+            lambda state, workspace, **kwargs: purges.append(kwargs),
+        )
+
+        cli_mod.configure_shared_state(f"{shared}?w=222", profile="acme", skip_preflight=True)
+
+        assert purges == [{}]
+
+    def test_explicit_selector_never_falls_back_to_the_saved_workspace(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        cli_mod, saved = self._stub(monkeypatch)
+        shared = "https://acme.cloud.databricks.com"
+        monkeypatch.setattr(
+            cli_mod, "load_state", lambda: {"workspace": shared, "workspace_id": "111"}
+        )
+
+        def unreachable(host):
+            raise workspace_mod.HostUnreachableError(f"{host} did not answer (timed out).")
+
+        monkeypatch.setattr(workspace_mod, "host_type", unreachable)
+        with pytest.raises(RuntimeError, match="Could not check"):
+            cli_mod.configure_shared_state(f"{shared}/?o=222", profile="acme", skip_preflight=True)
+        assert saved == []
+
+    def test_classic_reconfigure_never_gains_a_workspace_id(self, monkeypatch):
+        cli_mod, saved = self._stub(monkeypatch)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {"workspace": self.WS})
+
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", skip_preflight=True)
+
+        assert "workspace_id" not in state
+        assert "workspace_id" not in saved[-1]
+
 
 class TestSkipPreflightFlag:
     """`--skip-preflight` on a launch command threads through _launch_tool to
@@ -7256,6 +7425,126 @@ class TestDryRunAdoptsInstalledWorkspace:
             cli_mod.set_dry_run(False)
 
         assert state["workspace"] == "https://installed.example.com"
+
+
+class TestPickerOnSharedHosts:
+    def test_picked_profile_keeps_its_workspace(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        monkeypatch.setattr(
+            cli_mod,
+            "prompt_for_workspace",
+            lambda desc, profiles: ("https://acme.cloud.databricks.com", "b"),
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "list_profile_entries",
+            lambda: [
+                {"name": "b", "host": "https://acme.cloud.databricks.com", "workspace_id": "222"}
+            ],
+        )
+        assert cli_mod._prompt_for_configuration() == (
+            "https://acme.cloud.databricks.com?w=222",
+            "b",
+        )
+
+    def test_typed_url_is_resolved(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        monkeypatch.setattr(cli_mod, "list_profile_entries", lambda: [])
+        monkeypatch.setattr(
+            cli_mod,
+            "prompt_for_workspace",
+            lambda desc, profiles: ("https://acme.cloud.databricks.com/?o=111", None),
+        )
+        assert cli_mod._prompt_for_configuration() == (
+            "https://acme.cloud.databricks.com?w=111",
+            None,
+        )
+
+    def test_classic_pick_is_unchanged(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: pytest.fail("probed"))
+        monkeypatch.setattr(
+            cli_mod,
+            "prompt_for_workspace",
+            lambda desc, profiles: ("https://first.databricks.com", "p"),
+        )
+        monkeypatch.setattr(cli_mod, "list_profile_entries", lambda: [{"name": "p"}])
+        assert cli_mod._prompt_for_configuration() == ("https://first.databricks.com", "p")
+
+    def test_profiles_are_listed_once(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        entries = [
+            {"name": "a", "host": "https://acme.cloud.databricks.com", "workspace_id": "111"},
+            {"name": "pat", "host": "https://acme.cloud.databricks.com", "auth_type": "pat"},
+        ]
+        calls = []
+        monkeypatch.setattr(cli_mod, "list_profile_entries", lambda: calls.append(1) or entries)
+        offered = []
+
+        def pick(desc, profiles):
+            offered.extend(profiles)
+            return "https://acme.cloud.databricks.com", "a"
+
+        monkeypatch.setattr(cli_mod, "prompt_for_workspace", pick)
+        assert cli_mod._prompt_for_configuration() == (
+            "https://acme.cloud.databricks.com?w=111",
+            "a",
+        )
+        assert len(calls) == 1
+        assert offered == [("https://acme.cloud.databricks.com", "a")]
+
+
+class TestLaunchWorkspaceStateOnSharedHosts:
+    def test_launch_selector_saves_the_workspace_key(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        state = cli_mod._launch_workspace_state("https://acme.cloud.databricks.com/?w=111")
+        assert state["workspace"] == "https://acme.cloud.databricks.com"
+        assert state["workspace_id"] == "111"
+
+    def test_launch_with_the_bare_host_keeps_the_saved_workspace(self):
+        import ucode.state as state_mod
+
+        shared = "https://acme.cloud.databricks.com"
+        block = {"workspace": shared, "workspace_id": "111"}
+        state_mod.STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        state_mod.STATE_PATH.write_text(
+            json.dumps(
+                {
+                    "state_version": state_mod.STATE_VERSION,
+                    "current_workspace": shared,
+                    state_mod.CURRENT_WORKSPACE_KEY: f"{shared}?w=111",
+                    "workspaces": {
+                        f"{shared}?w=111": block,
+                        shared: {**block, state_mod.ALIAS_OF_KEY: f"{shared}?w=111"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        state = cli_mod._launch_workspace_state(shared)
+        assert state["workspace_id"] == "111"
+        assert state_mod.load_full_state()[state_mod.CURRENT_WORKSPACE_KEY] == f"{shared}?w=111"
+
+    def test_policy_for_another_workspace_on_the_same_host_refuses_the_launch(self, monkeypatch):
+        """A policy installed for one workspace of a shared host doesn't admit its siblings."""
+        import ucode.workspace as workspace_mod
+        from ucode.managed_config import save_managed_state
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        save_managed_state("https://acme.cloud.databricks.com?w=111", {"default_agent": "claude"})
+        with pytest.raises(
+            RuntimeError, match="managed for https://acme.cloud.databricks.com\\?w=111"
+        ):
+            cli_mod._launch_workspace_state("https://acme.cloud.databricks.com/?w=222")
 
 
 class TestConfigureOtherAgentReadsPolicyOnly:
