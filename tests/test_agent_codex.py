@@ -2376,8 +2376,8 @@ class TestCodexManagedConfig:
         assert not app_path.exists() and not unit_path.exists()
         monkeypatch.setattr(codex, "_explicit_configure", True)
         codex.write_tool_config(dict(relayed), provider="cat.s.mps", relayed=True)
-        provider = read_toml_safe(app_path)["model_providers"]["Databricks"]
-        assert read_toml_safe(app_path)["model_provider"] == "Databricks"
+        provider = read_toml_safe(app_path)["model_providers"]["DatabricksRelay"]
+        assert read_toml_safe(app_path)["model_provider"] == "DatabricksRelay"
         assert provider["base_url"] == "http://127.0.0.1:43198/v1"
         assert provider["requires_openai_auth"] is True
         assert "auth" not in provider
@@ -2388,7 +2388,7 @@ class TestCodexManagedConfig:
         codex.write_tool_config(
             {**relayed, "codex_otel_tracing": True}, provider="cat.s.mps", relayed=True
         )
-        assert read_toml_safe(app_path)["model_providers"]["Databricks"] == provider
+        assert read_toml_safe(app_path)["model_providers"]["DatabricksRelay"] == provider
         assert "--relay-port 43198 --port 43199" in unit_path.read_text()
         assert read_toml_safe(app_path)["otel"]["trace_exporter"]
 
@@ -2410,6 +2410,15 @@ class TestCodexManagedConfig:
         assert codex.revert_legacy_shared_config() is True
         assert "model_providers" not in read_toml_safe(app_path)
         assert not unit_path.exists()
+
+        # The name marks the entry as ug's, so it is replaced even after its service is lost.
+        codex.write_tool_config(dict(relayed), provider="cat.s.mps", relayed=True)
+        unit_path.unlink()
+        codex.write_tool_config(dict(relayed), provider="cat.s.mps", relayed=True)
+        relay = read_toml_safe(app_path)["model_providers"]["DatabricksRelay"]
+        port = relay["base_url"].removeprefix("http://127.0.0.1:").removesuffix("/v1")
+        assert relay["base_url"] != provider["base_url"]
+        assert f"--relay-port {port} " in unit_path.read_text()
 
     @pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
     def test_desktop_relay_preserves_user_provider_and_dry_run(self, tmp_path, monkeypatch, capsys):

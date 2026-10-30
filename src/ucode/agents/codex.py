@@ -110,6 +110,8 @@ LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
 CODEX_MODEL_PROVIDER_NAME = "Databricks"
 LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
+# The Codex app relay's own provider in ~/.codex/config.toml, apart from the managed `Databricks`.
+CODEX_APP_RELAY_PROVIDER_NAME = "DatabricksRelay"
 # ug owns the provider http_headers table and its auth/requires_openai_auth mode, so they are
 # pruned before each merge and rewritten from render_overlay — dropping stale routing and admin
 # headers or a previous relayed/non-relayed mode that deep_merge cannot delete.
@@ -962,7 +964,8 @@ def _sync_desktop_relay(
     """Point the Codex app at ug's login service as a ChatGPT relay for ``provider``; None removes.
 
     It goes in the Codex App settings (``ug codex`` sessions' own ``-c`` provider outranks it and
-    keeps a per-session proxy). Only a provider at the service's recorded relay port is ug's.
+    keeps a per-session proxy). Its own provider name is ug's, like Claude Desktop's reserved
+    profile, so a managed ``Databricks`` provider never merges into it.
     Returns whether that file changed; setup problems only warn.
     """
     if current_os() == OS.OTHER or is_dry_run():
@@ -970,37 +973,34 @@ def _sync_desktop_relay(
     try:
         doc = _read_app_config()
         providers = doc.get("model_providers")
-        current = providers.get(CODEX_MODEL_PROVIDER_NAME) if isinstance(providers, dict) else None
-        relay_port = _service_port("relay-port")
-        base_url = f"http://{LOOPBACK_HOST}:{relay_port}/v1"
-        ours = (
-            isinstance(current, dict)
-            and relay_port is not None
-            and current.get("base_url") == base_url
+        current = (
+            providers.get(CODEX_APP_RELAY_PROVIDER_NAME) if isinstance(providers, dict) else None
         )
+        relay_port = _service_port("relay-port")
         if provider is None or workspace is None:
             if tracing and workspace and relay_port:
                 _ensure_otel_service(workspace, _service_port("port") or _allocate_otel_port())
             elif not tracing:
                 _remove_otel_service()
-            if ours and isinstance(providers, dict):
-                del providers[CODEX_MODEL_PROVIDER_NAME]
-                if not providers:
-                    del doc["model_providers"]
-                if doc.get("model_provider") == CODEX_MODEL_PROVIDER_NAME:
-                    del doc["model_provider"]
-                write_toml_file(_legacy_config_path(), doc)
-            return ours
-        if (current is not None and not ours) or doc.get(
-            "model_provider", CODEX_MODEL_PROVIDER_NAME
-        ) != (CODEX_MODEL_PROVIDER_NAME):
+            if current is None or not isinstance(providers, dict):
+                return False
+            del providers[CODEX_APP_RELAY_PROVIDER_NAME]
+            if not providers:
+                del doc["model_providers"]
+            if doc.get("model_provider") == CODEX_APP_RELAY_PROVIDER_NAME:
+                del doc["model_provider"]
+            write_toml_file(_legacy_config_path(), doc)
+            return True
+        if (
+            doc.get("model_provider", CODEX_APP_RELAY_PROVIDER_NAME)
+            != CODEX_APP_RELAY_PROVIDER_NAME
+        ):
             print_warning_err(
                 f"{_legacy_config_path()} already sets a model provider; skipped the Codex app "
                 "ChatGPT relay."
             )
             return False
         relay_port = relay_port or _allocate_otel_port()
-        base_url = f"http://{LOOPBACK_HOST}:{relay_port}/v1"
         # Before the config, so a missing systemd user manager leaves Codex settings untouched.
         _ensure_otel_service(workspace, _service_port("port") or _allocate_otel_port(), relay_port)
         block = _provider_block(
@@ -1010,11 +1010,11 @@ def _sync_desktop_relay(
             managed_http_headers=state.get("codex_http_headers"),
             relayed=True,
         )
-        block["base_url"] = base_url
-        if doc.get("model_provider") == CODEX_MODEL_PROVIDER_NAME and current == block:
+        block["base_url"] = f"http://{LOOPBACK_HOST}:{relay_port}/v1"
+        if doc.get("model_provider") == CODEX_APP_RELAY_PROVIDER_NAME and current == block:
             return False
-        doc["model_provider"] = CODEX_MODEL_PROVIDER_NAME
-        doc.setdefault("model_providers", {})[CODEX_MODEL_PROVIDER_NAME] = block
+        doc["model_provider"] = CODEX_APP_RELAY_PROVIDER_NAME
+        doc.setdefault("model_providers", {})[CODEX_APP_RELAY_PROVIDER_NAME] = block
         write_toml_file(_legacy_config_path(), doc)
         print_warning_err("Restart the Codex app and sign in with ChatGPT to use the relay.")
         return True
