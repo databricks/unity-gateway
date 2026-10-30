@@ -10,6 +10,12 @@ that the pinned binary version remains unchanged.
 Artifacts retain native rollouts, hook inputs, routing decisions, and user settings
 for independent checks after the run.
 
+The verification branch also has a Windows controls diagnostic,
+`test_ug_codex_windows_session_controls.py`, selected against the unchanged PR
+and the candidate. It compares reads inside/outside the real Codex sandbox
+and requires native approval for the exact public routing off/on commands.
+It does not establish that the unmodified skill can recover from denied access.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered

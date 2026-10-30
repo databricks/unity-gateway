@@ -11,6 +11,12 @@ version verified again after the lifecycle completes.
 Artifacts include all routing decisions and before/after user settings alongside
 the native rollouts, hook inputs, and terminal actions.
 
+The verification branch also has a Windows controls diagnostic,
+`test_ug_codex_windows_session_controls.py`, selected against the unchanged PR
+and the candidate. It compares reads inside/outside the real Codex sandbox
+and requires native approval for the exact public routing off/on commands.
+It does not establish that the unmodified skill can recover from denied access.
+
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls
 still routing waiting for a later reply, distinct
