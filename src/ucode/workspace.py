@@ -142,6 +142,14 @@ def host_type(host: str) -> str | None:
     return result
 
 
+def is_unified_host(host: str) -> bool:
+    """Whether ``host`` serves several workspaces; an unreachable host counts as no."""
+    try:
+        return host_type(host) == UNIFIED_HOST_TYPE
+    except HostUnreachableError:
+        return False
+
+
 def resolve_workspace(
     raw: str,
     workspace_id: str | None = None,
