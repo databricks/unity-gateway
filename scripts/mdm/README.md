@@ -1,9 +1,6 @@
 # MDM / JAMF deployment for Unity Gateway
 
-Deploying coding agents through the Databricks AI Gateway to a fleet of macs has
-two independent layers. Keep them separate.
-
-## Layer 1 — provisioning
+MDM deployment runs `ug configure` as root on each machine.
 
 | Platform | Script | Setup guide |
 | --- | --- | --- |
@@ -21,41 +18,9 @@ The script authenticates `ug configure` with a short-lived token for a service p
 client id and secret come in as policy parameters; neither the credentials nor the token are
 written to disk. See [macos-setup.md](macos-setup.md) for the full setup.
 
-## Layer 2 — enforcement (config profiles in this directory)
-
-The OS-managed settings are what enforce gateway routing even for **bare**
-`claude` / `codex` launches (not just `ug claude`). Both agents read a macOS
-managed-preferences domain, so deploy them as JAMF **Configuration Profiles** —
-no root file-writes, no `sudo`, and the profile outranks any on-disk file. This
-matches how OpenRouter Ori is deployed (`com.openrouter.ori`).
-
-| Agent | Domain | Template | Reads it |
-| --- | --- | --- | --- |
-| Claude Code | `com.anthropic.claudecode` | `claude-code.mobileconfig` | startup + every 30 min, read-only |
-| Codex | `com.openai.codex` | `codex.mobileconfig` (+ `codex-managed_config.toml.template`) | startup, read-only |
-
-Deploy each via JAMF -> Configuration Profiles -> Application & Custom Settings
-(or upload the `.mobileconfig`). Each template has a header comment listing the
-placeholders to fill (workspace host, model list, UUIDs) before deployment.
-
-References:
-- Claude Code managed settings: https://code.claude.com/docs/en/managed-settings
-  (and Anthropic's Jamf template: https://github.com/anthropics/claude-code/tree/main/examples/mdm)
-- Codex managed configuration: https://developers.openai.com/codex/enterprise/managed-configuration
-
-## Why the split
-
-Claude Code and Codex both treat OS-managed settings as **externally owned and
-read-only** — an external tool writes them once and the agent only reads them.
-Having `ug` rewrite them via `sudo` on each launch fights that model and prompts
-non-admin users. Let MDM own the enforcement layer; let the provisioning script
-own installation and the workspace policy.
-
 ## Known gap
 
-`ug` cannot yet **emit** these profile payloads for MDM packaging — it only writes
-the OS-managed files in place via an interactive `sudo` reconciliation. Until it
-can, generate accurate content from a reference machine (run `ug configure` once as
-admin, then read `/Library/Application Support/ClaudeCode/managed-settings.json`
-and `/etc/codex/managed_config.toml`) and transcribe it into these templates. See
-the "ug MDM gaps" note for the requested `ug` changes.
+`macos-provision.sh` requests an `all-apis` token for the service principal, which
+is broader than `ug configure` needs: it only reads the workspace's coding-agent
+config and lists models. Until the script requests narrower scopes, give the
+service principal only workspace access and a short-lived secret.
