@@ -29,31 +29,51 @@ launches and `ug agents add` do not configure Desktop.
 
 ## Cowork workspace skills and MCP servers
 
-On macOS and Windows, default `ug configure` (`--global`) installs the generated `ug`
-plugin through Desktop's [organization plugin directory](https://claude.com/docs/third-party/claude-desktop/extensions#organization-plugins-admin):
+Both scopes generate the user marketplace at `~/.ucode/claude-cowork-marketplace`.
+Default `ug configure` (`--global`) on macOS and Windows also publishes the same bundle
+into a root-owned directory:
 
-- macOS: `/Library/Application Support/Claude/org-plugins/ug`
-- Windows: `C:\Program Files\Claude\org-plugins\ug`
+- macOS: `/Library/Application Support/UnityGateway/claude-cowork-marketplace`
+- Windows: `%ProgramFiles%\UnityGateway\claude-cowork-marketplace`
 
-The 3P connection profile stays in the user's `configLibrary`; no mobileconfig or
-registry policy is generated. Run configure as your normal user on macOS; UG uses its
-shared sudo session for system writes. Windows requires an elevated terminal.
-This path needs no existing Cowork session or account-directory discovery. The plugin
-is marked `required` so Desktop installs it on sync, and a content-derived `version.json`
-changes only when its contents change. Local stdio connectors require Desktop 1.49585.0
-or later. Quit and reopen Desktop after configuring.
+Global configure registers the root source. `--user`, `UG_SKIP_OS_SETTINGS`, and Linux
+register the user source. Both use Desktop's normal user-level Cowork loader through
+`claude plugin ... --cowork --json`, with one `ug@unity-gateway-cowork` registration
+for the selected account/org. Keeping both source copies does not install two plugins.
+Switching scope replaces the source registration; `--user` leaves existing root files
+untouched. A source registered elsewhere under UG's marketplace name is preserved
+and reported as a conflict.
 
-`--user` and `UG_SKIP_OS_SETTINGS` retain the user-level
-`ug@unity-gateway-cowork` installation, as does Linux. For that path, start one Cowork
-session first so Desktop creates its account/organization directory. Ambiguous active
-profiles warn without changes. User installation is refused while a system `ug` plugin
-exists, to avoid duplicate connectors. Use `ug revert` to remove a UG-owned system copy
-before switching to user scope; ask IT about an IT-managed copy.
+Start one Cowork task before configuring so Desktop creates its account/org directory.
+Quit Desktop, run configure, then reopen it and start a new task. Ambiguous profiles
+warn without changes. Run configure as your normal user on macOS; UG uses its shared
+sudo session for root writes. Global configure on Windows requires an elevated terminal.
+It does not fall back silently to user scope if the root write fails.
 
-System installation is verified before removing previous UG user registrations and their
-generated marketplace. Other plugins are preserved. UG records the installed contents in
-`~/.ucode/claude-cowork.json` and refuses to replace or remove an unrecorded or externally
-edited system bundle. This includes a bundle installed by another user or MDM.
+The source contains `.claude-plugin/marketplace.json`, and under `plugins/ug` the
+plugin manifest, `.mcp.json`, `hooks/hooks.json`, and included `skills/` assets.
+The plugin version changes with its contents. Configure explicitly updates the marketplace
+and installs or updates the user-cached plugin: changing root files alone is insufficient.
+The 3P connection profile, telemetry helper, runtime authentication, and UG state remain
+user-local. No mobileconfig, registry policy, or organization-loader plugin is generated.
+A pre-existing `Claude/org-plugins/ug` installation must be removed by its owner before
+configuration, so the organization loader cannot expose a duplicate UG plugin.
+
+Configure and revert share a user-level lock so concurrent commands cannot interleave
+source publication and registration changes. UG records the source, account/org, and owned root contents in `~/.ucode/claude-cowork.json`.
+Foreign or externally edited root bundles are preserved. Source publication uses staged
+replacement and rollback. If an existing registration fails to update or switch sources,
+UG attempts to restore its previous sources and registration; failed rollback retains the
+backup and reports its path. An initial registration failure retains source/state for retry
+or revert. Other plugins are preserved. Default revert removes UG's registration and both
+owned sources; user-scope revert removes only the registration and user source, retaining
+the root ownership record for a later global revert.
+
+This configures the current user. The MCP executable and Databricks profile still refer to
+the installation selected by configure. A shared UG runtime, setup for new users, policy
+enforcement, and automatic per-user refresh at login are separate MDM work. The macOS
+pilot verified connector calls and skill delivery after an explicit refresh; it did not
+establish fresh-user provisioning or native Windows behavior.
 
 The plugin contains the current workspace's Claude-targeted MCP servers and downloaded
 user-level skills, plus any managed MCP servers and skills. Add skills with `ug skills add`

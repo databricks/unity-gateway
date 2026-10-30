@@ -1,4 +1,4 @@
-"""Transactional installation of UG's system-wide Desktop plugin."""
+"""Transactional publication of UG's root-owned Desktop marketplace source."""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ def _write_bundle(root: Path, files: Bundle) -> None:
         path.chmod(mode)
 
 
-def _owned_bundle(path: Path, state: dict) -> Bundle | None:
+def owned_bundle(path: Path, state: dict) -> Bundle | None:
     files = read_bundle(path)
     if files is not None and bundle_digest(files) not in [state.get(key) for key in _DIGEST_KEYS]:
         raise RuntimeError(
@@ -70,22 +70,14 @@ def _owned_bundle(path: Path, state: dict) -> Bundle | None:
 
 
 def install(source: Path, state_path: Path) -> None:
-    path = managed_files.claude_desktop_plugin_path()
+    path = managed_files.claude_desktop_marketplace_path()
     if path is None or config_io.is_dry_run():
         return
     state = config_io.read_json_safe(state_path)
-    previous = _owned_bundle(path, state)
+    previous = owned_bundle(path, state)
     files = read_bundle(source)
     if files is None:
         raise RuntimeError(f"Desktop plugin source is missing: {source}")
-    manifest_name = ".claude-plugin/plugin.json"
-    manifest = json.loads(files[manifest_name][0])
-    manifest["installationPreference"] = "required"
-    files[manifest_name] = (json.dumps(manifest, indent=2).encode("utf-8") + b"\n", 0o644)
-    version = "0.0.0-ug-" + bundle_digest(files)
-    manifest["version"] = version
-    files[manifest_name] = (json.dumps(manifest, indent=2).encode("utf-8") + b"\n", 0o644)
-    files["version.json"] = (json.dumps({"version": version}).encode("utf-8") + b"\n", 0o644)
     digest = bundle_digest(files)
     # Retain ownership if the process stops after installation but before saving its result.
     config_io.atomic_write_json(state_path, {**state, "pending_system_digest": digest})
@@ -100,11 +92,11 @@ def install(source: Path, state_path: Path) -> None:
 
 
 def remove(state_path: Path) -> bool:
-    path = managed_files.claude_desktop_plugin_path()
+    path = managed_files.claude_desktop_marketplace_path()
     state = config_io.read_json_safe(state_path)
     if path is None or not any(state.get(key) for key in _DIGEST_KEYS) or config_io.is_dry_run():
         return False
-    previous = _owned_bundle(path, state)
+    previous = owned_bundle(path, state)
     _update_bundle(path, None, previous)
     for key in _DIGEST_KEYS:
         state.pop(key, None)
@@ -115,7 +107,7 @@ def remove(state_path: Path) -> bool:
 def _update_bundle(path: Path, files: Bundle | None, previous: Bundle | None) -> None:
     if files == previous:
         return
-    if path != managed_files.claude_desktop_plugin_path():
+    if path != managed_files.claude_desktop_marketplace_path():
         raise RuntimeError(f"Refusing unexpected Desktop plugin target: {path}")
     if managed_files.current_os() is managed_files.OS.WINDOWS:
         if not system_cross_os.is_admin():

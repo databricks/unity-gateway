@@ -161,7 +161,17 @@ def claude_header_mod_root() -> Path | None:
     return None if managed_settings_skipped() else CLAUDE_HEADER_MOD_ROOTS.get(current_os())
 
 
-def claude_desktop_plugin_path() -> Path | None:
+def claude_desktop_marketplace_path() -> Path | None:
+    if current_os() is OS.MACOS:
+        return Path("/Library/Application Support/UnityGateway/claude-cowork-marketplace")
+    if current_os() is OS.WINDOWS:
+        return (
+            system_cross_os.windows_program_files_dir() / "UnityGateway/claude-cowork-marketplace"
+        )
+    return None
+
+
+def claude_desktop_org_plugin_path() -> Path | None:
     if current_os() is OS.MACOS:
         return Path("/Library/Application Support/Claude/org-plugins/ug")
     if current_os() is OS.WINDOWS:
@@ -171,7 +181,7 @@ def claude_desktop_plugin_path() -> Path | None:
 
 def replace_privileged_bundle(path: Path, request: Path) -> None:
     """Apply a staged Desktop bundle transaction through the existing sudo session."""
-    if path != claude_desktop_plugin_path() or current_os() is not OS.MACOS:
+    if path != claude_desktop_marketplace_path() or current_os() is not OS.MACOS:
         raise RuntimeError(f"Refusing unexpected privileged bundle target: {path}")
     if _sudo_may_prompt():
         _print_managed_write_permission("Claude Desktop")

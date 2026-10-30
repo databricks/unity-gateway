@@ -7,15 +7,18 @@ import os
 import shutil
 import tempfile
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import unquote
 
 from ucode import config_io, managed_files
-from ucode.agents.desktop import org_plugins
+from ucode.agents.desktop import system_marketplace
 from ucode.agents.desktop.claude import claude_desktop_root_directory
 from ucode.databricks import build_mcp_proxy_argv
 from ucode.mcp_connection_login import connection_from_url
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock, release_file_lock
 from ucode.skills_state import records_for_scope
 from ucode.ui import print_warning
 
@@ -29,6 +32,7 @@ MARKETPLACE_DIRECTORY_NAME = "claude-cowork-marketplace"
 CONNECTOR_SKILL_NAME = "unity-gateway-connectors"
 SESSION_START_HOOK_TIMEOUT_SECONDS = 30
 PROMPT_HOOK_TIMEOUT_SECONDS = 20
+COWORK_LOCK_TIMEOUT_SECONDS = 5
 
 _COWORK_MARKERS = (
     "cowork_settings.json",
@@ -42,6 +46,11 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
     """Generate and install UG's Cowork plugin for the active workspace."""
     if config_io.is_dry_run():
         return False
+    with _locked():
+        return _configure_cowork(state, mcp_servers)
+
+
+def _configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
     workspace = state.get("workspace")
     if not isinstance(workspace, str) or not workspace:
         raise RuntimeError("No Databricks workspace is configured for Cowork.")
@@ -50,16 +59,13 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
     skill_records = _workspace_skill_records(workspace)
     if not previous_state and not skill_records and not mcp_servers:
         return False
-    system_path = managed_files.claude_desktop_plugin_path()
+    system_path = managed_files.claude_desktop_marketplace_path()
     system_install = system_path is not None and not managed_files.managed_settings_skipped()
-    if (
-        not system_install
-        and system_path is not None
-        and (system_path.exists() or system_path.is_symlink())
-    ):
+    org_plugin = managed_files.claude_desktop_org_plugin_path()
+    if org_plugin is not None and (org_plugin.exists() or org_plugin.is_symlink()):
         raise RuntimeError(
-            f"A system Desktop plugin already exists at {system_path}. Use --global, or remove "
-            "the existing installation before configuring a user plugin."
+            f"An organization plugin already exists at {org_plugin}. Remove the previous UG "
+            "pilot, or ask its administrator to remove it, before installing the marketplace plugin."
         )
     if not system_install and not previous_state and not _cowork_sessions_root_exists():
         return False
@@ -78,53 +84,134 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
     if not previous_state and not skill_records and not mcp_config["mcpServers"]:
         return False
 
-    hooks = _connector_hooks(mcp_config, workspace, profile, use_pat=bool(state.get("use_pat")))
-    if system_install:
-        with tempfile.TemporaryDirectory(prefix="ug-desktop-marketplace-") as directory:
-            marketplace = Path(directory).resolve() / "marketplace"
-            plugin = marketplace / "plugins" / PLUGIN_NAME
-            _write_marketplace(marketplace, plugin, skill_records, mcp_config, hooks)
-            org_plugins.install(plugin, _state_path())
-        _remove_user_registrations(previous_state)
-        _remove_marketplace_source()
-        installed_state = config_io.read_json_safe(_state_path())
-        installed_state.pop("cowork_root", None)
-        config_io.atomic_write_json(_state_path(), installed_state)
-        return True
-
     cowork_root = discover_cowork_root()
-    previous_root = previous_state.get("cowork_root")
-    if isinstance(previous_root, str) and previous_root and Path(previous_root) != cowork_root:
-        _remove_plugin_registration(Path(previous_root))
     marketplace_root = _marketplace_root()
+    selected_source = system_path if system_install else marketplace_root
+    assert selected_source is not None
+    previous_source = _registered_marketplace_source(cowork_root)
+    if previous_source is not None and previous_source not in (marketplace_root, system_path):
+        raise RuntimeError(
+            f"UG marketplace refers to another source at {previous_source}; left unchanged."
+        )
+    if system_install:
+        system_marketplace.owned_bundle(selected_source, previous_state)
+    system_marketplace.read_bundle(marketplace_root)
+    hooks = _connector_hooks(mcp_config, workspace, profile, use_pat=bool(state.get("use_pat")))
     plugin_root = marketplace_root / "plugins" / PLUGIN_NAME
-    _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config, hooks)
-    config_io.atomic_write_json(
-        _state_path(),
-        {"version": 1, "cowork_root": str(cowork_root)},
-    )
-    _install_plugin(cowork_root, marketplace_root)
+    backup = Path(tempfile.mkdtemp(prefix="ug-desktop-rollback-")).resolve()
+    retain_backup = False
+    registration_attempted = False
+    try:
+        if marketplace_root.exists():
+            shutil.copytree(marketplace_root, backup / "user")
+        if system_install and selected_source.exists():
+            shutil.copytree(selected_source, backup / "system")
+        try:
+            _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config, hooks)
+            if system_install:
+                system_marketplace.install(marketplace_root, _state_path())
+            installed_state = config_io.read_json_safe(_state_path())
+            pending_roots = list(previous_state.get("previous_cowork_roots", []))
+            previous_root = previous_state.get("cowork_root")
+            if (
+                previous_root
+                and previous_root != str(cowork_root)
+                and previous_root not in pending_roots
+            ):
+                pending_roots.append(previous_root)
+            installed_state.update(
+                version=3,
+                cowork_root=str(cowork_root),
+                marketplace_root=str(selected_source),
+                previous_cowork_roots=pending_roots,
+            )
+            config_io.atomic_write_json(_state_path(), installed_state)
+            registration_attempted = True
+            _install_plugin(cowork_root, selected_source)
+        except Exception as exc:
+            # First-install failures retain enough state/source for retry or revert.
+            if registration_attempted and previous_source is None:
+                raise
+            try:
+                _remove_marketplace_source()
+                if (backup / "user").exists():
+                    shutil.copytree(backup / "user", marketplace_root)
+                if system_install:
+                    if (backup / "system").exists():
+                        system_marketplace.install(backup / "system", _state_path())
+                    else:
+                        system_marketplace.remove(_state_path())
+                if registration_attempted and previous_source is not None:
+                    _install_plugin(cowork_root, previous_source)
+                if previous_state:
+                    config_io.atomic_write_json(_state_path(), previous_state)
+                else:
+                    _state_path().unlink(missing_ok=True)
+            except Exception as rollback_error:
+                retain_backup = True
+                raise RuntimeError(
+                    f"Desktop update failed ({exc}); rollback failed ({rollback_error}). "
+                    f"Previous source files retained at {backup}. Retry configure or revert."
+                ) from rollback_error
+            raise
+    finally:
+        if not retain_backup:
+            shutil.rmtree(backup)
+
+    for old_root in installed_state["previous_cowork_roots"]:
+        if Path(old_root) != cowork_root:
+            _remove_plugin_registration(Path(old_root))
+    installed_state.pop("previous_cowork_roots", None)
+    config_io.atomic_write_json(_state_path(), installed_state)
     return True
 
 
 def revert_cowork() -> bool:
     """Remove only UG's Cowork plugin, marketplace registration, and generated source."""
+    if config_io.is_dry_run():
+        return False
+    with _locked():
+        return _revert_cowork()
+
+
+def _revert_cowork() -> bool:
 
     state_path = _state_path()
     state = config_io.read_json_safe(state_path)
-    if config_io.is_dry_run():
-        return False
-    if managed_files.managed_settings_skipped() and (
-        state.get("system_digest") or state.get("pending_system_digest")
-    ):
-        raise RuntimeError("Enable machine-wide writes to revert the system Desktop plugin.")
-    changed = org_plugins.remove(state_path)
-    changed = _remove_user_registrations(state) or changed
+    if not managed_files.managed_settings_skipped():
+        path = managed_files.claude_desktop_marketplace_path()
+        if path is not None and (state.get("system_digest") or state.get("pending_system_digest")):
+            system_marketplace.owned_bundle(path, state)
+    changed = _remove_user_registrations(state)
+    if not managed_files.managed_settings_skipped():
+        changed = system_marketplace.remove(state_path) or changed
     changed = _remove_marketplace_source() or changed
-    if state_path.exists():
+    state = config_io.read_json_safe(state_path)
+    if state.get("system_digest") or state.get("pending_system_digest"):
+        for key in ("cowork_root", "marketplace_root", "previous_cowork_roots"):
+            state.pop(key, None)
+        config_io.atomic_write_json(state_path, state)
+    elif state_path.exists():
         state_path.unlink()
         changed = True
     return changed
+
+
+@contextmanager
+def _locked() -> Iterator[None]:
+    path = _state_path().with_suffix(".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        try:
+            acquire_exclusive_file_lock(handle, timeout=COWORK_LOCK_TIMEOUT_SECONDS)
+        except TimeoutError as exc:
+            raise RuntimeError(
+                "Timed out waiting for another Cowork configure/revert; retry after it finishes."
+            ) from exc
+        try:
+            yield
+        finally:
+            release_file_lock(handle)
 
 
 def _remove_user_registrations(state: dict) -> bool:
@@ -132,6 +219,9 @@ def _remove_user_registrations(state: dict) -> bool:
     roots: list[Path] = []
     if isinstance(raw_root, str) and raw_root:
         roots.append(Path(raw_root))
+    for raw_root in state.get("previous_cowork_roots", []):
+        if Path(raw_root) not in roots:
+            roots.append(Path(raw_root))
     for root in _cowork_roots():
         if root not in roots and _has_ug_registration(root):
             roots.append(root)
@@ -378,6 +468,10 @@ def _write_marketplace(
         _copy_skills(staging_plugin / "skills", skill_records)
         if mcp_config["mcpServers"]:
             _write_connector_skill(staging_plugin / "skills", list(mcp_config["mcpServers"]))
+        files = system_marketplace.read_bundle(staging_plugin)
+        assert files is not None
+        plugin["version"] = "0.0.0-ug-" + system_marketplace.bundle_digest(files)
+        _write_json(staging_plugin / ".claude-plugin" / "plugin.json", plugin)
 
         if backup.exists():
             shutil.rmtree(backup)
@@ -525,6 +619,24 @@ def _claude_skill_directory(record: dict) -> Path | None:
     )
 
 
+def _registered_marketplace_source(cowork_root: Path) -> Path | None:
+    path = cowork_root / "cowork_plugins/known_marketplaces.json"
+    if not path.exists():
+        return None
+    entry = json.loads(path.read_text(encoding="utf-8")).get(MARKETPLACE_NAME)
+    if entry is None:
+        return None
+    source = entry.get("source", {})
+    raw_path = source.get("path")
+    if (
+        source.get("source") != "directory"
+        or not isinstance(raw_path, str)
+        or not Path(raw_path).is_absolute()
+    ):
+        raise RuntimeError("Existing UG marketplace is not a local directory; left unchanged.")
+    return Path(raw_path)
+
+
 def _install_plugin(cowork_root: Path, marketplace_root: Path) -> None:
     claude = _claude_binary()
     env = os.environ.copy()
@@ -534,6 +646,9 @@ def _install_plugin(cowork_root: Path, marketplace_root: Path) -> None:
         ["plugin", "validate", str(marketplace_root)],
         env,
     )
+    previous_source = _registered_marketplace_source(cowork_root)
+    if previous_source is not None and previous_source != marketplace_root:
+        _remove_plugin_registration(cowork_root)
     _run_claude_json(
         claude,
         ["plugin", "marketplace", "add", str(marketplace_root), "--cowork", "--json"],

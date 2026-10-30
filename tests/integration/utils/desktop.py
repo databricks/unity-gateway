@@ -30,32 +30,39 @@ def prepare_cowork_home(session) -> Path:
 
 def installed_cowork_servers(session, root: Path) -> dict:
     state = json.loads((session.home / ".ucode/claude-cowork.json").read_text())
-    plugin = system_desktop_plugin()
-    if plugin is None:
-        assert Path(state["cowork_root"]) == root
-        installed = json.loads((root / "cowork_plugins/installed_plugins.json").read_text())
-        entries = installed["plugins"]["ug@unity-gateway-cowork"]
-        assert len(entries) == 1, entries
-        plugin = Path(entries[0]["installPath"])
-    else:
+    user_source = session.home / ".ucode/claude-cowork-marketplace"
+    system_source = system_desktop_marketplace()
+    source = system_source or user_source
+    assert Path(state["cowork_root"]) == root
+    assert Path(state["marketplace_root"]) == source
+    known = json.loads((root / "cowork_plugins/known_marketplaces.json").read_text())
+    assert Path(known["unity-gateway-cowork"]["source"]["path"]) == source
+    if system_source is not None:
         assert state["system_digest"]
-        assert "cowork_root" not in state
-        installed = json.loads((root / "cowork_plugins/installed_plugins.json").read_text())
-        assert "ug@unity-gateway-cowork" not in installed["plugins"]
+        contents = {p.relative_to(source): p.read_bytes() for p in source.rglob("*") if p.is_file()}
+        assert contents == {
+            p.relative_to(user_source): p.read_bytes()
+            for p in user_source.rglob("*")
+            if p.is_file()
+        }
+    installed = json.loads((root / "cowork_plugins/installed_plugins.json").read_text())
+    entries = installed["plugins"]["ug@unity-gateway-cowork"]
+    assert len(entries) == 1, entries
+    assert "unity-gateway@unity-gateway-cowork" not in installed["plugins"]
+    plugin = Path(entries[0]["installPath"])
     manifest = json.loads((plugin / ".claude-plugin/plugin.json").read_text())
-    if system_desktop_plugin() is not None:
-        assert manifest["installationPreference"] == "required"
-        assert manifest["version"] == json.loads((plugin / "version.json").read_text())["version"]
+    assert manifest == json.loads((source / "plugins/ug/.claude-plugin/plugin.json").read_text())
+    assert "installationPreference" not in manifest
     assert manifest["name"] == "ug"
     assert manifest["mcpServers"] == "./.mcp.json"
     return json.loads((plugin / manifest["mcpServers"]).read_text())["mcpServers"]
 
 
-def system_desktop_plugin() -> Path | None:
+def system_desktop_marketplace() -> Path | None:
     if os.name == "nt":
-        return Path(os.environ["ProgramFiles"]) / "Claude/org-plugins/ug"
+        return Path(os.environ["ProgramFiles"]) / "UnityGateway/claude-cowork-marketplace"
     if sys.platform == "darwin":
-        return Path("/Library/Application Support/Claude/org-plugins/ug")
+        return Path("/Library/Application Support/UnityGateway/claude-cowork-marketplace")
     return None
 
 
