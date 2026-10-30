@@ -39,6 +39,7 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     SMART_ROUTER_RECIPE_HEADER,
+    UG_CLAUDE_SERVER_SIDE_WEB_SEARCH_ENV_VAR,
     UG_HEADERS_ENV_VAR,
 )
 from ucode.custom_oauth import (
@@ -57,6 +58,7 @@ from ucode.databricks import (
     maybe_add_gpt_1m_suffix,
     ug_binary,
 )
+from ucode.env import env_bool
 from ucode.launcher import exec_or_spawn
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import (
@@ -188,6 +190,7 @@ def _resolve_web_search_model(state: dict) -> str | None:
 
 
 WEB_SEARCH_MCP_NAME = "web_search"
+DENIED_MCP_SERVERS_KEY = "deniedMcpServers"
 # Matches both the AI Gateway form (`databricks-claude-opus-4-8`) and the UC
 # model-services form (`system.ai.claude-opus-4-8`).
 _CLAUDE_MODEL_RE = re.compile(
@@ -647,7 +650,8 @@ def render_overlay(
     # mechanism for built-in tools; a bare tool name in `deny` drops it, whereas
     # a scoped rule like `WebSearch(*)` would leave it advertised.) The
     # replacement `web_search` MCP server is registered separately via the
-    # claude CLI.
+    # claude CLI. A launch can opt out of this deny for its own session
+    # (see `_enable_server_side_web_search`).
     if disable_web_search:
         overlay["permissions"] = {"deny": ["WebSearch"]}
         keys.append(["permissions", "deny"])
@@ -1381,13 +1385,11 @@ def _prepare_external_web_search_args(state: dict, tool_args: list[str]) -> list
         raise _external_search_conflict("managed MCP scope cannot be inspected on this platform")
     if managed_path.with_name("managed-mcp.json").exists():
         raise _external_search_conflict("managed-mcp.json has exclusive control over MCP servers")
-    user_settings = (
-        Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json"
-        if os.environ.get("CLAUDE_CONFIG_DIR")
-        else CLAUDE_USER_SETTINGS_PATH
-    )
-    settings_paths = [managed_path, user_settings, CLAUDE_SETTINGS_PATH]
-    settings_paths.extend(sorted(managed_path.with_name("managed-settings.d").glob("*.json")))
+    settings_paths = [
+        *_managed_settings_files(managed_path),
+        _active_user_settings_path(),
+        CLAUDE_SETTINGS_PATH,
+    ]
     for directory in directories:
         settings_paths.extend(
             [directory / ".claude/settings.json", directory / ".claude/settings.local.json"]
@@ -2358,12 +2360,77 @@ def _union_claude_hooks(base: dict, overlay: dict) -> dict:
     return result
 
 
+def _union_denied_mcp_servers(base: dict, overlay: dict, merged: dict) -> None:
+    """A deny list is a restriction, so a replaced list must not drop the other side's entries."""
+    lists = [s.get(DENIED_MCP_SERVERS_KEY) for s in (base, overlay)]
+    if not any(isinstance(entries, list) for entries in lists):
+        return
+    union: list = []
+    for entries in lists:
+        for entry in entries if isinstance(entries, list) else []:
+            if entry not in union:
+                union.append(entry)
+    merged[DENIED_MCP_SERVERS_KEY] = union
+
+
+def _managed_settings_files(managed_path: Path) -> list[Path]:
+    """The managed settings file and its ``managed-settings.d`` drop-ins."""
+    return [managed_path, *sorted(managed_path.with_name("managed-settings.d").glob("*.json"))]
+
+
+def _active_user_settings_path() -> Path:
+    """The user settings file Claude Code reads, which ``CLAUDE_CONFIG_DIR`` relocates."""
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(config_dir) / "settings.json" if config_dir else CLAUDE_USER_SETTINGS_PATH
+
+
+def server_side_web_search_enabled() -> bool:
+    return env_bool(UG_CLAUDE_SERVER_SIDE_WEB_SEARCH_ENV_VAR)
+
+
+def _enable_server_side_web_search(settings: dict) -> dict:
+    """Let Claude's native WebSearch reach the gateway for this launch, hiding ug's GPT search.
+
+    Applied after every merge because the merges re-add denies from either side. Scoped rules
+    such as ``WebSearch(...)`` stay: they restrict, not remove, the tool.
+    """
+    permissions = settings.get("permissions")
+    if isinstance(permissions, dict) and isinstance(permissions.get("deny"), list):
+        permissions["deny"] = [rule for rule in permissions["deny"] if rule != "WebSearch"]
+    denied = settings.get(DENIED_MCP_SERVERS_KEY)
+    denied = denied if isinstance(denied, list) else []
+    entry = {"serverName": WEB_SEARCH_MCP_NAME}
+    if entry not in denied:
+        denied.append(entry)
+    settings[DENIED_MCP_SERVERS_KEY] = denied
+    return settings
+
+
+def _warn_if_web_search_denied_outside_launch() -> None:
+    """Managed and user settings outrank a launch's deny removal, so say why it won't take effect."""
+    managed_path = _managed_settings_path()
+    for path in (
+        *(_managed_settings_files(managed_path) if managed_path else []),
+        _active_user_settings_path(),
+    ):
+        permissions = read_json_safe(path).get("permissions")
+        deny = permissions.get("deny") if isinstance(permissions, dict) else None
+        if isinstance(deny, list) and "WebSearch" in deny:
+            print_warning(
+                f"Server-side web search is enabled, but {path} still denies WebSearch, and a "
+                'launch cannot override it. Remove "WebSearch" from its permissions.deny for '
+                "Claude's native web search to work (the managed file needs admin or sudo)."
+            )
+            return
+
+
 def _merge_claude_settings(base: dict, overlay: dict) -> dict:
     """Deep-merge *overlay* onto *base* (overlay wins on conflicting leaves),
-    preserving both sources' hooks and permission denies. Inputs are not mutated.
+    preserving both sources' hooks, permission denies and denied MCP servers. Inputs are not mutated.
     """
     merged = deep_merge_dict(copy.deepcopy(base), overlay)
     _preserve_permission_denies(base, merged)
+    _union_denied_mcp_servers(base, overlay, merged)
     base_hooks = base.get("hooks")
     overlay_hooks = overlay.get("hooks")
     if isinstance(base_hooks, dict) or isinstance(overlay_hooks, dict):
@@ -2380,7 +2447,10 @@ def _compose_v2_settings(tool_args: list[str]) -> tuple[dict, list[str]]:
     settings: dict = {}
     for value in caller_values:
         settings = _merge_claude_settings(settings, _load_caller_settings(value))
-    return _merge_claude_settings(settings, read_json_safe(CLAUDE_SETTINGS_PATH)), remaining
+    settings = _merge_claude_settings(settings, read_json_safe(CLAUDE_SETTINGS_PATH))
+    if server_side_web_search_enabled():
+        _enable_server_side_web_search(settings)
+    return settings, remaining
 
 
 def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[str]:
@@ -2491,7 +2561,9 @@ def _build_claude_argv(
         else []
     )
     caller_values, remaining = _extract_caller_settings(tool_args)
-    if not caller_values and settings_override is None:
+    # Relayed launches keep ug's deny: they never reach the gateway's server-side search.
+    server_side_search = server_side_web_search_enabled() and not relayed
+    if not caller_values and settings_override is None and not server_side_search:
         # No caller --settings: hand Claude ucode's settings file directly (the
         # common path; behavior unchanged).
         return [binary, *source_args, "--settings", str(CLAUDE_SETTINGS_PATH), *tool_args]
@@ -2503,6 +2575,8 @@ def _build_claude_argv(
     merged = _merge_claude_settings(caller_settings, read_json_safe(CLAUDE_SETTINGS_PATH))
     if settings_override is not None:
         merged = _merge_claude_settings(merged, settings_override)
+    if server_side_search:
+        _enable_server_side_web_search(merged)
     merged_env = merged.get("env")
     if isinstance(merged_env, dict):
         merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
@@ -2672,6 +2746,8 @@ def launch(
     if state.get("claude_relayed"):
         _launch_relayed(state, binary, tool_args)
         return
+    if server_side_web_search_enabled():
+        _warn_if_web_search_denied_outside_launch()
     launch_default_model = state.get("_claude_launch_default_model")
     if isinstance(launch_default_model, str) and launch_default_model:
         os.environ["ANTHROPIC_DEFAULT_MODEL"] = launch_default_model

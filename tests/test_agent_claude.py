@@ -4018,6 +4018,188 @@ class TestBuildClaudeArgv:
             claude._build_claude_argv("claude", ["--settings", str(bad_file)])
 
 
+class TestServerSideWebSearchOptIn:
+    ENV = "UG_CLAUDE_SERVER_SIDE_WEB_SEARCH"
+
+    @pytest.fixture
+    def settings_path(self, tmp_path, monkeypatch):
+        path = tmp_path / "ucode-settings.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "apiKeyHelper": "gateway-helper",
+                    "permissions": {"deny": ["WebSearch", "WebSearch(domain:evil.test)"]},
+                }
+            )
+        )
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", tmp_path / "user-settings.json")
+        monkeypatch.delenv(self.ENV, raising=False)
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        return path
+
+    @staticmethod
+    def _normal(args):
+        argv = claude._build_claude_argv("claude", args)
+        return json.loads(argv[argv.index("--settings") + 1])
+
+    @staticmethod
+    def _routing(args):
+        settings, remaining = claude._compose_v2_settings(args)
+        argv = claude._build_claude_argv("claude", remaining, settings_override=settings)
+        return json.loads(argv[argv.index("--settings") + 1])
+
+    @pytest.mark.parametrize("path", ["_normal", "_routing"])
+    def test_off_by_default_keeps_deny_and_file_argv(self, settings_path, path):
+        merged = getattr(self, path)(["--settings", json.dumps({"env": {"A": "1"}})])
+        assert "WebSearch" in merged["permissions"]["deny"]
+        assert "deniedMcpServers" not in merged
+        argv = claude._build_claude_argv("claude", ["-p", "hi"])
+        assert argv == ["claude", "--settings", str(settings_path), "-p", "hi"]
+
+    @pytest.mark.parametrize("path", ["_normal", "_routing"])
+    @pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
+    def test_enabled_drops_bare_deny_and_hides_gpt_search(
+        self, settings_path, monkeypatch, path, value
+    ):
+        monkeypatch.setenv(self.ENV, value)
+        caller = {
+            "permissions": {"deny": ["Bash(rm:*)"]},
+            "deniedMcpServers": [{"serverName": "web-search"}],
+        }
+        before = settings_path.read_bytes()
+
+        merged = getattr(self, path)(["--settings", json.dumps(caller)])
+
+        assert sorted(merged["permissions"]["deny"]) == [
+            "Bash(rm:*)",
+            "WebSearch(domain:evil.test)",
+        ]
+        assert merged["deniedMcpServers"] == [
+            {"serverName": "web-search"},
+            {"serverName": claude.WEB_SEARCH_MCP_NAME},
+        ]
+        assert merged["apiKeyHelper"] == "gateway-helper"
+        assert settings_path.read_bytes() == before
+
+    def test_enabled_without_caller_settings_goes_inline(self, settings_path, monkeypatch):
+        monkeypatch.setenv(self.ENV, "1")
+        merged = self._normal(["-p", "hi"])
+        assert "WebSearch" not in merged["permissions"]["deny"]
+
+    def test_enabled_does_not_duplicate_gpt_search_deny(self, settings_path, monkeypatch):
+        monkeypatch.setenv(self.ENV, "1")
+        caller = {"deniedMcpServers": [{"serverName": claude.WEB_SEARCH_MCP_NAME}]}
+        merged = self._normal(["--settings", json.dumps(caller)])
+        assert merged["deniedMcpServers"] == [{"serverName": claude.WEB_SEARCH_MCP_NAME}]
+
+    def test_relayed_launch_unchanged(self, settings_path, monkeypatch):
+        monkeypatch.setenv(self.ENV, "1")
+        argv = claude._build_claude_argv("claude", ["-p", "hi"], relayed=True)
+        assert str(settings_path) in argv
+
+    def test_merge_unions_denied_mcp_servers_without_flag(self):
+        merged = claude._merge_claude_settings(
+            {"deniedMcpServers": [{"serverName": "a"}, {"serverName": "b"}]},
+            {"deniedMcpServers": [{"serverName": "b"}, {"serverName": "c"}]},
+        )
+        assert merged["deniedMcpServers"] == [
+            {"serverName": "a"},
+            {"serverName": "b"},
+            {"serverName": "c"},
+        ]
+
+    @pytest.mark.parametrize("where", ["managed", "user"])
+    def test_warns_when_unchangeable_scope_denies_web_search(
+        self, settings_path, tmp_path, monkeypatch, where
+    ):
+        denying = tmp_path / "denying.json"
+        denying.write_text(json.dumps({"permissions": {"deny": ["WebSearch"]}}))
+        monkeypatch.setenv(self.ENV, "1")
+        monkeypatch.setattr(
+            claude, "_managed_settings_path", lambda: denying if where == "managed" else None
+        )
+        if where == "user":
+            monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", denying)
+        warnings: list[str] = []
+        monkeypatch.setattr(claude, "print_warning", warnings.append)
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: None)
+        monkeypatch.setattr(claude, "ensure_hooks_modules_gate", lambda: None)
+
+        claude.launch({}, [], options=LaunchOptions())
+
+        assert len(warnings) == 1
+        assert str(denying) in warnings[0]
+
+    def test_warns_when_managed_drop_in_denies_web_search(
+        self, settings_path, tmp_path, monkeypatch
+    ):
+        managed = tmp_path / "managed-settings.json"
+        drop_in = tmp_path / "managed-settings.d" / "10-policy.json"
+        drop_in.parent.mkdir()
+        drop_in.write_text(json.dumps({"permissions": {"deny": ["WebSearch"]}}))
+        monkeypatch.setenv(self.ENV, "1")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed)
+        warnings: list[str] = []
+        monkeypatch.setattr(claude, "print_warning", warnings.append)
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: None)
+        monkeypatch.setattr(claude, "ensure_hooks_modules_gate", lambda: None)
+
+        claude.launch({}, [], options=LaunchOptions())
+
+        assert len(warnings) == 1
+        assert str(drop_in) in warnings[0]
+
+    def test_warning_follows_claude_config_dir(self, settings_path, tmp_path, monkeypatch):
+        custom = tmp_path / "custom"
+        custom.mkdir()
+        (custom / "settings.json").write_text(json.dumps({"permissions": {"deny": ["WebSearch"]}}))
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(custom))
+        monkeypatch.setenv(self.ENV, "1")
+        warnings: list[str] = []
+        monkeypatch.setattr(claude, "print_warning", warnings.append)
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: None)
+        monkeypatch.setattr(claude, "ensure_hooks_modules_gate", lambda: None)
+
+        claude.launch({}, [], options=LaunchOptions())
+
+        assert len(warnings) == 1
+        assert str(custom / "settings.json") in warnings[0]
+
+    def test_default_user_settings_ignored_when_claude_config_dir_is_set(
+        self, settings_path, tmp_path, monkeypatch
+    ):
+        default_user = tmp_path / "user-settings.json"
+        default_user.write_text(json.dumps({"permissions": {"deny": ["WebSearch"]}}))
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", default_user)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(elsewhere))
+        monkeypatch.setenv(self.ENV, "1")
+        warnings: list[str] = []
+        monkeypatch.setattr(claude, "print_warning", warnings.append)
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: None)
+        monkeypatch.setattr(claude, "ensure_hooks_modules_gate", lambda: None)
+
+        claude.launch({}, [], options=LaunchOptions())
+
+        assert warnings == []
+
+    def test_no_warning_when_other_scopes_allow_or_absent(
+        self, settings_path, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv(self.ENV, "1")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "missing.json")
+        warnings: list[str] = []
+        monkeypatch.setattr(claude, "print_warning", warnings.append)
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: None)
+        monkeypatch.setattr(claude, "ensure_hooks_modules_gate", lambda: None)
+
+        claude.launch({}, [], options=LaunchOptions())
+
+        assert warnings == []
+
+
 class TestClaudeSmartRouting:
     def _capture_write(self, monkeypatch, existing, written):
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)

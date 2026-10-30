@@ -43,6 +43,8 @@ AI_GATEWAY_REQUEST_TAGS_HEADER = "Databricks-Ai-Gateway-Request-Tags"
 AI_GATEWAY_REQUEST_TAGS_ENV_VAR = "AI_GATEWAY_REQUEST_TAGS"
 # Extra Databricks request headers, one `Name: value` per line; `ug --header` adds to it.
 UG_HEADERS_ENV_VAR = "UG_HEADERS"
+# Launch-scoped opt-in to the AI Gateway's server-side Anthropic web search for Claude Code.
+UG_CLAUDE_SERVER_SIDE_WEB_SEARCH_ENV_VAR = "UG_CLAUDE_SERVER_SIDE_WEB_SEARCH"
 
 
 # MCP server registration scopes. Claude Code supports local/project/user; the
