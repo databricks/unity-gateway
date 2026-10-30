@@ -231,8 +231,8 @@ from ucode.usage import usage as usage_report
 CustomOAuthConfig = custom_oauth.CustomOAuthConfig
 
 _DISCOVERY_CONSUMERS: dict[str, tuple[str, ...]] = {
-    "claude": ("claude", "opencode", "kilo", AGENT_COPILOT, "pi"),
-    "codex": ("codex", AGENT_COPILOT, "pi"),
+    "claude": ("claude", "opencode", "kilo", "copilot", "pi"),
+    "codex": ("codex", "copilot", "pi"),
     "gemini": ("gemini", "opencode", "kilo", "pi", "antigravity"),
     "oss": ("opencode", "kilo"),
 }
@@ -676,7 +676,7 @@ def configure_shared_state(
         or "claude" in tools
         or "opencode" in tools
         or "kilo" in tools
-        or AGENT_COPILOT in tools
+        or "copilot" in tools
         or "pi" in tools
     )
     want_gemini = (
@@ -689,16 +689,12 @@ def configure_shared_state(
     )
     # Claude's web-search server also needs a Responses-capable model.
     want_codex = (
-        fetch_all
-        or "codex" in tools
-        or "claude" in tools
-        or AGENT_COPILOT in tools
-        or "pi" in tools
+        fetch_all or "codex" in tools or "claude" in tools or "copilot" in tools or "pi" in tools
     )
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
     # configure must persist that discovered family too.
     want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
-    want_copilot = fetch_all or AGENT_COPILOT in tools
+    want_copilot = fetch_all or "copilot" in tools
 
     claude_reason: str | None = None
     gemini_reason: str | None = None
@@ -796,7 +792,7 @@ def configure_shared_state(
         "gemini": gemini_reason,
         "codex": codex_reason,
         "oss": oss_reason,
-        AGENT_COPILOT: copilot_reason,
+        "copilot": copilot_reason,
     }
     return state
 
@@ -1001,7 +997,7 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     back to Databricks when no matching provider services are found or the listing fails and no
     custom location is offered.
     """
-    if tool not in ("claude", "codex", "gemini", "antigravity", AGENT_COPILOT):
+    if tool not in ("claude", "codex", "gemini", "antigravity", "copilot"):
         return state
     display = TOOL_SPECS[tool]["display"]
 
@@ -1358,7 +1354,7 @@ def _model_values(value: object) -> list[str]:
 def _status_models(tool: str, state: dict) -> list[str]:
     """Return the effective model allow-list for one configured agent."""
     static_models = _model_values(state.get(f"{tool}_static_models"))
-    if tool == AGENT_COPILOT:
+    if tool == "copilot":
         models = [model.id for model in copilot_agent.copilot_catalog(state)]
     elif static_models:
         models = static_models
@@ -1381,7 +1377,7 @@ def _status_models(tool: str, state: dict) -> list[str]:
 
 
 def _status_default_model(tool: str, state: dict, models: list[str]) -> str | None:
-    if tool == AGENT_COPILOT:
+    if tool == "copilot":
         return copilot_agent.default_model(state)
     explicit = state.get(f"{tool}_default_model")
     if isinstance(explicit, str) and explicit:
@@ -1437,7 +1433,7 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
     if oss_models:
         opencode_models["oss"] = oss_models
     live["opencode_models"] = opencode_models
-    if AGENT_COPILOT in tools:
+    if "copilot" in tools:
         copilot_models = copilot_agent.catalog_from_listings(
             cached_model_service_entries(workspace),
             [*claude_models.values(), *codex_models],
@@ -3303,7 +3299,7 @@ def _child_owns_stdout(tool: str, tool_args: list[str]) -> bool:
         tool_args = tool_args[: tool_args.index("--")]
     if tool == "claude":
         return any(arg in {"-p", "--print"} for arg in tool_args)
-    if tool == AGENT_COPILOT:
+    if tool == "copilot":
         return any(arg in {"-p", "--prompt"} or arg.startswith("--prompt=") for arg in tool_args)
     return tool == "codex" and any(arg in {"exec", "e", "app-server"} for arg in tool_args)
 
@@ -3383,7 +3379,7 @@ def _skip_model_discovery(
     (``family_defaults``). In the last case it is also harmful: discovered family defaults would
     overwrite that writer's on every launch, and each rewrite of the managed file costs a sudo prompt.
     """
-    if tool == AGENT_COPILOT:
+    if tool == "copilot":
         # Copilot registers its discovered catalog, so a managed default alone still needs it.
         return bool(
             provider or managed_parent_schema or (managed and managed_static_models(managed, tool))
@@ -3908,7 +3904,7 @@ def _launch_tool(
             provider=provider,
             # Copilot picks its start model from its own catalog; the admin's or budget pick leads.
             # session_model is set for claude only.
-            launch_model=managed_model if tool == AGENT_COPILOT else session_model,
+            launch_model=managed_model if tool == "copilot" else session_model,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):
@@ -4382,7 +4378,7 @@ def copilot_cmd(
 ) -> None:
     """Launch GitHub Copilot CLI via Databricks."""
     _launch_tool(
-        AGENT_COPILOT,
+        "copilot",
         ctx,
         provider=provider,
         skip_preflight=skip_preflight,
@@ -4681,8 +4677,8 @@ def configure(
             requested_agents = [a.strip().lower() for a in (agents or "").split(",") if a.strip()]
             # Both flags choose VS Code's models alone, so another model agent in the same run
             # would silently keep the workspace's own. Cursor has no models to choose.
-            if AGENT_VSCODE not in requested_agents or [
-                a for a in requested_agents if a not in (AGENT_VSCODE, "cursor")
+            if "vscode" not in requested_agents or [
+                a for a in requested_agents if a not in ("vscode", "cursor")
             ]:
                 raise RuntimeError(
                     "--provider and --model-location work only with `--agents vscode`. "
@@ -4750,8 +4746,8 @@ def configure(
             # VS Code is configure-only too: it needs the workspace, then its own setup below.
             requested = [a.strip().lower() for a in agents.split(",") if a.strip()]
             wants_cursor = "cursor" in requested
-            wants_vscode = AGENT_VSCODE in requested
-            model_agent_names = ",".join(a for a in requested if a not in ("cursor", AGENT_VSCODE))
+            wants_vscode = "vscode" in requested
+            model_agent_names = ",".join(a for a in requested if a not in ("cursor", "vscode"))
             if model_agent_names:
                 selected_tools = _parse_agents_option(model_agent_names)
                 if workspace_entries is None:
