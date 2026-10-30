@@ -161,24 +161,23 @@ export const registerSubagentPane = (on: On): void => {
     }
     const visible = ordered.slice(0, room)
     return Box({ flexDirection: 'column', children: [
-      Text({ children: ['Focus: Ctrl+X, then Tab'] }),
-      Text({ dimColor: true, children: ['↑/↓ move · Enter or 1–9 open'] }),
-      Text({ dimColor: true, children: ['0 main · Esc prompt · s collapse'] }),
+      Text({ children: ['Ctrl+X, then Tab to focus'] }),
+      Text({ dimColor: true, children: ['↑/↓ choose · Enter opens'] }),
       Box({ justifyContent: 'space-between', children: [
         Text({ dimColor: true, children: [
-          `${running.length} running · ${done} done${errors ? ` · ${errors} failed` : ''}`,
+          `${running.length} running${done ? ` · ${done} done` : ''}${errors ? ` · ${errors} failed` : ''}`,
         ] }),
-        Button({ key: 'collapse', label: '>>', hotkey: 's', onPress: () => setCollapsed($, true) }),
+        Button({ key: 'collapse', label: 'Collapse', hotkey: 's', onPress: () => setCollapsed($, true) }),
       ] }),
-      Button({ key: 'main', hotkey: '0', autoFocus: !viewing || undefined,
-        label: '← Main session', onPress: () => show() }),
+      ...(viewing ? [Button({ key: 'main', hotkey: '0',
+        label: 'Back to main session', onPress: () => show() })] : []),
       ...(list.length === 0 ? [Text({ dimColor: true, children: ['No subagents yet.'] })] : []),
       ...visible.map((agent, i) => Box({ key: agent.id, flexDirection: 'column', marginTop: 1, children: [
         Box({ flexDirection: 'row', children: [
           Text({ color: agent.isError ? 'red' : agent.isDone ? 'green' : 'yellow',
             children: [agent.isError ? '● error ' : agent.isDone ? '✓ ' : '● '] }),
           Button({ key: `view-${agent.id}`, plain: true, hotkey: i < 9 ? String(i + 1) : undefined,
-            autoFocus: viewing === agent.id || undefined, onPress: () => show(agent.id),
+            autoFocus: (viewing === agent.id || !viewing && i === 0) || undefined, onPress: () => show(agent.id),
             label: `${viewing === agent.id ? '▸ ' : ''}${agent.description}` }),
         ] }),
         Text({ dimColor: true, wrap: 'truncate-end', children: [
