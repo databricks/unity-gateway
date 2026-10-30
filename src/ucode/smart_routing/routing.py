@@ -26,7 +26,7 @@ from typing import Any
 from ucode.smart_routing.rationale import format_rationale
 from ucode.ug_headers import ug_headers
 
-ROUTER_NAME = "task_v3"
+ROUTER_NAME = "stable"
 ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
 REQUEST_TIMEOUT_S = 30.0
@@ -190,7 +190,7 @@ def unwrap_anthropic_gateway_model(model: str) -> str:
 
 
 def configured_router_name() -> str:
-    """Return the environment-selected router, falling back to ``task_v3``."""
+    """Return the environment-selected router, falling back to ``stable``."""
     return os.environ.get(ROUTER_NAME_ENV_VAR, "").strip() or ROUTER_NAME
 
 
