@@ -60,7 +60,10 @@ def installed_cowork_servers(session, root: Path) -> dict:
 
 def system_desktop_marketplace() -> Path | None:
     if os.name == "nt":
-        return Path(os.environ["ProgramFiles"]) / "UnityGateway/claude-cowork-marketplace"
+        program_files = (
+            os.environ.get("ProgramW6432") or os.environ.get("ProgramFiles") or r"C:\Program Files"
+        )
+        return Path(program_files) / "UnityGateway/claude-cowork-marketplace"
     if sys.platform == "darwin":
         return Path("/Library/Application Support/UnityGateway/claude-cowork-marketplace")
     return None

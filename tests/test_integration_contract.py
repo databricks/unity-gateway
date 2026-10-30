@@ -12,6 +12,7 @@ import textwrap
 import urllib.error
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -36,6 +37,33 @@ def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
     monkeypatch.setenv("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
 
     assert clean_environment(tmp_path)["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
+
+
+@pytest.mark.parametrize(
+    ("program_files_env", "expected_root"),
+    [
+        ({}, r"C:\Program Files"),
+        ({"ProgramW6432": "", "ProgramFiles": ""}, r"C:\Program Files"),
+        ({"ProgramW6432": "", "ProgramFiles": r"D:\Program Files"}, r"D:\Program Files"),
+        (
+            {"ProgramW6432": r"D:\Program Files", "ProgramFiles": r"D:\Program Files (x86)"},
+            r"D:\Program Files",
+        ),
+    ],
+)
+def test_desktop_marketplace_windows_directory(
+    tmp_path, monkeypatch, program_files_env, expected_root
+):
+    from tests.integration.utils import desktop
+
+    env = clean_environment(tmp_path)
+    env.update(program_files_env)
+    # Keep Windows simulation local so pathlib and pytest retain the host platform.
+    monkeypatch.setattr(desktop, "os", SimpleNamespace(name="nt", environ=env))
+
+    assert desktop.system_desktop_marketplace() == (
+        Path(expected_root) / "UnityGateway/claude-cowork-marketplace"
+    )
 
 
 def test_integration_ci_pins_a_skills_capable_databricks_cli():
