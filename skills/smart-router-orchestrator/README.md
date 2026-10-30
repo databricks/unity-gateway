@@ -2,9 +2,10 @@
 
 UG bundles the `smart-router-orchestrator` workflow and five Claude role definitions.
 Smart-routed Claude and Codex launches install and activate this skill alongside
-`smart-router` with `SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0` or `subagent_orch_v1`,
-and with `--enable-smart-routing` or workspace smart routing when no other version is set
-(both select `subagent_orch_v0`).
+`smart-router` with `SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0` or `subagent_orch_v1`.
+`--enable-smart-routing` and workspace smart routing default to `subagent_orch_v0_claude_only`,
+which activates both skills for Claude and leaves Codex unrouted. Explicit known versions
+still take precedence.
 UG expands the selected version into the session's legacy feature flags. The `_v1` revision
 enables both V2 and subagent-only routing flags alongside orchestration; subagent-only still
 takes precedence, so the first prompt is not routed.

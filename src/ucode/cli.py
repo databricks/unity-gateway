@@ -3580,12 +3580,14 @@ def _launch_tool(
             provider = None
             parent_schema = managed_parent_schema
         # Managed smart routing overrides individual routing env vars, but not the flag or a known
-        # version. Its version is applied right before launch, after the launch options below.
+        # version. Resolve its agent-specific flags before deciding the launch options.
         managed_smart_routing_applies = (
             _managed_smart_routing_enabled(managed, tool) and not routing_chosen
         )
-        smart_routing_enabled = managed_smart_routing_applies or (
-            smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
+        if managed_smart_routing_applies:
+            previous.update(smart_routing_config.apply_enabled_version(agent=tool))
+        smart_routing_enabled = smart_routing_v2.smart_routing_enabled(
+            None, default=False, agent=tool
         )
         # Re-fetch model lists on every launch so newly-added Databricks
         # endpoints show up without a manual `ug configure` (and so that
@@ -3939,8 +3941,7 @@ def _launch_tool(
             launch_model=managed_model if tool == "copilot" else session_model,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
-        with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):
-            launch_agent(tool, state, ctx.args, options=launch_options)
+        launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None

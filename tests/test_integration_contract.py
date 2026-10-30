@@ -204,7 +204,7 @@ def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, retained_test
         for variant in (
             "routing-only",
             "orchestration",
-            "managed-default",
+            "managed-routing",
             "subagent_only_v0",
             "subagent_only_v1",
             "subagent_orch_v0",

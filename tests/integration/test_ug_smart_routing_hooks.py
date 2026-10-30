@@ -30,8 +30,8 @@ pytestmark = pytest.mark.harness_latest
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 SMART_ROUTING_SUBAGENT_NOTICE = "Using Unity Gateway Smart Router - Subagent"
-# No selector or legacy flag: the managed config's smart_routing.enabled alone turns routing on.
-MANAGED_DEFAULT = "managed-default"
+# Managed defaults route only Claude; Codex explicitly selects a routing-enabled version.
+MANAGED_ROUTING = "managed-routing"
 
 
 # Use the same task_v3-compatible menu for direct hooks and managed TUI journeys.
@@ -392,7 +392,7 @@ SMART_ROUTER_VERSIONS = pytest.mark.parametrize(
     [
         (False, None),
         (True, None),
-        (True, MANAGED_DEFAULT),
+        (True, MANAGED_ROUTING),
         (False, "subagent_only_v0"),
         (False, "subagent_only_v1"),
         (True, "subagent_orch_v0"),
@@ -400,7 +400,7 @@ SMART_ROUTER_VERSIONS = pytest.mark.parametrize(
     ids=[
         "routing-only",
         "orchestration",
-        MANAGED_DEFAULT,
+        MANAGED_ROUTING,
         "subagent_only_v0",
         "subagent_only_v1",
         "subagent_orch_v0",
@@ -411,14 +411,16 @@ SMART_ROUTER_VERSIONS = pytest.mark.parametrize(
 def _select_smart_router_version(
     session, agent: str, workspace, tmp_path, orchestration_enabled, config_version
 ) -> None:
-    """Choose the legacy flags, a subagent selector, or the managed default; install the fixture."""
+    """Choose the legacy flags, a subagent selector, or managed routing; install the fixture."""
     session.env["TMPDIR"] = str(tmp_path)
     if config_version is None:
         session.env["ENABLE_SMART_ROUTING_V2"] = "1"
         session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
         if orchestration_enabled:
             session.env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] = "1"
-    elif config_version != MANAGED_DEFAULT:
+    elif config_version == MANAGED_ROUTING and agent == "codex":
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = "subagent_orch_v0"
+    elif config_version != MANAGED_ROUTING:
         session.env["SMART_ROUTER_CONFIG_VERSION"] = config_version
     # Managed smart routing would override the legacy env vars set above.
     use_smart_routing_fixture(session, agent, workspace, smart_routing=config_version is not None)
@@ -711,9 +713,9 @@ def test_smart_router_skill_turns_claude_subagent_routing_back_on(
 def test_smart_router_routes_codex_subagent_at_launch(
     live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
 ):
-    """Scenario: launch Codex with the legacy flags, a subagent selector, or only the managed
-    config's smart routing default and, without touching the Smart Router skill, spawn one child in
-    the real TUI.
+    """Scenario: launch Codex with legacy flags or a subagent selector, including an explicit
+    routing version over the managed config, and spawn one child in the real TUI without
+    touching the Smart Router skill.
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
     Smart Router Orchestrator. The uniquely tagged calculation completes in a native child
@@ -751,9 +753,9 @@ def test_smart_router_routes_codex_subagent_at_launch(
 def test_smart_router_skill_turns_codex_subagent_routing_off(
     live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
 ):
-    """Scenario: launch Codex with the legacy flags, a subagent selector, or only the managed
-    config's smart routing default, invoke the installed Smart Router skill to turn routing off,
-    then spawn a child in the same real TUI session.
+    """Scenario: launch Codex with legacy flags or a subagent selector, including an explicit
+    routing version over the managed config, invoke the installed Smart Router skill to turn
+    routing off, then spawn a child in the same real TUI session.
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
     Smart Router Orchestrator. The invocation records the CLI confirmation in the native
@@ -795,10 +797,10 @@ def test_smart_router_skill_turns_codex_subagent_routing_off(
 def test_smart_router_skill_turns_codex_subagent_routing_back_on(
     live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
 ):
-    """Scenario: launch Codex with the legacy flags, a subagent selector, or only the managed
-    config's smart routing default, spawn a child, invoke the installed Smart Router skill to turn
-    routing off, spawn a second child, turn routing back on, and spawn a third child in the same
-    real TUI session.
+    """Scenario: launch Codex with legacy flags or a subagent selector, including an explicit
+    routing version over the managed config, spawn a child, invoke the installed Smart Router
+    skill to turn routing off, spawn a second child, turn routing back on, and spawn a third
+    child in the same real TUI session.
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
     Smart Router Orchestrator. Each invocation records the CLI confirmation in the native

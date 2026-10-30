@@ -187,9 +187,22 @@ def test_known_version(selector, expected):
     assert config.known_version(env) is expected
 
 
-@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+@pytest.mark.parametrize(
+    ("agent", "expected"),
+    [
+        (AGENT_CLAUDE, _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0]),
+        (
+            AGENT_CODEX,
+            {
+                ENABLE_SMART_ROUTING_ENV_VAR: "0",
+                ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+                ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+            },
+        ),
+    ],
+)
 @pytest.mark.parametrize("selector", [None, "", "   ", "unsupported_version"])
-def test_enabled_version_selects_subagent_orch_v0_over_legacy_flags(agent, selector):
+def test_enabled_version_selects_claude_only_over_legacy_flags(agent, expected, selector):
     inherited = {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
@@ -203,7 +216,7 @@ def test_enabled_version_selects_subagent_orch_v0_over_legacy_flags(agent, selec
     previous = config.apply_enabled_version(applied, agent=agent)
 
     assert applied == {
-        **_EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0],
+        **expected,
         "INHERITED_SETTING": "preserved",
     }
     v2.restore_smart_routing_env(previous, applied)
