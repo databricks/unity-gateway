@@ -147,7 +147,7 @@ def test_cuj_evidence_completed_native_turn(tmp_path, agent):
 
 
 @pytest.mark.parametrize("agent", [CLAUDE, CODEX])
-@pytest.mark.parametrize("answer", ["Hello!", "Hi there.", "", " \n "])
+@pytest.mark.parametrize("answer", ["Hello!", "", " \n "])
 def test_cuj_inference_requires_nonempty_final_answer(agent, answer):
     task = SimpleNamespace(prompt="Reply with a short greeting. Request ID: unique-id.", value=None)
     rows = records(agent, SimpleNamespace(prompt=task.prompt, value=answer), "model")

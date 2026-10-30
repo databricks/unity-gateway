@@ -117,6 +117,11 @@ def message_text(content):
     )
 
 
+def _answer_matches(task, answer):
+    """task.value=None accepts any nonempty final answer."""
+    return bool(answer.strip()) and (task.value is None or task.value in answer)
+
+
 @dataclass
 class CompletedTurn:
     session_id: str
@@ -190,8 +195,7 @@ class ClaudeCujHelper(BaseCujHelper):
         last = responses[-1]
         answer = message_text(last.get("content"))
         if (
-            not answer.strip()
-            or (task.value is not None and task.value not in answer)
+            not _answer_matches(task, answer)
             or not last.get("id")
             or any(part.get("type") == "tool_use" for part in last.get("content", []))
             or last.get("stop_reason") not in (None, "end_turn", "stop_sequence")
@@ -276,11 +280,7 @@ class CodexCujHelper(BaseCujHelper):
         if not prompt_sources or not target_turn or started_turn != target_turn or answer is None:
             return None
         models = contexts.get(target_turn)
-        if (
-            not answer.strip()
-            or (task.value is not None and task.value not in answer)
-            or not models
-        ):
+        if not _answer_matches(task, answer) or not models:
             return None
         assert all(models), "Missing native turn model metadata"
         return CompletedTurn(meta[0]["id"], target_turn, models, answer)

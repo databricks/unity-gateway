@@ -796,7 +796,7 @@ class TestAnthropicNonRelayMps:
     def _messages_request(workspace: str, token: str, model: str) -> httpx.Response:
         body = {
             "model": model,
-            "max_tokens": 16,
+            "max_tokens": 64,  # Leave room to finish without truncating the greeting.
             "stream": False,
             "messages": [{"role": "user", "content": "say hi in 5 words or less"}],
         }
