@@ -81,7 +81,6 @@ from ucode.databricks import (
     external_bearer_configured,
     find_profile_name_for_host,
     find_profile_name_for_workspace,
-    get_databricks_profiles,
     get_databricks_token,
     install_databricks_cli,
     is_model_provider_feature_unavailable,
@@ -91,6 +90,7 @@ from ucode.databricks import (
     map_claude_family_models,
     normalize_workspace_url,
     probe_unity_gateway_capabilities,
+    profile_choices,
     resolve_pat_token,
     resolve_provider_launch_model,
     resolve_provider_service,
@@ -408,11 +408,11 @@ def _prompt_for_configuration(tool: str | None = None) -> tuple[str, str | None]
     else:
         desc = f"Configure {TOOL_SPECS[tool]['display']} to use your Databricks endpoint."
     with spinner("Loading Databricks workspaces and profiles..."):
-        profiles = get_databricks_profiles()
-    url, profile = prompt_for_workspace(desc, profiles)
+        entries = list_profile_entries()
+    url, profile = prompt_for_workspace(desc, profile_choices(entries))
     workspace_id = None
     if profile:
-        entry = next((p for p in list_profile_entries() if p.get("name") == profile), {})
+        entry = next((p for p in entries if p.get("name") == profile), {})
         workspace_id = str(entry.get("workspace_id") or "").strip() or None
     return resolve_workspace(url, workspace_id, explicit_id=False), profile
 
@@ -631,7 +631,7 @@ def configure_shared_state(
 
     cli_custom_oauth = state.get("custom_oauth") if custom_oauth_cli_enabled(custom_oauth) else None
     if cli_custom_oauth:
-        token = ensure_custom_oauth_cli_token(workspace, cli_custom_oauth)
+        token = ensure_custom_oauth_cli_token(workspace, cli_custom_oauth, workspace_id)
 
     if skip_preflight:
         # A prior `ug configure` created the profile; resolve it locally (no

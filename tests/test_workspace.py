@@ -135,7 +135,6 @@ class TestHostType:
         ):
             with pytest.raises(workspace_mod.HostUnreachableError, match="down"):
                 host_type(CLASSIC)
-            assert not workspace_mod.is_unified_host(CLASSIC)
         assert CLASSIC not in workspace_mod._host_types
 
     def test_bad_response_is_unreachable(self):

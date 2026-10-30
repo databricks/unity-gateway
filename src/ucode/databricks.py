@@ -1129,7 +1129,9 @@ def external_bearer_configured() -> bool:
     )
 
 
-def save_databricks_cli_oauth_profile(workspace: str, profile: str, client_id: str) -> None:
+def save_databricks_cli_oauth_profile(
+    workspace: str, profile: str, client_id: str, *, workspace_id: str | None = None
+) -> None:
     """Persist the profile metadata normally written by ``databricks auth login``."""
     cfg_path = Path(os.environ.get("DATABRICKS_CONFIG_FILE") or "~/.databrickscfg").expanduser()
     parser = configparser.ConfigParser(default_section="@ucode-no-defaults@", interpolation=None)
@@ -1142,6 +1144,8 @@ def save_databricks_cli_oauth_profile(workspace: str, profile: str, client_id: s
             "auth_type": "databricks-cli",
             "client_id": client_id,
         }
+        if workspace_id:
+            parser[profile]["workspace_id"] = workspace_id
         cfg_path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(dir=cfg_path.parent, prefix=f".{cfg_path.name}.")
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -1260,8 +1264,11 @@ def list_profile_entries() -> list[dict]:
 
 def get_databricks_profiles() -> list[tuple[str, str]]:
     """Return [(host_url, profile_name), ...] from Databricks CLI profiles."""
-    profiles = list_profile_entries()
+    return profile_choices(list_profile_entries())
 
+
+def profile_choices(profiles: list[dict]) -> list[tuple[str, str]]:
+    """The non-PAT ``(host_url, profile_name)`` pairs among ``list_profile_entries`` results."""
     out: list[tuple[str, str]] = []
     pat = 0
     for p in profiles:

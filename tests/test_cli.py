@@ -7129,7 +7129,6 @@ class TestPickerOnSharedHosts:
         import ucode.workspace as workspace_mod
 
         monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
-        monkeypatch.setattr(cli_mod, "get_databricks_profiles", lambda: [])
         monkeypatch.setattr(
             cli_mod,
             "prompt_for_workspace",
@@ -7151,7 +7150,7 @@ class TestPickerOnSharedHosts:
         import ucode.workspace as workspace_mod
 
         monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
-        monkeypatch.setattr(cli_mod, "get_databricks_profiles", lambda: [])
+        monkeypatch.setattr(cli_mod, "list_profile_entries", lambda: [])
         monkeypatch.setattr(
             cli_mod,
             "prompt_for_workspace",
@@ -7166,7 +7165,6 @@ class TestPickerOnSharedHosts:
         import ucode.workspace as workspace_mod
 
         monkeypatch.setattr(workspace_mod, "host_type", lambda host: pytest.fail("probed"))
-        monkeypatch.setattr(cli_mod, "get_databricks_profiles", lambda: [])
         monkeypatch.setattr(
             cli_mod,
             "prompt_for_workspace",
@@ -7174,6 +7172,30 @@ class TestPickerOnSharedHosts:
         )
         monkeypatch.setattr(cli_mod, "list_profile_entries", lambda: [{"name": "p"}])
         assert cli_mod._prompt_for_configuration() == ("https://first.databricks.com", "p")
+
+    def test_profiles_are_listed_once(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        entries = [
+            {"name": "a", "host": "https://acme.cloud.databricks.com", "workspace_id": "111"},
+            {"name": "pat", "host": "https://acme.cloud.databricks.com", "auth_type": "pat"},
+        ]
+        calls = []
+        monkeypatch.setattr(cli_mod, "list_profile_entries", lambda: calls.append(1) or entries)
+        offered = []
+
+        def pick(desc, profiles):
+            offered.extend(profiles)
+            return "https://acme.cloud.databricks.com", "a"
+
+        monkeypatch.setattr(cli_mod, "prompt_for_workspace", pick)
+        assert cli_mod._prompt_for_configuration() == (
+            "https://acme.cloud.databricks.com?w=111",
+            "a",
+        )
+        assert len(calls) == 1
+        assert offered == [("https://acme.cloud.databricks.com", "a")]
 
 
 class TestLaunchWorkspaceStateOnSharedHosts:

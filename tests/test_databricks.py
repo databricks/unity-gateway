@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import configparser
 import json
 import os
 import subprocess
@@ -3413,6 +3414,40 @@ class TestGetDatabricksToken:
         assert custom_oauth_mod.ensure_custom_oauth_cli_token(WS, config) == "fresh"
         assert len(login_calls) == 1
         assert len(token_calls) == 1
+
+    @pytest.mark.parametrize(("workspace_id", "login_host"), [("111", f"{WS}?w=111"), (None, WS)])
+    def test_custom_oauth_cli_login_selects_the_workspace(
+        self, monkeypatch, workspace_id, login_host
+    ):
+        config = {
+            "client_id": "custom-client",
+            "redirect_url": "http://localhost:8020/callback",
+            "scopes": ["all-apis"],
+        }
+        login_calls = []
+        monkeypatch.setattr(custom_oauth_mod, "ensure_databricks_cli_version", lambda *_: None)
+        monkeypatch.setattr(custom_oauth_mod, "external_bearer_configured", lambda: False)
+        monkeypatch.setattr(custom_oauth_mod, "has_valid_databricks_auth", lambda *_: False)
+        monkeypatch.setattr(custom_oauth_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(
+            custom_oauth_mod, "run", lambda command, **kwargs: login_calls.append(command)
+        )
+        monkeypatch.setattr(custom_oauth_mod, "get_databricks_token", lambda *_: "token")
+
+        custom_oauth_mod.ensure_custom_oauth_cli_token(WS, config, workspace_id)
+
+        command = login_calls[0]
+        assert command[command.index("--host") + 1] == login_host
+
+    def test_saved_custom_oauth_profile_records_the_workspace(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "databrickscfg"
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg))
+        db_mod.save_databricks_cli_oauth_profile(WS, "ug-oauth", "client", workspace_id="111")
+        db_mod.save_databricks_cli_oauth_profile(WS, "plain", "client")
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read(cfg)
+        assert parser["ug-oauth"]["workspace_id"] == "111"
+        assert "workspace_id" not in parser["plain"]
 
 
 class TestGetDatabricksProfiles:
