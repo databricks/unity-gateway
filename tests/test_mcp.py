@@ -395,6 +395,8 @@ class TestConfigureClientMcpServer:
     def _capture_claude(self, monkeypatch, *, claude_code_available: bool):
         http_calls: list[tuple[str, str]] = []
         proxy_calls: list[tuple[str, list[str]]] = []
+        # These tests exercise CLI registration; CI need not have Claude on PATH.
+        monkeypatch.setattr(mcp, "_mcp_cli_available", lambda client: True)
         monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: claude_code_available)
         monkeypatch.setattr(
             mcp, "oauth_client_available", lambda ws, client_id: claude_code_available
