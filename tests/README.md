@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+`test_integration_contract.py` checks the Pi/Gemini CI manifests and locks for exact
+stable versions, public registry URLs and integrity hashes, Gemini's supported-version
+ceiling and Dependabot guard, and locked-shard Node/PATH installation wiring. These
+offline contract checks do not establish live agent inference coverage.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered
