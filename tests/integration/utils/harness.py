@@ -131,6 +131,8 @@ class UserSession:
             "DATABRICKS_SECOND_BEARER",
             "CLAUDE_CODE_OAUTH_TOKEN",
             "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN",
+            "CODEX_ACCESS_TOKEN",
+            "UG_INTEGRATION_CODEX_ACCESS_TOKEN",
         ):
             for token in (os.environ.get(name), self.env.get(name)):
                 if token:
