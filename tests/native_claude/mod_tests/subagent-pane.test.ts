@@ -80,17 +80,19 @@ test('pane tracks successful spawns, ignores denied spawns, and shows tools and 
   on('tool.call', () => ({ result: 'ok' }))
   await $.agent.spawn({ subagentType: 'Explore', description: 'denied', prompt: 'denied' })
   expect(opened).toEqual([])
-  await $.agent.spawn({ subagentType: 'Explore', description: 'Inspect parser', prompt: 'Inspect parser' })
+  const subagentType = 'ug-smart-router:ucode-route-claude-sonnet-5-5-1m-16041e2f'
+  await $.agent.spawn({ subagentType, description: 'Inspect parser', prompt: 'Inspect parser' })
   expect(opened).toHaveLength(1)
   expect(opened[0]).toMatchObject({ id: 'subagents', columns: 34 })
-  await $.agent.spawn({ subagentType: 'Explore', description: 'Inspect parser', prompt: 'Inspect parser' })
+  await $.agent.spawn({ subagentType, description: 'Inspect parser', prompt: 'Inspect parser' })
   expect(opened).toHaveLength(1)
   await $.tool.call({ tool: 'Read', agentId: 'child-1', file_path: '/work/parser.py' })
   at = 62000
   const ui = await $.ui.mount(pane)
   expect(await ui.find({ type: 'Text', text: '1 running · 0 done' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '● ' })).toMatchObject({ props: { color: 'yellow' } })
-  expect(await ui.find({ type: 'Text', text: '   Inspect parser' })).toBeDefined()
+  expect(JSON.stringify(await ui.drawn())).toContain('"label":"  Inspect parser"')
+  expect(JSON.stringify(await ui.drawn())).not.toContain(subagentType)
   expect(await ui.find({ type: 'Text', text: '   → sonnet · 1m01s · Read' })).toBeDefined()
   expect(JSON.stringify(await ui.drawn())).not.toContain('denied')
   await ui.unmount()
@@ -165,7 +167,7 @@ test('pane lingers five seconds after completion, cancels closing for new work, 
   expect(opened).toHaveLength(1)
   const batch = await $.ui.mount(pane)
   expect(await batch.find({ type: 'Text', text: '1 running · 0 done' })).toBeDefined()
-  expect(await batch.find({ type: 'Text', text: '   child-1' })).toBeUndefined()
+  expect(JSON.stringify(await batch.drawn())).not.toContain('child-1')
   await batch.unmount()
   nextStatus = 'completed'
   at = 16000

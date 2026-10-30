@@ -15,7 +15,7 @@ cleans up the files when Claude exits.
 The subagent pane ships with smart-routed launches:
 `uv run ug claude --enable-smart-routing`. Relaunch to load module changes.
 
-- Each new batch opens the right pane fully expanded. Rows show task, model,
+- Each new batch opens the right pane fully expanded. Rows show the task description, model,
   elapsed time, and latest tool; running agents appear first.
 - Yellow circle = active (including waiting), green check = done, red circle =
   failed or killed. Status refreshes every second.

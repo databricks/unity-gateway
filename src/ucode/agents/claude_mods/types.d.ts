@@ -3,7 +3,6 @@ declare module 'claude-code' {
     'ug-smart-router': {
       paneAgents: {
         id: string
-        type: string
         description: string
         model: string
         startedAt: number

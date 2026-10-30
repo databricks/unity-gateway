@@ -102,7 +102,6 @@ export const registerSubagentPane = (on: On): void => {
     const at = await $.clock.now()
     const agent: Subagent = {
       id: started.agentId,
-      type: e.subagentType,
       description: e.description,
       model: /haiku|sonnet|opus|fable|mythos/.exec(started.model)?.[0] ?? started.model,
       startedAt: at,
@@ -154,7 +153,7 @@ export const registerSubagentPane = (on: On): void => {
     }
 
     const ordered = [...running.reverse(), ...finished.reverse()]
-    const room = Math.max(1, Math.floor(((e.viewport?.rows ?? 24) - 7) / 4))
+    const room = Math.max(1, Math.floor(((e.viewport?.rows ?? 24) - 7) / 3))
     const viewing = e.props.view?.agentId
     const show = async (agentId?: string) => {
       const moved = await $.ui.view(agentId ? { agentId } : {})
@@ -180,9 +179,8 @@ export const registerSubagentPane = (on: On): void => {
             children: [agent.isError ? '● error ' : agent.isDone ? '✓ ' : '● '] }),
           Button({ key: `view-${agent.id}`, plain: true, hotkey: i < 9 ? String(i + 1) : undefined,
             autoFocus: viewing === agent.id || undefined, onPress: () => show(agent.id),
-            label: `${viewing === agent.id ? '▸' : ' '} ${agent.type}` }),
+            label: `${viewing === agent.id ? '▸' : ' '} ${agent.description}` }),
         ] }),
-        Text({ dimColor: true, wrap: 'truncate-end', children: [`   ${agent.description}`] }),
         Text({ dimColor: true, wrap: 'truncate-end', children: [
           `   → ${agent.model} · ${elapsed(agent, at)}${agent.tool ? ` · ${agent.tool}` : ''}`,
         ] }),

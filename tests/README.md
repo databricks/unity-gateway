@@ -1,7 +1,8 @@
 # Test suites and user journeys
 
 Subagent pane coverage: `native_claude/mod_tests/subagent-pane.test.ts` checks
-opening, collapse/focus expansion, status colors/counts, tool/time rendering,
+opening, collapse/focus expansion, task labels without internal agent names,
+status colors/counts, tool/time rendering,
 denied spawns, and the five-second close delay with cancellation and new batches.
 `test_claude_mod.py` checks packaged sources and state declarations.
 `native_claude/mod_tests/register.test.ts` checks `/smart-router off` releases
