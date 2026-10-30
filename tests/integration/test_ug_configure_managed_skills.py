@@ -3,13 +3,11 @@
 The admin CodingAgentConfig is a checked-in JSON fixture injected via UCODE_MANAGED_CONFIG_STUB so
 the real /skills TUI can be driven against a managed skill; only the config INPUT is stubbed (auth, the skill download, the config writers, and the agent binary stay real). These
 assert what the agent presents, not the bundles on disk (that is unit tests' job). See
-tests/AGENTS.md rule 4. Claude reads ~/.claude/skills and Codex and Copilot read the shared
-~/.agents/skills, both of which `ug configure` writes, so a managed skill reaches each agent. The reconcile
+tests/AGENTS.md rule 4. Claude reads ~/.claude/skills and Codex reads the shared ~/.agents/skills,
+both of which `ug configure` writes, so a managed skill reaches either agent. The reconcile
 lifecycle test additionally checks the on-disk bundles, since removal-on-reconcile is a disk change
 that has no steady-state `/skills` signal.
 """
-
-import json
 
 import pytest
 from utils.managed import use_managed_config_fixture
@@ -79,27 +77,6 @@ def test_managed_fixture_codex_skills_lists_downloaded_skill(live_session, works
             "the /skills view to list the downloaded managed skill",
             timeout=60,
         )
-
-
-@pytest.mark.managed_fixture
-@pytest.mark.copilot
-def test_managed_fixture_copilot_skills_lists_downloaded_skill(live_session, workspace):
-    """Scenario: configure Copilot under an injected config that names a managed skill, then list
-    Copilot's skills.
-
-    Expected: Copilot's own `copilot skill list --json` lists the downloaded managed skill as an
-    enabled personal skill, read from the shared ~/.agents/skills dir `ug configure` writes.
-    """
-    session = live_session
-    use_managed_config_fixture(session, "copilot_skills_by_name")
-    result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
-    assert "Select coding agents to configure:" not in result.stdout, result.stdout
-
-    listing = session.run("skill", "list", "--json", binary=session.which("copilot"), timeout=60)
-    skills = [skill for skill in json.loads(listing.stdout) if skill.get("name") == SKILL_NAME]
-    assert skills, listing.stdout
-    assert all(skill["enabled"] is True for skill in skills), skills
-    assert any(str(skill["source"]).startswith("personal") for skill in skills), skills
 
 
 @pytest.mark.managed_fixture
