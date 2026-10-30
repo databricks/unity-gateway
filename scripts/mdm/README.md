@@ -17,9 +17,9 @@ machine. It installs `ug` (with its own Python), the Databricks CLI, Claude Code
 workspace policy at `/etc/unitygateway/managed-settings.json`. Developers then launch with
 `UG_SKIP_OS_SETTINGS=1 ug claude`: no sudo, and inference uses their own OAuth.
 
-The script authenticates `ug configure` with a short-lived service-principal token. The service
-principal's credentials reach each Mac in a package that installs them readable only by root, and
-no token is written to disk. See [macos-setup.md](macos-setup.md) for the full setup.
+The script authenticates `ug configure` with a short-lived token for a service principal whose
+client id and secret come in as policy parameters; neither the credentials nor the token are
+written to disk. See [macos-setup.md](macos-setup.md) for the full setup.
 
 ## Layer 2 — enforcement (config profiles in this directory)
 
