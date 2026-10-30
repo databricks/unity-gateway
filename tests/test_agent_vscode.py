@@ -478,7 +478,7 @@ def test_configure_agents_vscode_sets_up_the_workspace_then_vscode(monkeypatch, 
     shared: list[dict] = []
     monkeypatch.setattr(
         "ucode.cli._configure_shared_workspace_states",
-        lambda *args, **kwargs: shared.append(kwargs) or [],
+        lambda *args, **kwargs: shared.append(kwargs) or [STATE],
     )
     monkeypatch.setattr(
         "ucode.cli.configure_workspace_command",
