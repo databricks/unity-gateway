@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 import os
-import tomllib
+from types import SimpleNamespace
 
-import httpx
 import pytest
 
 from ucode import codex_config, custom_oauth
@@ -51,6 +50,7 @@ class TestLaunchCodex:
     )
     def test_codex_smart_routing_launch_dispatches_to_v2(self, monkeypatch, tool_args, options):
         calls = []
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.164.0")
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: "gpt-start")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
@@ -112,6 +112,7 @@ class TestLaunchCodex:
 
     def test_codex_launch_normalizes_cached_bootstrap_model(self, monkeypatch):
         calls = []
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.164.0")
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
@@ -156,7 +157,7 @@ class TestLaunchCodex:
         monkeypatch.delenv("CODEX_HOME", raising=False)
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
-        monkeypatch.setattr(codex, "agent_version", lambda _: "0.145.0")
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.164.0")
         monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         if custom_home:
             monkeypatch.setenv("CODEX_HOME", str(config_home))
@@ -178,16 +179,19 @@ class TestLaunchCodex:
                 assert path.read_text() == content
         assert codex._smart_routing_config_model({"codex_default_model": "admin"}) == "admin"
 
-    @pytest.mark.parametrize("subagent_only", [False, True])
-    def test_owns_app_server_interposer_and_tui_lifecycle(self, monkeypatch, subagent_only):
+    @pytest.mark.parametrize(
+        ("platform_name", "tui_has_provider"), [("posix", False), ("nt", True)]
+    )
+    def test_owns_app_server_interposer_and_tui_lifecycle(
+        self, monkeypatch, platform_name, tui_has_provider
+    ):
         processes = []
         interposer_args = {}
         stopped = []
         token_calls = []
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1" if subagent_only else "0")
         monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
-        monkeypatch.setenv(v2.CODEX_PROXY_TOKEN_ENV_VAR, "inherited-session-token")
+        monkeypatch.setattr(v2, "os", SimpleNamespace(name=platform_name, environ=os.environ))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
 
@@ -212,8 +216,8 @@ class TestLaunchCodex:
 
         monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
 
-        def get_token(workspace, profile, *, force_refresh=False):
-            token_calls.append((workspace, profile, force_refresh))
+        def get_token(workspace, profile, **_kw):
+            token_calls.append((workspace, profile))
             return f"token-{len(token_calls)}"
 
         monkeypatch.setattr(custom_oauth, "get_databricks_token", get_token)
@@ -235,29 +239,23 @@ class TestLaunchCodex:
                     "codex_models": ["system.ai.gpt-5-6-sol"],
                     "oss_models": ["system.ai.glm-5-2"],
                 },
-                ["--search", "--sandbox", "read-only", "--ask-for-approval", "on-request"],
+                ["--search"],
                 binary="codex",
                 start_model="gpt-start",
                 render_overlay=codex.render_overlay,
             )
 
         assert exc.value.code == 7
-        provider_name = interposer_args["kwargs"]["model_provider"]
-        assert provider_name == "Databricks-ug"
         assert processes[0].argv[:7] == [
             "codex",
             "app-server",
             "--config",
-            f'model_provider="{provider_name}"',
+            'model_provider="Databricks"',
             "--config",
             'model="gpt-start"',
             "--config",
         ]
-        assert processes[0].argv[7].startswith(f"model_providers.{provider_name}={{")
-        assert 'base_url = "http://127.0.0.1:' in processes[0].argv[7]
-        assert "supports_websockets = false" in processes[0].argv[7]
-        assert f'env_key = "{v2.CODEX_PROXY_TOKEN_ENV_VAR}"' in processes[0].argv[7]
-        assert "auth =" not in processes[0].argv[7]
+        assert processes[0].argv[7].startswith("model_providers.Databricks={")
         assert processes[0].argv[8] == "--config"
         hook_override = processes[0].argv[9]
         assert hook_override.startswith("hooks.PreToolUse=[{")
@@ -282,11 +280,6 @@ class TestLaunchCodex:
         ]
         assert processes[0].kwargs["env"][v2.OAUTH_TOKEN_ENV_VAR] == "token-1"
         assert processes[0].kwargs["env"]["CODEX_HOME"] == "/user/codex-home"
-        session_token = processes[0].kwargs["env"][v2.CODEX_PROXY_TOKEN_ENV_VAR]
-        assert session_token != "inherited-session-token"
-        assert processes[1].kwargs["env"][v2.CODEX_PROXY_TOKEN_ENV_VAR] == session_token
-        assert os.environ[v2.CODEX_PROXY_TOKEN_ENV_VAR] == "inherited-session-token"
-        assert all(session_token not in arg for process in processes for arg in process.argv)
         tui_argv = processes[1].argv
         expected_tui_args = [
             "--remote",
@@ -294,37 +287,31 @@ class TestLaunchCodex:
             "--model",
             "gpt-start",
             "--search",
-            "--sandbox",
-            "read-only",
-            "--ask-for-approval",
-            "on-request",
         ]
-        assert tui_argv[:4] == [
-            "codex",
-            "--config",
-            f'model_provider="{provider_name}"',
-            "--config",
-        ]
-        assert tui_argv[4] == processes[0].argv[7]
-        assert tui_argv[5:] == expected_tui_args
+        if tui_has_provider:
+            assert tui_argv[:4] == [
+                "codex",
+                "--config",
+                'model_provider="Databricks"',
+                "--config",
+            ]
+            assert tui_argv[4] == processes[0].argv[7]
+            assert tui_argv[5:] == expected_tui_args
+        else:
+            assert tui_argv == ["codex", *expected_tui_args]
         assert not any(arg.startswith("hooks.") for arg in tui_argv)
         assert interposer_args["args"] == (v2.LOOPBACK_HOST, "ws://127.0.0.1:41001")
         assert interposer_args["kwargs"]["available_models"] == [
             "system.ai.gpt-5-6-sol",
             "system.ai.glm-5-2",
         ]
-        assert interposer_args["kwargs"]["workspace"] == (None if subagent_only else WS)
-        assert interposer_args["kwargs"].get("model") is None
-        assert token_calls == [(WS, "myprof", False), (WS, "myprof", True)]
-        assert interposer_args["kwargs"]["token_provider"]() == "token-3"
-        assert token_calls[-1] == (WS, "myprof", False)
+        assert interposer_args["kwargs"]["workspace"] == WS
+        assert token_calls == [(WS, "myprof")]
+        assert interposer_args["kwargs"]["token_provider"]() == "token-2"
+        assert token_calls == [(WS, "myprof"), (WS, "myprof")]
         assert interposer_args["kwargs"]["switch_message_fn"] is v2.format_routing_notice
         assert stopped == [True]
         assert processes[0].terminated is True
-        provider = tomllib.loads(processes[0].argv[7])["model_providers"][provider_name]
-        # Windows may time out connecting to a closed port instead of refusing it.
-        with pytest.raises((httpx.ConnectError, httpx.ConnectTimeout)):
-            httpx.get(provider["base_url"], timeout=1, trust_env=False)
 
     def test_managed_http_headers_reach_app_server_config(self, monkeypatch):
         # Smart routing rebuilds the overlay and passes it to the app-server as `-c` overrides that
@@ -374,10 +361,63 @@ class TestLaunchCodex:
             )
 
         provider_arg = next(
-            arg for arg in processes[0].argv if arg.startswith("model_providers.Databricks-ug=")
+            arg for arg in processes[0].argv if arg.startswith("model_providers.Databricks=")
         )
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
+
+    def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(
+            v2.subprocess,
+            "Popen",
+            lambda *_args, **_kwargs: pytest.fail("subagent-only routing spawns no app-server"),
+        )
+        monkeypatch.setattr(
+            codex_interposer,
+            "start_interposer_thread",
+            lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not interpose"),
+        )
+        execd = []
+
+        def fake_exec(argv):
+            execd.append(argv)
+            raise SystemExit(0)
+
+        monkeypatch.setattr(v2, "exec_or_spawn", fake_exec)
+
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_codex(
+                {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
+                ["--search"],
+                binary="codex",
+                start_model="gpt-start",
+                render_overlay=codex.render_overlay,
+            )
+
+        assert exc.value.code == 0
+        (argv,) = execd
+        assert argv[0] == "codex"
+        assert argv[-1] == "--search"
+        assert 'model="gpt-start"' in argv
+        hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
+        assert "codex-router-hook route-subagent" in hook_override
+        assert "--model system.ai.gpt-5-6-sol" in hook_override
+        assert (
+            "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
+            + json.dumps(os.environ["UCODE_SESSION_ENV_FILE"])
+        ) in argv
+        assert (
+            "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
+            + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"])
+        ) in argv
+        # The hook subprocesses inherit the launch environment and pass the routing gate.
+        assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+        assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
 
     def test_v2_pre_tool_hook_leaves_saved_hooks_to_codex(self, tmp_path, monkeypatch):
         codex_home = tmp_path / ".codex"
@@ -666,61 +706,6 @@ def test_interposer_startup_failure_is_propagated(monkeypatch):
 
 
 class TestInterposerSession:
-    @pytest.mark.parametrize(
-        "providers,expected",
-        [
-            (["Databricks"], ["Databricks", "Databricks-ug"]),
-            (["Databricks", "Databricks-ug"], ["Databricks", "Databricks-ug"]),
-            (["Databricks-ug"], ["Databricks-ug"]),
-            (["openai"], ["openai"]),
-            ([], []),
-            (None, None),
-        ],
-    )
-    def test_history_filter_includes_routed_sessions(self, providers, expected):
-        session = codex_interposer._Session(
-            None, log=lambda _message: None, model_provider="Databricks-ug"
-        )
-        request = {
-            "id": 3,
-            "method": "thread/list",
-            "params": {"modelProviders": providers, "cursor": "next", "cwd": "/work"},
-        }
-        result = session.on_tui_frame(json.dumps(request))
-        assert json.loads(result.frame) == {
-            **request,
-            "params": {**request["params"], "modelProviders": expected},
-        }
-        assert not result.needs_settings_update
-
-    @pytest.mark.parametrize("method", ["thread/start", "thread/resume", "thread/fork"])
-    def test_selects_session_provider_when_opening_threads(self, method):
-        session = codex_interposer._Session(
-            None, log=lambda _message: None, model_provider="Databricks-ug-session"
-        )
-        request = {
-            "id": 2,
-            "method": method,
-            "params": {
-                "modelProvider": "Databricks",
-                "model": "parent-model",
-                "cwd": "/work",
-                "sandbox": "read-only",
-                "approvalPolicy": "on-request",
-            },
-        }
-        result = session.on_tui_frame(json.dumps(request))
-        assert json.loads(result.frame) == {
-            **request,
-            "params": {**request["params"], "modelProvider": "Databricks-ug-session"},
-        }
-        assert not result.needs_settings_update
-
-        turn = json.dumps(
-            {"method": "turn/start", "params": {"model": "parent-model", "input": "task"}}
-        )
-        assert session.on_tui_frame(turn).frame == turn
-
     def _turn_start(self, model: str, thread_id: str = "t1", prompt: str = "Fix the parser") -> str:
         return json.dumps(
             {

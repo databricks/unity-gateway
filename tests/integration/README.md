@@ -183,10 +183,8 @@ completed task rows before submitting `/exit`. Claude 2.1.290 retains finished c
 checkmarked `done` rows and no running or scheduled section. The helper observes menu dismissal
 after Escape before typing `/exit`. Offline PTY checks reject active/scheduled tasks, partial
 lists, and completed-task text outside the native menu.
-Scheduled wakeups can be absent from `/tasks` but appear in the exit dialog. Cleanup cancels
-that exit request with Escape and waits before checking again, for up to 180 seconds. It
-neither stops tasks nor confirms the dialog. Each exit attempt retains its 30-second timeout.
-Offline PTY cases cover this ordering, a scheduled check finishing, and stuck work failing.
+It neither stops tasks nor confirms an exit dialog. Process exit retains its 30-second
+timeout. Offline PTY checks cover this ordering.
 The shared wait also runs before CUJ4's Claude delegation sessions exit, after delegated-task
 evidence is checked, because Claude can resume a child after its first completed answer.
 
@@ -678,7 +676,7 @@ test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
 test_ug_codex_app_server.py             # actual client/server initialize exchange
 test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven subagent toggles
-test_ug_codex_v2_routing.py              # native v2 parent/child assignment routing CUJ
+test_ug_codex_v2_routing.py              # exact native v2 assignments and routed child execution
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_claude_desktop.py     # Desktop lifecycle, system.ai/relay inference, installed Cowork MCP; no GUI
 test_ug_configure_codex_desktop.py      # stubbed managed Codex desktop catalog pointer, no GUI
@@ -747,9 +745,8 @@ is enabled. Claude checks each local mod confirmation and the recorded `smart_ro
 on the following calculation's real gateway requests. Codex verifies saved session controls,
 a new CLI confirmation in native tool-result records, and a new assistant answer after each
 skill invocation.
-Fresh remote Codex sessions can require approval to write the session controls. On POSIX,
-the driver accepts only the exact requested toggle command through the native permission
-dialog; unexpected commands fail, and sandbox settings are not changed.
+If Codex requests permission to read the controls, the driver approves only the exact
+public toggle command through the native dialog, leaving the sandbox intact.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
 With orchestration enabled through legacy flags, a preset, or the managed default, both routed
@@ -759,14 +756,14 @@ Their off-phase child is an explicit user-requested delegation;
 these journeys do not establish automatic orchestration behavior. Root-only
 activation, compaction, retained skills in ineligible sessions,
 role-contract preservation, and isolation from legacy preference files
-lack dedicated regression coverage. The native v2 assignment journey covers a
-pre-existing observer hook alongside UG's hook and normal TUI trust. Other hook
-combinations remain outside the integration suite.
+lack dedicated regression coverage. The native v2 journey covers a pre-existing
+observer hook alongside UG's hook and normal TUI trust. Other hook combinations
+remain uncovered.
 
 Preset parameterization augments only routing hooks, skill toggles, and first-prompt routing;
 their original legacy-env cases remain, and the skill toggles add a managed-default case in
 which `smart_routing.enabled` alone routes subagents with Smart Router Orchestrator and no
-first-prompt routing decision is made. The skill toggles' legacy-env cases load the `_off` copy of the
+first-prompt wrapper starts. The skill toggles' legacy-env cases load the `_off` copy of the
 workspace's routing fixture (`claude_smart_routing_off.json`, `codex_smart_routing_off.json`, or
 `codex_smart_routing_ca_off.json`): the same models without `smart_routing`, because managed
 smart routing overrides individual routing env vars.
@@ -914,27 +911,12 @@ The complete integration suite collects 130 executions (127 with Claude and Code
 See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
-The native v2 CUJ covers subagent-only launch behavior with a bundled v2 catalog and
-a user-owned observer hook to verify the exact assignment at the native call,
-PreToolUse, and router decision. It checks
-session-provider selection over the configured Databricks default (machine-managed on
-POSIX) and completion on the selected child model; it does not exercise compaction.
-The proxy component tests check that retained calls, results, and the compressed
-compaction response pass through unchanged. They also cover 400/502 error responses,
-fragmented delimiters, and rejecting incomplete, oversized, or malformed SSE events.
-Component tests use the Codex handler configured by the proxy factory and reject
-missing or invalid session credentials, absolute destinations, and encoded traversal
-before forwarding. Authorized Responses and compaction requests carry only the
-workspace credential upstream.
-Launcher and interposer component cases cover both routing modes, a stable provider
-name, history filtering by the managed provider, proxy credentials passed through
-subprocess environments, and preserved explicit permission settings; they do not establish live
-resume coverage. Append
-`-- -k test_ug_codex_native_v2_plain_assignment_routing` to the version-pinned runner.
-A before/after comparison additionally needs fresh sessions with identical Codex, parent
-model, workspace, catalog, and prompt, capturing the provider spawn, hook, and router
-inputs. Only an actually encrypted baseline establishes the bug; a crash, missing
-spawn, or plaintext baseline is inconclusive. Encrypted-history resume is a separate check.
+The native v2 assignment journey requires Codex 0.164.0 or newer. It uses a bundled
+v2 catalog and a user-owned observer hook, without test-supplied native feature flags.
+It checks the exact multiline assignment at PreToolUse, the router decision, and
+the actual native recipient, then checks completed parent and child models and
+preserved settings. Select it with
+`-- -k test_ug_codex_native_v2_plain_assignment_routing`.
 
 ```bash
 # Append one of these selections to the runner command:
@@ -973,6 +955,8 @@ Claude file task on the second workspace. This exercises real commands, state,
 and agents without injected configuration. Deterministic duplicate-attempt and
 timeout/missing-executable regressions remain in `../test_mcp.py` and `../test_cli.py`;
 the CUJ does not force an agent failure.
+The switch reports one removal from previously configured workspaces; the old
+"Dropping stale entry" warning applied when the target inherited the source's MCP selection.
 
 Run this case with both agents installed if either workspace's managed config
 enables both. Supply the second workspace and its bearer explicitly:

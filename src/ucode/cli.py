@@ -139,7 +139,6 @@ from ucode.managed_resolve import (
 )
 from ucode.mcp import (
     MCP_CLIENTS,
-    MCP_ONLY_CLIENTS,
     McpServiceListingRateLimited,
     add_mcp_command,
     add_skills_command,
@@ -155,6 +154,7 @@ from ucode.mcp import (
     remove_mcp_command,
     remove_skills_command,
     remove_skills_locations_command,
+    restore_workspace_mcp_servers,
     revert_mcp_configs,
 )
 from ucode.mcp import managed_mcp_servers as load_managed_mcp_servers
@@ -570,7 +570,6 @@ def configure_shared_state(
         workspace_id = prior_state.get("workspace_id")
     key = workspace_key(workspace, workspace_id)
     previous_key = state_workspace_key(prior_state)
-    purge_kwargs = {"same_host_switch": True} if previous_workspace == workspace else {}
     if use_pat is None:
         use_pat = bool(prior_state.get("use_pat")) and previous_key == key
     if databricks_ai_tools_enabled is None:
@@ -592,6 +591,17 @@ def configure_shared_state(
         state["workspace_id"] = workspace_id
     else:
         state.pop("workspace_id", None)
+    if previous_key != key:
+        # Model discovery below refreshes the selected workspace. MCP selections are different:
+        # they are user choices, so carry the destination's saved registry across a switch.
+        destination = load_full_state().get("workspaces", {}).get(key, {})
+        # managed_mcp_servers records what the source workspace delivered to user scope.
+        # Keep it until reconciliation removes registrations the destination no longer wants.
+        for field in ("mcp_servers", "mcp_clients"):
+            if field in destination:
+                state[field] = destination[field]
+            else:
+                state.pop(field, None)
     # `state` starts from the current workspace's block, so its self-managed list belongs to the
     # source workspace. The opt-in is per workspace: replace it with the destination's own list.
     dest_self_managed = workspace_self_managed_agents(key)
@@ -643,7 +653,7 @@ def configure_shared_state(
         save_state(state)
         # Scrub MCP entries ucode wrote for a previous workspace.
         if previous_key and previous_key != key:
-            purge_cross_workspace_mcp_residue(state, workspace, **purge_kwargs)
+            purge_cross_workspace_mcp_residue(state, workspace)
         # Diagnostic reasons are transient (attached after save_state so they
         # don't land on disk). No discovery ran, so there is nothing to report.
         state["_discovery_reasons"] = {"claude": None, "gemini": None, "codex": None, "oss": None}
@@ -805,7 +815,7 @@ def configure_shared_state(
     # Scrub MCP entries that ucode wrote for the previous workspace so the new
     # workspace's agent configs aren't stale.
     if previous_key and previous_key != key:
-        purge_cross_workspace_mcp_residue(state, workspace, **purge_kwargs)
+        purge_cross_workspace_mcp_residue(state, workspace)
     # Diagnostic reasons are transient — attach after save_state so they don't
     # land on disk but are available to the caller for this run.
     state["_discovery_reasons"] = {
@@ -938,6 +948,7 @@ def _setup_single_agent(
     rejected). ``ug agents add`` passes ``apply_managed=False`` to set up a self-managed agent
     standalone, independent of the managed config.
     """
+    previous_workspace = state_workspace_key(load_state())
     states = _configure_shared_workspace_states(
         workspace_entries,
         [tool],
@@ -971,11 +982,14 @@ def _setup_single_agent(
         from ucode.agents.desktop.setup import configure_claude_desktop
 
         configure_claude_desktop(state, parent_schema=parent_schema)
-        if not is_dry_run():
-            resolved_mcps = _configure_managed_mcp_servers(managed)
-            skills_configured = _configure_managed_skills(managed)
-            if resolved_mcps is not None and skills_configured:
-                _sync_claude_cowork_plugin(state, managed_mcp_servers=resolved_mcps)
+    if apply_managed and tool in ("claude", "codex") and not is_dry_run():
+        resolved_mcps = _configure_managed_mcp_servers(managed)
+        skills_configured = _configure_managed_skills(managed)
+        _restore_mcp_after_workspace_switch(previous_workspace, state)
+        if tool == "claude" and resolved_mcps is not None and skills_configured:
+            _sync_claude_cowork_plugin(state, managed_mcp_servers=resolved_mcps)
+    else:
+        _restore_mcp_after_workspace_switch(previous_workspace, state)
     # Only the Claude and Codex branch above reads the managed config fresh.
     managed_refreshed = apply_managed and tool in ("claude", "codex")
     install_databricks_ai_tools_for_agents([tool], state, force_refresh=not managed_refreshed)
@@ -992,6 +1006,14 @@ def _setup_single_agent(
         )
     )
     return state
+
+
+def _restore_mcp_after_workspace_switch(previous_workspace: str | None, state: dict) -> None:
+    """Put the selected workspace's saved MCP entries back in global agent configs."""
+    if previous_workspace != state_workspace_key(state) and not is_dry_run():
+        # Managed reconciliation updates the persisted state, not the configure snapshot.
+        # Its freshly delivered names must take precedence over saved user selections.
+        restore_workspace_mcp_servers(load_state(), set(MCP_CLIENTS))
 
 
 def _record_unmanaged_configured_agents(state: dict, tools: list[str]) -> dict:
@@ -1170,6 +1192,7 @@ def _configure_workspace_command(
     offer_provider = tool is None and selected_tools is None
 
     workspace_entries = workspaces or [_prompt_for_configuration(tool)]
+    previous_workspace = state_workspace_key(load_state())
 
     if tool is not None:
         _setup_single_agent(
@@ -1249,6 +1272,7 @@ def _configure_workspace_command(
         if not is_dry_run():
             resolved_mcps = _configure_managed_mcp_servers(managed)
             skills_configured = _configure_managed_skills(managed)
+            _restore_mcp_after_workspace_switch(previous_workspace, state)
             registered_mcps = [
                 str(server["name"]) for server in (resolved_mcps or []) if server.get("name")
             ]
@@ -1310,6 +1334,7 @@ def _configure_workspace_command(
     if not is_dry_run():
         _configure_managed_mcp_servers(None)
         _configure_managed_skills(None)
+        _restore_mcp_after_workspace_switch(previous_workspace, state)
 
     # Prefer this run's outcome; available_tools is cumulative and can still list a
     # tool that failed this run from an earlier success. Fall back to it only when the
@@ -1937,68 +1962,41 @@ def _configure_agents_for_mcp(
     requested: list[str],
     workspace_entries: list[tuple[str, str | None]] | None = None,
 ) -> set[str]:
-    """Ensure the named coding agents are set up (workspace + models) so a
-    subsequent `ug mcp add` / `ug skills add --via mcp` has them as targets, and
-    return the full canonical name set. Agents already configured are left as-is;
-    only the rest are bootstrapped. Model agents go through
-    configure_workspace_command (which installs binaries and configures models);
-    Cursor is MCP-only, so it just needs workspace state established and rides
-    along via MCP_ONLY_CLIENTS. ``workspace_entries`` (from `--workspace` /
-    `--profile`) makes that workspace current and skips the workspace prompt;
-    otherwise the prompt is shown on first run. If setup fails, the previous
-    current workspace is restored."""
+    """Select MCP clients for one workspace without changing agent model settings."""
     scope = {a if a == "cursor" else normalize_tool(a) for a in requested}
     installed = available_mcp_clients()
-    # Setup installs model agents but not MCP-only ones, so a missing MCP-only CLI
-    # would otherwise leave the agent permanently unready and re-enter setup every run.
-    not_installed = sorted(a for a in scope if a in MCP_ONLY_CLIENTS and a not in installed)
+    not_installed = sorted(scope - set(installed))
     if not_installed:
         raise RuntimeError(_not_installed_message(not_installed))
     previous_workspace = current_workspace_key(load_full_state())
     try:
-        _bootstrap_agents_for_mcp(scope, installed, workspace_entries)
-    except BaseException:
-        # Don't leave launches pointed at a workspace whose setup didn't finish.
         if workspace_entries:
-            set_current_workspace(previous_workspace)
+            workspace, profile = workspace_entries[0]
+            set_current_workspace(workspace)
+        else:
+            state = load_state()
+            workspace = state_workspace_key(state)
+            if not workspace:
+                workspace, profile = _prompt_for_configuration(None)
+                set_current_workspace(workspace)
+            else:
+                profile = None
+        state = load_state()
+        host, workspace_id = split_workspace_key(workspace)
+        state["workspace"] = host
+        if workspace_id:
+            state["workspace_id"] = workspace_id
+        else:
+            state.pop("workspace_id", None)
+        state["mcp_clients"] = sorted(set(state.get("mcp_clients") or []) | scope)
+        if profile and state.get("profile") != profile:
+            state["profile"] = profile
+            state.pop("use_pat", None)
+        save_state(state)
+    except BaseException:
+        set_current_workspace(previous_workspace)
         raise
     return scope
-
-
-def _bootstrap_agents_for_mcp(
-    scope: set[str],
-    installed: list[str],
-    workspace_entries: list[tuple[str, str | None]] | None,
-) -> None:
-    workspace_known = True
-    if workspace_entries:
-        url = workspace_entries[0][0]
-        set_current_workspace(url)
-        workspace_known = url in (load_full_state().get("workspaces") or {})
-    ready = set(configured_mcp_clients(load_state(), installed)) if workspace_known else set()
-    to_bootstrap = scope - ready
-    model_agents = sorted(a for a in to_bootstrap if a != "cursor")
-    if model_agents:
-        if workspace_entries is None:
-            configure_workspace_command(selected_tools=model_agents)
-        else:
-            configure_workspace_command(selected_tools=model_agents, workspaces=workspace_entries)
-    if "cursor" in to_bootstrap and not model_agents:
-        _configure_shared_workspace_states(
-            workspace_entries or [_prompt_for_configuration(None)], tools=[], force_login=True
-        )
-    state = load_state()
-    unready = sorted(scope - set(configured_mcp_clients(state, available_mcp_clients())))
-    if unready:
-        raise RuntimeError(_not_installed_message(unready))
-    # Setup saves an explicit --profile, but it's skipped when every agent is already
-    # ready; save it here so registration authenticates as that profile. A saved
-    # --use-pat belonged to the old profile, and --profile means OAuth without it.
-    profile = workspace_entries[0][1] if workspace_entries else None
-    if profile and state.get("profile") != profile:
-        state["profile"] = profile
-        state.pop("use_pat", None)
-        save_state(state)
 
 
 def _not_installed_message(agents: list[str]) -> str:
@@ -2074,8 +2072,7 @@ def mcp_add(
         typer.Option(
             "--agents",
             help="Comma-separated coding agents to register the server(s) for (e.g. "
-            "claude,codex,cursor). Any that aren't configured yet are set up first "
-            "(workspace + models), so this works as a one-command setup. Without --agents, "
+            "claude,codex,cursor). MCP registration is independent of model setup. Without --agents, "
             "the server is registered for every already-configured agent.",
         ),
     ] = None,
@@ -2083,8 +2080,8 @@ def mcp_add(
         str | None,
         typer.Option(
             "--workspace",
-            help="Workspace URL to register --agents against (made the current workspace; set "
-            "up first if needed), skipping the workspace prompt. Defaults to the UG_WORKSPACE "
+            help="Workspace URL to register MCP servers against, without changing the launch "
+            "workspace or model settings. Defaults to the UG_WORKSPACE "
             "environment variable when set.",
         ),
     ] = None,
@@ -2092,7 +2089,7 @@ def mcp_add(
         str | None,
         typer.Option(
             "--profile",
-            help="Existing Databricks CLI profile to register --agents against, like "
+            help="Existing Databricks CLI profile to register MCP servers against, like "
             "--workspace. The profile's host supplies the workspace URL, and the profile is "
             "saved as that workspace's profile.",
         ),
@@ -2102,7 +2099,7 @@ def mcp_add(
 
     Purely additive: it never removes MCP servers that are already configured, only registers new
     ones (use `ug mcp remove` to remove). Pass --agents to target (and, if needed, set up) specific
-    agents.
+    agents. Explicit MCP setup never configures agent models or machine-wide settings.
     """
     selected = None if names is None else {s.strip() for s in names.split(",") if s.strip()}
     requested_agents = (
@@ -2110,6 +2107,9 @@ def mcp_add(
         if agents is None
         else ({a.strip().lower() for a in agents.split(",") if a.strip()} or None)
     )
+    previous_workspace = current_workspace_key(load_full_state())
+    workspace_entries = None
+    added = False
     try:
         # `ug --workspace <url> mcp add ...` is parsed by the root command, which
         # returns early for subcommands, so forward its value here.
@@ -2124,21 +2124,46 @@ def mcp_add(
             workspace = root_workspace
         if workspace is not None and profile is not None:
             raise RuntimeError("Use either --workspace or --profile, not both.")
-        if (workspace is not None or profile is not None) and not requested_agents:
-            raise RuntimeError("--workspace and --profile only apply with --agents.")
-        if workspace is None and profile is None and requested_agents:
+        if workspace is None and profile is None:
             workspace = os.environ.get("UG_WORKSPACE") or None
         workspace_entries = None
         if profile is not None:
             workspace_entries = _parse_profile_option(profile)
         elif workspace is not None:
             workspace_entries = _parse_workspace_option(workspace)
+        if (
+            workspace_entries
+            and previous_workspace
+            and workspace_entries[0][0] != previous_workspace
+        ):
+            raise RuntimeError(
+                f"MCP clients are configured for {previous_workspace}. "
+                f"Run `ug configure --workspace {workspace_entries[0][0]}` to switch "
+                "the active workspace before adding MCP servers there."
+            )
+        existing_scope = None
+        if workspace_entries and not requested_agents:
+            target = workspace_entries[0][0]
+            bucket = (load_full_state().get("workspaces") or {}).get(target)
+            recorded = set((bucket or {}).get("available_tools") or []) | set(
+                (bucket or {}).get("mcp_clients") or []
+            )
+            existing_scope = (
+                set(configured_mcp_clients(bucket or {}, available_mcp_clients())) & recorded
+            )
+            if not existing_scope:
+                raise RuntimeError(
+                    f"No MCP clients are configured for {target}. "
+                    "Pass --agents to select the clients for this workspace."
+                )
+            _configure_agents_for_mcp([], workspace_entries)
         scope = (
             _configure_agents_for_mcp(sorted(requested_agents), workspace_entries)
             if requested_agents
-            else None
+            else existing_scope
         )
         add_mcp_command(location=location, services=selected, agents=scope)
+        added = True
         _sync_claude_cowork_plugin()
     except RuntimeError as exc:
         print_err(str(exc))
@@ -2146,6 +2171,9 @@ def mcp_add(
     except KeyboardInterrupt:
         print_err("Interrupted.")
         raise typer.Exit(130) from None
+    finally:
+        if workspace_entries and (previous_workspace is not None or not added):
+            set_current_workspace(previous_workspace)
 
 
 @mcp_app.command("remove")
@@ -2840,7 +2868,7 @@ def codex_router_hook_cmd(
     )
 
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
+        payload = json.loads(sys.stdin.buffer.read() or b"{}")
     except ValueError:
         return
     if not isinstance(payload, dict):
@@ -4725,6 +4753,7 @@ def configure(
         # MCP setup prompt so flag-driven / scripted runs are never interrupted.
         fully_interactive = False
         combined_optional_setup = False
+        previous_workspace = state_workspace_key(load_state())
         if agent is not None:
             tool = normalize_tool(agent)
             install_tool_binary(
@@ -4752,6 +4781,7 @@ def configure(
             wants_cursor = "cursor" in requested
             wants_vscode = "vscode" in requested
             model_agent_names = ",".join(a for a in requested if a not in ("cursor", "vscode"))
+            mcp_states = None
             if model_agent_names:
                 selected_tools = _parse_agents_option(model_agent_names)
                 if workspace_entries is None:
@@ -4767,7 +4797,7 @@ def configure(
                     )
             elif wants_cursor or wants_vscode:
                 # Cursor/VS Code only: establish workspace state without the model picker.
-                _configure_shared_workspace_states(
+                mcp_states = _configure_shared_workspace_states(
                     workspace_entries or [_prompt_for_configuration(None)],
                     tools=[],
                     force_login=not use_pat,
@@ -4788,6 +4818,8 @@ def configure(
                 managed, _ = _read_policy_for_other_agent(state)
                 refuse_user_scope_over_managed_config(state.get("workspace"), managed)
                 vscode.configure(state, provider=provider, location=model_location)
+            if mcp_states is not None:
+                _restore_mcp_after_workspace_switch(previous_workspace, mcp_states[0])
         elif mcp is not None:
             # MCP-only: `--mcp` without --agent(s) (e.g. Cursor, which isn't a
             # model agent, or adding MCP servers to an already-configured setup).
@@ -4795,13 +4827,14 @@ def configure(
             # `--mcp` registration below has a current workspace to target.
             if workspace_entries is None:
                 workspace_entries = [_prompt_for_configuration(None)]
-            _configure_shared_workspace_states(
+            mcp_states = _configure_shared_workspace_states(
                 workspace_entries,
                 tools=[],
                 force_login=not use_pat,
                 use_pat=use_pat,
                 custom_oauth=custom_oauth,
             )
+            _restore_mcp_after_workspace_switch(previous_workspace, mcp_states[0])
         else:
             # Tool binaries are installed after the user picks which agents
             # they want, in configure_workspace_command.

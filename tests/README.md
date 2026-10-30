@@ -168,9 +168,6 @@ Offline PTY checks verify that the Claude background-task wait observes "No task
 running" or a native task menu containing only completed rows before sending `/exit`, without
 stopping tasks or confirming an exit dialog. Running/scheduled sections, incomplete row counts,
 and completed-task text outside the native menu cannot satisfy the wait.
-If `/exit` reveals pending work absent from `/tasks`, cleanup cancels the exit request with
-Escape and waits before checking again, for up to 180 seconds. Each exit attempt retains its
-30-second timeout. Offline PTY cases cover a scheduled check finishing and stuck work failing.
 The live Claude subagent skill-toggle journeys use this wait after their final calculation.
 CUJ4's Claude delegation sessions also use it after verifying delegated file tasks: a completed
 answer does not prove that a resumed child has stopped running.
@@ -527,24 +524,17 @@ output without colors, and the hint when more limits exist.
 These are unit/component tests; CUJ5 checks live `ug usage --all` output against budget
 figures before and after the command.
 
-The existing `test_codex_smart_routing_v2.py` launcher cases cover session-provider
-selection with a stable provider name during first-prompt and subagent-only routing,
-including the latter's unchanged parent model and disabled first-prompt selection.
-The launcher keeps the proxy credential in child-process environments, outside
-config files and command arguments. Launcher and interposer cases preserve explicit
-sandbox and approval settings and keep routed sessions in history filtered by the managed provider.
-The native v2 journey covers subagent-only routing. `test_codex_v2_transport.py`
-checks readable assignments, encrypted-history replay, and preserving malformed
-plaintext arguments for native tool validation while rejecting encrypted assignments.
-`test_gateway_proxy.py` checks gzip JSON/SSE decoding, split event delimiters,
-buffered JSON failures returning 502, request namespace conflicts returning 400,
-and stopping incomplete, oversized, or malformed SSE events. Compaction requests
-and responses retain completed calls, results, and an opaque summary unchanged.
-Tests construct the Codex handler through the proxy factory and reject missing or
-invalid session credentials, absolute destinations, and traversal before forwarding.
-Authorized Responses and compaction requests replace local credentials with the workspace bearer.
-These component checks do not cover live session resume, standalone compaction,
-or injected startup failures.
+`test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
+gateway provider on Windows while Unix launch arguments stay unchanged and routing
+hooks stay with the app-server. This is component coverage, not a live Windows
+sign-in or TUI test.
+
+`integration/test_ug_codex_v2_routing.py` checks native v2 on Codex 0.164.0 or newer:
+the exact multiline assignment reaches the real hook, router decision, and native
+child; the child completes on the routed model while the parent stays pinned.
+The production launcher supplies the native configuration, and user settings and
+the Databricks provider are preserved. `test_agent_codex.py` covers the routing
+minimum version separately from ordinary launches.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
@@ -630,11 +620,10 @@ add the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require 
 `smart-router` for routing-only cases, and both bundled skills when orchestration is enabled;
 Claude checks local mod confirmations and the inference payload's `smart_router_recipe_name`;
 Codex checks saved session controls and native tool-result confirmations after each toggle.
+If Codex requests permission to read the controls, the driver approves only the exact
+public toggle command through the native dialog, leaving the sandbox intact.
 Both explicitly request their children,
 including while routing is off.
-If Codex on POSIX requests permission to update the session controls, the driver approves only
-the exact toggle command through its native dialog and leaves the sandbox enabled.
-
 Claude's six toggle variants are temporarily non-blocking on Linux and Windows; required
 Smoke, Full, and Managed config lanes deselect `soft_fail` cases. A separate
 Soft-fail journeys lane still runs every assertion and uploads evidence on both platforms.
@@ -652,9 +641,8 @@ including collapsed-output records, and excludes user echoes and assistant claim
 Dedicated regression coverage is missing for root-only Smart Router Orchestrator activation,
 compaction, retained skills in ineligible sessions,
 role-contract preservation, and isolation from legacy preference files. The native
-v2 assignment journey covers a pre-existing observer hook alongside UG's hook and
-normal TUI trust. Other hook combinations and automatic delegation remain outside
-the integration suite.
+v2 journey covers a pre-existing observer hook alongside UG's hook and normal TUI
+trust. Other hook combinations and automatic delegation remain uncovered.
 
 The portable Windows routing test checks native executable forwarding, generated
 hooks/plugins, caller arguments, and cleanup without Unix imports. It does not
@@ -721,10 +709,10 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_codex_app_reports_unknown_argument` | Pass an invalid option directly to `ug codex app` with legacy smart routing off/on | Real Codex parser error and status preserved |
 | `test_ug_codex_app_server_client_initializes` | Connect a stdio client, direct/`--` separator, with legacy smart routing off/on | Actual JSON-RPC initialize response; no non-JSON stdout; no routing |
 | `test_smart_routing_claude_route_subagent_hook`, `test_smart_routing_codex_route_subagent_hook` | Pipe a native spawn payload to the installed Claude mod command or Codex PreToolUse hook with legacy subagent routing or each supported routing preset | Claude returns model/rationale/updatedInput JSON naming the routed agent the mod labels; Codex returns an allow-hook decision; requested model replaced by a routed agent definition (Claude) or bundled catalog slug (Codex) from the offered models; one audited decision matching the session and task |
-| `test_smart_router_routes_{claude,codex}_subagent_at_launch`, `test_smart_router_skill_turns_{claude,codex}_subagent_routing_off`, `test_smart_router_skill_turns_{claude,codex}_subagent_routing_back_on` | Configure, launch a real subagent-only TUI with legacy routing-only/orchestration flags or the three subagent-only presets, each in its own fresh session: spawn a tagged child at launch; invoke the installed Smart Router skill to turn routing off then spawn a child; or spawn a routed child, turn routing off and spawn an unrouted child, then turn routing back on and spawn a routed child | Routing-only cases install `smart-router`; orchestration cases also install `smart-router-orchestrator`; each tagged native child completes; routed children (launch, before off and after back on) show a native model/rationale row (Claude) or subagent banner (Codex) and produce a live routing decision correlated with the child, while each child after off shows neither and has no decision; Claude's recorded task inference payloads carry `smart_router_recipe_name` as the launch recipe (`at_launch`, `back_on`, where the second child must match the launch child) or DISABLED (after off), omit the recipe header, and receive successful gateway responses; opted-in Codex banners include `[orchestrator on]`; no first-prompt routing decision; the customer full-mode preset is intentionally outside this journey; normal exit |
-| `test_ug_codex_native_v2_plain_assignment_routing` | Configure Codex, launch subagent-only routing with a native v2 catalog and a user-owned observer hook, and delegate one multiline file task | The session provider overrides the configured Databricks default (machine-managed on POSIX); the actual PreToolUse input, native call, and router decision contain the exact assignment; one native v2 child completes on the selected model and returns the unpredictable file value; user settings survive |
+| `test_smart_router_routes_{claude,codex}_subagent_at_launch`, `test_smart_router_skill_turns_{claude,codex}_subagent_routing_off`, `test_smart_router_skill_turns_{claude,codex}_subagent_routing_back_on` | Configure, launch a real subagent-only TUI with legacy routing-only/orchestration flags or the three subagent-only presets, each in its own fresh session: spawn a tagged child at launch; invoke the installed Smart Router skill to turn routing off then spawn a child; or spawn a routed child, turn routing off and spawn an unrouted child, then turn routing back on and spawn a routed child | Routing-only cases install `smart-router`; orchestration cases also install `smart-router-orchestrator`; each tagged native child completes; routed children (launch, before off and after back on) show a native model/rationale row (Claude) or subagent banner (Codex) and produce a live routing decision correlated with the child, while each child after off shows neither and has no decision; Claude's recorded task inference payloads carry `smart_router_recipe_name` as the launch recipe (`at_launch`, `back_on`, where the second child must match the launch child) or DISABLED (after off), omit the recipe header, and receive successful gateway responses; opted-in Codex banners include `[orchestrator on]`; no first-prompt routing wrapper; the customer full-mode preset is intentionally outside this journey; normal exit |
+| `test_ug_codex_native_v2_plain_assignment_routing` | Configure and launch subagent-only routing with a native v2 catalog and a user-owned observer hook; delegate a multiline Unicode file task | Exact plaintext at the hook, router, and native child; completed child uses the routed model; parent model, Databricks provider, and user settings are preserved |
 | `test_ug_configure_claude_repeat_and_revert`, `test_ug_configure_codex_repeat_and_revert` | Configure twice over user settings; complete a task; revert twice | Settings preserved; no bearer in ug state; generated config removed; status unconfigured |
-| `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | Old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
+| `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | One cross-workspace removal reported; old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
 | `test_ug_configure_managed_claude`, `test_ug_configure_managed_codex` | Configure on the managed workspace with the stubbed `managed_workspace_default.json` CodingAgentConfig | No agent selector; each agent's generated config exposes exactly the admin's static model_services; real gateway prompt on launch. The Codex case also checks the shared catalog pointer, restart guidance, and a fresh bare app-server's visible model list |
 | `e2e_cuj/test_cuj5_budget_defaults.py` | Launch bare `ug` with separate low-spend and above-tier principals against the fixed 1% tier (`spending_percentage=0.01`); explicitly launch `ug claude`, and `ug claude --model`, above the tier | Bare launches check Claude/Sonnet below the tier and the Codex/Luna recommendation above it; `ug usage` agrees with backend spend, threshold, and percentage. Explicit `ug claude` displays the backend's Codex/Luna recommendation while its generated model setting and native header select Sonnet. `ug claude --model <Sonnet id>` (the workspace's only Claude model) displays the same recommendation, selects Sonnet in the native header, and leaves the user and OS-managed settings files byte-identical to configure's (Sonnet `ANTHROPIC_MODEL`); a following plain launch selects Sonnet without rewriting them. A differing Claude budget pick, alone or with smart routing, is unit-covered only. No budget writes or inference tasks. Runs on its own `E2E CUJs · CUJ 5 · Budget-driven defaults` runner with both credential pairs documented in `integration/README.md`. |

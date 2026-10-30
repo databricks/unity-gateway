@@ -13,7 +13,6 @@ from pathlib import Path
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
-from ucode.agents.codex import CODEX_MODEL_PROVIDER_NAME
 from ucode.smart_routing import codex_routing, routing
 
 SETTINGS_UPDATED = "thread/settings/updated"
@@ -22,7 +21,6 @@ ITEM_STARTED = "item/started"
 ITEM_COMPLETED = "item/completed"
 TURN_START = "turn/start"
 TURN_STARTED = "turn/started"
-THREAD_CONFIG_METHODS = frozenset({"thread/start", "thread/resume", "thread/fork"})
 
 RouteDecisionFn = Callable[[str], tuple[routing.RoutingDecision | None, str | None]]
 SwitchMessageFn = Callable[[str, str], str]
@@ -62,7 +60,6 @@ class _Session:
         available_models: list[str] | None = None,
         route_decision: RouteDecisionFn | None = None,
         switch_message_fn: SwitchMessageFn | None = None,
-        model_provider: str | None = None,
     ) -> None:
         self.target = target_model
         self.available_models = list(available_models or [])
@@ -70,7 +67,6 @@ class _Session:
         self.switch_message = switch_message
         self.route_decision = route_decision
         self.switch_message_fn = switch_message_fn
-        self.model_provider = model_provider
         self.thread_id: str | None = None
         self.settings: dict | None = None
         self.first_turn_seen = False
@@ -88,29 +84,6 @@ class _Session:
         if not isinstance(msg, dict):
             return TuiFrameResult(raw, needs_settings_update=False)
         params = msg.get("params")
-        if (
-            self.model_provider is not None
-            and msg.get("method") in THREAD_CONFIG_METHODS
-            and isinstance(params, dict)
-        ):
-            # This native override selects the session transport even when the
-            # machine-managed config fixes the default provider to Databricks.
-            params["modelProvider"] = self.model_provider
-            return TuiFrameResult(json.dumps(msg), needs_settings_update=False)
-        if (
-            self.model_provider is not None
-            and msg.get("method") == "thread/list"
-            and isinstance(params, dict)
-        ):
-            providers = params.get("modelProviders")
-            if (
-                isinstance(providers, list)
-                and CODEX_MODEL_PROVIDER_NAME in providers
-                and self.model_provider not in providers
-            ):
-                # Managed defaults can filter history to the original provider.
-                params["modelProviders"] = [*providers, self.model_provider]
-                return TuiFrameResult(json.dumps(msg), needs_settings_update=False)
         if msg.get("method") == TURN_START and isinstance(params, dict):
             if isinstance(params.get("threadId"), str):
                 self.thread_id = params["threadId"]
@@ -238,7 +211,6 @@ async def _handle_tui(
     workspace: str | None = None,
     token_provider: TokenProvider | None = None,
     switch_message_fn: SwitchMessageFn | None = None,
-    model_provider: str | None = None,
 ) -> None:
     path = getattr(getattr(tui, "request", None), "path", "/") or "/"
     uri = upstream_uri.rstrip("/") + path
@@ -266,7 +238,6 @@ async def _handle_tui(
         available_models,
         route_decision,
         switch_message_fn,
-        model_provider,
     )
     async with connect(uri, max_size=None) as upstream:
 
@@ -329,7 +300,6 @@ async def _serve(
     workspace: str | None = None,
     token_provider: TokenProvider | None = None,
     switch_message_fn: SwitchMessageFn | None = None,
-    model_provider: str | None = None,
 ):
     async def handler(tui):
         try:
@@ -343,7 +313,6 @@ async def _serve(
                 workspace,
                 token_provider,
                 switch_message_fn,
-                model_provider,
             )
         except Exception as exc:  # noqa: BLE001
             log(f"[ERR] session: {exc!r}")
@@ -363,7 +332,6 @@ def start_interposer_thread(
     workspace: str | None = None,
     token_provider: TokenProvider | None = None,
     switch_message_fn: SwitchMessageFn | None = None,
-    model_provider: str | None = None,
     switch_message: str | None = None,
     log_path: Path | None = None,
     ready_timeout: float = 10.0,
@@ -397,7 +365,6 @@ def start_interposer_thread(
                     workspace,
                     token_provider,
                     switch_message_fn,
-                    model_provider,
                 )
             )
             holder["port"] = holder["server"].sockets[0].getsockname()[1]

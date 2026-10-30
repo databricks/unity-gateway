@@ -45,8 +45,8 @@ def _seed_user_owned_native_codex_settings(session) -> tuple[Path, bytes, bytes]
     hook_input = codex_home / "native-pre-tool-use.jsonl"
     observer.write_text(
         "import json, sys\n"
-        f"with open({str(hook_input)!r}, 'a') as output:\n"
-        "    output.write(json.dumps(json.load(sys.stdin)) + '\\n')\n"
+        f"with open({str(hook_input)!r}, 'a', encoding='utf-8') as output:\n"
+        "    output.write(json.dumps(json.load(sys.stdin.buffer)) + '\\n')\n"
         "print('{}')\n"
     )
     config = codex_home / "config.toml"
@@ -68,18 +68,17 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
     """Scenario: configure ug with a user-owned native v2 catalog and observer hook,
     then delegate one multiline file task with subagent-only routing.
 
-    Expected: the native call, actual hook input, and router decision contain the exact
+    Expected: the native child, actual hook input, and router decision contain the exact
     assignment. One native child completes on the selected model; the parent stays on
-    its original model. The session provider overrides the configured Databricks default
-    (machine-managed on POSIX) and preserves the user's config. This case proves the
-    fixed behavior, not the baseline.
+    its original model. Requests use the configured Databricks provider directly and
+    preserve the user's config, without user-supplied feature flags.
     """
     session = live_session
     task = FileTask(session)
-    assignment = task.prompt + "\nPreserve punctuation (!?;:) and capitalization; add no label."
+    assignment = task.prompt + '\nKeep this literal: café λ; "quotes", \\slashes, {braces}.'
     task_name = "ug_native_file"
     prompt = (
-        f'Use native collaboration.spawn_agent exactly once with task_name "{task_name}". '
+        f'Delegate to one native child with task_name "{task_name}". '
         "Set message to exactly the assignment between BEGIN and END, preserving the newline.\n"
         f"BEGIN\n{assignment}\nEND\n"
         "Do not read the file yourself. Wait for the child and return only its file value."
@@ -127,27 +126,27 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
         else Path("/etc/codex/managed_config.toml")
     )
     assert tomllib.loads(provider_config.read_text())["model_provider"] == "Databricks"
-    assert parent_meta["model_provider"] == "Databricks-ug"
+    assert parent_meta["model_provider"] == "Databricks"
     assert child_meta["model_provider"] == parent_meta["model_provider"]
 
     (decision,) = read_jsonl(session.home / ".ucode/codex-smart-routing-decisions.jsonl")
     assert decision["session_id"] == parent_meta["id"]
     assert decision["task_name"] == assignment
-    calls = [
-        r["payload"]
-        for r in parent
-        if r.get("type") == "response_item" and r["payload"].get("type") == "function_call"
-    ]
-    assert all(call.get("namespace") == "collaboration" for call in calls)
-    (spawn,) = [call for call in calls if call.get("name") == "spawn_agent"]
-    assert spawn["encrypted_function_args"] == []
-    arguments = json.loads(spawn["arguments"])
-    assert arguments["message"] == assignment
-    assert arguments["task_name"] == task_name
     (hook,) = read_jsonl(session.home / ".codex/native-pre-tool-use.jsonl")
     assert hook["session_id"] == parent_meta["id"]
-    assert hook["tool_use_id"] == spawn["call_id"]
     assert hook["tool_input"]["message"] == assignment
+    assert hook["tool_input"]["task_name"] == task_name
+    child_path = child_meta["source"]["subagent"]["thread_spawn"]["agent_path"]
+    assert child_path == f"/root/{task_name}"
+    assert any(
+        content.get("text", "").endswith(assignment)
+        for row in child
+        if row.get("type") == "response_item"
+        and row.get("payload", {}).get("type") == "agent_message"
+        and row["payload"].get("recipient") == child_path
+        for content in row["payload"].get("content", [])
+        if content.get("type") == "input_text"
+    )
 
     parent_contexts = [r["payload"] for r in parent if r.get("type") == "turn_context"]
     parent_turns = {r["turn_id"] for r in parent_contexts}

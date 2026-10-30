@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import gzip
 import io
 import json
 import os
@@ -151,11 +150,11 @@ class _BrokenPipeWriter(io.RawIOBase):
         raise BrokenPipeError(32, "Broken pipe")
 
 
-def _relay_handler(wfile, handler_type=gateway_proxy._ProxyHandler) -> gateway_proxy._ProxyHandler:
+def _relay_handler(wfile) -> gateway_proxy._ProxyHandler:
     # Bypass BaseHTTPRequestHandler.__init__ (which would service a socket);
     # we only exercise _relay_response's write path. Set the few attributes the
     # send_response/send_header machinery reads (normally populated by __init__).
-    handler = object.__new__(handler_type)
+    handler = object.__new__(gateway_proxy._ProxyHandler)
     handler.wfile = wfile
     handler.request_version = "HTTP/1.1"
     handler.requestline = "POST /v1/messages HTTP/1.1"
@@ -430,10 +429,8 @@ class _RefreshFailsCache:
         raise RuntimeError("mint failed")
 
 
-def _handle_handler(
-    client, cache, wfile, handler_type=gateway_proxy._ProxyHandler
-) -> gateway_proxy._ProxyHandler:
-    h = object.__new__(handler_type)
+def _handle_handler(client, cache, wfile) -> gateway_proxy._ProxyHandler:
+    h = object.__new__(gateway_proxy._ProxyHandler)
     h.client = client
     h.cache = cache
     h.headers = {}
@@ -503,309 +500,6 @@ class TestRetryOn401:
         assert cache.refreshed == 1  # a refresh was attempted
         assert "databricks auth login" in capsys.readouterr().err
         assert b"401" in bytes(out.data)  # the response is still relayed
-
-
-class _ResponseChunks(httpx.SyncByteStream):
-    def __init__(self, data, chunk_size=7):
-        self.data = data
-        self.chunk_size = chunk_size
-
-    def __iter__(self):
-        for offset in range(0, len(self.data), self.chunk_size):
-            yield self.data[offset : offset + self.chunk_size]
-
-
-@pytest.fixture
-def codex_v2_handler():
-    requests = []
-
-    def upstream(request):
-        requests.append(request)
-        return httpx.Response(
-            200,
-            headers={"Content-Type": "application/json"},
-            stream=httpx.ByteStream(b'{"output":[]}'),
-        )
-
-    server, cache, client = gateway_proxy.start_codex_v2_proxy(
-        "https://workspace.invalid",
-        lambda force: "synthetic-workspace-token",
-        session_secret="synthetic-session-secret",
-    )
-    try:
-        # Use the factory's handler and base URL, with all upstream IO captured offline.
-        with httpx.Client(
-            base_url=client.base_url, transport=httpx.MockTransport(upstream)
-        ) as offline_client:
-            out = _Collect()
-            handler = _handle_handler(offline_client, cache, out, server.RequestHandlerClass)
-            yield handler, out, requests
-    finally:
-        cache.stop()
-        server.server_close()
-        client.close()
-
-
-class TestCodexV2Proxy:
-    @pytest.mark.parametrize("credential", [None, "Bearer wrong", "Basic synthetic-session-secret"])
-    def test_rejects_missing_or_invalid_session_credential(self, codex_v2_handler, credential):
-        handler, out, requests = codex_v2_handler
-        handler.path = "/v1/responses"
-        handler.headers = {"Authorization": credential} if credential else {}
-        handler._handle()
-        assert out.data.startswith(b"HTTP/1.0 401 ")
-        assert requests == []
-
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "/api/2.0/clusters/list",
-            "http://off-host.invalid/",
-            "/http://off-host.invalid/",
-            "//off-host.invalid/",
-            "/../../api/2.0/clusters/list",
-            "/v1/../../../api/2.0/clusters/list",
-            "/v1/%2e%2e/%2e%2e/%2e%2e/api/2.0/clusters/list",
-            "/v1/%252e%252e%252f%252e%252e%252f%252e%252e/api/2.0/clusters/list",
-        ],
-    )
-    def test_rejects_destination_overrides_and_traversal(self, codex_v2_handler, path):
-        handler, out, requests = codex_v2_handler
-        handler.path = path
-        handler.headers = {"Authorization": "Bearer synthetic-session-secret"}
-        handler._handle()
-        assert out.data.startswith(b"HTTP/1.0 404 ")
-        assert requests == []
-
-    @pytest.mark.parametrize("credential_header", ["Authorization", "x-api-key"])
-    @pytest.mark.parametrize("path", ["/v1/responses?stream=false", "/v1/responses/compact"])
-    def test_authenticates_and_forwards_only_the_workspace_credential(
-        self, codex_v2_handler, credential_header, path
-    ):
-        handler, out, requests = codex_v2_handler
-        handler.path = path
-        payload = {"model": "gpt-test", "input": []}
-        if "compact" not in path:
-            payload["tools"] = [{"type": "namespace", "name": "collaboration", "tools": []}]
-        body = json.dumps(payload).encode()
-        handler.headers = {
-            "Content-Length": str(len(body)),
-            "Authorization": "Bearer stale",
-            "x-api-key": "stale",
-            gateway_proxy.AI_GATEWAY_TOKEN_HEADER: "Bearer competing",
-        }
-        handler.headers[credential_header] = (
-            "Bearer synthetic-session-secret"
-            if credential_header == "Authorization"
-            else "synthetic-session-secret"
-        )
-        handler.rfile = io.BytesIO(body)
-        handler._handle()
-        assert out.data.startswith(b"HTTP/1.0 200 ")
-        assert len(requests) == 1
-        request = requests[0]
-        assert str(request.url) == f"https://workspace.invalid/ai-gateway/codex{path}"
-        assert request.headers["Authorization"] == "Bearer synthetic-workspace-token"
-        assert "x-api-key" not in request.headers
-        assert gateway_proxy.AI_GATEWAY_TOKEN_HEADER not in request.headers
-        assert all("synthetic-session-secret" not in value for value in request.headers.values())
-        if "tools" in payload:
-            payload["tools"][0]["name"] = "ucode_collaboration"
-        assert json.loads(request.content) == payload
-
-    @pytest.mark.parametrize(
-        "payload",
-        [
-            b"malformed-response-secret",
-            json.dumps(
-                {
-                    "output": [
-                        {
-                            "type": "function_call",
-                            "namespace": "ucode_collaboration",
-                            "name": "spawn_agent",
-                            "arguments": '{"message":"gAAAAABopaque"}',
-                        }
-                    ]
-                }
-            ).encode(),
-            pytest.param(
-                b"x" * (gateway_proxy._CODEX_V2_MAX_BUFFER_BYTES + 1), id="oversized-json"
-            ),
-        ],
-    )
-    def test_invalid_json_response_returns_502_before_sending_headers(self, payload):
-        out = _Collect()
-        handler = _relay_handler(out, gateway_proxy._CodexV2ProxyHandler)
-        handler.path = "/v1/responses"
-        handler._request_body(b'{"tools":[{"type":"namespace","name":"collaboration","tools":[]}]}')
-        response = httpx.Response(
-            200,
-            headers={"Content-Type": "application/json"},
-            stream=httpx.ByteStream(payload),
-        )
-        handler._relay_response(response)
-        response.close()
-        headers, wire = bytes(out.data).split(b"\r\n\r\n", 1)
-        assert headers.startswith(b"HTTP/1.0 502 ")
-        assert b"HTTP/1.0 200 " not in out.data
-        assert payload not in wire
-
-    def test_interrupted_json_response_returns_502(self):
-        class InterruptedResponse(httpx.SyncByteStream):
-            def __iter__(self):
-                yield b'{"output":['
-                raise httpx.ReadError("upstream-secret")
-
-        out = _Collect()
-        handler = _relay_handler(out, gateway_proxy._CodexV2ProxyHandler)
-        handler.path = "/v1/responses"
-        handler._request_body(b'{"tools":[{"type":"namespace","name":"collaboration","tools":[]}]}')
-        response = httpx.Response(
-            200, headers={"Content-Type": "application/json"}, stream=InterruptedResponse()
-        )
-        handler._relay_response(response)
-        response.close()
-        assert out.data.startswith(b"HTTP/1.0 502 ")
-        assert b"upstream-secret" not in out.data
-
-    @pytest.mark.parametrize(
-        "frame",
-        [
-            pytest.param(b'data: {"type":"response.output_item.done"}', id="eof-mid-event"),
-            pytest.param(
-                b"data: " + b"x" * gateway_proxy._CODEX_V2_MAX_BUFFER_BYTES + b"\n\n",
-                id="oversized-event",
-            ),
-            pytest.param(
-                b"event: response.output_item.done\ndata: malformed-secret\n\ndata: [DONE]\n\n",
-                id="malformed-response",
-            ),
-            pytest.param(
-                b"event: response.output_item.done\ndata: []\n\ndata: [DONE]\n\n",
-                id="non-object-response",
-            ),
-        ],
-    )
-    def test_unsafe_sse_is_not_forwarded(self, frame):
-        heartbeat = b": heartbeat\n\n"
-        out = _Collect()
-        handler = _relay_handler(out, gateway_proxy._CodexV2ProxyHandler)
-        handler.path = "/v1/responses"
-        handler._request_body(b'{"tools":[{"type":"namespace","name":"collaboration","tools":[]}]}')
-        response = httpx.Response(
-            200,
-            headers={"Content-Type": "text/event-stream"},
-            stream=httpx.ByteStream(heartbeat + frame),
-        )
-        handler._relay_response(response)
-        response.close()
-        headers, wire = bytes(out.data).split(b"\r\n\r\n", 1)
-        assert headers.startswith(b"HTTP/1.0 200 ")
-        assert wire == heartbeat
-
-    def test_reserved_request_namespace_returns_400_without_forwarding(self, codex_v2_handler):
-        body = b'{"tools":[{"type":"namespace","name":"ucode_collaboration","description":"request-secret"}]}'
-        handler, out, requests = codex_v2_handler
-        handler.path = "/v1/responses"
-        handler.headers = {
-            "Content-Length": str(len(body)),
-            "Authorization": "Bearer synthetic-session-secret",
-        }
-        handler.rfile = io.BytesIO(body)
-        handler._handle()
-        assert out.data.startswith(b"HTTP/1.0 400 ")
-        assert b"request-secret" not in out.data
-        assert requests == []
-
-    @pytest.mark.parametrize("streaming", [False, True])
-    @pytest.mark.parametrize("compressed,chunk_size", [(False, 1), (False, 7), (True, 7)])
-    def test_decodes_responses_and_restores_native_calls(self, streaming, compressed, chunk_size):
-        item = {
-            "type": "function_call",
-            "name": "spawn_agent",
-            "namespace": "ucode_collaboration",
-            "arguments": '{"message":"Read the file.\\nPreserve punctuation: !?;"}',
-        }
-        out = _Collect()
-        handler = _relay_handler(out, gateway_proxy._CodexV2ProxyHandler)
-        handler.path = "/v1/responses"
-        body = b'{"tools":[{"type":"namespace","name":"collaboration","tools":[]}]}'
-        prepared = json.loads(handler._request_body(body))
-        assert prepared["tools"][0]["name"] == "ucode_collaboration"
-
-        payload = json.dumps({"output": [item]}).encode()
-        if streaming:
-            event = {"type": "response.output_item.done", "item": item}
-            data = b"\r\n".join(
-                b"data: " + line for line in json.dumps(event, indent=2).encode().splitlines()
-            )
-            payload = b": heartbeat\r\n\r\nid: evt-1\r\n" + data + b"\r\n\r\ndata: [DONE]\n\n"
-        response = httpx.Response(
-            200,
-            headers={
-                "Content-Type": "text/event-stream" if streaming else "application/json",
-                **({"Content-Encoding": "gzip"} if compressed else {}),
-            },
-            stream=_ResponseChunks(gzip.compress(payload) if compressed else payload, chunk_size),
-        )
-        handler._relay_response(response)
-        response.close()
-        headers, wire = bytes(out.data).split(b"\r\n\r\n", 1)
-        assert b"content-encoding" not in headers.lower()
-        assert b"content-length" not in headers.lower()
-        if streaming:
-            assert b": heartbeat\r\n\r\nid: evt-1\r\n" in wire
-            assert wire.endswith(b"data: [DONE]\n\n")
-            data = next(line[6:] for line in wire.splitlines() if line.startswith(b"data: "))
-            rewritten = json.loads(data)["item"]
-        else:
-            rewritten = json.loads(wire)["output"][0]
-        assert rewritten == {
-            **item,
-            "namespace": "collaboration",
-            "encrypted_function_args": [],
-        }
-
-    def test_compaction_preserves_retained_calls_and_results(self):
-        history = [
-            {
-                "type": "function_call",
-                "name": "spawn_agent",
-                "namespace": "collaboration",
-                "call_id": "prior",
-                "arguments": '{"message":"Read the file."}',
-            },
-            {
-                "type": "function_call_output",
-                "namespace": "collaboration",
-                "call_id": "prior",
-                "output": "File read successfully.",
-            },
-        ]
-        body = json.dumps({"model": "test-model", "input": history}).encode()
-        out = _Collect()
-        handler = _relay_handler(out, gateway_proxy._CodexV2ProxyHandler)
-        handler.path = "/v1/responses/compact"
-        assert handler._request_body(body) == body
-
-        payload = json.dumps(
-            {
-                "object": "response.compaction",
-                "output": [*history, {"type": "compaction", "encrypted_content": "opaque-summary"}],
-            }
-        ).encode()
-        compressed = gzip.compress(payload)
-        response = httpx.Response(
-            200,
-            headers={"Content-Type": "application/json", "Content-Encoding": "gzip"},
-            stream=_ResponseChunks(compressed),
-        )
-        handler._relay_response(response)
-        response.close()
-        headers, wire = bytes(out.data).split(b"\r\n\r\n", 1)
-        assert b"content-encoding: gzip" in headers.lower()
-        assert wire == compressed
 
 
 class TestStartProxyPortFallback:

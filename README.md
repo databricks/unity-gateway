@@ -224,9 +224,11 @@ ug mcp add --agents cursor --names system.ai.github --workspace https://first.da
 ug mcp add --agents codex --names system.ai.github --profile DEFAULT
 ```
 
-With `--agents`, agents that aren't set up yet are set up first. Pass `--workspace`
-or `--profile` to pick the workspace instead of the picker; it becomes the current
-workspace.
+With `--agents`, installed agents can be registered for MCP without configuring their
+models. `--workspace` or `--profile` selects the workspace on a fresh setup. If another
+workspace is already active, run `ug configure --workspace <url>` to switch first;
+the switch replaces the agent's active MCP registrations with those saved for the
+selected workspace. Switching back restores the earlier workspace's saved servers.
 
 Remove configured servers:
 
@@ -415,6 +417,13 @@ An explicit `--model`, from `ug claude --model` or a launcher such as Omnigent, 
 subagent routing when first-prompt routing is off; the main session stays on that model.
 With first-prompt routing on, an explicit model still skips routing.
 
+Codex smart routing requires Codex 0.164.0 or newer. UG enables readable native v2
+collaboration and matching root/child guidance for that launch only; it does not
+write these settings to your config. Requests use the configured Databricks provider
+directly. Subagent-only routing launches the native TUI directly; first-prompt routing
+uses the existing app-server interposer. Older or unrecognized Codex versions must be
+upgraded or launched with `--disable-smart-routing`.
+
 ### Smart Router Orchestrator
 
 Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration.
@@ -485,6 +494,9 @@ Once opted in, orchestration follows the existing smart-routing launch eligibili
 and session controls. Turning Smart Router off through its skill stops new automatic delegation;
 turning it on restores orchestration only in opted-in sessions. Explicit user
 requests for subagents still use normal harness behavior while routing is off.
+If Codex cannot read the private session controls, the skill requests native
+approval for the exact toggle command. Declining leaves routing unchanged;
+the directory permissions and sandbox configuration are preserved.
 Stored skill files do not activate orchestration without an opted-in configuration,
 or in non-routed sessions. Existing Isaac pilot gating
 and UG launch exclusions still apply.
@@ -497,11 +509,6 @@ UG supplies its own hooks; Codex combines them with existing hooks and applies
 project trust. Smart routing selects subagent models; separate role-model
 preferences are ignored and their files are left untouched. See the bundled
 [Smart Router Orchestrator documentation](skills/smart-router-orchestrator/README.md) for details.
-
-Codex v2 routing uses a temporary local transport to keep assignments readable
-while preserving native child execution and encrypted session history. Both routing
-modes use the app-server; subagent-only mode preserves the parent model. The transport
-supports managed settings, uses Responses HTTP/SSE, and rejects new opaque assignments.
 
 ## Managed Files
 

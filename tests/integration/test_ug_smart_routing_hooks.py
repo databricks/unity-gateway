@@ -230,12 +230,13 @@ def _toggle_with_skill(
     tui.submit(invocation)
     approval_sent = False
     flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
-    command = f'"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex {flag}'
+    python = (
+        '& "$env:UCODE_SMART_ROUTER_PYTHON"' if os.name == "nt" else '"$UCODE_SMART_ROUTER_PYTHON"'
+    )
+    command = f"{python} -m ucode.cli codex {flag}"
 
     def toggled(screen):
         nonlocal approval_sent
-        if os.name == "nt" and tui.approve_windows_command(screen):
-            return False
         # Fresh remote Codex sessions can be read-only. Approve only this
         # requested toggle through the native dialog, keeping the sandbox intact.
         if not approval_sent and _codex_command_approval_pending(screen, command):
@@ -747,8 +748,8 @@ def test_smart_router_routes_codex_subagent_at_launch(
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
     Smart Router Orchestrator. The uniquely tagged calculation completes in a native child
     session, shows the subagent-routing banner (including [orchestrator on] when orchestration
-    is enabled), and produces one live gateway decision correlated with that child. The session
-    transport starts without making a first-prompt routing decision.
+    is enabled), and produces one live gateway decision correlated with that child. No
+    first-prompt interposer starts.
     """
     session = live_session
     _select_smart_router_version(
@@ -770,7 +771,7 @@ def test_smart_router_routes_codex_subagent_at_launch(
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
-    assert "[ROUTE]" not in session.routing_log("codex")
+    session.assert_not_routed()
 
 
 @pytest.mark.live
@@ -788,8 +789,8 @@ def test_smart_router_skill_turns_codex_subagent_routing_off(
     Smart Router Orchestrator. The invocation records the CLI confirmation in the native
     transcript and changes the saved routing controls, even with collapsed terminal output.
     The uniquely tagged calculation completes in a native child session, shows no
-    subagent-routing banner, and produces no live gateway decision. The session transport
-    starts without making a first-prompt routing decision.
+    subagent-routing banner, and produces no live gateway decision. No first-prompt
+    interposer starts.
     """
     session = live_session
     _select_smart_router_version(
@@ -814,7 +815,7 @@ def test_smart_router_skill_turns_codex_subagent_routing_off(
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
-    assert "[ROUTE]" not in session.routing_log("codex")
+    session.assert_not_routed()
 
 
 @pytest.mark.live
@@ -835,8 +836,7 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
     terminal output. Each uniquely tagged calculation completes in a native child session. The
     first and third show the subagent-routing banner (including [orchestrator on] when
     orchestration is enabled) and produce one live gateway decision correlated with that child;
-    the second shows no banner and produces no decision. The session transport starts without
-    making a first-prompt routing decision.
+    the second shows no banner and produces no decision. No first-prompt interposer starts.
     """
     session = live_session
     _select_smart_router_version(
@@ -867,4 +867,4 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
-    assert "[ROUTE]" not in session.routing_log("codex")
+    session.assert_not_routed()

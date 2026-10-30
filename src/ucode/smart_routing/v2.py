@@ -3,13 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import secrets
 import shutil
 import signal
 import socket
 import subprocess
 import sys
-import threading
 import time
 import urllib.request
 from collections.abc import Callable, Mapping, MutableMapping
@@ -47,6 +45,7 @@ from ucode.databricks import (
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
 )
+from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
@@ -75,13 +74,20 @@ LEGACY_STATE_KEY = "smart_routing_enabled"
 
 CODEX_INTERPOSER_LOG = APP_DIR / "codex-v2-interposer.log"
 
+# Native v2's default role hints assume direct tools even when code mode exposes them.
+CODEX_V2_COLLABORATION_GUIDANCE = """Use collaboration tools through the interface in their tool definitions. When listed in the code executor's `tools` namespace, invoke their exact declared names through `functions.exec`. When exposed as direct tools, call them directly.
+
+Use `spawn_agent` to create an agent, `followup_task` to start another turn on an existing agent, and `send_message` to send a message without starting a turn. The tool descriptions define valid task paths, history inheritance, model overrides, and concurrency limits. Full-history forks inherit the parent's model and effort. Set model or effort overrides only when the user, AGENTS.md, or skill instructions request them, and use `fork_turns="none"` with overrides.
+
+All agents share the current working directory and filesystem; coordinate edits. Messages identify their sender and recipient. Child final answers are delivered to their parent. Use `wait_agent` when a result is needed and no independent work remains; prefer longer waits to repeated polling.
+"""
+
 CLAUDE_TARGET_MODEL = "system.ai.claude-sonnet-4-6[1m]"  # TODO(lilly): replace with smart router.
 CLAUDE_PTY_LOG = APP_DIR / "claude-v2-pty.log"
 
 APP_SERVER_READY_TIMEOUT_SECONDS = 30
 PROCESS_SHUTDOWN_TIMEOUT_SECONDS = 5
 OAUTH_TOKEN_ENV_VAR = "OAUTH_TOKEN"
-CODEX_PROXY_TOKEN_ENV_VAR = "UCODE_CODEX_PROXY_TOKEN"
 HEALTH_REQUEST_TIMEOUT_SECONDS = 1
 HEALTH_POLL_INTERVAL_SECONDS = 0.25
 CLAUDE_ROUTE_SELECTION_TIMEOUT_S = 20.0
@@ -813,8 +819,6 @@ def launch_codex(
     start_model: str | None,
     render_overlay: Callable[..., dict],
 ) -> NoReturn:
-    from ucode import gateway_proxy
-
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -847,6 +851,15 @@ def launch_codex(
         overlay["model_catalog_json"] = str(catalog_path)
     overlay["hooks"] = _v2_hooks(state, available_models)
     overlay["features.hooks"] = True
+    overlay["features.multi_agent_v2.non_code_mode_only"] = False
+    overlay["features.multi_agent_v2.root_agent_usage_hint_text"] = (
+        "You are /root, the primary agent coordinating the user's task.\n\n"
+        + CODEX_V2_COLLABORATION_GUIDANCE
+    )
+    overlay["features.multi_agent_v2.subagent_usage_hint_text"] = (
+        "You are a child agent completing the task assigned by your parent. "
+        "Your assigned task path identifies you.\n\n" + CODEX_V2_COLLABORATION_GUIDANCE
+    )
     session_env_path = _prepare_smart_router_session("codex")
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
@@ -854,64 +867,11 @@ def launch_codex(
     overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
         SESSION_PYTHON_ENV_VAR
     ]
-    # Subagent-only routing also needs readable assignments at the native hook.
-    # Keep the transport session-local without changing Codex's on-disk config.
-    session_secret = secrets.token_urlsafe(32)
-    server, cache, client = gateway_proxy.start_codex_v2_proxy(
-        workspace,
-        lambda force: launch_token(state, workspace, force_refresh=force),
-        session_secret=session_secret,
-    )
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    transport_started = False
-    try:
-        server_thread.start()
-        transport_started = True
-        provider = overlay["model_providers"].pop(overlay["model_provider"])
-        # OS-managed Databricks settings outrank CLI overrides. Use a distinct
-        # provider, with a stable name so Codex can list prior sessions for resume.
-        provider_name = "Databricks-ug"
-        overlay["model_provider"] = provider_name
-        overlay["model_providers"][provider_name] = provider
-        provider["base_url"] = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/v1"
-        # Keep the local credential out of config files and process arguments.
-        provider.pop("auth", None)
-        provider["env_key"] = CODEX_PROXY_TOKEN_ENV_VAR
-        # The adapter handles Responses HTTP/SSE, not the optional provider
-        # WebSocket transport. The app-server/TUI WebSocket is independent.
-        provider["supports_websockets"] = False
-        _run_codex_session(
-            state,
-            tool_args,
-            binary=binary,
-            start_model=start_model,
-            overlay=overlay,
-            available_models=available_models,
-            workspace=workspace,
-            env={**os.environ, CODEX_PROXY_TOKEN_ENV_VAR: session_secret},
-        )
-    finally:
-        cache.stop()
-        if transport_started:
-            server.shutdown()
-        server.server_close()
-        client.close()
-        if transport_started:
-            server_thread.join(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
-
-
-def _run_codex_session(
-    state: dict,
-    tool_args: list[str],
-    *,
-    binary: str,
-    start_model: str,
-    overlay: dict,
-    available_models: list[str],
-    workspace: str,
-    env: dict[str, str],
-) -> NoReturn:
     config_args = codex_config_args(overlay)
+    if not first_prompt_routing_enabled(agent=AGENT_CODEX):
+        # Subagent-only routing needs neither the app-server nor the interposer:
+        # the hooks ride in the CLI config, so launch the TUI directly.
+        exec_or_spawn([binary, *config_args, *tool_args])
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
 
@@ -922,7 +882,7 @@ def _run_codex_session(
     # preferences) and layer only ucode's gateway settings at CLI precedence.
     app_server = subprocess_cross_os.popen(
         [binary, "app-server", *config_args, "--listen", app_server_url],
-        env=env,
+        env=os.environ.copy(),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -936,21 +896,25 @@ def _run_codex_session(
         tui_port, stop_interposer = codex_interposer.start_interposer_thread(
             LOOPBACK_HOST,
             app_server_url,
-            model_provider=overlay["model_provider"],
             available_models=available_models,
-            workspace=workspace if first_prompt_routing_enabled(agent=AGENT_CODEX) else None,
+            workspace=workspace,
             token_provider=lambda: launch_token(state, workspace),
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
         )
         tui_url = _loopback_websocket_url(tui_port)
-        # The TUI must recognize the session provider reported by the server.
-        provider_args = codex_config_args(
-            {key: overlay[key] for key in ("model_provider", "model_providers")}
-        )
+        provider_args = []
+        if os.name == "nt":
+            # Windows has no machine-wide Codex config for the remote TUI to inherit.
+            provider_args = codex_config_args(
+                {
+                    key: overlay[key]
+                    for key in ("model_provider", "model_providers")
+                    if key in overlay
+                }
+            )
         tui = subprocess_cross_os.popen(
-            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args],
-            env=env,
+            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
         )
         try:
             returncode = tui.wait()

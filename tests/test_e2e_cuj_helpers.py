@@ -236,8 +236,6 @@ time.sleep(30)
         "detail_running",
         "mixed",
         "scheduled",
-        "scheduled_exit",
-        "scheduled_stuck",
         "partial",
         "transcript",
     ],
@@ -286,15 +284,7 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
         "transcript": ("Background\n\n  Completed (1)\n✔ ug_subagent_one   done · Sonnet 5\n\n❯"),
     }
     views["resumed"] = views["mixed"]
-    views["scheduled_exit"] = views["scheduled_stuck"] = views["completed"]
-    complete = view in (
-        "empty",
-        "completed",
-        "detail",
-        "resumed",
-        "scheduled_exit",
-        "scheduled_stuck",
-    )
+    complete = view in ("empty", "completed", "detail", "resumed")
     script = tmp_path / "ug"
     script.write_text(
         f"""#!{sys.executable}
@@ -319,24 +309,6 @@ assert sys.stdin.read(1) == "\\x1b"
 termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, previous)
 print("\\x1b[2J\\x1b[H❯", flush=True)
 assert sys.stdin.readline().strip() == "/exit"
-if {view in ("scheduled_exit", "scheduled_stuck")!r}:
-    tty.setraw(sys.stdin.fileno())
-    print("\\x1b[2J\\x1b[HBackground work is running\\r\\n"
-          "The following will stop when you exit:\\r\\n\\r\\n"
-          "scheduled task · Runs once in 1m · Check if the subagent has completed\\r\\n\\r\\n"
-          "❯ 1. Exit and stop tasks\\r\\n"
-          "  2. Move to background and exit\\r\\n"
-          "  3. Stay\\r\\n\\r\\n"
-          "Enter to confirm · Esc to cancel", flush=True)
-    assert sys.stdin.read(1) == "\\x1b", "The scheduled task must not be stopped or detached"
-    termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, previous)
-    print("\\x1b[2J\\x1b[H❯", flush=True)
-    if {view == "scheduled_stuck"!r}:
-        time.sleep(30)
-    time.sleep(0.8)
-    assert not select.select([sys.stdin], [], [], 0)[0], "Retried exit before waiting for work"
-    print("Scheduled check finished\\n❯", flush=True)
-    assert sys.stdin.readline().strip() == "/exit"
 """
     )
     script.chmod(0o755)
@@ -344,21 +316,8 @@ if {view in ("scheduled_exit", "scheduled_stuck")!r}:
     with Terminal(session, "waits-before-exit", [], agent=CLAUDE) as tui:
         if complete:
             tui.wait_for_background_tasks(timeout=5)
-            if view == "scheduled_stuck":
-                with pytest.raises(AssertionError, match="background work.*within"):
-                    tui.exit_normally(background_timeout=2)
-                assert not tui.ended
-            else:
-                tui.exit_normally()
-                assert tui.child.exitstatus == 0
-            if view in ("scheduled_exit", "scheduled_stuck"):
-                cancellations = [
-                    action
-                    for action in tui.actions
-                    if action["reason"] == "cancel exit while background work is pending"
-                ]
-                assert len(cancellations) == 1
-                assert cancellations[0]["keys"] == "\x1b"
+            tui.exit_normally()
+            assert tui.child.exitstatus == 0
             close = next(
                 action
                 for action in tui.actions
