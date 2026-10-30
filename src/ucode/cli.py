@@ -4732,6 +4732,7 @@ def configure(
         set_config_scope(scope)
         claude_agent.request_explicit_configure()
         request_explicit_managed_writes()
+        codex_agent.request_explicit_configure()
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
