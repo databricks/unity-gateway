@@ -7,7 +7,9 @@ import json
 import os
 import shutil
 import subprocess
-from collections.abc import Iterator
+import threading
+from collections.abc import Callable, Iterator
+from concurrent.futures import Future
 from contextlib import contextmanager, redirect_stdout
 from enum import StrEnum
 from importlib import metadata
@@ -528,6 +530,24 @@ def _find_profile_name(workspace: str, workspace_id: str | None) -> str | None:
     return find_profile_name_for_host(workspace)
 
 
+def _start_in_background[T](fn: Callable[..., T], *args: object) -> Future[T]:
+    """Run ``fn(*args)`` on a daemon thread; the returned future carries its result or exception.
+
+    Not a ``ThreadPoolExecutor`` worker, which interpreter exit joins: a caller that raises before
+    reading the result must exit without waiting out the abandoned call's network retries.
+    """
+    future: Future[T] = Future()
+
+    def run() -> None:
+        try:
+            future.set_result(fn(*args))
+        except BaseException as exc:
+            future.set_exception(exc)
+
+    threading.Thread(target=run, daemon=True).start()
+    return future
+
+
 def configure_shared_state(
     workspace: str,
     profile: str | None = None,
@@ -686,6 +706,13 @@ def configure_shared_state(
     with spinner("Verifying Unity AI Gateway..."):
         if not cli_custom_oauth:
             token = get_databricks_token(workspace, profile)
+        # The listing is independent of the probe, so overlap the two round trips. The probe still
+        # gates the launch; its failure abandons the listing rather than waiting for it.
+        model_services_discovery = (
+            None
+            if skip_model_discovery
+            else _start_in_background(discover_model_services, workspace, token)
+        )
         model_service_probe = probe_unity_gateway_capabilities(workspace, token)
     if model_service_probe.resource_available:
         print_success("Unity Gateway connected")
@@ -745,10 +772,9 @@ def configure_shared_state(
         # back empty (workspace without UC model-services, or the listing
         # failed), fall back to the per-family AI Gateway listing for that
         # family only.
+        assert model_services_discovery is not None
         with spinner("Fetching available models..."):
-            ms_claude, ms_codex, ms_gemini, ms_oss, ms_reason = discover_model_services(
-                workspace, token
-            )
+            ms_claude, ms_codex, ms_gemini, ms_oss, ms_reason = model_services_discovery.result()
             if want_claude:
                 claude_models, claude_reason = ms_claude, ms_reason
                 if not claude_models:

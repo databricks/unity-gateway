@@ -304,6 +304,12 @@ attempt and fresh tokens on async proxy retries. This suite
 does not assert live token-fetch counts, stale-profile recovery, or launch-time
 savings; credential/profile routing is unchanged.
 
+Overlapping the model-service listing with the gateway probe is covered only by
+component tests in `../test_cli.py`: overlap, probe failure without waiting, listing
+errors, the `skip_model_discovery` and `skip_preflight` paths, and reuse of the process-local
+probe and listing caches. This suite does not assert live request overlap, probe/listing timing, or
+launch-time savings.
+
 The sudo-session regression checks live in `../test_managed_files.py` and `../test_cli.py`.
 They cover shared-worker invocation counts, shutdown/cancellation, and temporary-file failure
 handling without sudo.
