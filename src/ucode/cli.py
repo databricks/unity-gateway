@@ -80,7 +80,7 @@ from ucode.databricks import (
     ensure_pat_bearer,
     external_bearer_configured,
     find_profile_name_for_host,
-    get_databricks_profiles,
+    find_profile_name_for_workspace,
     get_databricks_token,
     install_databricks_cli,
     is_model_provider_feature_unavailable,
@@ -90,6 +90,7 @@ from ucode.databricks import (
     map_claude_family_models,
     normalize_workspace_url,
     probe_unity_gateway_capabilities,
+    profile_choices,
     resolve_pat_token,
     resolve_provider_launch_model,
     resolve_provider_service,
@@ -185,6 +186,7 @@ from ucode.state import (
     SELF_MANAGED_AGENTS_KEY,
     add_self_managed_agent,
     clear_state,
+    current_workspace_key,
     get_model_location,
     get_provider_service,
     is_self_managed,
@@ -222,6 +224,12 @@ from ucode.ui import (
     status_badge,
 )
 from ucode.usage import usage as usage_report
+from ucode.workspace import (
+    resolve_workspace,
+    split_workspace_key,
+    state_workspace_key,
+    workspace_key,
+)
 
 CustomOAuthConfig = custom_oauth.CustomOAuthConfig
 
@@ -400,8 +408,13 @@ def _prompt_for_configuration(tool: str | None = None) -> tuple[str, str | None]
     else:
         desc = f"Configure {TOOL_SPECS[tool]['display']} to use your Databricks endpoint."
     with spinner("Loading Databricks workspaces and profiles..."):
-        profiles = get_databricks_profiles()
-    return prompt_for_workspace(desc, profiles)
+        entries = list_profile_entries()
+    url, profile = prompt_for_workspace(desc, profile_choices(entries))
+    workspace_id = None
+    if profile:
+        entry = next((p for p in entries if p.get("name") == profile), {})
+        workspace_id = str(entry.get("workspace_id") or "").strip() or None
+    return resolve_workspace(url, workspace_id, explicit_id=False), profile
 
 
 def _custom_oauth_config(
@@ -476,11 +489,7 @@ def _parse_workspace_option(workspace: str) -> list[tuple[str, str | None]]:
             "--workspace takes a single workspace URL, e.g. "
             "`--workspace https://workspace.databricks.com`."
         )
-    try:
-        url = normalize_workspace_url(workspace)
-    except ValueError as exc:
-        raise RuntimeError(str(exc)) from exc
-    return [(url, None)]
+    return [(resolve_workspace(workspace), None)]
 
 
 def _parse_profile_option(profile: str) -> list[tuple[str, str | None]]:
@@ -509,11 +518,14 @@ def _parse_profile_option(profile: str) -> list[tuple[str, str | None]]:
         raise RuntimeError(
             f"Databricks CLI profile '{name}' has no host configured in ~/.databrickscfg."
         )
-    try:
-        workspace = normalize_workspace_url(host)
-    except ValueError as exc:
-        raise RuntimeError(str(exc)) from exc
-    return [(workspace, name)]
+    workspace_id = str(entry.get("workspace_id") or "").strip() or None
+    return [(resolve_workspace(host, workspace_id, explicit_id=False), name)]
+
+
+def _find_profile_name(workspace: str, workspace_id: str | None) -> str | None:
+    if workspace_id:
+        return find_profile_name_for_workspace(workspace, workspace_id)
+    return find_profile_name_for_host(workspace)
 
 
 def configure_shared_state(
@@ -548,10 +560,19 @@ def configure_shared_state(
     the saved model lists are preserved.
     """
     workspace = normalize_workspace_url(workspace)
+    if not split_workspace_key(workspace)[1]:
+        workspace = resolve_workspace(workspace)
+    workspace, workspace_id = split_workspace_key(workspace)
     prior_state = load_state()
     previous_workspace = prior_state.get("workspace")
+    # Re-configures pass the saved bare host; they keep its workspace on a multi-workspace host.
+    if workspace_id is None and previous_workspace == workspace:
+        workspace_id = prior_state.get("workspace_id")
+    key = workspace_key(workspace, workspace_id)
+    previous_key = state_workspace_key(prior_state)
+    purge_kwargs = {"same_host_switch": True} if previous_workspace == workspace else {}
     if use_pat is None:
-        use_pat = bool(prior_state.get("use_pat")) and previous_workspace == workspace
+        use_pat = bool(prior_state.get("use_pat")) and previous_key == key
     if databricks_ai_tools_enabled is None:
         # Opt-in: a True from an opt-out-era configure is a stale default, not a
         # standing opt-in, so it is not carried forward.
@@ -567,15 +588,19 @@ def configure_shared_state(
     # model lists (carried over by load_state, left untouched).
     state = load_state()
     state["workspace"] = workspace
+    if workspace_id:
+        state["workspace_id"] = workspace_id
+    else:
+        state.pop("workspace_id", None)
     # `state` starts from the current workspace's block, so its self-managed list belongs to the
     # source workspace. The opt-in is per workspace: replace it with the destination's own list.
-    dest_self_managed = workspace_self_managed_agents(workspace)
+    dest_self_managed = workspace_self_managed_agents(key)
     if dest_self_managed:
         state[SELF_MANAGED_AGENTS_KEY] = dest_self_managed
     else:
         state.pop(SELF_MANAGED_AGENTS_KEY, None)
-    if previous_workspace != workspace:
-        dest_block = load_full_state().get("workspaces", {}).get(workspace, {})
+    if previous_key != key:
+        dest_block = load_full_state().get("workspaces", {}).get(key, {})
         dest_catalog = dest_block.get(copilot_agent.CATALOG_STATE_KEY)
         if dest_catalog:
             state[copilot_agent.CATALOG_STATE_KEY] = dest_catalog
@@ -600,30 +625,31 @@ def configure_shared_state(
         state.pop("custom_oauth", None)
     elif custom_oauth is not None:
         state["custom_oauth"] = dict(custom_oauth)
-    elif previous_workspace != workspace:
+    elif previous_key != key:
         state.pop("custom_oauth", None)
     state["base_urls"] = build_shared_base_urls(workspace)
 
     cli_custom_oauth = state.get("custom_oauth") if custom_oauth_cli_enabled(custom_oauth) else None
     if cli_custom_oauth:
-        token = ensure_custom_oauth_cli_token(workspace, cli_custom_oauth)
+        token = ensure_custom_oauth_cli_token(workspace, cli_custom_oauth, workspace_id)
 
     if skip_preflight:
         # A prior `ug configure` created the profile; resolve it locally (no
         # login needed) and persist it so launches disambiguate.
         if profile is None:
-            profile = find_profile_name_for_host(workspace)
+            profile = _find_profile_name(workspace, workspace_id)
             if profile:
                 state["profile"] = profile
         save_state(state)
         # Scrub MCP entries ucode wrote for a previous workspace.
-        if previous_workspace and previous_workspace != workspace:
-            purge_cross_workspace_mcp_residue(state, workspace)
+        if previous_key and previous_key != key:
+            purge_cross_workspace_mcp_residue(state, workspace, **purge_kwargs)
         # Diagnostic reasons are transient (attached after save_state so they
         # don't land on disk). No discovery ran, so there is nothing to report.
         state["_discovery_reasons"] = {"claude": None, "gemini": None, "codex": None, "oss": None}
         return state
 
+    login_kwargs = {"workspace_id": workspace_id} if workspace_id else {}
     # ── Preflight (bypassed above under --skip-preflight): validate Databricks
     #    auth + the AI Gateway, then discover the available models. ──
     if cli_custom_oauth:
@@ -646,15 +672,15 @@ def configure_shared_state(
         # empty one as absent, so it never shadows the PAT. Pass the validated
         # token to avoid re-reading ~/.databrickscfg.
         ensure_pat_bearer(profile, pat)
-        ensure_databricks_auth(workspace, profile)
+        ensure_databricks_auth(workspace, profile, **login_kwargs)
     elif force_login and not external_bearer_configured():
-        run_databricks_login(workspace, profile)
+        run_databricks_login(workspace, profile, **login_kwargs)
     else:
-        ensure_databricks_auth(workspace, profile)
+        ensure_databricks_auth(workspace, profile, **login_kwargs)
     # After login the profile exists in ~/.databrickscfg, so a host->profile
     # lookup is reliable even when it returned nothing above.
     if profile is None:
-        profile = find_profile_name_for_host(workspace)
+        profile = _find_profile_name(workspace, workspace_id)
         if profile:
             state["profile"] = profile
     with spinner("Verifying Unity AI Gateway..."):
@@ -778,8 +804,8 @@ def configure_shared_state(
     save_state(state)
     # Scrub MCP entries that ucode wrote for the previous workspace so the new
     # workspace's agent configs aren't stale.
-    if previous_workspace and previous_workspace != workspace:
-        purge_cross_workspace_mcp_residue(state, workspace)
+    if previous_key and previous_key != key:
+        purge_cross_workspace_mcp_residue(state, workspace, **purge_kwargs)
     # Diagnostic reasons are transient — attach after save_state so they don't
     # land on disk but are available to the caller for this run.
     state["_discovery_reasons"] = {
@@ -843,9 +869,8 @@ def _keep_installed_workspace_selected(state: dict) -> str | None:
     Returns that installed workspace, or None when the selection already matches or none exists.
     """
     installed = managed_state_workspace()
-    if not installed or normalize_workspace_url(installed) == normalize_workspace_url(
-        state["workspace"]
-    ):
+    selected = state_workspace_key(state) or state["workspace"]
+    if not installed or normalize_workspace_url(installed) == normalize_workspace_url(selected):
         return None
     set_current_workspace(normalize_workspace_url(installed))
     return installed
@@ -875,16 +900,25 @@ def _launch_workspace_state(workspace: str | None) -> dict:
     Adopts the installed workspace when none is saved, so a fresh user launches it directly.
     """
     state = load_state()
-    saved = state.get("workspace")
+    saved = state_workspace_key(state)
+    requested = resolve_workspace(workspace) if workspace else None
+    if requested and requested == state.get("workspace"):
+        # The bare host of a multi-workspace host keeps its saved workspace.
+        requested = saved
     # The flag wins over the saved selection; either is refused if it isn't the installed one.
-    target = managed_launch_workspace(workspace or saved)
+    target = managed_launch_workspace(requested or saved)
     # An explicit --workspace always saves the selection, as on main.
-    if target and (workspace or not saved or normalize_workspace_url(saved) != target):
+    if target and (requested or not saved or normalize_workspace_url(saved) != target):
         set_current_workspace(target)
         state = load_state()
-        if state.get("workspace") != target:
+        if state_workspace_key(state) != target:
             # A dry run saves nothing, so carry the workspace for this run.
-            state = {**state, "workspace": target}
+            host, workspace_id = split_workspace_key(target)
+            state = {**state, "workspace": host}
+            if workspace_id:
+                state["workspace_id"] = workspace_id
+            else:
+                state.pop("workspace_id", None)
     return state
 
 
@@ -1478,7 +1512,7 @@ def status() -> int:
     # The one enumerator `ug mcp list` uses, keyed by name with each server's agents — so the
     # per-agent counts below can't drift from what `ug mcp list` reports.
     configured_mcp = configured_mcp_servers_by_name(state)
-    cached_managed = load_managed_state(workspace) if workspace else None
+    cached_managed = load_managed_state(state_workspace_key(state)) if workspace else None
     managed, managed_freshness = _live_status_managed_state(state, cached_managed)
     configured_tools = (
         set(state.get("available_tools") or [])
@@ -1920,7 +1954,7 @@ def _configure_agents_for_mcp(
     not_installed = sorted(a for a in scope if a in MCP_ONLY_CLIENTS and a not in installed)
     if not_installed:
         raise RuntimeError(_not_installed_message(not_installed))
-    previous_workspace = load_full_state().get("current_workspace")
+    previous_workspace = current_workspace_key(load_full_state())
     try:
         _bootstrap_agents_for_mcp(scope, installed, workspace_entries)
     except BaseException:
@@ -4022,7 +4056,7 @@ def _launch_managed_default(
     apply_pat_environment(state)
     coding_agent_config_feature_disabled = False
     if dry_run:
-        managed = load_managed_state(current)
+        managed = load_managed_state(state_workspace_key(state))
     else:
         with spinner("Loading..."):
             managed, coding_agent_config_feature_disabled = refresh_managed_config(state)

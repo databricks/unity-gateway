@@ -91,7 +91,11 @@ Its Claude/Codex evidence helpers keep scenario-specific assertions separate fro
 Workspace config/catalog reads use its base class's Databricks SDK client. Configuration
 is read-only and checked for changes at teardown; concurrent readers need no reservation.
 CUJ2 adds three separately collected cases for exact published MPS/MCP configuration, Codex
-inference, and Claude inference. The config equality also accounts for the workspace's fixture
+inference, and Claude inference. Both inference cases ask for a short greeting and require a
+completed parent turn matching the submitted prompt with a nonempty answer, plus the expected
+provider/model and paired HTTP 200. Random IDs correlate requests; answers need not repeat them.
+File, skill, MCP and subagent tasks retain their expected-value checks.
+The config equality also accounts for the workspace's fixture
 skill name as data; skill download and invocation are not covered.
 
 The dedicated smart-routing CUJ in `../e2e_cuj/test_cuj4_smart_routing.py` runs the original
@@ -851,6 +855,9 @@ Default row names the model in the scoped fixture catalog, selected through the 
 `ANTHROPIC_DEFAULT_MODEL` environment variable. Unit tests cover the existing Opus, Sonnet,
 then Haiku preference for catalogs with multiple families. Plain Claude launches replace the
 picker with the gateway catalog (saved family defaults first) but keep Claude's own starting model.
+Repeated UG-owned picker refresh and preservation of unrecorded or edited admin pickers
+have component coverage in `../test_managed_model_lifecycle.py` and `../test_agent_claude.py`;
+these discovery journeys do not validate repeated live `/model` launches.
 Obsolete disable-flag scenarios and duplicate managed variants are
 removed, not skipped; managed discovery and rejection remain covered by Cases
 1–6. Repository scenario numbers run consecutively from 01 to 14, with
