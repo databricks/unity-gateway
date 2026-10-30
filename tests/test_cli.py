@@ -636,13 +636,16 @@ class TestSubcommandRouting:
     @pytest.mark.parametrize(
         ("launch_env", "expected_version"),
         [
-            ({}, smart_routing_config.SUBAGENT_ORCH_V0),
-            ({"ENABLE_SMART_ROUTING_V2": "1"}, smart_routing_config.SUBAGENT_ORCH_V0),
-            ({"ENABLE_SMART_ROUTING_V2": "0"}, smart_routing_config.SUBAGENT_ORCH_V0),
-            ({"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"}, smart_routing_config.SUBAGENT_ORCH_V0),
+            ({}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY),
+            ({"ENABLE_SMART_ROUTING_V2": "1"}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY),
+            ({"ENABLE_SMART_ROUTING_V2": "0"}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY),
+            (
+                {"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"},
+                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+            ),
             (
                 {"SMART_ROUTER_CONFIG_VERSION": "unknown_version"},
-                smart_routing_config.SUBAGENT_ORCH_V0,
+                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
             ),
             *(
                 ({"SMART_ROUTER_CONFIG_VERSION": version}, version)
@@ -664,7 +667,7 @@ class TestSubcommandRouting:
             "claude-only-version",
         ],
     )
-    def test_enable_smart_routing_keeps_a_known_version_or_selects_subagent_orch_v0(
+    def test_enable_smart_routing_keeps_a_known_version_or_selects_claude_only(
         self, monkeypatch, tool, launch_env, expected_version
     ):
         for name, value in launch_env.items():
@@ -865,29 +868,29 @@ class TestSubcommandRouting:
     @pytest.mark.parametrize(
         ("launch_args", "launch_env", "expected_version", "routed_tools"),
         [
-            ([], {}, smart_routing_config.SUBAGENT_ORCH_V0, {"claude", "codex"}),
+            ([], {}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, {"claude", "codex"}),
             (
                 [],
                 {"ENABLE_SMART_ROUTING_V2": "1"},
-                smart_routing_config.SUBAGENT_ORCH_V0,
+                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
                 {"claude", "codex"},
             ),
             (
                 [],
                 {"ENABLE_SMART_ROUTING_V2": "0"},
-                smart_routing_config.SUBAGENT_ORCH_V0,
+                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
                 {"claude", "codex"},
             ),
             (
                 [],
                 {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0"},
-                smart_routing_config.SUBAGENT_ORCH_V0,
+                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
                 {"claude", "codex"},
             ),
             (
                 [],
                 {"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"},
-                smart_routing_config.SUBAGENT_ORCH_V0,
+                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
                 {"claude", "codex"},
             ),
             (
@@ -915,8 +918,8 @@ class TestSubcommandRouting:
             (
                 ["--enable-smart-routing"],
                 {"ENABLE_SMART_ROUTING_V2": "1"},
-                smart_routing_config.SUBAGENT_ORCH_V0,
-                {"claude", "codex"},
+                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+                {"claude"},
             ),
             (["--disable-smart-routing"], {}, None, set()),
         ],
