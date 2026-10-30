@@ -152,6 +152,7 @@ from ucode.mcp import (
     configured_mcp_clients,
     configured_mcp_servers_by_name,
     list_mcp_command,
+    mcp_client_display,
     mcp_clients_for_agents,
     purge_cross_workspace_mcp_residue,
     reconcile_managed_mcp_servers,
@@ -1626,9 +1627,9 @@ def revert() -> int:
     print_kv("Unity Gateway workspace policy", workspace_policy_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     print_kv("VS Code extension", vscode_result)
-    for client, spec in MCP_CLIENTS.items():
+    for client in MCP_CLIENTS:
         print_kv(
-            f"{spec['display']} MCP config",
+            f"{mcp_client_display(client, state)} MCP config",
             "restored" if mcp_results.get(client) else "unchanged",
         )
     if desktop_result == "failed":

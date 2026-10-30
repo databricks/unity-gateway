@@ -973,6 +973,24 @@ class TestCopilotUserMcpConfig:
         path.write_text('{\n  // mine\n  "mcpServers": {"svc": {}}\n}\n', encoding="utf-8")
         assert copilot.user_mcp_server_names() == set()
 
+    def test_removing_the_last_server_deletes_a_config_with_nothing_else(self):
+        path = copilot.copilot_mcp_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpServers": {"svc": self.ENTRY}}), encoding="utf-8")
+
+        assert copilot.write_user_mcp_servers({}, {"svc"}) == {"svc"}
+
+        assert not path.exists()
+
+    def test_removing_the_last_server_keeps_a_config_with_other_keys(self):
+        path = copilot.copilot_mcp_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpServers": {"svc": self.ENTRY}, "x": 1}), encoding="utf-8")
+
+        copilot.write_user_mcp_servers({}, {"svc"})
+
+        assert json.loads(path.read_text(encoding="utf-8")) == {"mcpServers": {}, "x": 1}
+
     def test_failed_cli_add_keeps_the_legacy_side_file(self, monkeypatch):
         self._stub_cli(monkeypatch, fail_add=True)
         path = copilot.copilot_mcp_config_path()

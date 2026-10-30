@@ -185,6 +185,21 @@ class TestVscodeMcpClient:
 
         assert mcp.query_live_mcp_status("copilot") == {"svc": mcp.LIVE_ENABLED}
 
+    @pytest.mark.parametrize(
+        ("vscode", "cli", "label"),
+        [
+            (True, None, "GitHub Copilot in VS Code"),
+            (True, "/usr/bin/copilot", "GitHub Copilot CLI"),
+            (False, None, "GitHub Copilot CLI"),
+        ],
+    )
+    def test_copilot_is_labeled_vscode_only_for_a_vscode_setup_without_the_cli(
+        self, monkeypatch, vscode, cli, label
+    ):
+        monkeypatch.setattr(mcp.shutil, "which", lambda binary: cli)
+        state = {mcp.VSCODE_CONFIGURED_KEY: True} if vscode else {}
+        assert mcp.mcp_client_display("copilot", state) == label
+
 
 class TestKiloMcpClient:
     def test_kilo_registered_in_mcp_clients(self):
