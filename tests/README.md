@@ -659,7 +659,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 
 | Test | User action | Expected evidence |
 | --- | --- | --- |
-| `test_cuj_configuration`, `test_cuj_codex_inference`, `test_cuj_claude_inference` in `test_cuj2_mps_mcp.py` | Read the permanently preconfigured two-agent MPS/MCP config; run separate configure, Codex TUI, and Claude TUI cases | Configuration verifies both native MPS APIs, generated settings, and sandbox inclusion with web_search excluded; each TUI case records its exact MPS target header and model, paired HTTP 200 response, and final marker. Live sandbox execution is deferred because MAS cannot downscope the CI service principal. No workspace config CRUD is performed |
+| `test_cuj_configuration`, `test_cuj_codex_inference`, `test_cuj_claude_inference` in `test_cuj2_mps_mcp.py` | Read the permanently preconfigured two-agent MPS/MCP config; run separate configure, Codex TUI, and Claude TUI cases | Configuration verifies both native MPS APIs, generated settings, and sandbox inclusion with web_search excluded; each TUI case records its exact MPS target header and model, paired HTTP 200 response, and a completed parent turn with a nonempty greeting answer. Request IDs correlate traffic without requiring the model to repeat them. Live sandbox execution is deferred because MAS cannot downscope the CI service principal. No workspace config CRUD is performed |
 | `test_ug_configure_claude_databricks` | Configure Databricks Hosted; execute the generated auth helper; launch plain `ug claude`, read a file, and open `/model` | Generated helper invokes `ug` with clean token stdout; assistant returns an unpredictable file value; native discovery caches `system.ai` models and the picker shows a discovered model without an opt-in flag; normal exit; reopen with working keyboard input |
 | `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task; normal exit |
 | `test_ug_configure_claude_bedrock_mps` | Select the restricted Bedrock MPS in the real configure picker; launch Claude without an explicit model | Saved provider in status; Sonnet 4.6 is selected from the Sonnet + Haiku allow-list and completes a TUI file task; normal exit |
@@ -756,7 +756,13 @@ one configuration case and separate Codex and Claude TUI task cases. The workspa
 preconfigured for CUJ2 and is read-only; every case validates it, and the fixture compares
 it again during teardown. The TUI cases forward agent requests through the shared per-test
 loopback recorder to the real workspace and assert the provider-service header, model,
-paired HTTP 200 response, and final answer. The configuration case verifies sandbox MCP
+paired HTTP 200 response, and a nonempty final answer in the completed parent turn matching
+the submitted greeting prompt. Request IDs correlate recorded traffic without constraining
+answer text. Offline evidence checks reject empty, incomplete, unrelated and child-session
+answers while retaining hidden-value requirements for file tasks.
+The existing direct Anthropic non-relay MPS e2e check also requires a complete Messages
+response: assistant role/type, the pinned model, `end_turn`, and nonempty text.
+The configuration case verifies sandbox MCP
 selection and generated client listings; live sandbox execution remains deferred because
 MAS cannot downscope the CI service principal. CUJ1 and CUJ2 also initialize Claude Desktop's
 Linux profile path and verify that its profile uses, respectively, the published Databricks-hosted
