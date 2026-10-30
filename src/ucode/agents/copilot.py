@@ -29,6 +29,8 @@ import json
 import os
 import re
 import secrets
+import shutil
+import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
@@ -41,8 +43,8 @@ from typing import Any, Protocol
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
-    apply_json_mcp_diff,
     backup_existing_file,
+    is_dry_run,
     parse_dotenv,
     read_json_safe,
     write_dotenv,
@@ -81,16 +83,19 @@ from ucode.os_compatibility.file_lock_cross_os import (
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
-from ucode.ui import print_warning
+from ucode.ui import print_note, print_warning
 
 from .args import LaunchOptions, explicit_model_arg_value
 from .request_tags import request_tags_header_value
 
 COPILOT_CONFIG_DIR = Path.home() / ".copilot"
 COPILOT_ENV_PATH = COPILOT_CONFIG_DIR / "ucode.env"
-COPILOT_MCP_CONFIG_PATH = COPILOT_CONFIG_DIR / "ucode-mcp-config.json"
+COPILOT_MCP_CONFIG_PATH = COPILOT_CONFIG_DIR / "mcp-config.json"
 COPILOT_BACKUP_PATH = APP_DIR / "copilot-ucode-env.backup"
-COPILOT_MCP_BACKUP_PATH = APP_DIR / "copilot-ucode-mcp-config.backup.json"
+# Older ug versions kept their servers in a side file loaded with `--additional-mcp-config`.
+LEGACY_MCP_CONFIG_PATH = COPILOT_CONFIG_DIR / "ucode-mcp-config.json"
+LEGACY_MCP_BACKUP_PATH = APP_DIR / "copilot-ucode-mcp-config.backup.json"
+MCP_CONFIG_ORIGINAL_PATH = APP_DIR / "copilot-mcp-config.original.json"
 COPILOT_PROXY_LOG_PATH = APP_DIR / "logs" / "copilot-proxy.log"
 _REGISTRY_PREFIX = "ug-providers-"
 _REGISTRY_LOCK_NAME = "ug-providers.lock"
@@ -800,35 +805,155 @@ def build_mcp_server_entry(argv: list[str]) -> dict:
     }
 
 
-def write_mcp_server_config(name: str, argv: list[str]) -> bool:
-    backup_existing_file(COPILOT_MCP_CONFIG_PATH, COPILOT_MCP_BACKUP_PATH)
-    existing = read_json_safe(COPILOT_MCP_CONFIG_PATH)
-    mcp_servers = existing.get("mcpServers")
-    if not isinstance(mcp_servers, dict):
-        mcp_servers = {}
-    removed = name in mcp_servers
-    mcp_servers[name] = build_mcp_server_entry(argv)
-    existing["mcpServers"] = mcp_servers
-    write_json_file(COPILOT_MCP_CONFIG_PATH, existing)
-    return removed
+def copilot_mcp_config_path() -> Path:
+    """The user config Copilot reads ``mcpServers`` from (and ``copilot mcp add`` writes)."""
+    copilot_home = os.environ.get("COPILOT_HOME")
+    return Path(copilot_home) / "mcp-config.json" if copilot_home else COPILOT_MCP_CONFIG_PATH
 
 
-def remove_mcp_server_config(name: str) -> bool:
-    existing = read_json_safe(COPILOT_MCP_CONFIG_PATH)
-    mcp_servers = existing.get("mcpServers")
-    if not isinstance(mcp_servers, dict) or name not in mcp_servers:
+def _read_mcp_config_for_rewrite(path: Path) -> dict | None:
+    """``path`` parsed for a rewrite: ``{}`` when absent, ``None`` when it isn't a JSON object, so
+    a caller never overwrites it. Copilot also accepts JSON with comments, which lands here."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def user_mcp_server_names() -> set[str]:
+    """The servers in Copilot's user config, read without the Copilot CLI."""
+    servers = (_read_mcp_config_for_rewrite(copilot_mcp_config_path()) or {}).get("mcpServers")
+    return set(servers) if isinstance(servers, dict) else set()
+
+
+def remove_legacy_mcp_config() -> bool:
+    """Delete the legacy side file and its backup (everything in them is ug's)."""
+    existed = LEGACY_MCP_CONFIG_PATH.exists() or LEGACY_MCP_BACKUP_PATH.exists()
+    if is_dry_run():
+        return existed
+    for path in (LEGACY_MCP_CONFIG_PATH, LEGACY_MCP_BACKUP_PATH):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise RuntimeError(f"Failed to remove {path}") from exc
+    return existed
+
+
+def _read_legacy_mcp_servers() -> dict[str, dict]:
+    """The servers in the legacy side file. Every entry there was written by ug, so it moves into
+    the user config as-is."""
+    servers = read_json_safe(LEGACY_MCP_CONFIG_PATH).get("mcpServers")
+    if not isinstance(servers, dict):
+        return {}
+    return {name: entry for name, entry in servers.items() if isinstance(entry, dict)}
+
+
+def _remove_mcp_server_via_cli(name: str) -> bool:
+    try:
+        result = subprocess_cross_os.run(
+            [SPEC["binary"], "mcp", "remove", name],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Timed out removing MCP server '{name}' via copilot CLI.") from exc
+    if "not found" in f"{result.stderr or ''}\n{result.stdout or ''}".lower():
         return False
-    mcp_servers.pop(name)
-    existing["mcpServers"] = mcp_servers
-    write_json_file(COPILOT_MCP_CONFIG_PATH, existing)
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to remove MCP server '{name}' via copilot CLI.")
     return True
 
 
+def _add_mcp_server_via_cli(name: str, entry: dict) -> None:
+    # The CLI refuses an existing name, so a replace removes it first.
+    _remove_mcp_server_via_cli(name)
+    argv = [entry["command"], *entry.get("args", [])]
+    try:
+        subprocess_cross_os.run(
+            [SPEC["binary"], "mcp", "add", name, "--", *argv],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"Failed to add MCP server '{name}' via copilot CLI.") from exc
+
+
+def _apply_mcp_diff(add: dict[str, dict], remove: set[str]) -> set[str]:
+    path = copilot_mcp_config_path()
+    config = _read_mcp_config_for_rewrite(path)
+    legacy = _read_legacy_mcp_servers()
+    upserts = {name: entry for name, entry in legacy.items() if name not in remove} | add
+    if config is None:
+        if not shutil.which(SPEC["binary"]):
+            raise RuntimeError(
+                f"{path} isn't plain JSON (it may have comments), and ug edits such a file only "
+                "through the Copilot CLI. Remove the comments, then try again; VS Code's local "
+                "agent also skips the file while it has them."
+            )
+        # Defer to the copilot CLI, which reads the file the way Copilot does, for exactly the
+        # changed entries. It saves the file as plain JSON, dropping its comments, so the
+        # original is kept once for the developer to recover them.
+        first_cli_edit = (upserts or remove) and not MCP_CONFIG_ORIGINAL_PATH.exists()
+        if first_cli_edit and backup_existing_file(path, MCP_CONFIG_ORIGINAL_PATH):
+            print_note(
+                f"The Copilot CLI saves {path} without its comments; the original is at "
+                f"{MCP_CONFIG_ORIGINAL_PATH}."
+            )
+        removed = {name for name in remove if _remove_mcp_server_via_cli(name) or name in legacy}
+        for name, entry in upserts.items():
+            _add_mcp_server_via_cli(name, entry)
+        remove_legacy_mcp_config()
+        return removed
+
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = {}
+    removed = {name for name in remove if name in servers or name in legacy}
+    if upserts or removed:
+        for name in remove:
+            servers.pop(name, None)
+        servers.update(upserts)
+        config["mcpServers"] = servers
+        if config == {"mcpServers": {}}:
+            # Copilot reads a missing file the same way, so don't leave an empty one behind.
+            if not is_dry_run():
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as exc:
+                    raise RuntimeError(f"Failed to remove {path}") from exc
+        else:
+            write_json_file(path, config)
+    remove_legacy_mcp_config()
+    return removed
+
+
+def migrate_legacy_mcp_config() -> None:
+    """Move the servers in the legacy side file into the user config, once."""
+    if LEGACY_MCP_CONFIG_PATH.exists() or LEGACY_MCP_BACKUP_PATH.exists():
+        _apply_mcp_diff({}, set())
+
+
+def write_mcp_server_config(name: str, argv: list[str]) -> bool:
+    """Add (or replace) a stdio (`ug mcp-proxy`) MCP server in Copilot's user config. Returns
+    True when an entry of that name was replaced."""
+    return bool(_apply_mcp_diff({name: build_mcp_server_entry(argv)}, {name}))
+
+
+def remove_mcp_server_config(name: str) -> bool:
+    return bool(_apply_mcp_diff({}, {name}))
+
+
 def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
-    """Apply ``add``/``remove`` to Copilot's `mcpServers` in a single read-modify-write. Returns the names actually removed."""
-    return apply_json_mcp_diff(
-        COPILOT_MCP_CONFIG_PATH, "mcpServers", add, remove, backup_path=COPILOT_MCP_BACKUP_PATH
-    )
+    """Apply ``add``/``remove`` to Copilot's user-config ``mcpServers`` in a single
+    read-modify-write. Returns the names actually removed."""
+    return _apply_mcp_diff(add, remove)
 
 
 def scrub_stored_credentials() -> None:
@@ -951,6 +1076,10 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         managed_list=not (provider_service or model_location),
     )
     scrub_stored_credentials()
+    try:
+        migrate_legacy_mcp_config()
+    except RuntimeError as exc:
+        print_warning(f"ug's MCP servers aren't available in this session: {exc}")
 
     # Only Copilot launches need the proxy (and its `httpx` import).
     from ucode import gateway_proxy
@@ -986,7 +1115,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         with session_registry(config) as registry_path:
             env = build_runtime_env(registry_path, start_model)
             proc = subprocess_cross_os.popen(
-                [SPEC["binary"], *mcp_config_args(), *tool_args], env=env
+                [SPEC["binary"], *MCP_LAUNCH_ARGS, *tool_args], env=env
             )
             returncode = _wait_for_exit(proc)
     finally:
@@ -1000,14 +1129,13 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
 def validate_cmd(binary: str) -> list[str]:
     return [
         binary,
-        *mcp_config_args(),
+        *MCP_LAUNCH_ARGS,
         "--prompt",
         "say hi in 5 words or less",
         "--allow-all-tools",
     ]
 
 
-def mcp_config_args() -> list[str]:
-    if not COPILOT_MCP_CONFIG_PATH.exists():
-        return []
-    return ["--additional-mcp-config", f"@{COPILOT_MCP_CONFIG_PATH}"]
+# Offline mode empties Copilot's allowlist of servers whose `instructions` reach the model, so
+# without this the gateway's servers lose theirs.
+MCP_LAUNCH_ARGS = ("--allow-all-mcp-server-instructions",)

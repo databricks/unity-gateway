@@ -338,6 +338,9 @@ model-discovery schema and completes a file task on its Claude-compatible model 
 `test_ug_copilot_providers.py` runs Copilot through the MPS fixtures below: a file task on the
 Anthropic service's model, on the OpenAI, Azure OpenAI and Microsoft Foundry services' `gpt-5-nano`, and
 on a named model of the Bedrock allow-all service; launching on the relayed service fails before Copilot starts.
+`test_ug_copilot_mcp.py` adds `system.ai.web_search` with `ug mcp add --agents copilot` over a
+developer's own disabled server, checks Copilot's `copilot mcp list --json` and `ug mcp list`, runs
+a headless task whose tool call Copilot's session events record as successful, and reverts.
 
 Antigravity CLI has five live headless journeys in `test_ug_antigravity_headless.py` and three in
 `test_ug_configure_antigravity.py`. Headless runs use `agy -p --output-format stream-json`; the
@@ -665,6 +668,7 @@ test_ug_copilot_lifecycle.py            # Copilot refresh after revocation, sign
 test_ug_copilot_models.py               # Copilot model registry: Claude then GPT, unknown model, TUI /model switch
 test_ug_copilot_providers.py            # Copilot via Model Provider Services: Anthropic, OpenAI, Azure OpenAI, Foundry, Bedrock allow-all; relayed refused
 test_ug_copilot_model_location.py       # Copilot on a Unity Catalog model location: fresh --model-location file task
+test_ug_copilot_mcp.py                  # Copilot MCP: ug mcp add, tool call, ug mcp list, revert keeps the user's server
 test_ug_antigravity_headless.py         # Antigravity via ug's proxy: file task, --model (ug agy), Gemini MPS targets, MCP SQL tool, skill dir
 test_ug_configure_antigravity.py        # Antigravity: configure picker + TUI task + reopen; External Models picker; revert keeps user files
 test_ug_codex_tracing.py                # Codex OTLP export reaches the configured trace table
@@ -875,7 +879,7 @@ cases instead complete real file tasks through `--workspace` and `--model-locati
 journeys check setup and launch with existing services, without inference.
 
 There are **88 live cases** (including 12 marked TUI journeys) and **7 installation
-checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds seventeen live cases; selecting Antigravity adds eight live cases (one TUI). One
+checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds eighteen live cases; selecting Antigravity adds eight live cases (one TUI). One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
 Claude task. A further **44 `managed_fixture` cases** (twelve of them also `live`) run on the
 managed workspace with a checked-in JSON CodingAgentConfig from `tests/fixtures/managed_config/`
@@ -1101,7 +1105,7 @@ A second non-blocking job, **Managed OpenCode self-managed** (`managed_fixture a
 in `test_ug_agents_self_managed.py`), installs Claude, Codex and OpenCode and runs against the
 managed e2e workspace (`E2E_ADMIN_WORKSPACE`) with the injected `managed_workspace_default` config,
 which enables Claude/Codex but not OpenCode. It is likewise outside `cujs`.
-A non-blocking **Copilot** job (`live and copilot`, sixteen cases) runs on Linux and Windows the
+A non-blocking **Copilot** job (`live and copilot`, seventeen cases) runs on Linux and Windows the
 same way and is likewise outside `cujs` until it is stable.
 A blocking **Antigravity** job (`live and antigravity`, eight cases) runs on Linux only with
 the pinned `ANTIGRAVITY_BUILD`; it is part of the `cujs` gate.

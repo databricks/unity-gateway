@@ -16,6 +16,7 @@ from ucode.agents import copilot, vscode
 from ucode.cli import app
 from ucode.databricks import AnthropicModelCatalog
 from ucode.managed_files import OS
+from ucode.mcp import VSCODE_CONFIGURED_KEY
 
 # The conftest fixture stubs these out for every test; the ones here exercise the real lookups.
 REAL_FIND_CODE = vscode.find_code
@@ -509,6 +510,24 @@ def test_configure_agents_vscode_sets_up_the_workspace_then_vscode(monkeypatch, 
     source = {"provider": "main.default.mps", "location": None}
     assert configured == ([] if dry_run else [{**STATE, **source}])
     assert ("VS Code isn't changed" in result.output) == dry_run
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_configure_agents_vscode_records_vscode_for_mcp_only_when_it_installs(
+    monkeypatch, installed
+):
+    saved: list[dict] = []
+    monkeypatch.setattr(config_io, "_dry_run", False)
+    monkeypatch.setattr("ucode.cli._configure_shared_workspace_states", lambda *a, **k: [])
+    monkeypatch.setattr("ucode.cli.load_state", lambda: STATE)
+    monkeypatch.setattr("ucode.cli.save_state", saved.append)
+    monkeypatch.setattr(vscode, "configure", lambda state, **_: installed)
+
+    result = CliRunner().invoke(app, ["configure", "--agents", "vscode", "--workspace", WS])
+
+    assert result.exit_code == 0, result.output
+    assert saved == ([{**STATE, VSCODE_CONFIGURED_KEY: True}] if installed else [])
+    assert VSCODE_CONFIGURED_KEY not in STATE
 
 
 @pytest.mark.parametrize(

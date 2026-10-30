@@ -2,7 +2,13 @@
 
 from . import _evidence_id
 
-__all__ = ["EVIDENCE_KIND", "assistant_answers", "completed_task_models", "selected_models"]
+__all__ = [
+    "EVIDENCE_KIND",
+    "assistant_answers",
+    "completed_task_models",
+    "mcp_tool_calls",
+    "selected_models",
+]
 
 SESSION_DIRECTORY = ".copilot/session-state"
 EVIDENCE_KIND = "assistant message model"
@@ -46,3 +52,27 @@ def selected_models(records: list[dict]) -> list[str]:
         elif record.get("type") == "session.model_change" and data.get("newModel"):
             refs.append(data["newModel"])
     return refs
+
+
+def mcp_tool_calls(records: list[dict]) -> list[dict]:
+    """Each MCP tool call: its server, the config source Copilot loaded it from, and whether
+    the call completed successfully."""
+    succeeded = {
+        (record.get("data") or {}).get("toolCallId")
+        for record in records
+        if record.get("type") == "tool.execution_complete"
+        and (record.get("data") or {}).get("success") is True
+    }
+    calls = []
+    for record in records:
+        data = record.get("data") or {}
+        if record.get("type") == "tool.execution_start" and data.get("mcpServerName"):
+            calls.append(
+                {
+                    "server": data["mcpServerName"],
+                    "tool": data.get("mcpToolName"),
+                    "source": data.get("mcpConfigSource"),
+                    "succeeded": data.get("toolCallId") in succeeded,
+                }
+            )
+    return calls
