@@ -569,12 +569,12 @@ class TestCujSmartRouting(BaseCujTest):
         assert case.task.value in case.observation.turn.answer
 
     @pytest.mark.parametrize("agent", AGENTS)
-    def test_managed_smart_routing_orchestrates_only_claude_without_routing_the_first_prompt(
+    def test_managed_smart_routing_orchestrates_without_routing_the_first_prompt(
         self, completed_smart_routing_runs, agent
     ):
         case = completed_smart_routing_runs.no_model_override[agent]
         assert not [request for request in case.requests if request.path == ROUTING_PATH]
-        assert (ORCHESTRATOR_CONTEXT.encode() in case.inference_request.body) == (agent == CLAUDE)
+        assert ORCHESTRATOR_CONTEXT.encode() in case.inference_request.body
 
     @pytest.mark.parametrize("agent", AGENTS)
     def test_admin_default_model_serves_the_first_prompt(self, completed_smart_routing_runs, agent):

@@ -181,10 +181,6 @@ default without routing requests, new router decisions, recipe headers, or orche
 Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,
 complete per-agent validation, session precedence, and preserving the preset selector
 until managed-default agent selection.
-CLI/component checks cover `--enable-smart-routing` and managed routing defaulting to
-`subagent_orch_v0_claude_only`, preserving known selectors, overriding legacy flags,
-and restoring the inherited environment. Claude routes subagents with orchestration;
-Codex stays unrouted unless an explicit known version enables it.
 These checks do not establish live agent coverage.
 
 The shared request recorder and native compatibility-retry checks live in
@@ -617,8 +613,6 @@ add the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require 
 `smart-router` for routing-only cases, and both bundled skills when orchestration is enabled;
 Claude checks local mod confirmations and the inference payload's `smart_router_recipe_name`;
 Codex checks saved session controls and native tool-result confirmations after each toggle.
-The managed-routing variants use the default version for Claude and explicitly select
-`subagent_orch_v0` for Codex; CUJ4 checks that managed defaults leave Codex unrouted.
 Both explicitly request their children,
 including while routing is off.
 Claude's six toggle variants are temporarily non-blocking on Linux and Windows; required
@@ -952,7 +946,7 @@ verify that neither a sudo capability probe nor a prompting worker is started.
 | Fresh provider/parent validation and mixed Bedrock filtering | Not covered after removing the duplicate model-discovery suites |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
-| Claude/Codex interactive smart routing | First-prompt routing through `first_prompt_and_subagent_no_orch_v0` is covered by the `managed_fixture` banner journeys and CUJ4's preset journeys. CUJ4's managed journeys verify that `smart_routing.enabled` alone leaves both first prompts unrouted and turns on Smart Router Orchestrator only for Claude; the managed-routing skill-toggle cases use Claude's default and an explicit routing version for Codex. `--enable-smart-routing` has component coverage only. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing at launch, off, and off -> on in separate Claude/Codex sessions. The scheduled harness-latest workflow repeats CUJ4, routing hooks, skill toggles, and banners with both latest agents. Plugin-refresh survival and native daemon/background dispatch remain deferred. |
+| Claude/Codex interactive smart routing | First-prompt routing through `first_prompt_and_subagent_no_orch_v0` is covered by the `managed_fixture` banner journeys and CUJ4's preset journeys. CUJ4's managed journeys and the managed-default skill-toggle cases verify that `smart_routing.enabled` alone leaves the first prompt unrouted and turns on Smart Router Orchestrator; `--enable-smart-routing` has component coverage only. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing at launch, off, and off -> on in separate Claude/Codex sessions. The scheduled harness-latest workflow repeats CUJ4, routing hooks, skill toggles, and banners with both latest agents. Plugin-refresh survival and native daemon/background dispatch remain deferred. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests. Codex desktop's shared-config catalog pointer (repeat configure and a user-owned pointer) is covered by `integration/test_ug_configure_codex_desktop.py`; desktop tracing, GUI, and inference are not |
 | Native macOS/Windows live TUI, managed settings, resize/signals | Windows fresh-install, CLI, local helpers, and the Claude headless gateway journey are advisory; Codex Windows CI is blocked on npm proxy access. Live PTY/TUI, managed settings, and signal behavior still need separate platform implementation and coverage |

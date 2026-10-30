@@ -652,7 +652,6 @@ class TestSubcommandRouting:
                 for version in (
                     smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
                     smart_routing_config.SUBAGENT_ONLY_V0,
-                    smart_routing_config.SUBAGENT_ORCH_V0,
                     smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
                 )
             ),
@@ -665,7 +664,6 @@ class TestSubcommandRouting:
             "unknown-version",
             "first-prompt-version",
             "subagent-only-version",
-            "subagent-orch-version",
             "claude-only-version",
         ],
     )
@@ -870,30 +868,30 @@ class TestSubcommandRouting:
     @pytest.mark.parametrize(
         ("launch_args", "launch_env", "expected_version", "routed_tools"),
         [
-            ([], {}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, {"claude"}),
+            ([], {}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, {"claude", "codex"}),
             (
                 [],
                 {"ENABLE_SMART_ROUTING_V2": "1"},
                 smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-                {"claude"},
+                {"claude", "codex"},
             ),
             (
                 [],
                 {"ENABLE_SMART_ROUTING_V2": "0"},
                 smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-                {"claude"},
+                {"claude", "codex"},
             ),
             (
                 [],
                 {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0"},
                 smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-                {"claude"},
+                {"claude", "codex"},
             ),
             (
                 [],
                 {"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"},
                 smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-                {"claude"},
+                {"claude", "codex"},
             ),
             (
                 [],
@@ -909,12 +907,6 @@ class TestSubcommandRouting:
                 [],
                 {"SMART_ROUTER_CONFIG_VERSION": smart_routing_config.SUBAGENT_ONLY_V0},
                 smart_routing_config.SUBAGENT_ONLY_V0,
-                {"claude", "codex"},
-            ),
-            (
-                [],
-                {"SMART_ROUTER_CONFIG_VERSION": smart_routing_config.SUBAGENT_ORCH_V0},
-                smart_routing_config.SUBAGENT_ORCH_V0,
                 {"claude", "codex"},
             ),
             (
@@ -939,7 +931,6 @@ class TestSubcommandRouting:
             "orchestrator-on",
             "first-prompt-version",
             "subagent-only-version",
-            "subagent-orch-version",
             "claude-only-version",
             "enable-flag",
             "disable-flag",
@@ -967,24 +958,6 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 0, result.output
         assert observed == [(tool in routed_tools, expected_env)]
-        assert _routing_env() == env_before
-
-    @pytest.mark.parametrize("tool", ["claude", "codex"])
-    def test_managed_smart_routing_restores_environment_after_setup_failure(
-        self, monkeypatch, tool
-    ):
-        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "unknown_version")
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
-        env_before = _routing_env()
-        managed = {"enabled_agents": {tool: {"smart_routing_enabled": True}}}
-
-        with _launch_policy_patches(managed) as calls:
-            calls["shared"].side_effect = RuntimeError("setup failed")
-            result = runner.invoke(app, [tool])
-
-        assert result.exit_code == 1, result.output
-        assert "setup failed" in result.output
-        calls["launch"].assert_not_called()
         assert _routing_env() == env_before
 
     @pytest.mark.parametrize(

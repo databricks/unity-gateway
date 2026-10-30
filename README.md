@@ -406,10 +406,10 @@ is enabled, ug warns and falls back to subagent routing because the first-prompt
 wrapper requires a Unix terminal.
 The generated shell hooks expect Git Bash; PowerShell-only setups are not covered.
 
-`--enable-smart-routing` and a workspace config with `smart_routing.enabled` select routing
+`--enable-smart-routing` and a workspace config with `smart_routing.enabled` turn routing on
 through `SMART_ROUTER_CONFIG_VERSION`: they keep a known version and otherwise select
-`subagent_orch_v0_claude_only`, which routes Claude subagents and turns on Smart Router
-Orchestrator while the main session stays on its default model. Codex stays unrouted.
+`subagent_orch_v0`, which routes subagents and turns on Smart Router Orchestrator while the
+main session stays on its default model.
 Like any version, it overrides individually set routing env vars. `--disable-smart-routing`
 turns routing off for the launch, including over a workspace config.
 
@@ -440,14 +440,13 @@ orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=
 `subagent_orch_v0_claude_only` keeps Claude's `subagent_orch_v0` flags (`0`, `1`, `1`)
 and sets all three flags to `"0"` for Codex. Codex uses its ordinary launch and
 managed default model, without routing or orchestration. `--enable-smart-routing` and
-workspace smart routing select this version by default, so Codex stays unrouted unless
-another known version is explicitly selected.
+workspace smart routing keep this version, so Codex stays unrouted.
 
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 
 Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
-and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill.
-The default `subagent_orch_v0_claude_only` version installs both skills for Claude.
+and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill,
+as do `--enable-smart-routing` and workspace smart routing when they select `subagent_orch_v0`.
 For example:
 
 ```bash
@@ -464,7 +463,7 @@ no preset is applied, the inherited environment is unchanged, and commands conti
 `--disable-smart-routing` and session on/off controls apply after expansion;
 `--enable-smart-routing` and workspace smart routing keep a known version.
 Orchestration is off by default unless `--enable-smart-routing` or workspace smart routing
-selects an orchestration-enabled version for the agent.
+selects `subagent_orch_v0`.
 
 Version names require an explicit suffix. Future revisions use new `_v1`, `_v2`,
 etc. names without changing existing versions.

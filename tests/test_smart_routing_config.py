@@ -187,22 +187,9 @@ def test_known_version(selector, expected):
     assert config.known_version(env) is expected
 
 
-@pytest.mark.parametrize(
-    ("agent", "expected"),
-    [
-        (AGENT_CLAUDE, _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0]),
-        (
-            AGENT_CODEX,
-            {
-                ENABLE_SMART_ROUTING_ENV_VAR: "0",
-                ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
-                ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
-            },
-        ),
-    ],
-)
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
 @pytest.mark.parametrize("selector", [None, "", "   ", "unsupported_version"])
-def test_enabled_version_selects_claude_only_over_legacy_flags(agent, expected, selector):
+def test_enabled_version_selects_claude_only_over_legacy_flags(agent, selector):
     inherited = {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
@@ -215,6 +202,9 @@ def test_enabled_version_selects_claude_only_over_legacy_flags(agent, expected, 
 
     previous = config.apply_enabled_version(applied, agent=agent)
 
+    expected = _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0]
+    if agent == AGENT_CODEX:
+        expected = dict.fromkeys(expected, "0")
     assert applied == {
         **expected,
         "INHERITED_SETTING": "preserved",

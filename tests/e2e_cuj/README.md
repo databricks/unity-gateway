@@ -93,9 +93,8 @@ It runs the managed-default and explicit-model journeys and six
 `SMART_ROUTER_CONFIG_VERSION` presets using the shared version constants. With no selector,
 managed smart routing leaves the first prompt unrouted: the admin's default model completes the
 file task, no `routes:select` request is sent, and the Smart Router Orchestrator context reaches
-only Claude's inference request. Codex stays unrouted under the default
-`subagent_orch_v0_claude_only` version. Each preset runs as independent tests so a slow live
-subagent call cannot fail unrelated assertions: one first-prompt-then-explicit-subagent journey per agent
+that inference request. Each preset runs as independent tests so a slow live subagent call
+cannot fail unrelated assertions: one first-prompt-then-explicit-subagent journey per agent
 (12 cases, with Claude ending in the native background-task wait) and one Claude-only status
 band/hint row/toggle journey per preset (6 cases, which needs no delegation or background-task
 wait).
