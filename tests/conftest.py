@@ -126,6 +126,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(
         copilot_mod, "LEGACY_MCP_BACKUP_PATH", state_dir / "copilot-ucode-mcp-config.backup.json"
     )
+    monkeypatch.setattr(
+        copilot_mod, "MCP_CONFIG_ORIGINAL_PATH", state_dir / "copilot-mcp-config.original.json"
+    )
     monkeypatch.delenv("COPILOT_HOME", raising=False)
 
     def reject_privileged_write(path, _desired_text):

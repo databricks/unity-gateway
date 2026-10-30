@@ -928,7 +928,7 @@ class TestCopilotUserMcpConfig:
         monkeypatch.setattr(copilot.shutil, "which", lambda binary: f"/usr/bin/{binary}")
         return calls
 
-    def test_defers_to_the_copilot_cli_for_a_config_it_cannot_parse(self, monkeypatch):
+    def test_defers_to_the_copilot_cli_for_a_config_it_cannot_parse(self, monkeypatch, capsys):
         calls = self._stub_cli(monkeypatch)
         path = copilot.copilot_mcp_config_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -946,8 +946,38 @@ class TestCopilotUserMcpConfig:
             ["copilot", "mcp", "remove", "svc"],
             ["copilot", "mcp", "add", "svc", "--", "ug", "mcp-proxy"],
         ]
-        assert path.read_text(encoding="utf-8") == jsonc
+        # The real CLI saves the file as plain JSON, so the original is kept for its comments.
+        assert copilot.MCP_CONFIG_ORIGINAL_PATH.read_text(encoding="utf-8") == jsonc
+        assert "without its comments" in " ".join(capsys.readouterr().out.split())
         assert not copilot.LEGACY_MCP_CONFIG_PATH.exists()
+
+    def test_cli_edits_keep_only_the_first_original(self, monkeypatch, capsys):
+        self._stub_cli(monkeypatch)
+        path = copilot.copilot_mcp_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{\n  // first\n}\n", encoding="utf-8")
+        copilot.write_user_mcp_servers({"svc": self.ENTRY}, set())
+        capsys.readouterr()
+        path.write_text("{\n  // second\n}\n", encoding="utf-8")
+
+        copilot.write_user_mcp_servers({}, {"svc"})
+
+        assert copilot.MCP_CONFIG_ORIGINAL_PATH.read_text(encoding="utf-8") == "{\n  // first\n}\n"
+        assert "without its comments" not in capsys.readouterr().out
+
+    def test_a_cli_pass_with_nothing_to_change_keeps_no_original(self, monkeypatch):
+        calls = self._stub_cli(monkeypatch)
+        path = copilot.copilot_mcp_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{\n  // mine\n}\n", encoding="utf-8")
+        copilot.LEGACY_MCP_BACKUP_PATH.parent.mkdir(parents=True, exist_ok=True)
+        copilot.LEGACY_MCP_BACKUP_PATH.write_text("{}", encoding="utf-8")
+
+        copilot.migrate_legacy_mcp_config()
+
+        assert calls == []
+        assert not copilot.MCP_CONFIG_ORIGINAL_PATH.exists()
+        assert not copilot.LEGACY_MCP_BACKUP_PATH.exists()
 
     def test_commented_config_without_the_copilot_cli_is_left_alone(self, monkeypatch):
         # VS Code alone has no Copilot CLI to edit a file ug can't parse.
