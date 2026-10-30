@@ -454,6 +454,24 @@ class TestSudoReplace:
         assert kwargs == {"capture_output": True, "text": True, "check": True, "stdin": None}
         assert source_path is not None and not source_path.exists()
 
+    def test_noninteractive_creation_needs_allow_create(self, tmp_path, monkeypatch):
+        # The header mod's files are new files; a headless configure creates them with sudo -n.
+        path = tmp_path / "register.ts"
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        monkeypatch.setitem(
+            managed_files._SUDO_REPLACE_TARGETS, managed_files.OS.LINUX, frozenset({path})
+        )
+        calls: list = []
+        monkeypatch.setattr(
+            managed_files.subprocess_cross_os, "run", lambda command, **_: calls.append(command)
+        )
+
+        with pytest.raises(RuntimeError, match="non-interactively"):
+            _REAL_SUDO_REPLACE(path, "mod")
+        _REAL_SUDO_REPLACE(path, "mod", allow_create=True)
+        assert len(calls) == 1 and "-n" in calls[0]
+
     @pytest.mark.parametrize("denied", [False, True])
     def test_noninteractive_repair_uses_sudo_n_without_session_or_stdin(
         self, tmp_path, monkeypatch, denied

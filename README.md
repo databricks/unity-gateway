@@ -178,9 +178,11 @@ Nothing is written to a config file.
 
 - **Codex**: added to the launch's `-c` provider headers.
 - **Claude Code**: added by a mod, even when managed settings set `ANTHROPIC_CUSTOM_HEADERS`.
-  Only `ug configure` installs or upgrades it beside the managed settings (Linux and macOS, with
-  sudo, not under `--user`); a launch never writes there. When it is missing or out of date the
-  launch warns and Claude doesn't send them.
+  Only `ug configure` installs or upgrades it beside the managed settings (with sudo, or as an
+  administrator on Windows; not under `--user` or `UG_SKIP_OS_SETTINGS`); a launch never writes
+  there. Without a terminal, configure needs passwordless sudo and an existing managed file. Another
+  tool's copy of the mod, such as Isaac's, also counts. When none is enabled, or ug's is out of
+  date, the launch warns and Claude doesn't send them.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `kilo`, `copilot`, `pi`, and `antigravity`. `cursor` can be included in `--agents` for MCP-only setup;
