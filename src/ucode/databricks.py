@@ -66,6 +66,10 @@ ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 MIN_DATABRICKS_CLI_VERSION = (1, 0, 0)
 # v1.11.0 fixes `fs cp` (create -> finalize), which the skills MCP uploads rely on.
 SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION = (1, 11, 0)
+# Leave room for one retry of a ten-second probe without multiplying the launch
+# delay by the number of CLI installations on PATH.
+_CLI_VERSION_PROBE_TIMEOUT_SECONDS = 10
+_CLI_VERSION_DISCOVERY_TIMEOUT_SECONDS = 20
 TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 # Substrings the Databricks CLI emits when it loses the token-cache write lock
 # to a concurrent `databricks auth token` (e.g. another ucode helper process
@@ -675,7 +679,7 @@ def run(
     capture_output: bool = False,
     text: Literal[True],
     env: dict[str, str] | None = None,
-    timeout: int | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]: ...
 
 
@@ -687,7 +691,7 @@ def run(
     capture_output: bool = False,
     text: Literal[False] = False,
     env: dict[str, str] | None = None,
-    timeout: int | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[bytes]: ...
 
 
@@ -698,7 +702,7 @@ def run(
     capture_output: bool = False,
     text: bool = False,
     env: dict[str, str] | None = None,
-    timeout: int | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
     return subprocess_cross_os.run(
         args,
@@ -786,31 +790,76 @@ def _iter_databricks_executables() -> list[str]:
     return found
 
 
-def _read_databricks_cli_version(path: str) -> tuple[int, int, int] | None:
-    """Run ``<path> --version`` and parse it. None on any subprocess or parse failure.
+def _cli_version_output(stdout: str | bytes | None, stderr: str | bytes | None) -> str:
+    return "\n".join(
+        stream if isinstance(stream, str) else stream.decode(errors="replace")
+        for stream in (stdout, stderr)
+        if stream
+    ).strip()
 
-    Used only by discovery, which is what establishes ``path`` in the first
-    place — every other caller reads a version through ``databricks_cli_path()``.
-    """
+
+@dataclass(frozen=True)
+class _DatabricksCliVersionProbe:
+    version: tuple[int, int, int] | None = None
+    output: str = ""
+    returncode: int | None = None
+    failure: str | None = None
+    deadline_exhausted: bool = False
+
+
+@dataclass
+class _DiscoveredDatabricksCli:
+    path: str
+    path_order: int
+    probes: list[_DatabricksCliVersionProbe]
+
+    @property
+    def version(self) -> tuple[int, int, int] | None:
+        return self.probes[-1].version
+
+
+def _read_databricks_cli_version(path: str, *, deadline: float) -> _DatabricksCliVersionProbe:
+    timeout = min(_CLI_VERSION_PROBE_TIMEOUT_SECONDS, deadline - time.monotonic())
+    if timeout <= 0:
+        return _DatabricksCliVersionProbe(
+            failure="not run: overall probe deadline exhausted", deadline_exhausted=True
+        )
     try:
-        result = run([path, "--version"], check=False, capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    raw = result.stdout or result.stderr or ""
-    output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()
-    return _parse_databricks_cli_version(output)
+        result = run(
+            [path, "--version"], check=False, capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired as exc:
+        return _DatabricksCliVersionProbe(
+            output=_cli_version_output(exc.stdout, exc.stderr),
+            failure=f"timed out after {timeout:g} seconds",
+            deadline_exhausted=time.monotonic() >= deadline,
+        )
+    except OSError as exc:
+        return _DatabricksCliVersionProbe(failure=f"could not execute: {exc}")
+    output = _cli_version_output(result.stdout, result.stderr)
+    version = _parse_databricks_cli_version(output) if result.returncode == 0 else None
+    failure = None
+    if result.returncode != 0:
+        failure = f"exited with status {result.returncode}"
+    elif version is None:
+        failure = "Could not parse Databricks CLI version"
+    return _DatabricksCliVersionProbe(version, output, result.returncode, failure)
+
+
+def _sort_databricks_clis(clis: list[_DiscoveredDatabricksCli]) -> None:
+    clis.sort(key=lambda cli: (cli.version or (-1, -1, -1), -cli.path_order), reverse=True)
 
 
 # Process-lifetime cache of discovered `databricks` binaries as an ordered list,
 # best-first: highest parseable version first, unparseable ones last, with PATH order
 # preserved among equals. `databricks_cli_path` just reads the front. None means
 # "not yet scanned" — distinct from an empty list, a cached "found nothing".
-_DISCOVERED_DATABRICKS_CLIS_ORDERED: list[tuple[str, tuple[int, int, int] | None]] | None = None
+_DISCOVERED_DATABRICKS_CLIS_ORDERED: list[_DiscoveredDatabricksCli] | None = None
 
 
 def _discover_databricks_clis(
-    *, use_cache: bool = True
-) -> list[tuple[str, tuple[int, int, int] | None]]:
+    *, use_cache: bool = True, deadline: float | None = None
+) -> list[_DiscoveredDatabricksCli]:
     """Find every distinct `databricks` binary on PATH, ordered best-first.
 
     Dedupes by ``os.path.realpath`` (first PATH-order occurrence wins), so the
@@ -824,19 +873,24 @@ def _discover_databricks_clis(
     global _DISCOVERED_DATABRICKS_CLIS_ORDERED
     if use_cache and _DISCOVERED_DATABRICKS_CLIS_ORDERED is not None:
         return _DISCOVERED_DATABRICKS_CLIS_ORDERED
+    if deadline is None:
+        deadline = time.monotonic() + _CLI_VERSION_DISCOVERY_TIMEOUT_SECONDS
 
     seen_real: set[str] = set()
-    discovered: list[tuple[str, tuple[int, int, int] | None]] = []
-    for path in _iter_databricks_executables():
+    discovered: list[_DiscoveredDatabricksCli] = []
+    for path_order, path in enumerate(_iter_databricks_executables()):
         real = os.path.realpath(path)
         if real in seen_real:
             continue
         seen_real.add(real)
-        discovered.append((path, _read_databricks_cli_version(path)))
+        discovered.append(
+            _DiscoveredDatabricksCli(
+                path, path_order, [_read_databricks_cli_version(path, deadline=deadline)]
+            )
+        )
 
-    # Best-first: highest version wins. A stable sort keeps PATH order among equal
-    # versions, and the None-version sentinel (unparseable) sinks below every real one.
-    discovered.sort(key=lambda pv: pv[1] or (-1, -1, -1), reverse=True)
+    # An explicit tie-break preserves original PATH order even after retries.
+    _sort_databricks_clis(discovered)
     _DISCOVERED_DATABRICKS_CLIS_ORDERED = discovered
     return _DISCOVERED_DATABRICKS_CLIS_ORDERED
 
@@ -849,9 +903,9 @@ def _select_databricks_cli(
     Discovery is already ordered newest-first, so the first match is the newest
     one meeting ``minimum`` (ties resolve to the earliest on PATH).
     """
-    for path, version in _discover_databricks_clis():
-        if version is not None and version >= minimum:
-            return path, version
+    for cli in _discover_databricks_clis():
+        if cli.version is not None and cli.version >= minimum:
+            return cli.path, cli.version
     return None, None
 
 
@@ -870,7 +924,7 @@ def databricks_cli_path() -> str:
     force re-resolution (e.g. after installing/upgrading the CLI).
     """
     clis = _discover_databricks_clis()
-    return clis[0][0] if clis else "databricks"
+    return clis[0].path if clis else "databricks"
 
 
 def clear_databricks_cli_cache() -> None:
@@ -883,7 +937,8 @@ def clear_databricks_cli_cache() -> None:
 
 def databricks_cli_installed() -> bool:
     """Whether any `databricks` binary was found on PATH."""
-    return bool(_discover_databricks_clis())
+    # Presence checks must not spend a separate version-probe budget before ensure.
+    return bool(_iter_databricks_executables())
 
 
 def _windows_user_path() -> str | None:
@@ -970,45 +1025,61 @@ def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
 def ensure_databricks_cli_version(
     minimum: tuple[int, int, int] = MIN_DATABRICKS_CLI_VERSION,
 ) -> None:
-    clis = _discover_databricks_clis(use_cache=False)
-    if not clis:
-        raise RuntimeError("Failed to read Databricks CLI version.")
+    if _DISCOVERED_DATABRICKS_CLIS_ORDERED:
+        cached_version = _DISCOVERED_DATABRICKS_CLIS_ORDERED[0].version
+        if cached_version is not None and cached_version >= minimum:
+            return
+    # Installation has its own timeout. Only a changed installation starts a new
+    # discovery budget; PATH candidates and diagnostic retries share one deadline.
+    for upgraded in (False, True):
+        # A fresh version scan must also refresh capabilities at the same executable path.
+        clear_databricks_cli_cache()
+        deadline = time.monotonic() + _CLI_VERSION_DISCOVERY_TIMEOUT_SECONDS
+        clis = _discover_databricks_clis(use_cache=False, deadline=deadline)
+        if not clis:
+            raise RuntimeError("Failed to read Databricks CLI version: no executable on PATH.")
 
-    parsed = [(path, version) for path, version in clis if version is not None]
-    if not parsed:
-        # Best-effort sample for the error message: the binary we'd run's raw
-        # `--version` output (already known unparseable, but worth showing why).
-        try:
-            result = run(
-                [databricks_cli_path(), "--version"],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=10,
+        if not any(cli.version is not None and cli.version >= minimum for cli in clis):
+            for cli in sorted(clis, key=lambda cli: cli.path_order):
+                if cli.version is None:
+                    cli.probes.append(_read_databricks_cli_version(cli.path, deadline=deadline))
+            _sort_databricks_clis(clis)
+
+        newest_version = clis[0].version
+        incomplete = any(cli.probes[-1].deadline_exhausted for cli in clis)
+        if newest_version is None or (newest_version < minimum and incomplete):
+            diagnostics = []
+            for cli in clis:
+                attempts = []
+                for index, probe in enumerate(cli.probes):
+                    label = "initial probe" if index == 0 else "retry"
+                    detail = probe.failure
+                    if probe.version is not None:
+                        detail = "version v" + ".".join(str(n) for n in probe.version)
+                    if probe.output:
+                        detail = f"{detail}; output: {probe.output!r}"
+                    attempts.append(f"{label}: {detail}")
+                diagnostics.append(f"{cli.path!r}: " + "; ".join(attempts))
+            raise RuntimeError(
+                "Failed to read Databricks CLI version after discovery and retry "
+                f"({_CLI_VERSION_DISCOVERY_TIMEOUT_SECONDS}-second probe budget).\n"
+                + "\n".join(diagnostics)
             )
-            raw = result.stdout or result.stderr or ""
-            output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            output = f"<error reading version: {exc}>"
-        raise RuntimeError(
-            f"Could not parse Databricks CLI version from `databricks --version` output: {output!r}"
-        )
+        if newest_version >= minimum:
+            # Keep the successful result so launch does not repeat a transient failure.
+            return
 
-    newest_path, newest_version = max(parsed, key=lambda item: item[1])
-    if newest_version < minimum:
         current = ".".join(str(n) for n in newest_version)
         required = ".".join(str(n) for n in minimum)
+        if upgraded:
+            raise RuntimeError(
+                f"Databricks CLI v{current} at {clis[0].path!r} is still too old after upgrade "
+                f"(need v{required} or newer). Upgrade the CLI on PATH and try again."
+            )
         print_warning(
             f"Databricks CLI v{current} is too old (need v{required} or newer). Upgrading..."
         )
         _run_databricks_cli_installer(brew_subcommand="upgrade")
-        ensure_databricks_cli_version(minimum)
-        return
-
-    # A discovered CLI already meets the floor: drop the cached resolution so
-    # `databricks_cli_path()` re-resolves to it (it may differ from whatever was
-    # cached before this call, e.g. right after an install).
-    clear_databricks_cli_cache()
 
 
 def databricks_cli_version() -> tuple[int, int, int] | None:
@@ -1019,7 +1090,7 @@ def databricks_cli_version() -> tuple[int, int, int] | None:
     # Discovery is ordered best-first, so the front entry's version is the one
     # `databricks_cli_path()` would run.
     clis = _discover_databricks_clis()
-    return clis[0][1] if clis else None
+    return clis[0].version if clis else None
 
 
 def upgrade_databricks_cli() -> bool:
@@ -1056,7 +1127,7 @@ def install_databricks_cli(
     print_warning("`databricks` was not found. Installing Databricks CLI...")
     _run_databricks_cli_installer(brew_subcommand="install")
 
-    if not _discover_databricks_clis(use_cache=False):
+    if not databricks_cli_installed():
         raise RuntimeError(
             "Databricks CLI install completed, but `databricks` is still not on PATH."
         )

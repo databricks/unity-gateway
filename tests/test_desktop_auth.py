@@ -192,7 +192,11 @@ def test_shared_cli_discovery_pins_newest_binary_through_recovery(monkeypatch, t
     newer_cli = str(tmp_path / "new cli" / "databricks")
     versions = {older_cli: (1, 0, 0), newer_cli: (1, 20, 0)}
     monkeypatch.setattr(databricks, "_iter_databricks_executables", lambda: list(versions))
-    monkeypatch.setattr(databricks, "_read_databricks_cli_version", versions.__getitem__)
+    monkeypatch.setattr(
+        databricks,
+        "_read_databricks_cli_version",
+        lambda path, **kw: databricks._DatabricksCliVersionProbe(version=versions[path]),
+    )
     monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
     monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", tmp_path / "auth.lock")
     responses = [_result(token="fresh-token")]
