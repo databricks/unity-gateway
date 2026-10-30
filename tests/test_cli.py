@@ -3847,6 +3847,8 @@ class TestOtelProxyCommand:
         with (
             patch("ucode.gateway_proxy.start_otel_proxy", return_value=otel),
             patch("ucode.gateway_proxy.start_relay_proxy", return_value=relay) as start_relay,
+            # Run the relay thread's target inline so its serve_forever call is deterministic.
+            patch("ucode.cli.threading.Thread", lambda target, daemon: MagicMock(start=target)),
         ):
             result = runner.invoke(
                 app,
@@ -3855,7 +3857,8 @@ class TestOtelProxyCommand:
         assert result.exit_code == 0, result.output
         assert start_relay.call_args.args[0] == workspace
         assert start_relay.call_args.args[2] == 43198
-        assert start_relay.call_args.kwargs == {"codex": True}
+        assert start_relay.call_args.kwargs == {"codex": True, "fallback_on_bind_error": False}
+        relay[0].serve_forever.assert_called_once()
         otel[0].serve_forever.assert_called_once()
 
 

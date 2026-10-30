@@ -2365,7 +2365,8 @@ class TestCodexManagedConfig:
         app_path = codex._legacy_config_path()
         app_path.parent.mkdir(parents=True, exist_ok=True)
         unit_path = codex._otel_service_path()
-        ports = iter(range(43198, 43298))
+        # A repeated allocation is retried, so the service never gets the same port twice.
+        ports = iter([43198, 43198, *range(43199, 43298)])
         monkeypatch.setattr(codex, "_allocate_otel_port", lambda: next(ports))
         monkeypatch.setattr(codex, "ug_binary", lambda: "/opt/ug")
         monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock())
@@ -2418,6 +2419,16 @@ class TestCodexManagedConfig:
         relay = read_toml_safe(app_path)["model_providers"]["DatabricksRelay"]
         port = relay["base_url"].removeprefix("http://127.0.0.1:").removesuffix("/v1")
         assert relay["base_url"] != provider["base_url"]
+        assert f"--relay-port {port} " in unit_path.read_text()
+
+        # A traced launch in another workspace leaves the service, and so the relay, on this one.
+        monkeypatch.setattr(codex, "_explicit_configure", False)
+        codex.write_tool_config({"workspace": "https://other.example", "codex_otel_tracing": True})
+        assert f'--host "{WS}" --relay-port {port} ' in unit_path.read_text()
+
+        # Removal writes the config first, so a failed write keeps the relay served.
+        monkeypatch.setattr(codex, "write_toml_file", Mock(side_effect=OSError("denied")))
+        assert codex._sync_desktop_relay({}, WS, None) is False
         assert f"--relay-port {port} " in unit_path.read_text()
 
     @pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")

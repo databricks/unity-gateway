@@ -585,9 +585,9 @@ def write_tool_config(
     save_state(state)
     # The desktop proxy reads authentication from the saved workspace.
     tracing = bool(state.get("codex_otel_tracing"))
-    _sync_desktop_tracing(workspace if tracing else None)
     if _explicit_configure:  # like Claude Desktop, only `ug configure` changes the app
         _sync_desktop_relay(state, workspace, provider if relayed else None, tracing=tracing)
+    _sync_desktop_tracing(workspace if tracing else None)
     return state
 
 
@@ -927,6 +927,10 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
                     del doc["otel"]
                 write_toml_file(_legacy_config_path(), doc)
             return ours
+        # The app's relay stays on the workspace `ug configure` set it up for; a launch elsewhere
+        # must not move the service (and the app's MPS headers) to another workspace.
+        if relay_port and workspace not in _read_otel_service(_otel_service_path()):
+            return False
         # shortcut: a managed-file exporter still outranks this one, check it if admins set one.
         if "trace_exporter" in otel and not ours:
             print_warning_err(
@@ -978,19 +982,19 @@ def _sync_desktop_relay(
         )
         relay_port = _service_port("relay-port")
         if provider is None or workspace is None:
+            # Config first, so a failed write leaves the app's relay still served.
+            if isinstance(current, dict) and isinstance(providers, dict):
+                del providers[CODEX_APP_RELAY_PROVIDER_NAME]
+                if not providers:
+                    del doc["model_providers"]
+                if doc.get("model_provider") == CODEX_APP_RELAY_PROVIDER_NAME:
+                    del doc["model_provider"]
+                write_toml_file(_legacy_config_path(), doc)
             if tracing and workspace and relay_port:
                 _ensure_otel_service(workspace, _service_port("port") or _allocate_otel_port())
             elif not tracing:
                 _remove_otel_service()
-            if current is None or not isinstance(providers, dict):
-                return False
-            del providers[CODEX_APP_RELAY_PROVIDER_NAME]
-            if not providers:
-                del doc["model_providers"]
-            if doc.get("model_provider") == CODEX_APP_RELAY_PROVIDER_NAME:
-                del doc["model_provider"]
-            write_toml_file(_legacy_config_path(), doc)
-            return True
+            return isinstance(current, dict)
         if (
             doc.get("model_provider", CODEX_APP_RELAY_PROVIDER_NAME)
             != CODEX_APP_RELAY_PROVIDER_NAME
@@ -1001,8 +1005,12 @@ def _sync_desktop_relay(
             )
             return False
         relay_port = relay_port or _allocate_otel_port()
+        port = _service_port("port")
+        # Each allocation releases its port, so a second one can repeat the first; retry it.
+        while not port or port == relay_port:
+            port = _allocate_otel_port()
         # Before the config, so a missing systemd user manager leaves Codex settings untouched.
-        _ensure_otel_service(workspace, _service_port("port") or _allocate_otel_port(), relay_port)
+        _ensure_otel_service(workspace, port, relay_port)
         block = _provider_block(
             workspace,
             state.get("profile"),
