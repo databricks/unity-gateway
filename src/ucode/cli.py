@@ -1926,7 +1926,7 @@ def _configure_agents_for_mcp(
     previous_workspace = load_full_state().get("current_workspace")
     try:
         _bootstrap_agents_for_mcp(
-            scope, workspace_entries, vscode_only="vscode" in names and "copilot" not in names
+            scope, workspace_entries, vscode_only="vscode" in names and AGENT_COPILOT not in names
         )
     except BaseException:
         # Don't leave launches pointed at a workspace whose setup didn't finish.
@@ -1952,7 +1952,7 @@ def _bootstrap_agents_for_mcp(
         set(configured_mcp_clients(state, available_mcp_clients())) if workspace_known else set()
     )
     to_bootstrap = scope - ready
-    if vscode_only and "copilot" in to_bootstrap:
+    if vscode_only and AGENT_COPILOT in to_bootstrap:
         # Setting up the copilot agent here would install the Copilot CLI and its models.
         raise RuntimeError(
             "VS Code isn't set up for this workspace yet. Run `ug configure --agents vscode` first."
