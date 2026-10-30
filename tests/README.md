@@ -304,6 +304,10 @@ credential-helper execution, live Messages inference, installed Cowork MCP calls
 and revert. Inference requires HTTP 200 and nonempty assistant text; MCP calls use web_search
 to find Databricks' official website without SQL compute. See
 [integration coverage](integration/README.md) for prerequisites and evidence.
+`test_integration_contract.py` checks the Desktop test helper's Windows marketplace
+path with missing or empty Program Files variables in the isolated environment,
+and prefers `ProgramW6432` over `ProgramFiles`. These are component checks, not
+native Windows integration runs.
 CUJ1/CUJ2 compare complete Desktop profile/metadata JSON for system.ai models and non-relay
 Anthropic MPS. CUJ3's existing picker journey checks its incompatible scoped aliases preserve
 all Desktop profile/metadata bytes after its existing configure call.

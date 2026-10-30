@@ -70,6 +70,10 @@ registration and generated user source, plus the owned root source on Windows.
 Source switching, refresh/rollback, scoped revert, ownership, and duplicate prevention have
 isolated component coverage in `../test_desktop_marketplace.py`; those checks do not
 establish native Desktop sync or ACLs.
+`../test_integration_contract.py` covers the Windows marketplace evidence helper's
+fallback to `C:\Program Files` when the isolated environment omits or empties both
+Program Files variables, and its preference for `ProgramW6432` over `ProgramFiles`.
+These component checks do not establish a native Windows integration pass.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.web_search and allow
