@@ -30,13 +30,16 @@ routing header. It takes the workspace and models from the environment:
 ```
 UG_LIVE_WORKSPACE=https://<workspace> \
 UG_LIVE_AUTH_COMMAND='ug auth-token --host https://<workspace>' \
-UG_LIVE_CLAUDE_MODEL=system.ai.claude-haiku-4-5 \
-UG_LIVE_GPT_MODEL=system.ai.gpt-5-nano \
+UG_LIVE_MPS= UG_LIVE_OPENAI_MPS= \
 npm run live
 ```
 
 CI runs it as the last step of the `VS Code extension` job, from `UCODE_TEST_WORKSPACE` and
 `DATABRICKS_BEARER`; with neither set the suite skips itself, so a fork's pull request stays green.
-`UG_LIVE_WORKSPACE` and `UG_LIVE_TOKEN` override them for a one-off local run. Setting `UG_LIVE_MPS` and `UG_LIVE_MPS_MODEL`
-(and `UG_LIVE_OPENAI_MPS` / `UG_LIVE_OPENAI_MPS_MODEL`) adds the Model Provider Service cases; a case
-whose variables are unset isn't registered. The models cost a few cents per run.
+`UG_LIVE_WORKSPACE` and `UG_LIVE_TOKEN` override them for a one-off local run.
+
+The models and Model Provider Services default to the ones the integration CUJs use, so CI passes
+only the two secrets. Any of `UG_LIVE_CLAUDE_MODEL`, `UG_LIVE_GPT_MODEL`, `UG_LIVE_MPS`,
+`UG_LIVE_MPS_MODEL`, `UG_LIVE_OPENAI_MPS` and `UG_LIVE_OPENAI_MPS_MODEL` overrides one; setting it to
+the empty string leaves that case out, which is what another workspace needs for the services it
+doesn't have. Each case needs its model or service to be set; the rest are left out. A run costs a few cents.

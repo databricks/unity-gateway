@@ -91,14 +91,20 @@ const responses = (turn: Turn, base = MLFLOW, headers: Record<string, string> = 
 const chat = (turn: Turn, base = MLFLOW, headers: Record<string, string> = {}) =>
   collect(chatCompletionsReplies(send(`${base}/chat/completions`, chatCompletionsRequest(turn), headers)));
 
-const CLAUDE = env("UG_LIVE_CLAUDE_MODEL");
-const GPT = env("UG_LIVE_GPT_MODEL");
-// Unset in CI: every OpenAI-type model there is GPT-5 or newer, which ug routes to Responses.
+// What to exercise, defaulted to the models and services the integration CUJs use (the same values
+// scripts/run_integration.py defaults its --claude-provider and --codex-provider flags to). Override
+// any of these for another workspace, or set one to "" to leave that case out.
+const setting = (name: string, fallback: string): string => (name in process.env ? env(name) : fallback);
+
+const CLAUDE = setting("UG_LIVE_CLAUDE_MODEL", "system.ai.claude-haiku-4-5");
+const GPT = setting("UG_LIVE_GPT_MODEL", "system.ai.gpt-5-4-nano");
+// No default: every OpenAI-type model on the CI workspace is GPT-5 or newer, which ug routes to
+// Responses, so nothing there exercises Chat Completions.
 const CHAT_GPT = env("UG_LIVE_CHAT_MODEL");
-const MPS = env("UG_LIVE_MPS");
-const MPS_MODEL = env("UG_LIVE_MPS_MODEL");
-const OPENAI_MPS = env("UG_LIVE_OPENAI_MPS");
-const OPENAI_MPS_MODEL = env("UG_LIVE_OPENAI_MPS_MODEL");
+const MPS = setting("UG_LIVE_MPS", "main.ucode.ci_e2e_anthropic_nonrelay_mps");
+const MPS_MODEL = setting("UG_LIVE_MPS_MODEL", "claude-haiku-4-5-20251001");
+const OPENAI_MPS = setting("UG_LIVE_OPENAI_MPS", "main.ucode.ci_openai_mps");
+const OPENAI_MPS_MODEL = setting("UG_LIVE_OPENAI_MPS_MODEL", "gpt-5-nano");
 
 if (!WORKSPACE || !AUTH_COMMAND) {
   it.skip("set UCODE_TEST_WORKSPACE and DATABRICKS_BEARER to run the live tests", () => {});
@@ -108,8 +114,9 @@ describe("the workspace's own models", () => {
   if (CLAUDE && WORKSPACE && AUTH_COMMAND) {
     it("streams a Claude answer on Anthropic Messages, and reads the prompt cache on a repeat", async () => {
       const mark = marker();
-      // Long enough that the gateway caches it; the cache point is on the system prompt.
-      const system = text(`Answer in as few words as possible. ${"Ignore this sentence. ".repeat(400)}`);
+      // Anthropic caches a prompt only above a minimum length, 2048 tokens for Haiku models, so this
+      // has to clear that with room to spare; the cache point itself sits on the system prompt.
+      const system = text(`Answer in as few words as possible. ${"Ignore this sentence. ".repeat(1500)}`);
       const turn = turnOf({ model: CLAUDE, messages: [message(SYSTEM, system), message(USER, text(`Reply with exactly: ${mark}`))] });
 
       assert.match(textOf(await anthropic(turn, 64)), new RegExp(mark));
