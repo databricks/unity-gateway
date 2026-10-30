@@ -942,7 +942,12 @@ def _is_app_mcp_server(server: dict) -> bool:
 
 
 def _resolve_managed_mcp_servers(
-    selector: dict, workspace: str, profile: str | None, clients: list[str]
+    selector: dict,
+    workspace: str,
+    profile: str | None,
+    clients: list[str],
+    *,
+    token: str | None = None,
 ) -> list[dict]:
     """Resolve a managed ``mcp_servers`` selector into MCP server entries for ``clients``.
 
@@ -961,6 +966,10 @@ def _resolve_managed_mcp_servers(
     """
     location = selector.get("unity_catalog_location")
     if isinstance(location, str) and location:
+        if token is not None:
+            return _resolve_location_mcp_servers(
+                workspace, profile, clients, location, [], token=token
+            )
         return _resolve_location_mcp_servers(workspace, profile, clients, location, [])
     names = [n for n in (selector.get("names") or []) if isinstance(n, str) and n]
     if not names:
@@ -1779,6 +1788,8 @@ def _resolve_location_mcp_servers(
     location: str,
     original_servers: list[dict],
     services: set[str] | None = None,
+    *,
+    token: str | None = None,
 ) -> list[dict]:
     """Build the desired MCP server list for ``--location <cat>.<schema>``.
 
@@ -1800,7 +1811,7 @@ def _resolve_location_mcp_servers(
     if location.count(".") != 1 or not all(part.strip() for part in location.split(".")):
         raise RuntimeError(f"--location must be `<catalog>.<schema>`, got `{location}`.")
 
-    token = get_databricks_token(workspace, profile)
+    token = token if token is not None else get_databricks_token(workspace, profile)
     with spinner(f"Discovering MCP services in {location}..."):
         names, reason = list_mcp_services(workspace, token, parent=location)
 

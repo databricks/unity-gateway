@@ -296,10 +296,10 @@ def _cowork_sessions_root_exists() -> bool:
     return root is not None and (root / "local-agent-mode-sessions").is_dir()
 
 
-def _remove_plugin_registration(cowork_root: Path) -> bool:
+def _remove_plugin_registration(cowork_root: Path, *, claude: str | None = None) -> bool:
     """Remove UG's plugin and marketplace registration from one Cowork root."""
 
-    claude = _claude_binary()
+    claude = claude or _claude_binary()
     env = os.environ.copy()
     env["CLAUDE_CONFIG_DIR"] = str(cowork_root)
     plugin_result = False
@@ -413,6 +413,7 @@ def _cowork_mcp_config(
     *,
     use_pat: bool = False,
     custom_oauth: bool = False,
+    executable: Path | None = None,
 ) -> dict:
     entries: dict[str, dict] = {}
     urls: dict[str, str] = {}
@@ -433,12 +434,12 @@ def _cowork_mcp_config(
             profile,
             use_pat=use_pat,
         )
-        executable = Path(argv[0])
-        if not executable.is_absolute():
+        command = executable if executable is not None else Path(argv[0])
+        if not command.is_absolute():
             raise RuntimeError(
                 "Could not resolve the absolute `ug` executable required by Claude Cowork."
             )
-        entries[name] = {"type": "stdio", "command": str(executable), "args": argv[1:]}
+        entries[name] = {"type": "stdio", "command": str(command), "args": argv[1:]}
         urls[name] = url
     aliases = _cowork_mcp_aliases(urls)
     return {"mcpServers": {aliases[name]: entry for name, entry in entries.items()}}
@@ -706,8 +707,10 @@ def _registered_marketplace_source(cowork_root: Path) -> Path | None:
     return Path(raw_path)
 
 
-def _install_plugin(cowork_root: Path, marketplace_root: Path) -> None:
-    claude = _claude_binary()
+def _install_plugin(
+    cowork_root: Path, marketplace_root: Path, *, claude: str | None = None
+) -> None:
+    claude = claude or _claude_binary()
     env = os.environ.copy()
     env["CLAUDE_CONFIG_DIR"] = str(cowork_root)
     _run_claude(
@@ -717,7 +720,7 @@ def _install_plugin(cowork_root: Path, marketplace_root: Path) -> None:
     )
     previous_source = _registered_marketplace_source(cowork_root)
     if previous_source is not None and previous_source != marketplace_root:
-        _remove_plugin_registration(cowork_root)
+        _remove_plugin_registration(cowork_root, claude=claude)
     _run_claude_json(
         claude,
         ["plugin", "marketplace", "add", str(marketplace_root), "--cowork", "--json"],

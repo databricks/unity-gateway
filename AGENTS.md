@@ -181,7 +181,17 @@ retain recovery files if rollback fails. Initial registration failures retain re
 state. User-scope revert leaves the root bundle and its ownership record; global revert
 removes both owned sources. Privileged bundle writes use the shared macOS sudo worker or
 Windows elevation. Explicit MCP/skill changes resync the selected path; launches do not.
-Shared-runtime installation, fresh-user setup, and automatic login refresh remain MDM work.
+The separate macOS `--mdm-desktop` mode requires root and preinstalled, root-owned shared
+UG/Python, Databricks CLI, and Claude CLI runtimes. It writes the whole machine plist at
+`/Library/Managed Preferences/com.anthropic.claudefordesktop.plist`, the root marketplace,
+`UnityGateway/claude-desktop-mdm` helpers/state, and a per-user LaunchAgent. No admin-local
+profile, skills, or credentials are copied. Workspace-managed skills and MCPs reuse the
+normal bundle writers; provisioning reuses one token. The login job performs native plugin
+refresh without authentication, recording pending installs before native commands; Desktop
+uses each user's own OAuth profile. `revert --mdm-desktop` removes policy/source but retains
+the disabled deployment, helper, and agent for logged-out users' deferred cleanup. Foreign or
+edited machine files are preserved. Windows MDM and shared-runtime installation are not
+implemented. See `docs/claude-desktop-mdm.md` for prerequisites and native validation gaps.
 Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
 custom registration names and full proxy URLs are preserved. Its name and display name
 are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old

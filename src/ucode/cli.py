@@ -2581,6 +2581,7 @@ def claude_desktop_auth_cmd(
     claude_binary: Annotated[
         str | None, typer.Option("--claude-binary", help="Absolute Claude Code executable path.")
     ] = None,
+    mdm_desktop: Annotated[bool, typer.Option("--mdm-desktop", hidden=True)] = False,
 ) -> None:
     """Print a Desktop credential, allowing browser login only for interactive requests."""
     import sys
@@ -2592,6 +2593,10 @@ def claude_desktop_auth_cmd(
 
     try:
         with redirect_stdout(sys.stderr):
+            if mdm_desktop:
+                from ucode.agents.desktop import mdm
+
+                mdm._require_macos(administrator=False)
             if relay:
                 if not claude_binary or not os.path.isabs(claude_binary):
                     raise RuntimeError("An absolute Claude Code executable path is required.")
@@ -2608,6 +2613,18 @@ def claude_desktop_auth_cmd(
         sys.stdout.write(credential + "\n")
     else:
         sys.stdout.write(json.dumps(credential, separators=(",", ":")) + "\n")
+
+
+@app.command("desktop-mdm-sync", hidden=True)
+def desktop_mdm_sync_cmd() -> None:
+    """Refresh the current user's Cowork installation from the machine deployment."""
+    from ucode.agents.desktop import mdm
+
+    try:
+        mdm.sync_user()
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
 
 
 @app.command("auth-token", hidden=True)
@@ -4648,6 +4665,13 @@ def configure(
             "The choice is saved for later commands.",
         ),
     ] = False,
+    mdm_desktop: Annotated[
+        bool,
+        typer.Option(
+            "--mdm-desktop",
+            help="Provision Claude Desktop machine policy and plugins from a macOS MDM script running as root.",
+        ),
+    ] = False,
     verbose: Annotated[
         str,
         typer.Option(
@@ -4675,7 +4699,8 @@ def configure(
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
-        install_databricks_cli()
+        if not mdm_desktop:
+            install_databricks_cli()
         if agent is not None and agents is not None:
             raise RuntimeError("Use either --agent or --agents, not both.")
         if provider is not None or model_location is not None:
@@ -4712,6 +4737,40 @@ def configure(
         workspace_entries = _parse_workspace_option(workspace) if workspace is not None else None
         if profile is not None:
             workspace_entries = _parse_profile_option(profile)
+        if mdm_desktop:
+            from ucode.agents.desktop import mdm
+
+            if (
+                user_scope
+                or use_pat
+                or custom_oauth
+                or provider
+                or model_location
+                or enable_databricks_ai_tools is not None
+            ):
+                raise RuntimeError(
+                    "--mdm-desktop uses workspace policy and cannot combine with --user, PAT/custom OAuth, model overrides, or AI Tools installation flags."
+                )
+            if (agent or agents or "").strip().lower() != "claude":
+                raise RuntimeError("Use --mdm-desktop with --agents claude.")
+            if workspace_entries is None:
+                raise RuntimeError(
+                    "--mdm-desktop requires --workspace or --profile (or UG_WORKSPACE)."
+                )
+            target_workspace, target_profile = workspace_entries[0]
+            try:
+                mdm.configure(
+                    target_workspace,
+                    target_profile,
+                    mcp_names=mcp.split(",") if mcp is not None else None,
+                )
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                raise RuntimeError(f"Desktop MDM provisioning failed: {exc}") from exc
+            if not dry_run:
+                print_success(
+                    "Claude Desktop MDM deployment configured. Users authenticate when they open Desktop; start a new Cowork task after plugin refresh."
+                )
+            return
         flag_driven_workspace = workspace_entries is not None
         # Only forward the opt-in flags when set so existing call expectations
         # (and defaults) stay unchanged for the common interactive path.
@@ -4905,10 +4964,29 @@ def status_cmd() -> None:
 
 
 @app.command("revert", rich_help_panel="Manage")
-def revert_cmd() -> None:
+def revert_cmd(
+    mdm_desktop: Annotated[
+        bool,
+        typer.Option(
+            "--mdm-desktop",
+            help="Remove Claude Desktop machine policy and schedule per-user plugin cleanup (macOS, root).",
+        ),
+    ] = False,
+) -> None:
     """Clear ug state and restore backed-up agent config files."""
     request_explicit_managed_writes("ug revert")
     try:
+        if mdm_desktop:
+            from ucode.agents.desktop import mdm
+
+            try:
+                mdm.remove()
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                raise RuntimeError(f"Desktop MDM removal failed: {exc}") from exc
+            print_success(
+                "Desktop MDM policy and source removed. Per-user cleanup runs at login or the next refresh."
+            )
+            return
         result = revert()
     except RuntimeError as exc:
         print_err(str(exc))

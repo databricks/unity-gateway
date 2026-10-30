@@ -172,6 +172,12 @@ Desktop connection profile and authentication remain user-local; this is not MDM
 Both paths require an initialized Cowork account. See
 [Desktop plugin installation](docs/claude-desktop.md#cowork-workspace-skills-and-mcp-servers).
 
+For macOS MDM deployment, run `ug configure --agents claude --mdm-desktop --workspace <url>`
+as root with a preinstalled shared runtime. This publishes Desktop's managed plist and root
+marketplace, then refreshes each user's normal plugin registration through a LaunchAgent.
+Provisioning credentials stay separate from users' Desktop authentication.
+See [MDM prerequisites, deployment, and validation](docs/claude-desktop-mdm.md).
+
 ### Extra headers for one session
 
 ```bash
