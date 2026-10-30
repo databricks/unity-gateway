@@ -183,6 +183,56 @@ state, setup skips silently. Only `ug revert` removes the plugin registration an
 marketplace. The native Desktop gateway profile is separate and remains under the cleanup rules
 below.
 
+## Anthropic account resources in relay mode
+
+When `claude_relayed` is enabled, Cowork setup additionally installs
+`ug-account-docs@unity-gateway-cowork`. The ID is retained from the Docs-only prototype;
+the plugin now imports all eligible connectors and enabled skills returned by the
+account APIs, including custom skills. The ordinary `ug` workspace plugin and its
+`system.ai` MCPs remain available, and Desktop stays in gateway/third-party mode.
+Managed configure uses Claude's newly configured relay state for Cowork and carries it
+forward when configuring other agents, so an earlier mode cannot remove account resources.
+
+The additional plugin uses Anthropic's internal account APIs with the same Claude
+subscription credential as relay authentication. Connector discovery needs the recorded
+`user:mcp_servers` grant; account skill access uses the account's existing permissions.
+UG stores no bearer in plugin files. Its stdio proxy reads or silently refreshes the
+credential for each HTTP request and forwards MCP instructions, tool schemas, and tool
+results unchanged. Each proxy checks that its configured connector ID remains eligible
+for the current account. Connector additions, removals, or account changes require
+reconfigure and a fresh task. Account API and proxy requests
+do not follow redirects. These APIs are undocumented and can change.
+
+Configure downloads each enabled skill's `SKILL.md` and supporting files into the separate
+plugin. Files retain their executable permission when provided by the archive. Skill and
+connector names are normalized to safe names, with deterministic suffixes for collisions;
+the account namespace keeps them separate from workspace skills/connectors of the same name.
+Its SessionStart handler uses the existing hidden `ug cowork-hook` command to refresh
+enabled skills and request `reloadSkills` before the first turn. Downloads run with up to
+four workers; the hook has a 180-second timeout. Confirmed disabled or deleted skills
+are removed using an ownership manifest. Individual download failures warn and preserve
+prior copies for the same organization and skill ID; other downloads still proceed.
+A failed or explicitly incomplete catalog leaves existing resources intact. ZIP archives
+are limited to 32 MiB of unpacked files and 512 files per skill; unsafe paths, symlinks,
+case-colliding files, and invalid skill roots are rejected.
+Both proxy and hook bind to configure's original Claude configuration directory;
+Cowork's inherited `CLAUDE_CONFIG_DIR` cannot select a different Keychain entry. Hook
+refresh never opens an interactive sign-in flow. Disabling relay removes this additional
+plugin on reconfigure; revert cleans up both plugins.
+
+The API path was checked manually on macOS: account connector listing, MCP initialization,
+tool discovery, a read-only `guide` invocation, account skill listing, and `docs` ZIP
+download all succeeded with the saved subscription credential. A manual third-party
+Cowork smoke check also loaded the imported docs skill, called its read-only `guide`,
+and discovered workspace tools in the same task. Component tests cover multi-connector
+generation and skill refresh with isolated HTTP/authentication boundaries.
+**Broader account skill downloads, other account connectors, and repeated same-session
+skill reload still need native validation.** After reconfigure, start a fresh task and
+discover both account and workspace connector tools, load an imported skill other than
+docs, and check a read-only account connector operation. Do not create or edit content
+for this check. Importing a skill does not provide missing native browser, artifact,
+computer-use, or other tools; skills that depend on those capabilities may be unusable.
+
 ## Models and authentication
 
 UG uses an admin's static model list when supplied. Otherwise it obtains the

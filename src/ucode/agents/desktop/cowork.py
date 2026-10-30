@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import tempfile
 from collections import Counter
 from pathlib import Path
 from urllib.parse import unquote
 
 from ucode import config_io
+from ucode.agents.desktop import anthropic_cowork
 from ucode.agents.desktop.claude import claude_desktop_root_directory
 from ucode.databricks import build_mcp_proxy_argv
 from ucode.mcp_connection_login import connection_from_url
@@ -46,7 +48,8 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
 
     previous_state = config_io.read_json_safe(_state_path())
     skill_records = _workspace_skill_records(workspace)
-    if not previous_state and not skill_records and not mcp_servers:
+    relayed = bool(state.get("claude_relayed"))
+    if not previous_state and not skill_records and not mcp_servers and not relayed:
         return False
     if not previous_state and not _cowork_sessions_root_exists():
         return False
@@ -62,7 +65,7 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
         use_pat=bool(state.get("use_pat")),
         custom_oauth=bool(state.get("custom_oauth")),
     )
-    if not previous_state and not skill_records and not mcp_config["mcpServers"]:
+    if not previous_state and not skill_records and not mcp_config["mcpServers"] and not relayed:
         return False
 
     cowork_root = discover_cowork_root()
@@ -72,7 +75,25 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
     marketplace_root = _marketplace_root()
     plugin_root = marketplace_root / "plugins" / PLUGIN_NAME
     hooks = _connector_hooks(mcp_config, workspace, profile, use_pat=bool(state.get("use_pat")))
-    _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config, hooks)
+    resources = None
+    if relayed:
+        try:
+            resources = anthropic_cowork.load_resources(_claude_binary())
+        except RuntimeError as exc:
+            print_warning(f"Could not sync Anthropic Cowork resources: {exc}")
+    if resources is None and not relayed:
+        _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config, hooks)
+    else:
+        _write_marketplace(
+            marketplace_root,
+            plugin_root,
+            skill_records,
+            mcp_config,
+            hooks,
+            anthropic_resources=resources,
+            workspace=workspace,
+            preserve_anthropic=relayed,
+        )
     config_io.atomic_write_json(
         _state_path(),
         {"version": 1, "cowork_root": str(cowork_root)},
@@ -123,7 +144,14 @@ def _remove_plugin_registration(cowork_root: Path) -> bool:
     env = os.environ.copy()
     env["CLAUDE_CONFIG_DIR"] = str(cowork_root)
     plugin_result = False
-    for plugin_id in (PLUGIN_ID, LEGACY_PLUGIN_ID):
+    plugin_ids = [PLUGIN_ID, LEGACY_PLUGIN_ID]
+    installed = config_io.read_json_safe(cowork_root / "cowork_plugins/installed_plugins.json")
+    if (
+        _contains_plugin_id(installed, plugin_id=anthropic_cowork.PLUGIN_ID)
+        or (_marketplace_root() / "plugins" / anthropic_cowork.PLUGIN_NAME).is_dir()
+    ):
+        plugin_ids.append(anthropic_cowork.PLUGIN_ID)
+    for plugin_id in plugin_ids:
         result = _run_claude_json(
             claude,
             ["plugin", "uninstall", plugin_id, "--cowork", "--json"],
@@ -298,6 +326,10 @@ def _write_marketplace(
     skill_records: list[dict],
     mcp_config: dict,
     hooks: dict | None = None,
+    *,
+    anthropic_resources: anthropic_cowork.AccountResources | None = None,
+    workspace: str = "",
+    preserve_anthropic: bool = False,
 ) -> None:
     marketplace_root.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(
@@ -331,6 +363,26 @@ def _write_marketplace(
             _write_json(staging_plugin / ".mcp.json", mcp_config)
         if hooks:
             _write_json(staging_plugin / "hooks" / "hooks.json", hooks)
+        name = anthropic_cowork.PLUGIN_NAME
+        previous_account = marketplace_root / "plugins" / name
+        if anthropic_resources is not None or (preserve_anthropic and previous_account.is_dir()):
+            marketplace["plugins"].append(
+                {
+                    "name": name,
+                    "description": "Anthropic relay account resources",
+                    "source": f"./plugins/{name}",
+                }
+            )
+            if anthropic_resources is None:
+                shutil.copytree(previous_account, staging / "plugins" / name)
+            else:
+                anthropic_cowork.write_plugin(
+                    staging / "plugins" / name,
+                    anthropic_resources,
+                    os.path.abspath(sys.executable),
+                    workspace,
+                    previous_root=previous_account,
+                )
         _write_json(staging / ".claude-plugin" / "marketplace.json", marketplace)
         _write_json(staging_plugin / ".claude-plugin" / "plugin.json", plugin)
         _copy_skills(staging_plugin / "skills", skill_records)
@@ -521,6 +573,18 @@ def _install_plugin(cowork_root: Path, marketplace_root: Path) -> None:
         ["plugin", action, PLUGIN_ID, "--cowork", "--json"],
         env,
     )
+    anthropic_id = anthropic_cowork.PLUGIN_ID
+    anthropic_source = marketplace_root / "plugins" / anthropic_cowork.PLUGIN_NAME
+    if anthropic_source.is_dir():
+        action = "update" if _contains_plugin_id(installed, plugin_id=anthropic_id) else "install"
+        _run_claude_json(claude, ["plugin", action, anthropic_id, "--cowork", "--json"], env)
+    elif _contains_plugin_id(installed, plugin_id=anthropic_id):
+        _run_claude_json(
+            claude,
+            ["plugin", "uninstall", anthropic_id, "--cowork", "--json"],
+            env,
+            accepted_failures=("not installed", "not_installed", "not found"),
+        )
     if _contains_plugin_id(installed, plugin_id=LEGACY_PLUGIN_ID):
         _run_claude_json(
             claude,

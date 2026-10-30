@@ -345,6 +345,16 @@ nothing without a readable transcript or previous reply. Other events are ignore
 stdout holds only the hook JSON. Probes and token minting are faked; native Cowork hook
 execution remains unverified.
 
+`test_anthropic_cowork.py` covers relay-only multi-connector/account-skill discovery,
+credential-source binding, per-request token rotation, HTTP error redaction and redirect
+refusal, custom archive roots and supporting-file executable modes, alias collisions,
+partial-download retention, organization isolation, disabled/deleted-skill cleanup,
+discovery-failure preservation, eligibility checks, a separate generated plugin alongside
+workspace resources, relay-mode cleanup, and a real MCP SDK exchange over isolated HTTP
+and stdio transports. It checks forwarding of instructions, tool schemas and call results.
+HTTP, credential storage, and plugin CLI boundaries are replaced; these are component
+tests, not native Cowork or live Anthropic coverage.
+
 `test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
 generated marketplace/plugin/MCP manifests, the generated connector skill naming Claude-only
 MCP servers with its two 5-second retries and one sign-in recovery attempt for access/IP
@@ -358,7 +368,10 @@ the `ug` name and display name in both manifests. Legacy-registration checks cov
 replacement after successful install/update, preservation on install failure, scoped
 cleanup, and unrelated-plugin preservation. CLI component tests
 cover managed setup after successful skill/MCP reconciliation, preservation after transient
-reconciliation failures, and cleanup for unmanaged or non-Claude configurations. These tests
+reconciliation failures, and cleanup for unmanaged or non-Claude configurations.
+Managed configure checks also cover enabling, disabling, and retaining Claude relay mode
+across agent ordering, so Cowork and later agents use the newly configured relay state.
+These tests
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
 late MCP connection, tool discovery, or inference behavior.
 

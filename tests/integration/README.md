@@ -559,6 +559,14 @@ emits one warning and a failed Desktop summary, and preserves profile and select
 files. Retry restores the previous selection without workspace state and returns 0;
 a repeated revert also returns 0. This does not establish native Desktop coverage.
 
+`../test_anthropic_cowork.py` adds component checks for relay-only multi-connector and
+enabled/custom-skill import, stable aliases, supporting-file permissions, per-skill failure
+retention, catalog-failure preservation, organization isolation, disabled/deleted-skill
+removal, account API/credential boundaries, skill refresh, mode cleanup, and
+MCP instruction/schema/result forwarding. HTTP and stdio transports are isolated in these
+checks. Native Cowork hook execution, `reloadSkills`, gateway inference, and coexisting
+Anthropic/workspace tool calls remain unverified by the automated suite.
+
 `../test_cowork_plugin.py` covers Cowork-root discovery, generated plugin contents,
 scoped Claude plugin commands, install/update selection, PAT/custom-OAuth behavior, and
 owned-file cleanup. Alias checks cover short UC names, unchanged proxy routing, custom-name
@@ -566,8 +574,9 @@ preservation, order-independent collisions, and repeated replacement of old keys
 Manifest checks require the `ug` name and display name in both manifests.
 Legacy-registration component checks cover replacement after successful install/update,
 preservation on install failure, scoped cleanup, and unrelated-plugin preservation.
-`../test_desktop_configure_cli.py` covers managed orchestration and
-cleanup. Both are mocked component coverage; the integration suite does not launch Cowork,
+`../test_desktop_configure_cli.py` covers managed orchestration, relay-state transitions
+and retention across agent ordering, and cleanup. Both are mocked component coverage;
+the integration suite does not launch Cowork,
 connect a plugin MCP server, discover its deferred tool, or run a task through it.
 
 `../test_mcp_proxy.py` covers persistent OAuth U2M authentication-tool discovery, explicit

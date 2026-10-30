@@ -1203,6 +1203,11 @@ def _configure_workspace_command(
                 if last is None or tool_name in last:
                     configured_tools.append(tool_name)
                     if tool_name == "claude":
+                        for key in ("claude_relayed", "relayed_proxy_port"):
+                            if key in configured:
+                                state[key] = configured[key]
+                            else:
+                                state.pop(key, None)
                         from ucode.agents.desktop.setup import configure_claude_desktop
 
                         configure_claude_desktop(configured, parent_schema=parent_schema)
@@ -2511,18 +2516,50 @@ def mcp_proxy_cmd(
     serve(url, workspace, profile, use_pat=use_pat or bool(state.get("use_pat")))
 
 
+@app.command("anthropic-mcp-proxy", hidden=True)
+def anthropic_mcp_proxy_cmd(
+    host: Annotated[str, typer.Option("--host")],
+    server_id: Annotated[str, typer.Option("--server-id")],
+    claude_binary: Annotated[str, typer.Option("--claude-binary")],
+    claude_config_dir: Annotated[str, typer.Option("--claude-config-dir")] = "",
+) -> None:
+    """Bridge a relay-only account connector without storing its bearer."""
+    import sys
+
+    from ucode.agents.desktop.anthropic_cowork import credential_source
+    from ucode.anthropic_mcp_proxy import serve
+
+    state = load_state()
+    if not state.get("claude_relayed") or state.get("workspace", "").rstrip("/") != host.rstrip(
+        "/"
+    ):
+        print("Anthropic Cowork resources require the configured relay workspace.", file=sys.stderr)
+        raise typer.Exit(1)
+    if not os.path.isabs(claude_binary):
+        print("An absolute Claude Code executable path is required.", file=sys.stderr)
+        raise typer.Exit(1)
+    with credential_source(claude_config_dir):
+        serve(server_id, claude_binary)
+
+
 @app.command("cowork-hook", hidden=True)
 def cowork_hook_cmd(
     host: Annotated[str, typer.Option("--host", help="Configured workspace URL.")],
-    server: Annotated[list[str], typer.Option("--server", help="Connector as `<name>=<MCP URL>`.")],
+    server: Annotated[
+        list[str] | None, typer.Option("--server", help="Connector as `<name>=<MCP URL>`.")
+    ] = None,
     profile: Annotated[
         str | None, typer.Option("--profile", help="Databricks CLI profile.")
     ] = None,
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
+    anthropic: Annotated[bool, typer.Option("--anthropic")] = False,
+    claude_binary: Annotated[str | None, typer.Option("--claude-binary")] = None,
+    claude_config_dir: Annotated[str, typer.Option("--claude-config-dir")] = "",
 ) -> None:
     """Run the Cowork plugin's SessionStart and UserPromptSubmit hooks."""
     import json
     import sys
+    from pathlib import Path
 
     from ucode.agents.desktop.cowork_hooks import hook_output
 
@@ -2530,9 +2567,28 @@ def cowork_hook_cmd(
         payload = json.loads(sys.stdin.read() or "{}")
     except ValueError:
         return
-    servers = dict(entry.split("=", 1) for entry in server if "=" in entry)
+    servers = dict(entry.split("=", 1) for entry in (server or []) if "=" in entry)
     with redirect_stdout(sys.stderr):  # stdout is reserved for the hook's JSON
-        output = hook_output(payload, servers, host, profile, use_pat=use_pat)
+        if anthropic:
+            from ucode.agents.desktop.anthropic_cowork import credential_source, sync_hook
+
+            state = load_state()
+            if not state.get("claude_relayed") or state.get("workspace", "").rstrip(
+                "/"
+            ) != host.rstrip("/"):
+                return
+            root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+            if not root or not claude_binary or not os.path.isabs(claude_binary):
+                print_warning("Anthropic Cowork hook needs its plugin root and Claude executable.")
+                return
+            try:
+                with credential_source(claude_config_dir):
+                    output = sync_hook(payload, Path(root), claude_binary)
+            except (RuntimeError, OSError) as exc:
+                print_warning(f"Could not refresh Anthropic Cowork skills: {exc}")
+                return
+        else:
+            output = hook_output(payload, servers, host, profile, use_pat=use_pat)
     if output:
         sys.stdout.write(json.dumps(output))
 

@@ -564,6 +564,11 @@ def _get_claude_auth_token(claude_binary: str, *, deadline: float | None = None)
         return _claude_subscription_token()
 
 
+def get_claude_subscription_token(claude_binary: str) -> str:
+    """Read or silently refresh the subscription credential without Databricks auth."""
+    return _get_claude_auth_token(claude_binary, deadline=time.monotonic() + _HELPER_BUDGET_SECONDS)
+
+
 def get_claude_desktop_relay_credential(
     host: str,
     profile: str,
@@ -589,6 +594,7 @@ __all__ = [
     "CLAUDE_CODE_OAUTH_TOKEN_ENV",
     "CLAUDE_CONFIG_DIR_ENV",
     "ClaudeDesktopAuthError",
+    "get_claude_subscription_token",
     "get_claude_desktop_relay_credential",
     "get_claude_desktop_databricks_token",
 ]

@@ -228,6 +228,56 @@ def test_managed_claude_configures_cowork_after_mcp_and_skill_sync(configuration
     configure_cowork.assert_called_once_with(configuration, servers)
 
 
+@pytest.mark.parametrize("agents", [("claude",), ("claude", "codex"), ("codex", "claude")])
+@pytest.mark.parametrize(
+    "was_relayed,relayed", [(False, True), (True, False), (True, True), (False, False)]
+)
+def test_managed_cowork_uses_configured_claude_relay_state(
+    configuration, monkeypatch, agents, was_relayed, relayed
+):
+    if was_relayed:
+        configuration["claude_relayed"] = True
+        configuration["relayed_proxy_port"] = 43210
+    configured_inputs = {}
+
+    def configure_agent(state, tools, **kwargs):
+        tool = tools[0]
+        configured_inputs[tool] = dict(state)
+        configured = dict(state)
+        configured["last_configured_tools"] = [tool]
+        if tool == "claude":
+            if relayed:
+                configured["claude_relayed"] = True
+            else:
+                configured.pop("claude_relayed", None)
+                configured.pop("relayed_proxy_port", None)
+        return configured
+
+    configure_cowork = Mock()
+    monkeypatch.setattr(cli, "configure_selected_tools", configure_agent)
+    monkeypatch.setattr(desktop_setup, "configure_claude_desktop", lambda *a, **k: None)
+    monkeypatch.setattr(desktop_setup, "configure_claude_cowork", configure_cowork)
+    monkeypatch.setattr(
+        cli,
+        "refresh_managed_config",
+        lambda *a, **k: ({"enabled_agents": {tool: {} for tool in agents}}, False),
+    )
+
+    assert (
+        cli._configure_workspace_command(
+            workspaces=[("https://workspace.example", "chosen-profile")]
+        )
+        == 0
+    )
+    synced_state = configure_cowork.call_args.args[0]
+    expected_port = 43210 if was_relayed and relayed else None
+    assert bool(synced_state.get("claude_relayed")) is relayed
+    assert synced_state.get("relayed_proxy_port") == expected_port
+    if agents == ("claude", "codex"):
+        assert bool(configured_inputs["codex"].get("claude_relayed")) is relayed
+        assert configured_inputs["codex"].get("relayed_proxy_port") == expected_port
+
+
 @pytest.mark.parametrize("failed_sync", ["mcp", "skills"])
 def test_managed_sync_failure_preserves_existing_cowork(configuration, monkeypatch, failed_sync):
     configure_cowork = Mock()
