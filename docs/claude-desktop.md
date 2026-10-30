@@ -1,5 +1,9 @@
 # Claude Desktop through Unity Gateway
 
+For macOS fleet provisioning as root, use
+[`ug configure --agents claude --mdm-desktop`](claude-desktop-mdm.md).
+The behavior below describes ordinary configure without that flag.
+
 After Claude Code is successfully configured, `ug configure` also creates and
 selects a `Unity Gateway - <CLI profile name>` profile for Claude Desktop on macOS,
 Windows, and Linux. This uses
@@ -69,8 +73,9 @@ or revert. Other plugins are preserved. Default `ug revert` removes UG's registr
 both owned sources.
 
 This configures the current user. The MCP executable and Databricks profile still refer to
-the installation selected by configure. A shared UG runtime, setup for new users, policy
-enforcement, and automatic per-user refresh at login are separate MDM work. Manual testing
+the installation selected by configure. The separate [MDM mode](claude-desktop-mdm.md)
+uses a preinstalled shared runtime, machine policy, and automatic per-user refresh.
+Manual testing
 on macOS with Claude Desktop 4.4212.0 verified configure and reconfigure, skill invocation,
 connector calls, matching source/cache contents, and one UG registration without duplicates
 in Desktop settings. Skills and connector calls also worked with the user marketplace source

@@ -71,6 +71,13 @@ Source switching, refresh/rollback, scoped revert, ownership, and duplicate prev
 isolated component coverage in `../test_desktop_marketplace.py`; those checks do not
 establish native Desktop sync or ACLs.
 
+macOS `--mdm-desktop` provisioning and its per-user LaunchAgent are outside these
+Linux/Windows journeys. `../test_desktop_mdm.py` has component coverage for publication,
+auth separation, cache refresh, ownership conflicts, rollback, and deferred cleanup using
+temporary paths and simulated external boundaries. Native launchd activation, first-user
+timing, managed-plist precedence, and tool/skill invocation remain untested here; follow
+[`docs/claude-desktop-mdm.md`](../../docs/claude-desktop-mdm.md) before fleet rollout.
+
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.web_search and allow
 the test identity to invoke it. No dedicated Desktop MCP test, separate fixture-workspace step,

@@ -82,11 +82,46 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
     if not isinstance(profile, str) or not profile:
         raise RuntimeError("Select an explicit Databricks CLI profile and run ug configure again.")
 
+    settings = resolve_gateway_profile(state, parent_schema=parent_schema)
+
+    write_claude_desktop_profile(
+        **settings,
+        helper_command=os.path.abspath(sys.executable),
+        helper_args=[
+            "-m",
+            "ucode.cli",
+            "claude-desktop-auth",
+            "--host",
+            workspace,
+            "--profile",
+            profile,
+            *(["--relay", "--claude-binary", claude_binary] if claude_binary else []),
+        ],
+        otel_headers_command=[
+            os.path.abspath(sys.executable),
+            "-m",
+            "ucode.cli",
+            "otel-headers",
+            "--host",
+            workspace,
+            "--profile",
+            profile,
+        ],
+        profile_key=profile,
+    )
+    print_success("Claude Desktop gateway profile configured. Quit and reopen Claude Desktop.")
+
+
+def resolve_gateway_profile(
+    state: dict, *, parent_schema: str | None = None, token: str | None = None
+) -> dict:
+    workspace = state["workspace"]
+    profile = state.get("profile")
     provider = None if parent_schema else get_provider_service(state, "claude")
     static_models = (
         state.get("claude_static_models") if not provider and not parent_schema else None
     )
-    token = get_databricks_token(workspace, profile)
+    token = token if token is not None else get_databricks_token(workspace, profile)
     catalog = list_anthropic_model_catalog(
         workspace, token, provider=provider, parent_schema=parent_schema
     )
@@ -117,38 +152,15 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
             del headers[existing]
         headers[name] = value
 
-    write_claude_desktop_profile(
-        model_ids=model_ids,
-        model_id_to_display_name=display_names,
-        base_url=build_tool_base_url("claude", workspace.rstrip("/")),
-        helper_command=os.path.abspath(sys.executable),
-        helper_args=[
-            "-m",
-            "ucode.cli",
-            "claude-desktop-auth",
-            "--host",
-            workspace,
-            "--profile",
-            profile,
-            *(["--relay", "--claude-binary", claude_binary] if claude_binary else []),
-        ],
-        custom_headers=headers,
-        otel_endpoint=(
+    return {
+        "model_ids": model_ids,
+        "model_id_to_display_name": display_names,
+        "base_url": build_tool_base_url("claude", workspace.rstrip("/")),
+        "custom_headers": headers,
+        "otel_endpoint": (
             f"{workspace.rstrip('/')}/ai-gateway/otel" if state.get("claude_otel_tracing") else None
         ),
-        otel_headers_command=[
-            os.path.abspath(sys.executable),
-            "-m",
-            "ucode.cli",
-            "otel-headers",
-            "--host",
-            workspace,
-            "--profile",
-            profile,
-        ],
-        profile_key=profile,
-    )
-    print_success("Claude Desktop gateway profile configured. Quit and reopen Claude Desktop.")
+    }
 
 
 def revert_desktop() -> str:

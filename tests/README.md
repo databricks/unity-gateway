@@ -372,6 +372,15 @@ command adapters without sudo; Windows filesystem logic runs with simulated elev
 Only the external Claude CLI registry/cache is simulated. These component checks do not
 establish native Desktop sync, Windows ACLs, fresh-user provisioning, or connector runtime.
 
+`test_desktop_mdm.py` covers macOS-only/root CLI guards, provisioning without a Cowork
+account, string-encoded machine policy, shared command bindings without admin credentials,
+managed skill assets/connectors, one native registration, explicit update and deferred
+removal, interrupted-account cleanup, foreign-file preservation, rollback, dry run, and
+reuse of provisioning authentication. It reuses the temporary filesystem transaction fixture;
+workspace APIs, machine ownership, launchd, and Claude's registry/cache commands are simulated.
+This does not establish native macOS MDM, launchd, fresh-user GUI login, or tool/skill execution.
+The rollout checklist is in `docs/claude-desktop-mdm.md`.
+
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
 It checks that Claude uses an available Slack tool despite a stale disconnect notice, actually
 waits and then uses a tool exposed after resume, and performs the bounded wait before reporting
