@@ -138,6 +138,7 @@ from ucode.managed_resolve import (
     resolve_state,
 )
 from ucode.mcp import (
+    CONFIG_WRITABLE_MCP_CLIENTS,
     MCP_CLIENTS,
     McpServiceListingRateLimited,
     add_mcp_command,
@@ -1965,7 +1966,8 @@ def _configure_agents_for_mcp(
     """Select MCP clients for one workspace without changing agent model settings."""
     scope = {a if a == "cursor" else normalize_tool(a) for a in requested}
     installed = available_mcp_clients()
-    not_installed = sorted(scope - set(installed))
+    # A named client whose user MCP config UG writes directly needs no CLI on PATH.
+    not_installed = sorted(scope - set(installed) - CONFIG_WRITABLE_MCP_CLIENTS.keys())
     if not_installed:
         raise RuntimeError(_not_installed_message(not_installed))
     previous_workspace = current_workspace_key(load_full_state())
@@ -2072,7 +2074,8 @@ def mcp_add(
         typer.Option(
             "--agents",
             help="Comma-separated coding agents to register the server(s) for (e.g. "
-            "claude,codex,cursor). MCP registration is independent of model setup. Without --agents, "
+            "claude,codex,cursor). Claude/Codex user config can be written even without a CLI on "
+            "PATH. MCP registration is independent of model setup. Without --agents, "
             "the server is registered for every already-configured agent.",
         ),
     ] = None,
@@ -2095,11 +2098,11 @@ def mcp_add(
         ),
     ] = None,
 ) -> None:
-    """Add Databricks MCP servers to installed coding tools.
+    """Add Databricks MCP servers to supported coding tools.
 
     Purely additive: it never removes MCP servers that are already configured, only registers new
-    ones (use `ug mcp remove` to remove). Pass --agents to target (and, if needed, set up) specific
-    agents. Explicit MCP setup never configures agent models or machine-wide settings.
+    ones (use `ug mcp remove` to remove). Pass --agents to target specific clients. Explicit MCP
+    setup never configures agent models or machine-wide settings.
     """
     selected = None if names is None else {s.strip() for s in names.split(",") if s.strip()}
     requested_agents = (

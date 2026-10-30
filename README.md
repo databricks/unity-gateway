@@ -201,10 +201,10 @@ subscription token and Databricks gateway token on macOS, Windows, and Linux.
 
 ## MCP Servers
 
-Register Databricks MCP servers for configured MCP-capable agents. Cursor Agent
-is MCP-only and is included when `cursor-agent` is installed:
+Use `ug mcp add` to register Databricks MCP servers for coding agents. Cursor
+Agent supports MCP only and requires `cursor-agent` on PATH.
 
-Run `ug mcp add` without selectors to browse a table of services by name, UC location,
+Run `ug mcp add` without options to browse services by name, UC location,
 and status. ✓ means configured (or managed by the workspace); ✗ means not configured.
 Configured and managed services stay visible as read-only rows. `[ ]`/`[x]` indicate
 what you select for this operation; `[-]` marks a read-only row.
@@ -224,11 +224,15 @@ ug mcp add --agents cursor --names system.ai.github --workspace https://first.da
 ug mcp add --agents codex --names system.ai.github --profile DEFAULT
 ```
 
-With `--agents`, installed agents can be registered for MCP without configuring their
-models. `--workspace` or `--profile` selects the workspace on a fresh setup. If another
-workspace is already active, run `ug configure --workspace <url>` to switch first;
-the switch replaces the agent's active MCP registrations with those saved for the
-selected workspace. Switching back restores the earlier workspace's saved servers.
+`--agents` adds MCP servers without changing an agent's models. Claude Code and
+Codex work even if their CLI is not on PATH: UG writes their user MCP config
+directly. If that file already exists, UG detects the client without its CLI.
+This works on macOS, Windows, and Linux; other agents need their CLI on PATH.
+Without a CLI, status shows the saved config but cannot check the connection.
+
+`--workspace` or `--profile` selects the workspace on a fresh setup. To switch
+an existing setup, run `ug configure --workspace <url>` first. The switch uses
+that workspace's saved MCP servers; switching back restores the previous ones.
 
 Remove configured servers:
 

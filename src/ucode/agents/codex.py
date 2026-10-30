@@ -7,6 +7,7 @@ import hashlib
 import os
 import plistlib
 import re
+import shutil
 import signal
 import socket
 import sys
@@ -1035,6 +1036,8 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     path = user_mcp_config_path()
     doc = _read_user_config_for_rewrite(path)
     if doc is None:
+        if shutil.which("codex") is None:
+            raise RuntimeError(f"Codex config at {path} is invalid. Fix it or install the CLI.")
         if any("url" in entry for entry in add.values()):
             raise RuntimeError(
                 f"Cannot register native OAuth MCP server: Codex config is invalid TOML at {path}."

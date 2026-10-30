@@ -2714,6 +2714,7 @@ class TestWriteUserMcpServers:
         path = tmp_path / "config.toml"
         path.write_text("this is = = not valid toml [[[")
         monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
+        monkeypatch.setattr(codex.shutil, "which", lambda binary: "/fake/codex")
         added: list[tuple[str, list]] = []
         removed: list[str] = []
         import ucode.mcp as mcp_mod
@@ -2737,6 +2738,7 @@ class TestWriteUserMcpServers:
         path = tmp_path / "config.toml"
         path.write_text("this is = = not valid toml [[[", encoding="utf-8")
         monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
+        monkeypatch.setattr(codex.shutil, "which", lambda binary: "/fake/codex")
         with pytest.raises(RuntimeError, match="invalid TOML"):
             codex.write_user_mcp_servers(
                 {"github": codex.managed_mcp_http_entry("https://ws/mcp", "https://client/id")},

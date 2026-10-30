@@ -1059,8 +1059,8 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     developer's own servers and every other key in the file are preserved. Returns the subset of
     ``remove`` names that were actually present (so callers can report only real removals).
 
-    If the file exists but can't be parsed as a JSON object, we must not clobber it, so we defer to
-    the per-server ``claude`` CLI (which edits the file in place) for exactly the changed entries."""
+    If the file exists but can't be parsed as a JSON object, we must not clobber it. Defer to the
+    CLI when available; otherwise report the invalid config."""
     removed: set[str] = set()
 
     def mutate(config: dict) -> bool:
@@ -1074,7 +1074,12 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
         config["mcpServers"] = servers
         return True
 
-    if not _update_claude_config(claude_code_config_path(), mutate):
+    path = claude_code_config_path()
+    if not _update_claude_config(path, mutate):
+        if shutil.which("claude") is None:
+            raise RuntimeError(
+                f"Claude Code config at {path} is invalid. Fix it or install the CLI."
+            )
         for name in remove:
             # Clean every scope (not short-circuited), recording the name if any scope had it.
             if [scope for scope in MCP_CLEANUP_SCOPES if remove_claude_mcp_server(name, scope)]:
