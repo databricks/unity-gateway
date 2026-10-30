@@ -124,6 +124,12 @@ MCP_CLIENTS = {
         "list_command": "agy mcp list",
     },
 }
+# These clients read their user MCP files on every supported OS. UG can write those files
+# directly, including when a desktop app exists without a CLI on PATH.
+CONFIG_WRITABLE_MCP_CLIENTS: dict[str, Callable[[], Path]] = {
+    "claude": lambda: claude.claude_code_config_path(),
+    "codex": lambda: codex.user_mcp_config_path(),
+}
 SKILLS_MCP_KIND = "skills"
 SKILLS_MCP_SERVER_NAME = "databricks-skill-registry"
 SKILL_LOCATIONS_BY_CLIENT_KEY = "skill_locations_by_client"
@@ -255,18 +261,37 @@ def remove_gemini_mcp_server(name: str) -> bool:
 
 
 def available_mcp_clients() -> list[str]:
-    return [client for client, spec in MCP_CLIENTS.items() if shutil.which(str(spec["binary"]))]
+    return [
+        client
+        for client in MCP_CLIENTS
+        if _mcp_cli_available(client) or _config_only_mcp_client(client)
+    ]
+
+
+def _mcp_cli_available(client: str) -> bool:
+    return shutil.which(str(MCP_CLIENTS[client]["binary"])) is not None
+
+
+def _config_only_mcp_client(client: str) -> bool:
+    """A client with a readable user config and no CLI; presence is not live health."""
+    path = CONFIG_WRITABLE_MCP_CLIENTS.get(client)
+    return path is not None and path().is_file()
 
 
 def configured_mcp_clients(state: dict, installed_clients: list[str]) -> list[str]:
     configured_tools = state.get("available_tools") or []
     if not isinstance(configured_tools, list):
         configured_tools = []
-    configured = set(configured_tools) | set(state.get("mcp_clients") or [])
+    registered = set(state.get("mcp_clients") or [])
+    configured = set(configured_tools) | registered
     return [
         client
         for client in MCP_CLIENTS
-        if client in installed_clients and (client in configured or client in MCP_ONLY_CLIENTS)
+        if (
+            client in installed_clients
+            or (client in registered and client in CONFIG_WRITABLE_MCP_CLIENTS)
+        )
+        and (client in configured or client in MCP_ONLY_CLIENTS)
     ]
 
 
@@ -363,6 +388,20 @@ def configure_client_mcp_server(
     use_pat: bool = False,
     always_load: bool = False,
 ) -> list[str]:
+    # The desktop apps read these files on every OS. An explicitly selected client can be
+    # configured before its CLI is on PATH; the writer creates the user config if needed.
+    if client in CONFIG_WRITABLE_MCP_CLIENTS and not _mcp_cli_available(client):
+        entry = _managed_mcp_entry(
+            client,
+            url,
+            workspace,
+            profile,
+            use_pat=use_pat,
+            always_load=always_load,
+            http_client=_oauth_http_client(client, workspace, use_pat=use_pat),
+        )
+        removed = _MCP_CLIENT_MODULES[client].write_user_mcp_servers({name: entry}, {name})
+        return [MCP_USER_SCOPE] if removed else []
     # Connection-backed services use native HTTP OAuth for CIMD-capable agents.
     # Other cases keep the stdio proxy: no-login services, unrelated URLs, PAT,
     # unsupported agents, and workspaces without CIMD support.
@@ -429,6 +468,9 @@ def configure_client_mcp_server(
 
 
 def remove_client_mcp_server(client: str, name: str) -> list[str]:
+    if client in CONFIG_WRITABLE_MCP_CLIENTS and not _mcp_cli_available(client):
+        removed = _MCP_CLIENT_MODULES[client].write_user_mcp_servers({}, {name})
+        return [MCP_USER_SCOPE] if removed else []
     if client == "claude":
         return [
             scope for scope in MCP_CLEANUP_SCOPES if claude.remove_claude_mcp_server(name, scope)
@@ -1944,10 +1986,11 @@ def setup_mcp_clients(
         purge_cross_workspace_mcp_residue(state, workspace)
 
     installed_clients = available_mcp_clients()
-    if not installed_clients:
+    configured_direct = set(state.get("mcp_clients") or []) & CONFIG_WRITABLE_MCP_CLIENTS.keys()
+    if not installed_clients and not configured_direct:
         raise RuntimeError(
-            "No supported MCP clients are installed. Install Claude, Codex, Gemini, OpenCode, "
-            "or GitHub Copilot CLI."
+            "No supported MCP clients are available. Install a client CLI or select "
+            "Claude Code or Codex with `ug mcp add --agents`."
         )
     clients = configured_mcp_clients(state, installed_clients)
     if agents is not None:
@@ -2607,9 +2650,31 @@ def _run_mcp_list(client: str) -> str | None:
 
 
 def query_live_mcp_status(client: str) -> dict[str, str]:
-    """MCP ``{server_name: state}`` for one installed agent, including ug's Copilot config."""
-    output = _run_mcp_list(client)
+    """MCP ``{server_name: state}`` for one client, including config-only status."""
+    config_only = _config_only_mcp_client(client) and not _mcp_cli_available(client)
+    output = None if config_only else _run_mcp_list(client)
     statuses = parse_mcp_list_output(client, output) if output is not None else {}
+    if config_only:
+        # A config-only client has no CLI to probe. Report config presence, not connection
+        # health. Codex exposes a local enabled bit; Claude's connection remains unknown.
+        if client == "claude":
+            servers = read_json_safe(claude.claude_code_config_path()).get("mcpServers")
+            managed = claude.read_managed_mcp_urls()
+        else:
+            servers = read_toml_safe(codex.user_mcp_config_path()).get("mcp_servers")
+            managed = codex.read_managed_mcp_urls()
+        if isinstance(servers, Mapping):
+            for name, entry in servers.items():
+                state = LIVE_UNKNOWN
+                if client == "codex":
+                    state = (
+                        LIVE_DISABLED
+                        if isinstance(entry, Mapping) and entry.get("enabled") is False
+                        else LIVE_ENABLED
+                    )
+                statuses.setdefault(name, state)
+        for name in managed:
+            statuses.setdefault(name, LIVE_UNKNOWN)
     if client == "copilot":
         # Copilot reads ug's additional MCP config only on an agent launch. Its bare `mcp list`
         # omits these servers, so report their configured state without claiming a live probe.
@@ -2841,8 +2906,18 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
     if other_summary:
         print_note(f"Other MCP servers not configured by ug — {other_summary}.")
 
-    live_note = "Status is from each agent's `mcp list`"
-    if "codex" in probe_clients:
+    config_only = {
+        client
+        for client in probe_clients
+        if _config_only_mcp_client(client) and not _mcp_cli_available(client)
+    }
+    live_note = (
+        "Status uses each CLI's `mcp list` when available; config-only status is from config, "
+        "not live health"
+        if config_only
+        else "Status is from each agent's `mcp list`"
+    )
+    if "codex" in probe_clients and "codex" not in config_only:
         live_note += "; Codex reports enabled/disabled"
     if "copilot" in probe_clients:
         live_note += "; ug-added Copilot servers report configured/enabled, not live health"

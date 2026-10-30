@@ -75,6 +75,13 @@ native installer, `agy mcp list` parsing, `ug antigravity`/`ug agy`, and
 eight journeys in `integration/` (blocking Linux CI lane, Databricks Hosted and the Gemini
 Enterprise MPS; see `integration/README.md`).
 
+`TestConfigOnlyMcpClients` in `test_mcp.py` covers Claude/Codex detection from existing
+user config files, direct registration when their CLIs are absent, and config-only
+status that makes no live-health claim. `TestMcpAddWorkspaceState` in `test_cli.py`
+checks explicit MCP selection with neither CLI nor pre-existing user config.
+These component tests run against temporary files; native desktop behavior on macOS,
+Windows, and Linux still needs a real client check.
+
 `test_integration_contract.py` checks that isolated test sessions set Antigravity's
 `AGY_CLI_DISABLE_AUTO_UPDATE` to the required literal `true`, overriding an inherited `1`.
 This component check does not run the native updater; the integration runner retains its

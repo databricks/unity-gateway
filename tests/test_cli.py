@@ -3274,14 +3274,16 @@ class TestConfigureAgentsForMcp:
 
         mock_prompt.assert_not_called()
 
-    def test_agent_still_unready_after_setup_errors(self):
+    def test_other_clients_without_cli_still_fail_before_prompt(self):
         with (
             patch("ucode.cli.load_state", return_value={}),
             patch("ucode.cli.available_mcp_clients", return_value=[]),
-            patch("ucode.cli.configure_workspace_command"),
-            pytest.raises(RuntimeError, match="Not installed or not set up: Codex"),
+            patch("ucode.cli._prompt_for_configuration") as prompt,
+            pytest.raises(RuntimeError, match="Not installed or not set up: Gemini CLI"),
         ):
-            cli_mod._configure_agents_for_mcp(["codex"])
+            cli_mod._configure_agents_for_mcp(["gemini"])
+
+        prompt.assert_not_called()
 
 
 class TestMcpAddWorkspace:
@@ -3359,6 +3361,39 @@ class TestMcpAddWorkspaceState:
     @staticmethod
     def _save_workspace(workspace: str, **extra) -> None:
         real_save_state({"workspace": workspace, "available_tools": ["codex"], **extra})
+
+    @pytest.mark.parametrize("agent", ["claude", "codex"])
+    def test_explicit_config_writable_client_needs_no_cli(self, agent):
+        from ucode.mcp import setup_mcp_clients
+        from ucode.state import load_state
+
+        selected = []
+
+        def register(**kwargs):
+            selected.append(
+                setup_mcp_clients(
+                    load_state(),
+                    "MCP servers",
+                    agents=kwargs["agents"],
+                    require_auth=False,
+                    purge_foreign=False,
+                )[2]
+            )
+
+        with (
+            patch("ucode.cli.available_mcp_clients", return_value=[]),
+            patch("ucode.mcp.available_mcp_clients", return_value=[]),
+            patch("ucode.cli.add_mcp_command", side_effect=register),
+            patch("ucode.cli._sync_claude_cowork_plugin"),
+        ):
+            result = runner.invoke(
+                app,
+                ["mcp", "add", "--agents", agent, "--names", "a.b.c", "--workspace", self.WS_B],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert selected == [[agent]]
+        assert load_state()["mcp_clients"] == [agent]
 
     def test_first_mcp_add_selects_its_workspace(self):
         from ucode.state import load_full_state

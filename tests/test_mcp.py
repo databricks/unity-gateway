@@ -110,6 +110,54 @@ class TestBuildMcpProxyArgv:
         assert "--profile" not in no_profile
 
 
+class TestConfigOnlyMcpClients:
+    @pytest.mark.parametrize("client", ["claude", "codex"])
+    def test_detects_existing_config_without_cli(self, tmp_path, monkeypatch, client):
+        monkeypatch.setattr(mcp.shutil, "which", lambda binary: None)
+        path = tmp_path / (".claude.json" if client == "claude" else "config.toml")
+        if client == "claude":
+            monkeypatch.setattr(mcp.claude, "claude_code_config_path", lambda: path)
+        else:
+            monkeypatch.setattr(mcp.codex, "user_mcp_config_path", lambda: path)
+        path.write_text("{}" if client == "claude" else "")
+
+        assert client in mcp.available_mcp_clients()
+        assert client in mcp.configured_mcp_clients(
+            {"available_tools": [client]}, mcp.available_mcp_clients()
+        )
+
+        path.unlink()
+        assert client not in mcp.available_mcp_clients()
+
+    @pytest.mark.parametrize("client", ["claude", "codex"])
+    def test_config_only_registration_creates_file_and_reports_no_live_health(
+        self, tmp_path, monkeypatch, client
+    ):
+        monkeypatch.setattr(mcp.shutil, "which", lambda binary: None)
+        monkeypatch.setattr(mcp, "_oauth_http_client", lambda *a, **kw: None)
+        monkeypatch.setattr(mcp, "_native_oauth_http_entry", lambda *a, **kw: None)
+        monkeypatch.setattr(mcp.claude, "read_managed_mcp_urls", lambda: {})
+        monkeypatch.setattr(mcp.codex, "read_managed_mcp_urls", lambda: {})
+        monkeypatch.setattr(mcp.subprocess_cross_os, "run", lambda *a, **kw: pytest.fail("CLI ran"))
+        monkeypatch.setattr(mcp, "_run_mcp_list", lambda selected: None)
+        if client == "claude":
+            path = tmp_path / ".claude.json"
+            monkeypatch.setattr(mcp.claude, "claude_code_config_path", lambda: path)
+        else:
+            path = tmp_path / "config.toml"
+            monkeypatch.setattr(mcp.codex, "user_mcp_config_path", lambda: path)
+
+        assert mcp.configure_client_mcp_server(client, "github", GH_URL, WS, "p") == []
+        assert path.exists()
+        status = mcp.query_live_mcp_status(client)
+        assert status["github"] == (mcp.LIVE_UNKNOWN if client == "claude" else mcp.LIVE_ENABLED)
+        if client == "codex":
+            path.write_text(path.read_text() + "enabled = false\n")
+            assert mcp.query_live_mcp_status(client)["github"] == mcp.LIVE_DISABLED
+        assert mcp.remove_client_mcp_server(client, "github") == [mcp.MCP_USER_SCOPE]
+        assert "github" not in mcp.query_live_mcp_status(client)
+
+
 class TestAddCodexMcpServer:
     def test_registers_stdio_proxy_command(self, monkeypatch):
         calls: list[dict] = []
@@ -4570,6 +4618,15 @@ class TestListMcpCommand:
         self._patch(monkeypatch, live={"claude": {}, "codex": {}})
         assert mcp.list_mcp_command() == 0
         assert "Codex reports enabled/disabled" in _unwrap(capsys.readouterr().out)
+
+    def test_config_only_status_note_does_not_claim_live_probe(self, monkeypatch, capsys):
+        self._patch(monkeypatch, installed=("claude", "codex"))
+        monkeypatch.setattr(mcp.shutil, "which", lambda binary: None)
+        monkeypatch.setattr(mcp, "_config_only_mcp_client", lambda client: True)
+        assert mcp.list_mcp_command() == 0
+        out = _unwrap(capsys.readouterr().out)
+        assert "config-only status is from config, not live health" in out
+        assert "Codex reports enabled/disabled" not in out
 
     def test_codex_caveat_omitted_when_scoped_out(self, monkeypatch, capsys):
         # Scoping Codex out drops the Codex clause from the note.

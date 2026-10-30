@@ -224,9 +224,13 @@ ug mcp add --agents cursor --names system.ai.github --workspace https://first.da
 ug mcp add --agents codex --names system.ai.github --profile DEFAULT
 ```
 
-With `--agents`, installed agents can be registered for MCP without configuring their
-models. `--workspace` or `--profile` selects the workspace on a fresh setup. If another
-workspace is already active, run `ug configure --workspace <url>` to switch first;
+With `--agents`, Claude Code and Codex can be registered for MCP through their user
+config files on macOS, Windows, and Linux, even when their CLIs are off PATH. A
+client whose CLI is off PATH is discovered automatically when its user config
+already exists; select it explicitly with `--agents` to create that config on a
+fresh setup. This confirms registration, not an active MCP connection. Other agents
+need their CLI on PATH. `--workspace` or `--profile` selects the workspace on a fresh
+setup. If another workspace is already active, run `ug configure --workspace <url>` to switch first;
 the switch replaces the agent's active MCP registrations with those saved for the
 selected workspace. Switching back restores the earlier workspace's saved servers.
 
