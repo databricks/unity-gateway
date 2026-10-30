@@ -349,6 +349,7 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             "version": "1.0.0",
             "description": "Launch-scoped agents for Unity Gateway smart routing.",
             "author": {"name": "Databricks"},
+            "types": "./hooks/types.d.ts",
             "userConfig": {
                 "orchestratorInstructions": {
                     "type": "string",
@@ -423,6 +424,8 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
         "routing-state.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
+        "subagent-pane.ts",
+        "types.d.ts",
     ):
         write_text_file(plugin_dir / "hooks" / name, (mods / name).read_text(encoding="utf-8"))
     write_json_file(plugin_dir / "hooks" / "hooks.json", {"modules": ["./register.ts"]})

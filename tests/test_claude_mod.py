@@ -24,6 +24,8 @@ def test_plugin_contains_mod_entry_point(tmp_path):
         "routing-state.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
+        "subagent-pane.ts",
+        "types.d.ts",
     ):
         assert (tmp_path / "hooks" / name).read_bytes() == (mods / name).read_bytes()
     assert sorted(path.name for path in (tmp_path / "hooks").iterdir()) == [
@@ -34,7 +36,9 @@ def test_plugin_contains_mod_entry_point(tmp_path):
         "register.ts",
         "routing-state.ts",
         "smart-routing-status.ts",
+        "subagent-pane.ts",
         "subagent-routing.ts",
+        "types.d.ts",
     ]
 
 

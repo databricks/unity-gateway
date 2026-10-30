@@ -1,5 +1,22 @@
 # Test suites and user journeys
 
+The subagent side pane PoC has native mod component coverage in
+`native_claude/mod_tests/subagent-pane.test.ts`: automatic and manual opening, collapse/expand,
+denied spawns, model/tool/time rendering, waiting versus completed status,
+closing five seconds after all agents finish, cancellation for new work, and
+reopening for the next batch. Render checks also cover the focus and navigation
+instructions at the top of the expanded pane, green completion checks, and a
+compact side pane with labeled counts and no buttons. Collapse releases
+focus and requests 23 content columns (24 including the host divider); successful
+host-reported pane focus expands it; without focus it stays compact. Both views close after the
+five-second grace period, without a summary bar above the prompt.
+Each new batch opens fully expanded; manual collapse lasts for the current batch.
+Native render checks verify yellow running circles, green completion checks,
+red error circles, and separate success/failure counts using engine statuses.
+Packaging coverage in `test_claude_mod.py` checks the module
+and state contract ship unchanged. Live TUI placement, keyboard navigation,
+transcript selection, reload/resume recovery, and gateway inference are not covered.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered

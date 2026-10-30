@@ -12,6 +12,7 @@ import {
 import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, registerIsaacFeedback } from './isaac-feedback.ts';
 import { isRoutingEnabled } from './routing-state.ts';
+import { registerSubagentPane } from './subagent-pane.ts';
 
 type Environment = Record<string, string | undefined>;
 
@@ -173,6 +174,7 @@ export function register(on: On, options: PluginOptions): void {
   });
   registerStatusBand(on);
   registerSubagentRouting(on, options);
+  registerSubagentPane(on);
   // Claude allows one unmatched turn.complete handler per plugin, so both modules share it.
   on('turn.complete', ($, e, next) => {
     endSubagentRoutingTurn(e.isAborted);

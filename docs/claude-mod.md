@@ -12,6 +12,51 @@ input with the permission mode) always ends with `smart router ON` or `smart rou
 routing launches use this path, and the existing temporary-directory lifecycle
 cleans up the files when Claude exits.
 
+The subagent side pane PoC ships in the same plugin. Launch this checkout with
+`uv run ug claude --enable-smart-routing`; the first successful subagent spawn
+automatically opens a 34-column pane on the right. `/subagents` also opens it
+manually, or switches it to a compact side pane when already open.
+The compact view requests 23 content columns, giving a 24-column dock including
+Claude's divider, the host's minimum width. It shows labeled status counts and
+the focus shortcut, with no buttons. The expanded view uses `>>` to collapse.
+Collapsing releases keyboard focus;
+Ctrl+X, then Tab focuses the pane; the next status refresh expands it within one
+second. `/subagents` also expands it.
+No summary bar is added above the prompt. Claude's saved or manually chosen dock
+width can override a plugin's requested width.
+Every new batch opens fully expanded, even after a manual collapse. Manual collapse
+applies only to the current batch. Launches without smart routing do not include it.
+
+Rows show the agent type, description, model, elapsed time, and latest tool.
+Each row has a yellow circle while running, a green check on successful completion,
+or a red circle with an error label when failed or killed. Failure counts stay
+separate from successful completions in the expanded and compact views.
+Running agents appear first. Claude's agent list supplies completion status once
+per second; waiting agents remain active while their background work runs.
+Both expanded and compact panes linger for five seconds after every tracked agent
+is finished, then close.
+New work cancels the pending close; the pane opens again for the next
+batch. Finished rows remain available through `/subagents` until the next batch
+spawns. Rows track spawns observed by the mod; existing agents are
+not recovered after a plugin reload or resume.
+
+The expanded pane starts with focus and navigation instructions. Press Ctrl+X,
+release it, then Tab to focus the pane with Claude's default keybindings.
+Select a row to view its transcript in the main TUI. With pane focus, `1`–`9`
+select visible rows, `0` returns to the main conversation, and the arrow keys move focus.
+Enter opens the focused row, and `s` collapses the pane. Completed rows also show
+a green check. The host
+controls placement and available terminal space. Extra rows show `+N more`;
+use Claude's native agent panel to reach agents beyond the visible rows.
+Native component tests cover automatic and manual opening, compact sizing,
+expansion when the host reports pane focus, denied spawns,
+model/tool/time rendering, waiting versus completed status, automatic closing after
+all agents finish with a five-second grace period, cancellation for new work, and
+reopening for the next batch.
+They do not establish live transcript navigation, narrow-terminal layout, or
+gateway inference. The PoC has been validated with Claude Code 2.1.290 and 2.1.314.
+Relaunch through this checkout to load changes; UG copies the module at launch.
+
 The same entry point routes Agent/Task calls in a native `tool.call` hook. It pipes the
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
 the `routeCommand` plugin option, and continues the call with the returned input. The
