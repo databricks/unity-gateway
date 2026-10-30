@@ -14,7 +14,7 @@ on:
         default: terminal-bench@2.0
         required: true
       model:
-        description: Optional model passed to ug --model (blank uses ug's default)
+        description: Optional model passed to ug --model, except in the GPT jobs (blank uses ug's default)
         default: ''
         required: false
       claude_version:
@@ -47,13 +47,28 @@ env:
 jobs:
   # Real TB2 tasks run in Harbor's Linux containers, with ug installed inside each one.
   harbor:
-    name: Harbor · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · Linux
+    name: Harbor · ${{ matrix.label }} · Linux
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
-        agent: [claude, codex]
+        # Each entry is one job. An entry without a model uses the dispatch input or ug's default.
+        include:
+          - agent: claude
+            label: Claude
+            artifact: claude
+          - agent: codex
+            label: Codex
+            artifact: codex
+          - agent: claude
+            model: system.ai.gpt-6-luna
+            label: Claude · gpt-6-luna
+            artifact: claude-gpt-6-luna
+          - agent: claude
+            model: system.ai.gpt-6-1-sol
+            label: Claude · gpt-6-1-sol
+            artifact: claude-gpt-6-1-sol
     env:
       UV_INDEX_URL: https://pypi.org/simple
       # bench_auth.py mints a fresh token per task from the CUJ service principal when
@@ -63,6 +78,7 @@ jobs:
       UG_BENCH_SP_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}
       UG_BENCH_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
       UG_BENCH_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
+      MODEL: ${{ matrix.model || inputs.model }}
       PYTHONPATH: ${{ github.workspace }}/bench/terminal_bench
       AGENT_CLASS: ${{ matrix.agent == 'claude' && 'UgClaude' || 'UgCodex' }}
     steps:
@@ -95,7 +111,7 @@ jobs:
           run_harbor "${includes[@]}" -k 2
           retry=()
           while read -r task; do retry+=(-i "$task"); done \
-            < <(python3 bench/terminal_bench/summarize_harbor.py "$out" --undecided)
+            < <(python3 bench/terminal_bench/summarize_harbor.py "$out" --undecided --model "$MODEL")
           if (( ${#retry[@]} )); then run_harbor "${retry[@]}" -k 1; fi
       - name: Run ug's own tasks
         if: ${{ !cancelled() }}
@@ -115,14 +131,14 @@ jobs:
           run_harbor "${includes[@]}" -k 2
           retry=()
           while read -r task; do retry+=(-i "$task"); done \
-            < <(python3 bench/terminal_bench/summarize_harbor.py "$out" --undecided)
+            < <(python3 bench/terminal_bench/summarize_harbor.py "$out" --undecided --model "$MODEL")
           if (( ${#retry[@]} )); then run_harbor "${retry[@]}" -k 1; fi
       - name: Summarize
         if: ${{ !cancelled() }}
         run: |
           status=0
-          python3 bench/terminal_bench/summarize_harbor.py "$RUNNER_TEMP/harbor-jobs/tb2" "TB2 · ${{ matrix.agent }}" --min-passes 2 || status=1
-          python3 bench/terminal_bench/summarize_harbor.py "$RUNNER_TEMP/harbor-jobs/ug" "ug tasks in Harbor · ${{ matrix.agent }}" --min-passes 2 || status=1
+          python3 bench/terminal_bench/summarize_harbor.py "$RUNNER_TEMP/harbor-jobs/tb2" "TB2 · ${{ matrix.agent }}" --min-passes 2 --model "$MODEL" || status=1
+          python3 bench/terminal_bench/summarize_harbor.py "$RUNNER_TEMP/harbor-jobs/ug" "ug tasks in Harbor · ${{ matrix.agent }}" --min-passes 2 --model "$MODEL" || status=1
           exit $status
       - name: Scrub the bearer token from job output
         if: ${{ !cancelled() }}
@@ -131,7 +147,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: terminal-bench-harbor-${{ matrix.agent }}
+          name: terminal-bench-harbor-${{ matrix.artifact }}
           path: ${{ runner.temp }}/harbor-jobs/
 
   # Windows runners can't run Linux containers, so ug's own tasks also run on the host.

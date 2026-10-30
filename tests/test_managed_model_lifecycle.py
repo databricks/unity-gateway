@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from ucode import managed_config, managed_files
+from ucode import databricks, managed_config, managed_files
 from ucode.agents import claude, codex
 from ucode.config_io import read_toml_safe
 from ucode.managed_config import normalize_managed_config
@@ -221,6 +221,29 @@ def harness(tmp_path, monkeypatch):
         lambda _binary, names: {"models": [{"slug": n, "visibility": "list"} for n in names]},
     )
     return h
+
+
+def test_unmanaged_claude_picker_refreshes_on_repeated_launches(harness):
+    state = {"workspace": WS, "claude_models": dict(DISCOVERED_CLAUDE)}
+    for launch in range(3):
+        assert (
+            claude.get_family_defaults(
+                state, managed_config=False, provider=None, parent_schema=None
+            )
+            is None
+        )
+        catalog = claude.default_model_picker_catalog(
+            DISCOVERED_CLAUDE,
+            discovered_catalog=databricks.AnthropicModelCatalog(
+                model_ids=[f"main.default.model_{launch}"], model_id_to_display_name={}
+            ),
+        )
+        state = claude.write_tool_config(state, None, picker_catalog=catalog)
+
+        for settings in harness.claude_files():
+            assert [
+                option["model"] for option in settings["modelPicker"]["options"]
+            ] == catalog.model_ids
 
 
 def test_claude_model_lifecycle(harness):
