@@ -68,7 +68,6 @@ def test_ug_codex_windows_session_controls(live_session, workspace, tmp_path):
                 "-c",
                 'sandbox_mode="read-only"',
                 "sandbox",
-                "windows",
                 "--",
                 str(python),
                 str(probe),
@@ -77,11 +76,32 @@ def test_ug_codex_windows_session_controls(live_session, workspace, tmp_path):
                 ok=False,
             )
             summary["outside_read"] = json.loads(outside.stdout)
-            summary["sandbox_read"] = json.loads(restricted.stdout)
             assert restricted.returncode == 13, restricted
+            summary["sandbox_read"] = json.loads(restricted.stdout)
             assert summary["sandbox_read"]["type"] == "PermissionError"
             assert json.loads(controls.read_text()) == {}
             session.run(str(controls.parent), binary=session.which("icacls"))
+            session.env["UCODE_SESSION_ENV_FILE"] = str(controls)
+            try:
+                denied_toggle = session.run(
+                    "-c",
+                    'sandbox_mode="read-only"',
+                    "sandbox",
+                    "--",
+                    str(python),
+                    "-m",
+                    "ucode.cli",
+                    "codex",
+                    "--disable-smart-routing",
+                    binary=session.which("codex"),
+                    ok=False,
+                )
+            finally:
+                session.env.pop("UCODE_SESSION_ENV_FILE")
+            assert denied_toggle.returncode == 1, denied_toggle
+            assert "are invalid" in denied_toggle.stdout + denied_toggle.stderr
+            assert json.loads(controls.read_text()) == {}
+            summary["sandbox_toggle"] = {"returncode": denied_toggle.returncode}
 
             def toggle(enabled):
                 state = "on" if enabled else "off"
