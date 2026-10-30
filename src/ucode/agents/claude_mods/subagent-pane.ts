@@ -65,6 +65,15 @@ async function reconcile($: EngineInterface) {
 }
 
 export const registerSubagentPane = (on: On): void => {
+  on('ui.open', async ($, e, next) => {
+    if (e.id !== PANE && e.focus && (await $.ui.panes()).some(pane => pane.id === PANE && pane.isFocused)) {
+      // Claude ignores a new focus request while another pane holds the keyboard.
+      await $.ui.close({ id: PANE })
+      await openPane($, await read($, isCollapsed))
+    }
+    return next(e)
+  })
+
   on('session.start', { surface: 'terminal' }, async ($, e, next) => {
     closeAt = undefined
     await update($, agents, () => [])

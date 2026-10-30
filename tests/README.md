@@ -4,6 +4,8 @@ Subagent pane coverage: `native_claude/mod_tests/subagent-pane.test.ts` checks
 opening, collapse/focus expansion, status colors/counts, tool/time rendering,
 denied spawns, and the five-second close delay with cancellation and new batches.
 `test_claude_mod.py` checks packaged sources and state declarations.
+`native_claude/mod_tests/register.test.ts` checks `/smart-router off` releases
+Subagents focus so the feedback form can open without losing the Subagents tab.
 See [pane behavior and limits](../docs/claude-mod.md). Live layout,
 keyboard/transcript navigation, reload/resume recovery, and inference are not covered.
 

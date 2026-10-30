@@ -115,6 +115,54 @@ function engine(on: On, env: Record<string, string | undefined>) {
   return { tails };
 }
 
+test('turning routing off releases subagent pane focus for the feedback form', {
+  options: { ...ROUTED, isaacExecutable: '/bin/isaac', isaacFeedbackDirectory: '/feedback' },
+}, async ($, on) => {
+  const { env } = setup(on);
+  env.ISAAC_SMART_ROUTER_FEEDBACK = '1';
+  env.UCODE_SMART_ROUTER_PYTHON = '/ug/python';
+  env.UCODE_SESSION_ENV_FILE = '/session/env.json';
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '{"message_id":null}', stderr: '' } }));
+  on('session.id', () => ({ value: 'pane-feedback-session' }));
+  let placed = false;
+  let focused = false;
+  const events: string[] = [];
+  on('ui.panes', () => ({ value: placed
+    ? [{ id: 'subagents', title: 'Subagents', isPlaced: true, isFocused: focused }]
+    : [] }));
+  on('ui.close', ($, e) => {
+    events.push(`close:${e.id}`);
+    if (e.id === 'subagents') { placed = false; focused = false; }
+    return { value: undefined };
+  });
+  on('ui.open', ($, e) => {
+    events.push(`open:${e.id}`);
+    if (e.id === 'subagents') placed = true;
+    if (e.id === 'smart-router-feedback') {
+      expect(focused).toBe(false);
+      expect(e.focus).toBe(true);
+    }
+    return { value: { isPlaced: true } };
+  });
+
+  await $.command.run({ command: 'subagents', args: '' });
+  focused = true;
+  events.length = 0;
+  await $.command.run({ command: 'smart-router', args: 'off' });
+  expect(events).toEqual(['close:subagents', 'open:subagents', 'open:smart-router-feedback']);
+  expect(placed).toBe(true);
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
+  const form = await $.ui.mount({
+    plugin: 'ug-smart-router', component: 'Pane', surface: 'terminal',
+    requestId: 'smart-router-feedback', props: {},
+  });
+  expect(await form.find({ type: 'Text', text: 'Why are you turning Smart Router off?' })).toBeDefined();
+  await form.unmount();
+  events.length = 0;
+  await $.command.run({ command: 'smart-router', args: 'off' });
+  expect(events).toEqual(['open:smart-router-feedback']);
+});
+
 // The tail the mod hands the engine for the prompt hint row under the input.
 async function hintTail($: any, tails: unknown[]): Promise<unknown> {
   tails.length = 0;

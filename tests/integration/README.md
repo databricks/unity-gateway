@@ -4,6 +4,8 @@ Subagent pane checks are native component tests, not a live integration journey.
 `../native_claude/mod_tests/subagent-pane.test.ts` covers opening, collapse/focus
 expansion, status rendering, and delayed closing/cancellation; `../test_claude_mod.py`
 checks packaging. See [pane behavior and limits](../../docs/claude-mod.md).
+`../native_claude/mod_tests/register.test.ts` checks the focus handoff from
+Subagents to the `/smart-router off` feedback form, preserving the Subagents tab.
 Live layout, keyboard/transcript navigation, reload/resume recovery, and inference
 are not covered.
 

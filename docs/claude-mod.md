@@ -23,6 +23,8 @@ The subagent pane ships with smart-routed launches:
   Finished rows remain available through `/subagents` until the next batch.
 - `/subagents` opens the pane or toggles collapse. `>>` or `s` collapses it to
   status counts. Ctrl+X, release, then Tab focuses it and expands it within a second.
+- Opening a form such as `/smart-router off` releases Subagents focus so the form
+  can take the keyboard; the Subagents tab remains available.
 - With pane focus: ↑/↓ moves, Enter or 1–9 opens a transcript, 0 returns to the
   main conversation, and Esc returns to the prompt. Use Claude's native agent
   panel for rows hidden by `+N more`.
