@@ -530,7 +530,9 @@ figures before and after the command.
 The existing `test_codex_smart_routing_v2.py` launcher cases cover session-provider
 selection with a stable provider name during first-prompt and subagent-only routing,
 including the latter's unchanged parent model and disabled first-prompt selection.
-Interposer cases keep routed sessions in history filtered by the managed provider.
+The launcher keeps the proxy credential in child-process environments, outside
+config files and command arguments. Launcher and interposer cases preserve explicit
+sandbox and approval settings and keep routed sessions in history filtered by the managed provider.
 The native v2 journey covers subagent-only routing. `test_codex_v2_transport.py`
 checks readable assignments, encrypted-history replay, and preserving malformed
 plaintext arguments for native tool validation while rejecting encrypted assignments.
@@ -538,6 +540,9 @@ plaintext arguments for native tool validation while rejecting encrypted assignm
 buffered JSON failures returning 502, request namespace conflicts returning 400,
 and stopping incomplete, oversized, or malformed SSE events. Compaction requests
 and responses retain completed calls, results, and an opaque summary unchanged.
+Tests construct the Codex handler through the proxy factory and reject missing or
+invalid session credentials, absolute destinations, and traversal before forwarding.
+Authorized Responses and compaction requests replace local credentials with the workspace bearer.
 These component checks do not cover live session resume, standalone compaction,
 or injected startup failures.
 

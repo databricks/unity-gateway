@@ -515,7 +515,104 @@ class _ResponseChunks(httpx.SyncByteStream):
             yield self.data[offset : offset + self.chunk_size]
 
 
+@pytest.fixture
+def codex_v2_handler():
+    requests = []
+
+    def upstream(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "application/json"},
+            stream=httpx.ByteStream(b'{"output":[]}'),
+        )
+
+    server, cache, client = gateway_proxy.start_codex_v2_proxy(
+        "https://workspace.invalid",
+        lambda force: "synthetic-workspace-token",
+        session_secret="synthetic-session-secret",
+    )
+    try:
+        # Use the factory's handler and base URL, with all upstream IO captured offline.
+        with httpx.Client(
+            base_url=client.base_url, transport=httpx.MockTransport(upstream)
+        ) as offline_client:
+            out = _Collect()
+            handler = _handle_handler(offline_client, cache, out, server.RequestHandlerClass)
+            yield handler, out, requests
+    finally:
+        cache.stop()
+        server.server_close()
+        client.close()
+
+
 class TestCodexV2Proxy:
+    @pytest.mark.parametrize("credential", [None, "Bearer wrong", "Basic synthetic-session-secret"])
+    def test_rejects_missing_or_invalid_session_credential(self, codex_v2_handler, credential):
+        handler, out, requests = codex_v2_handler
+        handler.path = "/v1/responses"
+        handler.headers = {"Authorization": credential} if credential else {}
+        handler._handle()
+        assert out.data.startswith(b"HTTP/1.0 401 ")
+        assert requests == []
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/2.0/clusters/list",
+            "http://off-host.invalid/",
+            "/http://off-host.invalid/",
+            "//off-host.invalid/",
+            "/../../api/2.0/clusters/list",
+            "/v1/../../../api/2.0/clusters/list",
+            "/v1/%2e%2e/%2e%2e/%2e%2e/api/2.0/clusters/list",
+            "/v1/%252e%252e%252f%252e%252e%252f%252e%252e/api/2.0/clusters/list",
+        ],
+    )
+    def test_rejects_destination_overrides_and_traversal(self, codex_v2_handler, path):
+        handler, out, requests = codex_v2_handler
+        handler.path = path
+        handler.headers = {"Authorization": "Bearer synthetic-session-secret"}
+        handler._handle()
+        assert out.data.startswith(b"HTTP/1.0 404 ")
+        assert requests == []
+
+    @pytest.mark.parametrize("credential_header", ["Authorization", "x-api-key"])
+    @pytest.mark.parametrize("path", ["/v1/responses?stream=false", "/v1/responses/compact"])
+    def test_authenticates_and_forwards_only_the_workspace_credential(
+        self, codex_v2_handler, credential_header, path
+    ):
+        handler, out, requests = codex_v2_handler
+        handler.path = path
+        payload = {"model": "gpt-test", "input": []}
+        if "compact" not in path:
+            payload["tools"] = [{"type": "namespace", "name": "collaboration", "tools": []}]
+        body = json.dumps(payload).encode()
+        handler.headers = {
+            "Content-Length": str(len(body)),
+            "Authorization": "Bearer stale",
+            "x-api-key": "stale",
+            gateway_proxy.AI_GATEWAY_TOKEN_HEADER: "Bearer competing",
+        }
+        handler.headers[credential_header] = (
+            "Bearer synthetic-session-secret"
+            if credential_header == "Authorization"
+            else "synthetic-session-secret"
+        )
+        handler.rfile = io.BytesIO(body)
+        handler._handle()
+        assert out.data.startswith(b"HTTP/1.0 200 ")
+        assert len(requests) == 1
+        request = requests[0]
+        assert str(request.url) == f"https://workspace.invalid/ai-gateway/codex{path}"
+        assert request.headers["Authorization"] == "Bearer synthetic-workspace-token"
+        assert "x-api-key" not in request.headers
+        assert gateway_proxy.AI_GATEWAY_TOKEN_HEADER not in request.headers
+        assert all("synthetic-session-secret" not in value for value in request.headers.values())
+        if "tools" in payload:
+            payload["tools"][0]["name"] = "ucode_collaboration"
+        assert json.loads(request.content) == payload
+
     @pytest.mark.parametrize(
         "payload",
         [
@@ -607,18 +704,19 @@ class TestCodexV2Proxy:
         assert headers.startswith(b"HTTP/1.0 200 ")
         assert wire == heartbeat
 
-    def test_reserved_request_namespace_returns_400_without_forwarding(self):
+    def test_reserved_request_namespace_returns_400_without_forwarding(self, codex_v2_handler):
         body = b'{"tools":[{"type":"namespace","name":"ucode_collaboration","description":"request-secret"}]}'
-        client = _FakeClient([])
-        out = _Collect()
-        handler = _handle_handler(client, _FakeCache(), out, gateway_proxy._CodexV2ProxyHandler)
+        handler, out, requests = codex_v2_handler
         handler.path = "/v1/responses"
-        handler.headers = {"Content-Length": str(len(body))}
+        handler.headers = {
+            "Content-Length": str(len(body)),
+            "Authorization": "Bearer synthetic-session-secret",
+        }
         handler.rfile = io.BytesIO(body)
         handler._handle()
         assert out.data.startswith(b"HTTP/1.0 400 ")
         assert b"request-secret" not in out.data
-        assert client.sent_tokens == []
+        assert requests == []
 
     @pytest.mark.parametrize("streaming", [False, True])
     @pytest.mark.parametrize("compressed,chunk_size", [(False, 1), (False, 7), (True, 7)])

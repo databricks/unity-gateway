@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import signal
 import socket
@@ -80,6 +81,7 @@ CLAUDE_PTY_LOG = APP_DIR / "claude-v2-pty.log"
 APP_SERVER_READY_TIMEOUT_SECONDS = 30
 PROCESS_SHUTDOWN_TIMEOUT_SECONDS = 5
 OAUTH_TOKEN_ENV_VAR = "OAUTH_TOKEN"
+CODEX_PROXY_TOKEN_ENV_VAR = "UCODE_CODEX_PROXY_TOKEN"
 HEALTH_REQUEST_TIMEOUT_SECONDS = 1
 HEALTH_POLL_INTERVAL_SECONDS = 0.25
 CLAUDE_ROUTE_SELECTION_TIMEOUT_S = 20.0
@@ -854,8 +856,11 @@ def launch_codex(
     ]
     # Subagent-only routing also needs readable assignments at the native hook.
     # Keep the transport session-local without changing Codex's on-disk config.
+    session_secret = secrets.token_urlsafe(32)
     server, cache, client = gateway_proxy.start_codex_v2_proxy(
-        workspace, lambda force: launch_token(state, workspace, force_refresh=force)
+        workspace,
+        lambda force: launch_token(state, workspace, force_refresh=force),
+        session_secret=session_secret,
     )
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     transport_started = False
@@ -869,6 +874,9 @@ def launch_codex(
         overlay["model_provider"] = provider_name
         overlay["model_providers"][provider_name] = provider
         provider["base_url"] = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/v1"
+        # Keep the local credential out of config files and process arguments.
+        provider.pop("auth", None)
+        provider["env_key"] = CODEX_PROXY_TOKEN_ENV_VAR
         # The adapter handles Responses HTTP/SSE, not the optional provider
         # WebSocket transport. The app-server/TUI WebSocket is independent.
         provider["supports_websockets"] = False
@@ -880,6 +888,7 @@ def launch_codex(
             overlay=overlay,
             available_models=available_models,
             workspace=workspace,
+            env={**os.environ, CODEX_PROXY_TOKEN_ENV_VAR: session_secret},
         )
     finally:
         cache.stop()
@@ -900,6 +909,7 @@ def _run_codex_session(
     overlay: dict,
     available_models: list[str],
     workspace: str,
+    env: dict[str, str],
 ) -> NoReturn:
     config_args = codex_config_args(overlay)
     app_port = _free_port()
@@ -912,7 +922,7 @@ def _run_codex_session(
     # preferences) and layer only ucode's gateway settings at CLI precedence.
     app_server = subprocess_cross_os.popen(
         [binary, "app-server", *config_args, "--listen", app_server_url],
-        env=os.environ.copy(),
+        env=env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -939,7 +949,8 @@ def _run_codex_session(
             {key: overlay[key] for key in ("model_provider", "model_providers")}
         )
         tui = subprocess_cross_os.popen(
-            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
+            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args],
+            env=env,
         )
         try:
             returncode = tui.wait()

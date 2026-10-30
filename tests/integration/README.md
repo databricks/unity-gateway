@@ -922,8 +922,13 @@ POSIX) and completion on the selected child model; it does not exercise compacti
 The proxy component tests check that retained calls, results, and the compressed
 compaction response pass through unchanged. They also cover 400/502 error responses,
 fragmented delimiters, and rejecting incomplete, oversized, or malformed SSE events.
+Component tests use the Codex handler configured by the proxy factory and reject
+missing or invalid session credentials, absolute destinations, and encoded traversal
+before forwarding. Authorized Responses and compaction requests carry only the
+workspace credential upstream.
 Launcher and interposer component cases cover both routing modes, a stable provider
-name, and history filtering by the managed provider; they do not establish live
+name, history filtering by the managed provider, proxy credentials passed through
+subprocess environments, and preserved explicit permission settings; they do not establish live
 resume coverage. Append
 `-- -k test_ug_codex_native_v2_plain_assignment_routing` to the version-pinned runner.
 A before/after comparison additionally needs fresh sessions with identical Codex, parent

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import tomllib
 
+import httpx
 import pytest
 
 from ucode import codex_config, custom_oauth
@@ -185,6 +187,7 @@ class TestLaunchCodex:
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1" if subagent_only else "0")
         monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
+        monkeypatch.setenv(v2.CODEX_PROXY_TOKEN_ENV_VAR, "inherited-session-token")
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
 
@@ -232,7 +235,7 @@ class TestLaunchCodex:
                     "codex_models": ["system.ai.gpt-5-6-sol"],
                     "oss_models": ["system.ai.glm-5-2"],
                 },
-                ["--search"],
+                ["--search", "--sandbox", "read-only", "--ask-for-approval", "on-request"],
                 binary="codex",
                 start_model="gpt-start",
                 render_overlay=codex.render_overlay,
@@ -253,6 +256,8 @@ class TestLaunchCodex:
         assert processes[0].argv[7].startswith(f"model_providers.{provider_name}={{")
         assert 'base_url = "http://127.0.0.1:' in processes[0].argv[7]
         assert "supports_websockets = false" in processes[0].argv[7]
+        assert f'env_key = "{v2.CODEX_PROXY_TOKEN_ENV_VAR}"' in processes[0].argv[7]
+        assert "auth =" not in processes[0].argv[7]
         assert processes[0].argv[8] == "--config"
         hook_override = processes[0].argv[9]
         assert hook_override.startswith("hooks.PreToolUse=[{")
@@ -277,6 +282,11 @@ class TestLaunchCodex:
         ]
         assert processes[0].kwargs["env"][v2.OAUTH_TOKEN_ENV_VAR] == "token-1"
         assert processes[0].kwargs["env"]["CODEX_HOME"] == "/user/codex-home"
+        session_token = processes[0].kwargs["env"][v2.CODEX_PROXY_TOKEN_ENV_VAR]
+        assert session_token != "inherited-session-token"
+        assert processes[1].kwargs["env"][v2.CODEX_PROXY_TOKEN_ENV_VAR] == session_token
+        assert os.environ[v2.CODEX_PROXY_TOKEN_ENV_VAR] == "inherited-session-token"
+        assert all(session_token not in arg for process in processes for arg in process.argv)
         tui_argv = processes[1].argv
         expected_tui_args = [
             "--remote",
@@ -284,6 +294,10 @@ class TestLaunchCodex:
             "--model",
             "gpt-start",
             "--search",
+            "--sandbox",
+            "read-only",
+            "--ask-for-approval",
+            "on-request",
         ]
         assert tui_argv[:4] == [
             "codex",
@@ -307,6 +321,9 @@ class TestLaunchCodex:
         assert interposer_args["kwargs"]["switch_message_fn"] is v2.format_routing_notice
         assert stopped == [True]
         assert processes[0].terminated is True
+        provider = tomllib.loads(processes[0].argv[7])["model_providers"][provider_name]
+        with pytest.raises(httpx.ConnectError):
+            httpx.get(provider["base_url"], timeout=1, trust_env=False)
 
     def test_managed_http_headers_reach_app_server_config(self, monkeypatch):
         # Smart routing rebuilds the overlay and passes it to the app-server as `-c` overrides that
@@ -683,7 +700,13 @@ class TestInterposerSession:
         request = {
             "id": 2,
             "method": method,
-            "params": {"modelProvider": "Databricks", "model": "parent-model", "cwd": "/work"},
+            "params": {
+                "modelProvider": "Databricks",
+                "model": "parent-model",
+                "cwd": "/work",
+                "sandbox": "read-only",
+                "approvalPolicy": "on-request",
+            },
         }
         result = session.on_tui_frame(json.dumps(request))
         assert json.loads(result.frame) == {
