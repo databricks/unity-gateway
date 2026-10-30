@@ -97,6 +97,31 @@ def _configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
         system_marketplace.owned_bundle(selected_source, previous_state)
     system_marketplace.read_bundle(marketplace_root)
     hooks = _connector_hooks(mcp_config, workspace, profile, use_pat=bool(state.get("use_pat")))
+    _publish_plugin(
+        cowork_root,
+        marketplace_root,
+        system_source=selected_source if system_install else None,
+        previous_state=previous_state,
+        previous_source=previous_source,
+        skill_records=skill_records,
+        mcp_config=mcp_config,
+        hooks=hooks,
+    )
+    return True
+
+
+def _publish_plugin(
+    cowork_root: Path,
+    marketplace_root: Path,
+    *,
+    system_source: Path | None,
+    previous_state: dict,
+    previous_source: Path | None,
+    skill_records: list[dict],
+    mcp_config: dict,
+    hooks: dict | None,
+) -> None:
+    selected_source = system_source if system_source is not None else marketplace_root
     plugin_root = marketplace_root / "plugins" / PLUGIN_NAME
     backup = Path(tempfile.mkdtemp(prefix="ug-desktop-rollback-")).resolve()
     retain_backup = False
@@ -104,28 +129,15 @@ def _configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
     try:
         if marketplace_root.exists():
             shutil.copytree(marketplace_root, backup / "user")
-        if system_install and selected_source.exists():
-            shutil.copytree(selected_source, backup / "system")
+        if system_source is not None and system_source.exists():
+            shutil.copytree(system_source, backup / "system")
         try:
             _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config, hooks)
-            if system_install:
+            if system_source is not None:
                 system_marketplace.install(marketplace_root, _state_path())
-            installed_state = config_io.read_json_safe(_state_path())
-            pending_roots = list(previous_state.get("previous_cowork_roots", []))
-            previous_root = previous_state.get("cowork_root")
-            if (
-                previous_root
-                and previous_root != str(cowork_root)
-                and previous_root not in pending_roots
-            ):
-                pending_roots.append(previous_root)
-            installed_state.update(
-                version=3,
-                cowork_root=str(cowork_root),
-                marketplace_root=str(selected_source),
-                previous_cowork_roots=pending_roots,
+            installed_state = _record_plugin_installation(
+                cowork_root, selected_source, previous_state
             )
-            config_io.atomic_write_json(_state_path(), installed_state)
             registration_attempted = True
             _install_plugin(cowork_root, selected_source)
         except Exception as exc:
@@ -133,20 +145,14 @@ def _configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
             if registration_attempted and previous_source is None:
                 raise
             try:
-                _remove_marketplace_source()
-                if (backup / "user").exists():
-                    shutil.copytree(backup / "user", marketplace_root)
-                if system_install:
-                    if (backup / "system").exists():
-                        system_marketplace.install(backup / "system", _state_path())
-                    else:
-                        system_marketplace.remove(_state_path())
-                if registration_attempted and previous_source is not None:
-                    _install_plugin(cowork_root, previous_source)
-                if previous_state:
-                    config_io.atomic_write_json(_state_path(), previous_state)
-                else:
-                    _state_path().unlink(missing_ok=True)
+                _restore_plugin_installation(
+                    backup,
+                    marketplace_root,
+                    cowork_root,
+                    previous_state,
+                    restore_system=system_source is not None,
+                    previous_source=previous_source if registration_attempted else None,
+                )
             except Exception as rollback_error:
                 retain_backup = True
                 raise RuntimeError(
@@ -163,7 +169,49 @@ def _configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
             _remove_plugin_registration(Path(old_root))
     installed_state.pop("previous_cowork_roots", None)
     config_io.atomic_write_json(_state_path(), installed_state)
-    return True
+
+
+def _record_plugin_installation(
+    cowork_root: Path, selected_source: Path, previous_state: dict
+) -> dict:
+    installed_state = config_io.read_json_safe(_state_path())
+    pending_roots = list(previous_state.get("previous_cowork_roots", []))
+    previous_root = previous_state.get("cowork_root")
+    if previous_root and previous_root != str(cowork_root) and previous_root not in pending_roots:
+        pending_roots.append(previous_root)
+    installed_state.update(
+        version=3,
+        cowork_root=str(cowork_root),
+        marketplace_root=str(selected_source),
+        previous_cowork_roots=pending_roots,
+    )
+    config_io.atomic_write_json(_state_path(), installed_state)
+    return installed_state
+
+
+def _restore_plugin_installation(
+    backup: Path,
+    marketplace_root: Path,
+    cowork_root: Path,
+    previous_state: dict,
+    *,
+    restore_system: bool,
+    previous_source: Path | None,
+) -> None:
+    _remove_marketplace_source()
+    if (backup / "user").exists():
+        shutil.copytree(backup / "user", marketplace_root)
+    if restore_system:
+        if (backup / "system").exists():
+            system_marketplace.install(backup / "system", _state_path())
+        else:
+            system_marketplace.remove(_state_path())
+    if previous_source is not None:
+        _install_plugin(cowork_root, previous_source)
+    if previous_state:
+        config_io.atomic_write_json(_state_path(), previous_state)
+    else:
+        _state_path().unlink(missing_ok=True)
 
 
 def revert_cowork() -> bool:
@@ -438,41 +486,7 @@ def _write_marketplace(
     backup = marketplace_root.with_name(f".{marketplace_root.name}.previous")
     try:
         staging_plugin = staging / plugin_root.relative_to(marketplace_root)
-        (staging / ".claude-plugin").mkdir(parents=True)
-        (staging_plugin / ".claude-plugin").mkdir(parents=True)
-        marketplace: dict[str, object] = {
-            "name": MARKETPLACE_NAME,
-            "owner": {"name": "Databricks"},
-            "plugins": [
-                {
-                    "name": PLUGIN_NAME,
-                    "displayName": PLUGIN_DISPLAY_NAME,
-                    "description": "Unity Gateway workspace skills and MCP servers for Cowork",
-                    "source": f"./plugins/{PLUGIN_NAME}",
-                }
-            ],
-        }
-        plugin: dict[str, object] = {
-            "name": PLUGIN_NAME,
-            "displayName": PLUGIN_DISPLAY_NAME,
-            "description": "Unity Gateway workspace skills and MCP servers for Cowork",
-            "author": {"name": "Databricks"},
-        }
-        if mcp_config["mcpServers"]:
-            plugin["mcpServers"] = "./.mcp.json"
-            _write_json(staging_plugin / ".mcp.json", mcp_config)
-        if hooks:
-            _write_json(staging_plugin / "hooks" / "hooks.json", hooks)
-        _write_json(staging / ".claude-plugin" / "marketplace.json", marketplace)
-        _write_json(staging_plugin / ".claude-plugin" / "plugin.json", plugin)
-        _copy_skills(staging_plugin / "skills", skill_records)
-        if mcp_config["mcpServers"]:
-            _write_connector_skill(staging_plugin / "skills", list(mcp_config["mcpServers"]))
-        files = system_marketplace.read_bundle(staging_plugin)
-        assert files is not None
-        plugin["version"] = "0.0.0-ug-" + system_marketplace.bundle_digest(files)
-        _write_json(staging_plugin / ".claude-plugin" / "plugin.json", plugin)
-
+        _write_marketplace_contents(staging, staging_plugin, skill_records, mcp_config, hooks)
         if backup.exists():
             shutil.rmtree(backup)
         if marketplace_root.exists():
@@ -488,6 +502,61 @@ def _write_marketplace(
     finally:
         if staging.exists():
             shutil.rmtree(staging)
+
+
+def _write_marketplace_contents(
+    marketplace_root: Path,
+    plugin_root: Path,
+    skill_records: list[dict],
+    mcp_config: dict,
+    hooks: dict | None,
+) -> None:
+    (marketplace_root / ".claude-plugin").mkdir(parents=True)
+    (plugin_root / ".claude-plugin").mkdir(parents=True)
+    marketplace: dict[str, object] = {
+        "name": MARKETPLACE_NAME,
+        "owner": {"name": "Databricks"},
+        "plugins": [
+            {
+                "name": PLUGIN_NAME,
+                "displayName": PLUGIN_DISPLAY_NAME,
+                "description": "Unity Gateway workspace skills and MCP servers for Cowork",
+                "source": f"./plugins/{PLUGIN_NAME}",
+            }
+        ],
+    }
+    plugin: dict[str, object] = {
+        "name": PLUGIN_NAME,
+        "displayName": PLUGIN_DISPLAY_NAME,
+        "description": "Unity Gateway workspace skills and MCP servers for Cowork",
+        "author": {"name": "Databricks"},
+    }
+    _write_plugin_connectors(plugin_root, plugin, mcp_config, hooks)
+    _write_json(marketplace_root / ".claude-plugin" / "marketplace.json", marketplace)
+    _write_json(plugin_root / ".claude-plugin" / "plugin.json", plugin)
+    _write_plugin_skills(plugin_root / "skills", skill_records, list(mcp_config["mcpServers"]))
+    files = system_marketplace.read_bundle(plugin_root)
+    assert files is not None
+    plugin["version"] = "0.0.0-ug-" + system_marketplace.bundle_digest(files)
+    _write_json(plugin_root / ".claude-plugin" / "plugin.json", plugin)
+
+
+def _write_plugin_connectors(
+    plugin_root: Path, plugin: dict, mcp_config: dict, hooks: dict | None
+) -> None:
+    if mcp_config["mcpServers"]:
+        plugin["mcpServers"] = "./.mcp.json"
+        _write_json(plugin_root / ".mcp.json", mcp_config)
+    if hooks:
+        _write_json(plugin_root / "hooks" / "hooks.json", hooks)
+
+
+def _write_plugin_skills(
+    destination: Path, skill_records: list[dict], server_names: list[str]
+) -> None:
+    _copy_skills(destination, skill_records)
+    if server_names:
+        _write_connector_skill(destination, server_names)
 
 
 def _copy_skills(destination: Path, records: list[dict]) -> None:
