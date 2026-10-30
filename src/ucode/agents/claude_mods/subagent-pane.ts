@@ -170,8 +170,8 @@ export const registerSubagentPane = (on: On): void => {
         ] }),
         Button({ key: 'collapse', label: '>>', hotkey: 's', onPress: () => setCollapsed($, true) }),
       ] }),
-      Button({ key: 'main', plain: true, hotkey: '0', autoFocus: !viewing || undefined,
-        label: viewing ? '  main' : '▸ main', onPress: () => show() }),
+      Button({ key: 'main', hotkey: '0', autoFocus: !viewing || undefined,
+        label: '← Main session', onPress: () => show() }),
       ...(list.length === 0 ? [Text({ dimColor: true, children: ['No subagents yet.'] })] : []),
       ...visible.map((agent, i) => Box({ key: agent.id, flexDirection: 'column', marginTop: 1, children: [
         Box({ flexDirection: 'row', children: [
@@ -179,7 +179,7 @@ export const registerSubagentPane = (on: On): void => {
             children: [agent.isError ? '● error ' : agent.isDone ? '✓ ' : '● '] }),
           Button({ key: `view-${agent.id}`, plain: true, hotkey: i < 9 ? String(i + 1) : undefined,
             autoFocus: viewing === agent.id || undefined, onPress: () => show(agent.id),
-            label: `${viewing === agent.id ? '▸' : ' '} ${agent.description}` }),
+            label: `${viewing === agent.id ? '▸ ' : ''}${agent.description}` }),
         ] }),
         Text({ dimColor: true, wrap: 'truncate-end', children: [
           `   → ${agent.model} · ${elapsed(agent, at)}${agent.tool ? ` · ${agent.tool}` : ''}`,

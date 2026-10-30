@@ -2,7 +2,8 @@
 
 Subagent pane checks are native component tests, not a live integration journey.
 `../native_claude/mod_tests/subagent-pane.test.ts` covers opening, collapse/focus
-expansion, task labels without internal agent names, status rendering, and delayed
+expansion, unpadded task labels without internal agent names, a distinct Main session
+button, status rendering, and delayed
 closing/cancellation; `../test_claude_mod.py`
 checks packaging. See [pane behavior and limits](../../docs/claude-mod.md).
 `../native_claude/mod_tests/register.test.ts` checks the focus handoff from
