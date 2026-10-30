@@ -54,7 +54,8 @@ def _assert_preserved(before, after):
 
 def test_ug_codex_native_v2_comprehensive_lifecycle(live_session, workspace, tmp_path):
     """Scenario: configure a real installed Codex with code-mode v2 collaboration,
-    route children, follow up, compact, resume, and toggle routing off and on.
+    route children, follow up, compact, resume, and toggle routing off and on with
+    user-configured on-request approvals.
 
     Expected: native hooks and children receive exact plaintext, completed child
     models match real routing decisions, the parent remains pinned, the original
@@ -69,6 +70,9 @@ def test_ug_codex_native_v2_comprehensive_lifecycle(live_session, workspace, tmp
     )
     catalog, original, catalog_bytes = _seed_user_owned_native_codex_settings(session)
     config = session.home / ".codex/config.toml"
+    # Windows protects the private control directory; exercise the user's approved toggle.
+    original = b'approval_policy = "on-request"\n' + original
+    config.write_bytes(original)
     version = session.run("--version", binary=session.which("codex")).stdout.strip()
     session.run(
         "configure",
@@ -241,6 +245,12 @@ def test_ug_codex_native_v2_comprehensive_lifecycle(live_session, workspace, tmp
             if row.get("type") == "turn_context"
         }
         assert versions == {"v2"}
+        assert all(
+            row["payload"].get("approval_policy") == "on-request"
+            for records in all_sessions.values()
+            for row in records
+            if row.get("type") == "turn_context"
+        )
         assert session.run("--version", binary=session.which("codex")).stdout.strip() == version
         summary.update(
             passed=True,

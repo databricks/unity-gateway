@@ -48,7 +48,7 @@ jobs:
       OMNIGENT_SKIP_WEB_UI: "true"
       # Same pins as integration.yml.
       CLAUDE_VERSION: 2.1.290
-      CODEX_VERSION: 0.154.0
+      CODEX_VERSION: 0.165.0
       PYPI_INDEX: https://databricks.jfrog.io/artifactory/api/pypi/db-pypi/simple
     steps:
       - name: Resolve the pull request
