@@ -75,6 +75,11 @@ def set_session_environment(values: Mapping[str, str]) -> None:
     path = session_env_path()
     try:
         _read(path)
+    except PermissionError as exc:
+        raise RuntimeError(
+            f"Permission denied reading Smart Router session controls at {path}. "
+            "Request native command approval to retry this command."
+        ) from exc
     except (OSError, UnicodeError, ValueError) as exc:
         raise RuntimeError(f"Smart Router session controls at {path} are invalid.") from exc
     atomic_write_json(path, _validate(dict(values)))

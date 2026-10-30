@@ -34,11 +34,22 @@ class TestCodexSpec:
 
 
 class TestMinimumVersion:
-    @pytest.mark.parametrize("version", ["0.145.0", "0.148.0", "1.0.0"])
-    def test_supported_version(self, monkeypatch, version):
+    @pytest.mark.parametrize(
+        "version,smart_routing_allowed",
+        [
+            ("0.145.0", False),
+            ("0.148.0", False),
+            ("0.163.0", False),
+            ("0.164.0", True),
+            ("0.165.0", True),
+            ("1.0.0", True),
+        ],
+    )
+    def test_supported_version(self, monkeypatch, version, smart_routing_allowed):
         monkeypatch.setattr(codex, "agent_version", lambda _binary: version)
 
         assert codex.minimum_version_error() is None
+        assert (codex.minimum_version_error(smart_routing=True) is None) == smart_routing_allowed
 
     def test_older_version_requires_update(self, monkeypatch):
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.144.0")
@@ -50,6 +61,7 @@ class TestMinimumVersion:
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "unknown")
 
         assert codex.minimum_version_error() is None
+        assert "found unknown" in codex.minimum_version_error(smart_routing=True)
 
 
 class TestHasUcodeConfig:

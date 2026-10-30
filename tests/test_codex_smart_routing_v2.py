@@ -50,6 +50,7 @@ class TestLaunchCodex:
     )
     def test_codex_smart_routing_launch_dispatches_to_v2(self, monkeypatch, tool_args, options):
         calls = []
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.164.0")
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: "gpt-start")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
@@ -111,6 +112,7 @@ class TestLaunchCodex:
 
     def test_codex_launch_normalizes_cached_bootstrap_model(self, monkeypatch):
         calls = []
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.164.0")
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
@@ -155,7 +157,7 @@ class TestLaunchCodex:
         monkeypatch.delenv("CODEX_HOME", raising=False)
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
-        monkeypatch.setattr(codex, "agent_version", lambda _: "0.145.0")
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.164.0")
         monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         if custom_home:
             monkeypatch.setenv("CODEX_HOME", str(config_home))

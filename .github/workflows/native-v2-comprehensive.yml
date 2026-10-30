@@ -1,0 +1,84 @@
+name: Native Codex v2 verification
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [JJ27/codex-native-v2-release-20261030]
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Codex ${{ matrix.codex }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        os: [macos-15, windows-latest]
+        codex: [0.164.0, 0.165.0, 0.166.0]
+    env:
+      PYTHONUTF8: 1
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.19.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          version: 0.13.5
+      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a
+        with:
+          version: 1.17.0
+      - name: Expose the Windows Databricks CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $databricks = Join-Path $env:RUNNER_TEMP ".bin/databricks.exe"
+          if (-not (Test-Path -LiteralPath $databricks -PathType Leaf)) {
+            throw "setup-cli did not install the expected executable"
+          }
+          Split-Path -Parent $databricks | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & $databricks version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run native lifecycle on macOS
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          CODEX_VERSION: ${{ matrix.codex }}
+        run: |
+          uv run --no-project --python 3.12 python scripts/run_integration.py \
+            --python 3.12 --ug-version checkout --codex-version "$CODEX_VERSION" \
+            --default-index https://pypi.org/simple --output "$RUNNER_TEMP/native-v2" \
+            -- -k 'test_ug_codex_native_v2_comprehensive_lifecycle or test_ug_codex_native_v2_plain_assignment_routing'
+      - name: Run native lifecycle on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CODEX_VERSION: ${{ matrix.codex }}
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP "native-v2"
+          uv run --no-project --python 3.12 python scripts/run_integration.py `
+            --python 3.12 --ug-version checkout --codex-version $env:CODEX_VERSION `
+            --default-index https://pypi.org/simple --output $output `
+            -- -k 'test_ug_codex_native_v2_comprehensive_lifecycle or test_ug_codex_native_v2_plain_assignment_routing'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload native evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-v2-${{ matrix.os }}-${{ matrix.codex }}
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/native-v2/*.json
+            ${{ runner.temp }}/native-v2/*.txt
+            ${{ runner.temp }}/native-v2/*.xml
+            ${{ runner.temp }}/native-v2/*.log
+            ${{ runner.temp }}/native-v2/artifacts/

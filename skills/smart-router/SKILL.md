@@ -3,7 +3,7 @@ name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
 allowed-tools: Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing --smart-router-feedback *)
 metadata:
-  version: "1.4.0"
+  version: "1.4.1"
 ---
 
 # Smart Router
@@ -20,6 +20,11 @@ In PowerShell, use `& "$env:UCODE_SMART_ROUTER_PYTHON"` in place of
 `"$UCODE_SMART_ROUTER_PYTHON"`; keep the remaining arguments the same.
 If `UCODE_SMART_ROUTER_PYTHON` or `UCODE_SESSION_ENV_FILE` is unset, ask the user
 to restart through an updated Unity Gateway with smart routing enabled.
+
+If Codex reports permission denied reading the session controls, request native
+approval for the same command with `sandbox_permissions="require_escalated"` and
+retry only after approval. If approval is unavailable or denied, report that routing
+was not changed. Do not change file permissions or disable the sandbox.
 
 If the off command requires feedback, routing is still on. Ask why the user is
 turning Smart Router off. Require at least 16 characters after trimming surrounding
