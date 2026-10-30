@@ -1112,8 +1112,8 @@ managed e2e workspace (`E2E_ADMIN_WORKSPACE`) with the injected `managed_workspa
 which enables Claude/Codex but not OpenCode. It is likewise outside `cujs`.
 A non-blocking **Copilot** job (`live and copilot`, sixteen cases) runs on Linux and Windows the
 same way and is likewise outside `cujs` until it is stable.
-A blocking **Antigravity** job (`live and antigravity`, eight cases) runs on Linux only with
-the pinned `ANTIGRAVITY_BUILD`; it is part of the `cujs` gate.
+A non-blocking **Antigravity** job (`live and antigravity`, eight cases) runs on Linux only with
+the pinned `ANTIGRAVITY_BUILD` and is likewise outside `cujs` until it is stable.
 
 Each lane installs only the agent CLIs it needs (one, except the managed OpenCode lane's
 three), once, and runs all its configure, headless,

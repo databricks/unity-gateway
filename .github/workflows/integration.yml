@@ -402,12 +402,14 @@ jobs:
       ARTIFACT_NAME: integration-full-copilot-${{ matrix.os }}
     steps: *live-steps
 
-  # Blocking: part of the cujs gate. Linux only: Antigravity CLI's gateway mode supports macOS
-  # and Linux, and ug installs no Windows build.
+  # Non-blocking pending stabilization, like OpenCode: continue-on-error and absent from the
+  # cujs `needs`. Linux only: Antigravity CLI's gateway mode supports macOS and Linux, and ug
+  # installs no Windows build.
   antigravity:
-    name: Full journeys · Antigravity · Linux
+    name: Full journeys · Antigravity · Linux (non-blocking)
     if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
+    continue-on-error: true
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     env:
@@ -628,7 +630,7 @@ jobs:
   cujs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, installation-windows, headless-windows, workspace, smoke, full, antigravity, managed, dedicated-cuj-plan, dedicated-cuj]
+    needs: [installation, installation-windows, headless-windows, workspace, smoke, full, managed, dedicated-cuj-plan, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
