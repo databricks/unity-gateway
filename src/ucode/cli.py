@@ -553,9 +553,7 @@ def configure_shared_state(
     if use_pat is None:
         use_pat = bool(prior_state.get("use_pat")) and previous_workspace == workspace
     if databricks_ai_tools_enabled is None:
-        # Opt-in: a True from an opt-out-era configure is a stale default, not a
-        # standing opt-in, so it is not carried forward.
-        databricks_ai_tools_enabled = False
+        databricks_ai_tools_enabled = True
     fetch_all = tools is None
 
     # Assemble the shared workspace state that doesn't depend on model discovery:
@@ -942,9 +940,7 @@ def _setup_single_agent(
             skills_configured = _configure_managed_skills(managed)
             if resolved_mcps is not None and skills_configured:
                 _sync_claude_cowork_plugin(state, managed_mcp_servers=resolved_mcps)
-    # Only the Claude and Codex branch above reads the managed config fresh.
-    managed_refreshed = apply_managed and tool in ("claude", "codex")
-    install_databricks_ai_tools_for_agents([tool], state, force_refresh=not managed_refreshed)
+    install_databricks_ai_tools_for_agents([tool], state)
     spec = TOOL_SPECS[tool]
     provider_summary = "Databricks" if parent_schema else _provider_summary(tool, state)
     console.print(
@@ -1265,10 +1261,7 @@ def _configure_workspace_command(
         for tool_name in picked:
             state = _maybe_select_provider_service(tool_name, state)
 
-    if offer_optional_setup:
-        state = configure_selected_tools(state, picked, install_ai_tools=False)
-    else:
-        state = configure_selected_tools(state, picked)
+    state = configure_selected_tools(state, picked)
 
     # No managed config here: undo what a prior managed workspace left behind (its MCP servers and
     # skills), so switching workspaces doesn't strand the old registry and skills. Cowork is synced
@@ -1315,7 +1308,7 @@ def _configure_workspace_command(
         )
     )
     if offer_optional_setup and not is_dry_run():
-        _configure_optional_setup(state, picked)
+        _configure_optional_setup(picked)
     return 0
 
 
@@ -1997,14 +1990,10 @@ def _sync_claude_cowork_plugin(
     )
 
 
-def _configure_optional_setup(state: dict, tools: list[str]) -> None:
-    enabled = prompt_yes_no("Configure MCP servers, skills, and plugins?")
-    state["databricks_ai_tools_enabled"] = enabled
-    save_state(state)
-    if not enabled:
+def _configure_optional_setup(tools: list[str]) -> None:
+    if not prompt_yes_no("Configure MCP servers?"):
         return
 
-    install_databricks_ai_tools_for_agents(tools, state)
     configure_mcp_command()
     if "claude" in tools:
         _sync_claude_cowork_plugin()
@@ -4556,9 +4545,8 @@ def configure(
         typer.Option(
             "--enable-databricks-ai-tools/--disable-databricks-ai-tools",
             help="Install Databricks AI Tools (skills + plugins that teach agents to use "
-            "Databricks) for the configured agents. Installation is configure-only and off "
-            "by default; pass --enable-databricks-ai-tools to opt in. Skipped when your "
-            "workspace has an admin-managed config.",
+            "Databricks) for the configured agents. Enabled by default, including for "
+            "admin-managed workspaces; pass --disable-databricks-ai-tools to opt out.",
         ),
     ] = None,
     provider: Annotated[
@@ -4678,7 +4666,7 @@ def configure(
         if profile is not None:
             workspace_entries = _parse_profile_option(profile)
         flag_driven_workspace = workspace_entries is not None
-        # Only forward the opt-in flags when set so existing call expectations
+        # Only forward the AI Tools flags when set so existing call expectations
         # (and defaults) stay unchanged for the common interactive path.
         skip_kwargs: dict = {}
         if use_pat:

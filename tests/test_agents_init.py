@@ -29,7 +29,6 @@ from ucode.agents import (
     resolve_launch_model,
 )
 from ucode.agents.args import has_explicit_model_arg
-from ucode.managed_config import ManagedConfigResult
 from ucode.ui import redirect_output_to_stderr
 
 
@@ -93,23 +92,18 @@ def test_launch_dispatches_invocation_options(monkeypatch):
 
 
 class TestInstallAiToolsForAgents:
-    def _capture(self, monkeypatch, *, managed=None):
+    def _capture(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(
             agents_mod,
             "install_ai_tools",
             lambda agents, profile: captured.update(agents=agents, profile=profile),
         )
-        monkeypatch.setattr(
-            agents_mod,
-            "refresh_managed_config",
-            lambda state, **_k: ManagedConfigResult(managed, False),
-        )
         return captured
 
     def test_maps_supported_tools_and_drops_others(self, monkeypatch):
         captured = self._capture(monkeypatch)
-        # Gemini and Pi aren't supported by `databricks aitools`, so they drop.
+        # The default-on change keeps UG's existing agent coverage.
         install_databricks_ai_tools_for_agents(
             ["claude", "codex", "gemini", "pi"],
             {"profile": "prof", "databricks_ai_tools_enabled": True},
@@ -136,39 +130,13 @@ class TestInstallAiToolsForAgents:
         )
         assert captured == {}  # install_ai_tools never called
 
-    def test_skipped_under_managed_config(self, monkeypatch):
-        # An admin's managed config governs the workspace; skip even when enabled.
-        captured = self._capture(monkeypatch, managed={"enabled_agents": {"claude": {}}})
+    def test_skipped_in_dry_run(self, monkeypatch):
+        captured = self._capture(monkeypatch)
+        monkeypatch.setattr(agents_mod, "is_dry_run", lambda: True)
         install_databricks_ai_tools_for_agents(
             ["claude"], {"profile": "p", "databricks_ai_tools_enabled": True}
         )
-        assert captured == {}  # install_ai_tools never called
-
-    def test_skipped_under_empty_managed_config(self, monkeypatch):
-        # A published-but-empty config still means the admin defined one; a present
-        # manifest (even {}) skips, while a truly absent config (None) does not.
-        captured = self._capture(monkeypatch, managed={})
-        install_databricks_ai_tools_for_agents(
-            ["claude"], {"profile": "p", "databricks_ai_tools_enabled": True}
-        )
-        assert captured == {}  # install_ai_tools never called
-
-    def test_forwards_force_refresh_to_managed_read(self, monkeypatch):
-        # The gate forwards force_refresh so `ug configure --agent` (no prior refresh) reads fresh,
-        # while the main configure path (already refreshed) reuses its read instead of re-fetching.
-        seen: list[bool] = []
-        monkeypatch.setattr(agents_mod, "install_ai_tools", lambda agents, profile: None)
-        monkeypatch.setattr(
-            agents_mod,
-            "refresh_managed_config",
-            lambda state, *, force_refresh=False: (
-                seen.append(force_refresh) or ManagedConfigResult(None, False)
-            ),
-        )
-        state = {"profile": "p", "databricks_ai_tools_enabled": True}
-        install_databricks_ai_tools_for_agents(["claude"], state)
-        install_databricks_ai_tools_for_agents(["claude"], state, force_refresh=True)
-        assert seen == [False, True]
+        assert captured == {}
 
 
 class TestConfigureWiresAiToolsInstall:
@@ -186,11 +154,6 @@ class TestConfigureWiresAiToolsInstall:
             agents_mod,
             "install_ai_tools",
             lambda agents, profile: captured.update(agents=agents, profile=profile),
-        )
-        monkeypatch.setattr(
-            agents_mod,
-            "refresh_managed_config",
-            lambda state, **_k: ManagedConfigResult(None, False),
         )
         return captured
 
