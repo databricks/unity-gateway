@@ -2855,6 +2855,18 @@ def codex_router_hook_cmd(
         sys.stdout.write(json.dumps(output))
 
 
+@app.command("smart-router-describe", hidden=True)
+def smart_router_describe_cmd() -> None:
+    """Print, as JSON, which agents this environment's smart-routing settings route.
+
+    For launchers that decide whether to offer a routing control. Offline: a workspace's managed
+    config and launch flags are not reflected.
+    """
+    import sys
+
+    sys.stdout.write(json.dumps(smart_routing_v2.describe_routing()) + "\n")
+
+
 @app.command("claude-router-hook", hidden=True)
 def claude_router_hook_cmd(
     event: str,

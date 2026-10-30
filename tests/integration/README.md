@@ -487,7 +487,8 @@ modules are not collected. Missing prerequisites and failed tasks still fail.
 Installation checks also invoke both `ug` and `ucode` auth helpers using the public
 bearer override and drive their real local web-search MCP handshake/tool listing.
 These assert protocol stdout without stripping ANSI escapes and make no workspace
-requests. The live Hosted configure journeys additionally execute the actual `ug`
+requests. `ucode smart-router-describe` is checked the same way, with and without a
+routing selector. The live Hosted configure journeys additionally execute the actual `ug`
 auth helper written into each agent's configuration before completing a real TUI task.
 The Claude journey also opens `/model` after a plain `ug claude` launch, requires
 its native gateway cache to contain `system.ai` models, and checks that a discovered
@@ -877,7 +878,7 @@ cases instead complete real file tasks through `--workspace` and `--model-locati
 `ug_e2e.models.claude_haiku` and `ug_e2e.models.gpt_luna`. The two fresh `--provider`
 journeys check setup and launch with existing services, without inference.
 
-There are **88 live cases** (including 12 marked TUI journeys) and **7 installation
+There are **88 live cases** (including 12 marked TUI journeys) and **8 installation
 checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds seventeen live cases; selecting Antigravity adds eight live cases (one TUI). One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
 Claude task. A further **44 `managed_fixture` cases** (twelve of them also `live`) run on the
@@ -899,7 +900,7 @@ bearer; no second workspace or extra secret is involved.
 Across integration and dedicated CUJ7, the 14 numbered scenarios comprise 24 journeys:
 12 managed and 12 unmanaged. Integration contains 22 of them (12 managed, 10 unmanaged);
 configured unmanaged cases 7 and 8 run in `e2e_cuj/test_cuj7_model_discovery.py`.
-The complete integration suite collects 130 executions (127 with Claude and Codex selected).
+The complete integration suite collects 131 executions (128 with Claude and Codex selected).
 See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
@@ -1483,7 +1484,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 88 live cases. For the seven installation checks, run the same
+This runs all 88 live cases. For the eight installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

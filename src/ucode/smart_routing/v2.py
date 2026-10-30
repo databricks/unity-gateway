@@ -72,6 +72,9 @@ from ucode.ui import print_note, print_warning
 
 LEGACY_STATE_KEY = "smart_routing_enabled"
 
+# Bump on any incompatible change to describe_routing's output; launchers parse it.
+DESCRIBE_ROUTING_SCHEMA = 1
+
 CODEX_INTERPOSER_LOG = APP_DIR / "codex-v2-interposer.log"
 
 CLAUDE_TARGET_MODEL = "system.ai.claude-sonnet-4-6[1m]"  # TODO(lilly): replace with smart router.
@@ -180,6 +183,23 @@ def first_prompt_routing_enabled(
         source.get(ENABLE_SMART_ROUTING_ENV_VAR) == "1"
         and source.get(ENABLE_SUBAGENT_ROUTING_ENV_VAR) != "1"
     )
+
+
+def describe_routing(env: MutableMapping[str, str] | None = None) -> dict:
+    """The agents a launch with this environment would route.
+
+    Depends only on the environment, so callers may cache it per ug version and routing env:
+    a workspace's managed config and launch flags are not applied.
+    """
+    source = os.environ if env is None else env
+    return {
+        "schema": DESCRIBE_ROUTING_SCHEMA,
+        "harnesses": [
+            agent
+            for agent in (AGENT_CLAUDE, AGENT_CODEX)
+            if smart_routing_enabled(source, default=False, agent=agent)
+        ],
+    }
 
 
 def override_smart_routing(

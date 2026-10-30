@@ -721,11 +721,12 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_auth_without_configuration_explains_how_to_configure` | Request auth before configure | Actionable setup error and nonzero exit |
 | `test_ug_and_ucode_auth_helpers_emit_only_the_supplied_bearer` | Run both auth helper commands with the public bearer override, with and without forced refresh | Exact token-only stdout, no warnings or ANSI escapes; no workspace authentication or saved state |
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
+| `test_ucode_smart_router_describe_reports_the_launch_environment_offline` | Run `ucode smart-router-describe` with the `subagent_orch_v0_claude_only` selector, then without a selector | One JSON object listing only Claude, then no agents; no stderr or saved state. Not a routed launch or managed config |
 
 With Claude and Codex selected there are **88 live cases** (12 marked TUI cases),
 **1 two-workspace case** (marker `workspace_switch`),
 **44 managed-fixture cases** (marker `managed_fixture`, with only
-the CodingAgentConfig input injected from a JSON file in `fixtures/managed_config/`), and **7 installation checks**. The 14 retained numbered scenarios
+the CodingAgentConfig input injected from a JSON file in `fixtures/managed_config/`), and **8 installation checks**. The 14 retained numbered scenarios
 comprise **24 explicit journeys**: 12 managed configured/fresh executions and 12 unmanaged
 executions. The remaining managed-fixture cases cover focused model, MCP, skills,
 saved-config replay, and lifecycle shapes, including two Claude defaults cases. Parametrization varies
