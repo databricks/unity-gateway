@@ -1,21 +1,11 @@
 # Integration tests
 
-The subagent side pane PoC has native component tests in
-`../native_claude/mod_tests/subagent-pane.test.ts` for automatic and manual opening,
-collapse/expand, denied spawns, model/tool/time rendering, waiting versus
-completed status, closing five seconds after all agents finish, cancellation for
-new work, and reopening for the next
-batch, plus rendered focus and navigation instructions, green completion checks,
-and a compact side pane with labeled counts and no buttons. Collapse
-releases focus and requests 23 content columns (24 including the host divider).
-Host-reported pane focus expands it; without focus it stays compact. Both views close
-after the completion grace period without a summary bar above the prompt.
-Each new batch opens fully expanded; manual collapse lasts for the current batch.
-Native render checks verify yellow running circles, green completion checks,
-red error circles, and separate success/failure counts using engine statuses.
-`../test_claude_mod.py` checks packaged
-sources and state declarations. No live pane placement, keyboard/transcript
-navigation, reload/resume recovery, or gateway inference journey has been added.
+Subagent pane checks are native component tests, not a live integration journey.
+`../native_claude/mod_tests/subagent-pane.test.ts` covers opening, collapse/focus
+expansion, status rendering, and delayed closing/cancellation; `../test_claude_mod.py`
+checks packaging. See [pane behavior and limits](../../docs/claude-mod.md).
+Live layout, keyboard/transcript navigation, reload/resume recovery, and inference
+are not covered.
 
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls
