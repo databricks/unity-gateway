@@ -4,6 +4,7 @@ import type { EngineInterface, On, PluginState } from 'claude-code'
 type Subagent = PluginState['ug-smart-router']['paneAgents'][number]
 
 const PANE = 'subagents'
+const REFRESH_INTERVAL_MS = 1000
 const CLOSE_DELAY_MS = 5000
 // shortcut: track observed spawns only; hydrate from agent.list when resume/reload recovery is needed.
 const agents = atom({ plugin: 'ug-smart-router', key: 'paneAgents' } as const, [] as Subagent[])
@@ -73,7 +74,7 @@ export const registerSubagentPane = (on: On): void => {
       name: 'subagents',
       description: 'Open the subagent side pane; run again to collapse or expand it',
     })
-    $.clock.every(1000, () => reconcile($))
+    $.clock.every(REFRESH_INTERVAL_MS, () => reconcile($))
     return next(e)
   })
 
