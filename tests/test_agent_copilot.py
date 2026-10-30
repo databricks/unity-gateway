@@ -925,6 +925,7 @@ class TestCopilotUserMcpConfig:
             return subprocess.CompletedProcess(argv, 1 if stderr else 0, "", stderr)
 
         monkeypatch.setattr(copilot.subprocess_cross_os, "run", run)
+        monkeypatch.setattr(copilot.shutil, "which", lambda binary: f"/usr/bin/{binary}")
         return calls
 
     def test_defers_to_the_copilot_cli_for_a_config_it_cannot_parse(self, monkeypatch):
@@ -947,6 +948,30 @@ class TestCopilotUserMcpConfig:
         ]
         assert path.read_text(encoding="utf-8") == jsonc
         assert not copilot.LEGACY_MCP_CONFIG_PATH.exists()
+
+    def test_commented_config_without_the_copilot_cli_is_left_alone(self, monkeypatch):
+        # VS Code alone has no Copilot CLI to edit a file ug can't parse.
+        calls = self._stub_cli(monkeypatch)
+        monkeypatch.setattr(copilot.shutil, "which", lambda binary: None)
+        path = copilot.copilot_mcp_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        jsonc = '{\n  // mine\n  "mcpServers": {"mine": {"x": 1}},\n}\n'
+        path.write_text(jsonc, encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="Remove the comments"):
+            copilot.write_user_mcp_servers({"svc": self.ENTRY}, set())
+
+        assert calls == []
+        assert path.read_text(encoding="utf-8") == jsonc
+
+    def test_user_mcp_server_names_reads_the_config_without_the_cli(self):
+        path = copilot.copilot_mcp_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpServers": {"svc": self.ENTRY}}), encoding="utf-8")
+        assert copilot.user_mcp_server_names() == {"svc"}
+
+        path.write_text('{\n  // mine\n  "mcpServers": {"svc": {}}\n}\n', encoding="utf-8")
+        assert copilot.user_mcp_server_names() == set()
 
     def test_failed_cli_add_keeps_the_legacy_side_file(self, monkeypatch):
         self._stub_cli(monkeypatch, fail_add=True)

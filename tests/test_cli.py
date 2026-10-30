@@ -2445,6 +2445,17 @@ class TestMcpSubcommands:
         assert result.exit_code == 0, result.output
         assert calls == [{"claude", "codex"}]
 
+    @pytest.mark.parametrize("command", ["list", "remove"])
+    def test_mcp_agents_vscode_means_copilot_config(self, monkeypatch, command):
+        calls: list[set[str] | None] = []
+        monkeypatch.setattr(
+            cli_mod, f"{command}_mcp_command", lambda agents=None: calls.append(agents)
+        )
+        monkeypatch.setattr(cli_mod, "_sync_claude_cowork_plugin", lambda: None)
+        result = runner.invoke(app, ["mcp", command, "--agents", "vscode,claude"])
+        assert result.exit_code == 0, result.output
+        assert calls == [{"copilot", "claude"}]
+
     def test_mcp_add_syncs_claude_cowork(self):
         with (
             patch("ucode.cli.add_mcp_command") as mock_add,
@@ -3288,6 +3299,41 @@ class TestConfigureAgentsForMcp:
             pytest.raises(RuntimeError, match="Not installed or not set up: Codex"),
         ):
             cli_mod._configure_agents_for_mcp(["codex"])
+
+    def test_vscode_targets_copilot_config_without_the_copilot_cli(self):
+        state = {"workspace": "https://ws", cli_mod.VSCODE_CONFIGURED_KEY: True}
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.available_mcp_clients", return_value=["claude"]),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            scope = cli_mod._configure_agents_for_mcp(["vscode"])
+
+        assert scope == {"copilot"}
+        mock_cfg.assert_not_called()
+
+    def test_vscode_not_set_up_errors_instead_of_installing_copilot(self):
+        with (
+            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
+            patch("ucode.cli.available_mcp_clients", return_value=[]),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+            pytest.raises(RuntimeError, match="ug configure --agents vscode"),
+        ):
+            cli_mod._configure_agents_for_mcp(["vscode"])
+
+        mock_cfg.assert_not_called()
+
+    def test_vscode_with_copilot_sets_up_the_copilot_cli(self):
+        with (
+            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
+            patch("ucode.cli.available_mcp_clients", return_value=["copilot"]),
+            patch("ucode.cli.configured_mcp_clients", side_effect=[[], ["copilot"]]),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            scope = cli_mod._configure_agents_for_mcp(["vscode", "copilot"])
+
+        assert scope == {"copilot"}
+        mock_cfg.assert_called_once_with(selected_tools=["copilot"])
 
 
 class TestMcpAddWorkspace:

@@ -155,6 +155,37 @@ class TestCursorMcpClient:
         assert "cursor" not in clients
 
 
+class TestVscodeMcpClient:
+    STATE = {"workspace": WS, "available_tools": [], mcp.VSCODE_CONFIGURED_KEY: True}
+
+    def test_vscode_setup_makes_copilot_eligible_without_its_cli(self):
+        assert mcp.configured_mcp_clients(self.STATE, ["claude"]) == ["copilot"]
+
+    def test_copilot_still_needs_its_cli_without_a_vscode_setup(self):
+        assert mcp.configured_mcp_clients({"available_tools": ["copilot"]}, ["claude"]) == []
+
+    def test_agents_vscode_names_the_copilot_client(self):
+        assert mcp.mcp_clients_for_agents({"vscode", "claude"}) == {"copilot", "claude"}
+
+    def test_setup_targets_copilot_in_vscode_when_no_agent_cli_is_installed(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(mcp.shutil, "which", lambda binary: None)
+
+        _, _, clients = mcp.setup_mcp_clients(self.STATE, "MCP", require_auth=False)
+
+        assert clients == ["copilot"]
+        assert "GitHub Copilot in VS Code" in _unwrap(capsys.readouterr().out)
+
+    def test_list_reads_copilot_config_when_its_cli_is_missing(self, monkeypatch):
+        monkeypatch.setattr(mcp.shutil, "which", lambda binary: None)
+        path = mcp.copilot.copilot_mcp_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpServers": {"svc": {"type": "local"}}}), encoding="utf-8")
+
+        assert mcp.query_live_mcp_status("copilot") == {"svc": mcp.LIVE_ENABLED}
+
+
 class TestKiloMcpClient:
     def test_kilo_registered_in_mcp_clients(self):
         assert "kilo" in mcp.MCP_CLIENTS
@@ -3140,6 +3171,34 @@ class TestRevertMcpConfigs:
         assert result == {"copilot": True}
         assert json.loads(user_config.read_text())["mcpServers"] == {"mine": {"x": 1}}
         assert not legacy.exists()
+
+    def test_commented_copilot_config_without_its_cli_does_not_stop_the_revert(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(mcp.copilot.shutil, "which", lambda binary: None)
+        user_config = mcp.copilot.copilot_mcp_config_path()
+        user_config.parent.mkdir(parents=True, exist_ok=True)
+        jsonc = '{\n  // mine\n  "mcpServers": {"svc": {"type": "local"}}\n}\n'
+        user_config.write_text(jsonc, encoding="utf-8")
+        removed: list[tuple[str, str]] = []
+        real_remove = mcp.remove_client_mcp_server
+
+        def remove(client, name):
+            if client == "copilot":
+                return real_remove(client, name)
+            removed.append((client, name))
+            return ["user"]
+
+        monkeypatch.setattr(mcp, "remove_client_mcp_server", remove)
+
+        result = mcp.revert_mcp_configs(
+            {"mcp_servers": [{"name": "svc", "clients": ["copilot", "claude"]}]}
+        )
+
+        assert removed == [("claude", "svc")]
+        assert result == {"claude": True}
+        assert user_config.read_text(encoding="utf-8") == jsonc
+        assert "Remove the comments" in _unwrap(capsys.readouterr().out)
 
     def test_removes_skills_registry_across_its_clients(self, monkeypatch):
         removed: list[tuple[str, str]] = []
