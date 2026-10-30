@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+`integration/test_ug_codex_native_v2_comprehensive.py` validates native v2 plaintext
+delegation, follow-ups, compaction, resume, routing toggles, and configuration
+preservation on Codex 0.164.0 and 0.165.0. The native verification workflow runs
+this journey on macOS and Windows against the real gateway.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered

@@ -3,13 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import secrets
 import shutil
 import signal
 import socket
 import subprocess
 import sys
-import threading
 import time
 import urllib.request
 from collections.abc import Callable, Mapping, MutableMapping
@@ -813,7 +811,6 @@ def launch_codex(
     start_model: str | None,
     render_overlay: Callable[..., dict],
 ) -> NoReturn:
-    from ucode import gateway_proxy
 
     workspace = state.get("workspace")
     if not workspace:
@@ -854,50 +851,16 @@ def launch_codex(
     overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
         SESSION_PYTHON_ENV_VAR
     ]
-    # Subagent-only routing also needs readable assignments at the native hook.
-    # Keep the transport session-local without changing Codex's on-disk config.
-    session_secret = secrets.token_urlsafe(32)
-    server, cache, client = gateway_proxy.start_codex_v2_proxy(
-        workspace,
-        lambda force: launch_token(state, workspace, force_refresh=force),
-        session_secret=session_secret,
+    _run_codex_session(
+        state,
+        tool_args,
+        binary=binary,
+        start_model=start_model,
+        overlay=overlay,
+        available_models=available_models,
+        workspace=workspace,
+        env=dict(os.environ),
     )
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    transport_started = False
-    try:
-        server_thread.start()
-        transport_started = True
-        provider = overlay["model_providers"].pop(overlay["model_provider"])
-        # OS-managed Databricks settings outrank CLI overrides. Use a distinct
-        # provider, with a stable name so Codex can list prior sessions for resume.
-        provider_name = "Databricks-ug"
-        overlay["model_provider"] = provider_name
-        overlay["model_providers"][provider_name] = provider
-        provider["base_url"] = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/v1"
-        # Keep the local credential out of config files and process arguments.
-        provider.pop("auth", None)
-        provider["env_key"] = CODEX_PROXY_TOKEN_ENV_VAR
-        # The adapter handles Responses HTTP/SSE, not the optional provider
-        # WebSocket transport. The app-server/TUI WebSocket is independent.
-        provider["supports_websockets"] = False
-        _run_codex_session(
-            state,
-            tool_args,
-            binary=binary,
-            start_model=start_model,
-            overlay=overlay,
-            available_models=available_models,
-            workspace=workspace,
-            env={**os.environ, CODEX_PROXY_TOKEN_ENV_VAR: session_secret},
-        )
-    finally:
-        cache.stop()
-        if transport_started:
-            server.shutdown()
-        server.server_close()
-        client.close()
-        if transport_started:
-            server_thread.join(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
 
 
 def _run_codex_session(
