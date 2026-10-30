@@ -185,6 +185,7 @@ from ucode.state import (
     MANAGED_OVERLAY_KEY,
     SELF_MANAGED_AGENTS_KEY,
     add_self_managed_agent,
+    aliased_workspace_key,
     clear_state,
     current_workspace_key,
     get_model_location,
@@ -568,9 +569,12 @@ def configure_shared_state(
     workspace, workspace_id = split_workspace_key(workspace)
     prior_state = load_state()
     previous_workspace = prior_state.get("workspace")
-    # Re-configures pass the saved bare host; they keep its workspace on a multi-workspace host.
-    if workspace_id is None and previous_workspace == workspace:
-        workspace_id = prior_state.get("workspace_id")
+    # The bare host of a multi-workspace host keeps its saved workspace, from any current one.
+    if workspace_id is None:
+        if previous_workspace == workspace:
+            workspace_id = prior_state.get("workspace_id")
+        else:
+            workspace_id = split_workspace_key(aliased_workspace_key(workspace) or workspace)[1]
     key = workspace_key(workspace, workspace_id)
     previous_key = state_workspace_key(prior_state)
     if use_pat is None:
