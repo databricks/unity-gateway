@@ -2803,9 +2803,11 @@ _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
         "microsoft_foundry",
     ),
 }
+# Copilot Chat in VS Code can use the same provider types as Copilot CLI.
+_TOOL_PROVIDER_TYPES["vscode"] = _TOOL_PROVIDER_TYPES["copilot"]
 
 # Agents that can only use a Bedrock service's Claude targets.
-_CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot")
+_CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot", "vscode")
 
 # Provider types that expose Bedrock-style model ids (e.g.
 # `us.anthropic.claude-sonnet-4-6`, or region-less `anthropic.claude-*` on
@@ -3605,8 +3607,9 @@ def fetch_ai_gateway_claude_models(workspace: str, token: str) -> dict[str, str]
 #   system.ai.claude-opus-4-7[1m]   -> claude-opus-4-7
 #   main.ucode.claude_haiku         -> claude_haiku
 #   gpt-5.5                         -> gpt-5.5 (one dot is a version, not a schema)
+# A region prefix is dotted on Bedrock (`us.anthropic.`) and slashed on Azure (`eu/gpt-5.6-luna`).
 _BARE_MODEL_NAME_PATTERN = re.compile(
-    r"^(?:[^.\[]+\.[^.\[]+\.)?(?:anthropic\.)?(?:databricks-)?(?P<name>[^\[]*)"
+    r"^(?:[^.\[]+\.[^.\[]+\.)?(?:[^/.\[]+/)?(?:anthropic\.)?(?:databricks-)?(?P<name>[^\[]*)"
 )
 
 

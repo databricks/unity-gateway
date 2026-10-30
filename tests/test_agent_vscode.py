@@ -11,8 +11,10 @@ import pytest
 from typer.testing import CliRunner
 
 from ucode import config_io
-from ucode.agents import vscode
+from ucode import databricks as databricks_module
+from ucode.agents import copilot, vscode
 from ucode.cli import app
+from ucode.databricks import AnthropicModelCatalog
 from ucode.managed_files import OS
 
 # The conftest fixture stubs these out for every test; the ones here exercise the real lookups.
@@ -65,6 +67,7 @@ def code(monkeypatch):
     monkeypatch.setattr(vscode, "_find_command", lambda command: Path(f"/fake/bin/{command}"))
     monkeypatch.setattr(vscode, "_run_code", fake)
     monkeypatch.setattr(vscode, "launch_token", lambda state, workspace: "token")
+    monkeypatch.setattr(copilot, "launch_token", lambda state, workspace: "token")
     monkeypatch.setattr(
         vscode,
         "discover_model_services",
@@ -106,11 +109,17 @@ class TestConfigure:
                 {
                     "id": "system.ai.claude-sonnet-5-5",
                     "name": "Claude Sonnet 5.5",
-                    "api": "chat_completions",
+                    "family": "claude-sonnet-5-5",
+                    "api": "anthropic",
                     "maxInputTokens": 872_000,
                     "maxOutputTokens": 128_000,
                 },
-                {"id": "system.ai.gpt-6-luna", "name": "GPT 6 Luna", "api": "responses"},
+                {
+                    "id": "system.ai.gpt-6-luna",
+                    "name": "GPT 6 Luna",
+                    "family": "gpt-6-luna",
+                    "api": "responses",
+                },
             ],
         }
         printed = _printed(capsys)
@@ -132,12 +141,140 @@ class TestConfigure:
             ),
         )
 
-        models, _ = vscode.model_entries(WS, "token")
+        models = vscode.model_entries(STATE)
 
         assert [model["name"] for model in models] == [
-            "system.ai.gpt-6-luna",
             "main.models.gpt-6-luna",
+            "system.ai.gpt-6-luna",
             "GPT 5.5",
+        ]
+
+    def test_a_provider_services_claude_targets_keep_their_ids_and_get_a_200k_cap(
+        self, code, monkeypatch, capsys
+    ):
+        service = {
+            "name": "main.default.bedrock",
+            "provider_type": "amazon_bedrock",
+            "targets": [
+                "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                "global.anthropic.claude-opus-4-8",
+                "openai.gpt-oss-120b-1:0",
+            ],
+        }
+        monkeypatch.setattr(
+            databricks_module, "list_model_provider_services", lambda *a, **k: ([service], None)
+        )
+
+        assert vscode.configure(STATE, provider="main.default.bedrock")
+
+        assert code.config["provider"] == "main.default.bedrock"
+        assert code.config["models"] == [
+            {
+                "id": "global.anthropic.claude-opus-4-8",
+                "name": "global.anthropic.claude-opus-4-8",
+                "family": "claude-opus-4-8",
+                "api": "anthropic",
+                "maxInputTokens": 168_000,
+                "maxOutputTokens": 32_000,
+            },
+            {
+                "id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                "name": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                "family": "claude-sonnet-4-5",
+                "api": "anthropic",
+                "maxInputTokens": 168_000,
+                "maxOutputTokens": 32_000,
+            },
+        ]
+        printed = _printed(capsys)
+        assert "with 2 models from main.default.bedrock" in printed
+        assert "that VS Code can't use: openai.gpt-oss-120b-1:0" in printed
+
+    def test_a_openai_provider_services_models_on_responses_and_chat_completions(
+        self, code, monkeypatch
+    ):
+        service = {
+            "name": "main.default.openai",
+            "provider_type": "openai",
+            "allow_all_targets": True,
+            "targets": [],
+        }
+        monkeypatch.setattr(
+            databricks_module, "list_model_provider_services", lambda *a, **k: ([service], None)
+        )
+        monkeypatch.setattr(
+            copilot,
+            "list_provider_service_models",
+            lambda *args: (["gpt-5.5", "gpt-4.1"], None),
+        )
+
+        assert vscode.configure(STATE, provider="main.default.openai")
+
+        assert code.config["models"] == [
+            {"id": "gpt-5.5", "name": "gpt-5.5", "family": "gpt-5.5", "api": "responses"},
+            {"id": "gpt-4.1", "name": "gpt-4.1", "family": "gpt-4.1", "api": "completions"},
+        ]
+
+    @pytest.mark.parametrize(
+        ("service", "error"),
+        [
+            ({"provider_type": "gemini_enterprise"}, "which vscode can't route to"),
+            ({"provider_type": "anthropic", "relayed": True}, "only Claude Code can use"),
+            (
+                {"provider_type": "openai", "allow_all_targets": True},
+                "Could not list the models of 'main.default.mps': forbidden.",
+            ),
+        ],
+    )
+    def test_keeps_the_installed_setup_for_a_provider_service_it_cant_use(
+        self, code, monkeypatch, capsys, service, error
+    ):
+        service = {"name": "main.default.mps", "targets": [], **service}
+        monkeypatch.setattr(
+            databricks_module, "list_model_provider_services", lambda *a, **k: ([service], None)
+        )
+        monkeypatch.setattr(
+            copilot, "list_provider_service_models", lambda *args: ([], "forbidden")
+        )
+
+        assert not vscode.configure(STATE, provider="main.default.mps")
+
+        assert code.calls == []
+        printed = _printed(capsys)
+        assert error in printed
+        assert "VS Code was left unchanged." in printed
+
+    def test_a_model_locations_services_with_a_200k_cap(self, code, monkeypatch):
+        listed: list[str | None] = []
+
+        def listing(workspace, token, *, parent_schema=None):
+            listed.append(parent_schema)
+            return AnthropicModelCatalog(
+                model_ids=["main.models.claude-opus-5-5", "main.models.team-assistant"],
+                model_id_to_display_name={},
+            )
+
+        monkeypatch.setattr(copilot, "list_anthropic_model_catalog", listing)
+
+        assert vscode.configure(STATE, location="main.models")
+
+        assert listed == ["main.models"]
+        assert "provider" not in code.config
+        assert code.config["models"] == [
+            {
+                "id": "main.models.claude-opus-5-5",
+                "name": "Claude Opus 5.5",
+                "family": "claude-opus-5-5",
+                "api": "anthropic",
+                "maxInputTokens": 168_000,
+                "maxOutputTokens": 32_000,
+            },
+            {
+                "id": "main.models.team-assistant",
+                "name": "Team Assistant",
+                "family": "team-assistant",
+                "api": "anthropic",
+            },
         ]
 
     def test_reruns_reinstall_with_the_new_setup(self, code):
@@ -322,7 +459,7 @@ def test_configure_agents_vscode_refuses_a_workspace_the_machine_isnt_managed_fo
         "ucode.cli.managed_state_workspace", lambda: "https://managed.cloud.databricks.com"
     )
     monkeypatch.setattr("ucode.cli.set_current_workspace", selected.append)
-    monkeypatch.setattr(vscode, "configure", lambda state: pytest.fail("VS Code was set up"))
+    monkeypatch.setattr(vscode, "configure", lambda state, **_: pytest.fail("VS Code was set up"))
 
     result = CliRunner().invoke(app, ["configure", "--agents", "vscode", "--workspace", WS])
 
@@ -348,7 +485,11 @@ def test_configure_agents_vscode_sets_up_the_workspace_then_vscode(monkeypatch, 
         lambda **kwargs: pytest.fail("no model agents to configure"),
     )
     monkeypatch.setattr("ucode.cli.load_state", lambda: STATE)
-    monkeypatch.setattr(vscode, "configure", lambda state: configured.append(state) or True)
+    monkeypatch.setattr(
+        vscode,
+        "configure",
+        lambda state, **source: configured.append({**state, **source}) or True,
+    )
 
     args = [
         "configure",
@@ -356,6 +497,8 @@ def test_configure_agents_vscode_sets_up_the_workspace_then_vscode(monkeypatch, 
         "vscode",
         "--workspace",
         WS,
+        "--provider",
+        "main.default.mps",
         *(["--dry-run"] if dry_run else []),
     ]
     result = CliRunner().invoke(app, args)
@@ -363,5 +506,36 @@ def test_configure_agents_vscode_sets_up_the_workspace_then_vscode(monkeypatch, 
     assert result.exit_code == 0, result.output
     assert shared[0]["tools"] == []
     # A dry run saves no workspace, so VS Code would be set up from stale or missing state.
-    assert configured == ([] if dry_run else [STATE])
+    source = {"provider": "main.default.mps", "location": None}
+    assert configured == ([] if dry_run else [{**STATE, **source}])
     assert ("VS Code isn't changed" in result.output) == dry_run
+
+
+@pytest.mark.parametrize(
+    ("args", "error"),
+    [
+        (["--agents", "claude", "--provider", "a.b.c"], "work only with `--agents vscode`"),
+        (["--provider", "a.b.c"], "work only with `--agents vscode`"),
+        # A model agent alongside VS Code would silently keep the workspace's own models.
+        (
+            ["--agents", "claude,vscode", "--provider", "a.b.c"],
+            "work only with `--agents vscode`",
+        ),
+        (
+            ["--agents", "vscode", "--provider", "a.b.c", "--model-location", "a.b"],
+            "cannot be used together",
+        ),
+        (["--agents", "vscode", "--model-location", "a.b.c"], "must be `<catalog>.<schema>`"),
+    ],
+)
+def test_configure_refuses_a_model_source_vscode_cant_take(monkeypatch, args, error):
+    monkeypatch.setattr("ucode.cli.install_databricks_cli", lambda: None)
+    monkeypatch.setattr(
+        "ucode.cli._configure_shared_workspace_states",
+        lambda *a, **k: pytest.fail("the workspace was configured"),
+    )
+
+    result = CliRunner().invoke(app, ["configure", "--workspace", WS, *args])
+
+    assert result.exit_code != 0
+    assert error in " ".join(result.output.split())
