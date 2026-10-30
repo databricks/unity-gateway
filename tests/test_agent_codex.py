@@ -2371,6 +2371,10 @@ class TestCodexManagedConfig:
         monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock())
         relayed = {"workspace": WS}
 
+        # Like Claude Desktop, a launch's --provider never changes the app; only `ug configure` does.
+        codex.write_tool_config(dict(relayed), provider="cat.s.mps", relayed=True)
+        assert not app_path.exists() and not unit_path.exists()
+        monkeypatch.setattr(codex, "_explicit_configure", True)
         codex.write_tool_config(dict(relayed), provider="cat.s.mps", relayed=True)
         provider = read_toml_safe(app_path)["model_providers"]["Databricks"]
         assert read_toml_safe(app_path)["model_provider"] == "Databricks"
@@ -2416,6 +2420,7 @@ class TestCodexManagedConfig:
         app_path.write_text(user)
         monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock())
         monkeypatch.setattr(codex, "ug_binary", lambda: "/opt/ug")
+        monkeypatch.setattr(codex, "_explicit_configure", True)
 
         codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
         assert app_path.read_text() == user

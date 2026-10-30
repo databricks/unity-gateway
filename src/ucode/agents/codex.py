@@ -584,7 +584,8 @@ def write_tool_config(
     # The desktop proxy reads authentication from the saved workspace.
     tracing = bool(state.get("codex_otel_tracing"))
     _sync_desktop_tracing(workspace if tracing else None)
-    _sync_desktop_relay(state, workspace, provider if relayed else None, tracing=tracing)
+    if _explicit_configure:  # like Claude Desktop, only `ug configure` changes the app
+        _sync_desktop_relay(state, workspace, provider if relayed else None, tracing=tracing)
     return state
 
 
@@ -943,6 +944,16 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
     except (OSError, RuntimeError, ValueError) as exc:
         print_warning_err(f"Could not update Codex desktop tracing: {exc}")
         return False
+
+
+_explicit_configure = False
+
+
+def request_explicit_configure(requested: bool = True) -> None:
+    """Mark this run as an explicit ``ug configure`` (``False`` clears it), the only run that sets
+    up or removes the Codex app's ChatGPT relay; a launch's ``--provider`` never changes the app."""
+    global _explicit_configure
+    _explicit_configure = requested
 
 
 def _sync_desktop_relay(

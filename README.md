@@ -512,10 +512,11 @@ Managed policy headers must not contain secrets: the policy is readable by all l
 
 ### Codex desktop ChatGPT relay
 
-When Codex uses a relayed OpenAI provider (picked in `ug configure`, or `ug codex --provider <mps>`),
-`ug` also points the Codex app's `~/.codex/config.toml` at a loopback relay served by the same login
-service below (plain `codex` then uses it too). Restart the app and sign in with ChatGPT. A provider you already set is
-left alone; `ug revert` removes ug's entries.
+When `ug configure` sets up Codex with a relayed OpenAI provider, it also points the Codex app's
+`~/.codex/config.toml` at a loopback relay served by the same login service below (plain `codex`
+then uses it too). Like Claude Desktop, `ug codex --provider` doesn't change the app. Restart the
+app and sign in with ChatGPT. A provider you already set is left alone; `ug revert` removes ug's
+entries.
 
 ### Codex desktop tracing
 
