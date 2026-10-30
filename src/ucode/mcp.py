@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 import questionary
 from rich.table import Table
 
-from ucode.agents import claude, codex, copilot, cursor, gemini, kilo, opencode
+from ucode.agents import antigravity, claude, codex, copilot, cursor, gemini, kilo, opencode
 from ucode.config_io import read_json_safe, read_toml_safe, restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
@@ -35,6 +35,7 @@ from ucode.databricks import (
     raise_for_invalid_access_token,
     workspace_hostname,
 )
+from ucode.managed_files import ManagedFileWriteUnavailable, explicit_managed_writes
 from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
     CLAUDE_CODE_CIMD_CLIENT_ID,
@@ -50,7 +51,7 @@ from ucode.skills_api import (
     SkillRef,
     list_all_skills,
 )
-from ucode.state import load_full_state, load_state, save_state
+from ucode.state import ALIAS_OF_KEY, load_full_state, load_state, save_state
 from ucode.ui import (
     _BACK,
     _Back,
@@ -65,6 +66,7 @@ from ucode.ui import (
     spinner,
 )
 from ucode.ui.interactive_picker import CatalogChoice, picker_details
+from ucode.workspace import state_workspace_key
 
 # Workspace-relative path fragments for the V2 AI Gateway MCP endpoints, shared by the URL-shape
 # checks (`_is_app_mcp_server`, `_mcp_server_location`) so the set stays in one place.
@@ -115,6 +117,11 @@ MCP_CLIENTS = {
         "binary": "cursor-agent",
         "display": "Cursor",
         "list_command": "cursor-agent mcp list",
+    },
+    "antigravity": {
+        "binary": "agy",
+        "display": "Antigravity CLI",
+        "list_command": "agy mcp list",
     },
 }
 SKILLS_MCP_KIND = "skills"
@@ -415,6 +422,9 @@ def configure_client_mcp_server(
     if client == "cursor":
         removed = cursor.write_mcp_server_config(name, argv)
         return [MCP_USER_SCOPE] if removed else []
+    if client == "antigravity":
+        removed = antigravity.write_mcp_server_config(name, argv)
+        return [MCP_USER_SCOPE] if removed else []
     raise RuntimeError(f"Unsupported MCP client '{client}'.")
 
 
@@ -435,6 +445,8 @@ def remove_client_mcp_server(client: str, name: str) -> list[str]:
         return [MCP_USER_SCOPE] if copilot.remove_mcp_server_config(name) else []
     if client == "cursor":
         return [MCP_USER_SCOPE] if cursor.remove_mcp_server_config(name) else []
+    if client == "antigravity":
+        return [MCP_USER_SCOPE] if antigravity.remove_mcp_server_config(name) else []
     raise RuntimeError(f"Unsupported MCP client '{client}'.")
 
 
@@ -597,14 +609,18 @@ def _mcp_entry_url_host(entry: dict) -> str | None:
 
 
 def _partition_mcp_entries_by_workspace(
-    entries: list[dict], workspace: str
+    entries: list[dict], workspace: str, *, same_host_switch: bool = False
 ) -> tuple[list[dict], list[dict]]:
-    """Split MCP entries into ones that belong to ``workspace`` and ones that don't."""
+    """Split MCP entries into ones that belong to ``workspace`` and ones that don't.
+
+    ``same_host_switch``: the entries came from another workspace on the same multi-workspace
+    host, so none of them belong.
+    """
     workspace_host = workspace_hostname(workspace)
     current: list[dict] = []
     foreign: list[dict] = []
     for entry in entries:
-        if _mcp_entry_url_host(entry) == workspace_host:
+        if not same_host_switch and _mcp_entry_url_host(entry) == workspace_host:
             current.append(entry)
         else:
             foreign.append(entry)
@@ -634,7 +650,7 @@ def _mcp_entries_only_in_other_workspaces(current_workspace: str) -> dict[str, s
 
     external_entries: dict[str, set[str]] = {}
     for ws, bucket in workspaces.items():
-        if ws == current_workspace or not isinstance(bucket, dict):
+        if ws == current_workspace or not isinstance(bucket, dict) or ALIAS_OF_KEY in bucket:
             continue
         for entry in bucket.get("mcp_servers") or []:
             name = _server_name(entry)
@@ -1116,7 +1132,8 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
     Returns the servers resolved this run. Propagates the distinct
     :class:`McpServiceListingRateLimited` when discovery is rate-limited (HTTP 429), so the caller
     can skip MCP setup for the run without treating it as a hard failure; any other discovery
-    failure raises plain ``RuntimeError``. Either way the caller keeps it best-effort.
+    failure raises plain ``RuntimeError``. Either way the caller keeps it best-effort, except that
+    ``ug configure`` fails on a denied machine-wide write (:class:`ManagedFileWriteUnavailable`).
     """
     selector = managed.get("mcp_servers")
     selector = selector if isinstance(selector, dict) else {}
@@ -1179,6 +1196,9 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
         try:
             written = module.reconcile_managed_mcp(state, entries, **extra)
         except RuntimeError as exc:
+            # `ug configure` must leave the machine-wide file correct, as for agent settings.
+            if isinstance(exc, ManagedFileWriteUnavailable) and explicit_managed_writes():
+                raise
             print_warning(f"Could not update {MCP_CLIENTS[agent]['display']} managed MCP: {exc}")
             written = False
         if is_eligible and written:
@@ -1435,6 +1455,7 @@ _MCP_CLIENT_MODULES = {
     "cursor": cursor,
     "opencode": opencode,
     "kilo": kilo,
+    "antigravity": antigravity,
 }
 
 
@@ -1480,6 +1501,8 @@ def _managed_mcp_entry(
         return opencode.build_mcp_server_entry(argv)
     if client == "kilo":
         return kilo.build_mcp_server_entry(argv)
+    if client == "antigravity":
+        return antigravity.build_mcp_server_entry(argv)
     raise RuntimeError(f"Unsupported MCP client '{client}'.")
 
 
@@ -1676,7 +1699,9 @@ def _batch_remove_stale_servers(batch_remove: dict[str, set[str]]) -> set[str]:
     return removed
 
 
-def purge_cross_workspace_mcp_residue(state: dict, workspace: str) -> None:
+def purge_cross_workspace_mcp_residue(
+    state: dict, workspace: str, *, same_host_switch: bool = False
+) -> None:
     installed = set(available_mcp_clients())
     # Collect every removal as {client: {names}} and apply it as one batched write per client below,
     # rather than a CLI/config removal per server (see `_batch_remove_stale_servers`).
@@ -1688,7 +1713,7 @@ def purge_cross_workspace_mcp_residue(state: dict, workspace: str) -> None:
 
     raw_mcp_servers = list(state.get("mcp_servers") or [])
     current_mcp_servers, foreign_mcp_servers = _partition_mcp_entries_by_workspace(
-        raw_mcp_servers, workspace
+        raw_mcp_servers, workspace, same_host_switch=same_host_switch
     )
     foreign_names = {name for server in foreign_mcp_servers if (name := _server_name(server))}
     if foreign_mcp_servers:
@@ -1709,7 +1734,7 @@ def purge_cross_workspace_mcp_residue(state: dict, workspace: str) -> None:
         state["mcp_servers"] = current_mcp_servers
         save_state(state)
 
-    other_ws_mcps = _mcp_entries_only_in_other_workspaces(workspace)
+    other_ws_mcps = _mcp_entries_only_in_other_workspaces(state_workspace_key(state) or workspace)
     for name, clients in other_ws_mcps.items():
         for client in clients:
             queue_removal(client, name)
@@ -2455,7 +2480,8 @@ def _parse_codex_mcp_list(output: str) -> dict[str, str]:
         name = fields[0].strip()
         # Registered MCP server names are single tokens (the health parser assumes the same), so a
         # first column with a space is prose: the header, or the "no servers configured" message.
-        if not name or name == "Name" or " " in name:
+        # Antigravity's header is upper-case (`NAME  TYPE  STATUS  COMMAND/URL`).
+        if not name or name.lower() == "name" or " " in name:
             continue
         state = LIVE_UNKNOWN
         for field in fields[1:]:
@@ -2499,7 +2525,8 @@ def parse_mcp_list_output(client: str, output: str) -> dict[str, str]:
     failure detail (``Failed to connect - HTTP 404 Not Found``), so checking it up front would
     let one broken server empty the whole listing.
     """
-    if client == "codex":
+    if client in ("codex", "antigravity"):
+        # Both print a columnar table with an enabled/disabled state column.
         parsed = _parse_codex_mcp_list(output)
     elif client in ("kilo", "opencode"):
         parsed = _parse_tree_mcp_list(output)

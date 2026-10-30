@@ -22,6 +22,7 @@ from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
 from ucode import custom_oauth
 from ucode.agents import (
+    GEMINI_API_TOOLS,
     MODEL_LOCATION_TOOLS,
     TOOL_SPECS,
     LaunchOptions,
@@ -41,6 +42,7 @@ from ucode.agents import (
     resolve_launch_model,
     resolve_provider_models,
 )
+from ucode.agents import antigravity as antigravity_agent
 from ucode.agents import claude as claude_agent
 from ucode.agents import codex as codex_agent
 from ucode.agents import copilot as copilot_agent
@@ -78,7 +80,7 @@ from ucode.databricks import (
     ensure_pat_bearer,
     external_bearer_configured,
     find_profile_name_for_host,
-    get_databricks_profiles,
+    find_profile_name_for_workspace,
     get_databricks_token,
     install_databricks_cli,
     is_model_provider_feature_unavailable,
@@ -88,8 +90,10 @@ from ucode.databricks import (
     map_claude_family_models,
     normalize_workspace_url,
     probe_unity_gateway_capabilities,
+    profile_choices,
     resolve_pat_token,
     resolve_provider_launch_model,
+    resolve_provider_service,
     run_databricks_login,
 )
 from ucode.env import env_bool
@@ -111,7 +115,14 @@ from ucode.managed_config import (
     refresh_managed_config,
     revert_machine_policy,
 )
-from ucode.managed_files import config_scope, managed_write_session, set_config_scope
+from ucode.managed_files import (
+    ManagedFileWriteUnavailable,
+    config_scope,
+    explicit_managed_writes,
+    managed_write_session,
+    request_explicit_managed_writes,
+    set_config_scope,
+)
 from ucode.managed_resolve import (
     managed_claude_family_models,
     managed_default_model,
@@ -175,6 +186,7 @@ from ucode.state import (
     SELF_MANAGED_AGENTS_KEY,
     add_self_managed_agent,
     clear_state,
+    current_workspace_key,
     get_model_location,
     get_provider_service,
     is_self_managed,
@@ -212,13 +224,19 @@ from ucode.ui import (
     status_badge,
 )
 from ucode.usage import usage as usage_report
+from ucode.workspace import (
+    resolve_workspace,
+    split_workspace_key,
+    state_workspace_key,
+    workspace_key,
+)
 
 CustomOAuthConfig = custom_oauth.CustomOAuthConfig
 
 _DISCOVERY_CONSUMERS: dict[str, tuple[str, ...]] = {
     "claude": ("claude", "opencode", "kilo", "copilot", "pi"),
     "codex": ("codex", "copilot", "pi"),
-    "gemini": ("gemini", "opencode", "kilo", "pi"),
+    "gemini": ("gemini", "opencode", "kilo", "pi", "antigravity"),
     "oss": ("opencode", "kilo"),
 }
 
@@ -390,8 +408,13 @@ def _prompt_for_configuration(tool: str | None = None) -> tuple[str, str | None]
     else:
         desc = f"Configure {TOOL_SPECS[tool]['display']} to use your Databricks endpoint."
     with spinner("Loading Databricks workspaces and profiles..."):
-        profiles = get_databricks_profiles()
-    return prompt_for_workspace(desc, profiles)
+        entries = list_profile_entries()
+    url, profile = prompt_for_workspace(desc, profile_choices(entries))
+    workspace_id = None
+    if profile:
+        entry = next((p for p in entries if p.get("name") == profile), {})
+        workspace_id = str(entry.get("workspace_id") or "").strip() or None
+    return resolve_workspace(url, workspace_id, explicit_id=False), profile
 
 
 def _custom_oauth_config(
@@ -466,11 +489,7 @@ def _parse_workspace_option(workspace: str) -> list[tuple[str, str | None]]:
             "--workspace takes a single workspace URL, e.g. "
             "`--workspace https://workspace.databricks.com`."
         )
-    try:
-        url = normalize_workspace_url(workspace)
-    except ValueError as exc:
-        raise RuntimeError(str(exc)) from exc
-    return [(url, None)]
+    return [(resolve_workspace(workspace), None)]
 
 
 def _parse_profile_option(profile: str) -> list[tuple[str, str | None]]:
@@ -499,11 +518,14 @@ def _parse_profile_option(profile: str) -> list[tuple[str, str | None]]:
         raise RuntimeError(
             f"Databricks CLI profile '{name}' has no host configured in ~/.databrickscfg."
         )
-    try:
-        workspace = normalize_workspace_url(host)
-    except ValueError as exc:
-        raise RuntimeError(str(exc)) from exc
-    return [(workspace, name)]
+    workspace_id = str(entry.get("workspace_id") or "").strip() or None
+    return [(resolve_workspace(host, workspace_id, explicit_id=False), name)]
+
+
+def _find_profile_name(workspace: str, workspace_id: str | None) -> str | None:
+    if workspace_id:
+        return find_profile_name_for_workspace(workspace, workspace_id)
+    return find_profile_name_for_host(workspace)
 
 
 def configure_shared_state(
@@ -538,10 +560,19 @@ def configure_shared_state(
     the saved model lists are preserved.
     """
     workspace = normalize_workspace_url(workspace)
+    if not split_workspace_key(workspace)[1]:
+        workspace = resolve_workspace(workspace)
+    workspace, workspace_id = split_workspace_key(workspace)
     prior_state = load_state()
     previous_workspace = prior_state.get("workspace")
+    # Re-configures pass the saved bare host; they keep its workspace on a multi-workspace host.
+    if workspace_id is None and previous_workspace == workspace:
+        workspace_id = prior_state.get("workspace_id")
+    key = workspace_key(workspace, workspace_id)
+    previous_key = state_workspace_key(prior_state)
+    purge_kwargs = {"same_host_switch": True} if previous_workspace == workspace else {}
     if use_pat is None:
-        use_pat = bool(prior_state.get("use_pat")) and previous_workspace == workspace
+        use_pat = bool(prior_state.get("use_pat")) and previous_key == key
     if databricks_ai_tools_enabled is None:
         # Opt-in: a True from an opt-out-era configure is a stale default, not a
         # standing opt-in, so it is not carried forward.
@@ -557,15 +588,19 @@ def configure_shared_state(
     # model lists (carried over by load_state, left untouched).
     state = load_state()
     state["workspace"] = workspace
+    if workspace_id:
+        state["workspace_id"] = workspace_id
+    else:
+        state.pop("workspace_id", None)
     # `state` starts from the current workspace's block, so its self-managed list belongs to the
     # source workspace. The opt-in is per workspace: replace it with the destination's own list.
-    dest_self_managed = workspace_self_managed_agents(workspace)
+    dest_self_managed = workspace_self_managed_agents(key)
     if dest_self_managed:
         state[SELF_MANAGED_AGENTS_KEY] = dest_self_managed
     else:
         state.pop(SELF_MANAGED_AGENTS_KEY, None)
-    if previous_workspace != workspace:
-        dest_block = load_full_state().get("workspaces", {}).get(workspace, {})
+    if previous_key != key:
+        dest_block = load_full_state().get("workspaces", {}).get(key, {})
         dest_catalog = dest_block.get(copilot_agent.CATALOG_STATE_KEY)
         if dest_catalog:
             state[copilot_agent.CATALOG_STATE_KEY] = dest_catalog
@@ -590,30 +625,31 @@ def configure_shared_state(
         state.pop("custom_oauth", None)
     elif custom_oauth is not None:
         state["custom_oauth"] = dict(custom_oauth)
-    elif previous_workspace != workspace:
+    elif previous_key != key:
         state.pop("custom_oauth", None)
     state["base_urls"] = build_shared_base_urls(workspace)
 
     cli_custom_oauth = state.get("custom_oauth") if custom_oauth_cli_enabled(custom_oauth) else None
     if cli_custom_oauth:
-        token = ensure_custom_oauth_cli_token(workspace, cli_custom_oauth)
+        token = ensure_custom_oauth_cli_token(workspace, cli_custom_oauth, workspace_id)
 
     if skip_preflight:
         # A prior `ug configure` created the profile; resolve it locally (no
         # login needed) and persist it so launches disambiguate.
         if profile is None:
-            profile = find_profile_name_for_host(workspace)
+            profile = _find_profile_name(workspace, workspace_id)
             if profile:
                 state["profile"] = profile
         save_state(state)
         # Scrub MCP entries ucode wrote for a previous workspace.
-        if previous_workspace and previous_workspace != workspace:
-            purge_cross_workspace_mcp_residue(state, workspace)
+        if previous_key and previous_key != key:
+            purge_cross_workspace_mcp_residue(state, workspace, **purge_kwargs)
         # Diagnostic reasons are transient (attached after save_state so they
         # don't land on disk). No discovery ran, so there is nothing to report.
         state["_discovery_reasons"] = {"claude": None, "gemini": None, "codex": None, "oss": None}
         return state
 
+    login_kwargs = {"workspace_id": workspace_id} if workspace_id else {}
     # ── Preflight (bypassed above under --skip-preflight): validate Databricks
     #    auth + the AI Gateway, then discover the available models. ──
     if cli_custom_oauth:
@@ -636,15 +672,15 @@ def configure_shared_state(
         # empty one as absent, so it never shadows the PAT. Pass the validated
         # token to avoid re-reading ~/.databrickscfg.
         ensure_pat_bearer(profile, pat)
-        ensure_databricks_auth(workspace, profile)
+        ensure_databricks_auth(workspace, profile, **login_kwargs)
     elif force_login and not external_bearer_configured():
-        run_databricks_login(workspace, profile)
+        run_databricks_login(workspace, profile, **login_kwargs)
     else:
-        ensure_databricks_auth(workspace, profile)
+        ensure_databricks_auth(workspace, profile, **login_kwargs)
     # After login the profile exists in ~/.databrickscfg, so a host->profile
     # lookup is reliable even when it returned nothing above.
     if profile is None:
-        profile = find_profile_name_for_host(workspace)
+        profile = _find_profile_name(workspace, workspace_id)
         if profile:
             state["profile"] = profile
     with spinner("Verifying Unity AI Gateway..."):
@@ -665,7 +701,12 @@ def configure_shared_state(
         or "pi" in tools
     )
     want_gemini = (
-        fetch_all or "gemini" in tools or "opencode" in tools or "kilo" in tools or "pi" in tools
+        fetch_all
+        or "gemini" in tools
+        or "opencode" in tools
+        or "kilo" in tools
+        or "pi" in tools
+        or "antigravity" in tools
     )
     # Claude's web-search server also needs a Responses-capable model.
     want_codex = (
@@ -763,8 +804,8 @@ def configure_shared_state(
     save_state(state)
     # Scrub MCP entries that ucode wrote for the previous workspace so the new
     # workspace's agent configs aren't stale.
-    if previous_workspace and previous_workspace != workspace:
-        purge_cross_workspace_mcp_residue(state, workspace)
+    if previous_key and previous_key != key:
+        purge_cross_workspace_mcp_residue(state, workspace, **purge_kwargs)
     # Diagnostic reasons are transient — attach after save_state so they don't
     # land on disk but are available to the caller for this run.
     state["_discovery_reasons"] = {
@@ -828,9 +869,8 @@ def _keep_installed_workspace_selected(state: dict) -> str | None:
     Returns that installed workspace, or None when the selection already matches or none exists.
     """
     installed = managed_state_workspace()
-    if not installed or normalize_workspace_url(installed) == normalize_workspace_url(
-        state["workspace"]
-    ):
+    selected = state_workspace_key(state) or state["workspace"]
+    if not installed or normalize_workspace_url(installed) == normalize_workspace_url(selected):
         return None
     set_current_workspace(normalize_workspace_url(installed))
     return installed
@@ -860,16 +900,25 @@ def _launch_workspace_state(workspace: str | None) -> dict:
     Adopts the installed workspace when none is saved, so a fresh user launches it directly.
     """
     state = load_state()
-    saved = state.get("workspace")
+    saved = state_workspace_key(state)
+    requested = resolve_workspace(workspace) if workspace else None
+    if requested and requested == state.get("workspace"):
+        # The bare host of a multi-workspace host keeps its saved workspace.
+        requested = saved
     # The flag wins over the saved selection; either is refused if it isn't the installed one.
-    target = managed_launch_workspace(workspace or saved)
+    target = managed_launch_workspace(requested or saved)
     # An explicit --workspace always saves the selection, as on main.
-    if target and (workspace or not saved or normalize_workspace_url(saved) != target):
+    if target and (requested or not saved or normalize_workspace_url(saved) != target):
         set_current_workspace(target)
         state = load_state()
-        if state.get("workspace") != target:
+        if state_workspace_key(state) != target:
             # A dry run saves nothing, so carry the workspace for this run.
-            state = {**state, "workspace": target}
+            host, workspace_id = split_workspace_key(target)
+            state = {**state, "workspace": host}
+            if workspace_id:
+                state["workspace_id"] = workspace_id
+            else:
+                state.pop("workspace_id", None)
     return state
 
 
@@ -972,11 +1021,12 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     (``system.ai``), a Model Provider Service, or a custom Unity Catalog model location — and
     persist (or clear) the choice.
 
-    No-op for tools other than claude/codex/gemini/copilot (gemini has no custom location). Falls
+    No-op for tools other than claude/codex/gemini/antigravity/copilot (the Gemini API agents have
+    no custom location). Falls
     back to Databricks when no matching provider services are found or the listing fails and no
     custom location is offered.
     """
-    if tool not in ("claude", "codex", "gemini", "copilot"):
+    if tool not in ("claude", "codex", "gemini", "antigravity", "copilot"):
         return state
     display = TOOL_SPECS[tool]["display"]
 
@@ -1034,7 +1084,28 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     state = set_model_location(state, tool, None)
     state = set_provider_service(state, tool, selected)
     save_state(state)
+    if tool == "antigravity":
+        state = _prompt_allow_all_provider_model(tool, state, selected, token)
     print_success(f"{display} will route through {selected}")
+    return state
+
+
+def _prompt_allow_all_provider_model(tool: str, state: dict, provider: str, token: str) -> dict:
+    """Ask which model to start on when ``provider`` serves any model but declares none.
+
+    Antigravity names a concrete model in every request, and `ug configure` has no `--model`, so
+    an allow-all service without declared targets would otherwise leave nothing to pin."""
+    service, error = resolve_provider_service(tool, provider, state["workspace"], token)
+    if error or service is None or not service.get("allow_all_targets") or service.get("targets"):
+        return state
+    model = prompt_for_text(
+        f"Model for {TOOL_SPECS[tool]['display']} to start on (any model {provider} serves)",
+        required=True,
+    )
+    if model is None:
+        raise KeyboardInterrupt
+    state[antigravity_agent.PROVIDER_MODEL_STATE_KEY] = model.strip()
+    save_state(state)
     return state
 
 
@@ -1321,6 +1392,8 @@ def _status_models(tool: str, state: dict) -> list[str]:
     elif tool == "kilo":
         # Kilo shares OpenCode's discovery; its models live under opencode_models.
         models = _model_values(state.get("opencode_models"))
+    elif tool == "antigravity":
+        models = list(antigravity_agent.model_catalog(state).values())
     elif tool == "pi":
         models = _model_values(state.get("pi_models")) or (
             _model_values(state.get("claude_models"))
@@ -1340,7 +1413,11 @@ def _status_default_model(tool: str, state: dict, models: list[str]) -> str | No
         return explicit
     # Claude and Codex deliberately leave the starting model to the agent unless a managed
     # config pins one. The other clients write the first resolved model into their ug config.
-    return models[0] if models and tool in ("gemini", "opencode", "kilo", "pi") else None
+    return (
+        models[0]
+        if models and tool in ("gemini", "opencode", "kilo", "pi", "antigravity")
+        else None
+    )
 
 
 def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
@@ -1435,7 +1512,7 @@ def status() -> int:
     # The one enumerator `ug mcp list` uses, keyed by name with each server's agents — so the
     # per-agent counts below can't drift from what `ug mcp list` reports.
     configured_mcp = configured_mcp_servers_by_name(state)
-    cached_managed = load_managed_state(workspace) if workspace else None
+    cached_managed = load_managed_state(state_workspace_key(state)) if workspace else None
     managed, managed_freshness = _live_status_managed_state(state, cached_managed)
     configured_tools = (
         set(state.get("available_tools") or [])
@@ -1544,11 +1621,21 @@ def revert() -> int:
     claude_managed_result = claude_agent.revert_managed_settings()
     codex_managed_result = codex_agent.revert_managed_config()
     workspace_policy_result = revert_machine_policy()
+    from ucode.agents import vscode
+
+    try:
+        vscode_result = vscode.revert()
+    except Exception as exc:  # noqa: BLE001 -- Preserve other revert operations on failure
+        # VS Code's revert looks at the installed extension, not ug state, so a later run still finds it.
+        print_warning(f"Could not revert VS Code: {exc}. Fix it, then run ug revert again.")
+        vscode_result = "failed"
 
     results: dict[str, bool] = {
-        tool: restore_file(
-            spec["config_path"], spec["backup_path"], bool(managed_configs.get(tool))
-        )
+        # Antigravity's skills.json is shared with its app and IDE extensions, so revert
+        # removes only ug's entry rather than restoring a snapshot.
+        tool: antigravity_agent.revert_skills_config()
+        if tool == "antigravity"
+        else restore_file(spec["config_path"], spec["backup_path"], bool(managed_configs.get(tool)))
         for tool, spec in TOOL_SPECS.items()
     }
     pi_settings_restored = restore_file(
@@ -1568,6 +1655,7 @@ def revert() -> int:
     print_kv("Codex OS-managed settings", codex_managed_result)
     print_kv("Unity Gateway workspace policy", workspace_policy_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
+    print_kv("VS Code extension", vscode_result)
     for client, spec in MCP_CLIENTS.items():
         print_kv(
             f"{spec['display']} MCP config",
@@ -1595,6 +1683,7 @@ _HELP_COMMAND_ORDER = (
     "opencode",
     "kilo",
     "pi",
+    "antigravity",
     "configure",
     "mcp",
     "skills",
@@ -1703,8 +1792,9 @@ app.add_typer(
     rich_help_panel="Tools and Skills",
 )
 
-# Tool keys that a managed config can govern — sourced from the same enum map managed_config uses.
-_MANAGEABLE_AGENTS: frozenset[str] = frozenset(AGENT_ENUM_TO_TOOL.values())
+# Tool keys that a managed config can govern — sourced from the same enum map managed_config uses —
+# plus Antigravity, which the managed config can't name yet and so only runs self-managed.
+_MANAGEABLE_AGENTS: frozenset[str] = frozenset(AGENT_ENUM_TO_TOOL.values()) | {"antigravity"}
 
 
 def _valid_agent_or_raise(agent: str) -> str:
@@ -1864,7 +1954,7 @@ def _configure_agents_for_mcp(
     not_installed = sorted(a for a in scope if a in MCP_ONLY_CLIENTS and a not in installed)
     if not_installed:
         raise RuntimeError(_not_installed_message(not_installed))
-    previous_workspace = load_full_state().get("current_workspace")
+    previous_workspace = current_workspace_key(load_full_state())
     try:
         _bootstrap_agents_for_mcp(scope, installed, workspace_entries)
     except BaseException:
@@ -2453,6 +2543,32 @@ def mcp_proxy_cmd(
         raise typer.Exit(1)
     profile = profile or state.get("profile")
     serve(url, workspace, profile, use_pat=use_pat or bool(state.get("use_pat")))
+
+
+@app.command("cowork-hook", hidden=True)
+def cowork_hook_cmd(
+    host: Annotated[str, typer.Option("--host", help="Configured workspace URL.")],
+    server: Annotated[list[str], typer.Option("--server", help="Connector as `<name>=<MCP URL>`.")],
+    profile: Annotated[
+        str | None, typer.Option("--profile", help="Databricks CLI profile.")
+    ] = None,
+    use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
+) -> None:
+    """Run the Cowork plugin's SessionStart and UserPromptSubmit hooks."""
+    import json
+    import sys
+
+    from ucode.agents.desktop.cowork_hooks import hook_output
+
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        return
+    servers = dict(entry.split("=", 1) for entry in server if "=" in entry)
+    with redirect_stdout(sys.stderr):  # stdout is reserved for the hook's JSON
+        output = hook_output(payload, servers, host, profile, use_pat=use_pat)
+    if output:
+        sys.stdout.write(json.dumps(output))
 
 
 @app.command("claude-desktop-auth", hidden=True)
@@ -3145,6 +3261,9 @@ def _configure_managed_mcp_servers(managed: dict | None) -> list[dict] | None:
         )
         return None
     except RuntimeError as exc:
+        # A denied machine-wide write fails `ug configure`, like the agents' own settings.
+        if isinstance(exc, ManagedFileWriteUnavailable) and explicit_managed_writes():
+            raise
         print_warning(f"Could not register your workspace's MCP servers: {exc}")
         return None
     names = [str(server["name"]) for server in registered if server.get("name")]
@@ -3196,7 +3315,9 @@ def _should_launch_smart_routing(
     explicit_prompt: bool,
     model: str | None,
 ) -> bool:
-    if model is not None or has_explicit_model_arg(tool_args):
+    pinned = model is not None or has_explicit_model_arg(tool_args)
+    # Subagent-only routing keeps a pinned root model; first-prompt routing would replace it.
+    if pinned and smart_routing_v2.first_prompt_routing_enabled(agent=tool):
         return False
     return _smart_routing_launch_shape(tool, tool_args, explicit_prompt)
 
@@ -3530,7 +3651,7 @@ def _launch_tool(
             if tool == "claude" and managed is not None
             else {}
         )
-        if provider and tool != "gemini":
+        if provider and tool not in GEMINI_API_TOOLS:
             provider_models, error, relayed = resolve_provider_models(tool, state, provider)
             if error:
                 if managed is not None and provider == managed_provider_service(managed, tool):
@@ -3630,10 +3751,12 @@ def _launch_tool(
                     route_root_model = resolve_provider_launch_model(
                         provider_launch_model, provider_models or {}
                     )
-            if provider and tool == "gemini":
+            if provider and tool in GEMINI_API_TOOLS:
                 # Gemini is the exception: the request still names a concrete model
                 # in the URL, so pin one of the service's targets (--model or default).
-                resolved_model, gemini_error = resolve_gemini_provider_model(state, provider, model)
+                resolved_model, gemini_error = resolve_gemini_provider_model(
+                    state, provider, model, tool=tool
+                )
                 if gemini_error:
                     raise RuntimeError(gemini_error)
         else:
@@ -3779,8 +3902,8 @@ def _launch_tool(
             ctx.args,
             smart_routing_enabled=smart_routing_enabled,
             explicit_prompt=explicit_prompt,
-            # Only a developer's explicit model disables routing. A managed default is the
-            # initial/fallback model and still participates in a routed session.
+            # A developer's explicit model allows only subagent-only routing. A managed default is
+            # the initial/fallback model and still participates in a routed session.
             user_pinned_model=model or forwarded_model,
             provider=provider,
             # Copilot picks its start model from its own catalog; the admin's or budget pick leads.
@@ -3933,7 +4056,7 @@ def _launch_managed_default(
     apply_pat_environment(state)
     coding_agent_config_feature_disabled = False
     if dry_run:
-        managed = load_managed_state(current)
+        managed = load_managed_state(state_workspace_key(state))
     else:
         with spinner("Loading..."):
             managed, coding_agent_config_feature_disabled = refresh_managed_config(state)
@@ -4282,6 +4405,45 @@ def pi_cmd(
 
 
 @app.command(
+    "antigravity",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    rich_help_panel="Launch",
+)
+def antigravity_cmd(
+    ctx: typer.Context,
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider",
+            help="Route through a Unity Catalog Model Provider Service "
+            "(<catalog>.<schema>.<name>) that serves a Gemini model. Pass before any "
+            "`--` separator.",
+        ),
+    ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help="Gemini model to launch on: a Databricks model ID (system.ai.gemini-3-8-flash) or "
+            "its Antigravity name (gemini-3.8-flash). Under --provider, selects which of the "
+            "service's target models to use. Pass before any `--` separator.",
+        ),
+    ] = None,
+    skip_preflight: SkipPreflightOption = False,
+) -> None:
+    """Launch Google Antigravity CLI (agy) via Databricks."""
+    _launch_tool("antigravity", ctx, provider=provider, model=model, skip_preflight=skip_preflight)
+
+
+# `ug agy` matches the agent's own binary name; it is the same command, kept out of help.
+app.command(
+    "agy",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    hidden=True,
+)(antigravity_cmd)
+
+
+@app.command(
     "cursor",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     rich_help_panel="Launch",
@@ -4328,14 +4490,15 @@ def configure(
         str | None,
         typer.Option(
             "--agent",
-            help="Configure only the named agent (e.g. claude, codex, gemini, opencode, kilo, copilot, pi).",
+            help="Configure only the named agent (e.g. claude, codex, gemini, opencode, kilo, "
+            "copilot, pi, antigravity).",
         ),
     ] = None,
     agents: Annotated[
         str | None,
         typer.Option(
             "--agents",
-            help="Configure a comma-separated list of agents without prompting (e.g. claude,codex).",
+            help="Configure a comma-separated list of agents without prompting (e.g. claude,codex,vscode).",
         ),
     ] = None,
     workspace: Annotated[
@@ -4432,6 +4595,22 @@ def configure(
             "workspace has an admin-managed config.",
         ),
     ] = None,
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider",
+            help="With --agents vscode: give VS Code the models of this Model Provider Service "
+            "(`<catalog>.<schema>.<name>`) instead of the Databricks-hosted ones.",
+        ),
+    ] = None,
+    model_location: Annotated[
+        str | None,
+        typer.Option(
+            "--model-location",
+            help="With --agents vscode: give VS Code the model services in this Unity Catalog "
+            "schema (`<catalog>.<schema>`) instead of the Databricks-hosted ones.",
+        ),
+    ] = None,
     mcp: Annotated[
         str | None,
         typer.Option(
@@ -4491,12 +4670,28 @@ def configure(
         scope = "user" if user_scope else "global"
         set_config_scope(scope)
         claude_agent.request_explicit_configure()
+        request_explicit_managed_writes()
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
         install_databricks_cli()
         if agent is not None and agents is not None:
             raise RuntimeError("Use either --agent or --agents, not both.")
+        if provider is not None or model_location is not None:
+            requested_agents = [a.strip().lower() for a in (agents or "").split(",") if a.strip()]
+            # Both flags choose VS Code's models alone, so another model agent in the same run
+            # would silently keep the workspace's own. Cursor has no models to choose.
+            if "vscode" not in requested_agents or [
+                a for a in requested_agents if a not in ("vscode", "cursor")
+            ]:
+                raise RuntimeError(
+                    "--provider and --model-location work only with `--agents vscode`. "
+                    "Configure the other agents in a separate run."
+                )
+            if provider is not None and model_location is not None:
+                raise RuntimeError("--provider and --model-location cannot be used together.")
+            if model_location is not None and not is_valid_catalog_schema(model_location):
+                raise RuntimeError("--model-location must be `<catalog>.<schema>`.")
         # --workspaces / --profiles are deprecated aliases of the singular flags.
         if workspace is not None and workspaces is not None:
             raise RuntimeError("Use either --workspace or --workspaces, not both.")
@@ -4552,9 +4747,11 @@ def configure(
             # (which picks cursor up through MCP_ONLY_CLIENTS). If cursor is the
             # only agent, do a workspace-only configure so that a later `ug mcp
             # add` run has a current workspace to target.
+            # VS Code is configure-only too: it needs the workspace, then its own setup below.
             requested = [a.strip().lower() for a in agents.split(",") if a.strip()]
             wants_cursor = "cursor" in requested
-            model_agent_names = ",".join(a for a in requested if a != "cursor")
+            wants_vscode = "vscode" in requested
+            model_agent_names = ",".join(a for a in requested if a not in ("cursor", "vscode"))
             if model_agent_names:
                 selected_tools = _parse_agents_option(model_agent_names)
                 if workspace_entries is None:
@@ -4568,8 +4765,8 @@ def configure(
                         workspaces=workspace_entries,
                         **skip_kwargs,
                     )
-            elif wants_cursor:
-                # Cursor-only: establish workspace state without the model picker.
+            elif wants_cursor or wants_vscode:
+                # Cursor/VS Code only: establish workspace state without the model picker.
                 _configure_shared_workspace_states(
                     workspace_entries or [_prompt_for_configuration(None)],
                     tools=[],
@@ -4580,6 +4777,17 @@ def configure(
             else:
                 # Neither model agents nor cursor -> empty/invalid --agents list.
                 _parse_agents_option(agents)
+            if wants_vscode and is_dry_run():
+                # A dry run saves no workspace, so the state on disk isn't the one being configured.
+                print_note("Dry run: VS Code isn't changed.")
+            elif wants_vscode:
+                from ucode.agents import vscode
+
+                # VS Code sends model traffic, so it gets the managed-workspace check other agents get.
+                state = load_state()
+                managed, _ = _read_policy_for_other_agent(state)
+                refuse_user_scope_over_managed_config(state.get("workspace"), managed)
+                vscode.configure(state, provider=provider, location=model_location)
         elif mcp is not None:
             # MCP-only: `--mcp` without --agent(s) (e.g. Cursor, which isn't a
             # model agent, or adding MCP servers to an already-configured setup).
@@ -4698,6 +4906,7 @@ def status_cmd() -> None:
 @app.command("revert", rich_help_panel="Manage")
 def revert_cmd() -> None:
     """Clear ug state and restore backed-up agent config files."""
+    request_explicit_managed_writes("ug revert")
     try:
         result = revert()
     except RuntimeError as exc:

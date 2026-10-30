@@ -1,7 +1,8 @@
 # Unity Gateway (`ug`)
 
 Unity Gateway runs coding agents through Databricks AI Gateway. It configures
-Codex, Claude Code, Gemini CLI, OpenCode, GitHub Copilot CLI, and Pi, and can
+Codex, Claude Code, Gemini CLI, OpenCode, GitHub Copilot CLI, Pi, and Google
+Antigravity CLI, and can
 register Databricks MCP servers for Cursor Agent.
 
 The command is `ug`. Existing `ucode` commands remain supported, and the Python
@@ -52,6 +53,7 @@ ug gemini
 ug opencode
 ug copilot
 ug pi
+ug antigravity   # Google Antigravity CLI; `ug agy` is an alias
 ug cursor   # Cursor Agent, MCP-only
 ```
 
@@ -67,6 +69,20 @@ Use `ug opencode --model system.ai.glm-5-3` (or `-m`) to select a configured
 model for one launch. OpenCode's `provider/model` form is also accepted.
 Unknown Databricks models produce an error; this option does not add models
 to discovery or change ug's saved default.
+
+`ug antigravity` (or `ug agy`) runs Google's Antigravity CLI 1.2.15 or later in its
+Enterprise Gateway mode, so it never asks for Google sign-in. It offers the workspace's
+Gemini models under the names Antigravity knows them by (`system.ai.gemini-3-8-flash` is
+`gemini-3.8-flash`) and starts on the newest. A local proxy refreshes the Databricks token
+for the whole session and maps each name back to its Databricks model. `--model` accepts
+either name, or one of Antigravity's thinking tiers such as `gemini-3.8-flash-high`.
+`--provider` routes through a Gemini Enterprise Model Provider Service, as with
+`ug gemini`; choosing External Models in `ug configure` saves one. When the service declares
+several models, configure starts on the newest; when it serves any model without declaring
+one, configure asks which to start on. `--model` picks another at launch. Claude, GPT, and open-source models aren't offered, because Antigravity runs
+tools only for models it recognizes. `ug` installs the CLI with Google's installer when it
+is missing (macOS and Linux). On a workspace with a managed config, which can't enable
+Antigravity yet, run `ug agents add antigravity` to use it self-managed.
 
 `ug copilot` lists every Claude and GPT model you can use on the workspace in
 Copilot's `/model` picker, and you can switch between them mid-session. Claude
@@ -136,7 +152,9 @@ ug configure --profile DEFAULT --agents claude,codex
 ug configure --user
 ```
 
-`--global` (the default) writes the machine-wide Claude Code and Codex managed settings with sudo.
+`--global` (the default) writes the machine-wide Claude Code and Codex managed settings with sudo,
+with or without a terminal: run headless as root (or with passwordless sudo), since a write that
+can't be authorized fails the command.
 `--user` skips them, like `UG_SKIP_OS_SETTINGS`, and needs no sudo; use it when you launch through
 `ug`. `UG_SKIP_OS_SETTINGS=1` neither writes nor checks the OS-managed files: ug trusts whatever is
 there and the agents apply their native precedence. Configure fails while a managed file for the agent exists, since managed settings take
@@ -165,7 +183,7 @@ Nothing is written to a config file.
   launch warns and Claude doesn't send them.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
-`copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;
+`kilo`, `copilot`, `pi`, and `antigravity`. `cursor` can be included in `--agents` for MCP-only setup;
 Cursor models still run through your Cursor account.
 
 `UG_WORKSPACE` can provide the default workspace. An explicit `--workspace` or
@@ -345,17 +363,10 @@ ug skills remove --location main.default --via mcp
 | `ug revert` | Clear saved state and restore backed-up config files |
 | `ug upgrade` | Upgrade Unity Gateway |
 
-`ug usage` shows your Unity Gateway budget usage. To try the expanded budget view:
-
-```bash
-ENABLE_UG_USAGE_SPEND_API=1 ug usage
-```
-
-The expanded view shows up to five budget limits with the highest usage percentages,
-with a short budget ID on each entry. It tells you when more limits exist.
-Add `--all` to show every limit: `ENABLE_UG_USAGE_SPEND_API=1 ug usage --all`.
-It uses your configured workspace login; no separate login is needed.
-Leave `ENABLE_UG_USAGE_SPEND_API` unset to keep the standard summary.
+`ug usage` shows up to five Unity Gateway budget limits with the highest usage
+percentages, with a short budget ID on each entry. It tells you when more limits
+exist. Run `ug usage --all` to show every limit. Both commands use your configured
+workspace login.
 
 A launch (`ug claude`, `ug codex`) uses the workspace's managed coding agent config that
 `ug configure` last saved and does not refetch it. After an admin changes that config, run
@@ -399,6 +410,10 @@ through `SMART_ROUTER_CONFIG_VERSION`: they keep a known version and otherwise s
 main session stays on its default model.
 Like any version, it overrides individually set routing env vars. `--disable-smart-routing`
 turns routing off for the launch, including over a workspace config.
+
+An explicit `--model`, from `ug claude --model` or a launcher such as Omnigent, keeps
+subagent routing when first-prompt routing is off; the main session stays on that model.
+With first-prompt routing on, an explicit model still skips routing.
 
 ### Smart Router Orchestrator
 
@@ -500,6 +515,7 @@ supports managed settings, uses Responses HTTP/SSE, and rejects new opaque assig
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |
 | GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/ucode-mcp-config.json` |
 | Pi | `~/.ucode/pi-home/.pi/agent/models.json`, `~/.ucode/pi-home/.pi/agent/settings.json` |
+| Antigravity CLI | `~/.gemini/config/skills.json` (adds `~/.agents/skills`), `~/.gemini/config/mcp_config.json` (ug's MCP servers only); the gateway is set per launch through `AGY_LLM_GATEWAY_*` variables |
 | Cursor Agent | `~/.cursor/mcp.json` |
 | Unity Gateway | `/etc/unitygateway/managed-settings.json` (Linux and macOS), `~/.ucode/refresh_ts.json`, `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
 

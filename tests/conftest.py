@@ -18,9 +18,8 @@ from ucode.databricks import (
 )
 from ucode.ui import normalize_workspace_url
 
-# The integration suite has its own configuration and subprocess-only fixtures.
-# Run it through scripts/run_integration.py, outside this fixture hierarchy.
-collect_ignore = ["integration", "e2e_cuj", "native_claude"]
+# Live suites have their own configuration and must be selected explicitly.
+collect_ignore = ["integration", "e2e_cuj", "native_claude", "connector_behavior"]
 
 
 @pytest.fixture(autouse=True)
@@ -38,8 +37,10 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
     from ucode import desktop_auth as desktop_auth_mod
+    from ucode.agents import antigravity as antigravity_mod
     from ucode.agents import claude as claude_mod
     from ucode.agents import codex as codex_mod
+    from ucode.agents import vscode as vscode_mod
     from ucode.agents.desktop import claude as desktop_mod
 
     state_dir = tmp_path / ".ucode"
@@ -48,7 +49,26 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
     monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
+    # No test may run the developer's `code` or look at their installed VS Code extensions.
+    monkeypatch.setattr(vscode_mod, "find_code", lambda: None)
+    monkeypatch.setattr(vscode_mod, "_find_command", lambda command: None)
+    monkeypatch.setattr(
+        vscode_mod, "extensions_dir", lambda folder: tmp_path / folder / "extensions"
+    )
     monkeypatch.setattr(desktop_auth_mod, "_AUTH_LOCK_PATH", state_dir / "claude-desktop-auth.lock")
+    # Antigravity's customization root is shared with the developer's Antigravity app and CLI.
+    agy_dir = tmp_path / ".gemini" / "config"
+    for name, path in (
+        ("AGY_MCP_CONFIG_PATH", agy_dir / "mcp_config.json"),
+        ("AGY_SKILLS_CONFIG_PATH", agy_dir / "skills.json"),
+        ("AGY_SKILLS_CREATED_MARKER", state_dir / "antigravity-skills.created"),
+        ("AGY_MCP_BACKUP_PATH", state_dir / "antigravity-mcp-config.backup.json"),
+    ):
+        monkeypatch.setattr(antigravity_mod, name, path)
+    monkeypatch.setitem(antigravity_mod.SPEC, "config_path", agy_dir / "skills.json")
+    monkeypatch.setitem(
+        antigravity_mod.SPEC, "backup_path", state_dir / "antigravity-skills.created"
+    )
     # The workspace policy lives outside APP_DIR; rebind it, and its user-owned refresh stamps,
     # so no test reads or installs the machine-wide copy.
     monkeypatch.setattr(
@@ -82,6 +102,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         managed_files_mod, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
     )
     monkeypatch.setattr(managed_files_mod, "_config_scope", "global")
+    # `ug configure` and `ug revert` set this for the rest of the process; start each test as a
+    # launch-like run.
+    monkeypatch.setattr(managed_files_mod, "_explicit_managed_command", None)
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
     # Launch seeds Claude's feature cache in `.claude.json`; never touch the developer's copy.
     monkeypatch.setattr(claude_mod, "CLAUDE_CODE_CONFIG_PATH", tmp_path / ".claude.json")
@@ -100,6 +123,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(managed_files_mod, "_sudo_replace", reject_privileged_write)
+    # Never shell out to the host's sudo from the password-note check; assume it would prompt.
+    monkeypatch.setattr(managed_files_mod, "_sudo_needs_password", lambda: True)
+    databricks_mod.clear_gateway_probe_cache()
     # Windows CI runners are elevated; never let an unmocked test write C:\Program Files.
     monkeypatch.setattr(managed_files_mod.system_cross_os, "is_admin", lambda: False)
     monkeypatch.setattr(managed_files_mod, "_windows_replace", reject_privileged_write)

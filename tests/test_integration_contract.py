@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.integration.utils.harness import clean_environment
 from tests.integration.utils.managed import assert_no_managed_config
 
 
@@ -29,6 +30,12 @@ def _markers(nodes):
         and node.value.value.id == "pytest"
         and node.value.attr == "mark"
     }
+
+
+def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
+
+    assert clean_environment(tmp_path)["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
 
 
 def test_integration_ci_pins_a_skills_capable_databricks_cli():
@@ -104,26 +111,7 @@ def test_soft_fail_marks_only_the_affected_claude_journey():
     assert marked == [("test_ug_smart_routing_hooks.py", name) for name in CLAUDE_TOGGLE_TESTS]
 
 
-@pytest.mark.parametrize(
-    ("job_name", "agent", "retained_test"),
-    [
-        ("smoke", "claude", "test_ug_claude_headless_prompt_argument"),
-        ("smoke", "codex", "test_ug_codex_headless_prompt_argument"),
-        ("full", "claude", "test_smart_routing_claude_route_subagent_hook"),
-        ("full", "codex", "test_smart_router_skill_turns_codex_subagent_routing_back_on"),
-        ("managed", "claude", "test_ug_configure_managed_claude"),
-        ("managed", "codex", "test_smart_router_skill_turns_codex_subagent_routing_back_on"),
-        ("soft-fail", "claude", None),
-    ],
-)
-def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, retained_test):
-    job = _integration_jobs()[job_name]
-    if job_name == "managed":
-        marker = re.search(r'-- -m "([^"]+)"', job)
-    else:
-        marker = re.search(r"(?m)^      TEST_MARKER: (.+)$", job)
-    assert marker is not None
-    expression = marker.group(1).replace("${{ matrix.agent }}", agent).replace("$AGENT", agent)
+def _collect_integration_cases(expression):
     result = subprocess.run(
         [
             sys.executable,
@@ -144,6 +132,68 @@ def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, retained_test
     assert result.returncode == 0, result.stdout + result.stderr
     cases = {line for line in result.stdout.splitlines() if line.startswith("test_")}
     assert cases, result.stdout
+    return cases
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_smoke_and_full_together_cover_every_blocking_live_case(agent):
+    jobs = _integration_jobs()
+    selected = []
+    for name in ("smoke", "full"):
+        marker = re.search(r"(?m)^      TEST_MARKER: (.+)$", jobs[name])
+        assert marker is not None
+        selected.append(
+            _collect_integration_cases(marker.group(1).replace("${{ matrix.agent }}", agent))
+        )
+    smoke, full = selected
+    # Full skips smoke cases only because smoke runs them on the same OS matrix.
+    assert "os: [ubuntu-22.04, windows-latest]" in jobs["smoke"]
+    assert "os: [ubuntu-22.04, windows-latest]" in jobs["full"]
+    assert not smoke & full
+    assert smoke | full == _collect_integration_cases(f"live and {agent} and not soft_fail")
+
+
+def test_smoke_and_full_journeys_run_every_agent_and_os_in_parallel():
+    jobs = _integration_jobs()
+    assert "concurrency:" not in jobs["smoke"]
+    assert "concurrency:" not in jobs["full"]
+    assert "max-parallel: 4" in jobs["full"]
+
+
+def test_full_claude_lane_includes_both_desktop_journeys():
+    full = _integration_jobs()["full"]
+    marker = re.search(r"(?m)^      TEST_MARKER: (.+)$", full)
+    assert marker is not None
+    cases = _collect_integration_cases(marker.group(1).replace("${{ matrix.agent }}", "claude"))
+    assert {
+        "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_profile_lifecycle",
+        "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_subscription_relay",
+    } <= cases
+    assert "os: [ubuntu-22.04, windows-latest]" in full
+    assert "CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" in full
+
+
+@pytest.mark.parametrize(
+    ("job_name", "agent", "retained_test"),
+    [
+        ("smoke", "claude", "test_ug_claude_headless_prompt_argument"),
+        ("smoke", "codex", "test_ug_codex_headless_prompt_argument"),
+        ("full", "claude", "test_smart_routing_claude_route_subagent_hook"),
+        ("full", "codex", "test_smart_router_skill_turns_codex_subagent_routing_back_on"),
+        ("managed", "claude", "test_ug_configure_managed_claude"),
+        ("managed", "codex", "test_smart_router_skill_turns_codex_subagent_routing_back_on"),
+        ("soft-fail", "claude", None),
+    ],
+)
+def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, retained_test):
+    job = _integration_jobs()[job_name]
+    if job_name == "managed":
+        marker = re.search(r'-- -m "([^"]+)"', job)
+    else:
+        marker = re.search(r"(?m)^      TEST_MARKER: (.+)$", job)
+    assert marker is not None
+    expression = marker.group(1).replace("${{ matrix.agent }}", agent).replace("$AGENT", agent)
+    cases = _collect_integration_cases(expression)
     if retained_test is not None:
         assert any(f"::{retained_test}" in case for case in cases), cases
         assert not any(f"::{toggle}[" in case for case in cases for toggle in CLAUDE_TOGGLE_TESTS)
@@ -366,6 +416,7 @@ SKIPPED_ON_FORK_PRS = {
     "soft-fail",
     "opencode",
     "copilot",
+    "antigravity",
     "managed",
     "managed-opencode",
     "dedicated-cuj-plan",
@@ -596,6 +647,7 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "workspace",
         "smoke",
         "full",
+        "antigravity",
         "managed",
         "dedicated-cuj-plan",
         "dedicated-cuj",
@@ -616,6 +668,7 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "workspace",
             "smoke",
             "full",
+            "antigravity",
             "managed",
             "dedicated-cuj-plan",
             "dedicated-cuj",
@@ -688,7 +741,9 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 marks = module_marks | _markers(node.decorator_list)
                 if marks & {"live", "managed_fixture", "workspace_switch"}:
-                    assert len(marks & {"claude", "codex", "opencode", "copilot"}) == 1, node.name
+                    assert (
+                        len(marks & {"claude", "codex", "opencode", "copilot", "antigravity"}) == 1
+                    ), node.name
 
 
 def test_model_discovery_cases_match_current_launch_contract():

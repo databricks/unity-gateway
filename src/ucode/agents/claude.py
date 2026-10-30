@@ -67,6 +67,7 @@ from ucode.managed_files import (
     apply_settings_passthrough,
     claude_header_mod_root,
     current_os,
+    explicit_managed_writes,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -337,9 +338,9 @@ def get_family_defaults(
 
     A ``modelPicker`` in that file (e.g. one a launcher wrote) means its writer chooses Claude's
     models, so ug uses that file's ``ANTHROPIC_DEFAULT_*_MODEL`` values as they are instead of
-    discovering its own. Returns them by family, or None when ug picks the defaults: a managed config, its static
-    model list (whose picker is ug's own), a provider, or a model location supplies the models,
-    or the file has no picker with family defaults.
+    discovering its own. Returns them by family, or None when ug picks the defaults: a managed
+    config, a static model list, a provider, or a model location supplies the models,
+    or the file has no externally owned picker with family defaults.
     """
     if managed_config or state.get("claude_static_models") or provider or parent_schema:
         return None
@@ -353,6 +354,12 @@ def get_family_defaults(
         return None
     env = settings.get("env")
     if "modelPicker" not in settings or not isinstance(env, dict):
+        return None
+    ug_picker = managed_file_snapshots("claude", _parse_managed_settings).ug_picker or {}
+    if "modelPicker" in ug_picker and all(
+        settings.get(key) == value for key, value in ug_picker.items()
+    ):
+        # Our own discovered picker must not suppress discovery on the next launch.
         return None
     defaults = {
         family: model
@@ -1092,8 +1099,9 @@ def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
     The OS-managed ``managedMcpServers`` key is additive (it never touches the developer's own
     servers) but Claude Code reads it only from a real managed source, and only as a remote HTTP
     server it can drive OAuth against itself. So it fits only when the platform supports the sudo
-    reconcile, the run is interactive, the developer is not on PAT auth (which needs the stdio
-    proxy), and the workspace publishes the pinned CIMD client. Other cases use user scope."""
+    reconcile, the run may write it (``ug configure``, or an interactive run), the developer is not
+    on PAT auth (which needs the stdio proxy), and the workspace publishes the pinned CIMD client.
+    Other cases use user scope."""
     return (
         managed_files_supported()
         and managed_writes_allowed()
@@ -1124,7 +1132,8 @@ def reconcile_managed_mcp(
     managed file is the source of truth, so this is a wipe-and-rewrite, not a diff. Every other
     managed key is preserved, including the model configuration ug wrote earlier this run and any
     admin-authored policy. Returns True when the managed file is the delivery mechanism (written or
-    already current), False when it cannot be used (unsupported platform or a non-interactive run),
+    already current), False when it cannot be used (unsupported platform, or a run that may not
+    write it),
     so the caller routes those servers to the user-scope registration instead.
 
     ``also_registered`` names the servers ug registers in Claude outside this file this run (the
@@ -2229,7 +2238,8 @@ def _reconcile_managed_settings(
             parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
-        if conflicts:
+        # `ug configure` must leave the machine-wide file correct, so it never degrades silently.
+        if conflicts or explicit_managed_writes():
             raise
         print_warning(
             f"Claude Code OS-managed settings could not be updated at {path}; continuing with "

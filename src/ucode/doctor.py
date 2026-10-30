@@ -47,6 +47,7 @@ from ucode.ui import (
     spinner,
     status_badge,
 )
+from ucode.workspace import state_workspace_key
 
 # Env vars that shadow the credential ucode configures for Claude Code. Claude
 # warns when its own token and one of these are both set, so we surface them.
@@ -192,7 +193,7 @@ def _check_copilot_models() -> Check | None:
     state = load_state()
     if "copilot" not in (state.get("available_tools") or []):
         return None
-    managed = load_managed_state(state.get("workspace"))
+    managed = load_managed_state(state_workspace_key(state))
     if managed:
         state = resolve_state(managed, state, "copilot")
     catalog = copilot.copilot_catalog(state)

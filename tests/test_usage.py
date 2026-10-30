@@ -1,4 +1,4 @@
-"""Tests for the AI Gateway spend-limit usage command."""
+"""Tests for the Unity Gateway spend-limit usage command."""
 
 from __future__ import annotations
 
@@ -11,27 +11,10 @@ from rich.text import Text
 
 import ucode.usage as usage_mod
 from ucode.budget import BudgetLimitStatus
-from ucode.usage import render_budget_limits, render_budget_summary, usage
+from ucode.usage import render_budget_limits, usage
 
 PER_USER = "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER"
 SHARED = "ALERT_CONFIGURATION_SCOPE_TYPE_SHARED"
-
-
-class TestRenderBudgetSummary:
-    def test_shows_original_spend_summary_and_meter(self):
-        result = render_budget_summary((Decimal("110.70"), Decimal("5000")))
-
-        assert "[bold]Budget spend:[/bold] [cyan]$110.70 of $5,000.00 (2%)[/cyan]" in result
-        assert "[dim][█░░░░░░░░░░░░░░░░░░░░░░░░░░░░░][/dim]" in result
-        assert "Usage Budget" not in result
-        assert "warehouse" not in result.lower()
-        assert "token" not in result.lower()
-
-    def test_shows_zero_total_budget(self):
-        result = render_budget_summary((Decimal("5"), Decimal("0")))
-
-        assert "$5.00 of $0.00 (0%)" in result
-        assert "[░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]" in result
 
 
 class TestRenderBudgetLimits:
@@ -468,13 +451,8 @@ class TestRenderBudgetLimits:
 
 class TestUsageCommand:
     @pytest.fixture(autouse=True)
-    def enable_spend_api(self, monkeypatch):
-        monkeypatch.setenv("ENABLE_UG_USAGE_SPEND_API", "1")
-        monkeypatch.setattr(
-            usage_mod,
-            "resolve_current_budget_spend",
-            lambda *_: pytest.fail("enabled spend API must not call recommendModel"),
-        )
+    def without_usage_opt_in(self, monkeypatch):
+        monkeypatch.delenv("ENABLE_UG_USAGE_SPEND_API", raising=False)
 
     @staticmethod
     def _stub_auth(monkeypatch, state):
@@ -483,7 +461,10 @@ class TestUsageCommand:
         monkeypatch.setattr(usage_mod, "ensure_databricks_auth", lambda *args: None)
         monkeypatch.setattr(usage_mod, "get_databricks_token", lambda *args: "workspace-token")
 
-    def test_fetches_and_prints_budget_limits(self, monkeypatch):
+    @pytest.mark.parametrize("old_flag", [None, "0"])
+    def test_fetches_and_prints_budget_limits(self, monkeypatch, old_flag):
+        if old_flag is not None:
+            monkeypatch.setenv("ENABLE_UG_USAGE_SPEND_API", old_flag)
         state = {"workspace": "https://workspace", "profile": "test-profile"}
         calls: list[tuple[str, object]] = []
         printed: list[str] = []
@@ -621,7 +602,7 @@ class TestUsageCommand:
             'HTTP 400 Bad Request: {"error_code": "FEATURE_DISABLED"}',
         ],
     )
-    def test_reports_expanded_view_unavailable_when_endpoint_is_missing_or_disabled(
+    def test_reports_usage_unavailable_when_endpoint_is_missing_or_disabled(
         self, monkeypatch, reason
     ):
         self._stub_auth(monkeypatch, {"workspace": "https://workspace"})
@@ -640,8 +621,8 @@ class TestUsageCommand:
 
         assert usage() == 0
         assert notes == [
-            "Expanded budget usage is not available for this workspace. "
-            "Unset ENABLE_UG_USAGE_SPEND_API to use the standard summary."
+            "Unity Gateway budget usage is not available for this workspace. "
+            "Contact your workspace admin for help."
         ]
 
     @pytest.mark.parametrize(
@@ -695,112 +676,6 @@ class TestUsageCommand:
         with pytest.raises(RuntimeError) as exc_info:
             usage()
         assert str(exc_info.value) == "Your access token is expired or invalid."
-
-    def test_requires_a_configured_workspace(self, monkeypatch):
-        monkeypatch.setattr(usage_mod, "load_state", lambda: {})
-
-        with pytest.raises(RuntimeError, match="Workspace is not configured"):
-            usage()
-
-
-class TestLegacyUsageCommand:
-    @pytest.fixture(autouse=True)
-    def use_legacy_usage(self, monkeypatch):
-        monkeypatch.delenv("ENABLE_UG_USAGE_SPEND_API", raising=False)
-        TestUsageCommand._stub_auth(
-            monkeypatch, {"workspace": "https://workspace", "profile": "test-profile"}
-        )
-        monkeypatch.setattr(
-            usage_mod,
-            "list_current_user_budget_spend_statuses",
-            lambda *_: pytest.fail("legacy usage must not call the spend-status endpoint"),
-        )
-
-    @pytest.mark.parametrize("flag", [None, "0", " 1 "])
-    def test_all_requires_the_expanded_view_opt_in(self, monkeypatch, flag):
-        if flag is not None:
-            monkeypatch.setenv("ENABLE_UG_USAGE_SPEND_API", flag)
-        monkeypatch.setattr(
-            usage_mod,
-            "resolve_current_budget_spend",
-            lambda *_: pytest.fail("--all must not return the standard summary"),
-        )
-        monkeypatch.setattr(
-            usage_mod,
-            "ensure_databricks_auth",
-            lambda *_: pytest.fail("invalid options must be rejected before authentication"),
-        )
-
-        with pytest.raises(RuntimeError, match="Set ENABLE_UG_USAGE_SPEND_API=1"):
-            usage(show_all=True)
-
-    @pytest.mark.parametrize("flag", [None, "", "0", "true", "yes", "2", " 1 "])
-    def test_uses_legacy_budget_summary_without_explicit_opt_in(self, monkeypatch, flag):
-        if flag is not None:
-            monkeypatch.setenv("ENABLE_UG_USAGE_SPEND_API", flag)
-        calls: list[tuple[str, str]] = []
-        printed: list[str] = []
-        monkeypatch.setattr(
-            usage_mod,
-            "resolve_current_budget_spend",
-            lambda workspace, token: (
-                calls.append((workspace, token)) or (Decimal("12.34"), Decimal("100")),
-                None,
-            ),
-        )
-        monkeypatch.setattr(
-            usage_mod,
-            "console",
-            type("Console", (), {"print": lambda _, text: printed.append(text)})(),
-        )
-
-        assert usage() == 0
-        assert calls == [("https://workspace", "workspace-token")]
-        assert len(printed) == 1
-        assert printed[0].startswith("[bold]Budget spend:[/bold]")
-        assert "$12.34 of $100.00 (12%)" in printed[0]
-        assert "Your Unity Gateway spend limits" not in printed[0]
-
-    @pytest.mark.parametrize(
-        "reason", ["disabled", "HTTP 404 Not Found", "network error: timed out"]
-    )
-    def test_preserves_legacy_unavailable_budget_message(self, monkeypatch, reason):
-        notes: list[str] = []
-        monkeypatch.setattr(
-            usage_mod,
-            "resolve_current_budget_spend",
-            lambda *_: (None, reason),
-        )
-        monkeypatch.setattr(usage_mod, "print_note", notes.append)
-        monkeypatch.setattr(
-            usage_mod,
-            "console",
-            type("Console", (), {"print": lambda *_: pytest.fail("no budget summary expected")})(),
-        )
-
-        assert usage() == 0
-        assert notes == [
-            "Usage information is unavailable. Ask your workspace admin to configure "
-            "Unity Gateway Budgets and add it to the workspace configuration."
-        ]
-
-    @pytest.mark.parametrize(
-        "reason", ["HTTP 401 Unauthorized", "HTTP 403 Forbidden: Invalid access token."]
-    )
-    def test_preserves_legacy_invalid_token_errors(self, monkeypatch, reason):
-        monkeypatch.setattr(
-            usage_mod,
-            "resolve_current_budget_spend",
-            lambda *_: (None, reason),
-        )
-        monkeypatch.setattr(
-            usage_mod,
-            "print_note",
-            lambda *_: pytest.fail("invalid credentials must not look like absent budget"),
-        )
-
-        with pytest.raises(RuntimeError, match="Your access token is expired or invalid"):
-            usage()
 
     def test_requires_a_configured_workspace(self, monkeypatch):
         monkeypatch.setattr(usage_mod, "load_state", lambda: {})

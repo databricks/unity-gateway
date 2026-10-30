@@ -771,8 +771,6 @@ class TestSubcommandRouting:
             (["fix this"], True, None, None, True),
             (["fix this"], False, None, None, False),
             (["update"], False, None, None, False),
-            (["--model", "fixed"], False, None, None, False),
-            ([], False, "fixed", None, False),
             ([], False, None, "catalog.schema.service", False),
         ],
     )
@@ -791,6 +789,40 @@ class TestSubcommandRouting:
         assert options.launch_smart_routing is expected
 
     @pytest.mark.parametrize(
+        ("tool", "tool_args", "model"),
+        [
+            ("claude", ["--model", "fixed"], None),
+            ("claude", ["-p", "hi", "--model", "fixed"], None),
+            ("claude", [], "fixed"),
+            ("codex", [], "fixed"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("routing_env", "expected"),
+        [
+            ({"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}, True),
+            ({"ENABLE_SMART_ROUTING_V2": "1"}, False),
+        ],
+        ids=["subagent-only", "first-prompt"],
+    )
+    def test_explicit_model_keeps_only_subagent_routing(
+        self, monkeypatch, tool, tool_args, model, routing_env, expected
+    ):
+        for name, value in routing_env.items():
+            monkeypatch.setenv(name, value)
+
+        options = cli_mod._launch_options(
+            tool,
+            tool_args,
+            smart_routing_enabled=True,
+            explicit_prompt=False,
+            user_pinned_model=model,
+            provider=None,
+        )
+
+        assert options.launch_smart_routing is expected
+
+    @pytest.mark.parametrize(
         ("tool_args", "expected"),
         [
             (["--session-id"], True),
@@ -802,7 +834,10 @@ class TestSubcommandRouting:
             (["--session-id", "session-123", "--model", "fixed"], False),
         ],
     )
-    def test_claude_options_allow_smart_routing_except_model(self, tool_args, expected):
+    def test_claude_options_allow_smart_routing_except_model(
+        self, monkeypatch, tool_args, expected
+    ):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
         options = cli_mod._launch_options(
             "claude",
             tool_args,
@@ -922,6 +957,37 @@ class TestSubcommandRouting:
         assert observed == [(tool in routed_tools, expected_env)]
         assert _routing_env() == env_before
 
+    @pytest.mark.parametrize(
+        ("version", "launch_args", "routed"),
+        [
+            (smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, [], True),
+            (None, [], True),
+            (smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, ["--disable-smart-routing"], False),
+            (smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, [], False),
+        ],
+        ids=["subagent-version", "managed", "disable-flag", "first-prompt-version"],
+    )
+    def test_forwarded_model_keeps_subagent_routing(
+        self, monkeypatch, version, launch_args, routed
+    ):
+        managed = None
+        if version is None:
+            managed = {"enabled_agents": {"claude": {"smart_routing_enabled": True}}}
+        else:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
+        observed = []
+
+        with _launch_policy_patches(managed) as calls:
+            calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
+                options.launch_smart_routing
+            )
+            result = runner.invoke(
+                app, ["claude", *launch_args, "--", "--model", "system.ai.claude-opus-5-5"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert observed == [routed]
+
     def test_bare_launch_keeps_a_known_version_over_managed_smart_routing(self, monkeypatch):
         monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ONLY_V0)
         managed = {"enabled_agents": {"claude": {"smart_routing_enabled": True}}}
@@ -935,6 +1001,27 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 0, result.output
         assert observed == [_version_routing_env(smart_routing_config.SUBAGENT_ONLY_V0, "claude")]
+
+    @pytest.mark.parametrize("command", ["antigravity", "agy"])
+    def test_antigravity_commands_launch_with_provider_and_model(self, command):
+        with patch("ucode.cli._launch_tool") as mock_launch:
+            result = runner.invoke(
+                app,
+                [command, "--provider", "c.s.svc", "--model", "gemini-3.8-flash", "-p", "hi"],
+            )
+
+        assert result.exit_code == 0, result.output
+        args, kwargs = mock_launch.call_args
+        assert args[0] == "antigravity"
+        assert args[1].args == ["-p", "hi"]
+        assert kwargs["provider"] == "c.s.svc"
+        assert kwargs["model"] == "gemini-3.8-flash"
+
+    def test_agy_alias_is_hidden_from_help(self):
+        result = runner.invoke(app, ["--help"])
+
+        assert "antigravity" in result.output
+        assert " agy " not in result.output
 
     def test_codex_refresh_is_consumed_by_ucode(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
@@ -2302,7 +2389,7 @@ class TestGeminiProviderLaunch:
         monkeypatch.setattr("ucode.cli.configure_tool", lambda *a, **k: state)
         monkeypatch.setattr(
             "ucode.cli.resolve_gemini_provider_model",
-            lambda s, p, m: ("gemini-3.5-flash", None),
+            lambda s, p, m, **k: ("gemini-3.5-flash", None),
         )
         mock_launch = MagicMock()
         monkeypatch.setattr("ucode.cli.launch_agent", mock_launch)
@@ -3718,6 +3805,51 @@ class TestStatusSkillsSection:
         assert "MCP servers: 1" in re.sub(r"\s+", " ", out)
 
 
+class TestAntigravityAllowAllProviderModel:
+    _STATE = {**MINIMAL_STATE, "workspace": "https://ws.databricks.com"}
+
+    def _run(self, monkeypatch, service, answer="gemini-4-argon"):
+        monkeypatch.setattr(
+            cli_mod, "resolve_provider_service", lambda tool, name, ws, token: (service, None)
+        )
+        asked = []
+        monkeypatch.setattr(
+            cli_mod,
+            "prompt_for_text",
+            lambda message, required=False: asked.append(message) or answer,
+        )
+        monkeypatch.setattr(cli_mod, "save_state", lambda state: None)
+        state = cli_mod._prompt_allow_all_provider_model(
+            "antigravity", dict(self._STATE), "c.s.g", "token"
+        )
+        return state, asked
+
+    def test_asks_for_a_start_model_when_the_service_declares_none(self, monkeypatch):
+        state, asked = self._run(monkeypatch, {"targets": [], "allow_all_targets": True})
+
+        assert state["antigravity_provider_model"] == "gemini-4-argon"
+        assert asked and "Antigravity CLI" in asked[0]
+
+    @pytest.mark.parametrize(
+        "service",
+        [
+            {"targets": ["gemini-3.8-flash"], "allow_all_targets": True},
+            {"targets": [], "allow_all_targets": False},
+        ],
+    )
+    def test_does_not_ask_when_a_target_can_be_pinned_or_none_is_allowed(
+        self, monkeypatch, service
+    ):
+        state, asked = self._run(monkeypatch, service)
+
+        assert asked == []
+        assert "antigravity_provider_model" not in state
+
+    def test_cancelling_the_prompt_stops_configure(self, monkeypatch):
+        with pytest.raises(KeyboardInterrupt):
+            self._run(monkeypatch, {"targets": [], "allow_all_targets": True}, answer=None)
+
+
 class TestRevert:
     def test_invalid_routing_config_does_not_block_revert(self, monkeypatch):
         monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "unsupported_v99")
@@ -3749,6 +3881,51 @@ class TestRevert:
         assert result.exit_code == 0, result.output
         assert "Could not remove leftover Copilot session files" in _strip_ansi(result.output)
         assert cleared == [True]
+
+    @pytest.mark.parametrize("existed", [False, True])
+    def test_antigravity_revert_keeps_skills_entries_added_after_configure(
+        self, existed, monkeypatch, tmp_path
+    ):
+        from ucode.agents import antigravity
+
+        monkeypatch.setattr(antigravity, "UG_AGENTS_SKILLS_DIR", tmp_path / ".agents/skills")
+        skills = antigravity.AGY_SKILLS_CONFIG_PATH
+        if existed:
+            skills.parent.mkdir(parents=True)
+            skills.write_text(json.dumps({"entries": [{"path": "/mine"}]}))
+        antigravity.write_tool_config({**MINIMAL_STATE}, None)
+        # skills.json is shared with the Antigravity app: the user adds to it after configure.
+        config = json.loads(skills.read_text())
+        config["entries"].append({"path": "/later"})
+        skills.write_text(json.dumps(config))
+
+        with (
+            patch("ucode.cli.load_state", return_value=dict(MINIMAL_STATE)),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.clear_state"),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        expected = [{"path": "/mine"}, {"path": "/later"}] if existed else [{"path": "/later"}]
+        assert json.loads(skills.read_text()) == {"entries": expected}
+        assert "Antigravity CLI config: restored" in _strip_ansi(result.output)
+
+    def test_antigravity_revert_deletes_skills_file_it_created(self, monkeypatch, tmp_path):
+        from ucode.agents import antigravity
+
+        monkeypatch.setattr(antigravity, "UG_AGENTS_SKILLS_DIR", tmp_path / ".agents/skills")
+        antigravity.write_tool_config({**MINIMAL_STATE}, None)
+
+        with (
+            patch("ucode.cli.load_state", return_value=dict(MINIMAL_STATE)),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.clear_state"),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        assert not antigravity.AGY_SKILLS_CONFIG_PATH.exists()
 
     def test_reverts_mcp_configs_before_clearing_state(self):
         state = {
@@ -3793,6 +3970,28 @@ class TestRevert:
         clear_state.assert_not_called()
         assert "ug state retained" in result.output
         assert "Fix the Claude Desktop error and run ug revert again" in result.output
+
+    def test_vscode_revert_failure_is_reported_and_the_rest_still_reverts(self):
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.agents.desktop.setup.revert_desktop", return_value="unchanged"),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.claude_agent.revert_managed_settings", return_value="unchanged"),
+            patch("ucode.cli.codex_agent.revert_managed_config", return_value="unchanged"),
+            patch("ucode.cli.revert_machine_policy", return_value="unchanged"),
+            patch("ucode.cli.restore_file", return_value=False) as restore_file,
+            patch("ucode.cli.revert_legacy_shared_config", return_value=False),
+            patch("ucode.agents.vscode.revert", side_effect=RuntimeError("code timed out")),
+            patch("ucode.cli.clear_state") as clear_state,
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        output = " ".join(result.output.split())
+        assert result.exit_code == 0, result.output
+        assert "Could not revert VS Code: code timed out" in output
+        assert "VS Code extension: failed" in output
+        assert restore_file.called
+        clear_state.assert_called_once()
 
 
 @pytest.mark.parametrize("args", [[], ["claude"], ["codex"]])
@@ -5584,6 +5783,55 @@ class TestParseProfileOption:
         with pytest.raises(RuntimeError, match="no host configured"):
             cli_mod._parse_profile_option("DEFAULT")
 
+    def test_profile_workspace_id_selects_the_workspace_on_a_shared_host(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        cli_mod = self._patch_profiles(
+            monkeypatch,
+            [
+                {
+                    "name": "acme",
+                    "host": "https://acme.cloud.databricks.com",
+                    "account_id": "acct",
+                    "workspace_id": "111",
+                }
+            ],
+        )
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        assert cli_mod._parse_profile_option("acme") == [
+            ("https://acme.cloud.databricks.com?w=111", "acme"),
+        ]
+
+    def test_profile_workspace_id_on_a_single_workspace_host_is_ignored(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        cli_mod = self._patch_profiles(
+            monkeypatch,
+            [{"name": "ws", "host": "https://dbc-1.cloud.databricks.com", "workspace_id": "111"}],
+        )
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "workspace")
+        assert cli_mod._parse_profile_option("ws") == [("https://dbc-1.cloud.databricks.com", "ws")]
+
+
+class TestParseWorkspaceOptionSelectors:
+    def test_bare_url_is_unchanged(self, monkeypatch):
+        import ucode.cli as cli_mod
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: pytest.fail("probed"))
+        assert cli_mod._parse_workspace_option("https://first.databricks.com/") == [
+            ("https://first.databricks.com", None)
+        ]
+
+    def test_selector_on_a_shared_host(self, monkeypatch):
+        import ucode.cli as cli_mod
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        assert cli_mod._parse_workspace_option("https://acme.cloud.databricks.com/?o=111") == [
+            ("https://acme.cloud.databricks.com?w=111", None)
+        ]
+
 
 class TestConfigureProfilesFlag:
     PROFILE_ENTRIES = [
@@ -6178,6 +6426,24 @@ class TestConfigureSharedStateUsePat:
         assert "v2" not in message.lower()
         assert "v3" not in message.lower()
 
+    def test_second_configure_in_process_does_not_reprobe_the_gateway(self, monkeypatch):
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        calls: list[str] = []
+
+        def fake_get(url, token, **kwargs):
+            calls.append(url)
+            return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        monkeypatch.setattr(
+            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
+        )
+
+        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
+        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
+
+        assert len(calls) == 1
+
     def test_use_pat_without_pat_profile_raises(self, monkeypatch):
         cli_mod, logins, _, _ = self._stub_deps(monkeypatch, pat_token=None)
 
@@ -6710,6 +6976,79 @@ class TestConfigureSharedStateSkipPreflight:
         # find_profile_name_for_host is a local ~/.databrickscfg lookup (no network).
         assert state["profile"] == "resolved"
 
+    def test_shared_host_key_saves_the_workspace_id(self, monkeypatch):
+        cli_mod, saved = self._stub(monkeypatch)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {})
+        monkeypatch.setattr(cli_mod, "find_profile_name_for_workspace", lambda w, i: f"p-{i}")
+
+        state = cli_mod.configure_shared_state(
+            "https://acme.cloud.databricks.com?w=111", profile=None, skip_preflight=True
+        )
+
+        assert state["workspace"] == "https://acme.cloud.databricks.com"
+        assert state["workspace_id"] == "111"
+        assert state["profile"] == "p-111"
+        assert saved[-1]["workspace_id"] == "111"
+
+    def test_reconfigure_with_the_bare_host_keeps_the_saved_workspace(self, monkeypatch):
+        cli_mod, _ = self._stub(monkeypatch)
+        shared = "https://acme.cloud.databricks.com"
+        monkeypatch.setattr(
+            cli_mod,
+            "load_state",
+            lambda: {"workspace": shared, "workspace_id": "111", "use_pat": True},
+        )
+        monkeypatch.setattr(cli_mod, "find_profile_name_for_workspace", lambda w, i: "acme")
+
+        state = cli_mod.configure_shared_state(shared, profile="acme", skip_preflight=True)
+
+        assert state["workspace_id"] == "111"
+        assert state["use_pat"] is True
+
+    def test_switching_workspaces_on_one_host_drops_the_previous_mcp_entries(self, monkeypatch):
+        cli_mod, _ = self._stub(monkeypatch)
+        shared = "https://acme.cloud.databricks.com"
+        monkeypatch.setattr(
+            cli_mod, "load_state", lambda: {"workspace": shared, "workspace_id": "111"}
+        )
+        monkeypatch.setattr(cli_mod, "find_profile_name_for_workspace", lambda w, i: "acme")
+        purges = []
+        monkeypatch.setattr(
+            cli_mod,
+            "purge_cross_workspace_mcp_residue",
+            lambda state, workspace, **kwargs: purges.append(kwargs),
+        )
+
+        cli_mod.configure_shared_state(f"{shared}?w=222", profile="acme", skip_preflight=True)
+
+        assert purges == [{"same_host_switch": True}]
+
+    def test_explicit_selector_never_falls_back_to_the_saved_workspace(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        cli_mod, saved = self._stub(monkeypatch)
+        shared = "https://acme.cloud.databricks.com"
+        monkeypatch.setattr(
+            cli_mod, "load_state", lambda: {"workspace": shared, "workspace_id": "111"}
+        )
+
+        def unreachable(host):
+            raise workspace_mod.HostUnreachableError(f"{host} did not answer (timed out).")
+
+        monkeypatch.setattr(workspace_mod, "host_type", unreachable)
+        with pytest.raises(RuntimeError, match="Could not check"):
+            cli_mod.configure_shared_state(f"{shared}/?o=222", profile="acme", skip_preflight=True)
+        assert saved == []
+
+    def test_classic_reconfigure_never_gains_a_workspace_id(self, monkeypatch):
+        cli_mod, saved = self._stub(monkeypatch)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {"workspace": self.WS})
+
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", skip_preflight=True)
+
+        assert "workspace_id" not in state
+        assert "workspace_id" not in saved[-1]
+
 
 class TestSkipPreflightFlag:
     """`--skip-preflight` on a launch command threads through _launch_tool to
@@ -6823,6 +7162,126 @@ class TestDryRunAdoptsInstalledWorkspace:
             cli_mod.set_dry_run(False)
 
         assert state["workspace"] == "https://installed.example.com"
+
+
+class TestPickerOnSharedHosts:
+    def test_picked_profile_keeps_its_workspace(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        monkeypatch.setattr(
+            cli_mod,
+            "prompt_for_workspace",
+            lambda desc, profiles: ("https://acme.cloud.databricks.com", "b"),
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "list_profile_entries",
+            lambda: [
+                {"name": "b", "host": "https://acme.cloud.databricks.com", "workspace_id": "222"}
+            ],
+        )
+        assert cli_mod._prompt_for_configuration() == (
+            "https://acme.cloud.databricks.com?w=222",
+            "b",
+        )
+
+    def test_typed_url_is_resolved(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        monkeypatch.setattr(cli_mod, "list_profile_entries", lambda: [])
+        monkeypatch.setattr(
+            cli_mod,
+            "prompt_for_workspace",
+            lambda desc, profiles: ("https://acme.cloud.databricks.com/?o=111", None),
+        )
+        assert cli_mod._prompt_for_configuration() == (
+            "https://acme.cloud.databricks.com?w=111",
+            None,
+        )
+
+    def test_classic_pick_is_unchanged(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: pytest.fail("probed"))
+        monkeypatch.setattr(
+            cli_mod,
+            "prompt_for_workspace",
+            lambda desc, profiles: ("https://first.databricks.com", "p"),
+        )
+        monkeypatch.setattr(cli_mod, "list_profile_entries", lambda: [{"name": "p"}])
+        assert cli_mod._prompt_for_configuration() == ("https://first.databricks.com", "p")
+
+    def test_profiles_are_listed_once(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        entries = [
+            {"name": "a", "host": "https://acme.cloud.databricks.com", "workspace_id": "111"},
+            {"name": "pat", "host": "https://acme.cloud.databricks.com", "auth_type": "pat"},
+        ]
+        calls = []
+        monkeypatch.setattr(cli_mod, "list_profile_entries", lambda: calls.append(1) or entries)
+        offered = []
+
+        def pick(desc, profiles):
+            offered.extend(profiles)
+            return "https://acme.cloud.databricks.com", "a"
+
+        monkeypatch.setattr(cli_mod, "prompt_for_workspace", pick)
+        assert cli_mod._prompt_for_configuration() == (
+            "https://acme.cloud.databricks.com?w=111",
+            "a",
+        )
+        assert len(calls) == 1
+        assert offered == [("https://acme.cloud.databricks.com", "a")]
+
+
+class TestLaunchWorkspaceStateOnSharedHosts:
+    def test_launch_selector_saves_the_workspace_key(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        state = cli_mod._launch_workspace_state("https://acme.cloud.databricks.com/?w=111")
+        assert state["workspace"] == "https://acme.cloud.databricks.com"
+        assert state["workspace_id"] == "111"
+
+    def test_launch_with_the_bare_host_keeps_the_saved_workspace(self):
+        import ucode.state as state_mod
+
+        shared = "https://acme.cloud.databricks.com"
+        block = {"workspace": shared, "workspace_id": "111"}
+        state_mod.STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        state_mod.STATE_PATH.write_text(
+            json.dumps(
+                {
+                    "state_version": state_mod.STATE_VERSION,
+                    "current_workspace": shared,
+                    state_mod.CURRENT_WORKSPACE_KEY: f"{shared}?w=111",
+                    "workspaces": {
+                        f"{shared}?w=111": block,
+                        shared: {**block, state_mod.ALIAS_OF_KEY: f"{shared}?w=111"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        state = cli_mod._launch_workspace_state(shared)
+        assert state["workspace_id"] == "111"
+        assert state_mod.load_full_state()[state_mod.CURRENT_WORKSPACE_KEY] == f"{shared}?w=111"
+
+    def test_policy_for_another_workspace_on_the_same_host_refuses_the_launch(self, monkeypatch):
+        """A policy installed for one workspace of a shared host doesn't admit its siblings."""
+        import ucode.workspace as workspace_mod
+        from ucode.managed_config import save_managed_state
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        save_managed_state("https://acme.cloud.databricks.com?w=111", {"default_agent": "claude"})
+        with pytest.raises(
+            RuntimeError, match="managed for https://acme.cloud.databricks.com\\?w=111"
+        ):
+            cli_mod._launch_workspace_state("https://acme.cloud.databricks.com/?w=222")
 
 
 class TestConfigureOtherAgentReadsPolicyOnly:

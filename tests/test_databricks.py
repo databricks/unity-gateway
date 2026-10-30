@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import configparser
 import json
 import os
 import subprocess
@@ -17,7 +18,6 @@ import pytest
 import ucode.custom_oauth as custom_oauth_mod
 import ucode.databricks as db_mod
 from ucode.databricks import (
-    CODING_AGENT_RECOMMEND_MODEL_PATH,
     _format_subprocess_result,
     _parse_databricks_cli_version,
     _run_databricks_cli_installer,
@@ -47,7 +47,6 @@ from ucode.databricks import (
     install_databricks_cli,
     list_databricks_apps,
     list_workspace_budgets,
-    resolve_current_budget_spend,
     upgrade_databricks_cli,
     workspace_hostname,
     workspace_origin,
@@ -1476,6 +1475,12 @@ class TestListProviderServiceModels:
         ("main.ucode.claude_haiku", "claude_haiku"),
         ("gpt-5.5", "gpt-5.5"),
         ("main.default.gpt-5.5", "gpt-5.5"),
+        # An Azure deployment names its region with a slash.
+        ("eu/gpt-5.6-luna", "gpt-5.6-luna"),
+        ("us/gpt-4o-mini-2024-07-18", "gpt-4o-mini-2024-07-18"),
+        ("mistralai/Mistral-7B", "mistral-7b"),
+        # Only the leading segment is a region; anything deeper is left alone.
+        ("publishers/google/models/gemini-4", "google/models/gemini-4"),
     ],
 )
 def test_bare_model_name(model, name):
@@ -3416,6 +3421,40 @@ class TestGetDatabricksToken:
         assert len(login_calls) == 1
         assert len(token_calls) == 1
 
+    @pytest.mark.parametrize(("workspace_id", "login_host"), [("111", f"{WS}?w=111"), (None, WS)])
+    def test_custom_oauth_cli_login_selects_the_workspace(
+        self, monkeypatch, workspace_id, login_host
+    ):
+        config = {
+            "client_id": "custom-client",
+            "redirect_url": "http://localhost:8020/callback",
+            "scopes": ["all-apis"],
+        }
+        login_calls = []
+        monkeypatch.setattr(custom_oauth_mod, "ensure_databricks_cli_version", lambda *_: None)
+        monkeypatch.setattr(custom_oauth_mod, "external_bearer_configured", lambda: False)
+        monkeypatch.setattr(custom_oauth_mod, "has_valid_databricks_auth", lambda *_: False)
+        monkeypatch.setattr(custom_oauth_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(
+            custom_oauth_mod, "run", lambda command, **kwargs: login_calls.append(command)
+        )
+        monkeypatch.setattr(custom_oauth_mod, "get_databricks_token", lambda *_: "token")
+
+        custom_oauth_mod.ensure_custom_oauth_cli_token(WS, config, workspace_id)
+
+        command = login_calls[0]
+        assert command[command.index("--host") + 1] == login_host
+
+    def test_saved_custom_oauth_profile_records_the_workspace(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "databrickscfg"
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg))
+        db_mod.save_databricks_cli_oauth_profile(WS, "ug-oauth", "client", workspace_id="111")
+        db_mod.save_databricks_cli_oauth_profile(WS, "plain", "client")
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read(cfg)
+        assert parser["ug-oauth"]["workspace_id"] == "111"
+        assert "workspace_id" not in parser["plain"]
+
 
 class TestGetDatabricksProfiles:
     def _patched_run(self, monkeypatch, payload: dict, returncode: int = 0) -> None:
@@ -3690,6 +3729,70 @@ class TestProbeUnityGatewayCapabilities:
         assert "v3" not in message.lower()
         assert "legacy" not in message.lower()
         assert calls == [f"https://{WS_HOST}/api/2.1/unity-catalog/model-services?page_size=50"]
+
+    def test_non_404_non_transient_failure_does_not_claim_not_enabled(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kwargs: (None, "HTTP 400 Bad Request: malformed"),
+        )
+
+        with pytest.raises(RuntimeError, match="Could not verify") as excinfo:
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
+        message = str(excinfo.value)
+        assert "HTTP 400 Bad Request: malformed" in message
+        assert "not enabled" not in message
+        assert "transient" not in message
+
+    def test_successful_probe_is_memoized_per_workspace_and_failures_are_not(self, monkeypatch):
+        calls: list[str] = []
+        outcomes = iter(
+            [
+                (None, "HTTP 400 Bad Request: malformed"),
+                ({"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None),
+            ]
+        )
+
+        def fake_get(url, token, **kwargs):
+            calls.append(url)
+            return next(outcomes)
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        with pytest.raises(RuntimeError):
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+        first = db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+        second = db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
+        assert first.resource_available
+        assert second == first
+        assert len(calls) == 2
+
+    def test_probe_cache_is_keyed_by_token_and_skips_empty_listings(self, monkeypatch):
+        calls: list[str] = []
+        outcomes = iter(
+            [
+                ({"model_services": []}, None),
+                ({"model_services": []}, None),
+                ({"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None),
+                ({"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None),
+            ]
+        )
+
+        def fake_get(url, token, **kwargs):
+            calls.append(token)
+            return next(outcomes)
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        assert not db_mod.probe_unity_gateway_capabilities(WS, "token-a").resource_available
+        assert not db_mod.probe_unity_gateway_capabilities(WS, "token-a").resource_available
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token-a").resource_available
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token-a").resource_available
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token-b").resource_available
+
+        assert calls == ["token-a", "token-a", "token-a", "token-b"]
 
     def test_model_service_auth_failure_raises(self, monkeypatch):
         calls: list[str] = []
@@ -5322,129 +5425,6 @@ class TestCodingAgentConfigCrudClients:
         assert reason == "HTTP 404 Not Found"
 
 
-class TestResolveCurrentBudgetSpend:
-    def test_parses_spend_and_threshold(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: (
-                {"current_spend": "12.34", "effective_threshold": "100"},
-                None,
-            ),
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend == (Decimal("12.34"), Decimal("100"))
-        assert reason is None
-
-    def test_posts_to_recommend_model_with_no_available_models(self, monkeypatch):
-        captured = {}
-
-        def fake_post(url, token, payload, timeout=10):
-            captured["url"] = url
-            captured["payload"] = payload
-            return {"current_spend": "1", "effective_threshold": "2"}, None
-
-        monkeypatch.setattr(db_mod, "_http_post_json", fake_post)
-        resolve_current_budget_spend("https://ws.example.com", "token")
-        assert captured["url"] == (f"https://ws.example.com{CODING_AGENT_RECOMMEND_MODEL_PATH}")
-        # Empty list applies no availability filter; we want the spend only.
-        assert captured["payload"] == {"available_models": []}
-
-    def test_ignores_recommended_models(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: (
-                {
-                    "recommended_models": ["system.ai.claude-sonnet-4-5"],
-                    "current_spend": "12.34",
-                    "effective_threshold": "100",
-                },
-                None,
-            ),
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend == (Decimal("12.34"), Decimal("100"))
-        assert reason is None
-
-    def test_recommendation_without_spend_is_no_spend(self, monkeypatch):
-        # A config with no matching budget still recommends models, but both
-        # spend fields come back unset.
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: (
-                {"recommended_models": ["system.ai.claude-sonnet-4-5"]},
-                None,
-            ),
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-        assert "no coding-agent budget spend" in reason
-
-    def test_feature_disabled_returns_reason(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: (
-                None,
-                "HTTP 400 Bad Request: FEATURE_DISABLED",
-            ),
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-        assert "FEATURE_DISABLED" in reason
-
-    def test_unset_fields_treated_as_no_spend(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod, "_http_post_json", lambda url, token, payload, timeout=10: ({}, None)
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-        assert "no coding-agent budget spend" in reason
-
-    def test_spend_without_threshold_is_no_spend(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: ({"current_spend": "12.34"}, None),
-        )
-        spend, _ = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-
-    def test_threshold_without_spend_is_zero_spend(self, monkeypatch):
-        # A per-user threshold with no spend yet this period is $0 spent, not "no budget" — the
-        # developer should still see their budget rather than a blank.
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: ({"effective_threshold": "100"}, None),
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend == (Decimal(0), Decimal("100"))
-        assert reason is None
-
-    def test_malformed_decimal_is_no_spend(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: (
-                {"current_spend": "not-a-number", "effective_threshold": "100"},
-                None,
-            ),
-        )
-        spend, _ = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-
-    def test_non_object_payload_is_no_spend(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod, "_http_post_json", lambda url, token, payload, timeout=10: ([], None)
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-        assert "not a JSON object" in reason
-
-
 class TestListWorkspaceBudgets:
     PER_USER = "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER"
     SHARED = "ALERT_CONFIGURATION_SCOPE_TYPE_SHARED"
@@ -5967,3 +5947,61 @@ def test_importing_the_cli_does_not_load_the_databricks_sdk():
         check=True,
     )
     assert result.stdout.strip() == "False"
+
+
+class TestSharedHostProfiles:
+    SHARED = "https://acme.cloud.databricks.com"
+    ENTRIES = [
+        {"name": "other", "host": "https://acme.cloud.databricks.com", "workspace_id": "222"},
+        {"name": "mine", "host": "https://acme.cloud.databricks.com/", "workspace_id": "111"},
+        {"name": "pat", "host": "https://acme.cloud.databricks.com", "auth_type": "pat"},
+    ]
+
+    def test_prefers_the_workspace_profile(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "list_profile_entries", lambda: self.ENTRIES)
+        assert db_mod.find_profile_name_for_workspace(self.SHARED, "111") == "mine"
+
+    def test_falls_back_to_another_profile_on_the_host(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "list_profile_entries", lambda: self.ENTRIES)
+        assert db_mod.find_profile_name_for_workspace(self.SHARED, "333") == "other"
+
+    def test_without_an_id_matches_by_host(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "find_profile_name_for_host", lambda ws: "first")
+        assert db_mod.find_profile_name_for_workspace(self.SHARED, None) == "first"
+
+    def _capture_login(self, monkeypatch, entries):
+        calls = []
+        monkeypatch.setattr(db_mod, "list_profile_entries", lambda: entries)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "run", lambda cmd, **kwargs: calls.append(cmd))
+        return calls
+
+    def test_first_login_names_a_profile_and_selects_the_workspace(self, monkeypatch):
+        calls = self._capture_login(monkeypatch, [{"name": "ug-acme", "host": "https://x.com"}])
+        db_mod.run_databricks_login(self.SHARED, workspace_id="111")
+        assert calls == [
+            [
+                "databricks",
+                "auth",
+                "login",
+                "--host",
+                f"{self.SHARED}?w=111",
+                "--profile",
+                "ug-acme-2",
+            ]
+        ]
+
+    def test_login_reuses_a_profile_on_the_host(self, monkeypatch):
+        calls = self._capture_login(monkeypatch, self.ENTRIES)
+        db_mod.run_databricks_login(self.SHARED, workspace_id="111")
+        assert calls == [
+            ["databricks", "auth", "login", "--host", self.SHARED, "--profile", "mine"]
+        ]
+
+    def test_classic_login_argv_is_unchanged(self, monkeypatch):
+        calls = self._capture_login(monkeypatch, [])
+        monkeypatch.setattr(db_mod, "find_profile_name_for_host", lambda ws: None)
+        db_mod.run_databricks_login("https://dbc-1.cloud.databricks.com")
+        assert calls == [
+            ["databricks", "auth", "login", "--host", "https://dbc-1.cloud.databricks.com"]
+        ]
