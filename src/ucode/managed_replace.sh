@@ -264,7 +264,7 @@ replace_bundle() (
     set -eu
     source_path=$1
     target=$2
-    if [ "$platform:$target" != "macos:/Library/Application Support/Claude/org-plugins/ug" ]; then
+    if [ "$platform:$target" != "macos:/Library/Application Support/UnityGateway/claude-cowork-marketplace" ]; then
         printf '%s\n' "Refusing unexpected Desktop plugin target: $target" >&2
         exit 1
     fi
@@ -337,7 +337,8 @@ replace_bundle() (
         exit 1
     fi
     if [ -e "$request/new" ]; then
-        [ -f "$request/new/.claude-plugin/plugin.json" ] || exit 1
+        [ -f "$request/new/.claude-plugin/marketplace.json" ] || exit 1
+        [ -f "$request/new/plugins/ug/.claude-plugin/plugin.json" ] || exit 1
         chown -R 0:0 "$request/new" || exit 1
         find "$request/new" -type d -exec chmod 0755 {} + || exit 1
         find "$request/new" -type f ! -perm -0100 -exec chmod 0644 {} + || exit 1
