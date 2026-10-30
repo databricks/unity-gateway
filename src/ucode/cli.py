@@ -57,6 +57,8 @@ from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
     AGENT_COPILOT,
+    AGENT_CURSOR,
+    AGENT_VSCODE,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -1915,7 +1917,7 @@ def _configure_agents_for_mcp(
     `--profile`) makes that workspace current and skips the workspace prompt;
     otherwise the prompt is shown on first run. If setup fails, the previous
     current workspace is restored."""
-    names = {a if a in ("cursor", "vscode") else normalize_tool(a) for a in requested}
+    names = {a if a in (AGENT_CURSOR, AGENT_VSCODE) else normalize_tool(a) for a in requested}
     scope = mcp_clients_for_agents(names)
     installed = available_mcp_clients()
     # Setup installs model agents but not MCP-only ones, so a missing MCP-only CLI
@@ -1926,7 +1928,9 @@ def _configure_agents_for_mcp(
     previous_workspace = load_full_state().get("current_workspace")
     try:
         _bootstrap_agents_for_mcp(
-            scope, workspace_entries, vscode_only="vscode" in names and AGENT_COPILOT not in names
+            scope,
+            workspace_entries,
+            vscode_only=AGENT_VSCODE in names and AGENT_COPILOT not in names,
         )
     except BaseException:
         # Don't leave launches pointed at a workspace whose setup didn't finish.
