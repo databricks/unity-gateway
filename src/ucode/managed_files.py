@@ -273,6 +273,33 @@ def _sudo_may_prompt() -> bool:
     return current_os() is not OS.WINDOWS and sys.stdin.isatty()
 
 
+_sudo_needs_password_cache: bool | None = None
+
+
+def _sudo_needs_password() -> bool:
+    """False when sudo is passwordless, so the "Enter password" note would be misleading.
+
+    Only informs that note; whether and how writes happen is unchanged. Skips the probe (and
+    assumes a prompt) on Windows and in dry-run mode, where no sudo is run."""
+    global _sudo_needs_password_cache
+    if current_os() is OS.WINDOWS or is_dry_run():
+        return True
+    if _sudo_needs_password_cache is None:
+        try:
+            result = subprocess_cross_os.run(
+                [_SUDO, "-n", "true"], capture_output=True, timeout=10, check=False
+            )
+            _sudo_needs_password_cache = result.returncode != 0
+        except (OSError, subprocess.SubprocessError):
+            _sudo_needs_password_cache = True
+    return _sudo_needs_password_cache
+
+
+def _print_password_note(message: str) -> None:
+    if _sudo_needs_password():
+        print_note(message)
+
+
 def request_explicit_managed_writes(command: str | None = "ug configure") -> None:
     """Mark this run as the explicit ``command`` (``ug configure`` or ``ug revert``); ``None``
     clears it. Error messages name the command to rerun.
@@ -389,17 +416,17 @@ def _print_managed_write_permission(display: str) -> None:
         if _managed_write_worker is not None and _managed_write_worker.usable:
             _managed_write_notice_shown = True
             return
-        print_note("Enter password once to configure machine-wide coding agent settings.")
+        _print_password_note("Enter password once to configure machine-wide coding agent settings.")
         _managed_write_notice_shown = True
         return
     if not _managed_write_batch:
-        print_note(f"Enter password to configure settings for {display}.")
+        _print_password_note(f"Enter password to configure settings for {display}.")
         return
     if _managed_write_notice_shown:
         return
 
     displays = " and ".join(_managed_write_batch)
-    print_note(f"Enter password to configure settings for {displays}.")
+    _print_password_note(f"Enter password to configure settings for {displays}.")
     _managed_write_notice_shown = True
 
 

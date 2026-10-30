@@ -123,6 +123,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(managed_files_mod, "_sudo_replace", reject_privileged_write)
+    # Never shell out to the host's sudo from the password-note check; assume it would prompt.
+    monkeypatch.setattr(managed_files_mod, "_sudo_needs_password", lambda: True)
+    databricks_mod.clear_gateway_probe_cache()
     # Windows CI runners are elevated; never let an unmocked test write C:\Program Files.
     monkeypatch.setattr(managed_files_mod.system_cross_os, "is_admin", lambda: False)
     monkeypatch.setattr(managed_files_mod, "_windows_replace", reject_privileged_write)

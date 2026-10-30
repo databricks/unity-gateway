@@ -6377,6 +6377,24 @@ class TestConfigureSharedStateUsePat:
         assert "v2" not in message.lower()
         assert "v3" not in message.lower()
 
+    def test_second_configure_in_process_does_not_reprobe_the_gateway(self, monkeypatch):
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        calls: list[str] = []
+
+        def fake_get(url, token, **kwargs):
+            calls.append(url)
+            return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        monkeypatch.setattr(
+            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
+        )
+
+        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
+        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
+
+        assert len(calls) == 1
+
     def test_use_pat_without_pat_profile_raises(self, monkeypatch):
         cli_mod, logins, _, _ = self._stub_deps(monkeypatch, pat_token=None)
 
