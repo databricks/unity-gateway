@@ -2593,6 +2593,7 @@ def cowork_hook_cmd(
         str | None, typer.Option("--profile", help="Databricks CLI profile.")
     ] = None,
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
+    workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
     """Run the Cowork plugin's SessionStart and UserPromptSubmit hooks."""
     import json
@@ -2605,6 +2606,8 @@ def cowork_hook_cmd(
     except ValueError:
         return
     servers = dict(entry.split("=", 1) for entry in server if "=" in entry)
+    if workspace_id:
+        pin(host, workspace_id)
     with redirect_stdout(sys.stderr):  # stdout is reserved for the hook's JSON
         output = hook_output(payload, servers, host, profile, use_pat=use_pat)
     if output:

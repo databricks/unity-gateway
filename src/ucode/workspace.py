@@ -256,7 +256,10 @@ def workspace_headers(url: str | None = None) -> dict[str, str]:
 
 
 class WorkspaceSelectionReason(str):
-    """A failure reason caused by the workspace selection, which callers report as is."""
+    """A failure reason that callers report as is, ahead of the auth, scope and permission checks.
+
+    It carries its own sign-in steps where a fresh login can help.
+    """
 
 
 def _origin(url: str) -> str:
@@ -278,7 +281,8 @@ def signin_redirect_reason(url: str) -> WorkspaceSelectionReason:
             f"`--workspace '{host}?w=<workspace id>'` or a `--profile` with a workspace_id."
         )
     return WorkspaceSelectionReason(
-        f"{host} redirected to sign-in: the token was rejected or needs a fresh login."
+        f"{host} redirected to sign-in: the token was rejected or needs a fresh login. "
+        f"Sign in again with `databricks auth login --host {host}`."
     )
 
 
@@ -290,7 +294,8 @@ def workspace_failure_reason(url: str, status: int, body: str) -> WorkspaceSelec
     if selected and status == 400 and "Invalid Token" in body:
         return WorkspaceSelectionReason(
             f"{_origin(url)} rejected the token for workspace {selected}: the token is invalid, "
-            "or the workspace belongs to another account."
+            "or the workspace belongs to another account. Sign in again with "
+            f"`databricks auth login --host '{_origin(url)}?w={selected}'`."
         )
     return None
 

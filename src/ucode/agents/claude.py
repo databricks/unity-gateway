@@ -1124,8 +1124,9 @@ def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
     servers) but Claude Code reads it only from a real managed source, and only as a remote HTTP
     server it can drive OAuth against itself. So it fits only when the platform supports the sudo
     reconcile, the run may write it (``ug configure``, or an interactive run), the developer is not
-    on PAT auth (which needs the stdio proxy), and the workspace publishes the pinned CIMD client.
-    Other cases use user scope."""
+    on PAT auth (which needs the stdio proxy), no workspace selection applies (a host that serves
+    several workspaces drops it from its OAuth metadata, so Claude's own OAuth can't reach the
+    workspace), and the workspace publishes the pinned CIMD client. Other cases use user scope."""
     return (
         managed_files_supported()
         and managed_writes_allowed()

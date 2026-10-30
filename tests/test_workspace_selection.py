@@ -118,6 +118,12 @@ class TestFailureReasons:
         with patch.object(workspace_mod, "host_type", return_value="workspace"):
             reason = signin_redirect_reason(f"{CLASSIC}/api/2.0/x")
         assert "token was rejected" in reason
+        assert f"databricks auth login --host {CLASSIC}" in reason
+
+    def test_rejected_token_for_the_selected_workspace_keeps_the_sign_in_steps(self, selected):
+        reason = workspace_failure_reason(f"{SHARED}/api", 400, "Invalid Token")
+        assert reason is not None and "another account" in reason
+        assert f"databricks auth login --host '{SHARED}?w={WSID}'" in reason
 
     def test_account_admin_403_on_a_multi_workspace_host(self):
         with patch.object(workspace_mod, "host_type", return_value="unified"):
@@ -209,6 +215,36 @@ class TestHelperArgv:
     def test_otel_headers(self, selected):
         argv = db_mod.build_otel_headers_argv(SHARED, "p")
         assert argv[argv.index("--workspace-id") + 1] == WSID
+
+    def test_cowork_hook(self, selected):
+        from ucode.agents.desktop import cowork
+
+        config = {
+            "mcpServers": {
+                "gh": {"command": "/bin/ug", "args": ["mcp-proxy", "--url", f"{SHARED}/mcp/gh"]}
+            }
+        }
+        hooks = cowork._connector_hooks(config, SHARED, "p", use_pat=False)
+        assert hooks is not None
+        command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        assert f"--workspace-id {WSID}" in command
+
+    def test_cowork_probe_sends_the_selection(self, selected, monkeypatch):
+        import anyio
+
+        from ucode.agents.desktop import cowork_hooks
+
+        seen: dict[str, str] = {}
+
+        class Client:
+            def __init__(self, headers, timeout):
+                seen.update(headers)
+                raise RuntimeError("stop")
+
+        monkeypatch.setattr(cowork_hooks, "_httpx", lambda: type("M", (), {"AsyncClient": Client}))
+        with pytest.raises(RuntimeError, match="stop"):
+            anyio.run(cowork_hooks._probe, f"{SHARED}/mcp/gh", "tok", 1.0)
+        assert seen["X-Databricks-Workspace-Id"] == WSID
 
     def test_classic_argv_is_unchanged(self):
         assert "--workspace-id" not in db_mod.build_mcp_proxy_argv(f"{CLASSIC}/x", CLASSIC)

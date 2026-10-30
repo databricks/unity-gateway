@@ -17,6 +17,7 @@ from ucode.mcp_connection_login import connection_from_url
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_state import records_for_scope
 from ucode.ui import print_warning
+from ucode.workspace import workspace_id_args
 
 MARKETPLACE_NAME = "unity-gateway-cowork"
 PLUGIN_NAME = "ug"
@@ -381,7 +382,7 @@ def _connector_hooks(
             command = entry["command"]
     if command is None:
         return None
-    argv = [command, "cowork-hook", "--host", workspace.rstrip("/")]
+    argv = [command, "cowork-hook", "--host", workspace.rstrip("/"), *workspace_id_args(workspace)]
     argv += ["--profile", profile]
     if use_pat:
         argv.append("--use-pat")
