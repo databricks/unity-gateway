@@ -62,6 +62,8 @@ from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
     AGENT_COPILOT,
+    AGENT_CURSOR,
+    AGENT_VSCODE,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -2032,13 +2034,13 @@ def _configure_agents_for_mcp(
     workspace_entries: list[tuple[str, str | None]] | None = None,
 ) -> set[str]:
     """Select MCP clients for one workspace without changing agent model settings."""
-    names = {a if a in ("cursor", "vscode") else normalize_tool(a) for a in requested}
+    names = {a if a in (AGENT_CURSOR, AGENT_VSCODE) else normalize_tool(a) for a in requested}
     scope = mcp_clients_for_agents(names)
     installed = available_mcp_clients()
     # A named client whose user MCP config UG writes directly needs no CLI on PATH. VS Code reads
     # Copilot's user config, so `vscode` alone needs a VS Code setup for the workspace rather than
     # the Copilot CLI; that's checked once the workspace is selected.
-    vscode_only = "vscode" in names and AGENT_COPILOT not in names
+    vscode_only = AGENT_VSCODE in names and AGENT_COPILOT not in names
     not_installed = sorted(
         scope
         - set(installed)
