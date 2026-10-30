@@ -65,15 +65,18 @@ Foreign or externally edited root bundles are preserved. Source publication uses
 replacement and rollback. If an existing registration fails to update or switch sources,
 UG attempts to restore its previous sources and registration; failed rollback retains the
 backup and reports its path. An initial registration failure retains source/state for retry
-or revert. Other plugins are preserved. Default revert removes UG's registration and both
-owned sources; user-scope revert removes only the registration and user source, retaining
-the root ownership record for a later global revert.
+or revert. Other plugins are preserved. Default `ug revert` removes UG's registration and
+both owned sources.
 
 This configures the current user. The MCP executable and Databricks profile still refer to
 the installation selected by configure. A shared UG runtime, setup for new users, policy
-enforcement, and automatic per-user refresh at login are separate MDM work. The macOS
-pilot verified connector calls and skill delivery after an explicit refresh; it did not
-establish fresh-user provisioning or native Windows behavior.
+enforcement, and automatic per-user refresh at login are separate MDM work. Manual testing
+on macOS with Claude Desktop 4.4212.0 verified configure and reconfigure, skill invocation,
+connector calls, matching source/cache contents, and one UG registration without duplicates
+in Desktop settings. Skills and connector calls also worked with the user marketplace source
+temporarily moved aside; the installed cache and authentication remained in place. This did
+not test rebuilding an absent cache from the root source, fresh-user provisioning, or native
+Windows Desktop behavior.
 
 The plugin contains the current workspace's Claude-targeted MCP servers and downloaded
 user-level skills, plus any managed MCP servers and skills. Add skills with `ug skills add`
@@ -219,15 +222,10 @@ Desktop policy. UG treats installation as best-effort: failure warns but does no
 Code setup. If the current workspace has no Claude-targeted MCP servers or managed skills, UG
 keeps the plugin installed but replaces its contents with an empty plugin so a prior workspace's
 tools and skills do not remain active. User-scope setup skips silently if Cowork has never been
-started and UG has no prior plugin state. `ug revert` removes the UG-owned system bundle or
-user registration and generated marketplace. System withdrawal is picked up by Desktop at
-its next sync (Desktop 1.46388.1 or later). The native gateway profile remains separate.
-
-System files retain the configuring user's absolute UG executable and selected profile name.
-Credentials and runtime caches remain per user. This is not yet a fleet installer: installing
-UG for every device user and generating MDM inference policy are separate work.
-Organization plugins are available in Chat and Cowork. Desktop's Code sessions do not load
-their skills or hooks; Claude Code's existing configuration is unchanged.
+started and UG has no prior plugin state. `ug revert` removes UG's registration and owned
+marketplace sources through the cleanup described below. Quit and reopen Desktop after
+revert. The native gateway profile has separate cleanup rules. This plugin is registered
+in Cowork scope; Claude Code's existing configuration is unchanged.
 
 ## Models and authentication
 
@@ -442,8 +440,9 @@ system.ai models and subscription-relay MPS. Each asserts the generated profile,
 credential helper, completes real Messages inference, and discovers/calls web_search through
 the installed plugin to find Databricks' official website.
 Both check repeated configuration, preservation of unrelated settings, and revert cleanup.
-On Windows, those journeys inspect and invoke the system bundle; Linux continues using the
-Claude CLI's installed Cowork plugin. They do not prove Desktop's native organization-plugin sync.
+Both platforms invoke the Claude CLI's installed Cowork plugin. Windows additionally checks
+that the user and root sources match, the registration selects the root source, and the
+cached manifest matches that source. Linux checks registration against the user source.
 All calls use the journey's existing model workspace. CUJ1 and CUJ2 compare complete Desktop
 profile/metadata JSON for system.ai models and non-relay Anthropic MPS. CUJ3's existing configure
 journey checks that its incompatible scoped aliases preserve all Desktop profile/metadata bytes.
