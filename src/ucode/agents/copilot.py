@@ -913,7 +913,15 @@ def _apply_mcp_diff(add: dict[str, dict], remove: set[str]) -> set[str]:
             servers.pop(name, None)
         servers.update(upserts)
         config["mcpServers"] = servers
-        write_json_file(path, config)
+        if config == {"mcpServers": {}}:
+            # Copilot reads a missing file the same way, so don't leave an empty one behind.
+            if not is_dry_run():
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as exc:
+                    raise RuntimeError(f"Failed to remove {path}") from exc
+        else:
+            write_json_file(path, config)
     remove_legacy_mcp_config()
     return removed
 

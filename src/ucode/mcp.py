@@ -295,8 +295,12 @@ def mcp_clients_for_agents(agents: set[str]) -> set[str]:
     return {"copilot" if agent == "vscode" else agent for agent in agents}
 
 
-def _client_display(client: str) -> str:
-    if client == "copilot" and not shutil.which(str(MCP_CLIENTS[client]["binary"])):
+def mcp_client_display(client: str, state: dict) -> str:
+    if (
+        client == "copilot"
+        and state.get(VSCODE_CONFIGURED_KEY)
+        and not shutil.which(str(MCP_CLIENTS[client]["binary"]))
+    ):
         return "GitHub Copilot in VS Code"
     return str(MCP_CLIENTS[client]["display"])
 
@@ -538,7 +542,7 @@ def revert_mcp_configs(state: dict) -> dict[str, bool]:
             try:
                 removed_scopes = remove_client_mcp_server(client, name)
             except RuntimeError as exc:
-                display = MCP_CLIENTS[client]["display"]
+                display = mcp_client_display(client, state)
                 print_warning(f"Could not remove MCP server `{name}` from {display}: {exc}")
                 continue
             results[client] = bool(removed_scopes) or results.get(client, False)
@@ -2048,7 +2052,7 @@ def setup_mcp_clients(
 
     if not quiet:
         print_section(section)
-        client_names = ", ".join(_client_display(client) for client in clients)
+        client_names = ", ".join(mcp_client_display(client, state) for client in clients)
         print_note(f"{action_note}: {client_names}")
     for client in missing_clients:
         print_warning(
@@ -2969,7 +2973,7 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
     )
     # Only mention the enabled/disabled caveat for the agents actually probed through their CLI.
     config_state_clients = [
-        MCP_CLIENTS[client]["display"]
+        mcp_client_display(client, state)
         for client in ("codex", "copilot")
         if client in probe_clients and client not in config_only
     ]
