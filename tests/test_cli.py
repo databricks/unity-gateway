@@ -3360,6 +3360,23 @@ class TestMcpAddWorkspaceState:
     def _save_workspace(workspace: str, **extra) -> None:
         real_save_state({"workspace": workspace, "available_tools": ["codex"], **extra})
 
+    def test_first_mcp_add_selects_its_workspace(self):
+        from ucode.state import load_full_state
+
+        with (
+            patch("ucode.cli.available_mcp_clients", return_value=["codex"]),
+            patch("ucode.cli.add_mcp_command") as add_mcp,
+            patch("ucode.cli._sync_claude_cowork_plugin"),
+        ):
+            result = runner.invoke(
+                app,
+                ["mcp", "add", "--agents", "codex", "--names", "a.b.c", "--workspace", self.WS_B],
+            )
+
+        assert result.exit_code == 0, result.output
+        add_mcp.assert_called_once()
+        assert load_full_state()["current_workspace"] == self.WS_B
+
     def test_profile_used_for_auth_when_workspace_already_ready(self):
         from ucode.mcp import setup_mcp_clients
         from ucode.state import load_state
@@ -3400,7 +3417,7 @@ class TestMcpAddWorkspaceState:
         assert state["profile"] == "NEW"
         assert "use_pat" not in state
 
-    def test_second_workspace_add_preserves_launch_and_model_configuration(self):
+    def test_second_workspace_add_requires_explicit_workspace_switch(self):
         from ucode.state import load_full_state
 
         self._save_workspace(self.WS_A, profile="A", mcp_servers=[{"name": "existing"}])
@@ -3426,18 +3443,16 @@ class TestMcpAddWorkspaceState:
                 ],
             )
 
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
+        assert f"configure --workspace {self.WS_B}" in _strip_ansi(result.output)
         configure_models.assert_not_called()
         configure_workspace.assert_not_called()
         sync_cowork.assert_not_called()
-        add_mcp.assert_called_once_with(
-            location=None, services={"a.b.c"}, agents={"claude", "codex"}
-        )
+        add_mcp.assert_not_called()
         full = load_full_state()
         assert full["current_workspace"] == self.WS_A
         assert full["workspaces"][self.WS_A] == before
-        assert full["workspaces"][self.WS_B]["mcp_clients"] == ["claude", "codex"]
-        assert full["workspaces"][self.WS_B].get("available_tools") is None
+        assert self.WS_B not in full["workspaces"]
 
     @pytest.mark.parametrize("use_env", [False, True])
     def test_second_workspace_without_agents_uses_its_existing_mcp_clients(
@@ -3459,8 +3474,9 @@ class TestMcpAddWorkspaceState:
         ):
             result = runner.invoke(app, args)
 
-        assert result.exit_code == 0, result.output
-        add_mcp.assert_called_once_with(location=None, services={"a.b.c"}, agents={"codex"})
+        assert result.exit_code == 1, result.output
+        assert f"configure --workspace {self.WS_B}" in _strip_ansi(result.output)
+        add_mcp.assert_not_called()
         configure_models.assert_not_called()
         assert load_full_state()["current_workspace"] == self.WS_A
         assert load_full_state()["workspaces"][self.WS_B]["mcp_clients"] == ["codex"]
@@ -3480,7 +3496,7 @@ class TestMcpAddWorkspaceState:
     @pytest.mark.parametrize(
         ("error", "exit_code"), [(RuntimeError("boom"), 1), (KeyboardInterrupt(), 130)]
     )
-    def test_failed_setup_restores_previous_workspace(self, error, exit_code):
+    def test_failed_same_workspace_add_preserves_workspace(self, error, exit_code):
         from ucode.state import load_full_state
 
         self._save_workspace(self.WS_A)
@@ -3490,14 +3506,14 @@ class TestMcpAddWorkspaceState:
         ):
             result = runner.invoke(
                 app,
-                ["mcp", "add", "--agents", "codex", "--names", "a.b.c", "--workspace", self.WS_B],
+                ["mcp", "add", "--agents", "codex", "--names", "a.b.c", "--workspace", self.WS_A],
             )
 
         assert result.exit_code == exit_code, result.output
         mock_add.assert_called_once()
         full = load_full_state()
         assert full["current_workspace"] == self.WS_A
-        assert full["workspaces"][self.WS_B]["mcp_clients"] == ["codex"]
+        assert self.WS_B not in full["workspaces"]
 
 
 class TestMcpAddRootWorkspace:
@@ -5481,6 +5497,34 @@ class TestConfigureAgentsSelection:
 
         install_ai_tools.assert_called_once_with(["copilot"], state, force_refresh=True)
 
+    def test_single_codex_switch_reconciles_managed_mcps_before_restoring_saved_entries(
+        self, monkeypatch
+    ):
+        state = {**MINIMAL_STATE, "workspace": "https://b.com"}
+        calls = []
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {"workspace": "https://a.com"})
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        monkeypatch.setattr(cli_mod, "_refresh_configured_policy", lambda state: (None, None))
+        monkeypatch.setattr(cli_mod, "refuse_user_scope_over_managed_config", lambda *a: None)
+        monkeypatch.setattr(cli_mod, "configure_single_tool", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "_record_unmanaged_configured_agents", lambda s, t: s)
+        monkeypatch.setattr(
+            cli_mod, "_configure_managed_mcp_servers", lambda managed: calls.append("managed") or []
+        )
+        monkeypatch.setattr(
+            cli_mod, "_configure_managed_skills", lambda managed: calls.append("skills") or True
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "_restore_mcp_after_workspace_switch",
+            lambda previous, current: calls.append((previous, current["workspace"])),
+        )
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
+
+        cli_mod._setup_single_agent([("https://b.com", None)], "codex", apply_managed=True)
+
+        assert calls == ["managed", "skills", ("https://a.com", "https://b.com")]
+
     def test_managed_config_fails_when_no_enabled_agent_is_available(self, monkeypatch):
         import ucode.cli as cli_mod
 
@@ -6689,6 +6733,75 @@ class TestConfigureSharedStateMcpCleanup:
         monkeypatch.setattr(cli_mod, "discover_codex_models", lambda w, t: ([], None))
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {})
 
+    @pytest.mark.parametrize("same_name", [False, True])
+    def test_explicit_configure_switch_restores_saved_mcp_entries(self, monkeypatch, same_name):
+        from ucode import mcp
+        from ucode import state as state_mod
+
+        self._stub_external_deps(monkeypatch)
+        monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
+        monkeypatch.setattr(state_mod, "build_agent_state", lambda state: {})
+        monkeypatch.setattr(cli_mod, "save_state", mcp.save_state)
+        monkeypatch.setattr(cli_mod, "_refresh_configured_policy", lambda state: (None, None))
+        monkeypatch.setattr(cli_mod, "refuse_user_scope_over_managed_files", lambda tools: None)
+        monkeypatch.setattr(cli_mod, "refuse_user_scope_over_managed_config", lambda *args: None)
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda state, tool: True)
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *args, **kwargs: True)
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda state, tools, **kwargs: {
+                **state,
+                "available_tools": tools,
+                "last_configured_tools": tools,
+            },
+        )
+        monkeypatch.setattr(
+            cli_mod, "_record_unmanaged_configured_agents", lambda state, tools: state
+        )
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda managed: [])
+        monkeypatch.setattr(cli_mod, "_configure_managed_skills", lambda managed: True)
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["codex"])
+        monkeypatch.setattr(mcp, "managed_mcp_server_names", lambda state, agents: set())
+        monkeypatch.setattr(mcp, "_oauth_http_client", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            mcp,
+            "_managed_mcp_entry",
+            lambda client, url, *args, **kwargs: {"url": url},
+        )
+        actual: dict[str, dict] = {}
+
+        def write(add: dict, remove: set[str]) -> set[str]:
+            removed = set(actual) & remove
+            for name in remove:
+                actual.pop(name, None)
+            actual.update(add)
+            return removed
+
+        monkeypatch.setattr(mcp.codex, "write_user_mcp_servers", write)
+        a = "https://a.databricks.com"
+        b = "https://b.databricks.com"
+        a_entry = {"name": "a-tools", "url": f"{a}/mcp", "clients": ["codex"]}
+        b_entry = {
+            "name": "a-tools" if same_name else "b-tools",
+            "url": f"{b}/mcp",
+            "clients": ["codex"],
+        }
+        mcp.save_state({"workspace": b, "mcp_servers": [b_entry]})
+        mcp.save_state({"workspace": a, "mcp_servers": [a_entry]})
+        actual["a-tools"] = {"url": a_entry["url"]}
+
+        cli_mod._configure_workspace_command(selected_tools=["codex"], workspaces=[(b, None)])
+        assert actual == {b_entry["name"]: {"url": b_entry["url"]}}
+        assert state_mod.load_full_state()["current_workspace"] == b
+
+        cli_mod._configure_workspace_command(selected_tools=["codex"], workspaces=[(a, None)])
+        assert actual == {"a-tools": {"url": a_entry["url"]}}
+        full = state_mod.load_full_state()
+        assert full["current_workspace"] == a
+        assert full["workspaces"][a]["mcp_servers"] == [a_entry]
+        assert full["workspaces"][b]["mcp_servers"] == [b_entry]
+
     def test_workspace_switch_continues_after_skills_cleanup_timeout(self, monkeypatch, capsys):
         from ucode import mcp
         from ucode import state as state_mod
@@ -6719,18 +6832,18 @@ class TestConfigureSharedStateMcpCleanup:
         state = cli_mod.configure_shared_state(new_workspace, force_login=True)
 
         assert state["workspace"] == new_workspace
-        assert state["mcp_servers"] == []
+        assert state.get("mcp_servers", []) == []
         assert "_discovery_reasons" in state
         assert calls == [({}, {"databricks-skill-registry"})]
         full = state_mod.load_full_state()
         assert full["current_workspace"] == new_workspace
-        assert full["workspaces"][new_workspace]["mcp_servers"] == []
+        assert full["workspaces"][new_workspace].get("mcp_servers", []) == []
         # The previous workspace's own bucket is always preserved so switching back still recognizes
         # its configured servers.
         assert full["workspaces"][old_workspace]["mcp_servers"] == [entry]
         output = " ".join(_strip_ansi(capsys.readouterr().out).split())
         assert "Unity Gateway connected" in output
-        assert "Dropping 1 stale MCP entry" in output
+        assert "Dropping 1 stale MCP entry" not in output
         assert "Failed to remove stale MCP entries from Claude Code" in output
         assert "left over from previously-configured workspaces" not in output
 

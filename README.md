@@ -224,9 +224,11 @@ ug mcp add --agents cursor --names system.ai.github --workspace https://first.da
 ug mcp add --agents codex --names system.ai.github --profile DEFAULT
 ```
 
-With `--agents`, agents that aren't set up yet are set up first. Pass `--workspace`
-or `--profile` to pick the workspace instead of the picker; it becomes the current
-workspace.
+With `--agents`, installed agents can be registered for MCP without configuring their
+models. `--workspace` or `--profile` selects the workspace on a fresh setup. If another
+workspace is already active, run `ug configure --workspace <url>` to switch first;
+the switch replaces the agent's active MCP registrations with those saved for the
+selected workspace. Switching back restores the earlier workspace's saved servers.
 
 Remove configured servers:
 

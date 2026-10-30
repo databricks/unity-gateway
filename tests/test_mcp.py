@@ -38,18 +38,39 @@ def test_mcp_only_client_is_available_without_model_configuration():
     assert mcp.configured_mcp_clients(state, ["claude", "codex"]) == ["claude"]
 
 
-def test_second_workspace_mcp_name_does_not_replace_first(monkeypatch):
-    other = "https://first.cloud.databricks.com"
-    current = "https://second.cloud.databricks.com"
+def test_restore_workspace_mcp_servers_uses_saved_name_and_destination_url(monkeypatch):
+    workspace = "https://second.cloud.databricks.com"
+    selected = {
+        "name": "system-ai-github",
+        "url": f"{workspace}/ai-gateway/mcp-services/system.ai.github",
+        "clients": ["claude"],
+    }
+    writes = []
+    monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
+    monkeypatch.setattr(mcp, "managed_mcp_server_names", lambda state, agents: set())
     monkeypatch.setattr(
         mcp,
-        "load_full_state",
-        lambda: {"workspaces": {other: {"mcp_servers": [{"name": "system-ai-github"}]}}},
+        "apply_mcp_server_changes",
+        lambda original, working, clients, ws, profile, **kwargs: writes.append(
+            (original, working, clients, ws, profile, kwargs)
+        ),
     )
-    selected = [{"name": "system-ai-github", "url": f"{current}/mcp"}]
-    result = mcp._namespace_foreign_mcp_names(selected, current)
-    assert result[0]["name"] == "system-ai-github-second-cloud-databricks-com"
-    assert selected[0]["name"] == "system-ai-github"
+
+    mcp.restore_workspace_mcp_servers(
+        {"workspace": workspace, "profile": "B", "mcp_servers": [selected]},
+        {"claude", "codex"},
+    )
+
+    assert writes == [
+        (
+            [],
+            [selected],
+            ["claude"],
+            workspace,
+            "B",
+            {"use_pat": False, "batch_agents": frozenset({"claude"})},
+        )
+    ]
 
 
 # The proxy argv every client registers as a stdio command. The leading element
@@ -1913,25 +1934,10 @@ class TestConfigureMcpFromLocation:
 class TestAddMcpCommand:
     """`ucode mcp add` (append) registers new servers without removing existing ones."""
 
-    def test_second_workspace_keeps_first_workspace_server(self, monkeypatch):
-        other = "https://first.cloud.databricks.com"
+    def test_add_uses_original_server_name(self, monkeypatch):
         saved: list[dict] = []
         registered: list[str] = []
         _stub_location_base(monkeypatch, {**CLAUDE_STATE, "mcp_servers": []})
-        monkeypatch.setattr(
-            mcp,
-            "load_full_state",
-            lambda: {
-                "workspaces": {
-                    other: {"mcp_servers": [{"name": "system-ai-github", "clients": ["claude"]}]}
-                }
-            },
-        )
-        monkeypatch.setattr(
-            mcp,
-            "purge_cross_workspace_mcp_residue",
-            lambda *a: pytest.fail("purged other workspace"),
-        )
         monkeypatch.setattr(mcp, "list_mcp_services", lambda *a, **kw: (["system.ai.github"], None))
         monkeypatch.setattr(
             mcp,
@@ -1941,7 +1947,7 @@ class TestAddMcpCommand:
         monkeypatch.setattr(mcp, "save_state", lambda state: saved.append(state.copy()))
 
         assert mcp.add_mcp_command(location="system.ai", agents={"claude"}) == 0
-        expected = "system-ai-github-example-databricks-com"
+        expected = "system-ai-github"
         assert registered == [expected]
         assert saved[-1]["mcp_servers"][0]["name"] == expected
 

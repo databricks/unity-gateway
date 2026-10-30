@@ -1621,6 +1621,34 @@ def apply_mcp_server_changes(
     return changed
 
 
+def restore_workspace_mcp_servers(state: dict, agents: set[str]) -> None:
+    """Reapply this workspace's saved user MCP entries after an explicit workspace switch."""
+    workspace = state.get("workspace")
+    if not workspace:
+        return
+    installed = set(available_mcp_clients()) & agents
+    managed_names = managed_mcp_server_names(state, installed)
+    servers = list(state.get("mcp_servers") or [])
+    for client in sorted(installed):
+        selected = [
+            server
+            for server in servers
+            if client in _mcp_server_clients(server)
+            and (name := _server_name(server))
+            and name not in managed_names
+        ]
+        if selected:
+            apply_mcp_server_changes(
+                [],
+                selected,
+                [client],
+                workspace,
+                state.get("profile"),
+                use_pat=bool(state.get("use_pat")),
+                batch_agents=frozenset({client}),
+            )
+
+
 class _Counter:
     """Thread-safe monotonic counter for cross-thread progress reporting."""
 
@@ -1959,25 +1987,6 @@ def _union_missing(base: list[dict], selected: list[dict]) -> list[dict]:
     return [*selected, *extra]
 
 
-def _namespace_foreign_mcp_names(servers: list[dict], workspace: str) -> list[dict]:
-    """Keep a second workspace from replacing an agent's same-named MCP server."""
-    foreign_names = {
-        name
-        for other_workspace, bucket in (load_full_state().get("workspaces") or {}).items()
-        if other_workspace != workspace and isinstance(bucket, dict)
-        for key in ("mcp_servers", "managed_mcp_servers")
-        for entry in bucket.get(key) or []
-        if (name := _server_name(entry))
-    }
-    suffix = _normalize_workspace_title(workspace_hostname(workspace))
-    return [
-        {**server, "name": f"{server['name']}-{suffix}"}
-        if server.get("name") in foreign_names and not server["name"].endswith(f"-{suffix}")
-        else server
-        for server in servers
-    ]
-
-
 def add_mcp_command(
     location: str | None = None,
     services: set[str] | None = None,
@@ -2064,7 +2073,6 @@ def _configure_v2_mcp_selectors(
         )
 
     if append:
-        working_mcp_servers = _namespace_foreign_mcp_names(working_mcp_servers, workspace)
         working_mcp_servers = _union_missing(original_mcp_servers, working_mcp_servers)
 
     changed = apply_mcp_server_changes(
@@ -2149,7 +2157,6 @@ def configure_mcp_command(
         )
         working_mcp_servers = _drop_managed_servers(working_mcp_servers, managed_names)
         if append:
-            working_mcp_servers = _namespace_foreign_mcp_names(working_mcp_servers, workspace)
             working_mcp_servers = _union_missing(
                 original_mcp_servers_for_location, working_mcp_servers
             )
@@ -2251,7 +2258,6 @@ def configure_mcp_command(
         working_names.add(entry_name)
 
     if append:
-        working_mcp_servers = _namespace_foreign_mcp_names(working_mcp_servers, workspace)
         working_mcp_servers = _union_missing(original_mcp_servers, working_mcp_servers)
 
     changed = apply_mcp_server_changes(
