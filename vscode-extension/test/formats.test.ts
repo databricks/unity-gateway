@@ -115,10 +115,10 @@ describe("Responses", () => {
   it("sends the whole conversation statelessly", () => {
     assert.deepEqual(responsesRequest(turn), {
       model: "m",
+      instructions: "Be brief.",
       stream: true,
       store: false,
       input: [
-        { role: "system", content: "Be brief." },
         { role: "user", content: [{ type: "input_text", text: "Weather?" }, { type: "input_image", image_url: "data:image/png;base64,Bw==", detail: "auto" }] },
         { role: "assistant", content: "Checking." },
         { type: "function_call", call_id: "c1", name: "get_weather", arguments: '{"city":"Paris"}' },

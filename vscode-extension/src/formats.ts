@@ -194,10 +194,14 @@ const functionOutput = (content: readonly unknown[]): string | object[] => {
 
 // Stateless: the gateway keeps no response state, so every turn resends the whole conversation.
 export function responsesRequest(turn: Turn): object {
+  const instructions: string[] = [];
   const input = turn.messages.flatMap((message): object[] => {
     const { results, calls, text, images } = sortParts(message.content);
     if (Number(message.role) === SYSTEM_ROLE) {
-      return [{ role: "system", content: text }];
+      // Microsoft Foundry rejects a system-role input item outright, whatever its content, while
+      // every OpenAI-compatible surface takes the prompt here.
+      instructions.push(text);
+      return [];
     }
     if (message.role === vscode.LanguageModelChatMessageRole.Assistant) {
       return [
@@ -216,6 +220,7 @@ export function responsesRequest(turn: Turn): object {
   });
   return {
     model: turn.model,
+    ...(instructions.length ? { instructions: instructions.join("\n\n") } : {}),
     input,
     stream: true,
     store: false,
