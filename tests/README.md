@@ -528,12 +528,18 @@ These are unit/component tests; CUJ5 checks live `ug usage --all` output against
 figures before and after the command.
 
 The existing `test_codex_smart_routing_v2.py` launcher cases cover session-provider
-selection during first-prompt routing. The native v2 journey covers subagent-only
-routing. `test_codex_v2_transport.py` checks readable
-assignments and encrypted-history replay. `test_gateway_proxy.py` checks gzip
-JSON/SSE decoding and unchanged compaction requests and responses retaining completed
-calls, results, and an opaque summary. These component checks do not cover live
-standalone compaction, injected startup failures, or malformed-stream diagnostics.
+selection with a stable provider name during first-prompt and subagent-only routing,
+including the latter's unchanged parent model and disabled first-prompt selection.
+Interposer cases keep routed sessions in history filtered by the managed provider.
+The native v2 journey covers subagent-only routing. `test_codex_v2_transport.py`
+checks readable assignments, encrypted-history replay, and preserving malformed
+plaintext arguments for native tool validation while rejecting encrypted assignments.
+`test_gateway_proxy.py` checks gzip JSON/SSE decoding, split event delimiters,
+buffered JSON failures returning 502, request namespace conflicts returning 400,
+and stopping incomplete, oversized, or malformed SSE events. Compaction requests
+and responses retain completed calls, results, and an opaque summary unchanged.
+These component checks do not cover live session resume, standalone compaction,
+or injected startup failures.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.

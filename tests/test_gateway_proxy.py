@@ -430,8 +430,10 @@ class _RefreshFailsCache:
         raise RuntimeError("mint failed")
 
 
-def _handle_handler(client, cache, wfile) -> gateway_proxy._ProxyHandler:
-    h = object.__new__(gateway_proxy._ProxyHandler)
+def _handle_handler(
+    client, cache, wfile, handler_type=gateway_proxy._ProxyHandler
+) -> gateway_proxy._ProxyHandler:
+    h = object.__new__(handler_type)
     h.client = client
     h.cache = cache
     h.headers = {}
@@ -504,17 +506,123 @@ class TestRetryOn401:
 
 
 class _ResponseChunks(httpx.SyncByteStream):
-    def __init__(self, data):
+    def __init__(self, data, chunk_size=7):
         self.data = data
+        self.chunk_size = chunk_size
 
     def __iter__(self):
-        for offset in range(0, len(self.data), 7):
-            yield self.data[offset : offset + 7]
+        for offset in range(0, len(self.data), self.chunk_size):
+            yield self.data[offset : offset + self.chunk_size]
 
 
 class TestCodexV2Proxy:
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            b"malformed-response-secret",
+            json.dumps(
+                {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "namespace": "ucode_collaboration",
+                            "name": "spawn_agent",
+                            "arguments": '{"message":"gAAAAABopaque"}',
+                        }
+                    ]
+                }
+            ).encode(),
+            pytest.param(
+                b"x" * (gateway_proxy._CODEX_V2_MAX_BUFFER_BYTES + 1), id="oversized-json"
+            ),
+        ],
+    )
+    def test_invalid_json_response_returns_502_before_sending_headers(self, payload):
+        out = _Collect()
+        handler = _relay_handler(out, gateway_proxy._CodexV2ProxyHandler)
+        handler.path = "/v1/responses"
+        handler._request_body(b'{"tools":[{"type":"namespace","name":"collaboration","tools":[]}]}')
+        response = httpx.Response(
+            200,
+            headers={"Content-Type": "application/json"},
+            stream=httpx.ByteStream(payload),
+        )
+        handler._relay_response(response)
+        response.close()
+        headers, wire = bytes(out.data).split(b"\r\n\r\n", 1)
+        assert headers.startswith(b"HTTP/1.0 502 ")
+        assert b"HTTP/1.0 200 " not in out.data
+        assert payload not in wire
+
+    def test_interrupted_json_response_returns_502(self):
+        class InterruptedResponse(httpx.SyncByteStream):
+            def __iter__(self):
+                yield b'{"output":['
+                raise httpx.ReadError("upstream-secret")
+
+        out = _Collect()
+        handler = _relay_handler(out, gateway_proxy._CodexV2ProxyHandler)
+        handler.path = "/v1/responses"
+        handler._request_body(b'{"tools":[{"type":"namespace","name":"collaboration","tools":[]}]}')
+        response = httpx.Response(
+            200, headers={"Content-Type": "application/json"}, stream=InterruptedResponse()
+        )
+        handler._relay_response(response)
+        response.close()
+        assert out.data.startswith(b"HTTP/1.0 502 ")
+        assert b"upstream-secret" not in out.data
+
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            pytest.param(b'data: {"type":"response.output_item.done"}', id="eof-mid-event"),
+            pytest.param(
+                b"data: " + b"x" * gateway_proxy._CODEX_V2_MAX_BUFFER_BYTES + b"\n\n",
+                id="oversized-event",
+            ),
+            pytest.param(
+                b"event: response.output_item.done\ndata: malformed-secret\n\ndata: [DONE]\n\n",
+                id="malformed-response",
+            ),
+            pytest.param(
+                b"event: response.output_item.done\ndata: []\n\ndata: [DONE]\n\n",
+                id="non-object-response",
+            ),
+        ],
+    )
+    def test_unsafe_sse_is_not_forwarded(self, frame):
+        heartbeat = b": heartbeat\n\n"
+        out = _Collect()
+        handler = _relay_handler(out, gateway_proxy._CodexV2ProxyHandler)
+        handler.path = "/v1/responses"
+        handler._request_body(b'{"tools":[{"type":"namespace","name":"collaboration","tools":[]}]}')
+        response = httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            stream=httpx.ByteStream(heartbeat + frame),
+        )
+        handler._relay_response(response)
+        response.close()
+        headers, wire = bytes(out.data).split(b"\r\n\r\n", 1)
+        assert headers.startswith(b"HTTP/1.0 200 ")
+        assert wire == heartbeat
+
+    def test_reserved_request_namespace_returns_400_without_forwarding(self):
+        body = b'{"tools":[{"type":"namespace","name":"ucode_collaboration","description":"request-secret"}]}'
+        client = _FakeClient([])
+        out = _Collect()
+        handler = _handle_handler(client, _FakeCache(), out, gateway_proxy._CodexV2ProxyHandler)
+        handler.path = "/v1/responses"
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        handler._handle()
+        assert out.data.startswith(b"HTTP/1.0 400 ")
+        assert b"request-secret" not in out.data
+        assert client.sent_tokens == []
+
     @pytest.mark.parametrize("streaming", [False, True])
-    def test_decodes_gzip_and_restores_native_calls(self, streaming):
+    @pytest.mark.parametrize("compressed,chunk_size", [(False, 1), (False, 7), (True, 7)])
+    def test_decodes_responses_and_restores_native_calls(self, streaming, compressed, chunk_size):
         item = {
             "type": "function_call",
             "name": "spawn_agent",
@@ -525,7 +633,7 @@ class TestCodexV2Proxy:
         handler = _relay_handler(out, gateway_proxy._CodexV2ProxyHandler)
         handler.path = "/v1/responses"
         body = b'{"tools":[{"type":"namespace","name":"collaboration","tools":[]}]}'
-        prepared = json.loads(handler._prepare_request_body(body))
+        prepared = json.loads(handler._request_body(body))
         assert prepared["tools"][0]["name"] == "ucode_collaboration"
 
         payload = json.dumps({"output": [item]}).encode()
@@ -539,9 +647,9 @@ class TestCodexV2Proxy:
             200,
             headers={
                 "Content-Type": "text/event-stream" if streaming else "application/json",
-                "Content-Encoding": "gzip",
+                **({"Content-Encoding": "gzip"} if compressed else {}),
             },
-            stream=_ResponseChunks(gzip.compress(payload)),
+            stream=_ResponseChunks(gzip.compress(payload) if compressed else payload, chunk_size),
         )
         handler._relay_response(response)
         response.close()
@@ -581,7 +689,7 @@ class TestCodexV2Proxy:
         out = _Collect()
         handler = _relay_handler(out, gateway_proxy._CodexV2ProxyHandler)
         handler.path = "/v1/responses/compact"
-        assert handler._prepare_request_body(body) == body
+        assert handler._request_body(body) == body
 
         payload = json.dumps(
             {

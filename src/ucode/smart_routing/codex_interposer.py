@@ -13,6 +13,7 @@ from pathlib import Path
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
+from ucode.agents.codex import CODEX_MODEL_PROVIDER_NAME
 from ucode.smart_routing import codex_routing, routing
 
 SETTINGS_UPDATED = "thread/settings/updated"
@@ -96,6 +97,20 @@ class _Session:
             # machine-managed config fixes the default provider to Databricks.
             params["modelProvider"] = self.model_provider
             return TuiFrameResult(json.dumps(msg), needs_settings_update=False)
+        if (
+            self.model_provider is not None
+            and msg.get("method") == "thread/list"
+            and isinstance(params, dict)
+        ):
+            providers = params.get("modelProviders")
+            if (
+                isinstance(providers, list)
+                and CODEX_MODEL_PROVIDER_NAME in providers
+                and self.model_provider not in providers
+            ):
+                # Managed defaults can filter history to the original provider.
+                params["modelProviders"] = [*providers, self.model_provider]
+                return TuiFrameResult(json.dumps(msg), needs_settings_update=False)
         if msg.get("method") == TURN_START and isinstance(params, dict):
             if isinstance(params.get("threadId"), str):
                 self.thread_id = params["threadId"]

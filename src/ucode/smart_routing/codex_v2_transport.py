@@ -147,8 +147,9 @@ def _rewrite_response_item(item: dict[str, Any], *, validate_arguments: bool) ->
         return
     if item.get("encrypted_function_args", []) != []:
         raise ValueError("wire collaboration response contains encrypted function arguments")
-    if validate_arguments:
-        _validate_plaintext_arguments(item.get("arguments"))
+    # Native tool validation handles malformed plaintext arguments without ending the turn.
+    if validate_arguments and _contains_opaque_message(item.get("arguments")):
+        raise ValueError("wire collaboration response contains an opaque message")
     item["encrypted_function_args"] = []
 
 
@@ -165,18 +166,3 @@ def _contains_opaque_message(arguments: Any) -> bool:
         message = arguments.get("message")
         return isinstance(message, str) and bool(_FERNET_TOKEN_RE.fullmatch(message.strip()))
     return False
-
-
-def _validate_plaintext_arguments(arguments: Any) -> None:
-    if not isinstance(arguments, str) or not arguments.strip():
-        raise ValueError("wire collaboration response has empty arguments")
-    if _contains_opaque_message(arguments):
-        raise ValueError("wire collaboration response contains an opaque message")
-    try:
-        parsed = json.loads(arguments)
-    except json.JSONDecodeError as exc:
-        raise ValueError("wire collaboration response arguments are not valid JSON") from exc
-    if not isinstance(parsed, dict) or not isinstance(parsed.get("message"), str):
-        raise ValueError("wire collaboration response arguments lack a string message")
-    if not parsed["message"].strip():
-        raise ValueError("wire collaboration response arguments have an empty message")

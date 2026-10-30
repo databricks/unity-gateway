@@ -127,7 +127,7 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
         else Path("/etc/codex/managed_config.toml")
     )
     assert tomllib.loads(provider_config.read_text())["model_provider"] == "Databricks"
-    assert parent_meta["model_provider"].startswith("Databricks-ug-")
+    assert parent_meta["model_provider"] == "Databricks-ug"
     assert child_meta["model_provider"] == parent_meta["model_provider"]
 
     (decision,) = read_jsonl(session.home / ".ucode/codex-smart-routing-decisions.jsonl")

@@ -124,9 +124,21 @@ def test_response_restores_native_calls_without_changing_arguments_or_ids(name, 
     [
         {"encrypted_function_args": ["encrypted"]},
         {"arguments": '{"message":"gAAAAABopaque"}'},
+        {"arguments": "gAAAAABopaque"},
     ],
 )
 def test_completed_assignment_rejects_encrypted_messages(override):
     item = {**CALL, "namespace": WIRE_NAMESPACE, **override}
     with pytest.raises(ValueError):
         transform_response_event({"type": "response.output_item.done", "item": item})
+
+
+@pytest.mark.parametrize("name", ["spawn_agent", "send_message", "followup_task"])
+@pytest.mark.parametrize("arguments", ["", "{", "[]", "{}", '{"message":""}', '{"message":4}'])
+def test_invalid_plaintext_arguments_reach_native_tool_validation(name, arguments):
+    item = {**CALL, "namespace": WIRE_NAMESPACE, "name": name, "arguments": arguments}
+    event = {"type": "response.output_item.done", "item": item}
+    assert transform_response_event(event) == {
+        **event,
+        "item": {**item, "namespace": NATIVE_NAMESPACE},
+    }

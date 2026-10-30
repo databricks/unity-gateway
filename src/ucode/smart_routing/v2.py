@@ -11,7 +11,6 @@ import sys
 import threading
 import time
 import urllib.request
-import uuid
 from collections.abc import Callable, Mapping, MutableMapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -853,8 +852,8 @@ def launch_codex(
     overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
         SESSION_PYTHON_ENV_VAR
     ]
-    # Keep this transport session-local: native v2 remains enabled in the model
-    # catalog, and neither the installed Codex nor its on-disk config is changed.
+    # Subagent-only routing also needs readable assignments at the native hook.
+    # Keep the transport session-local without changing Codex's on-disk config.
     server, cache, client = gateway_proxy.start_codex_v2_proxy(
         workspace, lambda force: launch_token(state, workspace, force_refresh=force)
     )
@@ -864,9 +863,9 @@ def launch_codex(
         server_thread.start()
         transport_started = True
         provider = overlay["model_providers"].pop(overlay["model_provider"])
-        # OS-managed Databricks settings outrank CLI overrides. Give this
-        # transport its own provider, selected through the native thread API.
-        provider_name = f"Databricks-ug-{uuid.uuid4().hex}"
+        # OS-managed Databricks settings outrank CLI overrides. Use a distinct
+        # provider, with a stable name so Codex can list prior sessions for resume.
+        provider_name = "Databricks-ug"
         overlay["model_provider"] = provider_name
         overlay["model_providers"][provider_name] = provider
         provider["base_url"] = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/v1"

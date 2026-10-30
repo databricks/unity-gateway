@@ -176,12 +176,14 @@ class TestLaunchCodex:
                 assert path.read_text() == content
         assert codex._smart_routing_config_model({"codex_default_model": "admin"}) == "admin"
 
-    def test_owns_app_server_interposer_and_tui_lifecycle(self, monkeypatch):
+    @pytest.mark.parametrize("subagent_only", [False, True])
+    def test_owns_app_server_interposer_and_tui_lifecycle(self, monkeypatch, subagent_only):
         processes = []
         interposer_args = {}
         stopped = []
         token_calls = []
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1" if subagent_only else "0")
         monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
@@ -238,7 +240,7 @@ class TestLaunchCodex:
 
         assert exc.value.code == 7
         provider_name = interposer_args["kwargs"]["model_provider"]
-        assert provider_name.startswith("Databricks-ug-")
+        assert provider_name == "Databricks-ug"
         assert processes[0].argv[:7] == [
             "codex",
             "app-server",
@@ -297,7 +299,8 @@ class TestLaunchCodex:
             "system.ai.gpt-5-6-sol",
             "system.ai.glm-5-2",
         ]
-        assert interposer_args["kwargs"]["workspace"] == WS
+        assert interposer_args["kwargs"]["workspace"] == (None if subagent_only else WS)
+        assert interposer_args["kwargs"].get("model") is None
         assert token_calls == [(WS, "myprof", False), (WS, "myprof", True)]
         assert interposer_args["kwargs"]["token_provider"]() == "token-3"
         assert token_calls[-1] == (WS, "myprof", False)
@@ -353,7 +356,7 @@ class TestLaunchCodex:
             )
 
         provider_arg = next(
-            arg for arg in processes[0].argv if arg.startswith("model_providers.Databricks-ug-")
+            arg for arg in processes[0].argv if arg.startswith("model_providers.Databricks-ug=")
         )
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
@@ -645,6 +648,33 @@ def test_interposer_startup_failure_is_propagated(monkeypatch):
 
 
 class TestInterposerSession:
+    @pytest.mark.parametrize(
+        "providers,expected",
+        [
+            (["Databricks"], ["Databricks", "Databricks-ug"]),
+            (["Databricks", "Databricks-ug"], ["Databricks", "Databricks-ug"]),
+            (["Databricks-ug"], ["Databricks-ug"]),
+            (["openai"], ["openai"]),
+            ([], []),
+            (None, None),
+        ],
+    )
+    def test_history_filter_includes_routed_sessions(self, providers, expected):
+        session = codex_interposer._Session(
+            None, log=lambda _message: None, model_provider="Databricks-ug"
+        )
+        request = {
+            "id": 3,
+            "method": "thread/list",
+            "params": {"modelProviders": providers, "cursor": "next", "cwd": "/work"},
+        }
+        result = session.on_tui_frame(json.dumps(request))
+        assert json.loads(result.frame) == {
+            **request,
+            "params": {**request["params"], "modelProviders": expected},
+        }
+        assert not result.needs_settings_update
+
     @pytest.mark.parametrize("method", ["thread/start", "thread/resume", "thread/fork"])
     def test_selects_session_provider_when_opening_threads(self, method):
         session = codex_interposer._Session(

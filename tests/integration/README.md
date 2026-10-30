@@ -919,8 +919,12 @@ a user-owned observer hook to verify the exact assignment at the native call,
 PreToolUse, and router decision. It checks
 session-provider selection over the configured Databricks default (machine-managed on
 POSIX) and completion on the selected child model; it does not exercise compaction.
-The proxy component test checks that retained calls, results, and the compressed
-response pass through unchanged; it uses no patched behavior. Append
+The proxy component tests check that retained calls, results, and the compressed
+compaction response pass through unchanged. They also cover 400/502 error responses,
+fragmented delimiters, and rejecting incomplete, oversized, or malformed SSE events.
+Launcher and interposer component cases cover both routing modes, a stable provider
+name, and history filtering by the managed provider; they do not establish live
+resume coverage. Append
 `-- -k test_ug_codex_native_v2_plain_assignment_routing` to the version-pinned runner.
 A before/after comparison additionally needs fresh sessions with identical Codex, parent
 model, workspace, catalog, and prompt, capturing the provider spawn, hook, and router
