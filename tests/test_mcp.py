@@ -157,6 +157,47 @@ class TestConfigOnlyMcpClients:
         assert mcp.remove_client_mcp_server(client, "github") == [mcp.MCP_USER_SCOPE]
         assert "github" not in mcp.query_live_mcp_status(client)
 
+    @pytest.mark.parametrize(
+        ("client", "invalid"),
+        [("claude", "[]"), ("codex", 'command = "x')],
+    )
+    @pytest.mark.parametrize("action", ["add", "remove"])
+    def test_invalid_config_without_cli_reports_error_and_preserves_file(
+        self, tmp_path, monkeypatch, client, invalid, action
+    ):
+        monkeypatch.setattr(mcp.shutil, "which", lambda binary: None)
+        monkeypatch.setattr(mcp, "_oauth_http_client", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            mcp.subprocess_cross_os, "run", lambda *args, **kwargs: pytest.fail("CLI ran")
+        )
+        path = tmp_path / (".claude.json" if client == "claude" else "config.toml")
+        if client == "claude":
+            monkeypatch.setattr(mcp.claude, "claude_code_config_path", lambda: path)
+        else:
+            monkeypatch.setattr(mcp.codex, "user_mcp_config_path", lambda: path)
+        path.write_text(invalid)
+
+        with pytest.raises(RuntimeError, match=f"{path} is invalid"):
+            if action == "add":
+                mcp.configure_client_mcp_server(client, "github", GH_URL, WS, "p")
+            else:
+                mcp.remove_client_mcp_server(client, "github")
+
+        assert path.read_text() == invalid
+
+    def test_saved_client_without_cli_or_config_needs_explicit_selection(self, monkeypatch):
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: [])
+        state = {"workspace": WS, "mcp_clients": ["codex"]}
+
+        assert mcp.configured_mcp_clients(state, []) == []
+        with pytest.raises(RuntimeError, match="No supported MCP clients are available"):
+            mcp.setup_mcp_clients(state, "MCP servers", require_auth=False, purge_foreign=False)
+
+        _, _, clients = mcp.setup_mcp_clients(
+            state, "MCP servers", agents={"codex"}, require_auth=False, purge_foreign=False
+        )
+        assert clients == ["codex"]
+
 
 class TestAddCodexMcpServer:
     def test_registers_stdio_proxy_command(self, monkeypatch):

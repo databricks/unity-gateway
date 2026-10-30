@@ -283,16 +283,11 @@ def configured_mcp_clients(state: dict, installed_clients: list[str]) -> list[st
     configured_tools = state.get("available_tools") or []
     if not isinstance(configured_tools, list):
         configured_tools = []
-    registered = set(state.get("mcp_clients") or [])
-    configured = set(configured_tools) | registered
+    configured = set(configured_tools) | set(state.get("mcp_clients") or [])
     return [
         client
         for client in MCP_CLIENTS
-        if (
-            client in installed_clients
-            or (client in registered and client in CONFIG_WRITABLE_MCP_CLIENTS)
-        )
-        and (client in configured or client in MCP_ONLY_CLIENTS)
+        if client in installed_clients and (client in configured or client in MCP_ONLY_CLIENTS)
     ]
 
 
@@ -1987,13 +1982,18 @@ def setup_mcp_clients(
         purge_cross_workspace_mcp_residue(state, workspace)
 
     installed_clients = available_mcp_clients()
-    configured_direct = set(state.get("mcp_clients") or []) & CONFIG_WRITABLE_MCP_CLIENTS.keys()
-    if not installed_clients and not configured_direct:
+    explicit_direct = (
+        set(state.get("mcp_clients") or []) & (agents or set()) & CONFIG_WRITABLE_MCP_CLIENTS.keys()
+    )
+    if not installed_clients and not explicit_direct:
         raise RuntimeError(
             "No supported MCP clients are available. Install a client CLI or select "
             "Claude Code or Codex with `ug mcp add --agents`."
         )
     clients = configured_mcp_clients(state, installed_clients)
+    clients.extend(
+        client for client in MCP_CLIENTS if client in explicit_direct and client not in clients
+    )
     if agents is not None:
         missing = sorted(a for a in agents if a not in clients)
         if missing:

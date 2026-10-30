@@ -77,7 +77,8 @@ Enterprise MPS; see `integration/README.md`).
 
 `test_mcp.py` and `test_cli.py` cover Claude/Codex MCP setup without their CLIs:
 finding an existing config, creating one with `--agents`, and reporting status
-from the file. They use temporary files; real desktop apps remain untested.
+from the file. They also check malformed config errors and stale client choices.
+They use temporary files; real desktop apps remain untested.
 
 `test_integration_contract.py` checks that isolated test sessions set Antigravity's
 `AGY_CLI_DISABLE_AUTO_UPDATE` to the required literal `true`, overriding an inherited `1`.
