@@ -4507,11 +4507,29 @@ class TestDatabricksCliResolution:
         assert db_mod._read_databricks_cli_version("/usr/bin/databricks") is None
 
     def test_read_version_swallows_timeout(self, monkeypatch):
+        timeouts = []
+
         def boom(*a, **kw):
-            raise subprocess.TimeoutExpired("databricks", 10)
+            timeouts.append(kw["timeout"])
+            raise subprocess.TimeoutExpired("databricks", kw["timeout"])
 
         monkeypatch.setattr(db_mod, "run", boom)
         assert db_mod._read_databricks_cli_version("/usr/bin/databricks") is None
+        assert timeouts == [10, 60]
+
+    def test_read_version_retries_a_slow_first_run(self, monkeypatch):
+        """A cold `--version` that outlasts the first budget is read on the longer retry."""
+        timeouts = []
+
+        def slow_then_ok(*a, **kw):
+            timeouts.append(kw["timeout"])
+            if len(timeouts) == 1:
+                raise subprocess.TimeoutExpired("databricks", kw["timeout"])
+            return subprocess.CompletedProcess(a, 0, "Databricks CLI v1.20.0", "")
+
+        monkeypatch.setattr(db_mod, "run", slow_then_ok)
+        assert db_mod._read_databricks_cli_version("/usr/bin/databricks") == (1, 20, 0)
+        assert timeouts == [10, 60]
 
     def test_read_version_parses_output(self, monkeypatch):
         monkeypatch.setattr(

@@ -786,15 +786,30 @@ def _iter_databricks_executables() -> list[str]:
     return found
 
 
+# The first `--version` probe's budget, then one longer retry for a slow cold start.
+_DATABRICKS_CLI_VERSION_TIMEOUTS_SECONDS = (10, 60)
+
+
 def _read_databricks_cli_version(path: str) -> tuple[int, int, int] | None:
     """Run ``<path> --version`` and parse it. None on any subprocess or parse failure.
 
     Used only by discovery, which is what establishes ``path`` in the first
     place — every other caller reads a version through ``databricks_cli_path()``.
+    A first run can be slow (e.g. macOS verifying a freshly upgraded binary), so a
+    timed-out probe is retried once with a longer budget before giving up.
     """
-    try:
-        result = run([path, "--version"], check=False, capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.TimeoutExpired):
+    result = None
+    for timeout in _DATABRICKS_CLI_VERSION_TIMEOUTS_SECONDS:
+        try:
+            result = run(
+                [path, "--version"], check=False, capture_output=True, text=True, timeout=timeout
+            )
+            break
+        except subprocess.TimeoutExpired:
+            continue
+        except OSError:
+            return None
+    if result is None:
         return None
     raw = result.stdout or result.stderr or ""
     output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()
