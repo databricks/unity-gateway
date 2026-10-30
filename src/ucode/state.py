@@ -54,8 +54,9 @@ def load_full_state() -> dict:
 def _split_saved_key(workspaces: object, key: str) -> tuple[str, str | None]:
     """:func:`split_workspace_key` for a saved key.
 
-    An older version saved a pasted URL as its key, so a ``<host>?w=<id>`` key only selects a
-    workspace when its block carries that ``workspace_id``, which this version always writes.
+    An older version saved a pasted URL as its key. A ``<host>?w=<id>`` key whose block exists
+    without that ``workspace_id`` (which this version always writes) is that older plain key; a
+    key with no block yet selects its workspace.
     """
     host, workspace_id = split_workspace_key(key)
     block = workspaces.get(key) if isinstance(workspaces, dict) else None
@@ -187,6 +188,17 @@ def _without_managed_overlay(state: dict) -> dict:
     return persisted
 
 
+def _alias_target(workspaces: object, host: str) -> str | None:
+    block = workspaces.get(host) if isinstance(workspaces, dict) else None
+    aliased = block.get(ALIAS_OF_KEY) if isinstance(block, dict) else None
+    return aliased if isinstance(aliased, str) else None
+
+
+def aliased_workspace_key(host: str) -> str | None:
+    """The ``<host>?w=<id>`` key a multi-workspace host's bare-host copy points at, if any."""
+    return _alias_target(load_full_state().get("workspaces"), host)
+
+
 def set_current_workspace(workspace: str | None) -> None:
     """Select ``workspace`` (a ``workspaces`` key) without touching its block.
 
@@ -205,13 +217,11 @@ def set_current_workspace(workspace: str | None) -> None:
         full.pop(CURRENT_WORKSPACE_KEY, None)
     else:
         host, workspace_id = _split_saved_key(full.get("workspaces"), workspace)
-        alias_block = full.get("workspaces", {}).get(host)
-        if not workspace_id and isinstance(alias_block, dict):
+        aliased = None if workspace_id else _alias_target(full.get("workspaces"), host)
+        if aliased:
             # The bare host of a multi-workspace host means its current workspace.
-            aliased = alias_block.get(ALIAS_OF_KEY)
-            if isinstance(aliased, str):
-                workspace = aliased
-                host, workspace_id = split_workspace_key(aliased)
+            workspace = aliased
+            host, workspace_id = split_workspace_key(aliased)
         full["current_workspace"] = host
         if workspace_id:
             full[CURRENT_WORKSPACE_KEY] = workspace

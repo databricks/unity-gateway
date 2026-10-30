@@ -6965,6 +6965,36 @@ class TestConfigureSharedStateSkipPreflight:
         assert state["workspace_id"] == "111"
         assert state["use_pat"] is True
 
+    def test_bare_host_from_another_host_keeps_the_saved_workspace(self, monkeypatch):
+        from ucode import state as state_mod
+
+        cli_mod, saved = self._stub(monkeypatch)
+        shared = "https://acme.cloud.databricks.com"
+        other = "https://other.cloud.databricks.com"
+        block = {"workspace_id": "111", "profile": "acme"}
+        state_mod.STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        state_mod.STATE_PATH.write_text(
+            json.dumps(
+                {
+                    "state_version": state_mod.STATE_VERSION,
+                    "current_workspace": other,
+                    "workspaces": {
+                        f"{shared}?w=111": block,
+                        shared: {**block, state_mod.ALIAS_OF_KEY: f"{shared}?w=111"},
+                        other: {"profile": "other"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(cli_mod, "find_profile_name_for_workspace", lambda w, i: f"p-{i}")
+
+        state = cli_mod.configure_shared_state(shared, profile=None, skip_preflight=True)
+
+        assert state["workspace"] == shared
+        assert state["workspace_id"] == "111"
+        assert saved[-1]["workspace_id"] == "111"
+
     def test_switching_workspaces_on_one_host_drops_the_previous_mcp_entries(self, monkeypatch):
         cli_mod, _ = self._stub(monkeypatch)
         shared = "https://acme.cloud.databricks.com"
