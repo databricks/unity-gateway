@@ -571,7 +571,9 @@ def configure_shared_state(
         # Model discovery below refreshes the selected workspace. MCP selections are different:
         # they are user choices, so carry the destination's saved registry across a switch.
         destination = load_full_state().get("workspaces", {}).get(workspace, {})
-        for key in ("mcp_servers", "mcp_clients", "managed_mcp_servers"):
+        # managed_mcp_servers records what the source workspace delivered to user scope.
+        # Keep it until reconciliation removes registrations the destination no longer wants.
+        for key in ("mcp_servers", "mcp_clients"):
             if key in destination:
                 state[key] = destination[key]
             else:

@@ -6733,6 +6733,57 @@ class TestConfigureSharedStateMcpCleanup:
         monkeypatch.setattr(cli_mod, "discover_codex_models", lambda w, t: ([], None))
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {})
 
+    def test_switch_reconciles_source_managed_fallback_without_losing_destination_choices(
+        self, monkeypatch
+    ):
+        from ucode import mcp
+        from ucode import state as state_mod
+
+        self._stub_external_deps(monkeypatch)
+        monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
+        monkeypatch.setattr(state_mod, "build_agent_state", lambda state: {})
+        monkeypatch.setattr(cli_mod, "save_state", mcp.save_state)
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
+        monkeypatch.setattr(mcp, "_MANAGED_FILE_AGENTS", {})
+        monkeypatch.setattr(
+            mcp,
+            "setup_mcp_clients",
+            lambda state, *args, **kwargs: (state["workspace"], None, ["claude"]),
+        )
+        changes = []
+        monkeypatch.setattr(
+            mcp,
+            "apply_mcp_server_changes",
+            lambda original, working, clients, *args, **kwargs: changes.append(
+                (original, working, clients)
+            ),
+        )
+        source = "https://source.databricks.com"
+        destination = "https://destination.databricks.com"
+        managed = {
+            "name": "managed-old",
+            "url": f"{source}/ai-gateway/mcp-services/system.ai.old",
+            "clients": ["claude"],
+        }
+        selected = {
+            "name": "user-choice",
+            "url": f"{destination}/ai-gateway/mcp-services/system.ai.choice",
+            "clients": ["claude"],
+        }
+        mcp.save_state({"workspace": destination, "mcp_servers": [selected]})
+        mcp.save_state(
+            {"workspace": source, "available_tools": ["claude"], "managed_mcp_servers": [managed]}
+        )
+        monkeypatch.setattr(cli_mod, "purge_cross_workspace_mcp_residue", lambda *args: None)
+
+        switched = cli_mod.configure_shared_state(destination, force_login=True)
+        assert switched["mcp_servers"] == [selected]
+        assert switched["managed_mcp_servers"] == [managed]
+
+        mcp.reconcile_managed_mcp_servers({}, {"claude"})
+        assert changes == [([managed], [], ["claude"])]
+        assert mcp.load_state().get("managed_mcp_servers") == []
+
     @pytest.mark.parametrize("same_name", [False, True])
     def test_explicit_configure_switch_restores_saved_mcp_entries(self, monkeypatch, same_name):
         from ucode import mcp
