@@ -110,7 +110,7 @@ class TestConfigure:
                     "id": "system.ai.claude-sonnet-5-5",
                     "name": "Claude Sonnet 5.5",
                     "family": "claude-sonnet-5-5",
-                    "api": "anthropic_messages",
+                    "api": "anthropic",
                     "maxInputTokens": 872_000,
                     "maxOutputTokens": 128_000,
                 },
@@ -173,7 +173,7 @@ class TestConfigure:
                 "id": "global.anthropic.claude-opus-4-8",
                 "name": "Claude Opus 4.8",
                 "family": "claude-opus-4-8",
-                "api": "anthropic_messages",
+                "api": "anthropic",
                 "maxInputTokens": 168_000,
                 "maxOutputTokens": 32_000,
             },
@@ -181,7 +181,7 @@ class TestConfigure:
                 "id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                 "name": "Claude Sonnet 4.5",
                 "family": "claude-sonnet-4-5",
-                "api": "anthropic_messages",
+                "api": "anthropic",
                 "maxInputTokens": 168_000,
                 "maxOutputTokens": 32_000,
             },
@@ -212,7 +212,7 @@ class TestConfigure:
 
         assert code.config["models"] == [
             {"id": "gpt-5.5", "name": "GPT 5.5", "family": "gpt-5.5", "api": "responses"},
-            {"id": "gpt-4.1", "name": "GPT 4.1", "family": "gpt-4.1", "api": "chat_completions"},
+            {"id": "gpt-4.1", "name": "GPT 4.1", "family": "gpt-4.1", "api": "completions"},
         ]
 
     @pytest.mark.parametrize(
@@ -265,7 +265,7 @@ class TestConfigure:
                 "id": "main.models.claude-opus-5-5",
                 "name": "Claude Opus 5.5",
                 "family": "claude-opus-5-5",
-                "api": "anthropic_messages",
+                "api": "anthropic",
                 "maxInputTokens": 168_000,
                 "maxOutputTokens": 32_000,
             },
@@ -273,7 +273,7 @@ class TestConfigure:
                 "id": "main.models.team-assistant",
                 "name": "Team Assistant",
                 "family": "team-assistant",
-                "api": "anthropic_messages",
+                "api": "anthropic",
             },
         ]
 

@@ -116,12 +116,12 @@ describe("readConfig", () => {
       models: [
         { id: "a", api: "responses" },
         { id: "gpt-5.5", family: "gpt-5.5", api: "responses" },
-        { id: "e", api: "anthropic_messages" },
+        { id: "e", api: "anthropic" },
         { id: "b", api: "messages" },
         { api: "responses" },
         null,
-        { id: "c", name: " Model C ", api: "chat_completions", maxInputTokens: 936_000, maxOutputTokens: "32000", extra: true },
-        { id: "d", name: 7, api: "chat_completions", maxInputTokens: 0, maxOutputTokens: 1.5 },
+        { id: "c", name: " Model C ", api: "completions", maxInputTokens: 936_000, maxOutputTokens: "32000", extra: true },
+        { id: "d", name: 7, api: "completions", maxInputTokens: 0, maxOutputTokens: 1.5 },
       ],
     };
     assert.deepEqual(readConfig(JSON.stringify(config)), {
@@ -131,9 +131,9 @@ describe("readConfig", () => {
       models: [
         { id: "a", api: "responses" },
         { id: "gpt-5.5", family: "gpt-5.5", api: "responses" },
-        { id: "e", api: "anthropic_messages" },
-        { id: "c", name: "Model C", api: "chat_completions", maxInputTokens: 936_000 },
-        { id: "d", api: "chat_completions" },
+        { id: "e", api: "anthropic" },
+        { id: "c", name: "Model C", api: "completions", maxInputTokens: 936_000 },
+        { id: "d", api: "completions" },
       ],
     });
   });
@@ -152,9 +152,9 @@ describe("DatabricksModels", () => {
     authCommand: command,
     provider,
     models: [
-      { id: "system.ai.claude-sonnet-5-5", name: "Claude Sonnet 5.5", api: "anthropic_messages", maxInputTokens: 872_000, maxOutputTokens: 128_000 },
+      { id: "system.ai.claude-sonnet-5-5", name: "Claude Sonnet 5.5", api: "anthropic", maxInputTokens: 872_000, maxOutputTokens: 128_000 },
       { id: "system.ai.gpt-6-luna", api: "responses" },
-      { id: "gpt-4.1", family: "gpt-4.1", api: "chat_completions" },
+      { id: "gpt-4.1", family: "gpt-4.1", api: "completions" },
     ],
   });
 
@@ -164,9 +164,9 @@ describe("DatabricksModels", () => {
     assert.deepEqual(
       models.map((model) => [model.id, model.name, model.family, model.api, model.maxInputTokens, model.maxOutputTokens]),
       [
-        ["system.ai.claude-sonnet-5-5", "Claude Sonnet 5.5", "claude-sonnet-5-5", "anthropic_messages", 872_000, 128_000],
+        ["system.ai.claude-sonnet-5-5", "Claude Sonnet 5.5", "claude-sonnet-5-5", "anthropic", 872_000, 128_000],
         ["system.ai.gpt-6-luna", "system.ai.gpt-6-luna", "gpt-6-luna", "responses", 128_000, 32_000],
-        ["gpt-4.1", "gpt-4.1", "gpt-4.1", "chat_completions", 128_000, 32_000],
+        ["gpt-4.1", "gpt-4.1", "gpt-4.1", "completions", 128_000, 32_000],
       ],
     );
     assert.deepEqual(await new DatabricksModels(() => ({ ...settings(""), models: [] }), (line) => logs.push(line)).provideLanguageModelChatInformation(), []);

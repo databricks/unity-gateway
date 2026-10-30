@@ -15,7 +15,8 @@ import {
 } from "./formats";
 import { streamEvents } from "./gateway";
 
-const APIS = ["anthropic_messages", "chat_completions", "responses"] as const;
+// ug writes the wire name of the model it configured (WIRE_* in src/ucode/agents/copilot.py).
+const APIS = ["anthropic", "completions", "responses"] as const;
 
 export interface ModelSetting {
   readonly id: string;
@@ -112,7 +113,7 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
       // The gateway reports no limits, so a model ug configure has none for gets Copilot's 128K default.
       maxInputTokens: maxInputTokens ?? 128_000,
       maxOutputTokens: maxOutputTokens ?? 32_000,
-      capabilities: { toolCalling: true, imageInput: api !== "chat_completions" || id.includes("claude") },
+      capabilities: { toolCalling: true, imageInput: api !== "completions" || id.includes("claude") },
     }));
   }
 
@@ -135,14 +136,14 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
     // The gateway serves a Model Provider Service's OpenAI models only on its OpenAI route.
     const openai = provider ? "/ai-gateway/openai/v1" : "/ai-gateway/mlflow/v1";
     const apis: Record<ModelSetting["api"], () => AsyncIterable<Reply>> = {
-      anthropic_messages: () =>
+      anthropic: () =>
         anthropicMessagesReplies(
           stream("/ai-gateway/anthropic/v1/messages", anthropicMessagesRequest(turn, model.maxOutputTokens), {
             "anthropic-version": "2023-06-01",
           }),
         ),
       responses: () => responsesReplies(stream(`${openai}/responses`, responsesRequest(turn))),
-      chat_completions: () => chatCompletionsReplies(stream(`${openai}/chat/completions`, chatCompletionsRequest(turn))),
+      completions: () => chatCompletionsReplies(stream(`${openai}/chat/completions`, chatCompletionsRequest(turn))),
     };
     try {
       for await (const reply of apis[model.api]()) {

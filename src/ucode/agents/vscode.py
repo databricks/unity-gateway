@@ -24,9 +24,6 @@ from typing import cast
 from xml.sax.saxutils import escape
 
 from ucode.agents.copilot import (
-    WIRE_ANTHROPIC,
-    WIRE_COMPLETIONS,
-    WIRE_RESPONSES,
     CopilotModel,
     build_copilot_catalog,
     catalog_model_limits,
@@ -49,12 +46,6 @@ CONFIG_FILE = "ug-config.json"
 # Each `code` command and the folder in the home directory it installs extensions under.
 CODE_COMMANDS = (("code", ".vscode"), ("code-insiders", ".vscode-insiders"))
 _CODE_TIMEOUT_S = 120
-# The extension's `api` for each wire API of Copilot's catalog.
-_APIS = {
-    WIRE_ANTHROPIC: "anthropic_messages",
-    WIRE_RESPONSES: "responses",
-    WIRE_COMPLETIONS: "chat_completions",
-}
 
 
 def _install_locations(command: str) -> list[Path]:
@@ -181,7 +172,9 @@ def _model_entry(model: CopilotModel, name: str, *, external: bool) -> dict[str,
         "id": model.id,
         "name": name,
         "family": claude_model_name(model.id),
-        "api": _APIS[model.wire],
+        # The wire names of Copilot's catalog; the extension dispatches on them (see APIS in
+        # vscode-extension/src/extension.ts).
+        "api": model.wire,
     }
     # Models without known limits get the extension's 128K-in, 32K-out default.
     if limits := catalog_model_limits(model, external=external):
