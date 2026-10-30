@@ -29,6 +29,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import threading
 import time
@@ -821,6 +822,12 @@ def _read_mcp_config_for_rewrite(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def user_mcp_server_names() -> set[str]:
+    """The servers in Copilot's user config, read without the Copilot CLI."""
+    servers = (_read_mcp_config_for_rewrite(copilot_mcp_config_path()) or {}).get("mcpServers")
+    return set(servers) if isinstance(servers, dict) else set()
+
+
 def remove_legacy_mcp_config() -> bool:
     """Delete the legacy side file and its backup (everything in them is ug's)."""
     existed = LEGACY_MCP_CONFIG_PATH.exists() or LEGACY_MCP_BACKUP_PATH.exists()
@@ -883,6 +890,12 @@ def _apply_mcp_diff(add: dict[str, dict], remove: set[str]) -> set[str]:
     legacy = _read_legacy_mcp_servers()
     upserts = {name: entry for name, entry in legacy.items() if name not in remove} | add
     if config is None:
+        if not shutil.which(SPEC["binary"]):
+            raise RuntimeError(
+                f"{path} isn't plain JSON (it may have comments), and ug edits such a file only "
+                "through the Copilot CLI. Remove the comments, then try again; VS Code's local "
+                "agent also skips the file while it has them."
+            )
         # Defer to the copilot CLI, which reads the file the way Copilot does, for exactly the
         # changed entries.
         removed = {name for name in remove if _remove_mcp_server_via_cli(name) or name in legacy}
