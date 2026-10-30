@@ -393,7 +393,7 @@ class AgentTerminal(TerminalProcess):
                 continue
             if (
                 "Update available" in text
-                and "Press enter to continue" in text
+                and ("Press enter to continue" in text or "enter continue" in text)
                 and "update-notice" not in handled
             ):
                 self.send("\x1b[B", "move selection off Update now to Skip")

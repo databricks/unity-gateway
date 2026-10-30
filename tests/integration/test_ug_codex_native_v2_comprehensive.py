@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import tomllib
 
 import pytest
@@ -257,4 +258,17 @@ def test_ug_codex_native_v2_comprehensive_lifecycle(live_session, workspace, tmp
         session.record("native-v2-sessions.json", sessions())
         session.record(
             "native-v2-hooks.json", read_jsonl(session.home / ".codex/native-pre-tool-use.jsonl")
+        )
+        session.record(
+            "native-v2-decisions.json",
+            read_jsonl(session.home / ".ucode/codex-smart-routing-decisions.jsonl"),
+        )
+        session.record(
+            "native-v2-settings.json",
+            {
+                "before": original.decode(),
+                "after": config.read_text(),
+                "catalog_before_sha256": hashlib.sha256(catalog_bytes).hexdigest(),
+                "catalog_after_sha256": hashlib.sha256(catalog.read_bytes()).hexdigest(),
+            },
         )

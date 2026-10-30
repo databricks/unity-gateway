@@ -5,6 +5,10 @@ delegation, follow-ups, compaction, resume, routing toggles, and configuration
 preservation on Codex 0.164.0 and 0.165.0. The native verification workflow runs
 this journey on macOS and Windows against the real gateway, including Unicode
 assignments through the native hook's UTF-8 input.
+The TUI helper selects Skip on visible Codex update prompts; the journey checks
+that the pinned binary version remains unchanged.
+Artifacts retain native rollouts, hook inputs, routing decisions, and user settings
+for independent checks after the run.
 
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,

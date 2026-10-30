@@ -6,6 +6,10 @@ exact plaintext hook/child inputs, real routed execution, follow-ups across
 compaction and native `/resume`, on/off/on behavior, preserved settings, and normal
 exits. Unicode assignments cover the native hook's UTF-8 input on Windows. The
 native verification workflow selects this case on macOS and Windows.
+Visible Codex update prompts are skipped through the UI, with the original pinned
+version verified again after the lifecycle completes.
+Artifacts include all routing decisions and before/after user settings alongside
+the native rollouts, hook inputs, and terminal actions.
 
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls
