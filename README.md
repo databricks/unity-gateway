@@ -168,6 +168,11 @@ and `ug revert` return to `--global`.
 `--user` also fails for a workspace that publishes a managed config, which must be installed
 machine-wide; use `--global` for it.
 
+On macOS and Windows, global configure also installs Claude Desktop's UG plugin into the
+system `org-plugins` directory. The Desktop connection profile remains user-local.
+`--user` retains user-level Cowork plugin installation, and refuses to create a duplicate
+while a system plugin exists. See [Desktop plugin installation](docs/claude-desktop.md#cowork-workspace-skills-and-mcp-servers).
+
 ### Hosts that serve several workspaces
 
 An account custom URL (such as `https://acme.cloud.databricks.com`) serves every workspace of the
