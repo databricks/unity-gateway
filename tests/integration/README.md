@@ -169,6 +169,13 @@ Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
 `test_desktop_configure_cli.py` also checks explicit-global selection versus default and
 `--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers.
 
+macOS `--mdm-desktop` provisioning and its per-user LaunchAgent are outside these
+Linux/Windows journeys. `../test_desktop_mdm.py` has component coverage for publication,
+auth separation, cache refresh, ownership conflicts, rollback, and deferred cleanup using
+temporary paths and simulated external boundaries. Native launchd activation, first-user
+timing, managed-plist precedence, and tool/skill invocation remain untested here; follow
+[`docs/claude-desktop-mdm.md`](../../docs/claude-desktop-mdm.md) before fleet rollout.
+
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.web_search and allow
 the test identity to invoke it. No dedicated Desktop MCP test, separate fixture-workspace step,

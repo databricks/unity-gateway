@@ -514,6 +514,15 @@ This check does not establish native install/update failure recovery or Desktop 
 `test_desktop_configure_cli.py` also checks explicit-global selection versus default and
 `--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers.
 
+`test_desktop_mdm.py` covers macOS-only/root CLI guards, provisioning without a Cowork
+account, string-encoded machine policy, shared command bindings without admin credentials,
+managed skill assets/connectors, one native registration, explicit update and deferred
+removal, interrupted-account cleanup, foreign-file preservation, rollback, dry run, and
+reuse of provisioning authentication. It reuses the temporary filesystem transaction fixture;
+workspace APIs, machine ownership, launchd, and Claude's registry/cache commands are simulated.
+This does not establish native macOS MDM, launchd, fresh-user GUI login, or tool/skill execution.
+The rollout checklist is in `docs/claude-desktop-mdm.md`.
+
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
 It checks that Claude uses an available Slack tool despite a stale disconnect notice, discovers
 deferred tools without login, and asks the user to retry when tools remain unavailable. These

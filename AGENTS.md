@@ -198,7 +198,18 @@ and rollback. Native refresh failures retain the source/state for retry/revert. 
 restores the previous marketplace/plugin through native commands when possible, and
 reports a failed recovery with configure retry instructions. Ordinary
 revert removes user source/registration only. Explicit MCP/skill changes resync this source;
-launches do not. Root bundle publication is implemented in the separate MDM follow-up.
+launches do not. The shared privileged bundle writer remains for MDM publication; its
+macOS worker accepts only root callers, validates root ownership, and rejects links/special
+files before copying. Unprivileged callers cannot elevate to publish a Desktop marketplace.
+The macOS Desktop MDM mode requires root and preinstalled, root-owned shared UG/Python,
+Databricks CLI, and Claude CLI runtimes. It publishes the managed plist, root marketplace,
+shared helpers/state, and a per-user LaunchAgent. No administrator-local profile, skills,
+or credentials are copied. Workspace-managed skills and MCPs reuse the normal bundle writers;
+provisioning reuses one token. Background native refresh never authenticates and tracks
+pending installs for retry/removal; Desktop uses each user's OAuth profile.
+Removal disables the deployment for logged-out users' deferred cleanup. Foreign or edited
+policy/helper files are preserved; the root marketplace belongs to UG and is replaced.
+Windows MDM and shared-runtime installation remain unsupported. See docs/claude-desktop-mdm.md.
 Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
 custom registration names and full proxy URLs are preserved. Its name and display name
 are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old

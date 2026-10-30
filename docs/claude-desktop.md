@@ -1,5 +1,9 @@
 # Claude Desktop through Unity Gateway
 
+For macOS fleet provisioning as root, use
+[`ug configure --agents claude --mdm-desktop`](claude-desktop-mdm.md).
+The behavior below describes ordinary configure without that flag.
+
 After Claude Code is successfully configured, `ug configure` also creates and
 selects a `Unity Gateway - <CLI profile name>` profile for Claude Desktop on macOS,
 Windows, and Linux. This uses
