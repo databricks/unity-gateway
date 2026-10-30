@@ -163,10 +163,19 @@ rollback shared with the profile. Disabled tracing omits these fields on replace
 Claude setup also installs a generated Cowork plugin containing only the current
 workspace's managed and user-downloaded home-level skills and Claude-targeted MCP servers.
 Downloaded skill additions and removals resync the plugin; project-local,
-user-authored, and other-workspace skills are excluded. The source lives at
+user-authored, and other-workspace skills are excluded. The user-scope source lives at
 `~/.ucode/claude-cowork-marketplace`, and `~/.ucode/claude-cowork.json` records the selected
-account/org root for cleanup. Cowork must have started once. Setup and cleanup use scoped
-`claude plugin ... --cowork --json` commands with `CLAUDE_CONFIG_DIR`; failures stay best-effort.
+account/org root for cleanup in user scope. User scope requires Cowork to have started once
+and uses scoped `claude plugin ... --cowork --json` commands with `CLAUDE_CONFIG_DIR`.
+Default/global scope on macOS and Windows instead installs `ug` in Desktop's system
+`org-plugins` directory, using the same generated payload plus required-install and
+content-version metadata. The 3P profile stays user-local. Linux, `--user`, and
+`UG_SKIP_OS_SETTINGS` keep user delivery; an existing system plugin blocks duplicate
+user installation. System installation precedes old user-registration cleanup. Recorded
+content hashes protect foreign/edited system bundles during update and revert. Explicit
+MCP/skill changes resync the selected delivery path; agent launches do not. Privileged
+bundle writes use staged replacement and rollback, sharing the macOS sudo worker or
+requiring Windows elevation. Failures stay best-effort; no MDM policy is generated.
 Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
 custom registration names and full proxy URLs are preserved. Its name and display name
 are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old

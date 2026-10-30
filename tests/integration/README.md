@@ -55,7 +55,8 @@ helper. Non-relay MPS Desktop configuration is asserted in CUJ2's existing MPS c
 journey; no dedicated Desktop MPS integration test is needed.
 
 Each of these two journeys supplies pre-existing Desktop account directories as inputs and
-requires real Claude CLI installation of the Cowork plugin. It registers system.ai.web_search through
+requires real Claude CLI installation of the Cowork plugin on Linux, or a system `org-plugins`
+bundle on Windows. It registers system.ai.web_search through
 `ug mcp add --names system.ai.web_search`, then runs the command from the installed plugin with the
 MCP SDK. The check initializes the protocol, discovers web_search, and searches for Databricks'
 official website. A successful result must contain a URL on databricks.com or www.databricks.com;
@@ -64,7 +65,9 @@ Both journeys verify reconfiguration preserves the profile/plugin and revert rem
 while retaining unrelated profiles and metadata. A separate local personal plugin is installed
 through the real Claude CLI before configuration; its registry entry and installed manifest must
 survive installation, reconfiguration, and revert unchanged. Revert also removes UG's marketplace
-registration and generated source directory.
+registration and generated source directory on Linux, or the system bundle on Windows.
+The system-bundle update/migration/ownership checks also have isolated component coverage
+in `../test_desktop_org_plugins.py`; those checks do not establish native Desktop sync or ACLs.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.web_search and allow

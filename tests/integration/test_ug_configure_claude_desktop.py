@@ -17,6 +17,7 @@ from utils.desktop import (
     desktop_config_library,
     installed_cowork_servers,
     prepare_cowork_home,
+    system_desktop_plugin,
 )
 from utils.harness import process_group_options, stop_process
 from utils.provider_catalog import fetch_anthropic_parent_catalog
@@ -139,6 +140,9 @@ def _revert_desktop(session, config_library, root, unrelated_plugin):
     assert not (session.home / ".ucode/claude-desktop.json").exists()
     assert not (session.home / ".ucode/claude-cowork.json").exists()
     assert not (session.home / ".ucode/claude-cowork-marketplace").exists()
+    system_plugin = system_desktop_plugin()
+    if system_plugin is not None:
+        assert not system_plugin.exists()
     installed = root / "cowork_plugins/installed_plugins.json"
     if installed.exists():
         assert "ug@unity-gateway-cowork" not in json.loads(installed.read_text())["plugins"]

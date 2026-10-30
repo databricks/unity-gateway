@@ -30,15 +30,33 @@ def prepare_cowork_home(session) -> Path:
 
 def installed_cowork_servers(session, root: Path) -> dict:
     state = json.loads((session.home / ".ucode/claude-cowork.json").read_text())
-    assert Path(state["cowork_root"]) == root
-    installed = json.loads((root / "cowork_plugins/installed_plugins.json").read_text())
-    entries = installed["plugins"]["ug@unity-gateway-cowork"]
-    assert len(entries) == 1, entries
-    plugin = Path(entries[0]["installPath"])
+    plugin = system_desktop_plugin()
+    if plugin is None:
+        assert Path(state["cowork_root"]) == root
+        installed = json.loads((root / "cowork_plugins/installed_plugins.json").read_text())
+        entries = installed["plugins"]["ug@unity-gateway-cowork"]
+        assert len(entries) == 1, entries
+        plugin = Path(entries[0]["installPath"])
+    else:
+        assert state["system_digest"]
+        assert "cowork_root" not in state
+        installed = json.loads((root / "cowork_plugins/installed_plugins.json").read_text())
+        assert "ug@unity-gateway-cowork" not in installed["plugins"]
     manifest = json.loads((plugin / ".claude-plugin/plugin.json").read_text())
+    if system_desktop_plugin() is not None:
+        assert manifest["installationPreference"] == "required"
+        assert manifest["version"] == json.loads((plugin / "version.json").read_text())["version"]
     assert manifest["name"] == "ug"
     assert manifest["mcpServers"] == "./.mcp.json"
     return json.loads((plugin / manifest["mcpServers"]).read_text())["mcpServers"]
+
+
+def system_desktop_plugin() -> Path | None:
+    if os.name == "nt":
+        return Path(os.environ["ProgramFiles"]) / "Claude/org-plugins/ug"
+    if sys.platform == "darwin":
+        return Path("/Library/Application Support/Claude/org-plugins/ug")
+    return None
 
 
 async def assert_desktop_mcp(session, registration: dict, workspace: str) -> None:

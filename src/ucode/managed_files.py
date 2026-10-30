@@ -161,6 +161,30 @@ def claude_header_mod_root() -> Path | None:
     return None if managed_settings_skipped() else CLAUDE_HEADER_MOD_ROOTS.get(current_os())
 
 
+def claude_desktop_plugin_path() -> Path | None:
+    if current_os() is OS.MACOS:
+        return Path("/Library/Application Support/Claude/org-plugins/ug")
+    if current_os() is OS.WINDOWS:
+        return system_cross_os.windows_program_files_dir() / "Claude" / "org-plugins" / "ug"
+    return None
+
+
+def replace_privileged_bundle(path: Path, request: Path) -> None:
+    """Apply a staged Desktop bundle transaction through the existing sudo session."""
+    if path != claude_desktop_plugin_path() or current_os() is not OS.MACOS:
+        raise RuntimeError(f"Refusing unexpected privileged bundle target: {path}")
+    if _sudo_may_prompt():
+        _print_managed_write_permission("Claude Desktop")
+    try:
+        with managed_write_session():
+            _session_worker().replace(path, str(request), operation="BUNDLE")
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = str(getattr(exc, "stderr", None) or exc).strip()
+        raise ManagedFileWriteUnavailable(
+            f"Could not update Desktop plugin at {path}: {detail}. Resolve the error and retry."
+        ) from exc
+
+
 def reconcile_privileged_files(files: dict[Path, str], *, display: str) -> None:
     """Write each allowlisted root-owned file whose contents differ, through the sudo worker."""
     changed = [(path, text) for path, text in files.items() if read_managed_file(path) != text]
@@ -1393,11 +1417,11 @@ class _SudoReplaceWorker:
         """Whether this worker can still serve requests (authenticated and running)."""
         return not self._broken and self.process.poll() is None
 
-    def replace(self, path: Path, source_path: str) -> None:
+    def replace(self, path: Path, source_path: str, *, operation: str = "REPLACE") -> None:
         request_id = str(self._next_request_id)
         self._next_request_id += 1
         fields = (
-            "REPLACE",
+            operation,
             request_id,
             _encode_worker_arg(source_path),
             _encode_worker_arg(str(path)),

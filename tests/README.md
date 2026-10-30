@@ -362,6 +362,13 @@ reconciliation failures, and cleanup for unmanaged or non-Claude configurations.
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
 late MCP connection, tool discovery, or inference behavior.
 
+`test_desktop_org_plugins.py` covers global Desktop bundle install/update/revert, stable
+content versions, binary and executable skill assets, no-session setup, migration ordering,
+user-scope conflicts, permission failures, dry runs, and foreign/edited-bundle preservation.
+Filesystem transactions run in temporary directories: the macOS shell worker uses host OS
+command adapters without sudo; Windows filesystem logic runs with simulated elevation.
+These are component checks, not native Desktop sync, Windows ACL, or connector runtime proof.
+
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
 It checks that Claude uses an available Slack tool despite a stale disconnect notice, actually
 waits and then uses a tool exposed after resume, and performs the bounded wait before reporting

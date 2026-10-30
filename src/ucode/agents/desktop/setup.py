@@ -48,7 +48,7 @@ def configure_claude_cowork(state: dict, mcp_servers: list[dict]) -> None:
         print_warning(f"Could not configure Claude Cowork: {exc}. Claude Code setup is unchanged.")
         return
     if configured:
-        print_success("Claude Cowork workspace plugin configured. Start a new Cowork session.")
+        print_success("Claude Desktop workspace plugin configured. Quit and reopen Claude Desktop.")
 
 
 def revert_claude_cowork() -> str:

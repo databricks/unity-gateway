@@ -10,7 +10,8 @@ from collections import Counter
 from pathlib import Path
 from urllib.parse import unquote
 
-from ucode import config_io
+from ucode import config_io, managed_files
+from ucode.agents.desktop import org_plugins
 from ucode.agents.desktop.claude import claude_desktop_root_directory
 from ucode.databricks import build_mcp_proxy_argv
 from ucode.mcp_connection_login import connection_from_url
@@ -39,7 +40,8 @@ _COWORK_MARKERS = (
 
 def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
     """Generate and install UG's Cowork plugin for the active workspace."""
-
+    if config_io.is_dry_run():
+        return False
     workspace = state.get("workspace")
     if not isinstance(workspace, str) or not workspace:
         raise RuntimeError("No Databricks workspace is configured for Cowork.")
@@ -48,7 +50,18 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
     skill_records = _workspace_skill_records(workspace)
     if not previous_state and not skill_records and not mcp_servers:
         return False
-    if not previous_state and not _cowork_sessions_root_exists():
+    system_path = managed_files.claude_desktop_plugin_path()
+    system_install = system_path is not None and not managed_files.managed_settings_skipped()
+    if (
+        not system_install
+        and system_path is not None
+        and (system_path.exists() or system_path.is_symlink())
+    ):
+        raise RuntimeError(
+            f"A system Desktop plugin already exists at {system_path}. Use --global, or remove "
+            "the existing installation before configuring a user plugin."
+        )
+    if not system_install and not previous_state and not _cowork_sessions_root_exists():
         return False
 
     profile = state.get("profile")
@@ -65,13 +78,26 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
     if not previous_state and not skill_records and not mcp_config["mcpServers"]:
         return False
 
+    hooks = _connector_hooks(mcp_config, workspace, profile, use_pat=bool(state.get("use_pat")))
+    if system_install:
+        with tempfile.TemporaryDirectory(prefix="ug-desktop-marketplace-") as directory:
+            marketplace = Path(directory).resolve() / "marketplace"
+            plugin = marketplace / "plugins" / PLUGIN_NAME
+            _write_marketplace(marketplace, plugin, skill_records, mcp_config, hooks)
+            org_plugins.install(plugin, _state_path())
+        _remove_user_registrations(previous_state)
+        _remove_marketplace_source()
+        installed_state = config_io.read_json_safe(_state_path())
+        installed_state.pop("cowork_root", None)
+        config_io.atomic_write_json(_state_path(), installed_state)
+        return True
+
     cowork_root = discover_cowork_root()
     previous_root = previous_state.get("cowork_root")
     if isinstance(previous_root, str) and previous_root and Path(previous_root) != cowork_root:
         _remove_plugin_registration(Path(previous_root))
     marketplace_root = _marketplace_root()
     plugin_root = marketplace_root / "plugins" / PLUGIN_NAME
-    hooks = _connector_hooks(mcp_config, workspace, profile, use_pat=bool(state.get("use_pat")))
     _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config, hooks)
     config_io.atomic_write_json(
         _state_path(),
@@ -86,6 +112,22 @@ def revert_cowork() -> bool:
 
     state_path = _state_path()
     state = config_io.read_json_safe(state_path)
+    if config_io.is_dry_run():
+        return False
+    if managed_files.managed_settings_skipped() and (
+        state.get("system_digest") or state.get("pending_system_digest")
+    ):
+        raise RuntimeError("Enable machine-wide writes to revert the system Desktop plugin.")
+    changed = org_plugins.remove(state_path)
+    changed = _remove_user_registrations(state) or changed
+    changed = _remove_marketplace_source() or changed
+    if state_path.exists():
+        state_path.unlink()
+        changed = True
+    return changed
+
+
+def _remove_user_registrations(state: dict) -> bool:
     raw_root = state.get("cowork_root")
     roots: list[Path] = []
     if isinstance(raw_root, str) and raw_root:
@@ -97,18 +139,18 @@ def revert_cowork() -> bool:
     changed = False
     for root in roots:
         changed = _remove_plugin_registration(root) or changed
+    return changed
 
+
+def _remove_marketplace_source() -> bool:
     marketplace_root = _marketplace_root()
     if marketplace_root.exists() or marketplace_root.is_symlink():
         if marketplace_root.is_symlink():
             marketplace_root.unlink()
         else:
             shutil.rmtree(marketplace_root)
-        changed = True
-    if state_path.exists():
-        state_path.unlink()
-        changed = True
-    return changed
+        return True
+    return False
 
 
 def _cowork_sessions_root_exists() -> bool:
