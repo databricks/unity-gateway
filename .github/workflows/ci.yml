@@ -127,13 +127,6 @@ jobs:
           UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
           # See the e2e shards: a hosted runner has no cached login, so CI supplies a pre-fetched bearer.
           DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
-          UG_LIVE_CLAUDE_MODEL: system.ai.claude-haiku-4-5
-          UG_LIVE_GPT_MODEL: system.ai.gpt-5-4-nano
-          # The services and targets the integration CUJs use (scripts/run_integration.py).
-          UG_LIVE_MPS: main.ucode.ci_e2e_anthropic_nonrelay_mps
-          UG_LIVE_MPS_MODEL: claude-haiku-4-5-20251001
-          UG_LIVE_OPENAI_MPS: main.ucode.ci_openai_mps
-          UG_LIVE_OPENAI_MPS_MODEL: gpt-5-nano
         run: npm run live
 
   e2e-shards:
