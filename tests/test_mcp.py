@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from unittest.mock import MagicMock
 
@@ -177,7 +178,7 @@ class TestConfigOnlyMcpClients:
             monkeypatch.setattr(mcp.codex, "user_mcp_config_path", lambda: path)
         path.write_text(invalid)
 
-        with pytest.raises(RuntimeError, match=f"{path} is invalid"):
+        with pytest.raises(RuntimeError, match=rf"{re.escape(str(path))} is invalid"):
             if action == "add":
                 mcp.configure_client_mcp_server(client, "github", GH_URL, WS, "p")
             else:
