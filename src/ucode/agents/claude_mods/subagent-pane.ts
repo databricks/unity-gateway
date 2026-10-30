@@ -1,17 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, On } from 'claude-code'
+import type { EngineInterface, On, PluginState } from 'claude-code'
 
-type Subagent = {
-  id: string
-  type: string
-  description: string
-  model: string
-  startedAt: number
-  isDone: boolean
-  isError: boolean
-  durationMs?: number
-  tool?: string
-}
+type Subagent = PluginState['ug-smart-router']['paneAgents'][number]
 
 const PANE = 'subagents'
 // shortcut: track observed spawns only; hydrate from agent.list when resume/reload recovery is needed.
@@ -58,8 +48,9 @@ async function reconcile($: EngineInterface) {
   const at = await $.clock.now()
   await update($, agents, all => all.map(agent => {
     const word = status.get(agent.id)
-    const isDone = word === undefined ? agent.isDone : FINISHED.has(word)
-    const isError = word === undefined ? agent.isError : word === 'failed' || word === 'killed'
+    if (word === undefined) return agent
+    const isDone = FINISHED.has(word)
+    const isError = word === 'failed' || word === 'killed'
     if (isDone === agent.isDone && isError === agent.isError) return agent
     return isDone
       ? { ...agent, isDone, isError, tool: undefined, durationMs: Math.max(0, at - agent.startedAt) }
@@ -87,14 +78,11 @@ export const registerSubagentPane = (on: On): void => {
 
   on('command.run', { command: 'subagents' }, async $ => {
     const isUp = (await $.ui.panes()).some(pane => pane.id === PANE && pane.isPlaced)
-    if (!isUp) {
-      const wasCollapsed = await read($, isCollapsed)
-      await setCollapsed($, false)
-      return { text: wasCollapsed ? 'Subagent pane expanded.' : 'Subagent pane opened.' }
-    }
-    const collapsed = !(await read($, isCollapsed))
+    const wasCollapsed = await read($, isCollapsed)
+    const collapsed = isUp && !wasCollapsed
     await setCollapsed($, collapsed)
-    return { text: collapsed ? 'Subagent pane collapsed.' : 'Subagent pane expanded.' }
+    const state = collapsed ? 'collapsed' : isUp || wasCollapsed ? 'expanded' : 'opened'
+    return { text: `Subagent pane ${state}.` }
   })
 
   on('agent.spawn', async ($, e, next) => {
@@ -142,15 +130,15 @@ export const registerSubagentPane = (on: On): void => {
     const at = await $.clock.now()
     const running = list.filter(agent => !agent.isDone)
     const finished = list.filter(agent => agent.isDone)
-    const done = finished.filter(agent => !agent.isError)
-    const errors = finished.filter(agent => agent.isError)
+    const errors = finished.filter(agent => agent.isError).length
+    const done = finished.length - errors
     if (await read($, isCollapsed)) {
       return Box({ flexDirection: 'column', children: [
         Text({ children: ['Focus to expand'] }),
         Text({ dimColor: true, children: ['Ctrl+X, then Tab'] }),
         Text({ color: 'yellow', children: [`● ${running.length} running`] }),
-        Text({ color: 'green', children: [`✓ ${done.length} done`] }),
-        ...(errors.length ? [Text({ color: 'red', children: [`● ${errors.length} failed`] })] : []),
+        Text({ color: 'green', children: [`✓ ${done} done`] }),
+        ...(errors ? [Text({ color: 'red', children: [`● ${errors} failed`] })] : []),
       ] })
     }
 
@@ -162,18 +150,17 @@ export const registerSubagentPane = (on: On): void => {
       if (moved.deny) $.ui.toast(`Can't open that transcript: ${moved.deny}`)
     }
     const visible = ordered.slice(0, room)
-    const ringStart = viewing ? `view-${viewing}` : 'main'
     return Box({ flexDirection: 'column', children: [
       Text({ children: ['Focus: Ctrl+X, then Tab'] }),
       Text({ dimColor: true, children: ['↑/↓ move · Enter or 1–9 open'] }),
       Text({ dimColor: true, children: ['0 main · Esc prompt · s collapse'] }),
       Box({ justifyContent: 'space-between', children: [
         Text({ dimColor: true, children: [
-          `${running.length} running · ${done.length} done${errors.length ? ` · ${errors.length} failed` : ''}`,
+          `${running.length} running · ${done} done${errors ? ` · ${errors} failed` : ''}`,
         ] }),
         Button({ key: 'collapse', label: '>>', hotkey: 's', onPress: () => setCollapsed($, true) }),
       ] }),
-      Button({ key: 'main', plain: true, hotkey: '0', autoFocus: ringStart === 'main' || undefined,
+      Button({ key: 'main', plain: true, hotkey: '0', autoFocus: !viewing || undefined,
         label: viewing ? '  main' : '▸ main', onPress: () => show() }),
       ...(list.length === 0 ? [Text({ dimColor: true, children: ['No subagents yet.'] })] : []),
       ...visible.map((agent, i) => Box({ key: agent.id, flexDirection: 'column', marginTop: 1, children: [
@@ -181,7 +168,7 @@ export const registerSubagentPane = (on: On): void => {
           Text({ color: agent.isError ? 'red' : agent.isDone ? 'green' : 'yellow',
             children: [agent.isError ? '● error ' : agent.isDone ? '✓ ' : '● '] }),
           Button({ key: `view-${agent.id}`, plain: true, hotkey: i < 9 ? String(i + 1) : undefined,
-            autoFocus: ringStart === `view-${agent.id}` || undefined, onPress: () => show(agent.id),
+            autoFocus: viewing === agent.id || undefined, onPress: () => show(agent.id),
             label: `${viewing === agent.id ? '▸' : ' '} ${agent.type}` }),
         ] }),
         Text({ dimColor: true, wrap: 'truncate-end', children: [`   ${agent.description}`] }),
