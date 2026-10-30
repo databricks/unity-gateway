@@ -1205,7 +1205,8 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
             delivered.update((name, agent) for name in entries)
 
     # Drop prior user-scope registrations for servers now on a managed file, but keep a (name,
-    # client) the developer also owns in their own mcp_servers (managed precedence covers it).
+    # client) the developer also owns in their own mcp_servers (managed precedence covers it; Codex
+    # drops that copy itself when its transport differs, see codex.reconcile_managed_mcp).
     developer_owned = {
         (_server_name(server), client)
         for server in (state.get("mcp_servers") or [])

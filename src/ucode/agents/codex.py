@@ -1113,6 +1113,18 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
         )
     except ManagedFileWriteUnavailable:
         return False
+    # Codex merges this file over the user config key by key, so a same-name user entry of the other
+    # transport (stdio `command` vs HTTP `url`) would get both and stop Codex from starting.
+    user = read_toml_safe(user_mcp_config_path()).get(MANAGED_MCP_CONFIG_KEY)
+    if isinstance(user, dict):
+        conflicts = {
+            name
+            for name, entry in servers.items()
+            if isinstance(user.get(name), dict)
+            and ("command" in user[name]) != ("command" in entry)
+        }
+        if conflicts:
+            write_user_mcp_servers({}, conflicts)
     # Preserve the scope the model reconcile recorded (e.g. relay-compatible); an MCP-only write only
     # refreshes the fingerprint, it does not change how the file relates to the model settings.
     mark_managed_file_verified(state, "codex", path, scope=managed_file_scope(state, "codex"))

@@ -2506,6 +2506,21 @@ class TestCodexReconcileManagedMcp:
         assert captured["owned_paths"] == [["mcp_servers"]]
         assert captured["tool"] == "codex"
 
+    def test_drops_user_entry_of_the_other_transport(self, monkeypatch, tmp_path):
+        # Codex merges the managed entry over a same-name user entry key by key, so a stdio user
+        # copy under a managed HTTP one would carry both `command` and `url`.
+        user_path = tmp_path / "config.toml"
+        user_path.write_text(
+            '[mcp_servers.stdio-now-http]\ncommand = "/opt/ug"\nargs = []\n\n'
+            '[mcp_servers.same]\nurl = "u"\n\n[mcp_servers.mine]\ncommand = "x"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(codex, "user_mcp_config_path", lambda: user_path)
+        self._wire(monkeypatch, None, {})
+        http = codex.managed_mcp_http_entry("u", "client")
+        codex.reconcile_managed_mcp({}, {"stdio-now-http": http, "same": http})
+        assert set(read_toml_safe(user_path)["mcp_servers"]) == {"same", "mine"}
+
     def test_empty_map_clears_table_preserving_model_keys(self, monkeypatch):
         import tomllib
 
