@@ -3318,6 +3318,26 @@ class TestPurgeCrossWorkspaceSkillsEntry:
             capsys.readouterr().out
         )
 
+    def test_same_name_in_destination_only_protects_its_selected_client(self, monkeypatch):
+        from ucode import state as state_mod
+
+        monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
+        monkeypatch.setattr(state_mod, "build_agent_state", lambda state: {})
+        other = "https://other.databricks.com"
+        old = {"name": "shared", "url": f"{other}/mcp", "clients": ["claude", "codex"]}
+        selected = {"name": "shared", "url": f"{WS}/mcp", "clients": ["codex"]}
+        state_mod.save_state({"workspace": other, "mcp_servers": [old]})
+        state = {"workspace": WS, "mcp_servers": [selected]}
+        state_mod.save_state(state)
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude", "codex"])
+        writes = self._capture_batched_writes(monkeypatch, ["claude", "codex"])
+
+        mcp.purge_cross_workspace_mcp_residue(state, WS)
+
+        assert writes["claude"] == [({}, {"shared"})]
+        assert writes["codex"] == []
+        assert state_mod.load_state()["mcp_servers"] == [selected]
+
     @pytest.mark.parametrize(
         "failure",
         [RuntimeError("config is locked"), OSError("no such file"), None],

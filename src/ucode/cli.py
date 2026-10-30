@@ -977,8 +977,10 @@ def _setup_single_agent(
 
 def _restore_mcp_after_workspace_switch(previous_workspace: str | None, state: dict) -> None:
     """Put the selected workspace's saved MCP entries back in global agent configs."""
-    if previous_workspace and previous_workspace != state.get("workspace") and not is_dry_run():
-        restore_workspace_mcp_servers(state, set(MCP_CLIENTS))
+    if previous_workspace != state.get("workspace") and not is_dry_run():
+        # Managed reconciliation updates the persisted state, not the configure snapshot.
+        # Its freshly delivered names must take precedence over saved user selections.
+        restore_workspace_mcp_servers(load_state(), set(MCP_CLIENTS))
 
 
 def _record_unmanaged_configured_agents(state: dict, tools: list[str]) -> dict:

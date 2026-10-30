@@ -6761,12 +6761,12 @@ class TestConfigureSharedStateMcpCleanup:
         source = "https://source.databricks.com"
         destination = "https://destination.databricks.com"
         managed = {
-            "name": "managed-old",
+            "name": "shared-name",
             "url": f"{source}/ai-gateway/mcp-services/system.ai.old",
             "clients": ["claude"],
         }
         selected = {
-            "name": "user-choice",
+            "name": "shared-name",
             "url": f"{destination}/ai-gateway/mcp-services/system.ai.choice",
             "clients": ["claude"],
         }
@@ -6783,6 +6783,11 @@ class TestConfigureSharedStateMcpCleanup:
         mcp.reconcile_managed_mcp_servers({}, {"claude"})
         assert changes == [([managed], [], ["claude"])]
         assert mcp.load_state().get("managed_mcp_servers") == []
+
+        # The original configure snapshot still has A's managed server. Restore must use
+        # reconciliation's persisted result so B's user choice can reuse that name.
+        cli_mod._restore_mcp_after_workspace_switch(source, switched)
+        assert changes == [([managed], [], ["claude"]), ([], [selected], ["claude"])]
 
     @pytest.mark.parametrize("same_name", [False, True])
     def test_explicit_configure_switch_restores_saved_mcp_entries(self, monkeypatch, same_name):
@@ -6852,6 +6857,13 @@ class TestConfigureSharedStateMcpCleanup:
         assert full["current_workspace"] == a
         assert full["workspaces"][a]["mcp_servers"] == [a_entry]
         assert full["workspaces"][b]["mcp_servers"] == [b_entry]
+
+        # Revert clears only A's active bucket. B's saved choice should return when
+        # configure selects B again, even though there is no current workspace.
+        state_mod.clear_state()
+        actual.clear()
+        cli_mod._configure_workspace_command(selected_tools=["codex"], workspaces=[(b, None)])
+        assert actual == {b_entry["name"]: {"url": b_entry["url"]}}
 
     def test_workspace_switch_continues_after_skills_cleanup_timeout(self, monkeypatch, capsys):
         from ucode import mcp

@@ -623,13 +623,13 @@ def _partition_mcp_entries_by_workspace(
 
 
 def _mcp_entries_only_in_other_workspaces(current_workspace: str) -> dict[str, set[str]]:
-    """Return ``{name: {client, ...}}`` for MCPs ucode tracks only in workspaces other than ``current_workspace``."""
+    """Return clients with a user MCP entry only in another workspace, grouped by name."""
     full_state = load_full_state()
     workspaces = full_state.get("workspaces")
     if not isinstance(workspaces, dict):
         return {}
 
-    current_names: set[str] = set()
+    current_pairs: set[tuple[str, str]] = set()
     current_bucket = workspaces.get(current_workspace)
     if isinstance(current_bucket, dict):
         # Include the current workspace's managed servers too — the `system.ai` default lives in
@@ -641,7 +641,7 @@ def _mcp_entries_only_in_other_workspaces(current_workspace: str) -> dict[str, s
             for entry in current_bucket.get(key) or []:
                 name = _server_name(entry)
                 if name:
-                    current_names.add(name)
+                    current_pairs.update((name, client) for client in _mcp_server_clients(entry))
 
     external_entries: dict[str, set[str]] = {}
     for ws, bucket in workspaces.items():
@@ -649,11 +649,11 @@ def _mcp_entries_only_in_other_workspaces(current_workspace: str) -> dict[str, s
             continue
         for entry in bucket.get("mcp_servers") or []:
             name = _server_name(entry)
-            if not name or name in current_names:
+            if not name:
                 continue
-            client_set = external_entries.setdefault(name, set())
-            for client in entry.get("clients") or []:
-                client_set.add(client)
+            for client in _mcp_server_clients(entry):
+                if (name, client) not in current_pairs:
+                    external_entries.setdefault(name, set()).add(client)
     return external_entries
 
 
