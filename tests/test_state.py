@@ -441,3 +441,181 @@ class TestSelfManagedWorkspaceIsolation:
         save_state(state)
         assert workspace_self_managed_agents(a) == []
         assert workspace_self_managed_agents(b) == ["copilot"]
+
+
+# ---------------------------------------------------------------------------
+# Hosts that serve several workspaces
+# ---------------------------------------------------------------------------
+
+SHARED_WS = "https://acme.cloud.databricks.com"
+KEY_A = f"{SHARED_WS}?w=111"
+KEY_B = f"{SHARED_WS}?w=222"
+
+
+def _raw_state() -> dict:
+    return json.loads(state_mod.STATE_PATH.read_text(encoding="utf-8"))
+
+
+class TestClassicStateUnchanged:
+    def test_classic_round_trip_writes_only_the_bare_host(self):
+        save_state({"workspace": FAKE_WS, "profile": "p"})
+        assert "workspace_id" not in load_state()
+        raw = _raw_state()
+        assert set(raw) == {"state_version", "current_workspace", "workspaces"}
+        assert raw["current_workspace"] == FAKE_WS
+        assert list(raw["workspaces"]) == [FAKE_WS]
+        block = raw["workspaces"][FAKE_WS]
+        assert "workspace_id" not in block
+        assert state_mod.ALIAS_OF_KEY not in block
+
+
+class TestMultiWorkspaceHostState:
+    def test_save_keys_by_workspace_and_mirrors_the_bare_host(self):
+        save_state({"workspace": SHARED_WS, "workspace_id": "111", "profile": "acme"})
+        raw = _raw_state()
+        assert raw["current_workspace"] == SHARED_WS
+        assert raw[state_mod.CURRENT_WORKSPACE_KEY] == KEY_A
+        assert raw["workspaces"][KEY_A]["workspace_id"] == "111"
+        alias = raw["workspaces"][SHARED_WS]
+        assert alias[state_mod.ALIAS_OF_KEY] == KEY_A
+        assert alias["profile"] == "acme"
+        assert alias["workspace_id"] == "111"
+
+    def test_load_returns_bare_host_and_id(self):
+        save_state({"workspace": SHARED_WS, "workspace_id": "111"})
+        loaded = load_state()
+        assert loaded["workspace"] == SHARED_WS
+        assert loaded["workspace_id"] == "111"
+        assert state_mod.ALIAS_OF_KEY not in loaded
+        assert loaded["base_urls"] == FAKE_URLS
+
+    def test_alias_follows_the_current_workspace(self):
+        save_state({"workspace": SHARED_WS, "workspace_id": "111", "profile": "a"})
+        save_state({"workspace": SHARED_WS, "workspace_id": "222", "profile": "b"})
+        raw = _raw_state()
+        assert set(raw["workspaces"]) == {KEY_A, KEY_B, SHARED_WS}
+        assert raw["workspaces"][SHARED_WS][state_mod.ALIAS_OF_KEY] == KEY_B
+        set_current_workspace(KEY_A)
+        raw = _raw_state()
+        assert raw[state_mod.CURRENT_WORKSPACE_KEY] == KEY_A
+        assert raw["workspaces"][SHARED_WS]["profile"] == "a"
+        assert load_state()["workspace_id"] == "111"
+
+    def test_switching_to_a_classic_workspace_drops_the_key(self):
+        save_state({"workspace": SHARED_WS, "workspace_id": "111"})
+        save_state({"workspace": FAKE_WS})
+        raw = _raw_state()
+        assert raw["current_workspace"] == FAKE_WS
+        assert state_mod.CURRENT_WORKSPACE_KEY not in raw
+        assert "workspace_id" not in load_state()
+
+    def test_stale_key_from_an_older_version_is_ignored(self):
+        save_state({"workspace": SHARED_WS, "workspace_id": "111"})
+        raw = _raw_state()
+        raw["current_workspace"] = FAKE_WS
+        raw["workspaces"][FAKE_WS] = {"profile": "classic"}
+        state_mod.STATE_PATH.write_text(json.dumps(raw), encoding="utf-8")
+        loaded = load_state()
+        assert loaded["workspace"] == FAKE_WS
+        assert loaded["profile"] == "classic"
+
+    def test_clear_removes_the_block_and_its_alias(self):
+        save_state({"workspace": SHARED_WS, "workspace_id": "111"})
+        clear_state()
+        raw = _raw_state()
+        assert raw["workspaces"] == {}
+        assert raw["current_workspace"] is None
+        assert state_mod.CURRENT_WORKSPACE_KEY not in raw
+
+    def test_first_selection_inherits_a_bare_host_self_managed_list(self):
+        state_mod.STATE_PATH.write_text(
+            json.dumps(
+                {
+                    "state_version": STATE_VERSION,
+                    "current_workspace": SHARED_WS,
+                    "workspaces": {SHARED_WS: {SELF_MANAGED_AGENTS_KEY: ["gemini"]}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert workspace_self_managed_agents(KEY_A) == ["gemini"]
+        save_state(
+            {"workspace": SHARED_WS, "workspace_id": "111", SELF_MANAGED_AGENTS_KEY: ["gemini"]}
+        )
+        save_state({**load_state(), "profile": "p"})
+        assert _raw_state()["workspaces"][KEY_A][SELF_MANAGED_AGENTS_KEY] == ["gemini"]
+
+    def test_selecting_the_bare_host_selects_its_current_workspace(self):
+        save_state({"workspace": SHARED_WS, "workspace_id": "111"})
+        save_state({"workspace": FAKE_WS})
+        set_current_workspace(SHARED_WS)
+        loaded = load_state()
+        assert (loaded["workspace"], loaded["workspace_id"]) == (SHARED_WS, "111")
+
+    def test_a_bare_host_selection_follows_its_alias(self):
+        save_state({"workspace": SHARED_WS, "workspace_id": "111"})
+        raw = _raw_state()
+        del raw[state_mod.CURRENT_WORKSPACE_KEY]
+        state_mod.STATE_PATH.write_text(json.dumps(raw), encoding="utf-8")
+        assert load_state()["workspace_id"] == "111"
+
+    def test_older_version_edits_to_the_alias_are_not_read(self):
+        """An older ug can't select a workspace on such a host; its edits to the copy don't apply."""
+        save_state({"workspace": SHARED_WS, "workspace_id": "111", "profile": "a"})
+        raw = _raw_state()
+        raw["workspaces"][SHARED_WS]["profile"] = "edited-by-older-ug"
+        state_mod.STATE_PATH.write_text(json.dumps(raw), encoding="utf-8")
+        assert load_state()["profile"] == "a"
+
+    def test_alias_has_no_self_managed_list_of_its_own(self):
+        save_state({"workspace": SHARED_WS, "workspace_id": "111", SELF_MANAGED_AGENTS_KEY: ["pi"]})
+        assert workspace_self_managed_agents(KEY_A) == ["pi"]
+        assert workspace_self_managed_agents(SHARED_WS) == []
+
+
+class TestLegacyWorkspaceKeys:
+    def _write(self, workspaces: dict, current: str) -> None:
+        state_mod.STATE_PATH.write_text(
+            json.dumps(
+                {
+                    "state_version": STATE_VERSION,
+                    "current_workspace": current,
+                    "workspaces": workspaces,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_pasted_query_key_is_kept(self):
+        legacy = f"{FAKE_WS}/?o=123"
+        self._write({legacy: {"workspace": legacy, "profile": "p"}}, legacy)
+        loaded = load_state()
+        assert loaded["workspace"] == legacy
+        assert loaded["profile"] == "p"
+        save_state(loaded)
+        raw = _raw_state()
+        assert list(raw["workspaces"]) == [legacy]
+        assert raw["current_workspace"] == legacy
+        assert state_mod.CURRENT_WORKSPACE_KEY not in raw
+
+    def test_existing_bare_host_block_wins(self):
+        legacy = f"{FAKE_WS}/browse"
+        self._write({legacy: {"profile": "old"}, FAKE_WS: {"profile": "new"}}, FAKE_WS)
+        assert load_state()["profile"] == "new"
+        assert set(load_full_state()["workspaces"]) == {legacy, FAKE_WS}
+
+    def test_canonical_keys_are_untouched(self):
+        self._write({KEY_A: {"workspace_id": "111"}, FAKE_WS: {"profile": "c"}}, FAKE_WS)
+        assert set(load_full_state()["workspaces"]) == {KEY_A, FAKE_WS}
+
+    def test_selector_key_saved_by_an_older_version_stays_a_plain_key(self):
+        legacy = f"{FAKE_WS}?w=1"
+        self._write({legacy: {"workspace": legacy, "profile": "p"}}, legacy)
+        loaded = load_state()
+        assert loaded["workspace"] == legacy
+        assert "workspace_id" not in loaded
+        save_state(loaded)
+        raw = _raw_state()
+        assert list(raw["workspaces"]) == [legacy]
+        assert "workspace_id" not in raw["workspaces"][legacy]
+        assert raw["current_workspace"] == legacy

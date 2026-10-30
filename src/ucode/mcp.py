@@ -51,7 +51,7 @@ from ucode.skills_api import (
     SkillRef,
     list_all_skills,
 )
-from ucode.state import load_full_state, load_state, save_state
+from ucode.state import ALIAS_OF_KEY, load_full_state, load_state, save_state
 from ucode.ui import (
     _BACK,
     _Back,
@@ -66,6 +66,7 @@ from ucode.ui import (
     spinner,
 )
 from ucode.ui.interactive_picker import CatalogChoice, picker_details
+from ucode.workspace import state_workspace_key
 
 # Workspace-relative path fragments for the V2 AI Gateway MCP endpoints, shared by the URL-shape
 # checks (`_is_app_mcp_server`, `_mcp_server_location`) so the set stays in one place.
@@ -608,14 +609,18 @@ def _mcp_entry_url_host(entry: dict) -> str | None:
 
 
 def _partition_mcp_entries_by_workspace(
-    entries: list[dict], workspace: str
+    entries: list[dict], workspace: str, *, same_host_switch: bool = False
 ) -> tuple[list[dict], list[dict]]:
-    """Split MCP entries into ones that belong to ``workspace`` and ones that don't."""
+    """Split MCP entries into ones that belong to ``workspace`` and ones that don't.
+
+    ``same_host_switch``: the entries came from another workspace on the same multi-workspace
+    host, so none of them belong.
+    """
     workspace_host = workspace_hostname(workspace)
     current: list[dict] = []
     foreign: list[dict] = []
     for entry in entries:
-        if _mcp_entry_url_host(entry) == workspace_host:
+        if not same_host_switch and _mcp_entry_url_host(entry) == workspace_host:
             current.append(entry)
         else:
             foreign.append(entry)
@@ -645,7 +650,7 @@ def _mcp_entries_only_in_other_workspaces(current_workspace: str) -> dict[str, s
 
     external_entries: dict[str, set[str]] = {}
     for ws, bucket in workspaces.items():
-        if ws == current_workspace or not isinstance(bucket, dict):
+        if ws == current_workspace or not isinstance(bucket, dict) or ALIAS_OF_KEY in bucket:
             continue
         for entry in bucket.get("mcp_servers") or []:
             name = _server_name(entry)
@@ -1694,7 +1699,9 @@ def _batch_remove_stale_servers(batch_remove: dict[str, set[str]]) -> set[str]:
     return removed
 
 
-def purge_cross_workspace_mcp_residue(state: dict, workspace: str) -> None:
+def purge_cross_workspace_mcp_residue(
+    state: dict, workspace: str, *, same_host_switch: bool = False
+) -> None:
     installed = set(available_mcp_clients())
     # Collect every removal as {client: {names}} and apply it as one batched write per client below,
     # rather than a CLI/config removal per server (see `_batch_remove_stale_servers`).
@@ -1706,7 +1713,7 @@ def purge_cross_workspace_mcp_residue(state: dict, workspace: str) -> None:
 
     raw_mcp_servers = list(state.get("mcp_servers") or [])
     current_mcp_servers, foreign_mcp_servers = _partition_mcp_entries_by_workspace(
-        raw_mcp_servers, workspace
+        raw_mcp_servers, workspace, same_host_switch=same_host_switch
     )
     foreign_names = {name for server in foreign_mcp_servers if (name := _server_name(server))}
     if foreign_mcp_servers:
@@ -1727,7 +1734,7 @@ def purge_cross_workspace_mcp_residue(state: dict, workspace: str) -> None:
         state["mcp_servers"] = current_mcp_servers
         save_state(state)
 
-    other_ws_mcps = _mcp_entries_only_in_other_workspaces(workspace)
+    other_ws_mcps = _mcp_entries_only_in_other_workspaces(state_workspace_key(state) or workspace)
     for name, clients in other_ws_mcps.items():
         for client in clients:
             queue_removal(client, name)
