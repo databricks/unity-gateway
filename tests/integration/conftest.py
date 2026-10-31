@@ -235,6 +235,22 @@ def codex_provider():
 
 
 @pytest.fixture(scope="session")
+def codex_relayed_provider():
+    return os.environ["UG_INTEGRATION_CODEX_RELAYED_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_access_token():
+    # Real Codex access token (ChatGPT Business/Enterprise admin console); the relayed launch needs
+    # it to run headless. Missing means the launch would fall back to a browser login, so fail
+    # rather than silently pass a degraded run — the suite has no capability skips.
+    token = os.environ.get("UG_INTEGRATION_CODEX_ACCESS_TOKEN", "").strip()
+    if not token:
+        pytest.fail("Set CODEX_ACCESS_TOKEN (a Codex access token) to run the relayed CUJ.")
+    return token
+
+
+@pytest.fixture(scope="session")
 def codex_provider_model():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER_MODEL"]
 

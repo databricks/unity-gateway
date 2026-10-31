@@ -563,6 +563,7 @@ test_ug_claude_headless.py              # script prompts, models, caller setting
 test_ug_claude_relayed.py               # relayed session: subscription + Databricks-hosted models
 test_ug_claude_tracing.py               # Claude OTLP export reaches the configured trace table
 test_ug_codex_headless.py               # script prompts and model arguments
+test_ug_codex_relayed.py                # relayed session: ChatGPT-relay inference + configure/revert app entry
 test_ug_copilot_headless.py             # Copilot via the session proxy: Claude + GPT tasks, no token on disk
 test_ug_copilot_lifecycle.py            # Copilot refresh after revocation, sign-in expired, configure/revert, upgrade
 test_ug_copilot_models.py               # Copilot model registry: Claude then GPT, unknown model, TUI /model switch
@@ -694,17 +695,45 @@ re-routes to gateway auth (`route=databricks`) — one relayed session reaching 
 It needs a subscription OAuth token (see below). Interactive model-picker selection
 remains uncovered.
 
+The Codex relay CUJs (`test_ug_codex_relayed.py`) mirror it for a ChatGPT-subscription relay:
+- `test_ug_codex_relayed_completes_inference_through_the_relay` launches Codex from fresh state
+  with `--provider <relayed OpenAI MPS>` and completes a headless file task on `gpt-6-luna`
+  (the gateway's relayed `/codex/v1/models` returns the API catalog, so Codex's bundled default is
+  rejected for a ChatGPT account and the model is pinned). It asserts the structured answer, the
+  loopback relay path (`route=forward` on `/v1/responses` from the proxy diagnostics), the saved
+  `codex_relayed` state, and that `/etc/codex/managed_config.toml` holds no Databricks provider.
+- `test_ug_codex_configure_relayed_app_entry_and_revert` selects the relayed MPS in the configure
+  picker beside user-owned `~/.codex/config.toml` settings. It asserts the saved provider and
+  `codex_relayed`, the unmodified managed file, and, only when ug reports the login service was
+  set up, the `DatabricksRelay` app entry; revert removes it and keeps the user's settings. A
+  Linux runner without a systemd user bus makes ug warn and leave the file untouched, so the
+  entry itself is **not asserted there** (the service unit and the Codex app are not covered).
+- `test_ug_copilot_refuses_a_chatgpt_relay_provider` (Copilot lane) mirrors the Claude relay
+  refusal: only Codex may use a ChatGPT-relay MPS.
+
+Not covered: the managed-file conflict refusal ("Codex ChatGPT relay cannot start because
+enterprise managed settings define ..."), which needs an enterprise-owned
+`/etc/codex/managed_config.toml` that sets `model_provider` or Databricks `base_url`/`auth`;
+Codex-app inference through the login service's `--relay-port`; and browser sign-in (the access
+token stands in for it). These are covered only by component tests.
+
 MPS CUJs select the existing services already used by e2e:
 
 - Claude: `main.ucode.ci_e2e_anthropic_nonrelay_mps`.
 - Claude (relayed hybrid): `main.ucode.ci_e2e_anthropic_relay_mps`, which also
   requires `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) so the relayed
   launch runs headless instead of opening a browser login.
+- Codex (relayed ChatGPT subscription): `main.ucode.ci_e2e_openai_relay_mps` (a relayed
+  `{"openai":{"relayed":{}}}` MPS that must exist on the e2e workspace), which also requires
+  `CODEX_ACCESS_TOKEN`: a Codex access token (ChatGPT Business/Enterprise admin console) that the
+  test sets in the launch environment so Codex and ug use it instead of a browser ChatGPT login.
+  It is a fixed credential with a finite expiry, so recreate the secret before it expires. That the
+  relay accepts an access-token credential has not yet been verified live.
 - Codex: `main.ucode.ci_openai_mps`, using its allowed `gpt-5-nano` model.
 - Codex and Copilot (Azure OpenAI): `main.ucode.ci_azure_openai_mps`, using its `gpt-5-nano` model.
 - Codex and Copilot (Microsoft Foundry): `main.ucode.ci_foundry_mps`, using its `gpt-5-nano` model.
 
-Use `--claude-provider` / `--claude-relayed-provider` / `--codex-provider` to
+Use `--claude-provider` / `--claude-relayed-provider` / `--codex-provider` / `--codex-relayed-provider` to
 reproduce another existing service. Use `--claude-provider-model` /
 `--codex-provider-model` when it allows a different model. Those choices are recorded in `versions.json`.
 No service is created or modified. A missing service, permission, or OAuth token
@@ -773,7 +802,7 @@ cases instead complete real file tasks through `--workspace` and `--model-locati
 `ug_e2e.models.claude_haiku` and `ug_e2e.models.gpt_luna`. The two fresh `--provider`
 journeys check setup and launch with existing services, without inference.
 
-There are **88 live cases** (including 12 marked TUI journeys) and **7 installation
+There are **90 live cases** (including 12 marked TUI journeys) and **7 installation
 checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds seventeen live cases. One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
 Claude task. A further **44 `managed_fixture` cases** (twelve of them also `live`) run on the
@@ -926,7 +955,8 @@ container option. Matching dependency versions does not make those OS environmen
 Installation jobs need no workspace credentials. For same-repository PRs, the live jobs
 reuse the existing `UCODE_TEST_WORKSPACE` and `DATABRICKS_BEARER` secrets; the full
 Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workflow
-uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
+uses) for the relayed hybrid CUJ, and the full lanes also pass `CODEX_ACCESS_TOKEN` for the
+Codex relay CUJs. Fork PRs run installation checks only because they
 cannot receive those secrets.
 
 CUJ7's five journeys collect eight cases in `tests/e2e_cuj/test_cuj7_model_discovery.py`: configured
@@ -986,13 +1016,13 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 88 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 90 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
 | Claude | `live and claude` | 40 |
-| Codex | `live and codex` | 46 |
+| Codex | `live and codex` | 48 |
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
 `continue-on-error` and is not part of the required `cujs` gate until it is stable.
@@ -1376,7 +1406,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 88 live cases. For the seven installation checks, run the same
+This runs all 90 live cases. For the seven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.
