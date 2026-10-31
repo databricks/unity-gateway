@@ -80,6 +80,11 @@ Enterprise MPS; see `integration/README.md`).
 This component check does not run the native updater; the integration runner retains its
 before/after agent-version check.
 
+`test_integration_managed.py` checks that Codex state snapshots never read disposable
+executables under `.codex/tmp/arg0` or `.codex/tmp/arg0-linux`. Persistent file additions,
+removals, and byte changes remain visible. These are offline checks of the snapshot helper;
+the managed integration journeys exercise real configure and override rejection.
+
 `test_ug_headers.py` covers the `UG_HEADERS` parser and the `--header` flag, `test_databricks.py`
 ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching a Codex launch's
 `-c` headers (plain and smart-routed) without writing its profile. No automated test checks the

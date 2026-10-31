@@ -50,6 +50,26 @@ def is_managed_config_control_plane_cache(home: Path, path: Path) -> bool:
     )
 
 
+def codex_state_and_agent_files(session):
+    paths = []
+    for directory in (session.home / ".ucode", session.home / ".codex"):
+        if directory.exists():
+            paths.extend(path for path in directory.rglob("*") if path.is_file())
+    return {
+        str(path.relative_to(session.home)): path.read_bytes()
+        for path in paths
+        if path.is_file()
+        # A fresh launch must retrieve and cache the control-plane input before it can reject an
+        # override. Exclude that expected cache and Codex's disposable arg0 executable links,
+        # which even a version check recreates; persistent agent-owned files stay compared.
+        and not is_managed_config_control_plane_cache(session.home, path)
+        and not any(
+            path.is_relative_to(session.home / ".codex" / "tmp" / name)
+            for name in ("arg0", "arg0-linux")
+        )
+    }
+
+
 def use_smart_routing_fixture(
     session, agent: str, workspace: str, *, smart_routing: bool = True
 ) -> Path:
