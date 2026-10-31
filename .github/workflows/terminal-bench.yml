@@ -65,6 +65,8 @@ jobs:
             model: system.ai.gpt-6-luna
             label: Claude · gpt-6-luna
             artifact: claude-gpt-6-luna
+            # Luna misattributes values across the task's 11 unlabeled invoice images.
+            skip_tasks: financial-document-processor
           - agent: claude
             model: system.ai.gpt-6-1-sol
             label: Claude · gpt-6-1-sol
@@ -99,7 +101,11 @@ jobs:
         run: |
           includes=()
           IFS=, read -ra tasks <<< "$TB2_TASKS"
-          for task in "${tasks[@]}"; do includes+=(-i "$task"); done
+          for task in "${tasks[@]}"; do
+            [[ ",${{ matrix.skip_tasks }}," == *",$task,"* ]] || includes+=(-i "$task")
+          done
+          # With no -i, Harbor would run the whole dataset.
+          (( ${#includes[@]} )) || exit 0
           out="$RUNNER_TEMP/harbor-jobs/tb2"
           run_harbor() {
             uvx --python 3.12 --from "harbor==$HARBOR_VERSION" harbor run -y \
