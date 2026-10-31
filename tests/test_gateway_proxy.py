@@ -9,6 +9,7 @@ import os
 import socket
 import threading
 import time
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -42,6 +43,15 @@ class TestForwardedRequestHeaders:
         handler = _FakeHandler({"Authorization": "Bearer anthropic-oauth"})
         out = gateway_proxy.forwarded_request_headers(handler, "dbx-token")
         assert out["Authorization"] == "Bearer anthropic-oauth"
+
+    def test_requests_identity_encoding_unless_client_asks(self):
+        # Codex sends no Accept-Encoding and can't decode gzip; httpx would otherwise ask for it.
+        out = gateway_proxy.forwarded_request_headers(_FakeHandler({}), "t")
+        assert out["Accept-Encoding"] == "identity"
+        handler = _FakeHandler({"accept-encoding": "gzip, br"})
+        out = gateway_proxy.forwarded_request_headers(handler, "t")
+        assert out["accept-encoding"] == "gzip, br"
+        assert "Accept-Encoding" not in out
 
     def test_overwrites_client_supplied_swap_header(self):
         # A stale settings.json value must not survive; the proxy replaces it.
@@ -608,3 +618,37 @@ class TestRelayedOssRouting:
         assert sent["Authorization"] == "Bearer anthropic-oauth"
         assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
         assert sent["Databricks-Model-Provider-Service"] == "cat.s.relayed_mps"
+
+
+class TestCodexRelayProxy:
+    def test_relays_chatgpt_login_to_codex_upstream(self, monkeypatch):
+        cache = Mock(token="tok1")
+        monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: cache)
+        server, _cache, upstream = gateway_proxy.start_relay_proxy(
+            "https://w", lambda _f: "t", 0, codex=True
+        )
+        server.server_close()
+        upstream.close()
+        # The handler requests the client's path minus its leading slash.
+        url = upstream.build_request("POST", "v1/responses").url
+        assert str(url) == "https://w/ai-gateway/codex/v1/responses"
+
+        client = _FakeClient([_FakeResp(200, b"ok")])
+        h = object.__new__(server.RequestHandlerClass)
+        h.client = client  # the bound class keeps the real cache, token header, and handler
+        h.wfile, h.request_version, h._headers_buffer = _Collect(), "HTTP/1.1", []
+        body = b'{"model": "claude-opus-4-1"}'  # not rerouted: no Anthropic hybrid logic
+        h.headers = {
+            "Authorization": "Bearer chatgpt-token",
+            "ChatGPT-Account-ID": "acct",
+            "Databricks-Model-Provider-Service": "cat.s.mps",
+            "Content-Length": str(len(body)),
+        }
+        h.rfile = io.BytesIO(body)
+        h.path, h.command, h.requestline = "/v1/responses", "POST", "POST /v1/responses HTTP/1.1"
+        h._handle()
+        sent = client.sent_headers[0]
+        assert sent["Authorization"] == "Bearer chatgpt-token"
+        assert sent["ChatGPT-Account-ID"] == "acct"
+        assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
+        assert sent["Databricks-Model-Provider-Service"] == "cat.s.mps"

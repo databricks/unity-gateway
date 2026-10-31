@@ -215,6 +215,10 @@ def forwarded_request_headers(
         key: value for key, value in handler.headers.items() if key.lower() not in strip_on_forward
     }
     headers[token_header] = f"Bearer {token}"
+    # Don't let httpx's default `Accept-Encoding: gzip, deflate` ask for a compressed body the
+    # client never requested: the response is relayed raw, and Codex can't decode gzip.
+    if not any(key.lower() == "accept-encoding" for key in headers):
+        headers["Accept-Encoding"] = "identity"
     return headers
 
 
@@ -651,15 +655,18 @@ def start_relay_proxy(
     workspace: str,
     token_provider: Callable[[bool], str],
     port: int,
+    *,
+    codex: bool = False,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
-    """Start the Claude subscription relay proxy."""
+    """Start the subscription relay proxy: Claude's, or Codex's with ``codex`` (plain forwarding,
+    since the Anthropic hybrid reroute doesn't apply)."""
     return _start_proxy(
         workspace,
         token_provider,
         port,
-        upstream_path="ai-gateway/anthropic/",
+        upstream_path="ai-gateway/codex/" if codex else "ai-gateway/anthropic/",
         token_header=AI_GATEWAY_TOKEN_HEADER,
-        handler_type=_RelayProxyHandler,
+        handler_type=_ProxyHandler if codex else _RelayProxyHandler,
         force_refresh_near_expiry=False,
     )
 
