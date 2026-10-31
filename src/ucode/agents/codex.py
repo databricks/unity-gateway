@@ -1540,6 +1540,10 @@ def _has_chatgpt_login(binary: str) -> bool:
 
 def _ensure_chatgpt_login(binary: str) -> None:
     """Run Codex's browser sign-in if it has no ChatGPT login. ug never sees the token."""
+    # Codex reads an access token from the environment directly, so no interactive login applies;
+    # return early so unattended runs can't hang on the browser fallback.
+    if os.environ.get("CODEX_ACCESS_TOKEN"):
+        return
     if _has_chatgpt_login(binary):
         return
     print_note("Opening browser to sign in with your ChatGPT subscription...")

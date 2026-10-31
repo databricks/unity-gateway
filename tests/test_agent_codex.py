@@ -1664,6 +1664,7 @@ class TestCodexLaunch:
             codex, "_fetch_codex_model_catalog", Mock(side_effect=AssertionError("no catalog"))
         )
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
 
         with pytest.raises(SystemExit):
             codex.launch(
@@ -1698,6 +1699,19 @@ class TestCodexLaunch:
         run.side_effect = [Mock(returncode=1, stdout="", stderr=""), CalledProcessError(1, "x")]
         with pytest.raises(RuntimeError, match="`codex login` failed"):
             codex._ensure_chatgpt_login("codex")
+
+    def test_access_token_env_skips_the_chatgpt_login(self, tmp_path, monkeypatch):
+        self._patch(tmp_path, monkeypatch)
+        run = Mock()
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", run)
+        monkeypatch.setenv("CODEX_ACCESS_TOKEN", "access-token")
+        codex._ensure_chatgpt_login("codex")
+        run.assert_not_called()
+        monkeypatch.setenv("CODEX_ACCESS_TOKEN", "")
+        run.return_value = Mock(returncode=0, stdout="", stderr="Not logged in")
+        run.side_effect = [Mock(returncode=1, stdout="", stderr="Not logged in"), Mock()]
+        codex._ensure_chatgpt_login("codex")
+        assert run.call_args.args[0][1:] == ["login"]
 
     def test_relayed_launch_rejects_smart_routing(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
