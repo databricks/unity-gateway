@@ -4,7 +4,9 @@ These tests cover:
 - Paste and Enter are separate writes with PASTE_SUBMIT_DELAY_S gap (Bug A fix).
 - Enter is retried when no submission signal arrives (Bug B fix).
 - Enter stops retrying once the submission signal fires (Bug B fix).
-- Switch-timeout path submits the prompt (Bug C fix).
+- Switch-timeout path submits the prompt after Claude settles (Bug C fix).
+- Late model-command completion cannot discard the replay or overwrite the saved default.
+- An unresponsive model command stops automatic input with a recovery message.
 - Persist-timeout path does not SIGTERM and submits (Bug C fix).
 - waiting_to_switch timeout submits without /model (Bug D fix).
 - Every write into the input box first clears the blocked prompt that Claude Code
@@ -253,6 +255,152 @@ capture_path.write_text(json.dumps({
 
 
 class TestSwitchTimeoutFailOpen:
+    @pytest.mark.parametrize("persist_delay", [0.0, 0.12], ids=["persisted", "pending-write"])
+    def test_late_model_completion_cannot_discard_the_replayed_prompt(
+        self, tmp_path, monkeypatch, persist_delay
+    ):
+        from ucode.smart_routing import v2
+
+        monkeypatch.setattr(claude_pty, "READY_QUIET_S", 0.05)
+        monkeypatch.setattr(claude_pty, "SELECT_TIMEOUT_S", 0.02)
+        monkeypatch.setattr(claude_pty, "SWITCH_TIMEOUT_S", 0.15)
+        monkeypatch.setattr(claude_pty, "ESC_GAP_S", 0.05)
+        monkeypatch.setattr(claude_pty, "PASTE_SUBMIT_DELAY_S", 0.05)
+        monkeypatch.setattr(claude_pty, "SUBMIT_VERIFY_S", 0.15)
+
+        socket_path = tmp_path / "first.sock"
+        capture = tmp_path / "capture.json"
+        settings = tmp_path / "settings.json"
+        original_settings = {"model": "haiku", "unrelated": "preserved"}
+        settings.write_text(json.dumps(original_settings))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        guard = v2._ClaudeModelSettingGuard(settings)
+        restored_after_completion = []
+
+        def restore():
+            restored_after_completion.append(guard.is_routed())
+            guard.restore()
+
+        fake_claude = tmp_path / "fc.py"
+        _write_fake_claude(
+            fake_claude,
+            f"PERSIST_DELAY = {persist_delay}\n"
+            + """\
+resp = send_hook(socket_path, "hello")
+assert resp["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\\r")
+
+# Claude 2.1.290 can finish /model after the wrapper sends its timeout Escape.
+# The command clears the input box when it finishes, discarding an early replay.
+ready_at = None
+model_complete = False
+persist_at = None
+received = b""
+submitted = []
+deadline = time.monotonic() + 3.0
+while time.monotonic() < deadline:
+    if ready_at is not None and not model_complete and time.monotonic() >= ready_at:
+        model_complete = True
+        persist_at = time.monotonic() + PERSIST_DELAY
+        os.write(1, b"Set model to sonnet\\n")
+    if persist_at is not None and time.monotonic() >= persist_at:
+        settings = Path(sys.argv[3])
+        saved = json.loads(settings.read_text())
+        saved["model"] = "sonnet"
+        settings.write_text(json.dumps(saved))
+        persist_at = None
+    readable, _, _ = sel.select([0], [], [], 0.01)
+    if not readable:
+        continue
+    data = os.read(0, 4096)
+    if not model_complete:
+        if ready_at is None and b"\\x1b" in data:
+            ready_at = time.monotonic() + 0.3
+        continue
+    received += data
+    if b"\\x1b[200~" in received and b"\\x1b[201~" in received:
+        prefix, rest = received.split(b"\\x1b[200~", 1)
+        prompt, rest = rest.split(b"\\x1b[201~", 1)
+        if b"\\r" in rest:
+            submitted.append(prompt.decode())
+            send_hook(socket_path, prompt.decode())
+            received = b""
+            deadline = min(deadline, time.monotonic() + 0.5)
+capture_path.write_text(json.dumps({"submitted": submitted}))
+""",
+        )
+
+        try:
+            result = claude_pty.run_claude_pty(
+                [sys.executable, str(fake_claude), str(socket_path), str(capture), str(settings)],
+                route_prompt=_route_sonnet,
+                socket_path=socket_path,
+                prepare_model_switch=guard.begin,
+                model_switch_persisted=guard.is_routed,
+                restore_model_setting=restore,
+            )
+        finally:
+            guard.restore()
+
+        assert result == 0
+        assert json.loads(capture.read_text())["submitted"] == ["hello"]
+        assert restored_after_completion == [True]
+        assert json.loads(settings.read_text()) == original_settings
+
+    @pytest.mark.parametrize("keeps_rendering", [False, True], ids=["silent", "busy"])
+    def test_unresponsive_switch_stops_automatic_input(
+        self, tmp_path, monkeypatch, keeps_rendering
+    ):
+        monkeypatch.setattr(claude_pty, "READY_QUIET_S", 0.05)
+        monkeypatch.setattr(claude_pty, "SELECT_TIMEOUT_S", 0.02)
+        monkeypatch.setattr(claude_pty, "SWITCH_TIMEOUT_S", 0.15)
+        monkeypatch.setattr(claude_pty, "ESC_GAP_S", 0.05)
+        monkeypatch.setattr(claude_pty, "READY_TIMEOUT_S", 0.25)
+
+        socket_path = tmp_path / "first.sock"
+        capture = tmp_path / "capture.json"
+        log = tmp_path / "routing.log"
+        restore_called = []
+        fake_claude = tmp_path / "fc.py"
+        _write_fake_claude(
+            fake_claude,
+            f"KEEPS_RENDERING = {keeps_rendering}\n"
+            + """\
+resp = send_hook(socket_path, "hello")
+assert resp["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\\r")
+esc = os.read(0, 1)
+
+# No ready response: either silent or continuously rendering a busy command.
+received = b""
+deadline = time.monotonic() + 0.6
+while time.monotonic() < deadline:
+    if KEEPS_RENDERING:
+        os.write(1, b"busy\\r")
+    readable, _, _ = sel.select([0], [], [], 0.01)
+    if readable:
+        received += os.read(0, 4096)
+capture_path.write_text(json.dumps({"esc": esc.hex(), "received": received.hex()}))
+""",
+        )
+
+        result = claude_pty.run_claude_pty(
+            [sys.executable, str(fake_claude), str(socket_path), str(capture)],
+            route_prompt=_route_sonnet,
+            socket_path=socket_path,
+            restore_model_setting=lambda: restore_called.append(True),
+            log_path=log,
+        )
+
+        assert result == 0
+        assert json.loads(capture.read_text()) == {"esc": "1b", "received": ""}
+        assert restore_called == [], "defer restoration until Claude can no longer write the model"
+        assert "automatic replay stopped" in log.read_text()
+
     def test_switch_timeout_sends_esc_then_pastes_and_submits(self, tmp_path, monkeypatch):
         monkeypatch.setattr(claude_pty, "READY_QUIET_S", 0.05)
         monkeypatch.setattr(claude_pty, "SWITCH_TIMEOUT_S", 0.25)
@@ -273,8 +421,9 @@ tty.setraw(0)
 
 read_until(b"\\r")    # /model command — but we never confirm the switch
 
-# After SWITCH_TIMEOUT_S: ESC is sent (to cancel /model), then paste, then CR.
+# The native TUI redraws after handling a standalone Escape.
 esc_byte = os.read(0, 1)
+os.write(1, b"Cancelled model switch\\n")
 paste = read_until(b"\\x1b[201~")
 enter = os.read(0, 1)
 
@@ -442,8 +591,17 @@ submitted = []
 pasting = False
 pending = b""
 in_hook = None
-while len(submitted) < EXPECTED_SUBMITS:
+deadline = time.monotonic() + 3.0
+while len(submitted) < EXPECTED_SUBMITS and time.monotonic() < deadline:
+    if not sel.select([0], [], [], 0.05)[0]:
+        continue
     pending += os.read(0, 1)
+    if pending == b"\\x1b" and not sel.select([0], [], [], 0.03)[0]:
+        if in_hook is not None:
+            box, in_hook = in_hook, None
+        pending = b""
+        os.write(1, b"Cancelled model switch\\n")
+        continue
     if pending in (b"\\x1b", b"\\x1b[", b"\\x1b[2", b"\\x1b[20", b"\\x1b[200", b"\\x1b[201"):
         continue
     if pending == b"\\x1b[200~":

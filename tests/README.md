@@ -596,8 +596,11 @@ Codex decisions carry the same request metadata. These use mocked HTTP responses
 `test_claude_pty_replay.py` drives `run_claude_pty` against fake TUIs. One models Claude Code
 2.1.295 and later, which keep a hook-blocked prompt in the input box: `/model` must run as a
 command, and the replay must arrive unchanged after a switch, a switch timeout, or a missing
-quiet window. These are component checks; live first-prompt routing on a pinned Claude Code
-version is not executed here.
+quiet window. A delayed `/model` completion reproduces Claude Code 2.1.290's timeout race:
+the prompt must be submitted exactly once and the saved default restored after the native
+write. Cancellation recovery waits for fresh output to settle; silent or continuously busy
+commands stop automatic replay with a warning. These are component checks; live first-prompt
+routing on a pinned Claude Code version is not executed here.
 
 `test_smart_router.py` executes the installed skill's shell commands with another `ug`
 first in PATH and a launching interpreter path containing spaces. Both agents' toggles
