@@ -24,7 +24,7 @@ on:
         required: true
       codex_version:
         description: Exact Codex version
-        default: 0.154.0
+        default: 0.165.0
         required: true
       opencode_version:
         description: Exact OpenCode version (non-blocking lane)
@@ -59,7 +59,7 @@ env:
   UG_VERSION: ${{ inputs.ug_version || 'checkout' }}
   ENTRY_POINT: ${{ inputs.entry_point || 'ug' }}
   CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.290' }}
-  CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}
+  CODEX_VERSION: ${{ inputs.codex_version || '0.165.0' }}
   OPENCODE_VERSION: ${{ inputs.opencode_version || '1.18.31' }}
   COPILOT_VERSION: ${{ inputs.copilot_version || '1.0.91' }}
   ANTIGRAVITY_BUILD: ${{ inputs.antigravity_build || '1.4.9-4962164969177088' }}

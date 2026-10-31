@@ -416,6 +416,7 @@ def run_claude_pty(
             paste_deadline = 0.0
             verify_deadline = 0.0
             esc_deadline = 0.0
+            cancel_started = 0.0
             submit_attempts = 0
             switch_complete: OutputMarkerDetector | None = None
 
@@ -456,7 +457,7 @@ def run_claude_pty(
                     keystroke = confirm.observe(chunk, last_output)
                     if keystroke is not None:
                         os.write(master_fd, keystroke)
-                    if phase == "switching" and switch_complete is not None:
+                    if phase in ("switching", "waiting_cancel") and switch_complete is not None:
                         switch_complete.observe(chunk)
 
                 if phase == "waiting_prompt":
@@ -496,21 +497,45 @@ def run_claude_pty(
                     phase = "waiting_persist"
                     switch_started = now
                 elif phase == "switching" and now - switch_started >= SWITCH_TIMEOUT_S:
-                    # ESC cancels the /model command; gap prevents ESC+\x1b[200~ being an Alt-seq.
+                    # ESC can race with /model finishing. Replaying before its final
+                    # redraw lets the command clear our pasted prompt.
                     os.write(master_fd, b"\x1b")
-                    restore_model_setting()
+                    confirm.clear()
                     inject_note(
                         1,
                         "Smart Routing could not confirm the model switch; "
-                        "submitting your prompt on the default model.",
+                        "waiting for Claude before replaying your prompt.",
                     )
+                    cancel_started = now
                     esc_deadline = now + ESC_GAP_S
-                    phase = "esc_gap"
+                    phase = "waiting_cancel"
                     log(f"[ERR] direct model switch timed out for {routed_model!r}")
-                elif phase == "esc_gap" and now >= esc_deadline:
-                    inject_prompt(master_fd, routed_prompt, submit=False, clear=clear_keys())
-                    paste_deadline = now + PASTE_SUBMIT_DELAY_S
-                    phase = "pasting"
+                elif phase == "waiting_cancel":
+                    if (
+                        now >= esc_deadline
+                        and switch_complete is not None
+                        and switch_complete.triggered
+                    ):
+                        # A late success still needs its settings write restored.
+                        phase = "waiting_persist"
+                        switch_started = now
+                        log("[SWITCH] model command completed after timeout")
+                    elif now >= esc_deadline and last_output > cancel_started and idle:
+                        restore_model_setting()
+                        inject_prompt(master_fd, routed_prompt, submit=False, clear=clear_keys())
+                        paste_deadline = now + PASTE_SUBMIT_DELAY_S
+                        phase = "pasting"
+                        log("[PASTE] Claude settled after Escape; replaying first prompt")
+                    elif now - cancel_started >= READY_TIMEOUT_S:
+                        # No safe replay point: keep the TUI usable and leave final
+                        # settings restoration to launch_claude after the child exits.
+                        inject_note(
+                            1,
+                            "Smart Routing could not confirm Claude was ready. "
+                            "Resend your prompt when Claude is ready.",
+                        )
+                        phase = "done"
+                        log("[WARN] Claude did not settle after Escape; automatic replay stopped")
                 elif phase == "waiting_persist" and model_switch_persisted():
                     restore_model_setting()
                     inject_prompt(master_fd, routed_prompt, submit=False, clear=clear_keys())

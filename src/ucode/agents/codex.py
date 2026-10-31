@@ -125,6 +125,8 @@ _LAUNCH_ROUTING_HEADER_ENV_VARS = {
 }
 MINIMUM_CODEX_VERSION = (0, 145, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.145.0"
+MINIMUM_SMART_ROUTING_CODEX_VERSION = (0, 164, 0)
+MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT = "0.164.0"
 # Codex 0.134.0 introduced per-profile config files; older releases use the legacy layout.
 LEGACY_LAYOUT_CODEX_VERSION = (0, 134, 0)
 LEGACY_LAYOUT_CODEX_VERSION_TEXT = "0.134.0"
@@ -167,9 +169,17 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
     return int(major), int(minor), int(patch)
 
 
-def minimum_version_error() -> str | None:
+def minimum_version_error(*, smart_routing: bool = False) -> str | None:
     version = agent_version(SPEC["binary"])
     parsed = _parse_version(version)
+    if smart_routing:
+        if parsed is not None and parsed >= MINIMUM_SMART_ROUTING_CODEX_VERSION:
+            return None
+        return (
+            f"Codex smart routing requires Codex {MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT} "
+            f"or newer for readable delegated assignments; found {version}. "
+            "Upgrade Codex or launch with --disable-smart-routing."
+        )
     if parsed is None or parsed >= MINIMUM_CODEX_VERSION:
         return None
     return f"ug requires Codex {MINIMUM_CODEX_VERSION_TEXT} or newer; found {version}."
@@ -1597,6 +1607,8 @@ def launch(
 def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
     binary = SPEC["binary"]
+    if error := minimum_version_error(smart_routing=True):
+        raise RuntimeError(error)
 
     configured_model = _smart_routing_config_model(state)
     # Prefer the custom catalog if it exists.

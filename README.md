@@ -417,6 +417,13 @@ An explicit `--model`, from `ug claude --model` or a launcher such as Omnigent, 
 subagent routing when first-prompt routing is off; the main session stays on that model.
 With first-prompt routing on, an explicit model still skips routing.
 
+Codex smart routing requires Codex 0.164.0 or newer. UG enables readable native v2
+collaboration and matching root/child guidance for that launch only; it does not
+write these settings to your config. Requests use the configured Databricks provider
+directly. Subagent-only routing launches the native TUI directly; first-prompt routing
+uses the existing app-server interposer. Older or unrecognized Codex versions must be
+upgraded or launched with `--disable-smart-routing`.
+
 ### Smart Router Orchestrator
 
 Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration.
@@ -487,6 +494,9 @@ Once opted in, orchestration follows the existing smart-routing launch eligibili
 and session controls. Turning Smart Router off through its skill stops new automatic delegation;
 turning it on restores orchestration only in opted-in sessions. Explicit user
 requests for subagents still use normal harness behavior while routing is off.
+If Codex cannot read the private session controls, the skill requests native
+approval for the exact toggle command. Declining leaves routing unchanged;
+the directory permissions and sandbox configuration are preserved.
 Stored skill files do not activate orchestration without an opted-in configuration,
 or in non-routed sessions. Existing Isaac pilot gating
 and UG launch exclusions still apply.

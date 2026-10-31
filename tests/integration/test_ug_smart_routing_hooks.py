@@ -9,6 +9,8 @@ Smart Router skill and spawn real children before and after its session-local to
 """
 
 import json
+import os
+import re
 from pathlib import Path
 
 import pytest
@@ -157,6 +159,23 @@ def _run_calculation(
     return task
 
 
+def _codex_command_approval_pending(screen: str, expected_command: str) -> bool:
+    prompt = "Would you like to run the following command?"
+    if prompt not in screen or "Press enter to confirm or esc to cancel" not in screen:
+        return False
+    dialog = screen.rsplit(prompt, 1)[1]
+    command = re.search(
+        r"(?ms)^[ \t]*\$ (.*?)\n[ \t]*[›❯>][ \t]*1\. Yes, proceed \(y\)[ \t]*$",
+        dialog,
+    )
+    assert (
+        "Environment: local" in dialog
+        and command is not None
+        and command.group(1).strip() == expected_command
+    ), "Codex requested an unexpected command approval:\n" + dialog
+    return True
+
+
 def _toggle_with_skill(
     tui, session, agent: str, enabled: bool, orchestration_enabled: bool
 ) -> None:
@@ -209,9 +228,20 @@ def _toggle_with_skill(
 
     before_answers, before_confirmations = completion_counts()
     tui.submit(invocation)
+    approval_sent = False
+    flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
+    python = (
+        '& "$env:UCODE_SMART_ROUTER_PYTHON"' if os.name == "nt" else '"$UCODE_SMART_ROUTER_PYTHON"'
+    )
+    command = f"{python} -m ucode.cli codex {flag}"
 
     def toggled(screen):
-        if tui.approve_windows_command(screen):
+        nonlocal approval_sent
+        # Fresh remote Codex sessions can be read-only. Approve only this
+        # requested toggle through the native dialog, keeping the sandbox intact.
+        if not approval_sent and _codex_command_approval_pending(screen, command):
+            tui.send("\r", f"approve the session-local Smart Router toggle {state} once")
+            approval_sent = True
             return False
         try:
             controls_now = json.loads(controls[0].read_text())
