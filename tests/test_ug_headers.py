@@ -64,3 +64,60 @@ def test_bad_inherited_line_never_blocks_a_command(monkeypatch):
     result = CliRunner().invoke(app, ["revert", "--help"])
     assert result.exit_code == 0, result.output
     assert "secret-tok" not in result.output
+
+
+def test_openui_attribution_is_launch_local(monkeypatch):
+    monkeypatch.setenv("OPENUI_SESSION_ID", "session-123")
+    monkeypatch.setenv("UG_HEADERS", "X-Team: eng")
+
+    assert ug_headers() == {
+        "X-Team": "eng",
+        "Databricks-Custom-Client-Surfaces": "openui",
+    }
+    assert os.environ["UG_HEADERS"] == "X-Team: eng"
+
+    monkeypatch.delenv("OPENUI_SESSION_ID")
+    assert ug_headers() == {"X-Team": "eng"}
+
+
+@pytest.mark.parametrize("session_id", ["", " \t"])
+def test_empty_openui_marker_does_not_attribute_a_terminal_launch(monkeypatch, session_id):
+    monkeypatch.setenv("OPENUI_SESSION_ID", session_id)
+    assert ug_headers() == {}
+
+
+def test_openui_merges_surfaces_and_keeps_admin_headers(monkeypatch):
+    monkeypatch.setenv("OPENUI_SESSION_ID", "session-123")
+    monkeypatch.setenv(
+        "UG_HEADERS",
+        "x-team: caller\ndatabricks-custom-client-surfaces: UG, OpenUI\nX-New: 1",
+    )
+    existing = {
+        "User-Agent": "ucode/1 claude/2",
+        "X-Team": "admin",
+        "Databricks-Custom-Client-Surfaces": "omnigent",
+    }
+
+    merged = ug_headers(existing)
+
+    assert merged == {
+        "User-Agent": "ucode/1 claude/2",
+        "X-Team": "admin",
+        "Databricks-Custom-Client-Surfaces": "omnigent, UG, OpenUI",
+        "X-New": "1",
+    }
+    assert ug_headers(merged) == merged
+    assert existing["Databricks-Custom-Client-Surfaces"] == "omnigent"
+
+
+def test_client_surfaces_merge_repeated_header_names_and_values(monkeypatch):
+    monkeypatch.setenv("OPENUI_SESSION_ID", "session-123")
+    monkeypatch.setenv(
+        "UG_HEADERS",
+        "databricks-custom-client-surfaces: ug, OpenUI\n"
+        "Databricks-Custom-Client-Surfaces: UG, other",
+    )
+
+    assert ug_headers() == {
+        "databricks-custom-client-surfaces": "ug, OpenUI, other",
+    }

@@ -7,6 +7,7 @@ import os
 import plistlib
 import re
 import sys
+import tomllib
 from pathlib import Path
 from subprocess import CalledProcessError
 from unittest.mock import Mock
@@ -1520,6 +1521,57 @@ class TestCodexLaunch:
             "X-Team": "eng",
             "X-New": "1",
         }
+
+    def test_openui_surface_reaches_only_its_codex_launch(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        profile_path = tmp_path / "ucode.config.toml"
+        profile_path.write_text(
+            profile_path.read_text(encoding="utf-8")
+            + "\n[model_providers.Databricks.http_headers]\n"
+            + 'Databricks-Custom-Client-Surfaces = "omnigent"\n'
+            + 'User-Agent = "ucode/1 codex/2"\n',
+            encoding="utf-8",
+        )
+        before = profile_path.read_bytes()
+        monkeypatch.setenv("OPENUI_SESSION_ID", "session-123")
+        monkeypatch.setenv("UG_HEADERS", "databricks-custom-client-surfaces: ug")
+
+        codex.launch({"workspace": WS}, [], options=LaunchOptions())
+        monkeypatch.delenv("OPENUI_SESSION_ID")
+        codex.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        headers = [
+            tomllib.loads(
+                next(arg for arg in argv if arg.startswith("model_providers.Databricks="))
+            )["model_providers"]["Databricks"]["http_headers"]
+            for argv in launches
+        ]
+        assert headers[0] == {
+            "Databricks-Custom-Client-Surfaces": "omnigent, ug, openui",
+            "User-Agent": "ucode/1 codex/2",
+        }
+        assert headers[1] == {
+            "Databricks-Custom-Client-Surfaces": "omnigent, ug",
+            "User-Agent": "ucode/1 codex/2",
+        }
+        assert profile_path.read_bytes() == before
+
+    @pytest.mark.parametrize(
+        ("admin_surfaces", "expected"),
+        [("omnigent", "omnigent, openui"), ("omnigent, OpenUI", "omnigent, OpenUI")],
+    )
+    def test_smart_routing_overlay_merges_openui_with_admin_surfaces(
+        self, monkeypatch, admin_surfaces, expected
+    ):
+        monkeypatch.setenv("OPENUI_SESSION_ID", "session-123")
+        overlay = codex._render_launch_overlay(
+            WS,
+            managed_http_headers={"databricks-custom-client-surfaces": admin_surfaces},
+        )
+
+        headers = overlay["model_providers"]["Databricks"]["http_headers"]
+        assert headers["databricks-custom-client-surfaces"] == expected
+        assert "Databricks-Custom-Client-Surfaces" not in headers
 
     def test_provider_discovery_uses_custom_oauth_token(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)

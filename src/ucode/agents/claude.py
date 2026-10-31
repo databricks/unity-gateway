@@ -39,7 +39,6 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     SMART_ROUTER_RECIPE_HEADER,
-    UG_HEADERS_ENV_VAR,
 )
 from ucode.custom_oauth import (
     CustomOAuthConfig,
@@ -118,6 +117,7 @@ from ucode.smart_routing.claude_hooks import (
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.ug_headers import ug_headers
 from ucode.ui import print_note, print_success, print_warning
 from ucode.workspace import (
     SELECTOR_HEADER_NAMES,
@@ -2691,9 +2691,10 @@ def launch(
     binary = SPEC["binary"]
     workspace = state.get("workspace")
     ensure_hooks_modules_gate()
-    if os.environ.get(UG_HEADERS_ENV_VAR, "").strip() and not header_mod_active():
+    if ug_headers() and not header_mod_active():
         print_warning(
-            "Claude Code won't send your `ug --header` / UG_HEADERS headers: ug's header mod isn't "
+            "Claude Code won't send launch headers (ug --header / UG_HEADERS or OpenUI attribution): "
+            "ug's header mod isn't "
             "installed or is out of date, and a launch never changes machine-wide files. Run "
             "`ug configure` from an interactive terminal on Linux or macOS, without "
             "UG_SKIP_OS_SETTINGS."

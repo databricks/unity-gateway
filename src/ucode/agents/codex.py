@@ -1321,11 +1321,15 @@ def _render_launch_overlay(*args, **kwargs) -> dict:
 def _add_launch_headers(config: dict) -> None:
     """Add this launch's ``ug --header`` / ``UG_HEADERS`` to the provider's ``-c`` headers.
 
-    A header ug or the admin already sends keeps its value. The headers reach only this launch's
-    ``-c`` flags, never a config file."""
-    present = {name.casefold() for name in _managed_provider_headers(config) or {}}
-    for name, value in ug_headers().items():
-        if name.casefold() not in present:
+    Existing headers keep their values and client surfaces are merged. The headers reach only
+    this launch's ``-c`` flags, never a config file."""
+    headers = _managed_provider_headers(config)
+    merged = ug_headers(headers)
+    if headers is not None:
+        headers.clear()
+        headers.update(merged)
+    else:
+        for name, value in merged.items():
             _set_routing_header(config, name, value)
 
 

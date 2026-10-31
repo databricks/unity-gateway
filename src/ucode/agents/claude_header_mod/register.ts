@@ -3,9 +3,11 @@ import type { EngineInterface, On } from 'claude-code';
 // Adds the launch's `UG_HEADERS` lines (`ug --header`) to `ANTHROPIC_CUSTOM_HEADERS` for this
 // process only. ug installs it as the organization's mod, the one tier allowed to change a variable
 // managed settings set. A header whose name is already present is left alone, so neither ug's nor an
-// admin's header can be replaced from a launch.
+// admin's header can be replaced from a launch. Client surfaces are additive, including OpenUI's
+// process-local session marker.
 
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const CLIENT_SURFACES_HEADER = 'Databricks-Custom-Client-Surfaces';
 
 // `Name: value` with an HTTP token name, a non-empty value, and no control characters but tab.
 function isHeaderLine(line: string): boolean {
@@ -18,18 +20,43 @@ function isHeaderLine(line: string): boolean {
   );
 }
 
-export function headerLines(base: string | undefined, extra: string | undefined): string | undefined {
+export function headerLines(
+  base: string | undefined,
+  extra: string | undefined,
+  openuiSessionId?: string,
+): string | undefined {
   const lines = (base ?? '').split(/\r?\n/).filter((line) => line.trim());
   const name = (line: string) => line.split(':', 1)[0].trim().toLowerCase();
   const present = new Set(lines.map(name));
   const merged = [...lines];
+  const additional = (extra ?? '').split(/\r?\n/).map((line) => line.trim());
+  if (openuiSessionId?.trim()) additional.push(`${CLIENT_SURFACES_HEADER}: openui`);
   // Malformed lines are skipped: launched without ug, nothing else has checked them.
-  for (const line of (extra ?? '').split(/\r?\n/).map((l) => l.trim())) {
-    if (!isHeaderLine(line) || present.has(name(line))) continue;
+  for (const line of additional) {
+    if (!isHeaderLine(line)) continue;
+    if (name(line) === CLIENT_SURFACES_HEADER.toLowerCase()) {
+      const indices = merged.flatMap((item, index) => name(item) === name(line) ? [index] : []);
+      const previous = indices.map((index) => merged[index]);
+      const surfaces = new Map<string, string>();
+      for (const item of [...previous, line]) {
+        for (const value of item.slice(item.indexOf(':') + 1).split(',')) {
+          const surface = value.trim();
+          if (surface && !surfaces.has(surface.toLowerCase())) surfaces.set(surface.toLowerCase(), surface);
+        }
+      }
+      const headerName = (previous[0] ?? line).split(':', 1)[0].trim();
+      const insertion = indices[0] ?? merged.length;
+      for (const index of indices.reverse()) merged.splice(index, 1);
+      merged.splice(insertion, 0, `${headerName}: ${[...surfaces.values()].join(', ')}`);
+      present.add(name(line));
+      continue;
+    }
+    if (present.has(name(line))) continue;
     present.add(name(line));
     merged.push(line);
   }
-  return merged.length === lines.length ? undefined : merged.join('\n');
+  const result = merged.join('\n');
+  return result === lines.join('\n') ? undefined : result;
 }
 
 async function apply($: EngineInterface): Promise<void> {
@@ -37,6 +64,7 @@ async function apply($: EngineInterface): Promise<void> {
   const merged = headerLines(
     await $.env.get('ANTHROPIC_CUSTOM_HEADERS'),
     await $.env.get('UG_HEADERS'),
+    await $.env.get('OPENUI_SESSION_ID'),
   );
   if (merged !== undefined) await $.env.set('ANTHROPIC_CUSTOM_HEADERS', merged);
 }

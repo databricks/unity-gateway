@@ -146,6 +146,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.delenv("UCODE_SMART_ROUTER_PYTHON", raising=False)
     # `ug --header` exports this to the agent, so an outer session's value would leak into launches.
     monkeypatch.delenv("UG_HEADERS", raising=False)
+    monkeypatch.delenv("OPENUI_SESSION_ID", raising=False)
     # When the suite runs inside a ug smart-routing session, these ambient env vars
     # make smart_routing_enabled()/configured_router_name() read the host's live
     # routing state, leaking a Databricks-Smart-Router-Recipe header into
