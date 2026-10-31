@@ -185,6 +185,7 @@ from ucode.state import (
     MANAGED_OVERLAY_KEY,
     SELF_MANAGED_AGENTS_KEY,
     add_self_managed_agent,
+    aliased_workspace_key,
     clear_state,
     current_workspace_key,
     get_model_location,
@@ -225,7 +226,10 @@ from ucode.ui import (
 )
 from ucode.usage import usage as usage_report
 from ucode.workspace import (
+    activate,
+    pin,
     resolve_workspace,
+    selector_headers,
     split_workspace_key,
     state_workspace_key,
     workspace_key,
@@ -565,9 +569,12 @@ def configure_shared_state(
     workspace, workspace_id = split_workspace_key(workspace)
     prior_state = load_state()
     previous_workspace = prior_state.get("workspace")
-    # Re-configures pass the saved bare host; they keep its workspace on a multi-workspace host.
-    if workspace_id is None and previous_workspace == workspace:
-        workspace_id = prior_state.get("workspace_id")
+    # The bare host of a multi-workspace host keeps its saved workspace, from any current one.
+    if workspace_id is None:
+        if previous_workspace == workspace:
+            workspace_id = prior_state.get("workspace_id")
+        else:
+            workspace_id = split_workspace_key(aliased_workspace_key(workspace) or workspace)[1]
     key = workspace_key(workspace, workspace_id)
     previous_key = state_workspace_key(prior_state)
     if use_pat is None:
@@ -591,6 +598,8 @@ def configure_shared_state(
         state["workspace_id"] = workspace_id
     else:
         state.pop("workspace_id", None)
+    # After `load_state`, which selected the previous workspace.
+    activate(workspace, workspace_id)
     if previous_key != key:
         # Model discovery below refreshes the selected workspace. MCP selections are different:
         # they are user choices, so carry the destination's saved registry across a switch.
@@ -2554,6 +2563,7 @@ def mcp_proxy_cmd(
             "with `ug configure --profile <name> --use-pat`.",
         ),
     ] = False,
+    workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
     """Bridge a coding agent's stdio MCP transport to a Databricks MCP endpoint.
 
@@ -2569,6 +2579,8 @@ def mcp_proxy_cmd(
     if not workspace:
         print_err("No workspace configured. Run `ug configure` first.")
         raise typer.Exit(1)
+    if workspace_id:
+        pin(workspace, workspace_id)
     profile = profile or state.get("profile")
     serve(url, workspace, profile, use_pat=use_pat or bool(state.get("use_pat")))
 
@@ -2581,6 +2593,7 @@ def cowork_hook_cmd(
         str | None, typer.Option("--profile", help="Databricks CLI profile.")
     ] = None,
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
+    workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
     """Run the Cowork plugin's SessionStart and UserPromptSubmit hooks."""
     import json
@@ -2593,6 +2606,8 @@ def cowork_hook_cmd(
     except ValueError:
         return
     servers = dict(entry.split("=", 1) for entry in server if "=" in entry)
+    if workspace_id:
+        pin(host, workspace_id)
     with redirect_stdout(sys.stderr):  # stdout is reserved for the hook's JSON
         output = hook_output(payload, servers, host, profile, use_pat=use_pat)
     if output:
@@ -2748,12 +2763,15 @@ def auth_token_cmd(
 def otel_proxy_cmd(
     host: Annotated[str, typer.Option("--host")],
     port: Annotated[int, typer.Option("--port", min=1, max=65535)],
+    workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
     """Run the same OTLP proxy as a Codex CLI session, for desktop."""
     from ucode import gateway_proxy
 
     try:
-        state = load_full_state().get("workspaces", {}).get(host)
+        state = load_full_state().get("workspaces", {}).get(workspace_key(host, workspace_id))
+        if workspace_id:
+            pin(host, workspace_id)
         if not state:
             raise RuntimeError(f"No saved configuration for {host}. Run `ug configure` first.")
         apply_pat_environment(state)
@@ -2782,6 +2800,7 @@ def otel_headers_cmd(
         bool,
         typer.Option("--force-refresh", help="Force the Databricks CLI to mint a new token."),
     ] = False,
+    workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
     """Print fresh OTLP export headers as JSON to stdout, then exit."""
     import json
@@ -2808,7 +2827,9 @@ def otel_headers_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
-    sys.stdout.write(json.dumps({"Authorization": f"Bearer {token}"}) + "\n")
+    sys.stdout.write(
+        json.dumps({"Authorization": f"Bearer {token}", **selector_headers(workspace_id)}) + "\n"
+    )
 
 
 def _oauth_token_is_fresh(token: str, buffer_seconds: float = 120) -> bool:
@@ -2851,8 +2872,11 @@ def codex_router_hook_cmd(
     profile: Annotated[str | None, typer.Option("--profile")] = None,
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
     model: Annotated[list[str] | None, typer.Option("--model")] = None,
+    workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
     """Run a Codex smart-routing lifecycle hook."""
+    if host and workspace_id:
+        pin(host, workspace_id)
     import json
     import sys
 
@@ -2925,8 +2949,11 @@ def claude_router_hook_cmd(
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
     model: Annotated[list[str] | None, typer.Option("--model")] = None,
     socket_path: Annotated[str | None, typer.Option("--socket")] = None,
+    workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
     """Run a Claude Code smart-routing lifecycle hook."""
+    if host and workspace_id:
+        pin(host, workspace_id)
     import json
     import sys
 

@@ -23,6 +23,7 @@ from urllib import request as urllib_request
 
 from ucode.databricks import get_databricks_token
 from ucode.ug_headers import ug_headers
+from ucode.workspace import WORKSPACE_ID_ENV_VAR, pin, workspace_headers
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "ucode-web-search"
@@ -124,6 +125,9 @@ def _call_responses_api(query: str) -> dict[str, Any]:
     profile = os.environ.get("DATABRICKS_CONFIG_PROFILE", "").strip() or None
     if not workspace:
         raise RuntimeError("DATABRICKS_HOST env var is not set.")
+    workspace_id = os.environ.get(WORKSPACE_ID_ENV_VAR, "").strip()
+    if workspace_id:
+        pin(workspace, workspace_id)
     if not model:
         raise RuntimeError("UCODE_WEB_SEARCH_MODEL env var is not set.")
 
@@ -147,6 +151,7 @@ def _call_responses_api(query: str) -> dict[str, Any]:
         method="POST",
         headers={
             **ug_headers(),
+            **workspace_headers(workspace),
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Accept": "application/json",

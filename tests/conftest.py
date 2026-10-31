@@ -23,6 +23,17 @@ collect_ignore = ["integration", "e2e_cuj", "native_claude", "connector_behavior
 
 
 @pytest.fixture(autouse=True)
+def _reset_selected_workspace(monkeypatch):
+    """Start every test with no multi-workspace host selected, as a fresh process would."""
+    import ucode.workspace as workspace_mod
+
+    monkeypatch.setattr(workspace_mod, "_active_host", None)
+    monkeypatch.setattr(workspace_mod, "_active_workspace_id", None)
+    monkeypatch.setattr(workspace_mod, "_pinned", False)
+    monkeypatch.setattr(workspace_mod, "_host_types", {})
+
+
+@pytest.fixture(autouse=True)
 def _isolate_ucode_state(tmp_path, monkeypatch):
     """Redirect ucode's state file and APP_DIR to a per-test tmp dir.
 
