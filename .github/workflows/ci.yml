@@ -117,6 +117,17 @@ jobs:
             echo "::error::The VS Code extension bundle is stale. Run \`just vscode-build\` and commit the result."
             exit 1
           }
+      # Last, so the offline checks fail fast before this spends anything on real models. It calls
+      # the gateway, so it can fail on provider quota or rate limits; that must not turn the required
+      # `test` check red, and the step is still marked failed in the run.
+      - name: Check the requests against a real gateway
+        continue-on-error: true
+        if: ${{ github.event_name != 'merge_group' }}
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          # See the e2e shards: a hosted runner has no cached login, so CI supplies a pre-fetched bearer.
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: npm run live
 
   e2e-shards:
     name: ${{ matrix.name }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}

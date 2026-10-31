@@ -33,7 +33,8 @@
   "scripts": {
     "build": "esbuild src/extension.ts --bundle --minify --legal-comments=none --outfile=../src/ucode/vscode/extension/out/extension.js --external:vscode --format=cjs --platform=node --target=node22 && node -e \"const m = require('./package.json'); delete m.scripts; delete m.devDependencies; require('fs').writeFileSync('../src/ucode/vscode/extension/package.json', JSON.stringify(m, null, 2) + '\\n')\"",
     "typecheck": "tsc",
-    "test": "esbuild test/*.test.ts --bundle --platform=node --format=cjs --target=node22 --outdir=.test-out --alias:vscode=./test/vscode.ts --log-level=warning && node --test .test-out/*.test.js"
+    "test": "esbuild test/*.test.ts --bundle --platform=node --format=cjs --target=node22 --outdir=.test-out --alias:vscode=./test/vscode.ts --log-level=warning && node --test .test-out/*.test.js",
+    "live": "esbuild test/live/requests.live.ts --bundle --platform=node --format=cjs --target=node22 --outdir=.live-out --alias:vscode=./test/vscode.ts --log-level=warning && node --test .live-out/requests.live.js"
   },
   "devDependencies": {
     "@types/node": "^22.20.3",
