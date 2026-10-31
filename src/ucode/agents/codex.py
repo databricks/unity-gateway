@@ -110,6 +110,8 @@ LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
 CODEX_MODEL_PROVIDER_NAME = "Databricks"
 LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
+# The Codex app relay's own provider in ~/.codex/config.toml, apart from the managed `Databricks`.
+CODEX_APP_RELAY_PROVIDER_NAME = "DatabricksRelay"
 # ug owns the provider http_headers table and its auth/requires_openai_auth mode, so they are
 # pruned before each merge and rewritten from render_overlay — dropping stale routing and admin
 # headers or a previous relayed/non-relayed mode that deep_merge cannot delete.
@@ -427,8 +429,8 @@ def revert_legacy_shared_config() -> bool:
     # Launch-scoped catalogs from _model_catalog_path; only the reverted ug profile names them.
     for path in CODEX_MODEL_CATALOG_PATH.parent.glob(f"{CODEX_MODEL_CATALOG_PATH.stem}-*.json"):
         path.unlink(missing_ok=True)
-    desktop_tracing_changed = _sync_desktop_tracing(None)
-    return legacy_changed or app_catalog_changed or desktop_tracing_changed
+    desktop_changed = _sync_desktop_tracing(None) | _sync_desktop_relay({}, None, None)
+    return legacy_changed or app_catalog_changed or desktop_changed
 
 
 def configured_paths(state: dict) -> list[str]:
@@ -582,7 +584,10 @@ def write_tool_config(
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
     # The desktop proxy reads authentication from the saved workspace.
-    _sync_desktop_tracing(workspace if state.get("codex_otel_tracing") else None)
+    tracing = bool(state.get("codex_otel_tracing"))
+    if _explicit_configure:  # like Claude Desktop, only `ug configure` changes the app
+        _sync_desktop_relay(state, workspace, provider if relayed else None, tracing=tracing)
+    _sync_desktop_tracing(workspace if tracing else None)
     return state
 
 
@@ -796,19 +801,31 @@ def _owned_otel_service(path: Path) -> bool:
     return path.is_file() and _CODEX_OTEL_UNIT_MARKER in _read_otel_service(path)
 
 
-def _ensure_otel_service(workspace: str, port: int) -> None:
+def _ensure_otel_service(workspace: str, port: int, relay_port: int | None = None) -> None:
     path = _otel_service_path()
     if path.is_symlink():
         raise RuntimeError(f"Refusing to replace a symlinked service file: {path}")
     if path.exists() and not _owned_otel_service(path):
         raise RuntimeError(f"Refusing to replace an unmanaged service file: {path}")
+    # Also serve the ChatGPT relay for the Codex app; before --port so its anchor still matches.
+    relay = ["--relay-port", str(relay_port)] if relay_port else []
     if current_os() == OS.WINDOWS:
         # pythonw runs the proxy without a console window that closing would kill.
         # shortcut: the task gets the logon environment, not this shell's DATABRICKS_* overrides;
         # pass them through if a Windows user needs them.
         pythonw = Path(sys.executable).with_name("pythonw.exe")
         python = str(pythonw if pythonw.is_file() else sys.executable)
-        argv = [python, "-m", "ucode.cli", "otel-proxy", "--host", workspace, "--port", str(port)]
+        argv = [
+            python,
+            "-m",
+            "ucode.cli",
+            "otel-proxy",
+            "--host",
+            workspace,
+            *relay,
+            "--port",
+            str(port),
+        ]
         _ensure_scheduled_task(path, argv)
         return
     ug_path = ug_binary()
@@ -818,7 +835,7 @@ def _ensure_otel_service(workspace: str, port: int) -> None:
         )
     if current_os() == OS.MACOS:
         _ensure_launch_agent(
-            path, [ug_path, "otel-proxy", "--host", workspace, "--port", str(port)]
+            path, [ug_path, "otel-proxy", "--host", workspace, *relay, "--port", str(port)]
         )
         return
     lines = [
@@ -826,7 +843,7 @@ def _ensure_otel_service(workspace: str, port: int) -> None:
         "[Service]",
         # systemd expands `$` in ExecStart arguments but never in the executable path.
         f"ExecStart={_systemd_quote(ug_path)} otel-proxy --host "
-        f"{_systemd_quote(workspace, exec_start=True)} --port {port}",
+        f"{_systemd_quote(workspace, exec_start=True)} {' '.join([*relay, '--port', str(port)])}",
         "Restart=on-failure",
         "RestartSec=1s",
     ]
@@ -870,6 +887,16 @@ def _remove_otel_service() -> None:
     _run_systemctl(["daemon-reload"])
 
 
+def _service_port(flag: str) -> int | None:
+    """The ``--{flag}`` port recorded in ug's own login service unit, if there is one."""
+    unit = _otel_service_path()
+    text = _read_otel_service(unit) if _owned_otel_service(unit) else ""
+    match = re.search(rf" --{flag} (\d+)(?= --|$)", text, re.MULTILINE)
+    # A plist puts the port in its own <string>; task XML ends it with </Arguments>.
+    match = match or re.search(rf"--{flag}\D+(\d+)", text)
+    return int(match[1]) if match else None
+
+
 def _desktop_trace_exporter(port: int) -> dict:
     return _otel_proxy_overlay(f"http://{LOOPBACK_HOST}:{port}/v1/traces")["otel"]["trace_exporter"]
 
@@ -888,21 +915,22 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
         if not isinstance(otel, dict):
             raise RuntimeError(f"otel in {_legacy_config_path()} is not a table")
         # ug's own unit records the port, so only an exporter at that port is ug's.
-        unit = _otel_service_path()
-        unit_text = _read_otel_service(unit) if _owned_otel_service(unit) else ""
-        match = re.search(r" --port (\d+)$", unit_text, re.MULTILINE)
-        # A plist puts the port in its own <string>; task XML ends it with </Arguments>.
-        match = match or re.search(r"--port\D+(\d+)", unit_text)
-        port = int(match[1]) if match else None
+        port = _service_port("port")
         ours = port is not None and otel.get("trace_exporter") == _desktop_trace_exporter(port)
+        relay_port = _service_port("relay-port")
         if workspace is None:
-            _remove_otel_service()
+            if not relay_port:  # the Codex app's relay still needs the service
+                _remove_otel_service()
             if ours:
                 del otel["trace_exporter"]
                 if not otel:
                     del doc["otel"]
                 write_toml_file(_legacy_config_path(), doc)
             return ours
+        # The app's relay stays on the workspace `ug configure` set it up for; a launch elsewhere
+        # must not move the service (and the app's MPS headers) to another workspace.
+        if relay_port and workspace not in _read_otel_service(_otel_service_path()):
+            return False
         # shortcut: a managed-file exporter still outranks this one, check it if admins set one.
         if "trace_exporter" in otel and not ours:
             print_warning_err(
@@ -912,7 +940,7 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
             return False
         port = port or _allocate_otel_port()
         # Before the exporter, so a missing systemd user manager leaves Codex settings untouched.
-        _ensure_otel_service(workspace, port)
+        _ensure_otel_service(workspace, port, relay_port)
         if ours:
             return False
         otel["trace_exporter"] = _desktop_trace_exporter(port)
@@ -921,6 +949,85 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
         return True
     except (OSError, RuntimeError, ValueError) as exc:
         print_warning_err(f"Could not update Codex desktop tracing: {exc}")
+        return False
+
+
+_explicit_configure = False
+
+
+def request_explicit_configure(requested: bool = True) -> None:
+    """Mark this run as an explicit ``ug configure`` (``False`` clears it), the only run that sets
+    up or removes the Codex app's ChatGPT relay; a launch's ``--provider`` never changes the app."""
+    global _explicit_configure
+    _explicit_configure = requested
+
+
+def _sync_desktop_relay(
+    state: dict, workspace: str | None, provider: str | None, *, tracing: bool = False
+) -> bool:
+    """Point the Codex app at ug's login service as a ChatGPT relay for ``provider``; None removes.
+
+    It goes in the Codex App settings (``ug codex`` sessions' own ``-c`` provider outranks it and
+    keeps a per-session proxy). Its own provider name is ug's, like Claude Desktop's reserved
+    profile, so a managed ``Databricks`` provider never merges into it.
+    Returns whether that file changed; setup problems only warn.
+    """
+    if current_os() == OS.OTHER or is_dry_run():
+        return False
+    try:
+        doc = _read_app_config()
+        providers = doc.get("model_providers")
+        current = (
+            providers.get(CODEX_APP_RELAY_PROVIDER_NAME) if isinstance(providers, dict) else None
+        )
+        relay_port = _service_port("relay-port")
+        if provider is None or workspace is None:
+            # Config first, so a failed write leaves the app's relay still served.
+            if isinstance(current, dict) and isinstance(providers, dict):
+                del providers[CODEX_APP_RELAY_PROVIDER_NAME]
+                if not providers:
+                    del doc["model_providers"]
+                if doc.get("model_provider") == CODEX_APP_RELAY_PROVIDER_NAME:
+                    del doc["model_provider"]
+                write_toml_file(_legacy_config_path(), doc)
+            if tracing and workspace and relay_port:
+                _ensure_otel_service(workspace, _service_port("port") or _allocate_otel_port())
+            elif not tracing:
+                _remove_otel_service()
+            return isinstance(current, dict)
+        if (
+            doc.get("model_provider", CODEX_APP_RELAY_PROVIDER_NAME)
+            != CODEX_APP_RELAY_PROVIDER_NAME
+        ):
+            print_warning_err(
+                f"{_legacy_config_path()} already sets a model provider; skipped the Codex app "
+                "ChatGPT relay."
+            )
+            return False
+        relay_port = relay_port or _allocate_otel_port()
+        port = _service_port("port")
+        # Each allocation releases its port, so a second one can repeat the first; retry it.
+        while not port or port == relay_port:
+            port = _allocate_otel_port()
+        # Before the config, so a missing systemd user manager leaves Codex settings untouched.
+        _ensure_otel_service(workspace, port, relay_port)
+        block = _provider_block(
+            workspace,
+            state.get("profile"),
+            provider=provider,
+            managed_http_headers=state.get("codex_http_headers"),
+            relayed=True,
+        )
+        block["base_url"] = f"http://{LOOPBACK_HOST}:{relay_port}/v1"
+        if doc.get("model_provider") == CODEX_APP_RELAY_PROVIDER_NAME and current == block:
+            return False
+        doc["model_provider"] = CODEX_APP_RELAY_PROVIDER_NAME
+        doc.setdefault("model_providers", {})[CODEX_APP_RELAY_PROVIDER_NAME] = block
+        write_toml_file(_legacy_config_path(), doc)
+        print_warning_err("Restart the Codex app and sign in with ChatGPT to use the relay.")
+        return True
+    except (OSError, RuntimeError, ValueError) as exc:
+        print_warning_err(f"Could not update the Codex app ChatGPT relay: {exc}")
         return False
 
 

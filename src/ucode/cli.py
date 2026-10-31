@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stdout
 from enum import StrEnum
@@ -2604,8 +2605,9 @@ def auth_token_cmd(
 def otel_proxy_cmd(
     host: Annotated[str, typer.Option("--host")],
     port: Annotated[int, typer.Option("--port", min=1, max=65535)],
+    relay_port: Annotated[int | None, typer.Option("--relay-port", min=1, max=65535)] = None,
 ) -> None:
-    """Run the same OTLP proxy as a Codex CLI session, for desktop."""
+    """Run the same OTLP proxy (and, with --relay-port, ChatGPT relay) as Codex CLI, for desktop."""
     from ucode import gateway_proxy
 
     try:
@@ -2613,9 +2615,14 @@ def otel_proxy_cmd(
         if not state:
             raise RuntimeError(f"No saved configuration for {host}. Run `ug configure` first.")
         apply_pat_environment(state)
-        server, _cache, _client = gateway_proxy.start_otel_proxy(
-            host, codex_agent._otel_token_provider(state, host), port=port
-        )
+        token_provider = codex_agent._otel_token_provider(state, host)
+        server, _cache, _client = gateway_proxy.start_otel_proxy(host, token_provider, port=port)
+        if relay_port:
+            # The Codex app is pinned to this port, so fail (and restart) rather than move.
+            relay, _cache, _client = gateway_proxy.start_relay_proxy(
+                host, token_provider, relay_port, codex=True, fallback_on_bind_error=False
+            )
+            threading.Thread(target=relay.serve_forever, daemon=True).start()
         # systemd stops this with SIGTERM, which exits without cleanup, and nothing needs it.
         server.serve_forever()
     except (OSError, RuntimeError) as exc:
@@ -4491,6 +4498,7 @@ def configure(
         scope = "user" if user_scope else "global"
         set_config_scope(scope)
         claude_agent.request_explicit_configure()
+        codex_agent.request_explicit_configure()
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
