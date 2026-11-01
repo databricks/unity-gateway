@@ -7608,6 +7608,35 @@ class TestConfigureSharedStateCopilotCatalog:
             "system.ai.gpt-5-4",
         ]
 
+    def test_saves_the_anthropic_route_catalog_with_its_limits(self, monkeypatch):
+        import ucode.cli as cli_mod
+        import ucode.databricks as db_mod
+
+        monkeypatch.setattr(
+            cli_mod,
+            "list_anthropic_model_catalog",
+            lambda *_args, **_kwargs: db_mod.AnthropicModelCatalog(
+                model_ids=[
+                    "system.ai.claude-sonnet-4-6",
+                    "anthropic-aigw-481f0baa-system.ai.gpt-6-luna",
+                ],
+                model_id_to_display_name={},
+                model_id_to_limits={
+                    "anthropic-aigw-481f0baa-system.ai.gpt-6-luna": (922_000, 128_000)
+                },
+            ),
+        )
+
+        state = self._configure(
+            monkeypatch, listed=["system.ai.claude-sonnet-4-6", "system.ai.gpt-5-4"]
+        )
+
+        assert state["copilot_catalog"]["models"] == [
+            "system.ai.claude-sonnet-4-6",
+            "system.ai.gpt-6-luna",
+        ]
+        assert state["copilot_catalog"]["limits"] == {"system.ai.gpt-6-luna": [922_000, 128_000]}
+
     def test_failed_listing_keeps_the_saved_catalog(self, monkeypatch, capsys):
         saved = {"models": ["system.ai.gpt-5-4"], "discovered_at": "2026-10-01T00:00:00+00:00"}
 

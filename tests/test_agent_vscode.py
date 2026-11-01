@@ -159,7 +159,7 @@ class TestConfigure:
             "GPT 5.5",
         ]
 
-    def test_a_provider_services_claude_targets_keep_their_ids_and_get_a_200k_cap(
+    def test_a_provider_services_claude_targets_keep_their_ids_and_their_limits(
         self, code, monkeypatch, capsys
     ):
         service = {
@@ -184,16 +184,16 @@ class TestConfigure:
                 "name": "global.anthropic.claude-opus-4-8",
                 "family": "claude-opus-4-8",
                 "api": "anthropic",
-                "maxInputTokens": 168_000,
-                "maxOutputTokens": 32_000,
+                "maxInputTokens": 872_000,
+                "maxOutputTokens": 128_000,
             },
             {
                 "id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                 "name": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                 "family": "claude-sonnet-4-5",
                 "api": "anthropic",
-                "maxInputTokens": 168_000,
-                "maxOutputTokens": 32_000,
+                "maxInputTokens": 136_000,
+                "maxOutputTokens": 64_000,
             },
         ]
         printed = _printed(capsys)
@@ -254,7 +254,7 @@ class TestConfigure:
         assert error in printed
         assert "VS Code was left unchanged." in printed
 
-    def test_a_model_locations_services_with_a_200k_cap(self, code, monkeypatch):
+    def test_a_model_locations_services_with_their_listed_limits(self, code, monkeypatch):
         listed: list[str | None] = []
 
         def listing(workspace, token, *, parent_schema=None):
@@ -262,6 +262,7 @@ class TestConfigure:
             return AnthropicModelCatalog(
                 model_ids=["main.models.claude-opus-5-5", "main.models.team-assistant"],
                 model_id_to_display_name={},
+                model_id_to_limits={"main.models.claude-opus-5-5": (200_000, 64_000)},
             )
 
         monkeypatch.setattr(copilot, "list_anthropic_model_catalog", listing)
@@ -276,8 +277,8 @@ class TestConfigure:
                 "name": "Claude Opus 5.5",
                 "family": "claude-opus-5-5",
                 "api": "anthropic",
-                "maxInputTokens": 168_000,
-                "maxOutputTokens": 32_000,
+                "maxInputTokens": 136_000,
+                "maxOutputTokens": 64_000,
             },
             {
                 "id": "main.models.team-assistant",

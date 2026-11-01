@@ -138,6 +138,37 @@ class TestCatalogFromListings:
             "databricks-claude-sonnet-4-6"
         )
 
+    def test_prefers_the_anthropic_route_listing_with_its_limits(self):
+        gateway = AnthropicModelCatalog(
+            model_ids=[
+                "system.ai.claude-opus-4-8",
+                "anthropic-aigw-481f0baa-system.ai.gpt-6-luna",
+                "anthropic-aigw-73ea02b2-system.ai.glm-5-2",
+                "system.ai.claude-opus-4-1",
+            ],
+            model_id_to_display_name={},
+            model_id_to_limits={
+                "system.ai.claude-opus-4-8": (1_000_000, 128_000),
+                "anthropic-aigw-481f0baa-system.ai.gpt-6-luna": (922_000, 128_000),
+            },
+        )
+
+        models = copilot.catalog_from_listings([ModelServiceEntry(GPT)], [SONNET], gateway)
+
+        assert [(m.id, m.wire, m.listed_limits) for m in models] == [
+            ("system.ai.claude-opus-4-8", "anthropic", (1_000_000, 128_000)),
+            ("system.ai.gpt-6-luna", "responses", (922_000, 128_000)),
+        ]
+
+    def test_an_anthropic_route_listing_without_usable_models_falls_back(self):
+        gateway = AnthropicModelCatalog(
+            model_ids=[], model_id_to_display_name={}, error_msg="HTTP 404"
+        )
+
+        assert copilot.catalog_from_listings(
+            [ModelServiceEntry(GPT)], [SONNET], gateway
+        ) == catalog(SONNET, GPT)
+
     def test_no_answer_keeps_the_saved_catalog(self):
         assert copilot.catalog_from_listings(None, []) is None
 
@@ -177,6 +208,25 @@ class TestCopilotCatalog:
         assert saved["models"] == [SONNET, GPT]
         assert saved["discovered_at"].endswith("+00:00")
         assert copilot.copilot_catalog({"copilot_catalog": saved}) == catalog(SONNET, GPT)
+
+    def test_saved_catalog_keeps_the_listed_limits(self):
+        models = [
+            copilot.CopilotModel(SONNET, "anthropic"),
+            copilot.CopilotModel(GPT, "responses", (922_000, 128_000)),
+        ]
+
+        saved = copilot.catalog_state(models)
+        restored = copilot.copilot_catalog({"copilot_catalog": saved})
+
+        assert saved["limits"] == {GPT: [922_000, 128_000]}
+        assert [m.listed_limits for m in restored] == [None, (922_000, 128_000)]
+
+    def test_malformed_saved_limits_are_ignored(self):
+        saved = dict(copilot.catalog_state(catalog(GPT)), limits={GPT: [0, 1], SONNET: "x"})
+
+        restored = copilot.copilot_catalog({"copilot_catalog": saved})
+
+        assert [m.listed_limits for m in restored] == [None]
 
     def test_an_empty_saved_catalog_does_not_revive_older_lists(self):
         state = {"copilot_catalog": copilot.catalog_state([]), "codex_models": [GPT]}
@@ -599,23 +649,48 @@ class TestLocationCatalog:
 
 class TestCopilotModelLimits:
     @pytest.mark.parametrize(
-        ("model", "limits"),
+        ("model", "tokens"),
         [
-            ("system.ai.claude-sonnet-5-5", (872_000, 128_000)),
-            ("system.ai.claude-haiku-5-5", (872_000, 128_000)),
-            ("system.ai.claude-haiku-4-5", (136_000, 64_000)),
-            ("system.ai.claude-sonnet-4-5", (168_000, 32_000)),
-            ("system.ai.claude-opus-4-8", (936_000, 32_000)),
-            ("system.ai.claude-opus-6", (936_000, 32_000)),
-            ("system.ai.claude-sonnet-4-7", (936_000, 32_000)),
-            ("system.ai.claude-opus-4-0", (168_000, 32_000)),
+            ("system.ai.claude-sonnet-5-5", (1_000_000, 128_000)),
+            ("system.ai.claude-haiku-5-5", (1_000_000, 128_000)),
+            ("system.ai.claude-opus-4-8", (1_000_000, 128_000)),
+            ("system.ai.claude-opus-6", (1_000_000, 128_000)),
+            ("system.ai.claude-sonnet-4-6", (1_000_000, 128_000)),
+            ("system.ai.claude-haiku-4-5", (200_000, 64_000)),
+            ("system.ai.claude-sonnet-4-5", (200_000, 64_000)),
+            ("system.ai.claude-opus-4-5", (200_000, 64_000)),
+            ("system.ai.claude-opus-4-1", (200_000, 32_000)),
+            ("system.ai.claude-opus-4-0", (200_000, 32_000)),
         ],
     )
-    def test_claude_limits(self, model, limits):
-        assert copilot.copilot_model_limits(model) == limits
+    def test_claude_token_limits_by_name(self, model, tokens):
+        assert copilot.claude_token_limits(model) == tokens
 
-    def test_gpt_keeps_copilots_defaults(self):
-        assert copilot.copilot_model_limits(GPT) is None
+    def test_gpt_has_no_limits_by_name(self):
+        assert copilot.claude_token_limits(GPT) is None
+
+    def test_claude_prompt_leaves_room_for_the_output(self):
+        model = copilot.CopilotModel(SONNET, "anthropic")
+
+        assert copilot.catalog_model_limits(model) == (872_000, 128_000)
+
+    def test_listed_limits_win_over_the_name(self):
+        model = copilot.CopilotModel(SONNET, "anthropic", (200_000, 64_000))
+
+        assert copilot.catalog_model_limits(model) == (136_000, 64_000)
+
+    def test_gpt_uses_the_listed_prompt_limit_and_keeps_copilots_output(self):
+        model = copilot.CopilotModel(GPT, "responses", (922_000, 128_000))
+
+        assert copilot.catalog_model_limits(model) == (922_000, None)
+
+    def test_gpt_without_listed_limits_keeps_copilots_defaults(self):
+        assert copilot.catalog_model_limits(copilot.CopilotModel(GPT, "responses")) is None
+
+    def test_a_listed_output_that_fills_the_window_is_ignored(self):
+        model = copilot.CopilotModel(SONNET, "anthropic", (64_000, 64_000))
+
+        assert copilot.catalog_model_limits(model) is None
 
 
 class TestRenderProvidersConfig:
@@ -694,7 +769,7 @@ class TestRenderProvidersConfig:
             },
         ]
 
-    def test_provider_service_claude_keeps_its_id_with_200k_limits(self):
+    def test_provider_service_claude_keeps_its_id_and_its_limits(self):
         claude, _ = provider_models(["claude-sonnet-4-6"], "anthropic")
 
         config = copilot.render_providers_config(claude, PROXY, "secret", provider_service=MPS)
@@ -706,10 +781,18 @@ class TestRenderProvidersConfig:
                 "wireModel": "claude-sonnet-4-6",
                 "name": "claude-sonnet-4-6",
                 "modelId": "claude-sonnet-4.6",
-                "maxPromptTokens": 168_000,
-                "maxOutputTokens": 32_000,
+                "maxPromptTokens": 872_000,
+                "maxOutputTokens": 128_000,
             }
         ]
+
+    def test_gpt_gets_only_its_listed_prompt_limit(self):
+        model = copilot.CopilotModel(GPT, "responses", (922_000, 128_000))
+
+        config = copilot.render_providers_config([model], PROXY, "secret")
+
+        assert config["models"][0]["maxPromptTokens"] == 922_000
+        assert "maxOutputTokens" not in config["models"][0]
 
 
 class TestBuildRuntimeEnv:
@@ -1356,7 +1439,7 @@ class TestLaunch:
             "main.ucode.claude_haiku",
         ]
         assert "headers" not in registry["providers"][0]
-        assert registry["models"][0]["maxPromptTokens"] == 168_000
+        assert registry["models"][0]["maxPromptTokens"] == 872_000
         assert seen["env"]["COPILOT_MODEL"] == "dbx-anthropic/main.ucode.claude-sonnet-4-6"
         assert copilot.LAUNCH_MODEL_LOCATION_KEY not in state
 

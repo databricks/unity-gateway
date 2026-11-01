@@ -818,6 +818,7 @@ def configure_shared_state(
                 copilot_models = copilot_agent.catalog_from_listings(
                     cached_model_service_entries(workspace),
                     [*claude_models.values(), *codex_models],
+                    list_anthropic_model_catalog(workspace, token),
                 )
                 copilot_reason = ms_reason or claude_reason or codex_reason
         if claude_models:
@@ -1551,6 +1552,9 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
                 codex_models, reasons["codex"] = discover_codex_models(workspace, token)
             if not gemini_models:
                 gemini_models, reasons["gemini"] = discover_gemini_models(workspace, token)
+            gateway_listing = (
+                list_anthropic_model_catalog(workspace, token) if "copilot" in tools else None
+            )
     except RuntimeError as exc:
         print_warning(f"Live model discovery failed ({exc}); showing cached models.")
         return state, "cached"
@@ -1572,6 +1576,7 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
         copilot_models = copilot_agent.catalog_from_listings(
             cached_model_service_entries(workspace),
             [*claude_models.values(), *codex_models],
+            gateway_listing,
         )
         if copilot_models is not None:
             live[copilot_agent.CATALOG_STATE_KEY] = copilot_agent.catalog_state(copilot_models)

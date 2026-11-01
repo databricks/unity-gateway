@@ -33,7 +33,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -64,6 +64,7 @@ from ucode.databricks import (
     ANTHROPIC_API_PROVIDER_TYPES,
     ANTHROPIC_FAMILIES,
     MICROSOFT_FOUNDRY_PROVIDER_TYPE,
+    AnthropicModelCatalog,
     ModelServiceEntry,
     bare_model_name,
     build_copilot_base_url,
@@ -157,26 +158,10 @@ _DOTTED_VERSION_PATTERN = re.compile(r"(?<=\d)\.(?=\d)")
 _O_SERIES_PATTERN = re.compile(r"^o(?=\d)")
 _CLAUDE_CATALOG_VERSION_PATTERN = re.compile(r"^claude-([a-z]+)-(\d+)(?:\.(\d+))?$")
 
-# (maxPromptTokens, maxOutputTokens) by Copilot catalog id. Copilot assumes a 128K prompt for
-# registry models without limits, and its own values differ between versions.
-_CLAUDE_LIMITS: dict[str, tuple[int, int]] = {
-    "claude-fable-5.1": (936_000, 32_000),
-    "claude-fable-5": (936_000, 32_000),
-    "claude-opus-5.5": (936_000, 32_000),
-    "claude-opus-5": (936_000, 32_000),
-    "claude-opus-4.8": (936_000, 32_000),
-    "claude-opus-4.7": (936_000, 32_000),
-    "claude-opus-4.6": (936_000, 32_000),
-    "claude-opus-4.5": (168_000, 32_000),
-    "claude-sonnet-5.5": (872_000, 128_000),
-    "claude-sonnet-5": (936_000, 32_000),
-    "claude-sonnet-4.6": (936_000, 32_000),
-    "claude-sonnet-4.5": (168_000, 32_000),
-    "claude-haiku-4.5": (136_000, 64_000),
-}
-_CLAUDE_1M_LIMITS = (936_000, 32_000)
-_CLAUDE_200K_LIMITS = (168_000, 32_000)
-_CLAUDE_200K_WINDOW = 200_000
+# (max_input_tokens, max_tokens) of Claude models the gateway lists no limits for.
+_CLAUDE_1M_TOKENS = (1_000_000, 128_000)
+_CLAUDE_200K_TOKENS = (200_000, 64_000)
+_CLAUDE_OPUS_4_TOKENS = (200_000, 32_000)
 
 # A Model Provider Service target that declares its APIs is usable only if one is a chat API.
 _CHAT_API_TYPES = frozenset(route for routes in _WIRE_ROUTES.values() for route in routes)
@@ -276,30 +261,39 @@ def copilot_catalog_model_id(model: str) -> str | None:
     return catalog_id
 
 
-def copilot_model_limits(model: str) -> tuple[int, int] | None:
-    """``(maxPromptTokens, maxOutputTokens)`` for a Claude model, or None for other models."""
+def claude_token_limits(model: str) -> tuple[int, int] | None:
+    """``(max_input_tokens, max_tokens)`` of a Claude model by its name, or None for other models."""
     catalog_id = copilot_catalog_model_id(model)
     if catalog_id is None:
         return None
-    if catalog_id in _CLAUDE_LIMITS:
-        return _CLAUDE_LIMITS[catalog_id]
     version = _CLAUDE_CATALOG_VERSION_PATTERN.match(catalog_id)
     if version is None:
-        return _CLAUDE_200K_LIMITS
+        return _CLAUDE_200K_TOKENS
     family, major, minor = version.group(1), int(version.group(2)), int(version.group(3) or 0)
-    one_million = major >= 5 or (family in ("opus", "sonnet") and (major, minor) >= (4, 6))
-    return _CLAUDE_1M_LIMITS if one_million else _CLAUDE_200K_LIMITS
+    if major >= 5 or (family in ("opus", "sonnet") and (major, minor) >= (4, 6)):
+        return _CLAUDE_1M_TOKENS
+    if family == "opus" and (major, minor) <= (4, 1):
+        return _CLAUDE_OPUS_4_TOKENS
+    return _CLAUDE_200K_TOKENS
 
 
-def catalog_model_limits(model: CopilotModel, *, external: bool) -> tuple[int, int] | None:
-    """:func:`copilot_model_limits` for a Claude ``model`` of the catalog, or None for others.
+def catalog_model_limits(model: CopilotModel) -> tuple[int, int | None] | None:
+    """Copilot's ``(maxPromptTokens, maxOutputTokens)`` for ``model``, or None to keep its defaults.
 
-    ``external`` (a Model Provider Service, or a location's model service) caps them at 200K, which
-    such a service may serve instead of the 1M window."""
-    limits = copilot_model_limits(model.id) if model.wire == WIRE_ANTHROPIC else None
-    if limits is not None and external and sum(limits) > _CLAUDE_200K_WINDOW:
-        return _CLAUDE_200K_LIMITS
-    return limits
+    The limits are the ones the gateway listed for the model, else Claude's by name. Claude's
+    window holds both the prompt and the output; other models' limit is on the prompt alone, and
+    their output keeps Copilot's default."""
+    limits = model.listed_limits
+    if limits is None and model.wire == WIRE_ANTHROPIC:
+        limits = claude_token_limits(model.id)
+    if limits is None:
+        return None
+    max_input, max_output = limits
+    if model.wire != WIRE_ANTHROPIC:
+        return max_input, None
+    if max_input <= max_output:
+        return None
+    return max_input - max_output, max_output
 
 
 @dataclass(frozen=True)
@@ -308,6 +302,8 @@ class CopilotModel:
 
     id: str
     wire: str
+    # (max_input_tokens, max_tokens) the gateway listed for the model.
+    listed_limits: tuple[int, int] | None = field(default=None, compare=False)
 
     @property
     def provider(self) -> str:
@@ -431,17 +427,29 @@ def provider_service_catalog(
     return catalog
 
 
-def location_catalog(state: dict, schema: str) -> list[CopilotModel]:
-    """The model services of Unity Catalog schema ``schema`` that this launch registers.
+def gateway_catalog(
+    listing: AnthropicModelCatalog, *, fallback_wire: str | None = None
+) -> list[CopilotModel]:
+    """The models of an AI Gateway Anthropic-route listing Copilot can use, with their limits.
 
     The listing names some services by gateway alias (``anthropic-aigw-<hash>-<name>``); Copilot
     sends the full name, which the gateway routes directly."""
+    limits = {
+        unwrap_anthropic_gateway_model(model): limit
+        for model, limit in listing.model_id_to_limits.items()
+    }
+    models = (unwrap_anthropic_gateway_model(model) for model in listing.model_ids)
+    catalog, _ = build_catalog(((model, ()) for model in models), fallback_wire=fallback_wire)
+    return [replace(model, listed_limits=limits.get(model.id)) for model in catalog]
+
+
+def location_catalog(state: dict, schema: str) -> list[CopilotModel]:
+    """The model services of Unity Catalog schema ``schema`` that this launch registers."""
     workspace = state["workspace"]
     listing = list_anthropic_model_catalog(
         workspace, launch_token(state, workspace), parent_schema=schema
     )
-    models = (unwrap_anthropic_gateway_model(model) for model in listing.model_ids)
-    catalog, _ = build_catalog(((model, ()) for model in models), fallback_wire=WIRE_ANTHROPIC)
+    catalog = gateway_catalog(listing, fallback_wire=WIRE_ANTHROPIC)
     if not catalog:
         reason = f": {listing.error_msg}" if listing.error_msg else ""
         raise RuntimeError(f"Found no model services to use in {schema}{reason}.")
@@ -449,13 +457,19 @@ def location_catalog(state: dict, schema: str) -> list[CopilotModel]:
 
 
 def catalog_from_listings(
-    entries: Iterable[ModelServiceEntry] | None, fallback: Iterable[str]
+    entries: Iterable[ModelServiceEntry] | None,
+    fallback: Iterable[str],
+    gateway: AnthropicModelCatalog | None = None,
 ) -> list[CopilotModel] | None:
     """The Copilot catalog from this run's model listings.
 
-    ``entries`` is the UC model-services listing (None when it failed); ``fallback`` holds the ids
-    the per-family gateway listings found instead. None when neither answered, so the caller keeps
-    the saved catalog; an empty catalog when they answered with nothing Copilot can use."""
+    ``gateway`` is AI Gateway's Anthropic-route listing, which also reports the models' limits; it
+    wins whenever it lists a model Copilot can use. Otherwise ``entries`` is the UC model-services
+    listing (None when it failed) and ``fallback`` holds the ids the per-family gateway listings
+    found instead. None when none answered, so the caller keeps the saved catalog; an empty catalog
+    when they answered with nothing Copilot can use."""
+    if gateway is not None and (gateway_models := gateway_catalog(gateway)):
+        return gateway_models
     listed = list(entries or ())
     fallback_catalog = build_copilot_catalog(list(fallback))
     if not listed:
@@ -472,7 +486,21 @@ def catalog_from_listings(
 def catalog_state(models: list[CopilotModel]) -> dict:
     return {
         "models": [model.id for model in models],
+        "limits": {model.id: list(model.listed_limits) for model in models if model.listed_limits},
         "discovered_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+
+
+def _saved_limits(value: object) -> dict[str, tuple[int, int]]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        model: (limit[0], limit[1])
+        for model, limit in value.items()
+        if isinstance(model, str)
+        and isinstance(limit, list)
+        and len(limit) == 2
+        and all(isinstance(n, int) and not isinstance(n, bool) and n > 0 for n in limit)
     }
 
 
@@ -493,7 +521,11 @@ def copilot_catalog(state: dict) -> list[CopilotModel]:
         return static
     saved = state.get(CATALOG_STATE_KEY)
     if isinstance(saved, dict):
-        return build_copilot_catalog(_string_list(saved.get("models")))
+        limits = _saved_limits(saved.get("limits"))
+        return [
+            replace(model, listed_limits=limits.get(model.id))
+            for model in build_copilot_catalog(_string_list(saved.get("models")))
+        ]
     claude_models = state.get("claude_models")
     legacy = list(claude_models.values()) if isinstance(claude_models, dict) else []
     return build_copilot_catalog([*_string_list(legacy), *_string_list(state.get("codex_models"))])
@@ -636,7 +668,6 @@ def render_providers_config(
     session_secret: str,
     *,
     provider_service: str | None = None,
-    model_location: str | None = None,
 ) -> dict:
     """Copilot's providers.json for ``catalog``: one provider per wire, all on the session proxy.
 
@@ -682,9 +713,10 @@ def render_providers_config(
         catalog_id = copilot_catalog_model_id(model.id) if model.wire == WIRE_ANTHROPIC else None
         if catalog_id is not None:
             entry["modelId"] = catalog_id
-        limits = catalog_model_limits(model, external=bool(provider_service or model_location))
-        if limits is not None:
-            entry["maxPromptTokens"], entry["maxOutputTokens"] = limits
+        if limits := catalog_model_limits(model):
+            entry["maxPromptTokens"], max_output = limits
+            if max_output is not None:
+                entry["maxOutputTokens"] = max_output
         models.append(entry)
     return {"providers": providers, "models": models}
 
@@ -1041,7 +1073,6 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
             proxy_base_url,
             session_secret,
             provider_service=provider_service,
-            model_location=model_location,
         )
         wire_override = os.environ.get("COPILOT_PROVIDER_WIRE_MODEL")
         if wire_override:

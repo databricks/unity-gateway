@@ -168,7 +168,7 @@ def install_extension(code: Path, config: dict[str, object]) -> str:
     return f"installed {EXTENSION_ID} {version}"
 
 
-def _model_entry(model: CopilotModel, name: str, *, external: bool) -> dict[str, object]:
+def _model_entry(model: CopilotModel, name: str) -> dict[str, object]:
     entry: dict[str, object] = {
         "id": model.id,
         "name": name,
@@ -178,8 +178,10 @@ def _model_entry(model: CopilotModel, name: str, *, external: bool) -> dict[str,
         "api": model.wire,
     }
     # Models without known limits get the extension's 128K-in, 32K-out default.
-    if limits := catalog_model_limits(model, external=external):
-        entry["maxInputTokens"], entry["maxOutputTokens"] = limits
+    if limits := catalog_model_limits(model):
+        entry["maxInputTokens"], max_output = limits
+        if max_output is not None:
+            entry["maxOutputTokens"] = max_output
     return entry
 
 
@@ -211,12 +213,12 @@ def model_entries(
     if provider:
         # A service's targets are the provider's own ids, which is what its users know it by, and
         # several of them differ only by a region the label would drop.
-        return [_model_entry(model, model.id, external=True) for model in catalog]
+        return [_model_entry(model, model.id) for model in catalog]
     labels = {model: model_picker_label(claude_model_name(model.id)) for model in catalog}
     counts = Counter(labels.values())
     # As in Codex's picker: two models with the same label show their full ids instead.
     return [
-        _model_entry(model, model.id if counts[label] > 1 else label, external=bool(location))
+        _model_entry(model, model.id if counts[label] > 1 else label)
         for model, label in labels.items()
     ]
 
