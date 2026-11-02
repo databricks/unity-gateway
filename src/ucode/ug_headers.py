@@ -9,11 +9,10 @@ import os
 import re
 from collections.abc import Mapping
 
-from ucode.constants import UG_HEADERS_ENV_VAR
+from ucode.constants import CLIENT_SURFACES_HEADER, UG_HEADERS_ENV_VAR
 
 _HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
-_CLIENT_SURFACES_HEADER = "Databricks-Custom-Client-Surfaces"
-_CLIENT_SURFACES_KEY = _CLIENT_SURFACES_HEADER.casefold()
+_CLIENT_SURFACES_KEY = CLIENT_SURFACES_HEADER.casefold()
 
 
 def _is_sendable_value(value: str) -> bool:
@@ -61,5 +60,5 @@ def ug_headers(existing: Mapping[str, str] | None = None) -> dict[str, str]:
             if name.casefold() not in protected or name.casefold() == _CLIENT_SURFACES_KEY:
                 _merge_header(headers, name, value)
     if os.environ.get("OPENUI_SESSION_ID", "").strip():
-        _merge_header(headers, _CLIENT_SURFACES_HEADER, "openui")
+        _merge_header(headers, CLIENT_SURFACES_HEADER, "openui")
     return dict(headers.values())

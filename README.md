@@ -203,12 +203,15 @@ the `openui` client surface for that process, preserving existing surfaces and o
 The session ID itself is never sent. A subsequent terminal launch without the marker gains no
 OpenUI attribution.
 
-- **Codex**: added to the launch's `-c` provider headers.
+- **Codex**: added to the launch's `-c` provider headers. On Windows, managed
+  `requirements.toml` reads the merged client surfaces from a launch-only environment variable.
 - **Claude Code**: added by a mod, even when managed settings set `ANTHROPIC_CUSTOM_HEADERS`.
   Only `ug configure` installs or upgrades it beside the managed settings (Linux and macOS, with
-  sudo, not under `--user`); a launch never writes there. When it is missing or out of date the
-  launch warns and Claude doesn't send them. This prerequisite also applies to automatic
-  OpenUI attribution; after upgrading ug, run `ug configure` to update the mod.
+  sudo, not under `--user`); a launch never writes there. On those platforms, a missing or stale
+  mod causes a warning and Claude doesn't send the headers. This prerequisite also applies to
+  automatic OpenUI attribution; after upgrading ug, run `ug configure` to update the mod. When
+  the mod is unavailable on Windows or with OS-managed settings disabled, an OpenUI marker alone
+  doesn't warn; an explicit `UG_HEADERS` value warns that Claude can't send those headers.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `kilo`, `copilot`, `pi`, and `antigravity`. `cursor` can be included in `--agents` for MCP-only setup;

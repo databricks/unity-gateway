@@ -21,6 +21,7 @@ SMART_ROUTING_ENV_KEYS = (
 )
 
 MODEL_PROVIDER_SERVICE_HEADER = "Databricks-Model-Provider-Service"
+CLIENT_SURFACES_HEADER = "Databricks-Custom-Client-Surfaces"
 
 # AI Gateway API types, as a model service lists them in `supported_api_types` and a Model
 # Provider Service target in `native_api_types`.

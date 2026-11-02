@@ -1033,6 +1033,7 @@ class TestCodexLaunch:
         monkeypatch.setenv("UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA", "stale")
         monkeypatch.setenv("UG_CODEX_SMART_ROUTER_RECIPE", "stale")
         monkeypatch.setenv("UG_CODEX_REQUEST_TAGS", "stale")
+        monkeypatch.setenv("UG_CODEX_CLIENT_SURFACES", "stale")
         monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "app-catalog.json")
         monkeypatch.setattr(
             codex, "_model_catalog_path", lambda workspace, scope: tmp_path / "m.json"
@@ -1047,10 +1048,12 @@ class TestCodexLaunch:
         assert os.environ.get("UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA") == parent_env
         assert "UG_CODEX_SMART_ROUTER_RECIPE" not in os.environ
         assert "UG_CODEX_REQUEST_TAGS" not in os.environ
+        assert "UG_CODEX_CLIENT_SURFACES" not in os.environ
 
     def test_smart_routing_overlay_exports_launch_headers(self, monkeypatch):
         monkeypatch.setenv("UG_CODEX_SMART_ROUTER_RECIPE", "stale")
         monkeypatch.setenv("UG_CODEX_REQUEST_TAGS", "stale")
+        monkeypatch.setenv("UG_CODEX_CLIENT_SURFACES", "stale")
         tags = '{"team": "data"}'
         headers = {
             codex.SMART_ROUTER_RECIPE_HEADER: "task_v3",
@@ -1066,6 +1069,7 @@ class TestCodexLaunch:
 
         assert os.environ["UG_CODEX_SMART_ROUTER_RECIPE"] == "task_v3"
         assert os.environ["UG_CODEX_REQUEST_TAGS"] == tags
+        assert "UG_CODEX_CLIENT_SURFACES" not in os.environ
 
     def test_sets_oauth_token(self, tmp_path, monkeypatch):
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
@@ -1572,6 +1576,7 @@ class TestCodexLaunch:
         headers = overlay["model_providers"]["Databricks"]["http_headers"]
         assert headers["databricks-custom-client-surfaces"] == expected
         assert "Databricks-Custom-Client-Surfaces" not in headers
+        assert os.environ["UG_CODEX_CLIENT_SURFACES"] == expected
 
     def test_provider_discovery_uses_custom_oauth_token(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
@@ -1971,10 +1976,54 @@ class TestCodexManagedConfig:
             codex.MODEL_SERVICE_PARENT_SCHEMA_HEADER: "UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA",
             codex.SMART_ROUTER_RECIPE_HEADER: "UG_CODEX_SMART_ROUTER_RECIPE",
             codex.AI_GATEWAY_REQUEST_TAGS_HEADER: "UG_CODEX_REQUEST_TAGS",
+            codex.CLIENT_SURFACES_HEADER: "UG_CODEX_CLIENT_SURFACES",
         }
         profile = read_toml_safe(config_path)
         assert profile["model"] == "gpt-5"
         assert "env_http_headers" not in profile["model_providers"]["Databricks"]
+
+    def test_windows_requirements_use_launch_surfaces_without_persisting(
+        self, tmp_path, monkeypatch
+    ):
+        config_path, _ = self._patch(tmp_path, monkeypatch)
+        requirements_path = tmp_path / "ProgramData" / "requirements.toml"
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: requirements_path)
+        state = codex.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_http_headers": {"databricks-custom-client-surfaces": "omnigent"},
+            }
+        )
+        profile_before = config_path.read_bytes()
+        requirements_before = requirements_path.read_bytes()
+        launches: list[str | None] = []
+        monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "tok")
+        monkeypatch.setattr(
+            codex,
+            "exec_or_spawn",
+            lambda _argv: launches.append(os.environ.get("UG_CODEX_CLIENT_SURFACES")),
+        )
+        monkeypatch.setenv("OPENUI_SESSION_ID", "session-123")
+        monkeypatch.setenv("UG_HEADERS", "Databricks-Custom-Client-Surfaces: ug")
+        monkeypatch.setenv("UG_CODEX_CLIENT_SURFACES", "stale")
+
+        codex.launch(state, [], options=LaunchOptions())
+
+        requirements = read_toml_safe(requirements_path)
+        env_headers = requirements["model_providers"]["Databricks"]["env_http_headers"]
+        env_name = env_headers[codex.CLIENT_SURFACES_HEADER]
+        assert env_name == "UG_CODEX_CLIENT_SURFACES"
+        assert launches == ["omnigent, ug, openui"]
+        assert config_path.read_bytes() == profile_before
+        assert requirements_path.read_bytes() == requirements_before
+
+        monkeypatch.delenv("OPENUI_SESSION_ID")
+        codex.launch(state, [], options=LaunchOptions())
+
+        assert launches == ["omnigent, ug, openui", "omnigent, ug"]
+        assert config_path.read_bytes() == profile_before
+        assert requirements_path.read_bytes() == requirements_before
 
     @pytest.mark.parametrize("opt_out", ["env", "user_scope"])
     def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch, opt_out):

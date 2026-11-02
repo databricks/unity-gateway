@@ -44,6 +44,7 @@ from ucode.config_io import (
 from ucode.constants import (
     AGENT_CODEX,
     AI_GATEWAY_REQUEST_TAGS_HEADER,
+    CLIENT_SURFACES_HEADER,
     LOOPBACK_HOST,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
@@ -121,11 +122,12 @@ _PROVIDER_HTTP_HEADERS_KEY_PATHS = [
 ]
 # Windows requirements.toml replaces the whole provider entry, so launch-scoped headers set with
 # `-c` would be dropped; Codex reads them from these variables instead.
-_LAUNCH_ROUTING_HEADER_ENV_VARS = {
+_LAUNCH_HEADER_ENV_VARS = {
     MODEL_PROVIDER_SERVICE_HEADER: "UG_CODEX_MODEL_PROVIDER_SERVICE",
     MODEL_SERVICE_PARENT_SCHEMA_HEADER: "UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA",
     SMART_ROUTER_RECIPE_HEADER: "UG_CODEX_SMART_ROUTER_RECIPE",
     AI_GATEWAY_REQUEST_TAGS_HEADER: "UG_CODEX_REQUEST_TAGS",
+    CLIENT_SURFACES_HEADER: "UG_CODEX_CLIENT_SURFACES",
 }
 MINIMUM_CODEX_VERSION = (0, 145, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.145.0"
@@ -1040,7 +1042,7 @@ def _as_requirements(compose: Callable[[dict], dict]) -> Callable[[dict], dict]:
         doc = compose(base)
         doc.pop("model", None)
         doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]["env_http_headers"] = dict(
-            _LAUNCH_ROUTING_HEADER_ENV_VARS
+            _LAUNCH_HEADER_ENV_VARS
         )
         return doc
 
@@ -1299,12 +1301,14 @@ def _set_parent_schema_header(config: dict, parent_schema: str | None) -> None:
     _set_routing_header(config, MODEL_SERVICE_PARENT_SCHEMA_HEADER, parent_schema)
 
 
-def _export_launch_routing_headers(config: dict) -> None:
-    """Mirror the routing headers this launch passes with ``-c`` into the variables that Windows
-    ``requirements.toml`` reads through ``env_http_headers``."""
-    headers = _managed_provider_headers(config) or {}
-    for header, name in _LAUNCH_ROUTING_HEADER_ENV_VARS.items():
-        value = headers.get(header)
+def _export_launch_headers(config: dict) -> None:
+    """Mirror launch headers into the variables read by Windows ``requirements.toml``."""
+    headers = {
+        header.casefold(): value
+        for header, value in (_managed_provider_headers(config) or {}).items()
+    }
+    for header, name in _LAUNCH_HEADER_ENV_VARS.items():
+        value = headers.get(header.casefold())
         if isinstance(value, str) and value:
             os.environ[name] = value
         else:
@@ -1313,8 +1317,8 @@ def _export_launch_routing_headers(config: dict) -> None:
 
 def _render_launch_overlay(*args, **kwargs) -> dict:
     overlay = render_overlay(*args, **kwargs)
-    _export_launch_routing_headers(overlay)
     _add_launch_headers(overlay)
+    _export_launch_headers(overlay)
     return overlay
 
 
@@ -1678,8 +1682,8 @@ def launch(
         )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
-    _export_launch_routing_headers(profile_doc)
     _add_launch_headers(profile_doc)
+    _export_launch_headers(profile_doc)
     updating = tool_args[:1] == ["update"]
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")

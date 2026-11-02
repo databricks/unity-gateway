@@ -39,6 +39,7 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     SMART_ROUTER_RECIPE_HEADER,
+    UG_HEADERS_ENV_VAR,
 )
 from ucode.custom_oauth import (
     CustomOAuthConfig,
@@ -2692,13 +2693,19 @@ def launch(
     workspace = state.get("workspace")
     ensure_hooks_modules_gate()
     if ug_headers() and not header_mod_active():
-        print_warning(
-            "Claude Code won't send launch headers (ug --header / UG_HEADERS or OpenUI attribution): "
-            "ug's header mod isn't "
-            "installed or is out of date, and a launch never changes machine-wide files. Run "
-            "`ug configure` from an interactive terminal on Linux or macOS, without "
-            "UG_SKIP_OS_SETTINGS."
-        )
+        if claude_header_mod_root() is not None:
+            print_warning(
+                "Claude Code won't send launch headers (ug --header / UG_HEADERS or OpenUI "
+                "attribution): ug's header mod isn't installed or is out of date, and a launch "
+                "never changes machine-wide files. Run `ug configure` from an interactive "
+                "terminal on Linux or macOS, without UG_SKIP_OS_SETTINGS."
+            )
+        elif os.environ.get(UG_HEADERS_ENV_VAR, "").strip():
+            print_warning(
+                "Claude Code won't send UG_HEADERS: ug's header mod is unavailable on this "
+                "platform or while OS-managed settings are disabled. On Linux or macOS, enable "
+                "OS-managed settings and run `ug configure` to install it."
+            )
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.
