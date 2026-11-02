@@ -542,6 +542,10 @@ child; the child completes on the routed model while the parent stays pinned.
 The production launcher supplies the native configuration, and user settings and
 the Databricks provider are preserved. `test_agent_codex.py` covers the routing
 minimum version separately from ordinary launches.
+`test_codex_smart_routing_v2.py` checks the native v2 overrides in both launch paths
+and the shared upgrade flow. Codex 0.163 cannot reach execution when the upgrade is
+declined, fails, or leaves the version below the routing minimum. Unrecognized
+versions also remain blocked; successful and automatic upgrades allow routing.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
@@ -609,6 +613,12 @@ must update the session controls through the launching installation. Launch test
 that Claude settings and Codex's shell policy carry the interpreter and session marker.
 These are component checks; they do not establish native skill permission matching or
 PowerShell execution.
+A denied control-file read fails both toggle commands with native-approval guidance
+and leaves the saved controls byte-for-byte unchanged.
+
+`test_integration_evidence.py` checks that the Codex approval driver accepts only the
+exact local command. Other commands or environments are rejected, and an incomplete
+dialog cannot borrow the confirmation footer from a previous dialog.
 
 `test_skills.py` checks agent-specific instruction installation, bundle updates,
 and matching prompt/compaction hook content for Claude and Codex. It also covers

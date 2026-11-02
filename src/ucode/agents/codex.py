@@ -1610,9 +1610,10 @@ def launch(
 
 def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
+    from ucode.agents import ensure_minimum_version
+
     binary = SPEC["binary"]
-    if error := minimum_version_error(smart_routing_enabled=True):
-        raise RuntimeError(error)
+    ensure_minimum_version("codex", lambda: minimum_version_error(smart_routing_enabled=True))
 
     configured_model = _smart_routing_config_model(state)
     # Prefer the custom catalog if it exists.

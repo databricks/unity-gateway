@@ -103,6 +103,17 @@ def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch):
     ]
     payload = '{"tool_name":"collaboration.spawn_agent","tool_input":{"message":"fix it"}}'
 
+    before = session_file.read_bytes()
+    with monkeypatch.context() as denied:
+        # Model a sandbox-denied read while leaving the actual controls available for comparison.
+        denied.setattr(session_env, "_read", Mock(side_effect=PermissionError("sandbox denied")))
+        for flag in ("--disable-smart-routing", "--enable-smart-routing"):
+            result = runner.invoke(cli.app, ["codex", flag], env=env)
+            assert result.exit_code == 1
+            assert "Request native command approval" in " ".join(result.output.split())
+            assert "Smart Router is" not in result.output
+            assert session_file.read_bytes() == before
+
     assert runner.invoke(cli.app, ["codex", "--disable-smart-routing"], env=env).exit_code == 0
     assert runner.invoke(cli.app, hook_args, input=payload, env=env).exit_code == 0
     route.assert_not_called()

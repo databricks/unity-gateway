@@ -749,6 +749,9 @@ a new CLI confirmation in native tool-result records, and a new assistant answer
 skill invocation.
 If Codex requests permission to read the controls, the driver approves only the exact
 public toggle command through the native dialog, leaving the sandbox intact.
+Offline cases in `../test_integration_evidence.py` cover wrong commands, non-local
+environments, and incomplete dialogs, including stale confirmation text. Session-control
+checks in `../test_smart_router.py` verify that a denied read leaves controls unchanged.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
 With orchestration enabled through legacy flags, a preset, or the managed default, both routed

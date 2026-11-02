@@ -196,6 +196,28 @@ def _minimum_version_error(tool: str) -> str | None:
     return checker()
 
 
+def ensure_minimum_version(
+    tool: str, version_check: Callable[[], str | None], *, allow_upgrade: bool = True
+) -> None:
+    version_error = version_check()
+    if version_error and allow_upgrade:
+        print_warning(version_error)
+        # Native upgraders run in place; EOF/piped runs take the existing default.
+        if (
+            tool in _NATIVE_UPGRADE_COMMANDS
+            and not _auto_upgrade_agent_enabled()
+            and not prompt_yes_no_default(
+                f"Upgrade {TOOL_SPECS[tool]['display']} if available?", default=True
+            )
+        ):
+            raise RuntimeError(version_error)
+        if not _update_installed_tool_binary(tool):
+            raise RuntimeError(version_error)
+        version_error = version_check()
+    if version_error:
+        raise RuntimeError(version_error)
+
+
 def _too_new_downgrade(tool: str) -> tuple[str, str] | None:
     """Return (installed_version, downgrade_target) when the installed tool is
     too new to work, or None. Agents opt in by defining `too_new_downgrade`."""
@@ -242,25 +264,9 @@ def install_tool_binary(
         # against the gateway), so check it on every launch — not just when
         # auto-configuring — mirroring the minimum-version gate below.
         too_new = _maybe_downgrade_too_new_tool(tool)
-        version_error = _minimum_version_error(tool)
-
-        if not too_new and version_error:
-            print_warning(version_error)
-            # Native upgraders run in place, so confirm before mutating the install;
-            # EOF/piped runs take the default and upgrade (a required fix must not stall).
-            if (
-                tool in _NATIVE_UPGRADE_COMMANDS
-                and not _auto_upgrade_agent_enabled()
-                and not prompt_yes_no_default(
-                    f"Upgrade {spec['display']} if available?", default=True
-                )
-            ):
-                raise RuntimeError(version_error)
-            if not _update_installed_tool_binary(tool):
-                raise RuntimeError(version_error)
-            version_error = _minimum_version_error(tool)
-        if version_error:
-            raise RuntimeError(version_error)
+        ensure_minimum_version(
+            tool, lambda: _minimum_version_error(tool), allow_upgrade=not too_new
+        )
         return True
 
     installer = getattr(_MODULES[tool], "install_binary", None)

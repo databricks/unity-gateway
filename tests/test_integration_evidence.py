@@ -13,6 +13,53 @@ from tests.integration.utils.evidence import (
     assistant_answer_contains,
     tool_outputs,
 )
+from tests.integration.utils.terminal import codex_command_approval_pending
+
+
+@pytest.mark.parametrize(
+    ("command", "environment", "missing", "expected"),
+    [
+        ("ug codex --disable-smart-routing", "local", None, True),
+        ("ug codex --enable-smart-routing", "local", None, None),
+        ("ug codex --disable-smart-routing", "remote", None, None),
+        ("ug codex --disable-smart-routing", "localhost", None, None),
+        ("ug codex --disable-smart-routing", "local", "prompt", False),
+        ("ug codex --disable-smart-routing", "local", "footer", False),
+        ("ug codex --disable-smart-routing", "local", "current-footer", False),
+        ("ug codex --disable-smart-routing", "local", "choice", None),
+    ],
+    ids=[
+        "exact",
+        "wrong-command",
+        "remote",
+        "not-local",
+        "no-prompt",
+        "no-footer",
+        "old-footer",
+        "no-choice",
+    ],
+)
+def test_codex_approval_requires_the_exact_local_command(command, environment, missing, expected):
+    prompt = "Would you like to run the following command?"
+    footer = "Press enter to confirm or esc to cancel"
+    choice = "› 1. Yes, proceed (y)"
+    screen = f"{prompt}\nEnvironment: {environment}\n  $ {command}\n{choice}\n{footer}"
+    if missing == "prompt":
+        screen = screen.replace(prompt, "")
+    elif missing == "footer":
+        screen = screen.replace(footer, "")
+    elif missing == "current-footer":
+        screen = screen + "\n" + screen.replace(footer, "")
+    elif missing == "choice":
+        screen = screen.replace(choice, "")
+
+    if expected is None:
+        with pytest.raises(AssertionError, match="unexpected command approval"):
+            codex_command_approval_pending(screen, "ug codex --disable-smart-routing")
+    else:
+        assert (
+            codex_command_approval_pending(screen, "ug codex --disable-smart-routing") is expected
+        )
 
 
 class _Session:

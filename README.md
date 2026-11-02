@@ -422,7 +422,9 @@ collaboration and matching root/child guidance for that launch only; it does not
 write these settings to your config. Requests use the configured Databricks provider
 directly. Subagent-only routing launches the native TUI directly; first-prompt routing
 uses the existing app-server interposer. Older or unrecognized Codex versions must be
-upgraded or launched with `--disable-smart-routing`.
+upgraded or launched with `--disable-smart-routing`. UG offers its usual upgrade
+prompt and rechecks the version before launching. Declining or failing the upgrade
+keeps routed launch blocked.
 
 An inconclusive Codex version probe is retried once with a longer timeout.
 

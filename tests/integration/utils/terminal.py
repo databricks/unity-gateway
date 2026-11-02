@@ -23,6 +23,25 @@ from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
 SELECTED = "[›❯>]"
 
 
+def codex_command_approval_pending(screen: str, expected_command: str) -> bool:
+    prompt = "Would you like to run the following command?"
+    if prompt not in screen:
+        return False
+    dialog = screen.rsplit(prompt, 1)[1]
+    if "Press enter to confirm or esc to cancel" not in dialog:
+        return False
+    command = re.search(
+        r"(?ms)^[ \t]*\$ (.*?)\n[ \t]*[›❯>][ \t]*1\. Yes, proceed \(y\)[ \t]*$",
+        dialog,
+    )
+    assert (
+        re.search(r"(?m)^[ \t]*Environment: local[ \t]*$", dialog) is not None
+        and command is not None
+        and command.group(1).strip() == expected_command
+    ), "Codex requested an unexpected command approval:\n" + dialog
+    return True
+
+
 def _claude_background_task_menu(text):
     return re.search(
         r"(?ms)^[ \t]*Background[ \t]*\n(.*?)"
