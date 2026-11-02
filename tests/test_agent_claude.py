@@ -3171,6 +3171,40 @@ class TestClaudeLaunch:
             ),
         )
 
+    @pytest.mark.parametrize(
+        ("os_family", "skip_os_settings", "extra_headers", "expected_warning"),
+        [
+            (managed_files.OS.LINUX, False, None, "OpenUI attribution"),
+            (managed_files.OS.WINDOWS, False, None, None),
+            (managed_files.OS.LINUX, True, None, None),
+            (managed_files.OS.WINDOWS, False, "X-Team: eng", "header mod is unavailable"),
+            (managed_files.OS.LINUX, True, "X-Team: eng", "header mod is unavailable"),
+        ],
+    )
+    def test_header_mod_warning_follows_installability(
+        self, monkeypatch, os_family, skip_os_settings, extra_headers, expected_warning
+    ):
+        warnings: list[str] = []
+        monkeypatch.setattr(claude, "claude_header_mod_root", managed_files.claude_header_mod_root)
+        monkeypatch.setattr(managed_files, "current_os", lambda: os_family)
+        monkeypatch.setattr(claude, "header_mod_active", lambda: False)
+        monkeypatch.setattr(claude, "print_warning", warnings.append)
+        monkeypatch.setattr(claude, "_launch_relayed", lambda *_args: None)
+        monkeypatch.setenv("OPENUI_SESSION_ID", "session-123")
+        monkeypatch.delenv("UG_HEADERS", raising=False)
+        if skip_os_settings:
+            monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        if extra_headers:
+            monkeypatch.setenv("UG_HEADERS", extra_headers)
+
+        claude.launch({"claude_relayed": True}, [], options=LaunchOptions())
+
+        if expected_warning is None:
+            assert warnings == []
+        else:
+            assert len(warnings) == 1
+            assert expected_warning in warnings[0]
+
     def test_gateway_discovery_enabled_for_relayed_provider(self, monkeypatch):
         calls: list[tuple[dict, str, list[str]]] = []
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")

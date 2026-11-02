@@ -118,6 +118,7 @@ from ucode.smart_routing.claude_hooks import (
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.ug_headers import ug_headers
 from ucode.ui import print_note, print_success, print_warning
 from ucode.workspace import (
     SELECTOR_HEADER_NAMES,
@@ -2696,13 +2697,20 @@ def launch(
     binary = SPEC["binary"]
     workspace = state.get("workspace")
     ensure_hooks_modules_gate()
-    if os.environ.get(UG_HEADERS_ENV_VAR, "").strip() and not header_mod_active():
-        print_warning(
-            "Claude Code won't send your `ug --header` / UG_HEADERS headers: ug's header mod isn't "
-            "installed or is out of date, and a launch never changes machine-wide files. Run "
-            "`ug configure` from an interactive terminal on Linux or macOS, without "
-            "UG_SKIP_OS_SETTINGS."
-        )
+    if ug_headers() and not header_mod_active():
+        if claude_header_mod_root() is not None:
+            print_warning(
+                "Claude Code won't send launch headers (ug --header / UG_HEADERS or OpenUI "
+                "attribution): ug's header mod isn't installed or is out of date, and a launch "
+                "never changes machine-wide files. Run `ug configure` from an interactive "
+                "terminal on Linux or macOS, without UG_SKIP_OS_SETTINGS."
+            )
+        elif os.environ.get(UG_HEADERS_ENV_VAR, "").strip():
+            print_warning(
+                "Claude Code won't send UG_HEADERS: ug's header mod is unavailable on this "
+                "platform or while OS-managed settings are disabled. On Linux or macOS, enable "
+                "OS-managed settings and run `ug configure` to install it."
+            )
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.

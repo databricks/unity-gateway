@@ -194,14 +194,28 @@ UG_HEADERS="X-Team: eng" ug codex
 
 `--header` (repeatable) and `UG_HEADERS` (one `Name: value` per line) add headers to that launch's
 Databricks requests only: Claude Code's and Codex's gateway requests, and ug's own requests
-(workspace APIs, MCP proxy, web search, smart routing). A header already sent keeps its value.
-Nothing is written to a config file.
+(workspace APIs, MCP proxy, web search, smart routing). A header already sent keeps its value,
+except `Databricks-Custom-Client-Surfaces`: its comma-separated surfaces are combined, with
+case-insensitive deduplication. Nothing is written to a config file.
 
-- **Codex**: added to the launch's `-c` provider headers.
+OpenUI launches already supply `OPENUI_SESSION_ID`. When it is nonempty, ug automatically adds
+the `openui` client surface for that process, preserving existing surfaces and other headers.
+The session ID itself is never sent. A subsequent terminal launch without the marker gains no
+OpenUI attribution.
+
+- **Codex**: added to the launch's `-c` provider headers. Managed Codex settings on Unix and
+  Windows read the merged client surfaces from a launch-only environment variable, while the
+  configured surface remains in the managed file for launches without that variable. After
+  upgrading ug, run `ug configure` to add the mapping to an existing managed file. An existing
+  administrator environment binding is preserved; ug merges its current value and any managed
+  static surfaces for a launch, while direct Codex launches keep the original binding.
 - **Claude Code**: added by a mod, even when managed settings set `ANTHROPIC_CUSTOM_HEADERS`.
   Only `ug configure` installs or upgrades it beside the managed settings (Linux and macOS, with
-  sudo, not under `--user`); a launch never writes there. When it is missing or out of date the
-  launch warns and Claude doesn't send them.
+  sudo, not under `--user`); a launch never writes there. On those platforms, a missing or stale
+  mod causes a warning and Claude doesn't send the headers. This prerequisite also applies to
+  automatic OpenUI attribution; after upgrading ug, run `ug configure` to update the mod. When
+  the mod is unavailable on Windows or with OS-managed settings disabled, an OpenUI marker alone
+  doesn't warn; an explicit `UG_HEADERS` value warns that Claude can't send those headers.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `kilo`, `copilot`, `pi`, and `antigravity`. `cursor` can be included in `--agents` for MCP-only setup;
