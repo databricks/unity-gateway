@@ -2857,10 +2857,11 @@ def _router_hook_token(host: str, profile: str | None, use_pat: bool) -> str | N
     token = os.environ.get("OAUTH_TOKEN", "").strip()
     if _oauth_token_is_fresh(token):
         return token
-    # Refresh through the same client the launch used, including CLI-backed custom OAuth.
+    # Refresh through the same client the launch used, including CLI-backed custom OAuth. Its cache
+    # renews an expired token itself; forcing a refresh cost a round trip on every routed subagent.
     state = {**load_full_state().get("workspaces", {}).get(host, {}), "profile": profile}
     try:
-        return custom_oauth.launch_token(state, host, force_refresh=True)
+        return custom_oauth.launch_token(state, host)
     except RuntimeError:
         return None
 
