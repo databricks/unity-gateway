@@ -746,8 +746,9 @@ a new CLI confirmation in native tool-result records, and a new assistant answer
 skill invocation.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
-With orchestration enabled through legacy flags, a preset, or the managed default, both routed
-Codex children must show `[orchestrator on]` in their own subagent banner. Claude shows the selected
+With orchestration enabled through legacy flags or a preset, both routed Codex children must show
+`[orchestrator on]` in their own subagent banner. Codex's managed default is opted out
+(`subagent_orch_v0_claude_only`) and has no skill-toggle case. Claude shows the selected
 model and rationale from each child's audited decision.
 Their off-phase child is an explicit user-requested delegation;
 these journeys do not establish automatic orchestration behavior. Root-only
@@ -757,9 +758,10 @@ lack dedicated regression coverage. Codex's native hook merging, project trust,
 and execution of pre-existing hooks are not exercised by this integration suite.
 
 Preset parameterization augments only routing hooks, skill toggles, and first-prompt routing;
-their original legacy-env cases remain, and the skill toggles add a managed-default case in
-which `smart_routing.enabled` alone routes subagents with Smart Router Orchestrator and no
-first-prompt wrapper starts. The skill toggles' legacy-env cases load the `_off` copy of the
+their original legacy-env cases remain, and the Claude skill toggles add a managed-default case in
+which `smart_routing.enabled` alone routes Claude subagents with Smart Router Orchestrator and no
+first-prompt wrapper starts. Codex's managed default is covered by its launch-only opt-out test,
+`test_smart_router_managed_default_leaves_codex_unrouted_at_launch`. The skill toggles' legacy-env cases load the `_off` copy of the
 workspace's routing fixture (`claude_smart_routing_off.json`, `codex_smart_routing_off.json`, or
 `codex_smart_routing_ca_off.json`): the same models without `smart_routing`, because managed
 smart routing overrides individual routing env vars.
@@ -1256,9 +1258,8 @@ The smart-routing banner journeys inject static Claude and Codex model lists wit
 `smart_routing` enabled in the agent config, run `ug configure`, then launch the real TUI with
 `first_prompt_and_subagent_no_orch_v0` and submit one small file task, asserting the
 "Using Unity Gateway Smart Router." banner naming the selected model, a routed answer completing
-the file task, and normal exit. The managed default alone routes only subagents, with the
-orchestrator; the
-managed-default skill-toggle cases cover it.
+the file task, and normal exit. The managed default alone routes only Claude subagents, with the
+orchestrator; Codex's managed default is opted out and covered by its launch-only test.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
 these same-repository secrets rather than storing a long-lived bearer:
