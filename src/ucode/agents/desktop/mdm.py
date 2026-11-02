@@ -97,6 +97,7 @@ def _runtime() -> dict[str, str]:
     probe = subprocess_cross_os.run(
         [str(python), "-I", "-c", "import ucode.agents.desktop.mdm as m; print(m.__file__)"],
         capture_output=True,
+        text=True,
         stdin=subprocess.DEVNULL,
         timeout=30,
         check=False,

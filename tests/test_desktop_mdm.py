@@ -437,6 +437,15 @@ def test_shared_runtime_checks_access_but_retains_virtualenv_path(monkeypatch, t
         checked.assert_any_call(executable.parent, required=True)
 
 
+def test_runtime_probe_reads_installed_package_path(monkeypatch):
+    # Exercise the real isolated interpreter without requiring root-owned test files or CLIs.
+    monkeypatch.setattr(mdm, "_shared_path", lambda value, *a, **kw: Path(value))
+    monkeypatch.setattr(mdm, "shutil", SimpleNamespace(which=lambda name: RUNTIME[name]))
+    monkeypatch.setattr(mdm.databricks, "databricks_cli_path", lambda: RUNTIME["databricks"])
+
+    assert mdm._runtime() == {**RUNTIME, "python": os.path.abspath(sys.executable)}
+
+
 def test_isolated_runtime_must_import_the_provisioning_package(monkeypatch):
     monkeypatch.setattr(mdm, "_shared_path", lambda value, *a, **kw: Path(value))
     probe = Mock(

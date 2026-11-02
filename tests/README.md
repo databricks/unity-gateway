@@ -520,6 +520,8 @@ managed skill assets/connectors, one native registration, explicit update and de
 removal, interrupted-account cleanup, foreign-file preservation, rollback, dry run, and
 reuse of provisioning authentication. It reuses the temporary filesystem transaction fixture;
 workspace APIs, machine ownership, launchd, and Claude's registry/cache commands are simulated.
+A real isolated Python child verifies the runtime probe can read the installed package path;
+this catches binary stdout being passed to `Path` during provisioning.
 This does not establish native macOS MDM, launchd, fresh-user GUI login, or tool/skill execution.
 The rollout checklist is in `docs/claude-desktop-mdm.md`.
 

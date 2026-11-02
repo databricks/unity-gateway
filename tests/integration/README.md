@@ -172,8 +172,10 @@ Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
 macOS `--mdm-desktop` provisioning and its per-user LaunchAgent are outside these
 Linux/Windows journeys. `../test_desktop_mdm.py` has component coverage for publication,
 auth separation, cache refresh, ownership conflicts, rollback, and deferred cleanup using
-temporary paths and simulated external boundaries. Native launchd activation, first-user
-timing, managed-plist precedence, and tool/skill invocation remain untested here; follow
+temporary paths and simulated external boundaries. Its runtime-probe regression uses a real
+isolated Python child to catch binary stdout being passed to `Path` during provisioning.
+Native launchd activation, first-user timing, managed-plist precedence, and tool/skill
+invocation remain untested here; follow
 [`docs/claude-desktop-mdm.md`](../../docs/claude-desktop-mdm.md) before fleet rollout.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
