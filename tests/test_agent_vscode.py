@@ -560,6 +560,7 @@ def _stub_workspace_setup(monkeypatch, state: dict, managed: dict | None) -> lis
 def test_configure_saves_copilots_model_source_for_its_launches(monkeypatch):
     state = {**STATE, "provider_services": {"copilot": "old.default.mps"}}
     seen = _stub_workspace_setup(monkeypatch, state, None)
+    monkeypatch.setattr(copilot, "location_catalog", lambda state, schema: ["a model"])
 
     cli_mod.configure_workspace_command(
         selected_tools=["copilot"], workspaces=[(WS, None)], copilot_source=(None, "main.models")
@@ -567,6 +568,28 @@ def test_configure_saves_copilots_model_source_for_its_launches(monkeypatch):
 
     assert "provider_services" not in seen[0]
     assert seen[0]["model_locations"] == {"copilot": "main.models"}
+
+
+@pytest.mark.parametrize(
+    "source", [("main.default.typo", None), (None, "main.empty")], ids=["provider", "location"]
+)
+def test_configure_keeps_copilots_source_when_the_new_one_fails(monkeypatch, source):
+    def unusable(*args, **kwargs):
+        raise RuntimeError("not usable")
+
+    state = {**STATE, "provider_services": {"copilot": "old.default.mps"}}
+    seen = _stub_workspace_setup(monkeypatch, state, None)
+    monkeypatch.setattr(copilot, "provider_service_catalog", unusable)
+    monkeypatch.setattr(copilot, "location_catalog", unusable)
+
+    with pytest.raises(RuntimeError, match="not usable"):
+        cli_mod.configure_workspace_command(
+            selected_tools=["copilot"], workspaces=[(WS, None)], copilot_source=source
+        )
+
+    assert seen == []
+    assert state["provider_services"] == {"copilot": "old.default.mps"}
+    assert "model_locations" not in state
 
 
 def test_configure_refuses_a_copilot_model_source_on_a_managed_workspace(monkeypatch):

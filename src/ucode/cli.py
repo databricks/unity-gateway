@@ -1379,8 +1379,14 @@ def _configure_workspace_command(
         for tool_name in picked:
             state = _maybe_select_provider_service(tool_name, state)
     if copilot_source is not None:
-        # Saved, so `ug copilot` launches on the same models VS Code gets.
         provider_service, model_location = copilot_source
+        # Resolve the source the way `ug copilot` will, so a bad one fails here instead of being
+        # saved over a working one.
+        if provider_service:
+            copilot_agent.provider_service_catalog(state, provider_service, None)
+        else:
+            copilot_agent.location_catalog(state, str(model_location))
+        # Saved, so `ug copilot` launches on the same models VS Code gets.
         state = set_provider_service(state, AGENT_COPILOT, provider_service)
         state = set_model_location(state, AGENT_COPILOT, model_location)
 
