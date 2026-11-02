@@ -172,3 +172,26 @@ def test_ug_copilot_refuses_a_subscription_relay_provider(
     assert "only Claude Code can use" in result.stderr
     assert not list(session.home.glob(".copilot/session-state/*")), "Copilot started"
     assert_no_session_registry_left(session)
+
+
+def test_ug_copilot_refuses_a_chatgpt_relay_provider(
+    live_session, workspace, codex_relayed_provider
+):
+    """Scenario: configure Copilot, then launch it with a provider service that relays a ChatGPT
+    subscription.
+
+    Expected: ug exits 1 before starting Copilot, and its error says only Codex can use that
+    service. No session registry is left.
+    """
+    session = live_session
+    _configure(session, workspace)
+
+    result = session.run(
+        "copilot", "--provider", codex_relayed_provider, "-p", "hi", ok=False, timeout=120
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "relays a ChatGPT subscription" in result.stderr
+    assert "only Codex can use" in result.stderr
+    assert not list(session.home.glob(".copilot/session-state/*")), "Copilot started"
+    assert_no_session_registry_left(session)

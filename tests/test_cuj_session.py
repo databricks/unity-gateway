@@ -48,3 +48,10 @@ def test_integration_session_redacts_relay_token_from_runner_env(tmp_path, monke
     session = IntegrationSession(tmp_path, tmp_path, Path("/installed/ug"), tmp_path / "artifacts")
 
     assert session.redact("token=claude-relay-token") == "token=<redacted>"
+
+
+def test_integration_session_redacts_codex_access_token_from_runner_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("UG_INTEGRATION_CODEX_ACCESS_TOKEN", "codex-access-token")
+    session = IntegrationSession(tmp_path, tmp_path, Path("/installed/ug"), tmp_path / "artifacts")
+
+    assert session.redact("token=codex-access-token") == "token=<redacted>"
