@@ -109,6 +109,16 @@ def save_config_scope(scope: str) -> None:
 
 def load_state() -> dict:
     """Load the current workspace's state as a flat dict."""
+    ws_state = load_saved_state()
+    return hydrate_state(ws_state) if ws_state else {}
+
+
+def load_saved_state() -> dict:
+    """Activate and return the current workspace's saved state without derived agent config.
+
+    Token helpers need only the saved workspace, profile, and auth flags; ``hydrate_state``
+    imports every agent module to derive per-agent settings.
+    """
     full = load_full_state()
     key = current_workspace_key(full)
     if not key:
@@ -125,7 +135,7 @@ def load_state() -> dict:
         ws_state.pop("workspace_id", None)
     ws_state.pop(ALIAS_OF_KEY, None)
     activate_state(ws_state)
-    return hydrate_state(ws_state)
+    return ws_state
 
 
 def save_state(state: dict) -> None:

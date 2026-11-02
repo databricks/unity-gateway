@@ -188,17 +188,17 @@ class TestCustomClientCommand:
     @pytest.fixture(autouse=True)
     def _no_production_auth(self, monkeypatch):
         monkeypatch.setattr(
-            "ucode.cli.get_databricks_token",
+            "ucode.agent_helpers.get_databricks_token",
             Mock(side_effect=AssertionError("Custom auth must not use production auth")),
         )
 
     def test_custom_client_dispatches_with_explicit_scopes(self):
         with (
             patch(
-                "ucode.cli.load_state",
+                "ucode.agent_helpers.load_saved_state",
                 return_value={"workspace": "https://ws", "profile": "saved", "use_pat": True},
             ),
-            patch("ucode.cli.ensure_pat_bearer") as pat,
+            patch("ucode.agent_helpers.ensure_pat_bearer") as pat,
             patch(
                 "ucode.custom_oauth.get_custom_client_token", return_value="custom-token"
             ) as fetch,
