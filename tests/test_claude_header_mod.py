@@ -208,3 +208,28 @@ def test_header_mod_active_needs_every_file(tmp_path, monkeypatch):
 
     (root / "ug-headers/.claude-plugin/plugin.json").unlink()
     assert not claude.header_mod_active()
+
+
+def test_header_mod_active_accepts_another_installers_copy_without_ug_files(tmp_path, monkeypatch):
+    # TODO: remove with the special case once other installers use ug to update managed settings.
+    _managed_path, root, _writes = _managed_env(
+        tmp_path, monkeypatch, {"enabledPlugins": {"ug-headers@other-managed": True}}
+    )
+    assert not root.exists()
+    assert claude.header_mod_active()
+
+
+def test_header_mod_active_rejects_disabled_absent_or_unrelated_plugins(tmp_path, monkeypatch):
+    managed_path, _root, _writes = _managed_env(
+        tmp_path, monkeypatch, {"enabledPlugins": {"ug-headers@other-managed": False}}
+    )
+    assert not claude.header_mod_active()
+
+    for doc in (
+        {"enabledPlugins": {}},
+        {},
+        {"enabledPlugins": {"other@other-managed": True}},
+        {"enabledPlugins": {"ug-headers@ucode-managed": True}},  # ug's own files are missing
+    ):
+        managed_path.write_text(json.dumps(doc), encoding="utf-8")
+        assert not claude.header_mod_active()
