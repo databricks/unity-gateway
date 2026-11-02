@@ -55,11 +55,26 @@ jobs:
       # GitHub runners can't reach (downloads time out). Re-resolve against
       # public PyPI at CI time: UV_INDEX_URL + a `uv lock` before install.
       UV_INDEX_URL: https://pypi.org/simple
+      # The pinned Codex that tests/test_codex_relay.py runs for real (no secrets involved).
+      UCODE_TEST_CODEX_VERSION: 0.154.0
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - name: Install the pinned Codex
+        run: |
+          npm install -g "@openai/codex@$UCODE_TEST_CODEX_VERSION"
+          # On Windows npm installs `codex.cmd`; the test unwraps it the way ug does.
+          if [ "$RUNNER_OS" = Windows ]; then
+            codex_bin="$(cygpath -m "$(npm prefix -g)")/codex.cmd"
+          else
+            codex_bin="$(command -v codex)"
+          fi
+          echo "UCODE_TEST_CODEX_BINARY=$codex_bin" >> "$GITHUB_ENV"
       - name: Install dependencies
         run: |
           uv lock

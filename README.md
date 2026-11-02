@@ -581,6 +581,11 @@ uv run pytest
 uv run ruff check .
 ```
 
+`tests/test_codex_relay.py` runs a real Codex (no network or credentials) and fails without one. Install
+the version CI pins (`UCODE_TEST_CODEX_VERSION` in `.github/workflows/ci.yml`), then set
+`UCODE_TEST_CODEX_BINARY` to its absolute path (`codex.cmd` on Windows) and `UCODE_TEST_CODEX_VERSION`
+to that version, or run `uv run pytest --deselect tests/test_codex_relay.py`.
+
 For integration tests against installed `ug` and agent versions, see
 [tests/integration/README.md](tests/integration/README.md). The existing e2e
 tests remain available separately:
