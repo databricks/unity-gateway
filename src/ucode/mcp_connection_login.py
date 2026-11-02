@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import time
+from typing import TextIO
 from urllib.parse import unquote, urlencode
 
 from ucode.databricks import (
@@ -66,12 +67,14 @@ def run_connection_login(
     workspace: str,
     *,
     profile: str | None = None,
+    stderr: TextIO | None = None,
 ) -> tuple[bool, str]:
     """Open MCP service sign-in and wait for the selected profile's credential.
 
     All diagnostics go to stderr because stdout carries MCP JSON-RPC messages.
     Browser launch alone never establishes successful authentication.
     """
+    output = stderr if stderr is not None else sys.stderr
     connection = unquote(connection_from_url(resource_url) or "")
     if len(connection.split(".")) != 3 or not all(connection.split(".")):
         return False, "connection sign-in requires an MCP service name (catalog.schema.service)"
@@ -113,7 +116,7 @@ def run_connection_login(
         f"Signing in to '{connection}'. Complete provider sign-in using the same Databricks "
         f"account as CLI profile '{profile or '(default)'}'. If the browser or provider popup "
         f"doesn't open, visit this URL and click Login:\n{login_url}",
-        file=sys.stderr,
+        file=output,
         flush=True,
     )
     deadline = time.monotonic() + _LOGIN_TIMEOUT_SECONDS
@@ -130,14 +133,14 @@ def run_connection_login(
             check=False,
             timeout=10,
             stdin=subprocess.DEVNULL,
-            stdout=sys.stderr,
-            stderr=sys.stderr,
+            stdout=output,
+            stderr=output,
         )
         browser_opened = result.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         browser_opened = False
     if not browser_opened:
-        print("Could not open a browser. Open the sign-in URL above manually.", file=sys.stderr)
+        print("Could not open a browser. Open the sign-in URL above manually.", file=output)
 
     while time.monotonic() < deadline:
         try:

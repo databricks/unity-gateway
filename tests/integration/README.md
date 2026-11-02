@@ -1601,3 +1601,9 @@ malformed upstream tool entries and slow metadata
 discovery while unrelated replies continue. Failed metadata discovery retries naturally
 on the next operation, without a cache or cooldown. These are component
 checks, not native Cowork invocation or live provider sign-in.
+
+Proxy startup has component coverage in `../test_mcp_proxy_cli.py` and shared-process
+coverage in `../test_mcp_proxy_shared.py`. The latter runs real relay/backend processes
+against a local HTTP MCP peer, checking concurrent session isolation, credentials,
+headers, disconnects, crash recovery, local authentication, idle shutdown, and sign-in
+output. These component checks do not establish live gateway or native Windows coverage.

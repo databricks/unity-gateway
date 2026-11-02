@@ -18,6 +18,21 @@ from ucode.databricks import (
     build_shared_base_urls,
 )
 from ucode.managed_files import CONFIG_SCOPES, DEFAULT_CONFIG_SCOPE
+from ucode.state_file import (
+    ALIAS_OF_KEY as ALIAS_OF_KEY,
+)
+from ucode.state_file import (
+    CURRENT_WORKSPACE_KEY as CURRENT_WORKSPACE_KEY,
+)
+from ucode.state_file import (
+    STATE_VERSION as STATE_VERSION,
+)
+from ucode.state_file import (
+    _split_saved_key,
+    current_workspace_key,
+    current_workspace_state,
+    read_state_file,
+)
 from ucode.workspace import (
     activate_state,
     selector_headers,
@@ -26,68 +41,18 @@ from ucode.workspace import (
 )
 
 STATE_PATH = APP_DIR / "state.json"
-STATE_VERSION = 3
 CONFIG_SCOPE_KEY = "config_scope"
 # Transient key holding the developer's own values for whatever a managed config layered over them.
 # Present only in memory: the layered values render the agent settings files, while `save_state`
 # restores what's under it so `state.json` keeps recording the developer's own configuration.
 MANAGED_OVERLAY_KEY = "_managed_overlay"
-# On a host that serves several workspaces, ``current_workspace`` holds the bare host (what older
-# ug versions and integrations read) and ``current_workspace_key`` the ``<host>?w=<id>`` block.
-CURRENT_WORKSPACE_KEY = "current_workspace_key"
-# Marks the copy of a multi-workspace host's current block kept under the bare host, for
-# integrations that look ucode state up by the host alone. ug follows it to that host's current
-# workspace and never treats a marked block as that host's own settings.
-ALIAS_OF_KEY = "alias_of"
 AUTH_COMMAND_TIMEOUT_MS = 5000
 AUTH_REFRESH_INTERVAL_MS = 900_000
 
 
 def load_full_state() -> dict:
     """Load the entire state file. Returns empty structure if missing or wrong version."""
-    if not STATE_PATH.exists():
-        return {"state_version": STATE_VERSION, "current_workspace": None, "workspaces": {}}
-    try:
-        data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"state_version": STATE_VERSION, "current_workspace": None, "workspaces": {}}
-    if not isinstance(data, dict) or data.get("state_version") != STATE_VERSION:
-        return {"state_version": STATE_VERSION, "current_workspace": None, "workspaces": {}}
-    return data
-
-
-def _split_saved_key(workspaces: object, key: str) -> tuple[str, str | None]:
-    """:func:`split_workspace_key` for a saved key.
-
-    An older version saved a pasted URL as its key. A ``<host>?w=<id>`` key whose block exists
-    without that ``workspace_id`` (which this version always writes) is that older plain key; a
-    key with no block yet selects its workspace.
-    """
-    host, workspace_id = split_workspace_key(key)
-    block = workspaces.get(key) if isinstance(workspaces, dict) else None
-    if workspace_id and isinstance(block, dict) and block.get("workspace_id") != workspace_id:
-        return key, None
-    return host, workspace_id
-
-
-def current_workspace_key(full: dict) -> str | None:
-    """The ``workspaces`` key of the current workspace.
-
-    ``current_workspace_key`` counts only while it matches ``current_workspace``: an older ug that
-    switched workspaces updates the bare host alone.
-    """
-    current = full.get("current_workspace")
-    if not isinstance(current, str) or not current:
-        return None
-    key = full.get(CURRENT_WORKSPACE_KEY)
-    if isinstance(key, str) and split_workspace_key(key)[0] == current:
-        return key
-    workspaces = full.get("workspaces") or {}
-    block = workspaces.get(current)
-    aliased = block.get(ALIAS_OF_KEY) if isinstance(block, dict) else None
-    if isinstance(aliased, str) and aliased in workspaces:
-        return aliased
-    return current
+    return read_state_file(STATE_PATH)
 
 
 def load_config_scope() -> str:
@@ -107,25 +72,11 @@ def save_config_scope(scope: str) -> None:
         raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
 
 
-def load_state() -> dict:
-    """Load the current workspace's state as a flat dict."""
-    full = load_full_state()
-    key = current_workspace_key(full)
-    if not key:
-        activate_state({})
-        return {}
-    ws_state = full.get("workspaces", {}).get(key, {})
-    if not isinstance(ws_state, dict):
-        ws_state = {}
-    workspace, workspace_id = _split_saved_key(full.get("workspaces"), key)
-    ws_state["workspace"] = workspace
-    if workspace_id:
-        ws_state["workspace_id"] = workspace_id
-    else:
-        ws_state.pop("workspace_id", None)
-    ws_state.pop(ALIAS_OF_KEY, None)
+def load_state(*, hydrate: bool = True) -> dict:
+    """Load the current workspace, optionally without derived agent launch config."""
+    ws_state = current_workspace_state(load_full_state())
     activate_state(ws_state)
-    return hydrate_state(ws_state)
+    return hydrate_state(ws_state) if hydrate and ws_state else ws_state
 
 
 def save_state(state: dict) -> None:
