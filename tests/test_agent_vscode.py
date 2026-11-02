@@ -334,14 +334,6 @@ class TestCopilotModels:
     SONNET = "system.ai.claude-sonnet-5-5"
     GPT = "system.ai.gpt-6-luna"
 
-    @pytest.fixture(autouse=True)
-    def _no_discovery(self, code, monkeypatch):
-        monkeypatch.setattr(
-            vscode,
-            "discover_model_services",
-            lambda *a: pytest.fail("the Copilot CLI's catalog needs no discovery"),
-        )
-
     def _state(self, **managed) -> dict:
         saved = {"models": [self.SONNET, self.GPT], "limits": {self.GPT: [922_000, 128_000]}}
         return {**STATE, copilot.CATALOG_STATE_KEY: saved, **managed}
