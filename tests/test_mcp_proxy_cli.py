@@ -11,7 +11,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from ucode import mcp_proxy_cli
+from ucode.cli import mcp_proxy_cmd
 
 
 @pytest.mark.parametrize("command", ["ug", "ucode"])
@@ -73,13 +73,15 @@ def test_proxy_explicit_workspace_and_profile(monkeypatch):
 
     calls = []
     monkeypatch.setattr(
-        mcp_proxy_cli, "load_state", lambda **_: {"workspace": "saved", "profile": "saved"}
+        mcp_proxy_runtime,
+        "load_proxy_state",
+        lambda **_: {"workspace": "saved", "profile": "saved"},
     )
     monkeypatch.setattr(
         mcp_proxy_runtime, "serve", lambda *args, **kwargs: calls.append((args, kwargs))
     )
     app = typer.Typer()
-    app.command()(mcp_proxy_cli.mcp_proxy_cmd)
+    app.command()(mcp_proxy_cmd)
     result = CliRunner().invoke(
         app,
         [
@@ -97,9 +99,11 @@ def test_proxy_explicit_workspace_and_profile(monkeypatch):
 
 
 def test_proxy_missing_workspace_reports_error(monkeypatch):
-    monkeypatch.setattr(mcp_proxy_cli, "load_state", lambda **_: {})
+    from ucode import mcp_proxy_runtime
+
+    monkeypatch.setattr(mcp_proxy_runtime, "load_proxy_state", lambda **_: {})
     app = typer.Typer()
-    app.command()(mcp_proxy_cli.mcp_proxy_cmd)
+    app.command()(mcp_proxy_cmd)
     result = CliRunner().invoke(app, ["--url", "https://endpoint"])
     assert result.exit_code == 1
     assert "No workspace configured" in result.stderr

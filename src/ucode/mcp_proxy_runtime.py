@@ -266,6 +266,34 @@ def serve(
         raise SystemExit(2) from None
 
 
+def load_proxy_state() -> dict:
+    return current_workspace_state(read_state_file(Path.home() / ".ucode" / "state.json"))
+
+
+def run_proxy(
+    url: str,
+    host: str | None = None,
+    profile: str | None = None,
+    use_pat: bool = False,
+    workspace_id: str | None = None,
+) -> None:
+    state = load_proxy_state()
+    workspace = host or state.get("workspace")
+    if not workspace:
+        print("No workspace configured. Run `ug configure` first.", file=sys.stderr)
+        raise SystemExit(1)
+    if not workspace_id and workspace == state.get("workspace"):
+        workspace_id = state.get("workspace_id")
+    options = {"workspace_id": workspace_id} if workspace_id else {}
+    serve(
+        url,
+        workspace,
+        profile or state.get("profile"),
+        use_pat=use_pat or bool(state.get("use_pat")),
+        **options,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog=f"{sys.argv[0]} mcp-proxy", allow_abbrev=False)
     parser.add_argument("--url", required=True, help="Databricks streamable-HTTP MCP endpoint.")
@@ -275,21 +303,4 @@ def main() -> None:
     parser.add_argument(
         "--use-pat", action="store_true", help="Use the profile's personal access token."
     )
-    args = parser.parse_args(sys.argv[2:])
-    state = current_workspace_state(read_state_file(Path.home() / ".ucode" / "state.json"))
-    workspace = args.host or state.get("workspace")
-    if not workspace:
-        print("No workspace configured. Run `ug configure` first.", file=sys.stderr)
-        raise SystemExit(1)
-    serve(
-        args.url,
-        workspace,
-        args.profile or state.get("profile"),
-        use_pat=args.use_pat or bool(state.get("use_pat")),
-        **(
-            {"workspace_id": args.workspace_id or state.get("workspace_id")}
-            if args.workspace_id
-            or (workspace == state.get("workspace") and state.get("workspace_id"))
-            else {}
-        ),
-    )
+    run_proxy(**vars(parser.parse_args(sys.argv[2:])))

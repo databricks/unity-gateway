@@ -160,7 +160,6 @@ from ucode.mcp import (
     revert_mcp_configs,
 )
 from ucode.mcp import managed_mcp_servers as load_managed_mcp_servers
-from ucode.mcp_proxy_cli import mcp_proxy_cmd
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_download import (
     configure_location_skills_download_command,
@@ -2566,7 +2565,36 @@ def skills_remove(
         raise typer.Exit(130) from None
 
 
-app.command("mcp-proxy", hidden=True)(mcp_proxy_cmd)
+@app.command("mcp-proxy", hidden=True)
+def mcp_proxy_cmd(
+    url: Annotated[
+        str,
+        typer.Option("--url", help="Databricks streamable-HTTP MCP endpoint to forward to."),
+    ],
+    host: Annotated[
+        str | None,
+        typer.Option(
+            "--host", help="Workspace URL for token minting. Defaults to the saved workspace."
+        ),
+    ] = None,
+    profile: Annotated[
+        str | None, typer.Option("--profile", help="Databricks CLI profile.")
+    ] = None,
+    use_pat: Annotated[
+        bool,
+        typer.Option(
+            "--use-pat",
+            help="Authenticate with the profile's static personal access token (from "
+            "~/.databrickscfg) instead of OAuth. Set automatically for workspaces configured "
+            "with `ug configure --profile <name> --use-pat`.",
+        ),
+    ] = False,
+    workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
+) -> None:
+    """Bridge a coding agent's stdio MCP transport to a Databricks MCP endpoint."""
+    from ucode.mcp_proxy_runtime import run_proxy
+
+    run_proxy(url, host, profile, use_pat, workspace_id)
 
 
 @app.command("cowork-hook", hidden=True)

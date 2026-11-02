@@ -651,7 +651,6 @@ async def _run(
     stdin: anyio.AsyncFile[str] | None = None,
     stdout: anyio.AsyncFile[str] | None = None,
     token_provider: Callable[[], str] | None = None,
-    headers: dict[str, str] | None = None,
     login_output: TextIO | None = None,
 ) -> None:
     httpx = _httpx()
@@ -676,7 +675,7 @@ async def _run(
     # yields a (read, write) pair in both.
     async with httpx.AsyncClient(
         auth=auth,
-        headers={**(ug_headers() if headers is None else headers), **workspace_headers(url)},
+        headers={**ug_headers(), **workspace_headers(url)},
         timeout=httpx.Timeout(
             connect=30.0,
             read=300.0,

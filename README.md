@@ -280,22 +280,10 @@ V2 AI Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
 
-Agents using `ug mcp-proxy` share a local backend instead of loading the MCP SDK
-in every agent process. Each agent keeps a small stdio relay and an independent
-upstream session, including its request IDs, headers, and selected profile. Existing
-registrations work without reconfiguration. Backends are shared within the same
-ug installation and credential environment; different inherited credentials use
-separate backends. Profile PATs stay within their own sessions.
-Selected workspaces on a host serving several workspaces also use separate backends
-to preserve the routing helper's process-wide workspace selection.
-
-The backend starts on demand and exits 60 seconds after its last connection closes.
-It listens only on loopback and authenticates local relays with a random secret in
-the user's private `~/.ucode/mcp-proxy/` runtime directory. On Windows this directory
-inherits the user profile's access permissions. Diagnostic logs are stored there
-as `backend.log`; connection sign-in output also reaches the requesting agent's stderr.
-If the backend exits unexpectedly, reconnect the agent's MCP server to start a new
-session. In-flight tool calls are not replayed automatically.
+UG automatically shares the MCP proxy across agents to reduce memory usage while
+keeping each connection's session and credentials separate. No configuration changes
+are needed. If a proxy connection closes unexpectedly, reconnect the MCP server in
+your agent.
 
 Claude-only setup also discovers GPT models for its generated `web_search`
 server; installing or configuring Codex is not required. Search registration

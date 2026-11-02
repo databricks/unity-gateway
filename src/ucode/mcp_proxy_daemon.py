@@ -27,7 +27,7 @@ from ucode.mcp_proxy_runtime import (
     private_directory,
 )
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock, release_file_lock
-from ucode.ug_headers import scoped_ug_headers, ug_headers
+from ucode.ug_headers import scoped_ug_headers
 from ucode.workspace import pin
 
 
@@ -159,7 +159,6 @@ async def run_backend(directory: Path, *, idle_timeout: float = IDLE_TIMEOUT_SEC
                         stdin=cast(anyio.AsyncFile[str], io),
                         stdout=cast(anyio.AsyncFile[str], io),
                         token_provider=token_provider,
-                        headers=ug_headers(),
                         login_output=login_output,
                     )
         except asyncio.CancelledError:

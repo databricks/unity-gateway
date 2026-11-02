@@ -72,11 +72,11 @@ def save_config_scope(scope: str) -> None:
         raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
 
 
-def load_state(*, hydrate: bool = True) -> dict:
-    """Load the current workspace, optionally without derived agent launch config."""
+def load_state() -> dict:
+    """Load the current workspace's state as a flat dict."""
     ws_state = current_workspace_state(load_full_state())
     activate_state(ws_state)
-    return hydrate_state(ws_state) if hydrate and ws_state else ws_state
+    return hydrate_state(ws_state) if ws_state else ws_state
 
 
 def save_state(state: dict) -> None:
