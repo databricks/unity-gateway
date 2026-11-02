@@ -20,6 +20,7 @@ import os
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -28,17 +29,36 @@ from ucode import gateway_proxy
 from ucode.agents import codex
 from ucode.codex_config import codex_config_args
 from ucode.constants import LOOPBACK_HOST, MODEL_PROVIDER_SERVICE_HEADER
+from ucode.os_compatibility import subprocess_cross_os
 
 FAKE_TOKEN = "at-fake-relay-test"
 ACCOUNT_ID = "acct-fake-relay-test"
 PROVIDER = "main.ucode.fake_relay_mps"
 ANSWER = "relay-ok-7c1"
 RESPONSES_PATH = "/ai-gateway/codex/v1/responses"
+WHOAMI_PATH = "/v1/user-auth-credential/whoami"
+BUNDLE_PATH = "/backend-api/wham/config/bundle"
 MODELS_PATH = "/ai-gateway/codex/v1/models"
 
 
 def _sse(*events: dict) -> list[bytes]:
     return [f"event: {e['type']}\ndata: {json.dumps(e)}\n\n".encode() for e in events]
+
+
+@pytest.fixture(scope="module")
+def native_binary():
+    binary = Path(os.environ.get("UCODE_TEST_CODEX_BINARY", ""))
+    expected = os.environ.get("UCODE_TEST_CODEX_VERSION", "")
+    assert binary.is_absolute() and binary.is_file() and expected, (
+        "Set UCODE_TEST_CODEX_BINARY to an absolute path to the pinned codex executable "
+        "(`codex.cmd` on Windows) and UCODE_TEST_CODEX_VERSION to its version."
+    )
+    result = subprocess_cross_os.run(
+        [str(binary), "--version"], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"codex-cli {expected}", result.stdout
+    return str(binary)
 
 
 ANSWER_STREAM = _sse(
@@ -76,7 +96,7 @@ def _chatgpt_stub():
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
             seen.append((self.path, self.headers.get("Authorization", "")))
-            if self.path == "/v1/user-auth-credential/whoami":
+            if self.path == WHOAMI_PATH:
                 body = {
                     "email": "relay-test@example.com",
                     "chatgpt_user_id": "user-fake-relay-test",
@@ -84,7 +104,7 @@ def _chatgpt_stub():
                     "chatgpt_plan_type": "plus",
                     "chatgpt_account_is_fedramp": False,
                 }
-            elif self.path == "/backend-api/wham/config/bundle":
+            elif self.path == BUNDLE_PATH:
                 body = {}
             else:
                 self.send_error(404)
@@ -132,7 +152,8 @@ def _run_codex_through_relay(native_binary, tmp_path, gateway, token_provider):
                 CODEX_ACCESS_TOKEN=FAKE_TOKEN,
                 CODEX_AUTHAPI_BASE_URL=stub_url,
             )
-            proc = subprocess.run(
+            # ug's own runner, which unwraps npm's `codex.cmd` shim on Windows.
+            proc = subprocess_cross_os.run(
                 [
                     native_binary,
                     *codex_config_args(overlay),
@@ -188,8 +209,12 @@ def test_codex_exec_through_relay_with_fake_access_token(native_binary, tmp_path
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert _agent_messages(proc.stdout) == [ANSWER], proc.stdout
 
-    # Codex validated the fake token with the stub, and nothing else was fetched.
-    assert ("/v1/user-auth-credential/whoami", f"Bearer {FAKE_TOKEN}") in stub_seen
+    # Codex validated the fake token with the stub. Its other startup fetches (plugins, user
+    # settings) also land on the stub under `chatgpt_base_url`, which 404s them harmlessly.
+    paths = {path for path, _ in stub_seen}
+    assert WHOAMI_PATH in paths, stub_seen
+    assert all(path == WHOAMI_PATH or path.startswith("/backend-api/") for path in paths), paths
+    assert {auth for _, auth in stub_seen} == {f"Bearer {FAKE_TOKEN}"}, stub_seen
 
     # Besides the turn, Codex refreshes its model list (the fake's non-JSON reply is tolerated).
     paths = {r.path.split("?")[0] for r in gateway.requests}
