@@ -25,7 +25,6 @@ from typing import Any
 
 from ucode.smart_routing.rationale import format_rationale
 from ucode.ug_headers import ug_headers
-from ucode.workspace import workspace_headers
 
 ROUTER_NAME = "task_v3"
 ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
@@ -224,6 +223,9 @@ def select_route(
         "task": {"prompt": task},
         "route_selector": {"router_name": router_name},
     }
+    # Hooks that only record sessions import this module; workspace selection loads the UI module.
+    from ucode.workspace import workspace_headers
+
     request = urllib.request.Request(
         workspace.rstrip("/") + ROUTING_PATH,
         data=json.dumps(body).encode("utf-8"),

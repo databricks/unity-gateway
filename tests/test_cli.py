@@ -1583,7 +1583,7 @@ class TestSubcommandRouting:
         }
         with (
             patch(
-                "ucode.cli.load_full_state",
+                "ucode.state.load_full_state",
                 return_value={"workspaces": {"https://example.com": {"custom_oauth": custom}}},
             ),
             patch("ucode.custom_oauth.get_databricks_token") as default_token,

@@ -223,6 +223,11 @@ The `auth-token` and `otel-headers` helpers that agents run go from the entry po
 bearer: they print it without loading `ucode.cli` or the agent modules, and their `--help` output
 matches the full CLI's. `TestAuthTokenCommand`, `TestOtelHeadersCommand`, and the custom-OAuth
 command tests cover their behavior through the CLI registration. No live token mint is timed.
+The `claude-router-hook` and `codex-router-hook` commands go to
+`ucode.smart_routing.hook_commands` the same way: their session and subagent records run in a fresh
+interpreter, write the routing canary or audit row, and skip the CLI, Databricks client, UI, and
+smart-routing launch modules. Routing events keep their `TestSubcommandRouting` coverage; no live
+router call is made.
 
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.

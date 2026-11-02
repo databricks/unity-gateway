@@ -132,17 +132,73 @@ def test_agent_helper_entrypoint_skips_the_cli(tmp_path, command, expected) -> N
     assert loaded == []
 
 
+@pytest.mark.parametrize(
+    ("command", "event", "payload", "artifact"),
+    [
+        (
+            "claude-router-hook",
+            "session-start",
+            {"session_id": "s1"},
+            "claude-smart-routing-canary.json",
+        ),
+        (
+            "claude-router-hook",
+            "record-subagent",
+            {"session_id": "s1"},
+            "claude-smart-routing-audit.jsonl",
+        ),
+        (
+            "codex-router-hook",
+            "session-start",
+            {"session_id": "s1"},
+            "codex-smart-routing-canary.json",
+        ),
+        (
+            "codex-router-hook",
+            "record-subagent",
+            {"session_id": "s1"},
+            "codex-smart-routing-audit.jsonl",
+        ),
+    ],
+)
+def test_router_hook_records_skip_the_cli(tmp_path, command, event, payload, artifact) -> None:
+    # Agents run these at session start and before every subagent starts.
+    session = tmp_path / "env.json"
+    session.write_text("{}", encoding="utf-8")
+    probe = (
+        "import io, os, sys\n"
+        f"os.environ.update(HOME={str(tmp_path)!r}, ENABLE_SMART_ROUTING_SUBAGENT_ONLY='1', "
+        f"UCODE_SESSION_ENV_FILE={str(session)!r})\n"
+        f"sys.argv, sys.stdin = ['ug', {command!r}, {event!r}], io.StringIO({json.dumps(payload)!r})\n"
+        "from ucode.entrypoint import main\n"
+        "try:\n    main()\nexcept SystemExit as exc:\n    assert not exc.code, exc.code"
+    )
+    deferred = ("ucode.cli", "ucode.databricks", "ucode.smart_routing.v2", "ucode.ui")
+
+    output, loaded = _modules_loaded_after(probe, (*deferred, *_LAZY_MODULES))
+
+    assert output == ""
+    assert loaded == []
+    assert '"session_id": "s1"' in (tmp_path / ".ucode" / artifact).read_text(encoding="utf-8")
+
+
 def test_agent_helpers_are_the_cli_hidden_helper_commands() -> None:
+    from importlib import import_module
+
     from typer.main import get_command
 
-    from ucode import agent_helpers, cli
+    from ucode import cli
 
     commands = get_command(cli.app).commands
-    assert entrypoint._AGENT_HELPER_COMMANDS == set(agent_helpers.COMMANDS)
-    assert all(commands[name].hidden for name in agent_helpers.COMMANDS)
+    for module in set(entrypoint._AGENT_HELPERS.values()):
+        names = {name for name, owner in entrypoint._AGENT_HELPERS.items() if owner == module}
+        assert names == set(import_module(module).COMMANDS)
+    assert all(commands[name].hidden for name in entrypoint._AGENT_HELPERS)
 
 
-@pytest.mark.parametrize("command", ["auth-token", "otel-headers"])
+@pytest.mark.parametrize(
+    "command", ["auth-token", "otel-headers", "claude-router-hook", "codex-router-hook"]
+)
 def test_agent_helper_help_matches_the_cli(command) -> None:
     def help_text(module: str) -> str:
         result = subprocess.run(
