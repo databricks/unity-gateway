@@ -869,9 +869,9 @@ def test_smart_router_managed_default_leaves_codex_unrouted_at_launch(
     the Claude-only default preset, then spawn one tagged child in the real TUI without touching
     the Smart Router skill.
 
-    Expected: ug warns that smart routing on Codex is not supported and launches as a plain,
-    unrouted Codex session: neither `smart-router` nor Smart Router Orchestrator is installed in
-    the fresh home. The tagged calculation completes in a native child session with no
+    Expected: ug warns that the workspace enables smart routing for Codex but it is currently
+    only supported for Claude Code, and launches a plain, unrouted Codex session: neither
+    `smart-router` nor Smart Router Orchestrator is installed in the fresh home. The tagged calculation completes in a native child session with no
     subagent-routing banner, produces no live gateway decision, and no first-prompt interposer
     starts.
     """
@@ -906,5 +906,8 @@ def test_smart_router_managed_default_leaves_codex_unrouted_at_launch(
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
     launch_text = " ".join(ANSI.sub("", transcript).split())
-    assert "Smart routing on Codex is currently not supported." in launch_text, transcript
+    assert (
+        "Smart routing is enabled for Codex in this workspace, but it is currently only "
+        "supported for Claude Code." in launch_text
+    ), transcript
     session.assert_not_routed()

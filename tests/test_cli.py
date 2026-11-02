@@ -1093,10 +1093,13 @@ class TestSubcommandRouting:
             result = runner.invoke(app, [tool, *launch_args])
 
         assert result.exit_code == 0, result.output
-        unsupported = [
-            "Smart routing on Codex is currently not supported. Running without smart routing."
-        ]
-        assert [w for w in warnings if "Smart routing on" in w] == (unsupported if warned else [])
+        unsupported = (
+            "Smart routing is enabled for Codex in this workspace, but it is currently only "
+            "supported for Claude Code. Running without smart routing."
+            if managed_routing and not launch_args
+            else "Smart routing on Codex is currently not supported. Running without smart routing."
+        )
+        assert [w for w in warnings if "Smart routing" in w] == ([unsupported] if warned else [])
         # An unrouted launch never reaches the routed path that installs skills and hooks.
         assert observed == [routed]
         assert any("one-time hook review" in note for note in notes) is routed

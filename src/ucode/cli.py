@@ -3640,17 +3640,24 @@ def _launch_tool(
         )
         # Checked before the managed version is applied, which consumes the selector. A version
         # that leaves this agent unrouted makes the launch a plain one: no skills, hooks, or note.
-        routing_unsupported = routing_unsupported or (
+        # The flag sets routing_chosen, so at most one of these holds.
+        managed_routing_unsupported = (
             managed_smart_routing_applies
             and not smart_routing_config.enabled_version_routes(agent=tool)
         )
-        smart_routing_enabled = not routing_unsupported and (
+        smart_routing_enabled = not (routing_unsupported or managed_routing_unsupported) and (
             managed_smart_routing_applies
             or smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
         )
-        if routing_unsupported and _smart_routing_launch_shape(tool, ctx.args, explicit_prompt):
+        if (routing_unsupported or managed_routing_unsupported) and _smart_routing_launch_shape(
+            tool, ctx.args, explicit_prompt
+        ):
+            display = TOOL_SPECS[tool]["display"]
             print_warning(
-                f"Smart routing on {TOOL_SPECS[tool]['display']} is currently not supported. "
+                f"Smart routing is enabled for {display} in this workspace, but it is currently "
+                "only supported for Claude Code. Running without smart routing."
+                if managed_routing_unsupported
+                else f"Smart routing on {display} is currently not supported. "
                 "Running without smart routing."
             )
         # Re-fetch model lists on every launch so newly-added Databricks
