@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 import ucode.doctor as doctor_mod
 from ucode.databricks import MIN_DATABRICKS_CLI_VERSION
@@ -188,6 +192,167 @@ class TestCopilotModelsCheck:
         assert check is not None
         assert check.status == "warn"
         assert "ug configure --agents copilot" in check.detail
+
+    def test_names_the_managed_source_launch_lists(self):
+        state = {
+            "workspace": "https://ws.databricks.com",
+            "available_tools": ["copilot"],
+            "copilot_catalog": {"models": ["system.ai.claude-sonnet-4-6"]},
+        }
+        managed = {
+            "enabled_agents": {
+                "copilot": {"model_config": {"model_provider_service": "main.default.mps"}}
+            }
+        }
+        with (
+            patch.object(doctor_mod, "load_state", return_value=state),
+            patch.object(doctor_mod, "load_managed_state", return_value=managed),
+        ):
+            check = doctor_mod._check_copilot_models()
+
+        assert check is not None
+        assert check.status == "ok"
+        assert check.detail.startswith("from main.default.mps, your workspace's managed config")
+
+
+COPILOT_STATE = {"available_tools": ["copilot"]}
+
+
+class TestCopilotDevicePolicyCheck:
+    @pytest.fixture
+    def policy(self, tmp_path, monkeypatch):
+        path = tmp_path / "managed-settings.json"
+        monkeypatch.setattr(doctor_mod, "load_state", lambda: COPILOT_STATE)
+        monkeypatch.setattr(doctor_mod.copilot, "device_policy_path", lambda: path)
+        monkeypatch.setattr(doctor_mod, "_ignored_by_copilot", lambda _path: False)
+        return path
+
+    def test_none_without_copilot_or_a_policy(self, policy, monkeypatch):
+        assert doctor_mod._check_copilot_device_policy() is None
+        policy.write_text("{}")
+        assert doctor_mod._check_copilot_device_policy() is None
+        policy.write_text(json.dumps({"forceLoginOrgs": ["acme"]}))
+        monkeypatch.setattr(doctor_mod, "load_state", lambda: {"available_tools": ["claude"]})
+        assert doctor_mod._check_copilot_device_policy() is None
+
+    @pytest.mark.parametrize(
+        ("settings", "named"),
+        [
+            ({"forceLoginOrgs": ["acme"]}, "forceLoginOrgs requires a GitHub sign-in"),
+            ({"forceRemoteSettingsRefresh": True}, "forceRemoteSettingsRefresh requires a live"),
+        ],
+    )
+    def test_errors_on_settings_that_stop_ug_copilot(self, policy, settings, named):
+        policy.write_text(json.dumps({**settings, "telemetry": {}}))
+
+        check = doctor_mod._check_copilot_device_policy()
+
+        assert check is not None
+        assert check.status == "error"
+        assert named in check.detail
+        assert "Ask your IT team" in check.detail
+
+    def test_errors_on_a_policy_it_cant_read(self, policy):
+        policy.write_text("{")
+
+        check = doctor_mod._check_copilot_device_policy()
+
+        assert check is not None
+        assert check.status == "error"
+        assert "can't be read" in check.detail
+
+    def test_warns_on_settings_that_change_ugs_setup(self, policy):
+        policy.write_text(
+            json.dumps({"allowedMcpServers": [], "deniedMcpServers": [], "model": "x"})
+        )
+
+        check = doctor_mod._check_copilot_device_policy()
+
+        assert check is not None
+        assert check.status == "warn"
+        assert "sets allowedMcpServers, deniedMcpServers: can block ug's MCP servers." in (
+            check.detail
+        )
+        assert "VS Code turns off its Claude and Codex agents" in check.detail
+
+    def test_notes_any_other_setting_for_vscode(self, policy):
+        policy.write_text(json.dumps({"model": "gpt-5"}))
+
+        check = doctor_mod._check_copilot_device_policy()
+
+        assert check is not None
+        assert check.status == "info"
+        assert "VS Code turns off its Claude and Codex agents" in check.detail
+
+    def test_warns_that_copilot_ignores_a_policy_it_doesnt_trust(self, policy, monkeypatch):
+        policy.write_text(json.dumps({"forceLoginOrgs": ["acme"]}))
+        monkeypatch.setattr(doctor_mod, "_ignored_by_copilot", lambda _path: True)
+
+        check = doctor_mod._check_copilot_device_policy()
+
+        assert check is not None
+        assert check.status == "warn"
+        assert "so Copilot ignores it" in check.detail
+
+    @pytest.mark.skipif(doctor_mod.current_os() is doctor_mod.OS.WINDOWS, reason="POSIX owners")
+    def test_a_policy_this_user_owns_or_links_is_ignored(self, tmp_path):
+        own = tmp_path / "own.json"
+        own.write_text("{}")
+        link = tmp_path / "link.json"
+        link.symlink_to(own)
+
+        assert doctor_mod._ignored_by_copilot(link)
+        assert doctor_mod._ignored_by_copilot(own) is (own.stat().st_uid != 0)
+
+
+class TestVSCodeCheck:
+    @pytest.fixture
+    def code(self, monkeypatch):
+        monkeypatch.setattr(doctor_mod, "load_state", lambda: COPILOT_STATE)
+        monkeypatch.setattr(doctor_mod.vscode, "find_code", lambda: Path("/fake/code"))
+        found = {"installed": "0.1.0", "version": (1, 144, 0)}
+        monkeypatch.setattr(doctor_mod.vscode, "installed_version", lambda _c: found["installed"])
+        monkeypatch.setattr(doctor_mod.vscode, "code_version", lambda _c: found["version"])
+        return found
+
+    def test_none_without_copilot_or_vscode(self, code, monkeypatch):
+        monkeypatch.setattr(doctor_mod.vscode, "find_code", lambda: None)
+        assert doctor_mod._check_vscode() is None
+        monkeypatch.setattr(doctor_mod, "load_state", lambda: {"available_tools": ["claude"]})
+        assert doctor_mod._check_vscode() is None
+
+    def test_ok_with_the_extension_and_its_vscode_version(self, code):
+        assert doctor_mod._check_vscode() == Check(
+            "VS Code", "ok", "extension 0.1.0 (VS Code 1.144.0)"
+        )
+
+    def test_notes_a_missing_extension(self, code):
+        code["installed"] = None
+
+        check = doctor_mod._check_vscode()
+
+        assert check is not None
+        assert check.status == "info"
+        assert "ug configure --agents copilot" in check.detail
+
+    def test_warns_when_vscode_is_too_old_for_ugs_mcp_servers(self, code):
+        code["version"] = (1, 140, 2)
+
+        check = doctor_mod._check_vscode()
+
+        assert check is not None
+        assert check.status == "warn"
+        assert "MCP servers need VS Code 1.142.0 or later" in check.detail
+
+    def test_warns_when_code_cant_run(self, code, monkeypatch):
+        def broken(_code):
+            raise RuntimeError("`code --version` failed: boom")
+
+        monkeypatch.setattr(doctor_mod.vscode, "code_version", broken)
+
+        assert doctor_mod._check_vscode() == Check(
+            "VS Code", "warn", "`code --version` failed: boom"
+        )
 
 
 class TestDatabricksAuthCheck:

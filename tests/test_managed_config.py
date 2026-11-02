@@ -489,6 +489,31 @@ class TestFetchClient:
         assert reason == "HTTP 403 Forbidden"
 
     @pytest.mark.parametrize(
+        ("state", "expected"),
+        [
+            ({"available_tools": ["copilot"], "copilot_cli_version": "1.0.98"}, "copilot/1.0.98"),
+            ({"available_tools": ["copilot"]}, None),
+            ({"available_tools": ["claude"], "copilot_cli_version": "1.0.98"}, None),
+        ],
+    )
+    def test_user_agent_names_a_configured_copilots_recorded_version(
+        self, monkeypatch, state, expected
+    ):
+        import ucode.state as state_mod
+        from ucode.agents import claude, codex
+
+        monkeypatch.setattr(db_mod, "ug_version", lambda: "9.9.9")
+        monkeypatch.setattr(claude, "managed_user_agent", lambda: None)
+        monkeypatch.setattr(codex, "managed_user_agent", lambda: None)
+        monkeypatch.setattr(state_mod, "load_state", lambda: state)
+
+        user_agent = db_mod._managed_config_user_agent()
+
+        assert user_agent == " ".join(t for t in ("ucode/9.9.9", expected) if t) + (
+            f" {client_platform()}"
+        )
+
+    @pytest.mark.parametrize(
         ("claude_ua", "codex_ua", "expected"),
         [
             (None, None, "ucode/9.9.9"),

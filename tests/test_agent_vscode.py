@@ -382,6 +382,18 @@ class TestCopilotModels:
         assert "default model system.ai.missing isn't among VS Code's models" in _printed(capsys)
 
 
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [("1.144.0\n0f1e2d3c\nx64\n", (1, 144, 0)), ("", None), ("Visual Studio Code\n", None)],
+)
+def test_code_version_reads_the_first_line(monkeypatch, stdout, expected):
+    monkeypatch.setattr(
+        vscode, "_run_code", lambda code, *args: subprocess.CompletedProcess(args, 0, stdout, "")
+    )
+
+    assert vscode.code_version(Path("/fake/bin/code")) == expected
+
+
 class TestRevert:
     def test_uninstalls_the_extension(self, code):
         vscode.configure(STATE)
