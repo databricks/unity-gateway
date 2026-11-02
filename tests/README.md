@@ -158,6 +158,9 @@ only native `running` statuses count, one uses singular wording, background work
 parent-turn completion and routing toggles, existing tails are preserved, and zero hides
 the count. A mounted row updates on the one-second timer without another prompt or a
 redraw when the count is unchanged. This count has no live TUI coverage.
+They also check the Agent `tool.describe` hook: a host `Usage notes` section is kept (LF or
+CRLF heading), and a host description with a missing or empty section still gets the fixed
+SendMessage continuation note.
 
 CUJ3 expects GPT Luna in both agents' catalogs and pickers, including Claude's gateway alias,
 and covers an explicit Claude headless task on that model.

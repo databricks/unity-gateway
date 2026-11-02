@@ -243,3 +243,39 @@ test('the band is gone by the second turn after either toggle', { options: ROUTE
     expect(hasBand(await band.drawn())).toBe(false);
   }
 });
+
+const ORCHESTRATED = { ...ROUTED, orchestratorInstructions: 'Delegate under the orchestrator.' };
+const CONTINUE = 'To continue a previously spawned agent, use SendMessage';
+
+// The orchestrator replaces the host's Agent advice but keeps its Usage notes section.
+function agentDescriber($: any, on: On) {
+  setup(on);
+  on('tool.describe', ($, e) => ({ description: e.description }));
+  return async (host: string): Promise<string> =>
+    (await $.tool.describe({ tool: 'Agent', description: host })).description;
+}
+
+test('the host Usage notes survive the orchestrator description', { options: ORCHESTRATED }, async ($, on) => {
+  const describe = agentDescriber($, on);
+  const host = 'When in doubt, don\'t spawn.\n## Usage notes\n- Runs in the background.\n- Resume with SendMessage.\n## When to fork\nPolicy.';
+  expect(await describe(host))
+    .toBe('Delegate under the orchestrator.\n\n## Usage notes\n\n- Runs in the background.\n- Resume with SendMessage.');
+});
+
+test('a CRLF Usage notes heading is still found', { options: ORCHESTRATED }, async ($, on) => {
+  const describe = agentDescriber($, on);
+  const host = 'Policy.\r\n##  Usage notes \r\n- Runs in the background.\r\n## When to fork\r\nPolicy.';
+  expect(await describe(host)).toBe('Delegate under the orchestrator.\n\n## Usage notes\n\n- Runs in the background.');
+});
+
+test('a host description without Usage notes keeps the continuation note', { options: ORCHESTRATED }, async ($, on) => {
+  const describe = agentDescriber($, on);
+  // Neither a missing section nor an empty one may drop the continuation mechanics.
+  for (const host of ['Policy only.', 'Policy.\n## Usage notes\n\n## When to fork\nPolicy.']) {
+    const description = await describe(host);
+    expect(description.startsWith('Delegate under the orchestrator.\n\n## Usage notes\n\n- ')).toBe(true);
+    expect(description).toContain(CONTINUE);
+    expect(description).toContain('starts a fresh agent with no memory of prior runs');
+    expect(description).not.toContain('Policy');
+  }
+});

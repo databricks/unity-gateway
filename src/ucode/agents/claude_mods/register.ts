@@ -15,6 +15,15 @@ import { isRoutingEnabled } from './routing-state.ts';
 
 type Environment = Record<string, string | undefined>;
 
+// Kept when a host description has no Usage notes section, so continuation stays native.
+const CONTINUATION_NOTE = "- To continue a previously spawned agent, use SendMessage with the agent's ID or name as the `to` field — that resumes it with full context. A new Agent call starts a fresh agent with no memory of prior runs, so the prompt must be self-contained.";
+
+// The host's Usage notes section, up to the next level-two heading; tolerates CRLF and spacing.
+export function usageNotes(description: string): string {
+  const match = /(?:^|\r?\n)[ \t]*##[ \t]+Usage notes[ \t]*\r?\n([\s\S]*?)(?=\r?\n[ \t]*##[ \t]|$)/i.exec(description);
+  return match ? match[1].trim() : '';
+}
+
 async function readEnvironment($: EngineInterface): Promise<Environment> {
   return {
     ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
@@ -138,9 +147,8 @@ export function register(on: On, options: PluginOptions): void {
     const instructions = options.orchestratorInstructions as string;
     if (!await readOrchestratorState($, options)) return next(e);
     // Preserve the host's waiting and follow-up mechanics without its ownership policy.
-    const notes = e.description.split('\n## Usage notes\n')[1]?.split('\n## ')[0].trim();
-    const description = notes ? `${instructions}\n\n## Usage notes\n\n${notes}` : instructions;
-    return next({...e, description});
+    const notes = usageNotes(e.description) || CONTINUATION_NOTE;
+    return next({...e, description: `${instructions}\n\n## Usage notes\n\n${notes}`});
   });
 
   // The installed smart-router skill already supplies the slash command.
