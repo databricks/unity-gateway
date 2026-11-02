@@ -164,6 +164,27 @@ and `ug revert` return to `--global`.
 `--user` also fails for a workspace that publishes a managed config, which must be installed
 machine-wide; use `--global` for it.
 
+### Hosts that serve several workspaces
+
+An account custom URL (such as `https://acme.cloud.databricks.com`) serves every workspace of the
+account. Select the workspace the way the Databricks CLI does:
+
+```bash
+ug configure --workspace 'https://acme.cloud.databricks.com/?w=1234567890123456'
+ug configure --profile acme   # a profile whose host is the custom URL and that has a workspace_id
+ug claude --workspace 'https://acme.cloud.databricks.com/?w=1234567890123456'
+```
+
+`?o=` and `?workspace_id=` work too. ug keeps the custom URL as the workspace URL, gets the account
+token from the profile, and sends the workspace id as `X-Databricks-Org-Id` and
+`X-Databricks-Workspace-Id` on every request to that host: its own requests, its proxies, and the
+headers it writes for each agent. On a host that serves one workspace the id is ignored. With no
+profile for the host yet, the first login names one `ug-<name>`.
+
+Not supported yet on these hosts: disaster-recovery stable connection ids, signing in to an MCP
+service connection that needs your own login, and the MDM bootstrap script. MCP servers are
+registered through `ug mcp-proxy`, never as the agent's own OAuth connection.
+
 ### Extra headers for one session
 
 ```bash
@@ -201,10 +222,10 @@ subscription token and Databricks gateway token on macOS, Windows, and Linux.
 
 ## MCP Servers
 
-Register Databricks MCP servers for configured MCP-capable agents. Cursor Agent
-is MCP-only and is included when `cursor-agent` is installed:
+Use `ug mcp add` to register Databricks MCP servers for coding agents. Cursor
+Agent supports MCP only and requires `cursor-agent` on PATH.
 
-Run `ug mcp add` without selectors to browse a table of services by name, UC location,
+Run `ug mcp add` without options to browse services by name, UC location,
 and status. ✓ means configured (or managed by the workspace); ✗ means not configured.
 Configured and managed services stay visible as read-only rows. `[ ]`/`[x]` indicate
 what you select for this operation; `[-]` marks a read-only row.
@@ -224,9 +245,15 @@ ug mcp add --agents cursor --names system.ai.github --workspace https://first.da
 ug mcp add --agents codex --names system.ai.github --profile DEFAULT
 ```
 
-With `--agents`, agents that aren't set up yet are set up first. Pass `--workspace`
-or `--profile` to pick the workspace instead of the picker; it becomes the current
-workspace.
+`--agents` adds MCP servers without changing an agent's models. Claude Code and
+Codex work even if their CLI is not on PATH: UG writes their user MCP config
+directly. If that file already exists, UG detects the client without its CLI.
+This works on macOS, Windows, and Linux; other agents need their CLI on PATH.
+Without a CLI, status shows the saved config but cannot check the connection.
+
+`--workspace` or `--profile` selects the workspace on a fresh setup. To switch
+an existing setup, run `ug configure --workspace <url>` first. The switch uses
+that workspace's saved MCP servers; switching back restores the previous ones.
 
 Remove configured servers:
 

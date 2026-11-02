@@ -5,15 +5,12 @@ from __future__ import annotations
 import json
 import shutil
 import tomllib
+from dataclasses import asdict
+from types import SimpleNamespace
 
 from databricks.sdk.service.catalog import ListModelProviderServicesRequestView
 
-from tests.integration.utils.evidence import (
-    agent_sessions,
-    assistant_answers,
-    fresh_id,
-    is_child_session,
-)
+from tests.integration.utils.evidence import fresh_id
 
 from .base import BaseCujTest
 from .helpers.constants import (
@@ -29,7 +26,7 @@ from .helpers.constants import (
     WORKSPACE_POLICY_PATH,
 )
 from .helpers.desktop import assert_claude_desktop_profile, enable_claude_desktop
-from .helpers.evidence import assert_served
+from .helpers.evidence import SessionEvidence, assert_served
 from .helpers.mcp import registered_name
 from .helpers.poll import poll
 from .helpers.terminal import Terminal
@@ -172,37 +169,8 @@ def _assert_generated_mcp_listings(session) -> None:
         assert not _mcp_name_listed(output, WEB_SEARCH_MCP_SERVICE_NAME), output
 
 
-def _parent_transcripts(session, agent: str) -> dict[str, list[dict]]:
-    return {
-        path: records
-        for path, records in agent_sessions(session, agent).items()
-        if not is_child_session(agent, path, records)
-    }
-
-
-def _task_complete(session, agent: str, marker: str) -> bool:
-    transcripts = _parent_transcripts(session, agent)
-    return any(
-        marker in answer
-        for records in transcripts.values()
-        for answer in assistant_answers(agent, records)
-    )
-
-
-def _assert_task_evidence(session, agent: str, marker: str) -> None:
-    transcripts = _parent_transcripts(session, agent)
-    answers = [
-        answer for records in transcripts.values() for answer in assistant_answers(agent, records)
-    ]
-    assert any(marker in answer for answer in answers), answers
-    session.record(
-        f"cuj2-{agent}-evidence",
-        {"marker": marker, "answers": answers},
-    )
-
-
 def _agent_prompt(marker: str) -> str:
-    return f"Reply with the exact marker `{marker}` and no other text. Do not use tools."
+    return f"Reply with a short greeting. Do not use tools. Request ID: {marker}."
 
 
 def _served_marker_request(recorder, checkpoint: int, agent: str, marker: str):
@@ -284,7 +252,7 @@ class TestCuj2CodexInference(_Cuj2Base):
 
         Expected: Codex sends a Responses request for gpt-5-nano with the
         ug_e2e.providers.openai target header and receives its paired HTTP 200 response; its
-        parent transcript contains the final marker.
+        parent transcript contains a completed turn with a nonempty answer to the greeting prompt.
         """
         session, workspace, recorder = cuj
         published = workspace.config()
@@ -305,11 +273,13 @@ class TestCuj2CodexInference(_Cuj2Base):
 
         recorder.prepare_launch()
         marker = f"CUJ2-CODEX-{fresh_id()}"
+        task = SimpleNamespace(prompt=_agent_prompt(marker), value=None)
+        evidence = SessionEvidence(session.home, CODEX)
         checkpoint = recorder.checkpoint()
         with Terminal(session, "cuj2-codex", [CODEX]) as tui:
             tui.boot()
-            tui.submit(_agent_prompt(marker))
-            tui.wait_until(lambda: _task_complete(session, CODEX, marker), "completed Codex task")
+            tui.submit(task.prompt)
+            tui.wait_until(lambda: evidence.completed(task), "completed Codex task")
             tui.exit_normally()
 
         request = recorder.expect_request(
@@ -325,7 +295,9 @@ class TestCuj2CodexInference(_Cuj2Base):
             model=MODEL_PROVIDER_SERVICE_FIXTURES[CODEX][1],
             marker=marker,
         )
-        _assert_task_evidence(session, CODEX, marker)
+        turn = evidence.completed(task)
+        assert turn is not None, "No completed Codex answer matched the greeting prompt"
+        session.record("cuj2-codex-evidence", {"marker": marker, **asdict(turn)})
 
 
 class TestCuj2ClaudeInference(_Cuj2Base):
@@ -334,7 +306,7 @@ class TestCuj2ClaudeInference(_Cuj2Base):
 
         Expected: Claude sends a Messages request for claude-haiku-4-5-20251001 with the
         ug_e2e.providers.anthropic target header and receives its paired HTTP 200 response; its
-        parent transcript contains the final marker.
+        parent transcript contains a completed turn with a nonempty answer to the greeting prompt.
         """
         session, workspace, recorder = cuj
         published = workspace.config()
@@ -355,11 +327,13 @@ class TestCuj2ClaudeInference(_Cuj2Base):
 
         recorder.prepare_launch()
         marker = f"CUJ2-CLAUDE-{fresh_id()}"
+        task = SimpleNamespace(prompt=_agent_prompt(marker), value=None)
+        evidence = SessionEvidence(session.home, CLAUDE)
         checkpoint = recorder.checkpoint()
         with Terminal(session, "cuj2-claude", [CLAUDE]) as tui:
             tui.boot()
-            tui.submit(_agent_prompt(marker))
-            tui.wait_until(lambda: _task_complete(session, CLAUDE, marker), "completed Claude task")
+            tui.submit(task.prompt)
+            tui.wait_until(lambda: evidence.completed(task), "completed Claude task")
             tui.exit_normally()
 
         recorder.expect_request(
@@ -376,4 +350,6 @@ class TestCuj2ClaudeInference(_Cuj2Base):
             model=MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][1],
             marker=marker,
         )
-        _assert_task_evidence(session, CLAUDE, marker)
+        turn = evidence.completed(task)
+        assert turn is not None, "No completed Claude answer matched the greeting prompt"
+        session.record("cuj2-claude-evidence", {"marker": marker, **asdict(turn)})

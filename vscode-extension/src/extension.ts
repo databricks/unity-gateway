@@ -3,13 +3,26 @@ import { join } from "node:path";
 import * as vscode from "vscode";
 import { version } from "../package.json";
 import { Tokens } from "./auth";
-import { chatCompletionsReplies, chatCompletionsRequest, estimateTokens, responsesReplies, responsesRequest, type Reply } from "./formats";
+import {
+  anthropicMessagesReplies,
+  anthropicMessagesRequest,
+  chatCompletionsReplies,
+  chatCompletionsRequest,
+  estimateTokens,
+  responsesReplies,
+  responsesRequest,
+  type Reply,
+} from "./formats";
 import { streamEvents } from "./gateway";
+
+// ug writes the wire name of the model it configured (WIRE_* in src/ucode/agents/copilot.py).
+const APIS = ["anthropic", "completions", "responses"] as const;
 
 export interface ModelSetting {
   readonly id: string;
   readonly name?: string;
-  readonly api: "chat_completions" | "responses";
+  readonly family?: string;
+  readonly api: (typeof APIS)[number];
   readonly maxInputTokens?: number;
   readonly maxOutputTokens?: number;
 }
@@ -18,7 +31,12 @@ export interface Settings {
   readonly workspace: string;
   readonly models: readonly ModelSetting[];
   readonly authCommand: string;
+  /** The Model Provider Service the models belong to, or "" for the workspace's own models. */
+  readonly provider: string;
 }
+
+/** Routes a request to a Model Provider Service; its models aren't served without it. */
+export const PROVIDER_HEADER = "Databricks-Model-Provider-Service";
 
 const tokenLimits = (model: ModelSetting): Partial<ModelSetting> =>
   Object.fromEntries(
@@ -49,15 +67,17 @@ export const readConfig = (text: string | undefined): Settings => {
     models: (Array.isArray(models) ? models : [])
       .filter(
         (model): model is ModelSetting =>
-          typeof model?.id === "string" && model.id !== "" && (model.api === "chat_completions" || model.api === "responses"),
+          typeof model?.id === "string" && model.id !== "" && APIS.includes(model.api),
       )
       .map((model) => ({
         id: model.id,
         ...(typeof model.name === "string" && model.name.trim() ? { name: model.name.trim() } : {}),
+        ...(typeof model.family === "string" && model.family ? { family: model.family } : {}),
         api: model.api,
         ...tokenLimits(model),
       })),
     authCommand: String(get("authCommand") ?? ""),
+    provider: typeof get("provider") === "string" ? String(get("provider")) : "",
   };
 };
 
@@ -82,18 +102,18 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
       this.log("No Databricks models: run `ug configure --agents vscode` to set them up.");
       return [];
     }
-    return models.map(({ id, name, api, maxInputTokens, maxOutputTokens }) => ({
+    return models.map(({ id, name, family, api, maxInputTokens, maxOutputTokens }) => ({
       id,
       api,
       name: name ?? id,
       // Copilot Chat tunes its prompts and tools by family, so this is the model's own name.
-      family: id.split(".").pop() ?? id,
+      family: family ?? id.split(".").pop() ?? id,
       version,
       detail: "Databricks",
       // The gateway reports no limits, so a model ug configure has none for gets Copilot's 128K default.
       maxInputTokens: maxInputTokens ?? 128_000,
       maxOutputTokens: maxOutputTokens ?? 32_000,
-      capabilities: { toolCalling: true, imageInput: api === "responses" || id.includes("claude") },
+      capabilities: { toolCalling: true, imageInput: api !== "completions" || id.includes("claude") },
     }));
   }
 
@@ -104,17 +124,29 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken,
   ): Promise<void> {
-    const { workspace, authCommand } = this.settings();
+    const { workspace, authCommand, provider } = this.settings();
     this.tokens ??= new Tokens(authCommand, (expiresAt) => this.log(`Fetched a Databricks token (expires ${new Date(expiresAt).toISOString()})`));
     const turn = { model: model.id, messages, tools: options.tools ?? [], toolRequired: options.toolMode === vscode.LanguageModelChatToolMode.Required };
     const abort = new AbortController();
     const cancelled = token.onCancellationRequested(() => abort.abort());
+    const headers = { ...this.headers(), ...(provider ? { [PROVIDER_HEADER]: provider } : {}) };
+    const tokens = this.tokens;
+    const stream = (path: string, body: object, extra: Record<string, string> = {}) =>
+      streamEvents(workspace, path, body, tokens, { ...headers, ...extra }, abort.signal);
+    // The gateway serves a Model Provider Service's OpenAI models only on its OpenAI route.
+    const openai = provider ? "/ai-gateway/openai/v1" : "/ai-gateway/mlflow/v1";
+    const apis: Record<ModelSetting["api"], () => AsyncIterable<Reply>> = {
+      anthropic: () =>
+        anthropicMessagesReplies(
+          stream("/ai-gateway/anthropic/v1/messages", anthropicMessagesRequest(turn, model.maxOutputTokens), {
+            "anthropic-version": "2023-06-01",
+          }),
+        ),
+      responses: () => responsesReplies(stream(`${openai}/responses`, responsesRequest(turn))),
+      completions: () => chatCompletionsReplies(stream(`${openai}/chat/completions`, chatCompletionsRequest(turn))),
+    };
     try {
-      const replies: AsyncIterable<Reply> =
-        model.api === "responses"
-          ? responsesReplies(streamEvents(workspace, "responses", responsesRequest(turn), this.tokens, this.headers(), abort.signal))
-          : chatCompletionsReplies(streamEvents(workspace, "chat/completions", chatCompletionsRequest(turn), this.tokens, this.headers(), abort.signal));
-      for await (const reply of replies) {
+      for await (const reply of apis[model.api]()) {
         progress.report(reply);
       }
     } catch (error) {

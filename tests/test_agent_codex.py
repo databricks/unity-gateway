@@ -1641,6 +1641,87 @@ class TestCodexLaunch:
         assert "Authorization" not in otel  # no credential in argv; the proxy injects it
         assert argv[-2:] == ["exec", "hi"]
 
+    def test_relayed_launch_checks_login_and_routes_through_relay_proxy(
+        self, tmp_path, monkeypatch
+    ):
+        self._patch(tmp_path, monkeypatch)
+        server = Mock(server_address=("127.0.0.1", 54321))
+        cache, client = Mock(), Mock()
+        process = Mock()
+        process.wait.return_value = 0
+        popen = Mock(return_value=process)
+        started = {}
+
+        def start_relay_proxy(workspace, token_provider, port, *, agent="claude"):
+            started.update(workspace=workspace, token=token_provider(False), agent=agent)
+            return server, cache, client
+
+        monkeypatch.setattr(gateway_proxy, "start_relay_proxy", start_relay_proxy)
+        monkeypatch.setattr(codex.subprocess_cross_os, "popen", popen)
+        login_status = Mock(return_value=True)
+        monkeypatch.setattr(codex, "_has_chatgpt_login", login_status)
+        monkeypatch.setattr(
+            codex, "_fetch_codex_model_catalog", Mock(side_effect=AssertionError("no catalog"))
+        )
+        monkeypatch.delenv("OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
+
+        with pytest.raises(SystemExit):
+            codex.launch(
+                {
+                    "workspace": WS,
+                    "codex_relayed": True,
+                    "_codex_launch_provider": "cat.s.mps",
+                },
+                ["exec", "hi"],
+                options=LaunchOptions(),
+            )
+
+        login_status.assert_called_once()
+        assert started == {"workspace": WS, "token": "tok", "agent": "codex"}
+        assert "OAUTH_TOKEN" not in os.environ
+        argv = popen.call_args.args[0]
+        assert any("http://127.0.0.1:54321/v1" in arg for arg in argv)
+        assert argv[-2:] == ["exec", "hi"]
+        cache.stop.assert_called_once_with()
+        server.shutdown.assert_called_once_with()
+
+    def test_relayed_launch_logs_in_when_not_chatgpt(self, tmp_path, monkeypatch):
+        self._patch(tmp_path, monkeypatch)
+        run = Mock(return_value=Mock(returncode=0, stdout="", stderr="Logged in using an API key"))
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", run)
+        assert codex._has_chatgpt_login("codex") is False
+        run.return_value = Mock(returncode=0, stdout="", stderr="Logged in using ChatGPT")
+        assert codex._has_chatgpt_login("codex") is True
+        run.side_effect = [Mock(returncode=1, stdout="", stderr="Not logged in"), Mock()]
+        codex._ensure_chatgpt_login("codex")
+        assert run.call_args.args[0][1:] == ["login"]
+        run.side_effect = [Mock(returncode=1, stdout="", stderr=""), CalledProcessError(1, "x")]
+        with pytest.raises(RuntimeError, match="`codex login` failed"):
+            codex._ensure_chatgpt_login("codex")
+
+    def test_access_token_env_skips_the_chatgpt_login(self, tmp_path, monkeypatch):
+        self._patch(tmp_path, monkeypatch)
+        run = Mock()
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", run)
+        monkeypatch.setenv("CODEX_ACCESS_TOKEN", "access-token")
+        codex._ensure_chatgpt_login("codex")
+        run.assert_not_called()
+        monkeypatch.setenv("CODEX_ACCESS_TOKEN", "")
+        run.return_value = Mock(returncode=0, stdout="", stderr="Not logged in")
+        run.side_effect = [Mock(returncode=1, stdout="", stderr="Not logged in"), Mock()]
+        codex._ensure_chatgpt_login("codex")
+        assert run.call_args.args[0][1:] == ["login"]
+
+    def test_relayed_launch_rejects_smart_routing(self, tmp_path, monkeypatch):
+        self._patch(tmp_path, monkeypatch)
+        with pytest.raises(RuntimeError, match="Smart routing can't be used"):
+            codex.launch(
+                {"workspace": WS, "codex_relayed": True},
+                [],
+                options=LaunchOptions(launch_smart_routing=True),
+            )
+
     def test_no_otel_config_when_tracing_disabled(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
 
@@ -1760,6 +1841,64 @@ class TestCodexManagedConfig:
         assert "model" not in doc
         assert "Databricks" in doc["model_providers"]
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+
+    def test_relayed_writes_proxyless_provider_and_skips_managed_file(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            '[model_providers.Databricks]\nauth = { command = "old" }\n', encoding="utf-8"
+        )
+        marked = []
+        monkeypatch.setattr(
+            codex, "mark_managed_file_verified", lambda *a, **k: marked.append(k.get("scope"))
+        )
+        state = {"workspace": WS}
+
+        codex.write_tool_config(state, provider="cat.s.mps", relayed=True)
+
+        provider = read_toml_safe(config_path)["model_providers"]["Databricks"]
+        assert provider["requires_openai_auth"] is True
+        assert "auth" not in provider
+        assert not managed_path.exists()
+        assert marked == ["relay-compatible"]
+        assert state["codex_relayed"] is True
+
+        marked.clear()
+        codex.write_tool_config(state, provider="cat.s.mps")
+        provider = read_toml_safe(config_path)["model_providers"]["Databricks"]
+        assert "requires_openai_auth" not in provider
+        assert "auth" in provider
+        assert "codex_relayed" not in state
+
+    def test_relayed_rejects_managed_provider_override(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_path.parent.mkdir(parents=True)
+        managed_path.write_text(
+            'model_provider = "Databricks"\n[model_providers.Databricks]\nbase_url = "x"\n',
+            encoding="utf-8",
+        )
+
+        with pytest.raises(RuntimeError, match=r"model_provider, .*base_url.*ug revert"):
+            codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+
+        # requirements.toml replaces the whole entry, so even a name-only one would drop the relay.
+        requirements = tmp_path / "ProgramData" / "requirements.toml"
+        requirements.parent.mkdir(parents=True)
+        requirements.write_text('[model_providers.Databricks]\nname = "x"\n', encoding="utf-8")
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: requirements)
+        with pytest.raises(RuntimeError, match=r"define model_providers\.Databricks at"):
+            codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+
+    def test_relayed_state_requires_relay_compatible_scope(self, tmp_path, monkeypatch):
+        self._patch(tmp_path, monkeypatch)
+        scopes = []
+        monkeypatch.setattr(
+            codex,
+            "managed_file_is_verified",
+            lambda state, tool, path, required_scope=None: scopes.append(required_scope) or True,
+        )
+        codex.managed_config_is_current({"codex_relayed": True})
+        assert scopes == ["relay-compatible"]
 
     def test_windows_writes_requirements_shaped_config(self, tmp_path, monkeypatch):
         config_path, _ = self._patch(tmp_path, monkeypatch)
@@ -2506,6 +2645,21 @@ class TestCodexReconcileManagedMcp:
         assert captured["owned_paths"] == [["mcp_servers"]]
         assert captured["tool"] == "codex"
 
+    def test_drops_user_entry_of_the_other_transport(self, monkeypatch, tmp_path):
+        # Codex merges the managed entry over a same-name user entry key by key, so a stdio user
+        # copy under a managed HTTP one would carry both `command` and `url`.
+        user_path = tmp_path / "config.toml"
+        user_path.write_text(
+            '[mcp_servers.stdio-now-http]\ncommand = "/opt/ug"\nargs = []\n\n'
+            '[mcp_servers.same]\nurl = "u"\n\n[mcp_servers.mine]\ncommand = "x"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(codex, "user_mcp_config_path", lambda: user_path)
+        self._wire(monkeypatch, None, {})
+        http = codex.managed_mcp_http_entry("u", "client")
+        codex.reconcile_managed_mcp({}, {"stdio-now-http": http, "same": http})
+        assert set(read_toml_safe(user_path)["mcp_servers"]) == {"same", "mine"}
+
     def test_empty_map_clears_table_preserving_model_keys(self, monkeypatch):
         import tomllib
 
@@ -2699,6 +2853,7 @@ class TestWriteUserMcpServers:
         path = tmp_path / "config.toml"
         path.write_text("this is = = not valid toml [[[")
         monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
+        monkeypatch.setattr(codex.shutil, "which", lambda binary: "/fake/codex")
         added: list[tuple[str, list]] = []
         removed: list[str] = []
         import ucode.mcp as mcp_mod
@@ -2722,6 +2877,7 @@ class TestWriteUserMcpServers:
         path = tmp_path / "config.toml"
         path.write_text("this is = = not valid toml [[[", encoding="utf-8")
         monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
+        monkeypatch.setattr(codex.shutil, "which", lambda binary: "/fake/codex")
         with pytest.raises(RuntimeError, match="invalid TOML"):
             codex.write_user_mcp_servers(
                 {"github": codex.managed_mcp_http_entry("https://ws/mcp", "https://client/id")},

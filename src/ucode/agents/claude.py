@@ -119,6 +119,12 @@ from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed,
 from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_note, print_success, print_warning
+from ucode.workspace import (
+    SELECTOR_HEADER_NAMES,
+    WORKSPACE_ID_ENV_VAR,
+    workspace_headers,
+    workspace_id_args,
+)
 
 from .args import LaunchOptions, has_explicit_model_arg
 from .request_tags import request_tags_header_value
@@ -271,6 +277,7 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
         MODEL_PROVIDER_SERVICE_HEADER.casefold(),
         MODEL_SERVICE_PARENT_SCHEMA_HEADER.casefold(),
         SMART_ROUTER_RECIPE_HEADER.casefold(),  # Remove recipe headers written by older ug versions.
+        *(name.casefold() for name in SELECTOR_HEADER_NAMES),
     }
 )
 # ug replaces these only when it emits them (e.g. AI_GATEWAY_REQUEST_TAGS is set); otherwise an
@@ -296,6 +303,16 @@ def _apply_managed_header_lines(
     for name, value in (managed_http_headers or {}).items():
         lines_by_name[name.strip().casefold()] = f"{name}: {value}"
     return list(lines_by_name.values())
+
+
+def _with_workspace_selector(lines: list[str], workspace: str) -> list[str]:
+    """``lines`` with the workspace selection last, so an admin header can't replace it."""
+    selector = workspace_headers(workspace)
+    if not selector:
+        return lines
+    names = {name.casefold() for name in selector}
+    kept = [line for line in lines if line.partition(":")[0].strip().casefold() not in names]
+    return kept + [f"{name}: {value}" for name, value in selector.items()]
 
 
 def configured_paths(state: dict) -> list[str]:
@@ -338,9 +355,9 @@ def get_family_defaults(
 
     A ``modelPicker`` in that file (e.g. one a launcher wrote) means its writer chooses Claude's
     models, so ug uses that file's ``ANTHROPIC_DEFAULT_*_MODEL`` values as they are instead of
-    discovering its own. Returns them by family, or None when ug picks the defaults: a managed config, its static
-    model list (whose picker is ug's own), a provider, or a model location supplies the models,
-    or the file has no picker with family defaults.
+    discovering its own. Returns them by family, or None when ug picks the defaults: a managed
+    config, a static model list, a provider, or a model location supplies the models,
+    or the file has no externally owned picker with family defaults.
     """
     if managed_config or state.get("claude_static_models") or provider or parent_schema:
         return None
@@ -354,6 +371,12 @@ def get_family_defaults(
         return None
     env = settings.get("env")
     if "modelPicker" not in settings or not isinstance(env, dict):
+        return None
+    ug_picker = managed_file_snapshots("claude", _parse_managed_settings).ug_picker or {}
+    if "modelPicker" in ug_picker and all(
+        settings.get(key) == value for key, value in ug_picker.items()
+    ):
+        # Our own discovered picker must not suppress discovery on the next launch.
         return None
     defaults = {
         family: model
@@ -498,6 +521,9 @@ def _web_search_mcp_entry(
     }
     if profile:
         env["DATABRICKS_CONFIG_PROFILE"] = profile
+    workspace_args = workspace_id_args(workspace)
+    if workspace_args:
+        env[WORKSPACE_ID_ENV_VAR] = workspace_args[1]
     return {
         "type": "stdio",
         "command": ug_binary(),
@@ -570,7 +596,11 @@ def render_overlay(
         header_lines.append(f"{AI_GATEWAY_REQUEST_TAGS_HEADER}: {request_tags}")
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
-    custom_headers = "\n".join(_apply_managed_header_lines(header_lines, managed_http_headers))
+    custom_headers = "\n".join(
+        _with_workspace_selector(
+            _apply_managed_header_lines(header_lines, managed_http_headers), workspace
+        )
+    )
     env: dict[str, str] = {
         "ANTHROPIC_BASE_URL": base_url,
         "ANTHROPIC_CUSTOM_HEADERS": custom_headers,
@@ -1053,8 +1083,8 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     developer's own servers and every other key in the file are preserved. Returns the subset of
     ``remove`` names that were actually present (so callers can report only real removals).
 
-    If the file exists but can't be parsed as a JSON object, we must not clobber it, so we defer to
-    the per-server ``claude`` CLI (which edits the file in place) for exactly the changed entries."""
+    If the file exists but can't be parsed as a JSON object, we must not clobber it. Defer to the
+    CLI when available; otherwise report the invalid config."""
     removed: set[str] = set()
 
     def mutate(config: dict) -> bool:
@@ -1068,7 +1098,12 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
         config["mcpServers"] = servers
         return True
 
-    if not _update_claude_config(claude_code_config_path(), mutate):
+    path = claude_code_config_path()
+    if not _update_claude_config(path, mutate):
+        if shutil.which("claude") is None:
+            raise RuntimeError(
+                f"Claude Code config at {path} is invalid. Fix it or install the CLI."
+            )
         for name in remove:
             # Clean every scope (not short-circuited), recording the name if any scope had it.
             if [scope for scope in MCP_CLEANUP_SCOPES if remove_claude_mcp_server(name, scope)]:
@@ -1094,12 +1129,14 @@ def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
     servers) but Claude Code reads it only from a real managed source, and only as a remote HTTP
     server it can drive OAuth against itself. So it fits only when the platform supports the sudo
     reconcile, the run may write it (``ug configure``, or an interactive run), the developer is not
-    on PAT auth (which needs the stdio proxy), and the workspace publishes the pinned CIMD client.
-    Other cases use user scope."""
+    on PAT auth (which needs the stdio proxy), no workspace selection applies (a host that serves
+    several workspaces drops it from its OAuth metadata, so Claude's own OAuth can't reach the
+    workspace), and the workspace publishes the pinned CIMD client. Other cases use user scope."""
     return (
         managed_files_supported()
         and managed_writes_allowed()
         and not use_pat
+        and not workspace_headers(workspace)
         and workspace_supports_cimd(workspace)
         and oauth_client_available(workspace, CLAUDE_CODE_CIMD_CLIENT_ID)
     )
@@ -1305,6 +1342,7 @@ def _generated_search_entry(entry: object) -> bool:
             "DATABRICKS_HOST",
             "UCODE_WEB_SEARCH_MODEL",
             "DATABRICKS_CONFIG_PROFILE",
+            WORKSPACE_ID_ENV_VAR,
         }
     )
 
