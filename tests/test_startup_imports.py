@@ -189,7 +189,7 @@ def test_web_search_server_initializes_without_the_cli(tmp_path) -> None:
     request = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
     probe = (
         "import io, os, sys\n"
-        f"os.environ['HOME'] = {str(tmp_path)!r}\n"
+        f"os.environ.update(HOME={str(tmp_path)!r}, USERPROFILE={str(tmp_path)!r})\n"
         "sys.argv = ['ug', 'mcp', 'web-search', '--managed-by-ucode']\n"
         f"sys.stdin = io.StringIO({json.dumps(request)!r} + '\\n')\n"
         "from ucode.entrypoint import main\n"
