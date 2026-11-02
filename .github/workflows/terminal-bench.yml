@@ -65,7 +65,8 @@ jobs:
             model: system.ai.gpt-6-luna
             label: Claude · gpt-6-luna
             artifact: claude-gpt-6-luna
-            # Luna misattributes values across the task's 11 unlabeled invoice images.
+            # Luna misattributes values across the task's 11 unlabeled invoice images, and it
+            # passes few Terminal Bench tasks in general: https://www.tbench.ai/
             skip_tasks: financial-document-processor
           - agent: claude
             model: system.ai.gpt-6-1-sol
