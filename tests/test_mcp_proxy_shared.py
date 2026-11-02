@@ -7,11 +7,13 @@ workspace. The relay, shared backend, MCP SDK and socket lifecycle stay real.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import queue
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -240,8 +242,10 @@ def clients(tmp_path):
         metadata = json.loads(path.read_text())
         try:
             os.kill(metadata["pid"], signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+        except OSError as exc:
+            # Windows reports an already-exited PID as ERROR_INVALID_PARAMETER.
+            if not isinstance(exc, ProcessLookupError) and getattr(exc, "winerror", None) != 87:
+                raise
 
 
 def _endpoints(tmp_path):
@@ -281,6 +285,30 @@ def test_different_credential_environments_use_separate_backends(clients, peer, 
     assert first.call("one")["authorization"] == "Bearer credential-one"
     assert second.call("two")["authorization"] == "Bearer credential-two"
     assert len(_endpoints(tmp_path)) == 2
+
+
+@pytest.mark.parametrize("reset", [False, True], ids=["eof", "reset"])
+def test_backend_disconnect_reports_reconnect(reset):
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        with socket.create_connection(listener.getsockname()) as relay_socket:
+            backend_socket, _ = listener.accept()
+            if reset:
+                # SO_LINGER's fields are unsigned shorts on Windows and ints on Unix.
+                backend_socket.setsockopt(
+                    socket.SOL_SOCKET,
+                    socket.SO_LINGER,
+                    struct.pack("HH" if os.name == "nt" else "ii", 1, 0),
+                )
+            backend_socket.close()
+            read_fd, write_fd = os.pipe()
+            try:
+                with os.fdopen(read_fd, "rb") as stdin:
+                    with pytest.raises(RuntimeError, match="disconnected.*Reconnect"):
+                        mcp_proxy_runtime.relay(relay_socket, stdin, io.BytesIO(), io.BytesIO())
+            finally:
+                os.close(write_fd)
 
 
 def test_backend_crash_fails_session_and_next_agent_restarts(clients, peer, tmp_path):
@@ -414,7 +442,7 @@ def test_login_output_reaches_only_its_own_client():
                     )
                     async with asyncio.timeout(3):
                         assert json.loads(await first_reader.readline()) == {
-                            "stderr": "browser login URL\n"
+                            "stderr": "browser login URL" + os.linesep
                         }
                 await second.send({"message": "second session"})
                 assert json.loads(await second_reader.readline()) == {"message": "second session"}

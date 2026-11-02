@@ -1605,5 +1605,5 @@ checks, not native Cowork invocation or live provider sign-in.
 Proxy startup has component coverage in `../test_mcp_proxy_cli.py` and shared-process
 coverage in `../test_mcp_proxy_shared.py`. The latter runs real relay/backend processes
 against a local HTTP MCP peer, checking concurrent session isolation, credentials,
-headers, disconnects, crash recovery, local authentication, idle shutdown, and sign-in
-output. These component checks do not establish live gateway or native Windows coverage.
+headers, EOF/reset disconnect diagnostics, crash recovery, local authentication, idle
+shutdown, and sign-in output with native line endings. These component checks do not establish live gateway or native Windows coverage.

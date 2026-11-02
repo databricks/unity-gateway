@@ -219,7 +219,14 @@ def relay(sock: socket.socket, stdin: BinaryIO, stdout: BinaryIO, stderr: Binary
 
     threading.Thread(target=send_input, daemon=True).start()
     with sock.makefile("rb") as reader:
-        while frame := reader.readline(MAX_FRAME_BYTES + 1):
+        while True:
+            try:
+                frame = reader.readline(MAX_FRAME_BYTES + 1)
+            except ConnectionError:
+                # A terminated backend produces a reset on Windows and EOF on Unix.
+                break
+            if not frame:
+                break
             if len(frame) > MAX_FRAME_BYTES:
                 raise RuntimeError("Shared MCP proxy response exceeded the message limit")
             envelope = json.loads(frame)
