@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -147,12 +146,6 @@ def _run_code(code: Path, *args: str):
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f"`{code} {args[0]}` failed: {exc}") from exc
-
-
-def code_version(code: Path) -> tuple[int, int, int] | None:
-    """VS Code's own version, from the first line of `code --version`."""
-    match = re.match(r"(\d+)\.(\d+)\.(\d+)", (_run_code(code, "--version").stdout or "").strip())
-    return (int(match[1]), int(match[2]), int(match[3])) if match else None
 
 
 def installed_version(code: Path) -> str | None:

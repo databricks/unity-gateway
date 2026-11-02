@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 import ucode.doctor as doctor_mod
 from ucode.databricks import MIN_DATABRICKS_CLI_VERSION
@@ -191,80 +188,6 @@ class TestCopilotModelsCheck:
         assert check is not None
         assert check.status == "warn"
         assert "ug configure --agents copilot" in check.detail
-
-    def test_names_the_managed_source_launch_lists(self):
-        state = {
-            "workspace": "https://ws.databricks.com",
-            "available_tools": ["copilot"],
-            "copilot_catalog": {"models": ["system.ai.claude-sonnet-4-6"]},
-        }
-        managed = {
-            "enabled_agents": {
-                "copilot": {"model_config": {"model_provider_service": "main.default.mps"}}
-            }
-        }
-        with (
-            patch.object(doctor_mod, "load_state", return_value=state),
-            patch.object(doctor_mod, "load_managed_state", return_value=managed),
-        ):
-            check = doctor_mod._check_copilot_models()
-
-        assert check is not None
-        assert check.status == "ok"
-        assert check.detail.startswith("from main.default.mps, your workspace's managed config")
-
-
-COPILOT_STATE = {"available_tools": ["copilot"]}
-
-
-class TestVSCodeCheck:
-    @pytest.fixture
-    def code(self, monkeypatch):
-        monkeypatch.setattr(doctor_mod, "load_state", lambda: COPILOT_STATE)
-        monkeypatch.setattr(doctor_mod.vscode, "find_code", lambda: Path("/fake/code"))
-        found = {"installed": "0.1.0", "version": (1, 144, 0)}
-        monkeypatch.setattr(doctor_mod.vscode, "installed_version", lambda _c: found["installed"])
-        monkeypatch.setattr(doctor_mod.vscode, "code_version", lambda _c: found["version"])
-        return found
-
-    def test_none_without_copilot_or_vscode(self, code, monkeypatch):
-        monkeypatch.setattr(doctor_mod.vscode, "find_code", lambda: None)
-        assert doctor_mod._check_vscode() is None
-        monkeypatch.setattr(doctor_mod, "load_state", lambda: {"available_tools": ["claude"]})
-        assert doctor_mod._check_vscode() is None
-
-    def test_ok_with_the_extension_and_its_vscode_version(self, code):
-        assert doctor_mod._check_vscode() == Check(
-            "VS Code", "ok", "extension 0.1.0 (VS Code 1.144.0)"
-        )
-
-    def test_notes_a_missing_extension(self, code):
-        code["installed"] = None
-
-        check = doctor_mod._check_vscode()
-
-        assert check is not None
-        assert check.status == "info"
-        assert "ug configure --agents copilot" in check.detail
-
-    def test_warns_when_vscode_is_too_old_for_ugs_mcp_servers(self, code):
-        code["version"] = (1, 140, 2)
-
-        check = doctor_mod._check_vscode()
-
-        assert check is not None
-        assert check.status == "warn"
-        assert "MCP servers need VS Code 1.142.0 or later" in check.detail
-
-    def test_warns_when_code_cant_run(self, code, monkeypatch):
-        def broken(_code):
-            raise RuntimeError("`code --version` failed: boom")
-
-        monkeypatch.setattr(doctor_mod.vscode, "code_version", broken)
-
-        assert doctor_mod._check_vscode() == Check(
-            "VS Code", "warn", "`code --version` failed: boom"
-        )
 
 
 class TestDatabricksAuthCheck:

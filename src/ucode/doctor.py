@@ -20,7 +20,6 @@ from ucode.agents import (
     tool_binary_installed,
     tool_version_error,
     update_tool_binary,
-    vscode,
 )
 from ucode.databricks import (
     MIN_DATABRICKS_CLI_VERSION,
@@ -33,11 +32,7 @@ from ucode.databricks import (
     upgrade_databricks_cli,
 )
 from ucode.managed_config import load_managed_state
-from ucode.managed_resolve import (
-    managed_provider_service,
-    managed_unity_catalog_location,
-    resolve_state,
-)
+from ucode.managed_resolve import resolve_state
 from ucode.state import load_state
 from ucode.telemetry import ug_version
 from ucode.ui import (
@@ -58,9 +53,6 @@ from ucode.workspace import state_workspace_key
 # warns when its own token and one of these are both set, so we surface them.
 _CLAUDE_TOKEN_ENV_VARS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
 
-
-# The first VS Code that reads ug's MCP servers from the Copilot CLI's config.
-_VSCODE_MCP_VERSION = (1, 142, 0)
 
 # status -> (glyph, status_badge kind). "info" is a healthy line that still
 # carries an optional suggestion (e.g. installing a missing dependency).
@@ -203,15 +195,6 @@ def _check_copilot_models() -> Check | None:
         return None
     managed = load_managed_state(state_workspace_key(state))
     if managed:
-        source = managed_provider_service(managed, "copilot") or managed_unity_catalog_location(
-            managed, "copilot"
-        )
-        if source:
-            return Check(
-                "Copilot models",
-                "ok",
-                f"from {source}, your workspace's managed config; listed at each launch",
-            )
         state = resolve_state(managed, state, "copilot")
     catalog = copilot.copilot_catalog(state)
     if not catalog:
@@ -226,35 +209,6 @@ def _check_copilot_models() -> Check | None:
         if any(m.provider == provider for m in catalog)
     )
     return Check("Copilot models", "ok", f"{len(catalog)} models ({counts})")
-
-
-def _check_vscode() -> Check | None:
-    """Copilot Chat in VS Code, which `ug configure` sets up with Copilot."""
-    if "copilot" not in (load_state().get("available_tools") or []):
-        return None
-    code = vscode.find_code()
-    if code is None:
-        return None
-    try:
-        installed = vscode.installed_version(code)
-        version = vscode.code_version(code)
-    except RuntimeError as exc:
-        return Check("VS Code", "warn", str(exc))
-    if installed is None:
-        return Check(
-            "VS Code",
-            "info",
-            "ug's extension isn't installed; run `ug configure --agents copilot` to set it up",
-        )
-    if version is not None and version < _VSCODE_MCP_VERSION:
-        return Check(
-            "VS Code",
-            "warn",
-            f"VS Code {_fmt_version(version)} has ug's models, but ug's MCP servers need VS Code "
-            f"{_fmt_version(_VSCODE_MCP_VERSION)} or later",
-        )
-    detail = f"extension {installed}" + (f" (VS Code {_fmt_version(version)})" if version else "")
-    return Check("VS Code", "ok", detail)
 
 
 def _check_databricks_auth() -> Check | None:
@@ -333,12 +287,7 @@ def _gather_checks() -> list[Check]:
     checks: list[Check] = [_check_uv(), _check_npm(), _check_databricks_cli(), _check_workspace()]
     # These return None when they don't apply (no workspace, no env collision),
     # so drop the Nones before display.
-    optional = [
-        _check_databricks_auth(),
-        _check_anthropic_env_collision(),
-        _check_copilot_models(),
-        _check_vscode(),
-    ]
+    optional = [_check_databricks_auth(), _check_anthropic_env_collision(), _check_copilot_models()]
     checks.extend(c for c in optional if c is not None)
     checks.extend(_check_agent_clis())
     checks.append(_check_ug())
