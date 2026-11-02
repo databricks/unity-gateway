@@ -1333,7 +1333,8 @@ requests review on in-repository PRs. Members can request reviews on any PR; Git
 `CONTRIBUTOR`s can request them on their own PR. `/integration-test` uses the same policy
 and runs PR code with CI secrets, explicitly trusting prior contributors. First-time
 contributors still need a member. `../test_comment_command_authorization.py` covers the job
-conditions with synthetic events, not live GitHub delivery or contributor classification.
+conditions with synthetic events, including integration commands with or without a SHA,
+not live GitHub delivery or contributor classification.
 `../test_ug_review_bot.py` covers gateway authentication,
 OIDC-authenticated npm-proxy configuration and credential cleanup, and the workflow
 contract as component tests. This integration suite does not establish

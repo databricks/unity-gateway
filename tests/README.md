@@ -919,8 +919,9 @@ summary helper. `/user-journey-check` runs the user-journey gate,
 which runs automatically only for in-repo PRs.
 `test_comment_command_authorization.py` evaluates integration/review job guards with synthetic
 GitHub events: members on any PR, prior contributors on their own PR, rejected first-time
-and unrelated contributors, ordinary comments, and non-PR issues. These component checks do
-not establish live GitHub event delivery or the timing of GitHub's contributor classification.
+and unrelated contributors, integration commands with or without a SHA, ordinary comments,
+and non-PR issues. These component checks do not establish live GitHub event delivery or
+the timing of GitHub's contributor classification.
 
 ## Gaps and deferred scope
 

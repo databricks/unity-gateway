@@ -11,6 +11,8 @@ WORKFLOWS = Path(__file__).parent.parent / ".github/workflows"
 JOBS = [
     ("fork-integration.yml", "authorize", "/integration-test"),
     ("fork-integration.yml", "reject", "/integration-test"),
+    ("fork-integration.yml", "authorize", "/integration-test abc1234"),
+    ("fork-integration.yml", "reject", "/integration-test abc1234"),
     ("ug-review.yml", "review", "/ug-review"),
     ("polly-review.yml", "review", "/ug-review"),
 ]
