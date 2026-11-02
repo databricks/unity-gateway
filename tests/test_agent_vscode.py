@@ -25,7 +25,12 @@ REAL_FIND_COMMAND = vscode._find_command
 REAL_RUN_CODE = vscode._run_code
 
 WS = "https://ws.cloud.databricks.com"
-STATE = {"workspace": WS, "profile": "dev"}
+# What `ug configure` saved for the Copilot CLI, which VS Code reuses.
+DISCOVERED = [
+    copilot.CopilotModel("system.ai.claude-sonnet-5-5", "anthropic"),
+    copilot.CopilotModel("system.ai.gpt-6-luna", "responses", (922_000, 128_000)),
+]
+STATE = {"workspace": WS, "profile": "dev", "copilot_catalog": copilot.catalog_state(DISCOVERED)}
 VERSION = json.loads((vscode.EXTENSION_DIR / "package.json").read_text())["version"]
 
 
@@ -68,19 +73,7 @@ def code(monkeypatch):
     monkeypatch.setattr(vscode, "find_code", lambda: Path("/fake/bin/code"))
     monkeypatch.setattr(vscode, "_find_command", lambda command: Path(f"/fake/bin/{command}"))
     monkeypatch.setattr(vscode, "_run_code", fake)
-    monkeypatch.setattr(vscode, "launch_token", lambda state, workspace: "token")
     monkeypatch.setattr(copilot, "launch_token", lambda state, workspace: "token")
-    monkeypatch.setattr(
-        vscode,
-        "discover_model_services",
-        lambda workspace, token: (
-            {"sonnet": "system.ai.claude-sonnet-5-5"},
-            ["system.ai.gpt-6-luna", "system.ai.gpt-oss-120b"],
-            ["system.ai.gemini-4-argon"],
-            ["system.ai.gpt-oss-120b", "system.ai.deepseek-v4-1-flash"],
-            None,
-        ),
-    )
     return fake
 
 
@@ -89,9 +82,7 @@ def _printed(capsys) -> str:
 
 
 class TestConfigure:
-    def test_installs_the_extension_with_the_workspace_and_its_claude_and_gpt_models(
-        self, code, capsys
-    ):
+    def test_installs_the_extension_with_the_copilot_clis_models_and_limits(self, code, capsys):
         assert vscode.configure(STATE)
 
         assert code.calls[-1][0] == "--install-extension"
@@ -121,6 +112,8 @@ class TestConfigure:
                     "name": "GPT 6 Luna",
                     "family": "gpt-6-luna",
                     "api": "responses",
+                    "maxInputTokens": 794_000,
+                    "maxOutputTokens": 128_000,
                 },
             ],
         }
@@ -138,20 +131,13 @@ class TestConfigure:
             "X-Databricks-Workspace-Id": "6051921418418893",
         }
 
-    def test_models_with_the_same_label_show_their_ids(self, code, monkeypatch):
-        monkeypatch.setattr(
-            vscode,
-            "discover_model_services",
-            lambda workspace, token: (
-                {},
-                ["system.ai.gpt-6-luna", "main.models.gpt-6-luna", "system.ai.gpt-5-5"],
-                [],
-                [],
-                None,
-            ),
+    def test_models_with_the_same_label_show_their_ids(self, code):
+        discovered = copilot.build_copilot_catalog(
+            ["system.ai.gpt-6-luna", "main.models.gpt-6-luna", "system.ai.gpt-5-5"]
         )
+        state = {**STATE, "copilot_catalog": copilot.catalog_state(discovered)}
 
-        models = vscode.model_entries(STATE)
+        models = vscode.model_entries(state)
 
         assert [model["name"] for model in models] == [
             "main.models.gpt-6-luna",
@@ -309,11 +295,13 @@ class TestConfigure:
         vscode.configure(STATE)
         installed = code.config
         code.calls.clear()
-        monkeypatch.setattr(
-            vscode, "discover_model_services", lambda workspace, token: ({}, [], [], [], reason)
-        )
+        state = {
+            "workspace": "https://other.cloud.databricks.com",
+            "copilot_catalog": copilot.catalog_state([]),
+            "_discovery_reasons": {"copilot": reason} if reason else {},
+        }
 
-        assert not vscode.configure({**STATE, "workspace": "https://other.cloud.databricks.com"})
+        assert not vscode.configure(state)
 
         assert code.calls == []
         assert code.config == installed
