@@ -432,7 +432,9 @@ through `SMART_ROUTER_CONFIG_VERSION`: they keep a known version and otherwise s
 `subagent_orch_v0_claude_only`. For Claude, that routes subagents and turns on Smart Router
 Orchestrator while the main session stays on its default model. Codex stays unrouted and
 without orchestration under this default, and a Codex launch that turns routing on this way
-warns that smart routing on Codex is currently not supported.
+warns that smart routing on Codex is currently not supported. `ug codex --help` hides
+`--enable-smart-routing` and `--disable-smart-routing` (the Smart Router skill still uses them)
+and notes that Smart Routing is currently only supported for the Claude Code harness.
 Like any version, it overrides individually set routing env vars. `--disable-smart-routing`
 turns routing off for the launch, including over a workspace config.
 

@@ -4240,20 +4240,31 @@ def codex_cmd(
         str | None,
         typer.Option("--scopes", hidden=True, help="Comma-separated custom OAuth scopes."),
     ] = None,
-    enable_smart_routing_flag: Annotated[
-        bool | None,
-        typer.Option(
-            "--enable-smart-routing/--disable-smart-routing",
-            help="Enable or disable AI Gateway subagent model routing and Smart Router "
-            "Orchestrator for this Codex launch or session.",
-        ),
-    ] = None,
+    # Hidden while Codex is unrouted by default; the Smart Router skill still toggles with them.
+    enable_smart_routing: Annotated[
+        bool,
+        typer.Option("--enable-smart-routing", hidden=True),
+    ] = False,
+    disable_smart_routing: Annotated[
+        bool,
+        typer.Option("--disable-smart-routing", hidden=True),
+    ] = False,
     smart_router_feedback: Annotated[
         str | None,
         typer.Option("--smart-router-feedback", hidden=True),
     ] = None,
 ) -> None:
-    """Launch Codex via Databricks."""
+    """Launch Codex via Databricks.
+
+    Smart Routing is currently only supported for the Claude Code harness.
+    """
+    if enable_smart_routing and disable_smart_routing:
+        raise typer.BadParameter(
+            "Pass only one of --enable-smart-routing and --disable-smart-routing."
+        )
+    enable_smart_routing_flag = (
+        True if enable_smart_routing else False if disable_smart_routing else None
+    )
     if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
         return
     try:

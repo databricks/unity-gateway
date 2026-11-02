@@ -184,6 +184,67 @@ class TestHelp:
             assert "--model-location" in output
             assert "--parent" not in output
 
+    def test_codex_help_hides_smart_routing_flags(self):
+        result = runner.invoke(app, ["codex", "--help"])
+        assert result.exit_code == 0, result.output
+        flat = re.sub(r"[│╭╮╯╰─\s]+", " ", _strip_ansi(result.output))
+        assert "--enable-smart-routing" not in flat
+        assert "--disable-smart-routing" not in flat
+        assert "Smart Routing is currently only supported for the Claude Code harness." in flat
+
+    def test_codex_command_list_entry_keeps_short_help(self):
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0, result.output
+        output = _strip_ansi(result.output)
+        assert "Launch Codex via Databricks." in output
+        assert "Claude Code harness" not in output
+
+    @pytest.mark.parametrize(
+        ("launch_args", "expected"),
+        [
+            (["--enable-smart-routing"], True),
+            (["--disable-smart-routing"], False),
+            ([], None),
+        ],
+        ids=["enable", "disable", "neither"],
+    )
+    def test_codex_smart_routing_flags_combine_into_one_choice(self, launch_args, expected):
+        with (
+            patch("ucode.cli._toggle_current_smart_routing_session", return_value=False) as toggle,
+            patch("ucode.cli._smart_routing_v2_flag", wraps=cli_mod._smart_routing_v2_flag) as flag,
+            patch("ucode.cli._launch_tool") as launch,
+        ):
+            result = runner.invoke(app, ["codex", *launch_args])
+
+        assert result.exit_code == 0, result.output
+        assert toggle.call_args.args == (expected, None)
+        assert flag.call_args.args == (expected,)
+        assert launch.call_args.kwargs["routing_already_chosen"] is (
+            expected is not None or smart_routing_config.known_version()
+        )
+
+    def test_codex_enable_smart_routing_still_toggles_the_session(self):
+        with (
+            patch("ucode.cli._toggle_current_smart_routing_session", return_value=True) as toggle,
+            patch("ucode.cli._launch_tool") as launch,
+        ):
+            result = runner.invoke(app, ["codex", "--enable-smart-routing"])
+
+        assert result.exit_code == 0, result.output
+        toggle.assert_called_once_with(True, None)
+        launch.assert_not_called()
+
+    def test_codex_rejects_both_smart_routing_flags(self):
+        with patch("ucode.cli._launch_tool") as launch:
+            result = runner.invoke(
+                app, ["codex", "--enable-smart-routing", "--disable-smart-routing"]
+            )
+
+        assert result.exit_code == 2
+        flat = " ".join(re.sub(r"[│╭╮╯╰─]+", " ", _strip_ansi(result.output)).split())
+        assert "Pass only one of --enable-smart-routing and --disable-smart-routing." in flat
+        launch.assert_not_called()
+
     def test_configure_help_lists_agents_flag(self):
         result = runner.invoke(app, ["configure", "--help"])
         assert result.exit_code == 0
