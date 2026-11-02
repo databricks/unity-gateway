@@ -6491,7 +6491,9 @@ class TestConfigureSharedStateUsePat:
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
         response_iter = iter(responses)
         monkeypatch.setattr(
-            db_mod, "_http_get_json", lambda url, token, **kwargs: next(response_iter)
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kwargs: ({}, None) if "parent=" in url else next(response_iter),
         )
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
@@ -6531,7 +6533,9 @@ class TestConfigureSharedStateUsePat:
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
         response_iter = iter(responses)
         monkeypatch.setattr(
-            db_mod, "_http_get_json", lambda url, token, **kwargs: next(response_iter)
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kwargs: ({}, None) if "parent=" in url else next(response_iter),
         )
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
@@ -6558,10 +6562,12 @@ class TestConfigureSharedStateUsePat:
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
         )
+        monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
 
-        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
-        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
+        first = cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
+        second = cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
 
+        assert first["codex_models"] == second["codex_models"] == ["system.ai.gpt-5"]
         assert len(calls) == 1
 
     def test_use_pat_without_pat_profile_raises(self, monkeypatch):

@@ -1,5 +1,10 @@
 # Integration tests
 
+`../test_databricks.py` covers the bounded `system.ai` gateway probe, complete-page
+reuse by model discovery, uncached pagination, token changes, immediate token
+rejection, and unscoped fallback when system models are unavailable. These are
+component checks; they do not establish live gateway or agent launch latency.
+
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls
 still routing waiting for a later reply, distinct

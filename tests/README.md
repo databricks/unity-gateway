@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+`test_databricks.py` covers the bounded `system.ai` gateway probe, complete-page
+reuse by model discovery, uncached pagination, token changes, immediate token
+rejection, and unscoped fallback when system models are unavailable. These are
+component checks; they do not establish live gateway or agent launch latency.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered

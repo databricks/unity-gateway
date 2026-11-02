@@ -2268,6 +2268,13 @@ def _model_service_id(service: dict) -> str | None:
     return name or None
 
 
+def _model_service_entry(service: object) -> ModelServiceEntry | None:
+    if not isinstance(service, dict):
+        return None
+    model_id = _model_service_id(service)
+    return ModelServiceEntry(model_id, _model_service_api_types(service)) if model_id else None
+
+
 # The model-services metastore listing REQUIRES a bounded `page_size`:
 # unparameterized or large-page requests (verified against
 # eng-ml-agent-platform.staging 2026-06-14) return `HTTP 499` with an empty
@@ -2400,12 +2407,9 @@ def list_model_service_entries(
             break
         data = cast(dict, payload) if isinstance(payload, dict) else {}
         for service in data.get("model_services", []):
-            if isinstance(service, dict):
-                model_id = _model_service_id(service)
-                if model_id and model_id not in entries:
-                    entries[model_id] = ModelServiceEntry(
-                        model_id, _model_service_api_types(service)
-                    )
+            entry = _model_service_entry(service)
+            if entry is not None and entry.id not in entries:
+                entries[entry.id] = entry
         page_token = data.get("next_page_token") or None
         if not page_token:
             last_reason = None
@@ -3868,7 +3872,38 @@ _MODEL_SERVICE_EMPTY_DETAIL = (
 )
 
 
+def _probe_system_model_services(workspace: str, token: str) -> GatewayProbe | None:
+    """Prove access with one system.ai page, reusing a complete page for discovery."""
+    params = {"parent": _MODEL_SERVICE_PARENT_SCHEMA, "page_size": str(_MODEL_SERVICES_PAGE_SIZE)}
+    payload, reason = _http_get_json(
+        f"{workspace_origin(workspace)}/api/2.1/unity-catalog/model-services?{urlencode(params)}",
+        token,
+        max_retries=_MODEL_SERVICE_PROBE_MAX_RETRIES,
+    )
+    if payload is None:
+        if reason is not None and _looks_like_definitive_auth_failure(reason):
+            return GatewayProbe(False, reason)
+        return None
+    data = payload if isinstance(payload, dict) else {}
+    services = data.get("model_services")
+    if not isinstance(services, list):
+        return None
+    entries: dict[str, ModelServiceEntry] = {}
+    for service in services:
+        entry = _model_service_entry(service)
+        if entry is not None and entry.id not in entries:
+            entries[entry.id] = entry
+    if not entries:
+        return None
+    if not data.get("next_page_token"):
+        _MODEL_SERVICES_CACHE[workspace] = [entries[model_id] for model_id in sorted(entries)]
+    return GatewayProbe(True, "reachable, accessible model service returned", True)
+
+
 def _probe_model_services(workspace: str, token: str) -> GatewayProbe:
+    scoped_probe = _probe_system_model_services(workspace, token)
+    if scoped_probe is not None:
+        return scoped_probe
     base = f"{workspace_origin(workspace)}/api/2.1/unity-catalog/model-services"
     page_token: str | None = None
     for page in range(_MODEL_SERVICE_PROBE_MAX_PAGES):
