@@ -1,5 +1,6 @@
 """Behavioral coverage for session-local Smart Router controls."""
 
+import errno
 import json
 import os
 import re
@@ -82,7 +83,19 @@ def test_skill_toggles_with_launch_installation_despite_shadowed_path(tmp_path, 
         assert json.loads(session_path.read_text()) == expected
 
 
-def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "write_step,error_number",
+    [
+        ("mkstemp", errno.EACCES),
+        ("mkstemp", errno.EROFS),
+        ("mkdir", errno.EACCES),
+        ("replace", errno.EPERM),
+        ("replace", errno.EROFS),
+        ("mkstemp", errno.ENOSPC),
+        ("replace", errno.ENOSPC),
+    ],
+)
+def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch, write_step, error_number):
     session_file = tmp_path / "env.json"
     session_file.write_text("{}")
     env = {
@@ -113,6 +126,35 @@ def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch):
             assert "Request native command approval" in " ".join(result.output.split())
             assert "Smart Router is" not in result.output
             assert session_file.read_bytes() == before
+
+    with monkeypatch.context() as denied:
+        # Inject filesystem failures at the raw and wrapped atomic-write boundaries.
+        target = {"mkstemp": config_io.tempfile, "mkdir": Path, "replace": config_io.os}[write_step]
+        original = getattr(target, write_step)
+
+        def fail_session_write(*args, **kwargs):
+            path = (
+                kwargs["dir"]
+                if write_step == "mkstemp"
+                else args[-1 if write_step == "replace" else 0]
+            )
+            if Path(path) in (session_file, session_file.parent):
+                raise OSError(error_number, os.strerror(error_number))
+            return original(*args, **kwargs)
+
+        denied.setattr(target, write_step, fail_session_write)
+        for flag in ("--disable-smart-routing", "--enable-smart-routing"):
+            result = runner.invoke(cli.app, ["codex", flag], env=env)
+            assert result.exit_code == 1
+            output = " ".join(result.output.split())
+            assert "writing Smart Router session controls" in output
+            assert ("Request native command approval" in output) == (error_number != errno.ENOSPC)
+            if error_number == errno.ENOSPC:
+                assert os.strerror(errno.ENOSPC) in output
+            assert "Smart Router is" not in output
+            assert isinstance(result.exception, SystemExit)
+            assert session_file.read_bytes() == before
+            assert not list(session_file.parent.glob(".env.json.*.tmp"))
 
     assert runner.invoke(cli.app, ["codex", "--disable-smart-routing"], env=env).exit_code == 0
     assert runner.invoke(cli.app, hook_args, input=payload, env=env).exit_code == 0

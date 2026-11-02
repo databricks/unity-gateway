@@ -537,15 +537,25 @@ hooks stay with the app-server. This is component coverage, not a live Windows
 sign-in or TUI test.
 
 `integration/test_ug_codex_v2_routing.py` checks native v2 on Codex 0.164.0 or newer:
-the exact multiline assignment reaches the real hook, router decision, and native
+the exact multiline assignment reaches the real hook, router, and native
 child; the child completes on the routed model while the parent stays pinned.
+The audit's SHA-256 digest and character count identify that exact assignment without
+persisting its text. Native hook and child assertions still compare the full text.
 The production launcher supplies the native configuration, and user settings and
 the Databricks provider are preserved. `test_agent_codex.py` covers the routing
 minimum version separately from ordinary launches.
-`test_codex_smart_routing_v2.py` checks the native v2 overrides in both launch paths
+`test_codex_smart_routing_v2.py` checks the native v2 overrides take precedence over
+conflicting saved values in both launch paths, with saved files unchanged,
 and the shared upgrade flow. Codex 0.163 cannot reach execution when the upgrade is
 declined, fails, or leaves the version below the routing minimum. Unrecognized
-versions also remain blocked; successful and automatic upgrades allow routing.
+versions stop before an upgrade prompt or updater, including automatic-update mode;
+successful and automatic upgrades of known old versions allow routing.
+The managed-launch cases in `test_cli.py` exercise Codex 0.145 and 0.163 through the
+real version gate: declining blocks launch, upgrading to 0.164 allows routing, and
+`--disable-smart-routing` allows an ordinary launch without invoking the updater.
+`test_codex_routing.py` checks that long Unicode assignments reach the router and hook
+unchanged while audits contain their hash and length, and bound each reason to 1,000
+characters. Shared-writer coverage keeps Claude's full task and reason fields intact.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
@@ -613,8 +623,10 @@ must update the session controls through the launching installation. Launch test
 that Claude settings and Codex's shell policy carry the interpreter and session marker.
 These are component checks; they do not establish native skill permission matching or
 PowerShell execution.
-A denied control-file read fails both toggle commands with native-approval guidance
-and leaves the saved controls byte-for-byte unchanged.
+A denied control-file read or write fails both toggle commands with native-approval
+guidance and leaves the saved controls byte-for-byte unchanged. Write coverage includes
+raw temporary-file errors and wrapped mkdir/replace errors, read-only filesystems,
+and full-disk failures, which report their cause without permission guidance.
 
 `test_integration_evidence.py` checks that the Codex approval driver accepts only the
 exact local command. Other commands or environments are rejected, and an incomplete

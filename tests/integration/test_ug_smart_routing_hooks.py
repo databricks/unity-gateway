@@ -8,6 +8,7 @@ an agent choosing to spawn a subagent. The TUI journeys additionally invoke the 
 Smart Router skill and spawn real children before and after its session-local toggles.
 """
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -130,9 +131,28 @@ def _run_calculation(
         return task
 
     assert new_decisions, new_decisions
-    assert all(task.marker in decision.get("task_name", "") for decision in new_decisions), (
-        new_decisions
-    )
+    if agent == "codex":
+        # Correlate the audit hashes with plaintext assignments in native rollouts.
+        assignments = set()
+        for records in agent_sessions(session, agent).values():
+            for row in records:
+                item = row.get("payload", {})
+                if row.get("type") != "response_item" or item.get("type") != "agent_message":
+                    continue
+                for part in item.get("content", []):
+                    text = part.get("text", "")
+                    if part.get("type") != "input_text" or not text.startswith(
+                        "Message Type: NEW_TASK\n"
+                    ):
+                        continue
+                    _, separator, assignment = text.partition("\nPayload:\n")
+                    if separator and task.marker in assignment:
+                        assignments.add(
+                            hashlib.sha256(assignment.strip().encode("utf-8")).hexdigest()
+                        )
+        assert all(row["task_sha256"] in assignments for row in new_decisions), new_decisions
+    else:
+        assert all(task.marker in row.get("task_name", "") for row in new_decisions), new_decisions
     decision = new_decisions[0]
     if agent == "claude":
         model = decision["requested_model"].removeprefix("system.ai.").removeprefix("databricks-")
@@ -395,7 +415,10 @@ def test_smart_routing_codex_route_subagent_hook(
     assert len(rows) == 1, rows
     row = rows[0]
     assert row["session_id"] == payload["session_id"], row
-    assert row["task_name"] == payload["tool_input"]["message"], row
+    assignment = payload["tool_input"]["message"]
+    assert row["task_sha256"] == hashlib.sha256(assignment.encode("utf-8")).hexdigest(), row
+    assert row["task_length"] == len(assignment), row
+    assert "task_name" not in row, row
     assert row["requested_model"] == updated["model"], row
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
@@ -73,8 +74,8 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
     """Scenario: configure ug with a user-owned native v2 catalog and observer hook,
     then delegate one multiline file task with subagent-only routing.
 
-    Expected: the native child, actual hook input, and router decision contain the exact
-    assignment. One native child completes on the selected model; the parent stays on
+    Expected: the native child and actual hook input contain the exact assignment,
+    matched by the router decision's digest. One native child completes on the selected model; the parent stays on
     its original model. Requests use the configured Databricks provider directly and
     preserve the user's config, without user-supplied feature flags.
     """
@@ -136,7 +137,9 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
 
     (decision,) = read_jsonl(session.home / ".ucode/codex-smart-routing-decisions.jsonl")
     assert decision["session_id"] == parent_meta["id"]
-    assert decision["task_name"] == assignment
+    assert decision["task_sha256"] == hashlib.sha256(assignment.encode("utf-8")).hexdigest()
+    assert decision["task_length"] == len(assignment)
+    assert "task_name" not in decision
     (hook,) = read_jsonl(session.home / ".codex/native-pre-tool-use.jsonl")
     assert hook["session_id"] == parent_meta["id"]
     assert hook["tool_input"]["message"] == assignment

@@ -1,5 +1,6 @@
 """Smart-routing CUJ: execute once, then report each contract assertion separately."""
 
+import hashlib
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -447,16 +448,23 @@ class TestCujSmartRouting(BaseCujTest):
                 }
                 assert completed_children, (agent, children.keys())
                 decisions = read_jsonl(decisions_path)[decision_count:]
-                decision_tasks = {
-                    decision.get("task_name") for decision in decisions if decision.get("task_name")
-                }
+                task_field = "task_sha256" if agent == CODEX else "task_name"
+                decision_tasks = {decision[task_field] for decision in decisions}
                 requests = recorder.requests_after(checkpoint)
-                routes = [
-                    request
-                    for request in requests
-                    if request.path == ROUTING_PATH
-                    and request.payload.get("task", {}).get("prompt") in decision_tasks
-                ]
+                routes = []
+                for request in requests:
+                    if request.path != ROUTING_PATH:
+                        continue
+                    prompt = request.payload.get("task", {}).get("prompt")
+                    if not isinstance(prompt, str):
+                        continue
+                    key = (
+                        hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+                        if agent == CODEX
+                        else prompt
+                    )
+                    if key in decision_tasks:
+                        routes.append(request)
                 assert bool(routes) == subagent_routed, (agent, routes)
                 if subagent_routed:
                     assert_subagent_routed(

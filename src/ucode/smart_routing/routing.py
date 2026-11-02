@@ -9,6 +9,7 @@ options, spawn-tool detector, model-id translation, and artifact paths.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -397,14 +398,24 @@ def write_decision_record(
     task_name: str,
     decision: RoutingDecision,
     requested_model: str,
+    *,
+    include_task_text: bool = True,
 ) -> None:
     """Record a routing decision so a later SubagentStart can reconcile it."""
+    task_fields = (
+        {"task_name": task_name}
+        if include_task_text
+        else {
+            "task_sha256": hashlib.sha256(task_name.encode("utf-8")).hexdigest(),
+            "task_length": len(task_name),
+        }
+    )
     _append_jsonl(
         decisions_path,
         {
             "decision_id": uuid.uuid4().hex,
             "session_id": payload.get("session_id"),
-            "task_name": task_name,
+            **task_fields,
             "router_model": decision.model,
             "requested_model": requested_model,
             "route_options": [

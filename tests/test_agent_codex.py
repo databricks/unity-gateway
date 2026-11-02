@@ -63,7 +63,8 @@ class TestMinimumVersion:
         monkeypatch.setattr(codex, "agent_version", lambda _binary, **_kwargs: "unknown")
 
         assert codex.minimum_version_error() is None
-        assert "found unknown" in codex.minimum_version_error(smart_routing_enabled=True)
+        with pytest.raises(RuntimeError, match="codex --version"):
+            codex.minimum_version_error(smart_routing_enabled=True)
 
     @pytest.mark.parametrize(
         ("version", "allowed"),
@@ -84,8 +85,14 @@ class TestMinimumVersion:
         codex.agent_version.cache_clear()
         try:
             assert codex.minimum_version_error() is None
-            assert (codex.minimum_version_error(smart_routing_enabled=True) is None) == allowed
-            assert (codex.minimum_version_error(smart_routing_enabled=True) is None) == allowed
+            for _ in range(2):
+                if version in (None, "unknown"):
+                    with pytest.raises(RuntimeError, match="codex --version"):
+                        codex.minimum_version_error(smart_routing_enabled=True)
+                else:
+                    assert (
+                        codex.minimum_version_error(smart_routing_enabled=True) is None
+                    ) == allowed
             assert [call.kwargs["timeout"] for call in probe.call_args_list] == [2, 10]
         finally:
             codex.agent_version.cache_clear()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tomllib
 from types import SimpleNamespace
 
 import pytest
@@ -52,6 +53,8 @@ class TestLaunchCodex:
             ("0.163.0", True, None, False),
             ("0.163.0", True, "0.163.0", False),
             ("unknown", True, "unknown", False),
+            ("unknown", True, "unknown", True),
+            ("0.163.0", True, "unknown", False),
         ],
         ids=[
             "supported",
@@ -61,6 +64,8 @@ class TestLaunchCodex:
             "failed",
             "still-old",
             "unknown",
+            "unknown-auto-upgrade",
+            "unknown-after-upgrade",
         ],
     )
     @pytest.mark.parametrize(
@@ -119,13 +124,15 @@ class TestLaunchCodex:
         with pytest.raises(SystemExit if allowed else RuntimeError) as exc:
             codex.launch(state, tool_args, options=options)
 
-        needs_upgrade = installed_version != "0.164.0"
+        needs_upgrade = installed_version == "0.163.0"
         assert prompts == (
             [("Upgrade Codex if available?", True)] if needs_upgrade and not auto_upgrade else []
         )
         assert updates == ([["codex", "update"]] if needs_upgrade and accept_upgrade else [])
         if not allowed:
             assert "requires Codex 0.164.0" in str(exc.value)
+            if version == "unknown":
+                assert "codex --version" in str(exc.value)
             assert calls == []
             return
         assert exc.value.code == 0
@@ -246,14 +253,21 @@ class TestLaunchCodex:
         ("platform_name", "tui_has_provider"), [("posix", False), ("nt", True)]
     )
     def test_owns_app_server_interposer_and_tui_lifecycle(
-        self, monkeypatch, platform_name, tui_has_provider
+        self, tmp_path, monkeypatch, platform_name, tui_has_provider
     ):
         processes = []
         interposer_args = {}
         stopped = []
         token_calls = []
+        user_config = tmp_path / "config.toml"
+        saved_config = (
+            b"[features.multi_agent_v2]\nnon_code_mode_only = true\n"
+            b'root_agent_usage_hint_text = "user root hint"\n'
+            b'subagent_usage_hint_text = "user child hint"\n'
+        )
+        user_config.write_bytes(saved_config)
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
         monkeypatch.setattr(v2, "os", SimpleNamespace(name=platform_name, environ=os.environ))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
@@ -329,6 +343,8 @@ class TestLaunchCodex:
         assert "--model system.ai.gpt-5-6-sol" in hook_override
         assert "--model system.ai.glm-5-2" in hook_override
         config_values = processes[0].argv[3:-2:2]
+        native_overrides = tomllib.loads("\n".join(config_values))["features"]["multi_agent_v2"]
+        assert native_overrides["non_code_mode_only"] is False
         assert "features.multi_agent_v2.non_code_mode_only=false" in config_values
         for key, role in (
             ("root_agent_usage_hint_text", "You are /root,"),
@@ -340,6 +356,8 @@ class TestLaunchCodex:
             )
             assert hint.startswith(role)
             assert v2.CODEX_V2_COLLABORATION_GUIDANCE in hint
+            assert native_overrides[key] == hint
+        assert user_config.read_bytes() == saved_config
         assert (
             "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
             + json.dumps(os.environ["UCODE_SESSION_ENV_FILE"])
@@ -353,7 +371,7 @@ class TestLaunchCodex:
             "ws://127.0.0.1:41001",
         ]
         assert processes[0].kwargs["env"][v2.OAUTH_TOKEN_ENV_VAR] == "token-1"
-        assert processes[0].kwargs["env"]["CODEX_HOME"] == "/user/codex-home"
+        assert processes[0].kwargs["env"]["CODEX_HOME"] == str(tmp_path)
         tui_argv = processes[1].argv
         expected_tui_args = [
             "--remote",
@@ -441,6 +459,13 @@ class TestLaunchCodex:
         assert "eng-ml-inference" in provider_arg
 
     def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch):
+        user_config = tmp_path / "config.toml"
+        saved_config = (
+            b"[features.multi_agent_v2]\nnon_code_mode_only = true\n"
+            b'root_agent_usage_hint_text = "user root hint"\n'
+            b'subagent_usage_hint_text = "user child hint"\n'
+        )
+        user_config.write_bytes(saved_config)
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
@@ -478,6 +503,9 @@ class TestLaunchCodex:
         assert argv[0] == "codex"
         assert argv[-1] == "--search"
         assert 'model="gpt-start"' in argv
+        config_values = [argv[index + 1] for index, arg in enumerate(argv) if arg == "--config"]
+        native_overrides = tomllib.loads("\n".join(config_values))["features"]["multi_agent_v2"]
+        assert native_overrides["non_code_mode_only"] is False
         assert "features.multi_agent_v2.non_code_mode_only=false" in argv
         for key, role in (
             ("root_agent_usage_hint_text", "You are /root,"),
@@ -489,6 +517,8 @@ class TestLaunchCodex:
             )
             assert hint.startswith(role)
             assert v2.CODEX_V2_COLLABORATION_GUIDANCE in hint
+            assert native_overrides[key] == hint
+        assert user_config.read_bytes() == saved_config
         hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
         assert "codex-router-hook route-subagent" in hook_override
         assert "--model system.ai.gpt-5-6-sol" in hook_override

@@ -177,7 +177,14 @@ def minimum_version_error(*, smart_routing_enabled: bool = False) -> str | None:
             # The short telemetry probe can time out on a cold npm wrapper.
             version = agent_version(SPEC["binary"], timeout=10)
             parsed = _parse_version(version)
-        if parsed is not None and parsed >= MINIMUM_SMART_ROUTING_CODEX_VERSION:
+        if parsed is None:
+            raise RuntimeError(
+                "Could not determine the installed Codex version. "
+                f"Smart routing requires Codex {MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT} "
+                "or newer. Run `codex --version` to check the installation, "
+                "or launch with --disable-smart-routing."
+            )
+        if parsed >= MINIMUM_SMART_ROUTING_CODEX_VERSION:
             return None
         return (
             f"Codex smart routing requires Codex {MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT} "

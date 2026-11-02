@@ -24,6 +24,7 @@ from typer.testing import CliRunner
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 import ucode.managed_files as managed_files
+from ucode import agents
 from ucode.agents import copilot as copilot_agent
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
@@ -955,6 +956,64 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 0, result.output
         assert observed == [(tool in routed_tools, expected_env)]
+        assert _routing_env() == env_before
+
+    @pytest.mark.parametrize("installed_version", ["0.145.0", "0.163.0"])
+    @pytest.mark.parametrize("recovery", ["decline", "upgrade", "disable"])
+    def test_managed_codex_routing_requires_upgrade_or_explicit_disable(
+        self, tmp_path, monkeypatch, installed_version, recovery
+    ):
+        codex = cli_mod.codex_agent
+        version = installed_version
+        updates, routed, plain = [], [], []
+        profile = tmp_path / "ucode.config.toml"
+        profile.write_text('model_provider = "Databricks"\n', encoding="utf-8")
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile)
+        monkeypatch.setattr(codex, "agent_version", lambda *_args, **_kwargs: version)
+        monkeypatch.setattr(codex, "_launch_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: plain.append(argv))
+        monkeypatch.setenv(agents.AUTO_UPGRADE_AGENT_ENV, "0")
+        monkeypatch.setattr(agents.shutil, "which", lambda binary: f"/tools/{binary}")
+
+        def update(argv, **_kwargs):
+            nonlocal version
+            if argv[-1:] == ["--version"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="0.265.0\n", stderr="")
+            assert argv == ["codex", "update"]
+            updates.append(argv)
+            version = "0.164.0"
+            return subprocess.CompletedProcess(argv, 0)
+
+        def launch_native(*_args, **_kwargs):
+            routed.append(version)
+            raise SystemExit(0)
+
+        # Keep managed selection, version checks and updater orchestration real;
+        # isolate native execution and the external workspace through the existing fixture.
+        monkeypatch.setattr(agents.subprocess_cross_os, "run", update)
+        monkeypatch.setattr(cli_mod.smart_routing_v2, "launch_codex", launch_native)
+        launch = cli_mod.launch_agent
+        managed = {"enabled_agents": {"codex": {"smart_routing_enabled": True}}}
+        env_before = _routing_env()
+        with (
+            _launch_policy_patches(managed) as calls,
+            patch(
+                "ucode.agents.prompt_yes_no_default", return_value=recovery == "upgrade"
+            ) as prompt,
+        ):
+            calls["launch"].side_effect = launch
+            args = ["codex", "--disable-smart-routing"] if recovery == "disable" else ["codex"]
+            result = runner.invoke(app, args)
+
+        assert result.exit_code == (1 if recovery == "decline" else 0), result.output
+        assert routed == (["0.164.0"] if recovery == "upgrade" else [])
+        assert bool(plain) == (recovery == "disable")
+        assert updates == ([["codex", "update"]] if recovery == "upgrade" else [])
+        assert prompt.call_count == (0 if recovery == "disable" else 1)
+        if recovery == "decline":
+            output = " ".join(_strip_ansi(result.output).split())
+            assert f"found {installed_version}" in output
+            assert "--disable-smart-routing" in output
         assert _routing_env() == env_before
 
     @pytest.mark.parametrize(

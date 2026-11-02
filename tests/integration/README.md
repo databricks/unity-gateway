@@ -751,7 +751,9 @@ If Codex requests permission to read the controls, the driver approves only the 
 public toggle command through the native dialog, leaving the sandbox intact.
 Offline cases in `../test_integration_evidence.py` cover wrong commands, non-local
 environments, and incomplete dialogs, including stale confirmation text. Session-control
-checks in `../test_smart_router.py` verify that a denied read leaves controls unchanged.
+checks in `../test_smart_router.py` verify that denied reads and raw or wrapped write
+failures leave controls unchanged. Permission failures request native approval;
+full-disk errors retain their own diagnostic. These checks do not simulate a native approval.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
 With orchestration enabled through legacy flags, a preset, or the managed default, both routed
@@ -918,9 +920,11 @@ See the named coverage and gaps matrix in
 
 The native v2 assignment journey requires Codex 0.164.0 or newer. It uses a bundled
 v2 catalog and a user-owned observer hook, without test-supplied native feature flags.
-It checks the exact multiline assignment at PreToolUse, the router decision, and
-the actual native recipient, then checks completed parent and child models and
-preserved settings. Select it with
+It checks the exact multiline assignment at PreToolUse and the actual native recipient,
+and matches the router decision's SHA-256 digest and character count to that assignment.
+The launch/off/on journeys match audit digests against native assignment text;
+CUJ4 matches them against the recorded real router requests. Full native plaintext,
+completed parent and child models, and preserved settings remain required. Select it with
 `--codex-version 0.165.0 -- -k test_ug_codex_native_v2_plain_assignment_routing`.
 The `codex_smart_routing` marker also selects the native launch/off/on journeys,
 managed routing banner, and catalog-fallback routing-on case. To reproduce the
