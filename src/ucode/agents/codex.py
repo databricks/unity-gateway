@@ -173,6 +173,10 @@ def minimum_version_error(*, smart_routing_enabled: bool = False) -> str | None:
     version = agent_version(SPEC["binary"])
     parsed = _parse_version(version)
     if smart_routing_enabled:
+        if parsed is None:
+            # The short telemetry probe can time out on a cold npm wrapper.
+            version = agent_version(SPEC["binary"], timeout=10)
+            parsed = _parse_version(version)
         if parsed is not None and parsed >= MINIMUM_SMART_ROUTING_CODEX_VERSION:
             return None
         return (

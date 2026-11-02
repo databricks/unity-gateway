@@ -605,6 +605,10 @@ Lock contention is nonblocking, and deferred restoration waits for another activ
 These are component checks; live first-prompt
 routing on a pinned Claude Code version is not executed here.
 
+Codex version tests cover one longer probe after an inconclusive cached result. Supported
+versions can pass that probe; old, unparseable, or repeatedly timed-out versions still fail
+the smart-routing gate. Plain launches retain their existing version rules.
+
 `test_smart_router.py` executes the installed skill's shell commands with another `ug`
 first in PATH and a launching interpreter path containing spaces. Both agents' toggles
 must update the session controls through the launching installation. Launch tests check
