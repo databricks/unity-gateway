@@ -340,9 +340,11 @@ def run_claude_pty(
     *,
     route_prompt: Callable[[str], FirstPromptRoute],
     socket_path: Path,
-    prepare_model_switch: Callable[[str], None] = lambda _model: None,
+    prepare_model_switch: Callable[[str], bool | None] = lambda _model: None,
     model_switch_persisted: Callable[[], bool] = lambda: True,
-    restore_model_setting: Callable[[], None] = lambda: None,
+    restore_model_setting: Callable[[], bool | None] = lambda: None,
+    defer_model_setting: Callable[[], None] = lambda: None,
+    abandon_model_setting: Callable[[], None] = lambda: None,
     log_path: Path | None = None,
 ) -> int:
     """Run Claude in a PTY, switch its model, and replay the first prompt."""
@@ -419,6 +421,8 @@ def run_claude_pty(
             cancel_started = 0.0
             submit_attempts = 0
             switch_complete: OutputMarkerDetector | None = None
+            model_pending = False
+            deferred_restore = False
 
             def clear_keys() -> bytes:
                 # The box can still hold the blocked prompt and an unrun /model command.
@@ -441,6 +445,14 @@ def run_claude_pty(
                     if not data:
                         stdin_open = False
                     else:
+                        if model_pending:
+                            # Once the user takes over, a later /model is theirs.
+                            restore_model_setting()
+                            abandon_model_setting()
+                            model_pending = False
+                            deferred_restore = False
+                            phase = "done"
+                            confirm.clear()
                         os.write(master_fd, data)
 
                 if master_fd in ready_fds:
@@ -470,8 +482,17 @@ def run_claude_pty(
 
                 now = time.monotonic()
                 idle = last_output > 0.0 and now - last_output >= READY_QUIET_S
-                if phase == "waiting_to_switch" and idle:
-                    prepare_model_switch(routed_model)
+                if deferred_restore and model_switch_persisted():
+                    if restore_model_setting() is not False:
+                        model_pending = False
+                        deferred_restore = False
+                        log("[RESTORE] late model write restored")
+                if (
+                    phase == "waiting_to_switch"
+                    and idle
+                    and prepare_model_switch(routed_model) is not False
+                ):
+                    model_pending = True
                     inject_model_switch(master_fd, routed_model, clear=clear_keys())
                     confirm.arm(now + CONFIRM_TIMEOUT_S)
                     switch_complete = OutputMarkerDetector(("Set model to", "Model set to"))
@@ -479,10 +500,10 @@ def run_claude_pty(
                     phase = "switching"
                     log(f"[SWITCH] /model {routed_model}")
                 elif phase == "waiting_to_switch" and now - ready_capture >= READY_TIMEOUT_S:
-                    # Output never went quiet; skip the switch and submit on the default model.
+                    # Neither terminal activity nor another session's lock may stall input.
                     inject_note(
                         1,
-                        "Smart Routing could not find a quiet window to switch models; "
+                        "Smart Routing could not prepare the model switch; "
                         "submitting your prompt on the default model.",
                     )
                     inject_prompt(master_fd, routed_prompt, submit=False, clear=clear_keys())
@@ -520,15 +541,11 @@ def run_claude_pty(
                         phase = "waiting_persist"
                         switch_started = now
                         log("[SWITCH] model command completed after timeout")
-                    elif now >= esc_deadline and last_output > cancel_started and idle:
-                        restore_model_setting()
-                        inject_prompt(master_fd, routed_prompt, submit=False, clear=clear_keys())
-                        paste_deadline = now + PASTE_SUBMIT_DELAY_S
-                        phase = "pasting"
-                        log("[PASTE] Claude settled after Escape; replaying first prompt")
                     elif now - cancel_started >= READY_TIMEOUT_S:
-                        # No safe replay point: keep the TUI usable and leave final
-                        # settings restoration to launch_claude after the child exits.
+                        # A quiet redraw does not prove /model has stopped writing.
+                        # Release other launches and watch for its late settings write.
+                        defer_model_setting()
+                        deferred_restore = True
                         inject_note(
                             1,
                             "Smart Routing could not confirm Claude was ready. "
@@ -538,13 +555,15 @@ def run_claude_pty(
                         log("[WARN] Claude did not settle after Escape; automatic replay stopped")
                 elif phase == "waiting_persist" and model_switch_persisted():
                     restore_model_setting()
+                    model_pending = False
                     inject_prompt(master_fd, routed_prompt, submit=False, clear=clear_keys())
                     paste_deadline = now + PASTE_SUBMIT_DELAY_S
                     phase = "pasting"
                     log("[PASTE] first prompt pasted; waiting for submit delay")
                 elif phase == "waiting_persist" and now - switch_started >= MODEL_PERSIST_TIMEOUT_S:
                     # Fail-open: don't kill claude; submit on whatever model is active.
-                    restore_model_setting()
+                    defer_model_setting()
+                    deferred_restore = True
                     inject_note(
                         1,
                         "Smart Routing could not confirm the default model was preserved. "

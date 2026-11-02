@@ -598,8 +598,11 @@ Codex decisions carry the same request metadata. These use mocked HTTP responses
 command, and the replay must arrive unchanged after a switch, a switch timeout, or a missing
 quiet window. A delayed `/model` completion reproduces Claude Code 2.1.290's timeout race:
 the prompt must be submitted exactly once and the saved default restored after the native
-write. Cancellation recovery waits for fresh output to settle; silent or continuously busy
-commands stop automatic replay with a warning. These are component checks; live first-prompt
+write. Intermediate redraws do not confirm cancellation or completion. Unconfirmed commands
+stop automatic replay with a warning and release the settings lock. Late writes are restored
+without replaying again; manual model choices, including the same routed model, are preserved.
+Lock contention is nonblocking, and deferred restoration waits for another active switch.
+These are component checks; live first-prompt
 routing on a pinned Claude Code version is not executed here.
 
 `test_smart_router.py` executes the installed skill's shell commands with another `ug`
