@@ -4,7 +4,7 @@ import { afterEach, describe, it } from "node:test";
 import type * as vscode from "vscode";
 import packageJson from "../package.json";
 import { Tokens } from "../src/auth";
-import { DatabricksModels, PROVIDER_HEADER, readConfig, userAgent, type Settings } from "../src/extension";
+import { applyDefaultModel, DatabricksModels, PROVIDER_HEADER, readConfig, requestHeaders, userAgent, type Settings } from "../src/extension";
 import { streamEvents } from "../src/gateway";
 import { collect, message, rejectsWith, text, tokenCommand, USER } from "./support";
 import { LanguageModelChatToolMode, LanguageModelTextPart } from "./vscode";
@@ -13,7 +13,7 @@ const sse = (...data: string[]) => data.map((item) => `data: ${item}\n\n`).join(
 
 /** Replaces fetch with one that answers each request with the next status and SSE body. */
 const stubFetch = (...answers: [number, string, string?][]) => {
-  const requests: { url: string; authorization: string; userAgent: string; provider: string | null; orgId: string | null; body: Record<string, unknown> }[] = [];
+  const requests: { url: string; authorization: string; userAgent: string; provider: string | null; body: Record<string, unknown> }[] = [];
   globalThis.fetch = (async (url: string, init: RequestInit) => {
     const headers = new Headers(init.headers);
     requests.push({
@@ -21,7 +21,6 @@ const stubFetch = (...answers: [number, string, string?][]) => {
       authorization: headers.get("authorization") ?? "",
       userAgent: headers.get("user-agent") ?? "",
       provider: headers.get(PROVIDER_HEADER),
-      orgId: headers.get("x-databricks-org-id"),
       body: JSON.parse(String(init.body)),
     });
     const [status, body, contentType] = answers[Math.min(requests.length - 1, answers.length - 1)] ?? [500, ""];
@@ -119,13 +118,50 @@ describe("userAgent", () => {
   });
 });
 
+describe("requestHeaders", () => {
+  it("adds the admin's headers to the User-Agent, and theirs wins by name", () => {
+    assert.deepEqual(requestHeaders("0.71.0"), { "User-Agent": `ucode/${packageJson.version} githubcopilotchat/0.71.0` });
+    assert.deepEqual(requestHeaders("0.71.0", { "X-Team": "ml" }), {
+      "User-Agent": `ucode/${packageJson.version} githubcopilotchat/0.71.0`,
+      "X-Team": "ml",
+    });
+    assert.deepEqual(requestHeaders("0.71.0", { "user-agent": "admin" }), { "user-agent": "admin" });
+  });
+});
+
+describe("applyDefaultModel", () => {
+  const chat = (current: string | undefined) => {
+    const updates: unknown[][] = [];
+    return {
+      updates,
+      get: <T>() => current as T,
+      update: async (...args: unknown[]) => {
+        updates.push(args);
+      },
+    };
+  };
+
+  it("sets the user's default model when the workspace names another", async () => {
+    const settings = chat("gpt-4.1");
+    await applyDefaultModel(settings as never, "system.ai.claude-sonnet-5-5");
+    assert.deepEqual(settings.updates, [["defaultModel", "system.ai.claude-sonnet-5-5", 1]]);
+  });
+
+  it("leaves the setting alone without a workspace default or when it already matches", async () => {
+    for (const [current, model] of [["gpt-4.1", undefined], ["system.ai.claude-sonnet-5-5", "system.ai.claude-sonnet-5-5"]]) {
+      const settings = chat(current);
+      await applyDefaultModel(settings as never, model);
+      assert.deepEqual(settings.updates, []);
+    }
+  });
+});
+
 describe("readConfig", () => {
-  it("keeps well-formed models, names, families and token limits, the provider, string headers, and trims the workspace URL", () => {
+  it("keeps well-formed models, names, families and token limits, the provider, and trims the workspace URL", () => {
     const config = {
       workspace: "https://ws/",
       authCommand: "ug auth-token",
       provider: "main.default.mps",
-      headers: { "X-Databricks-Org-Id": "123", "X-Bad": 7 },
       models: [
         { id: "a", api: "responses" },
         { id: "gpt-5.5", family: "gpt-5.5", api: "responses" },
@@ -141,7 +177,6 @@ describe("readConfig", () => {
       workspace: "https://ws",
       authCommand: "ug auth-token",
       provider: "main.default.mps",
-      headers: { "X-Databricks-Org-Id": "123" },
       models: [
         { id: "a", api: "responses" },
         { id: "gpt-5.5", family: "gpt-5.5", api: "responses" },
@@ -152,8 +187,27 @@ describe("readConfig", () => {
     });
   });
 
+  it("keeps the admin's string headers except Authorization, and the default model", () => {
+    const config = {
+      workspace: "https://ws",
+      authCommand: "ug auth-token",
+      models: [],
+      headers: { "X-Team": "ml", authorization: "Bearer x", "X-Count": 3, " ": "blank" },
+      defaultModel: "system.ai.claude-sonnet-5-5",
+    };
+    assert.deepEqual(readConfig(JSON.stringify(config)), {
+      workspace: "https://ws",
+      authCommand: "ug auth-token",
+      provider: "",
+      models: [],
+      headers: { "X-Team": "ml" },
+      defaultModel: "system.ai.claude-sonnet-5-5",
+    });
+    assert.equal(readConfig(JSON.stringify({ ...config, headers: ["X-Team"], defaultModel: 7 })).headers, undefined);
+  });
+
   it("gives no models for a missing or malformed file", () => {
-    const none = { workspace: "", authCommand: "", models: [], provider: "", headers: {} };
+    const none = { workspace: "", authCommand: "", models: [], provider: "" };
     for (const text of [undefined, "", "{", "[]", "null", '"text"']) {
       assert.deepEqual(readConfig(text), none, String(text));
     }
@@ -161,11 +215,10 @@ describe("readConfig", () => {
 });
 
 describe("DatabricksModels", () => {
-  const settings = (command: string, provider = "", headers: Record<string, string> = {}): Settings => ({
+  const settings = (command: string, provider = ""): Settings => ({
     workspace: "https://ws",
     authCommand: command,
     provider,
-    headers,
     models: [
       { id: "system.ai.claude-sonnet-5-5", name: "Claude Sonnet 5.5", api: "anthropic", maxInputTokens: 872_000, maxOutputTokens: 128_000 },
       { id: "system.ai.gpt-6-luna", api: "responses" },
@@ -234,15 +287,6 @@ describe("DatabricksModels", () => {
         ["https://ws/ai-gateway/openai/v1/responses", "main.default.mps"],
         ["https://ws/ai-gateway/openai/v1/chat/completions", "main.default.mps"],
       ],
-    );
-  });
-
-  it("selects the workspace with the configured headers on every API", async () => {
-    const requests = stubFetch(...answers);
-    await askEach(new DatabricksModels(() => settings(tokenCommand(["t"]).command, "", { "X-Databricks-Org-Id": "123" }), () => {}));
-    assert.deepEqual(
-      requests.map((request) => request.orgId),
-      ["123", "123", "123"],
     );
   });
 });

@@ -361,7 +361,7 @@ def provider_service_catalog(
 
     A service that allows every model registers what the gateway lists for it, plus ``requested``
     (the launch's ``--model``) or the managed default, so a model the listing omits can be named.
-    ``tool`` is ``vscode`` for Copilot Chat in VS Code, which has neither."""
+    ``tool`` is ``vscode`` for Copilot Chat in VS Code, which has no ``--model``."""
     workspace = state["workspace"]
     token = launch_token(state, workspace)
     service, error = resolve_provider_service(tool, service_name, workspace, token)
@@ -374,7 +374,7 @@ def provider_service_catalog(
     allow_all = bool(service.get("allow_all_targets"))
     if allow_all:
         start = _without_registry_prefix(requested) if requested else None
-        managed_default = state.get("copilot_default_model") if tool == "copilot" else None
+        managed_default = state.get("copilot_default_model")
         start = start or (managed_default if isinstance(managed_default, str) else None)
         listed, reason = list_provider_service_models(workspace, token, service_name, provider_type)
         if reason and not start:
@@ -946,6 +946,19 @@ def _token_provider(state: dict) -> Callable[[bool], str]:
     return lambda force_refresh: launch_token(state, workspace, force_refresh=force_refresh)
 
 
+def managed_http_headers(state: dict) -> dict[str, str]:
+    """The admin's headers for Copilot's gateway requests, never ``Authorization``."""
+    managed = state.get("copilot_http_headers")
+    return {
+        name.strip(): value
+        for name, value in (managed if isinstance(managed, dict) else {}).items()
+        if isinstance(name, str)
+        and isinstance(value, str)
+        and name.strip()
+        and name.strip().casefold() != "authorization"
+    }
+
+
 def proxy_headers(state: dict) -> dict[str, str]:
     """Headers the proxy adds to every gateway request; admin-managed headers win by name."""
     headers = {
@@ -958,15 +971,10 @@ def proxy_headers(state: dict) -> dict[str, str]:
     request_tags = request_tags_header_value()
     if request_tags:
         headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
-    managed = state.get("copilot_http_headers")
-    for name, value in (managed if isinstance(managed, dict) else {}).items():
-        if not isinstance(name, str) or not isinstance(value, str):
-            continue
-        if name.strip().casefold() == "authorization":
-            continue
-        for existing in [key for key in headers if key.casefold() == name.strip().casefold()]:
+    for name, value in managed_http_headers(state).items():
+        for existing in [key for key in headers if key.casefold() == name.casefold()]:
             headers.pop(existing)
-        headers[name.strip()] = value
+        headers[name] = value
     return headers
 
 

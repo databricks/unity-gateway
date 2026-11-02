@@ -328,6 +328,60 @@ class TestConfigure:
         assert "--install-extension` failed: boom" in _printed(capsys)
 
 
+class TestCopilotModels:
+    """With the Copilot CLI's catalog in state, VS Code gets the same models and the managed setup."""
+
+    SONNET = "system.ai.claude-sonnet-5-5"
+    GPT = "system.ai.gpt-6-luna"
+
+    @pytest.fixture(autouse=True)
+    def _no_discovery(self, code, monkeypatch):
+        monkeypatch.setattr(
+            vscode,
+            "discover_model_services",
+            lambda *a: pytest.fail("the Copilot CLI's catalog needs no discovery"),
+        )
+
+    def _state(self, **managed) -> dict:
+        saved = {"models": [self.SONNET, self.GPT], "limits": {self.GPT: [922_000, 128_000]}}
+        return {**STATE, copilot.CATALOG_STATE_KEY: saved, **managed}
+
+    def test_uses_the_catalog_configure_saved_with_its_limits(self, code):
+        assert vscode.configure(self._state())
+
+        assert [model["id"] for model in code.config["models"]] == [self.SONNET, self.GPT]
+        assert code.config["models"][1]["maxInputTokens"] == 922_000
+        assert "headers" not in code.config
+        assert "defaultModel" not in code.config
+
+    def test_uses_only_the_managed_list_and_says_what_it_skips(self, code, capsys):
+        state = self._state(copilot_static_models=[self.GPT, "system.ai.gemini-4-argon"])
+
+        assert vscode.configure(state)
+
+        assert [model["id"] for model in code.config["models"]] == [self.GPT]
+        assert "Skipping system.ai.gemini-4-argon from your workspace's managed config" in (
+            _printed(capsys)
+        )
+
+    def test_writes_the_managed_headers_without_authorization_and_the_default_model(self, code):
+        state = self._state(
+            copilot_http_headers={" X-Team ": "ml", "Authorization": "Bearer x", "X-Bad": 3},
+            copilot_default_model="claude-sonnet-5-5",
+        )
+
+        assert vscode.configure(state)
+
+        assert code.config["headers"] == {"X-Team": "ml"}
+        assert code.config["defaultModel"] == self.SONNET
+
+    def test_a_default_model_vscode_doesnt_have_is_left_out_with_a_warning(self, code, capsys):
+        assert vscode.configure(self._state(copilot_default_model="system.ai.missing"))
+
+        assert "defaultModel" not in code.config
+        assert "default model system.ai.missing isn't among VS Code's models" in _printed(capsys)
+
+
 class TestRevert:
     def test_uninstalls_the_extension(self, code):
         vscode.configure(STATE)

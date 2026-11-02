@@ -30,7 +30,10 @@ from ucode.agents.copilot import (
     claude_model_name,
     copilot_catalog,
     location_catalog,
+    managed_http_headers,
     provider_service_catalog,
+    resolve_copilot_model,
+    unservable_static_models,
 )
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command
 from ucode.databricks import build_auth_shell_command
@@ -190,7 +193,11 @@ def _catalog(state: dict, provider: str | None, location: str | None) -> list[Co
         return provider_service_catalog(state, provider, None, tool="vscode")
     if location:
         return location_catalog(state, location)
+    # The managed model list, else the catalog configure just saved for the Copilot CLI.
     catalog = copilot_catalog(state)
+    if catalog:
+        for model, reason in unservable_static_models(state):
+            print_warning(f"Skipping {model} from your workspace's managed config: {reason}.")
     if not catalog:
         reason = (state.get("_discovery_reasons") or {}).get("copilot")
         raise RuntimeError(
@@ -203,8 +210,11 @@ def model_entries(
     state: dict, *, provider: str | None = None, location: str | None = None
 ) -> list[dict[str, object]]:
     """The models of the chosen source, each with the API the extension calls it on."""
-    catalog = _catalog(state, provider, location)
-    if provider:
+    return _entries(_catalog(state, provider, location), by_id=bool(provider))
+
+
+def _entries(catalog: list[CopilotModel], *, by_id: bool) -> list[dict[str, object]]:
+    if by_id:
         # A service's targets are the provider's own ids, which is what its users know it by, and
         # several of them differ only by a region the label would drop.
         return [_model_entry(model, model.id) for model in catalog]
@@ -215,6 +225,21 @@ def model_entries(
         _model_entry(model, model.id if counts[label] > 1 else label)
         for model, label in labels.items()
     ]
+
+
+def _default_model(state: dict, catalog: list[CopilotModel]) -> str | None:
+    """The catalog id of the workspace's managed default model, for new VS Code chats."""
+    wanted = state.get("copilot_default_model")
+    if not isinstance(wanted, str) or not wanted:
+        return None
+    try:
+        return resolve_copilot_model(wanted, catalog).id
+    except RuntimeError:
+        print_warning(
+            f"Your workspace's default model {wanted} isn't among VS Code's models, so VS Code "
+            "keeps its own default."
+        )
+        return None
 
 
 def auth_command(state: dict) -> str:
@@ -244,8 +269,9 @@ def next_steps() -> list[str]:
 
 def configure(state: dict, *, provider: str | None = None, location: str | None = None) -> bool:
     """Install the extension with this workspace's setup and the models of ``provider`` (a Model
-    Provider Service), ``location`` (a ``<catalog>.<schema>``) or else ``system.ai``. Returns False,
-    after a warning, if any step fails."""
+    Provider Service), ``location`` (a ``<catalog>.<schema>``) or else the Copilot CLI's, with the
+    workspace's managed headers and default model. Returns False, after a warning, if any step
+    fails."""
     code = find_code()
     if code is None:
         print_note(
@@ -255,11 +281,12 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
         )
         return False
     try:
-        models = model_entries(state, provider=provider, location=location)
+        catalog = _catalog(state, provider, location)
     except RuntimeError as exc:
         # Keep what an earlier configure installed: a failed listing shouldn't wipe a working setup.
         print_warning(f"{exc} VS Code was left unchanged.")
         return False
+    models = _entries(catalog, by_id=bool(provider))
     config: dict[str, object] = {
         "workspace": state["workspace"],
         "authCommand": auth_command(state),
@@ -267,9 +294,12 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     }
     if provider:
         config["provider"] = provider
-    # A host that serves several workspaces answers a request without them with its sign-in page.
-    if selector := selector_headers(state.get("workspace_id")):
-        config["headers"] = selector
+    # The selector wins over an admin's header of the same name: a host that serves several
+    # workspaces answers a request without it with its sign-in page.
+    if headers := managed_http_headers(state) | selector_headers(state.get("workspace_id")):
+        config["headers"] = headers
+    if default := _default_model(state, catalog):
+        config["defaultModel"] = default
     source = f" from {provider or location}" if provider or location else ""
     try:
         print_kv(

@@ -524,6 +524,19 @@ class TestProviderCatalog:
         ]
         assert seen["listing"] == (MPS, "amazon_bedrock")
 
+    @pytest.mark.parametrize("tool", ["copilot", "vscode"])
+    def test_allow_all_adds_the_managed_default_for_the_cli_and_vscode(self, monkeypatch, tool):
+        _stub_provider_service(
+            monkeypatch,
+            {"provider_type": "anthropic", "targets": [], "allow_all_targets": True},
+            listed=["claude-opus-5"],
+        )
+        state = {"workspace": WS, "copilot_default_model": "claude-sonnet-5"}
+
+        models = copilot.provider_service_catalog(state, MPS, None, tool=tool)
+
+        assert sorted(m.id for m in models) == ["claude-opus-5", "claude-sonnet-5"]
+
     def test_allow_all_openai_takes_a_provider_ref_as_the_start_model(self, monkeypatch):
         seen = _stub_provider_service(
             monkeypatch,

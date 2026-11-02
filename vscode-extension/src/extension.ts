@@ -33,8 +33,10 @@ export interface Settings {
   readonly authCommand: string;
   /** The Model Provider Service the models belong to, or "" for the workspace's own models. */
   readonly provider: string;
-  /** Selects the workspace on a host that serves several; empty otherwise. */
-  readonly headers: Readonly<Record<string, string>>;
+  /** The workspace admin's headers for every gateway request. */
+  readonly headers?: Readonly<Record<string, string>>;
+  /** The id of the model the workspace admin wants new chats to start on. */
+  readonly defaultModel?: string;
 }
 
 /** Routes a request to a Model Provider Service; its models aren't served without it. */
@@ -46,6 +48,14 @@ const tokenLimits = (model: ModelSetting): Partial<ModelSetting> =>
       const value: unknown = model[key];
       return typeof value === "number" && Number.isInteger(value) && value > 0 ? [[key, value]] : [];
     }),
+  );
+
+const managedHeaders = (value: unknown): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(value && typeof value === "object" && !Array.isArray(value) ? value : {}).filter(
+      // The extension signs every request itself.
+      (entry): entry is [string, string] => typeof entry[1] === "string" && entry[0].trim() !== "" && entry[0].toLowerCase() !== "authorization",
+    ),
   );
 
 /** `ug configure` writes this file into the extension it packs, so each install carries its own setup. */
@@ -64,6 +74,8 @@ export const readConfig = (text: string | undefined): Settings => {
   }
   const get = (key: string) => config[key];
   const models = get("models");
+  const headers = managedHeaders(get("headers"));
+  const defaultModel = get("defaultModel");
   return {
     workspace: String(get("workspace") ?? "").replace(/\/+$/, ""),
     models: (Array.isArray(models) ? models : [])
@@ -80,18 +92,34 @@ export const readConfig = (text: string | undefined): Settings => {
       })),
     authCommand: String(get("authCommand") ?? ""),
     provider: typeof get("provider") === "string" ? String(get("provider")) : "",
-    headers: stringValues(get("headers")),
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    ...(typeof defaultModel === "string" && defaultModel ? { defaultModel } : {}),
   };
 };
 
-const stringValues = (value: unknown): Record<string, string> =>
-  value && typeof value === "object" && !Array.isArray(value)
-    ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
-    : {};
 
 /** The gateway attributes requests by this User-Agent. */
 export const userAgent = (copilotChatVersion: unknown): string =>
   `ucode/${version} githubcopilotchat${typeof copilotChatVersion === "string" ? `/${copilotChatVersion}` : ""}`;
+
+/** The User-Agent and the admin's headers, which win by name, as in `ug copilot`. */
+export const requestHeaders = (copilotChatVersion: unknown, managed: Readonly<Record<string, string>> = {}): Record<string, string> => {
+  const names = new Set(Object.keys(managed).map((name) => name.toLowerCase()));
+  return {
+    ...(names.has("user-agent") ? {} : { "User-Agent": userAgent(copilotChatVersion) }),
+    ...managed,
+  };
+};
+
+/** Points new chats at the admin's default model; the developer can still switch in a chat. */
+export const applyDefaultModel = async (
+  chat: Pick<vscode.WorkspaceConfiguration, "get" | "update">,
+  model: string | undefined,
+): Promise<void> => {
+  if (model && chat.get<string>("defaultModel") !== model) {
+    await chat.update("defaultModel", model, vscode.ConfigurationTarget.Global);
+  }
+};
 
 type Model = vscode.LanguageModelChatInformation & { readonly api: ModelSetting["api"] };
 
@@ -132,12 +160,12 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken,
   ): Promise<void> {
-    const { workspace, authCommand, provider, headers: selector } = this.settings();
+    const { workspace, authCommand, provider } = this.settings();
     this.tokens ??= new Tokens(authCommand, (expiresAt) => this.log(`Fetched a Databricks token (expires ${new Date(expiresAt).toISOString()})`));
     const turn = { model: model.id, messages, tools: options.tools ?? [], toolRequired: options.toolMode === vscode.LanguageModelChatToolMode.Required };
     const abort = new AbortController();
     const cancelled = token.onCancellationRequested(() => abort.abort());
-    const headers = { ...this.headers(), ...selector, ...(provider ? { [PROVIDER_HEADER]: provider } : {}) };
+    const headers = { ...this.headers(), ...(provider ? { [PROVIDER_HEADER]: provider } : {}) };
     const tokens = this.tokens;
     const stream = (path: string, body: object, extra: Record<string, string> = {}) =>
       streamEvents(workspace, path, body, tokens, { ...headers, ...extra }, abort.signal);
@@ -184,7 +212,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Unity Gateway", { log: true });
   // Read once: ug changes the file only by reinstalling the extension, which takes a restart to load.
   const settings = readConfig(readConfigFile(join(context.extensionPath, CONFIG_FILE)));
-  const headers = () => ({ "User-Agent": userAgent(vscode.extensions.getExtension("GitHub.copilot-chat")?.packageJSON?.version) });
+  const headers = () => requestHeaders(vscode.extensions.getExtension("GitHub.copilot-chat")?.packageJSON?.version, settings.headers);
   const provider = new DatabricksModels(() => settings, (line) => output.info(line), headers);
   context.subscriptions.push(output, vscode.lm.registerLanguageModelChatProvider("databricks-unity-gateway", provider));
+  applyDefaultModel(vscode.workspace.getConfiguration("chat"), settings.defaultModel).catch((error: unknown) =>
+    output.warn(`Could not set the workspace's default model: ${String(error)}`),
+  );
 }
