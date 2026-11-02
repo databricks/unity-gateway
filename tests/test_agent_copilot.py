@@ -980,7 +980,7 @@ class TestCopilotUserMcpConfig:
         assert not copilot.LEGACY_MCP_BACKUP_PATH.exists()
 
     def test_commented_config_without_the_copilot_cli_is_left_alone(self, monkeypatch):
-        # VS Code alone has no Copilot CLI to edit a file ug can't parse.
+        # Without the Copilot CLI, ug has nothing to edit a file it can't parse with.
         calls = self._stub_cli(monkeypatch)
         monkeypatch.setattr(copilot.shutil, "which", lambda binary: None)
         path = copilot.copilot_mcp_config_path()
@@ -993,15 +993,6 @@ class TestCopilotUserMcpConfig:
 
         assert calls == []
         assert path.read_text(encoding="utf-8") == jsonc
-
-    def test_user_mcp_server_names_reads_the_config_without_the_cli(self):
-        path = copilot.copilot_mcp_config_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"mcpServers": {"svc": self.ENTRY}}), encoding="utf-8")
-        assert copilot.user_mcp_server_names() == {"svc"}
-
-        path.write_text('{\n  // mine\n  "mcpServers": {"svc": {}}\n}\n', encoding="utf-8")
-        assert copilot.user_mcp_server_names() == set()
 
     def test_removing_the_last_server_deletes_a_config_with_nothing_else(self):
         path = copilot.copilot_mcp_config_path()

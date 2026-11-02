@@ -823,12 +823,6 @@ def _read_mcp_config_for_rewrite(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def user_mcp_server_names() -> set[str]:
-    """The servers in Copilot's user config, read without the Copilot CLI."""
-    servers = (_read_mcp_config_for_rewrite(copilot_mcp_config_path()) or {}).get("mcpServers")
-    return set(servers) if isinstance(servers, dict) else set()
-
-
 def remove_legacy_mcp_config() -> bool:
     """Delete the legacy side file and its backup (everything in them is ug's)."""
     existed = LEGACY_MCP_CONFIG_PATH.exists() or LEGACY_MCP_BACKUP_PATH.exists()
