@@ -49,7 +49,9 @@ class TestMinimumVersion:
         monkeypatch.setattr(codex, "agent_version", lambda _binary: version)
 
         assert codex.minimum_version_error() is None
-        assert (codex.minimum_version_error(smart_routing=True) is None) == smart_routing_allowed
+        assert (
+            codex.minimum_version_error(smart_routing_enabled=True) is None
+        ) == smart_routing_allowed
 
     def test_older_version_requires_update(self, monkeypatch):
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.144.0")
@@ -61,7 +63,7 @@ class TestMinimumVersion:
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "unknown")
 
         assert codex.minimum_version_error() is None
-        assert "found unknown" in codex.minimum_version_error(smart_routing=True)
+        assert "found unknown" in codex.minimum_version_error(smart_routing_enabled=True)
 
 
 class TestHasUcodeConfig:

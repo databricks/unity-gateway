@@ -169,10 +169,10 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
     return int(major), int(minor), int(patch)
 
 
-def minimum_version_error(*, smart_routing: bool = False) -> str | None:
+def minimum_version_error(*, smart_routing_enabled: bool = False) -> str | None:
     version = agent_version(SPEC["binary"])
     parsed = _parse_version(version)
-    if smart_routing:
+    if smart_routing_enabled:
         if parsed is not None and parsed >= MINIMUM_SMART_ROUTING_CODEX_VERSION:
             return None
         return (
@@ -1607,7 +1607,7 @@ def launch(
 def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
     binary = SPEC["binary"]
-    if error := minimum_version_error(smart_routing=True):
+    if error := minimum_version_error(smart_routing_enabled=True):
         raise RuntimeError(error)
 
     configured_model = _smart_routing_config_model(state)
