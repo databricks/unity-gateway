@@ -120,7 +120,8 @@ def test_cli_import_defers_subcommand_specific_modules() -> None:
 def test_agent_helper_entrypoint_skips_the_cli(tmp_path, command, expected) -> None:
     probe = (
         "import os, sys\n"
-        f"os.environ.update(HOME={str(tmp_path)!r}, DATABRICKS_BEARER='helper-bearer')\n"
+        f"os.environ.update(HOME={str(tmp_path)!r}, USERPROFILE={str(tmp_path)!r}, "
+        "DATABRICKS_BEARER='helper-bearer')\n"
         f"sys.argv = ['ug', {command!r}, '--host', 'https://ws.example']\n"
         "from ucode.entrypoint import main\n"
         "try:\n    main()\nexcept SystemExit as exc:\n    assert not exc.code, exc.code"
@@ -167,7 +168,8 @@ def test_router_hook_records_skip_the_cli(tmp_path, command, event, payload, art
     session.write_text("{}", encoding="utf-8")
     probe = (
         "import io, os, sys\n"
-        f"os.environ.update(HOME={str(tmp_path)!r}, ENABLE_SMART_ROUTING_SUBAGENT_ONLY='1', "
+        f"os.environ.update(HOME={str(tmp_path)!r}, USERPROFILE={str(tmp_path)!r}, "
+        "ENABLE_SMART_ROUTING_SUBAGENT_ONLY='1', "
         f"UCODE_SESSION_ENV_FILE={str(session)!r})\n"
         f"sys.argv, sys.stdin = ['ug', {command!r}, {event!r}], io.StringIO({json.dumps(payload)!r})\n"
         "from ucode.entrypoint import main\n"
