@@ -478,7 +478,7 @@ def test_fork_integration_runs_only_authorized_pr_heads():
     assert command in authorize and command in reject
     assert MEMBER_ONLY in authorize
     assert f"!({MEMBER_ONLY} ||" in reject
-    assert "prior contributors on their own PR can run integration tests" in reject
+    assert "Prior contributors can run integration tests on their own PR" in reject
     assert "set -euo pipefail" in authorize
     assert '[[ "$sha" =~ ^[0-9a-f]{40}$ ]]' in authorize
     assert "state=pending" in authorize

@@ -90,7 +90,7 @@ jobs:
           COMMENTER: ${{ github.event.comment.user.login }}
         run: |
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body \
-            "Sorry @$COMMENTER, only Databricks org members or prior contributors on their own PR can run integration tests. A maintainer can run \`/integration-test\` after reviewing the changes."
+            "Sorry @$COMMENTER, only Databricks org members can run integration tests on any PR. Prior contributors can run integration tests on their own PR. A maintainer can run \`/integration-test\` after reviewing the changes."
 
   integration:
     name: Integration
