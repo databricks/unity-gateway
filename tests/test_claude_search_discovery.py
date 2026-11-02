@@ -12,7 +12,7 @@ from ucode import cli
 from ucode import state as state_module
 from ucode.agents import claude
 from ucode.databricks import GatewayProbe
-from ucode.mcp_web_search import PROVIDER_ENV
+from ucode.mcp_web_search import MANAGED_ENTRY_FLAG, PROVIDER_ENV
 from ucode.os_compatibility import subprocess_cross_os
 
 WORKSPACE = "https://example.databricks.com"
@@ -132,3 +132,46 @@ def test_claude_only_setup_preserves_explicit_search_model(search_setup):
     servers = json.loads(search_setup.config_path.read_text())["mcpServers"]
     assert servers["web_search"]["env"]["UCODE_WEB_SEARCH_MODEL"] == "custom-search-model"
     assert servers["web-search"] == search_setup.isaac_entry
+
+
+@pytest.mark.parametrize("ownership", ["missing", "stale", "workspace_switch"])
+def test_configure_repairs_marked_search_ownership(search_setup, capsys, ownership):
+    """A managed search entry survives lost state or a workspace switch and refreshes cleanly."""
+    state = cli.configure_shared_state(WORKSPACE, profile="first-profile", tools=["claude"])
+    claude.write_tool_config(state, CLAUDE_MODEL)
+    installed = json.loads(search_setup.config_path.read_text())["mcpServers"]["web_search"]
+    assert installed["args"] == ["mcp", "web-search", MANAGED_ENTRY_FLAG]
+    state = state_module.load_state()
+    if ownership == "missing":
+        state.pop(claude.WEB_SEARCH_MCP_STATE_KEY)
+    elif ownership == "stale":
+        state[claude.WEB_SEARCH_MCP_STATE_KEY]["env"]["DATABRICKS_CONFIG_PROFILE"] = "old-profile"
+    state_module.save_state(state)
+    if ownership == "workspace_switch":
+        other = cli.configure_shared_state(
+            "https://other.databricks.com", profile="other-profile", tools=["claude"]
+        )
+        claude.write_tool_config(other, CLAUDE_MODEL)
+        state_module.set_current_workspace(WORKSPACE)
+    capsys.readouterr()
+
+    state = cli.configure_shared_state(WORKSPACE, profile="next-profile", tools=["claude"])
+    claude.write_tool_config(state, CLAUDE_MODEL)
+
+    servers = json.loads(search_setup.config_path.read_text())["mcpServers"]
+    assert servers == {
+        "web-search": search_setup.isaac_entry,
+        "web_search": {
+            **installed,
+            "env": {
+                "DATABRICKS_HOST": WORKSPACE,
+                "DATABRICKS_CONFIG_PROFILE": "next-profile",
+                "UCODE_WEB_SEARCH_MODEL": SEARCH_MODEL,
+            },
+        },
+    }
+    assert state_module.load_state()[claude.WEB_SEARCH_MCP_STATE_KEY] == servers["web_search"]
+    before = search_setup.config_path.read_bytes()
+    claude.write_tool_config(state_module.load_state(), CLAUDE_MODEL)
+    assert search_setup.config_path.read_bytes() == before
+    assert "Preserving web_search" not in capsys.readouterr().out

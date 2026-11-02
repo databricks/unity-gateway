@@ -300,7 +300,11 @@ does not yet have a live integration journey.
 Fresh Claude-only search discovery and registration are covered by component
 tests in `../test_claude_search_discovery.py`, including legacy catalog fallback,
 an explicit model override, and no available GPT model. Live search remains
-outside this integration suite.
+outside this integration suite. The component tests also verify marked search
+ownership repair after missing/stale records and workspace switches, including
+idempotent reconfiguration and preservation of an unrelated search registration.
+Custom/unmarked registration and unreadable-config preservation remain covered
+in `../test_claude_search_provider.py`.
 
 CLI token memoization and capability-gated `--no-browser` re-auth are covered by
 component tests in `../test_databricks.py` and `../test_mcp_web_search.py`, including
