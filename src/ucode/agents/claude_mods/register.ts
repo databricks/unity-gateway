@@ -16,6 +16,8 @@ import { isRoutingEnabled } from './routing-state.ts';
 type Environment = Record<string, string | undefined>;
 
 // Kept when a host description has no Usage notes section, so continuation stays native.
+// Copied from Claude Code 2.1.314's Agent Usage notes; its compact layout (no such section)
+// words this differently. Update with tests/integration/test_ug_smart_routing_hooks.py.
 const CONTINUATION_NOTE = "- To continue a previously spawned agent, use SendMessage with the agent's ID or name as the `to` field — that resumes it with full context. A new Agent call starts a fresh agent with no memory of prior runs, so the prompt must be self-contained.";
 
 async function readEnvironment($: EngineInterface): Promise<Environment> {
