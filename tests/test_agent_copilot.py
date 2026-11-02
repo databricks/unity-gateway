@@ -226,7 +226,7 @@ class TestCopilotCatalog:
 
         restored = copilot.copilot_catalog({"copilot_catalog": saved})
 
-        assert [m.listed_limits for m in restored] == [None]
+        assert [copilot.catalog_model_limits(m) for m in restored] == [None]
 
     def test_an_empty_saved_catalog_does_not_revive_older_lists(self):
         state = {"copilot_catalog": copilot.catalog_state([]), "codex_models": [GPT]}
@@ -656,9 +656,9 @@ class TestCopilotModelLimits:
             ("system.ai.claude-opus-4-8", (1_000_000, 128_000)),
             ("system.ai.claude-opus-6", (1_000_000, 128_000)),
             ("system.ai.claude-sonnet-4-6", (1_000_000, 128_000)),
-            ("system.ai.claude-haiku-4-5", (200_000, 64_000)),
-            ("system.ai.claude-sonnet-4-5", (200_000, 64_000)),
-            ("system.ai.claude-opus-4-5", (200_000, 64_000)),
+            ("system.ai.claude-haiku-4-5", (200_000, 32_000)),
+            ("system.ai.claude-sonnet-4-5", (200_000, 32_000)),
+            ("system.ai.claude-opus-4-5", (200_000, 32_000)),
             ("system.ai.claude-opus-4-1", (200_000, 32_000)),
             ("system.ai.claude-opus-4-0", (200_000, 32_000)),
         ],
@@ -679,10 +679,10 @@ class TestCopilotModelLimits:
 
         assert copilot.catalog_model_limits(model) == (136_000, 64_000)
 
-    def test_gpt_uses_the_listed_prompt_limit_and_keeps_copilots_output(self):
+    def test_gpt_prompt_leaves_room_for_the_output(self):
         model = copilot.CopilotModel(GPT, "responses", (922_000, 128_000))
 
-        assert copilot.catalog_model_limits(model) == (922_000, None)
+        assert copilot.catalog_model_limits(model) == (794_000, 128_000)
 
     def test_gpt_without_listed_limits_keeps_copilots_defaults(self):
         assert copilot.catalog_model_limits(copilot.CopilotModel(GPT, "responses")) is None
@@ -786,13 +786,13 @@ class TestRenderProvidersConfig:
             }
         ]
 
-    def test_gpt_gets_only_its_listed_prompt_limit(self):
+    def test_gpt_gets_its_listed_limits(self):
         model = copilot.CopilotModel(GPT, "responses", (922_000, 128_000))
 
         config = copilot.render_providers_config([model], PROXY, "secret")
 
-        assert config["models"][0]["maxPromptTokens"] == 922_000
-        assert "maxOutputTokens" not in config["models"][0]
+        assert config["models"][0]["maxPromptTokens"] == 794_000
+        assert config["models"][0]["maxOutputTokens"] == 128_000
 
 
 class TestBuildRuntimeEnv:

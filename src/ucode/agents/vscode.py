@@ -179,9 +179,7 @@ def _model_entry(model: CopilotModel, name: str) -> dict[str, object]:
     }
     # Models without known limits get the extension's 128K-in, 32K-out default.
     if limits := catalog_model_limits(model):
-        entry["maxInputTokens"], max_output = limits
-        if max_output is not None:
-            entry["maxOutputTokens"] = max_output
+        entry["maxInputTokens"], entry["maxOutputTokens"] = limits
     return entry
 
 

@@ -160,8 +160,7 @@ _CLAUDE_CATALOG_VERSION_PATTERN = re.compile(r"^claude-([a-z]+)-(\d+)(?:\.(\d+))
 
 # (max_input_tokens, max_tokens) of Claude models the gateway lists no limits for.
 _CLAUDE_1M_TOKENS = (1_000_000, 128_000)
-_CLAUDE_200K_TOKENS = (200_000, 64_000)
-_CLAUDE_OPUS_4_TOKENS = (200_000, 32_000)
+_CLAUDE_200K_TOKENS = (200_000, 32_000)
 
 # A Model Provider Service target that declares its APIs is usable only if one is a chat API.
 _CHAT_API_TYPES = frozenset(route for routes in _WIRE_ROUTES.values() for route in routes)
@@ -272,28 +271,18 @@ def claude_token_limits(model: str) -> tuple[int, int] | None:
     family, major, minor = version.group(1), int(version.group(2)), int(version.group(3) or 0)
     if major >= 5 or (family in ("opus", "sonnet") and (major, minor) >= (4, 6)):
         return _CLAUDE_1M_TOKENS
-    if family == "opus" and (major, minor) <= (4, 1):
-        return _CLAUDE_OPUS_4_TOKENS
     return _CLAUDE_200K_TOKENS
 
 
-def catalog_model_limits(model: CopilotModel) -> tuple[int, int | None] | None:
+def catalog_model_limits(model: CopilotModel) -> tuple[int, int] | None:
     """Copilot's ``(maxPromptTokens, maxOutputTokens)`` for ``model``, or None to keep its defaults.
 
-    The limits are the ones the gateway listed for the model, else Claude's by name. Claude's
-    window holds both the prompt and the output; other models' limit is on the prompt alone, and
-    their output keeps Copilot's default."""
-    limits = model.listed_limits
-    if limits is None and model.wire == WIRE_ANTHROPIC:
-        limits = claude_token_limits(model.id)
-    if limits is None:
+    The limits are the ones the gateway listed for the model, else Claude's by name; the prompt
+    leaves room for the output."""
+    limits = model.listed_limits or claude_token_limits(model.id)
+    if limits is None or limits[0] <= limits[1]:
         return None
-    max_input, max_output = limits
-    if model.wire != WIRE_ANTHROPIC:
-        return max_input, None
-    if max_input <= max_output:
-        return None
-    return max_input - max_output, max_output
+    return limits[0] - limits[1], limits[1]
 
 
 @dataclass(frozen=True)
@@ -497,10 +486,7 @@ def _saved_limits(value: object) -> dict[str, tuple[int, int]]:
     return {
         model: (limit[0], limit[1])
         for model, limit in value.items()
-        if isinstance(model, str)
-        and isinstance(limit, list)
-        and len(limit) == 2
-        and all(isinstance(n, int) and not isinstance(n, bool) and n > 0 for n in limit)
+        if isinstance(limit, list) and len(limit) == 2 and all(isinstance(n, int) for n in limit)
     }
 
 
@@ -714,9 +700,7 @@ def render_providers_config(
         if catalog_id is not None:
             entry["modelId"] = catalog_id
         if limits := catalog_model_limits(model):
-            entry["maxPromptTokens"], max_output = limits
-            if max_output is not None:
-                entry["maxOutputTokens"] = max_output
+            entry["maxPromptTokens"], entry["maxOutputTokens"] = limits
         models.append(entry)
     return {"providers": providers, "models": models}
 
