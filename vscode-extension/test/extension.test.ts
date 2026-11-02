@@ -4,7 +4,7 @@ import { afterEach, describe, it } from "node:test";
 import type * as vscode from "vscode";
 import packageJson from "../package.json";
 import { Tokens } from "../src/auth";
-import { applyDefaultModel, DatabricksModels, PROVIDER_HEADER, readConfig, requestHeaders, userAgent, type Settings } from "../src/extension";
+import { DatabricksModels, PROVIDER_HEADER, readConfig, requestHeaders, userAgent, type Settings } from "../src/extension";
 import { streamEvents } from "../src/gateway";
 import { collect, message, rejectsWith, text, tokenCommand, USER } from "./support";
 import { LanguageModelChatToolMode, LanguageModelTextPart } from "./vscode";
@@ -129,33 +129,6 @@ describe("requestHeaders", () => {
   });
 });
 
-describe("applyDefaultModel", () => {
-  const chat = (current: string | undefined) => {
-    const updates: unknown[][] = [];
-    return {
-      updates,
-      get: <T>() => current as T,
-      update: async (...args: unknown[]) => {
-        updates.push(args);
-      },
-    };
-  };
-
-  it("sets the user's default model when the workspace names another", async () => {
-    const settings = chat("gpt-4.1");
-    await applyDefaultModel(settings as never, "system.ai.claude-sonnet-5-5");
-    assert.deepEqual(settings.updates, [["defaultModel", "system.ai.claude-sonnet-5-5", 1]]);
-  });
-
-  it("leaves the setting alone without a workspace default or when it already matches", async () => {
-    for (const [current, model] of [["gpt-4.1", undefined], ["system.ai.claude-sonnet-5-5", "system.ai.claude-sonnet-5-5"]]) {
-      const settings = chat(current);
-      await applyDefaultModel(settings as never, model);
-      assert.deepEqual(settings.updates, []);
-    }
-  });
-});
-
 describe("readConfig", () => {
   it("keeps well-formed models, names, families and token limits, the provider, and trims the workspace URL", () => {
     const config = {
@@ -187,13 +160,12 @@ describe("readConfig", () => {
     });
   });
 
-  it("keeps the admin's string headers except Authorization, and the default model", () => {
+  it("keeps the string headers except Authorization", () => {
     const config = {
       workspace: "https://ws",
       authCommand: "ug auth-token",
       models: [],
       headers: { "X-Team": "ml", authorization: "Bearer x", "X-Count": 3, " ": "blank" },
-      defaultModel: "system.ai.claude-sonnet-5-5",
     };
     assert.deepEqual(readConfig(JSON.stringify(config)), {
       workspace: "https://ws",
@@ -201,9 +173,8 @@ describe("readConfig", () => {
       provider: "",
       models: [],
       headers: { "X-Team": "ml" },
-      defaultModel: "system.ai.claude-sonnet-5-5",
     });
-    assert.equal(readConfig(JSON.stringify({ ...config, headers: ["X-Team"], defaultModel: 7 })).headers, undefined);
+    assert.equal(readConfig(JSON.stringify({ ...config, headers: ["X-Team"] })).headers, undefined);
   });
 
   it("gives no models for a missing or malformed file", () => {

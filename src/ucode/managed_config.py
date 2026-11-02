@@ -960,7 +960,8 @@ def refresh_managed_config(
             )
             fallback_message = "Continuing with the installed policy."
         else:
-            # Nothing usable is installed for this run: the fetched policy governs it.
+            # Nothing is installed, or this configure applies what it just read: the fetched policy
+            # governs this run.
             result = ManagedConfigResult(
                 normalize_managed_config(raw) if raw is not None else None,
                 reason is not None and _is_feature_disabled(reason),

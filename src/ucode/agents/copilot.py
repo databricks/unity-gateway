@@ -83,6 +83,7 @@ from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_warning
+from ucode.workspace import SELECTOR_HEADER_NAMES
 
 from .args import LaunchOptions, explicit_model_arg_value
 from .request_tags import request_tags_header_value
@@ -951,8 +952,21 @@ def _token_provider(state: dict) -> Callable[[bool], str]:
     return lambda force_refresh: launch_token(state, workspace, force_refresh=force_refresh)
 
 
+# Headers ug sets on Copilot's gateway requests itself, which an admin header must not replace:
+# the credential, the body type, the Model Provider Service and the workspace selection.
+_RESERVED_HEADERS = frozenset(
+    name.casefold()
+    for name in (
+        "Authorization",
+        "Content-Type",
+        MODEL_PROVIDER_SERVICE_HEADER,
+        *SELECTOR_HEADER_NAMES,
+    )
+)
+
+
 def managed_http_headers(state: dict) -> dict[str, str]:
-    """The admin's headers for Copilot's gateway requests, never ``Authorization``."""
+    """The admin's headers for Copilot's gateway requests, without the ones ug sets itself."""
     managed = state.get("copilot_http_headers")
     return {
         name.strip(): value
@@ -960,7 +974,7 @@ def managed_http_headers(state: dict) -> dict[str, str]:
         if isinstance(name, str)
         and isinstance(value, str)
         and name.strip()
-        and name.strip().casefold() != "authorization"
+        and name.strip().casefold() not in _RESERVED_HEADERS
     }
 
 

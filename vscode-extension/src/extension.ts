@@ -33,10 +33,8 @@ export interface Settings {
   readonly authCommand: string;
   /** The Model Provider Service the models belong to, or "" for the workspace's own models. */
   readonly provider: string;
-  /** The workspace admin's headers for every gateway request. */
+  /** Headers for every gateway request: the workspace admin's, and the selected workspace on a host that serves several. */
   readonly headers?: Readonly<Record<string, string>>;
-  /** The id of the model the workspace admin wants new chats to start on. */
-  readonly defaultModel?: string;
 }
 
 /** Routes a request to a Model Provider Service; its models aren't served without it. */
@@ -75,7 +73,6 @@ export const readConfig = (text: string | undefined): Settings => {
   const get = (key: string) => config[key];
   const models = get("models");
   const headers = managedHeaders(get("headers"));
-  const defaultModel = get("defaultModel");
   return {
     workspace: String(get("workspace") ?? "").replace(/\/+$/, ""),
     models: (Array.isArray(models) ? models : [])
@@ -93,7 +90,6 @@ export const readConfig = (text: string | undefined): Settings => {
     authCommand: String(get("authCommand") ?? ""),
     provider: typeof get("provider") === "string" ? String(get("provider")) : "",
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
-    ...(typeof defaultModel === "string" && defaultModel ? { defaultModel } : {}),
   };
 };
 
@@ -109,16 +105,6 @@ export const requestHeaders = (copilotChatVersion: unknown, managed: Readonly<Re
     ...(names.has("user-agent") ? {} : { "User-Agent": userAgent(copilotChatVersion) }),
     ...managed,
   };
-};
-
-/** Points new chats at the admin's default model; the developer can still switch in a chat. */
-export const applyDefaultModel = async (
-  chat: Pick<vscode.WorkspaceConfiguration, "get" | "update">,
-  model: string | undefined,
-): Promise<void> => {
-  if (model && chat.get<string>("defaultModel") !== model) {
-    await chat.update("defaultModel", model, vscode.ConfigurationTarget.Global);
-  }
 };
 
 type Model = vscode.LanguageModelChatInformation & { readonly api: ModelSetting["api"] };
@@ -215,7 +201,4 @@ export function activate(context: vscode.ExtensionContext): void {
   const headers = () => requestHeaders(vscode.extensions.getExtension("GitHub.copilot-chat")?.packageJSON?.version, settings.headers);
   const provider = new DatabricksModels(() => settings, (line) => output.info(line), headers);
   context.subscriptions.push(output, vscode.lm.registerLanguageModelChatProvider("databricks-unity-gateway", provider));
-  applyDefaultModel(vscode.workspace.getConfiguration("chat"), settings.defaultModel).catch((error: unknown) =>
-    output.warn(`Could not set the workspace's default model: ${String(error)}`),
-  );
 }

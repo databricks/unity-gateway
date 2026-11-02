@@ -345,7 +345,6 @@ class TestCopilotModels:
         assert code.config["models"][1]["maxInputTokens"] == 794_000
         assert code.config["models"][1]["maxOutputTokens"] == 128_000
         assert "headers" not in code.config
-        assert "defaultModel" not in code.config
 
     def test_uses_only_the_managed_list_and_says_what_it_skips(self, code, capsys):
         state = self._state(copilot_static_models=[self.GPT, "system.ai.gemini-4-argon"])
@@ -357,22 +356,22 @@ class TestCopilotModels:
             _printed(capsys)
         )
 
-    def test_writes_the_managed_headers_without_authorization_and_the_default_model(self, code):
+    def test_writes_the_managed_headers_without_the_ones_ug_sets(self, code):
         state = self._state(
-            copilot_http_headers={" X-Team ": "ml", "Authorization": "Bearer x", "X-Bad": 3},
+            copilot_http_headers={
+                " X-Team ": "ml",
+                "Authorization": "Bearer x",
+                "content-type": "text/plain",
+                "databricks-model-provider-service": "main.default.other",
+                "X-Bad": 3,
+            },
             copilot_default_model="claude-sonnet-5-5",
         )
 
         assert vscode.configure(state)
 
         assert code.config["headers"] == {"X-Team": "ml"}
-        assert code.config["defaultModel"] == self.SONNET
-
-    def test_a_default_model_vscode_doesnt_have_is_left_out_with_a_warning(self, code, capsys):
-        assert vscode.configure(self._state(copilot_default_model="system.ai.missing"))
-
         assert "defaultModel" not in code.config
-        assert "default model system.ai.missing isn't among VS Code's models" in _printed(capsys)
 
 
 class TestRevert:

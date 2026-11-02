@@ -26,7 +26,6 @@ export class LanguageModelPromptTsxPart {
 }
 export const LanguageModelChatMessageRole = { User: 1, Assistant: 2 } as const;
 export const LanguageModelChatToolMode = { Auto: 1, Required: 2 } as const;
-export const ConfigurationTarget = { Global: 1, Workspace: 2, WorkspaceFolder: 3 } as const;
 export class EventEmitter<T> {
   private listeners: ((value: T) => void)[] = [];
   event = (listener: (value: T) => void) => {
