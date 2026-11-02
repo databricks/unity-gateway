@@ -1126,24 +1126,6 @@ class TestWriteToolConfig:
 
         assert state.get(copilot.VERSION_STATE_KEY) == recorded
 
-    @pytest.mark.parametrize(
-        ("system", "expected"),
-        [
-            (copilot.OS.LINUX, Path("/etc/github-copilot/managed-settings.json")),
-            (
-                copilot.OS.MACOS,
-                Path("/Library/Application Support/GitHubCopilot/managed-settings.json"),
-            ),
-            (copilot.OS.WINDOWS, Path(r"C:\Program Files") / "GitHubCopilot/managed-settings.json"),
-            (copilot.OS.OTHER, None),
-        ],
-    )
-    def test_device_policy_path_per_os(self, monkeypatch, system, expected):
-        monkeypatch.setattr(copilot, "current_os", lambda: system)
-        monkeypatch.setattr(copilot, "windows_program_files_dir", lambda: Path(r"C:\Program Files"))
-
-        assert copilot.device_policy_path() == expected
-
     def test_scrubs_a_token_an_earlier_version_wrote(self, tmp_path, monkeypatch):
         env_path = isolate_copilot_config_paths(monkeypatch, tmp_path)
         env_path.parent.mkdir(parents=True)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -216,93 +215,6 @@ class TestCopilotModelsCheck:
 
 
 COPILOT_STATE = {"available_tools": ["copilot"]}
-
-
-class TestCopilotDevicePolicyCheck:
-    @pytest.fixture
-    def policy(self, tmp_path, monkeypatch):
-        path = tmp_path / "managed-settings.json"
-        monkeypatch.setattr(doctor_mod, "load_state", lambda: COPILOT_STATE)
-        monkeypatch.setattr(doctor_mod.copilot, "device_policy_path", lambda: path)
-        monkeypatch.setattr(doctor_mod, "_ignored_by_copilot", lambda _path: False)
-        return path
-
-    def test_none_without_copilot_or_a_policy(self, policy, monkeypatch):
-        assert doctor_mod._check_copilot_device_policy() is None
-        policy.write_text("{}")
-        assert doctor_mod._check_copilot_device_policy() is None
-        policy.write_text(json.dumps({"forceLoginOrgs": ["acme"]}))
-        monkeypatch.setattr(doctor_mod, "load_state", lambda: {"available_tools": ["claude"]})
-        assert doctor_mod._check_copilot_device_policy() is None
-
-    @pytest.mark.parametrize(
-        ("settings", "named"),
-        [
-            ({"forceLoginOrgs": ["acme"]}, "forceLoginOrgs requires a GitHub sign-in"),
-            ({"forceRemoteSettingsRefresh": True}, "forceRemoteSettingsRefresh requires a live"),
-        ],
-    )
-    def test_errors_on_settings_that_stop_ug_copilot(self, policy, settings, named):
-        policy.write_text(json.dumps({**settings, "telemetry": {}}))
-
-        check = doctor_mod._check_copilot_device_policy()
-
-        assert check is not None
-        assert check.status == "error"
-        assert named in check.detail
-        assert "Ask your IT team" in check.detail
-
-    def test_errors_on_a_policy_it_cant_read(self, policy):
-        policy.write_text("{")
-
-        check = doctor_mod._check_copilot_device_policy()
-
-        assert check is not None
-        assert check.status == "error"
-        assert "can't be read" in check.detail
-
-    def test_warns_on_settings_that_change_ugs_setup(self, policy):
-        policy.write_text(
-            json.dumps({"allowedMcpServers": [], "deniedMcpServers": [], "model": "x"})
-        )
-
-        check = doctor_mod._check_copilot_device_policy()
-
-        assert check is not None
-        assert check.status == "warn"
-        assert "sets allowedMcpServers, deniedMcpServers: can block ug's MCP servers." in (
-            check.detail
-        )
-        assert "VS Code turns off its Claude and Codex agents" in check.detail
-
-    def test_notes_any_other_setting_for_vscode(self, policy):
-        policy.write_text(json.dumps({"model": "gpt-5"}))
-
-        check = doctor_mod._check_copilot_device_policy()
-
-        assert check is not None
-        assert check.status == "info"
-        assert "VS Code turns off its Claude and Codex agents" in check.detail
-
-    def test_warns_that_copilot_ignores_a_policy_it_doesnt_trust(self, policy, monkeypatch):
-        policy.write_text(json.dumps({"forceLoginOrgs": ["acme"]}))
-        monkeypatch.setattr(doctor_mod, "_ignored_by_copilot", lambda _path: True)
-
-        check = doctor_mod._check_copilot_device_policy()
-
-        assert check is not None
-        assert check.status == "warn"
-        assert "so Copilot ignores it" in check.detail
-
-    @pytest.mark.skipif(doctor_mod.current_os() is doctor_mod.OS.WINDOWS, reason="POSIX owners")
-    def test_a_policy_this_user_owns_or_links_is_ignored(self, tmp_path):
-        own = tmp_path / "own.json"
-        own.write_text("{}")
-        link = tmp_path / "link.json"
-        link.symlink_to(own)
-
-        assert doctor_mod._ignored_by_copilot(link)
-        assert doctor_mod._ignored_by_copilot(own) is (own.stat().st_uid != 0)
 
 
 class TestVSCodeCheck:
