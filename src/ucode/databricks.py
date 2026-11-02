@@ -2577,8 +2577,9 @@ def _managed_config_user_agent() -> str:
 
     The fetch serves every agent, so it reports what ug configured on this machine; reading the
     managed files avoids probing each agent's ``--version`` on every fetch."""
-    from ucode.agents import claude, codex  # the agent modules import this one
+    from ucode.agents import claude, codex, copilot  # the agent modules import this one
     from ucode.managed_files import ug_agent_token
+    from ucode.state import load_state
 
     tokens: list[str] = []
     for agent, user_agent in (
@@ -2588,6 +2589,11 @@ def _managed_config_user_agent() -> str:
         token = ug_agent_token(user_agent or "", agent)
         if token:
             tokens.append(token)
+    # Copilot has no managed file, so its version is the one configure recorded.
+    state = load_state()
+    copilot_version = state.get(copilot.VERSION_STATE_KEY)
+    if "copilot" in (state.get("available_tools") or []) and isinstance(copilot_version, str):
+        tokens.append(f"copilot/{copilot_version}")
     return ucode_user_agent(ug_version(), *tokens)
 
 

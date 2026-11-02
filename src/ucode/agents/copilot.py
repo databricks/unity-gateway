@@ -74,11 +74,13 @@ from ucode.databricks import (
     model_version_sort_key,
     resolve_provider_service,
 )
+from ucode.managed_files import OS, current_os
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
     release_file_lock,
 )
+from ucode.os_compatibility.system_cross_os import windows_program_files_dir
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
@@ -122,6 +124,8 @@ LEGACY_ENV_KEYS = [
 # Earlier versions wrote the Databricks token (or PAT) under these keys.
 CREDENTIAL_ENV_KEYS = ("COPILOT_PROVIDER_BEARER_TOKEN", "OAUTH_TOKEN")
 CATALOG_STATE_KEY = "copilot_catalog"
+# The Copilot CLI version configure found, for the managed-config read's User-Agent.
+VERSION_STATE_KEY = "copilot_cli_version"
 # The Model Provider Service this launch routes through; set by the launch command, never saved.
 LAUNCH_PROVIDER_SERVICE_KEY = "_copilot_launch_provider_service"
 # The Unity Catalog schema whose model services this launch uses; never saved.
@@ -937,8 +941,23 @@ def write_tool_config(state: dict, model: str | None) -> dict:
     existing["COPILOT_OFFLINE"] = "true"
     write_dotenv(COPILOT_ENV_PATH, existing)
     state = mark_tool_managed(state, "copilot", MANAGED_KEYS)
+    version = agent_version(SPEC["binary"])
+    if version != "unknown":
+        state[VERSION_STATE_KEY] = version
     save_state(state)
     return state
+
+
+def device_policy_path() -> Path | None:
+    """Where the Copilot CLI reads the device's managed settings on this OS, which IT owns."""
+    system = current_os()
+    if system is OS.LINUX:
+        return Path("/etc/github-copilot/managed-settings.json")
+    if system is OS.MACOS:
+        return Path("/Library/Application Support/GitHubCopilot/managed-settings.json")
+    if system is OS.WINDOWS:
+        return windows_program_files_dir() / "GitHubCopilot" / "managed-settings.json"
+    return None
 
 
 def _token_provider(state: dict) -> Callable[[bool], str]:
