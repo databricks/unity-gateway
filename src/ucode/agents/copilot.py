@@ -160,8 +160,7 @@ _CLAUDE_CATALOG_VERSION_PATTERN = re.compile(r"^claude-([a-z]+)-(\d+)(?:\.(\d+))
 
 # (max_input_tokens, max_tokens) of Claude models the gateway lists no limits for.
 _CLAUDE_1M_TOKENS = (1_000_000, 128_000)
-_CLAUDE_200K_TOKENS = (200_000, 64_000)
-_CLAUDE_OPUS_4_TOKENS = (200_000, 32_000)
+_CLAUDE_200K_TOKENS = (200_000, 32_000)
 
 # A Model Provider Service target that declares its APIs is usable only if one is a chat API.
 _CHAT_API_TYPES = frozenset(route for routes in _WIRE_ROUTES.values() for route in routes)
@@ -272,8 +271,6 @@ def claude_token_limits(model: str) -> tuple[int, int] | None:
     family, major, minor = version.group(1), int(version.group(2)), int(version.group(3) or 0)
     if major >= 5 or (family in ("opus", "sonnet") and (major, minor) >= (4, 6)):
         return _CLAUDE_1M_TOKENS
-    if family == "opus" and (major, minor) <= (4, 1):
-        return _CLAUDE_OPUS_4_TOKENS
     return _CLAUDE_200K_TOKENS
 
 
@@ -455,37 +452,23 @@ def catalog_from_listings(
 ) -> list[CopilotModel] | None:
     """The Copilot catalog from this run's model listings.
 
-    ``entries`` is the UC model-services listing (None when it failed); ``fallback`` holds the ids
-    the per-family gateway listings found instead. ``gateway`` is AI Gateway's Anthropic-route
-    listing, which also reports the models' limits: its model services replace the other listings'
-    models of each family (Claude, or GPT) it lists. Until the gateway serves that listing from
-    model services, the route lists endpoints, which are left to the other listings. None when none
-    answered, so the caller keeps the saved catalog; an empty catalog when they answered with
-    nothing Copilot can use."""
+    ``gateway`` is AI Gateway's Anthropic-route listing, which also reports the models' limits; it
+    wins whenever it lists a model Copilot can use. Otherwise ``entries`` is the UC model-services
+    listing (None when it failed) and ``fallback`` holds the ids the per-family gateway listings
+    found instead. None when none answered, so the caller keeps the saved catalog; an empty catalog
+    when they answered with nothing Copilot can use."""
+    if gateway is not None and (gateway_models := gateway_catalog(gateway)):
+        return gateway_models
     listed = list(entries or ())
     fallback_catalog = build_copilot_catalog(list(fallback))
-    if listed:
-        # A family the UC listing lacks keeps the models its gateway listing found.
-        catalog = _with_missing_families(build_copilot_catalog(listed), fallback_catalog)
-    else:
-        catalog = fallback_catalog
-    if gateway is not None:
-        services = [model for model in gateway_catalog(gateway) if _is_model_service(model.id)]
-        if services:
-            return _with_missing_families(services, catalog)
-    return catalog if listed or catalog else None
-
-
-def _is_model_service(model: str) -> bool:
-    """Model services are named ``<catalog>.<schema>.<name>``; serving endpoints have no dots."""
-    return model.count(".") >= 2
-
-
-def _with_missing_families(
-    catalog: list[CopilotModel], others: list[CopilotModel]
-) -> list[CopilotModel]:
+    if not listed:
+        return fallback_catalog or None
+    catalog = build_copilot_catalog(listed)
+    # A family the UC listing lacks keeps the models its gateway listing found.
     families = {model.wire == WIRE_ANTHROPIC for model in catalog}
-    missing = [model for model in others if (model.wire == WIRE_ANTHROPIC) not in families]
+    missing = [
+        model for model in fallback_catalog if (model.wire == WIRE_ANTHROPIC) not in families
+    ]
     return sorted([*catalog, *missing], key=_catalog_sort_key)
 
 
