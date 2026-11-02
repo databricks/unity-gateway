@@ -33,6 +33,7 @@ from ucode.state import (
     set_provider_service,
 )
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.workspace import workspace_headers
 
 from .args import LaunchOptions
 
@@ -147,6 +148,8 @@ def render_env_overlay(
         # A Model Provider Service routes by this header; the request still names
         # the service's target model in `GEMINI_MODEL` (pinned by the launch path).
         custom_headers += f",Databricks-Model-Provider-Service:{provider}"
+    for name, value in workspace_headers(workspace).items():
+        custom_headers += f",{name}:{value}"
     # TODO: attach AI_GATEWAY_REQUEST_TAGS here like the other agents do. Not yet
     # supported for Gemini: GEMINI_CLI_CUSTOM_HEADERS is the only header hook the
     # supported CLI (< 0.45) exposes, and its parser splits on `,(?=\s*[^,:]+:)`

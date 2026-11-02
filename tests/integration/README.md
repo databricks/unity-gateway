@@ -6,6 +6,13 @@ still routing waiting for a later reply, distinct
 IDs for identical tasks, pending row and turn-spinner routing timers, and disabled/failed routing. These are not live
 parallel-agent TUI or gateway checks.
 
+Native hint-row component tests also cover ` · N subagents running` from Claude's agent
+list, excluding inactive statuses, singular wording, preservation of other hint text,
+background work after the parent turn ends, routing toggles, and hiding the count at zero.
+The one-second refresh updates a mounted row without another prompt and avoids redraws
+when the count is unchanged.
+The running count has no live TUI coverage.
+
 `../test_claude_launch_settings.py` covers oversized Windows Claude launch
 settings with controlled process boundaries: UTF-16 command length, merged
 settings, literal prompts, temporary-file lifetime and cleanup, launch failures,
@@ -41,15 +48,41 @@ Claude answer delivery has offline transcript and subprocess coverage in
 streaming JSON when UG redirects diagnostics to stderr. Live model/gateway selection
 and capability-hook activation are not covered here; interactive selection is unsupported.
 
-Claude Desktop has installed-CLI profile lifecycle and subscription-relay coverage in the
-existing Linux and Windows lanes. It configures twice and reverts against each platform's
-isolated native profile path, checking the fixed profile, gateway/helper/model fields,
-metadata, prior selection, and an unrelated profile. A separate real-provider journey checks
-the relay helper arguments and runs the installed helper with real Claude and Databricks
-credentials, requiring separate bearer and gateway-header output. It does not launch Desktop. The
-[native testing plan](../../docs/claude-desktop-integration-testing.md) covers the remaining
-macOS/Windows GUI, Cowork, model-switching, and browser-authentication work; those GUI and
-virtualization prerequisites are not satisfied by the headless suite.
+Claude Desktop has installed-CLI lifecycle and subscription-relay coverage on Linux and
+Windows. The lifecycle journey configures twice and reverts against an isolated native profile
+path, preserves an unrelated profile and metadata, then runs the exact generated credential
+helper and validates its token against the paginated live models API. It requires system.ai
+Claude models without an MPS override and uses the profile's credentials and headers for a small
+Messages request on `system.ai.claude-haiku-4-5`, requiring HTTP 200, a nonempty response model ID,
+and nonempty assistant text without matching its wording. The service may return a provider model
+ID rather than its alias; this does not pin or prove its backing model revision. The relay journey selects
+the real subscription provider through configure and completes
+Messages inference using the subscription token and separate Databricks header returned by its
+helper. Non-relay MPS Desktop configuration is asserted in CUJ2's existing MPS configuration
+journey; no dedicated Desktop MPS integration test is needed.
+
+Each of these two journeys supplies pre-existing Desktop account directories as inputs and
+requires real Claude CLI installation of the Cowork plugin. It registers system.ai.web_search through
+`ug mcp add --names system.ai.web_search`, then runs the command from the installed plugin with the
+MCP SDK. The check initializes the protocol, discovers web_search, and searches for Databricks'
+official website. A successful result must contain a URL on databricks.com or www.databricks.com;
+the response wording and search rankings are not asserted. No SQL compute is needed.
+Both journeys verify reconfiguration preserves the profile/plugin and revert removes UG's entries
+while retaining unrelated profiles and metadata. A separate local personal plugin is installed
+through the real Claude CLI before configuration; its registry entry and installed manifest must
+survive installation, reconfiguration, and revert unchanged. Revert also removes UG's marketplace
+registration and generated source directory.
+
+The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
+the same workspace as their model calls. The workspace must expose system.ai.web_search and allow
+the test identity to invoke it. No dedicated Desktop MCP test, separate fixture-workspace step,
+or extra credentials are required.
+
+These tests do not launch Desktop or establish GUI, skill execution, browser consent,
+token renewal, or injected authentication-failure/reconnect recovery. CI supplies the supported
+bearer override. See the [native testing plan](../../docs/claude-desktop-integration-testing.md)
+for those remaining checks. The standalone test runtime pins the MCP SDK used for protocol calls;
+it stays separate from the installed UG runtime and its dependencies.
 
 Codex desktop has managed-fixture coverage in `test_ug_configure_codex_desktop.py`. It
 configures twice beside user-owned `~/.codex/config.toml` settings and checks the stable catalog
@@ -65,7 +98,11 @@ Its Claude/Codex evidence helpers keep scenario-specific assertions separate fro
 Workspace config/catalog reads use its base class's Databricks SDK client. Configuration
 is read-only and checked for changes at teardown; concurrent readers need no reservation.
 CUJ2 adds three separately collected cases for exact published MPS/MCP configuration, Codex
-inference, and Claude inference. The config equality also accounts for the workspace's fixture
+inference, and Claude inference. Both inference cases ask for a short greeting and require a
+completed parent turn matching the submitted prompt with a nonempty answer, plus the expected
+provider/model and paired HTTP 200. Random IDs correlate requests; answers need not repeat them.
+File, skill, MCP and subagent tasks retain their expected-value checks.
+The config equality also accounts for the workspace's fixture
 skill name as data; skill download and invocation are not covered.
 
 The dedicated smart-routing CUJ in `../e2e_cuj/test_cuj4_smart_routing.py` runs the original
@@ -116,6 +153,11 @@ defaults, and real inference, including an explicit Claude headless task on GPT 
 Claude's decoy catalog includes both decoys while the scoped picker excludes both.
 CI collects it through the shared `dedicated-cuj` job. Its request checks accept the known
 Claude thinking-display 400 only with a successful, otherwise identical native retry.
+
+The two Claude Bedrock journeys use `us.anthropic.claude-sonnet-4-6`. The configure
+journey selects it from the restricted `main.ucode.ci_bedrock_mason_filtered_models`
+service, while the headless journey pins it through
+`main.ucode.ci_bedrock_mason_all_models`.
 
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
@@ -412,7 +454,12 @@ Copilot CLI is opt-in the same way: pass `--copilot-version` (for example `1.0.9
 Antigravity CLI is not on npm: pass `--antigravity-build` with the exact `<version>-<build id>`
 from Google's release manifest (for example `1.4.9-4962164969177088`). The runner downloads that
 archive for the host platform into the run directory, records its URL and SHA-512 in
-`versions.json`, and sets `AGY_CLI_DISABLE_AUTO_UPDATE=1` so the CLI cannot replace itself.
+`versions.json`, and sets `AGY_CLI_DISABLE_AUTO_UPDATE=true` in the runner and isolated test
+sessions. Antigravity requires the literal `true`; `1` leaves background updates enabled
+([upstream documentation](https://antigravity.google/docs/cli/troubleshooting/#resolve-self-updater-locks-and-failures)).
+The runner still fails if an agent's version changes during the suite.
+`../test_integration_contract.py` checks that isolated sessions use this documented value,
+including when the caller supplied `1`; this component check does not run the native updater.
 
 ```bash
 # Constrain the suspected dependency while keeping the real CLI and gateway.
@@ -541,12 +588,44 @@ preservation on install failure, scoped cleanup, and unrelated-plugin preservati
 cleanup. Both are mocked component coverage; the integration suite does not launch Cowork,
 connect a plugin MCP server, discover its deferred tool, or run a task through it.
 
+`../test_mcp_proxy.py` covers persistent OAuth U2M authentication-tool discovery, explicit
+reauthentication after success/cancellation, refresh and task retry over in-memory MCP
+streams, and renewed discovery-auth failures. Failed metadata lookups remain retryable, and
+discovery and unrelated replies continue during interactive login. Metadata/pagination and
+upstream tool names are preserved. A fresh listing that removes upstream `authenticate`
+restores local recovery, while continuation pages preserve ownership from earlier pages.
+PAT/non-U2M discovery, permission errors, and policy URL
+elicitation stay unchanged. `../test_databricks.py` returns `False` for unsupported services
+and failed requests; later operations look up metadata again. `../test_cowork_plugin.py` also checks generated
+sign-in/retry guidance. These component tests replace external login and do not establish
+native Cowork browser recovery.
+Generated-guidance checks include one sign-in attempt for access/IP denials and stopping
+authentication retries if the denial persists. They verify the instructions, not model compliance.
+The separately selected `../connector_behavior/` suite tests model compliance using a real Claude
+model and synthetic Slack tools: available tools despite a stale notice, tools appearing after
+an actual wait, and tools absent through the wait limit. It does not establish native Desktop
+sleep/resume, discovery, or proxy reconnection coverage. Run instructions and explicit
+workspace/profile/model requirements are in `../README.md`.
+Gmail/Calendar component regressions cover service-scoped login URLs in failed tool results
+and structured login elicitations: automatic sign-in, one request replay, cancellation,
+persistent failures, and unrelated replies during login. Direct URL-matcher tests reject
+other services/hosts and malformed URLs, with representative bridge pass-through cases for
+both error forms. Success results, unsupported services, failed
+metadata lookups, PAT profiles, and policy or mixed challenges stay unchanged.
+Discovery login elicitations expose `authenticate` without starting login. No live signed-out
+Gmail/Calendar operation or native browser flow was exercised by these component tests.
+HTTP 401 component coverage verifies no connector login during initialization, discovery,
+notifications, or background requests. Actual tool-call 401s can open connector login;
+PAT mode, malformed requests, and other HTTP failures do not open it. Async HTTP-client
+cases replace only external network/login boundaries and verify identical request bodies.
+They do not establish native logout/relogin behavior.
+
 `../test_mcp_connection_login.py` substitutes browser, HTTP, and clock boundaries to check
 workspace sign-in URL construction and polling the selected CLI user's credential. Pending,
 FAILED, and 404 states keep waiting; transient errors can recover; denied/malformed states,
 workspace-token failures, and timeout fail. A blocked browser retains the manual URL.
 Success requires ACTIVE; browser launch alone is insufficient. Proxy coverage combines
-this browser flow with request replay, preserving the profile and token
+this browser flow and replay, preserving the profile and token
 memo. These are component tests; live provider sign-in, popup behavior, and native
 Desktop/Cowork recovery remain unverified.
 
@@ -612,7 +691,7 @@ test_ug_codex_commands.py               # command help and parser error forwardi
 test_ug_codex_app_server.py             # actual client/server initialize exchange
 test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven subagent toggles
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
-test_ug_configure_claude_desktop.py     # native-path Desktop lifecycle + relay helper, no GUI
+test_ug_configure_claude_desktop.py     # Desktop lifecycle, system.ai/relay inference, installed Cowork MCP; no GUI
 test_ug_configure_codex_desktop.py      # stubbed managed Codex desktop catalog pointer, no GUI
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
@@ -790,6 +869,9 @@ Default row names the model in the scoped fixture catalog, selected through the 
 `ANTHROPIC_DEFAULT_MODEL` environment variable. Unit tests cover the existing Opus, Sonnet,
 then Haiku preference for catalogs with multiple families. Plain Claude launches replace the
 picker with the gateway catalog (saved family defaults first) but keep Claude's own starting model.
+Repeated UG-owned picker refresh and preservation of unrecorded or edited admin pickers
+have component coverage in `../test_managed_model_lifecycle.py` and `../test_agent_claude.py`;
+these discovery journeys do not validate repeated live `/model` launches.
 Obsolete disable-flag scenarios and duplicate managed variants are
 removed, not skipped; managed discovery and rejection remain covered by Cases
 1–6. Repository scenario numbers run consecutively from 01 to 14, with
@@ -876,6 +958,8 @@ Claude file task on the second workspace. This exercises real commands, state,
 and agents without injected configuration. Deterministic duplicate-attempt and
 timeout/missing-executable regressions remain in `../test_mcp.py` and `../test_cli.py`;
 the CUJ does not force an agent failure.
+The switch reports one removal from previously configured workspaces; the old
+"Dropping stale entry" warning applied when the target inherited the source's MCP selection.
 
 Run this case with both agents installed if either workspace's managed config
 enables both. Supply the second workspace and its bearer explicitly:
@@ -1505,3 +1589,9 @@ Pre-browser credential reads retry transient HTTP/network failures twice before 
 
 Credential validation rejects malformed initial responses before browser launch and non-string
 states during polling. The browser subprocess runs Python in isolated mode.
+
+MCP review regressions cover bounded connector descriptions with a complete body list,
+malformed upstream tool entries and slow metadata
+discovery while unrelated replies continue. Failed metadata discovery retries naturally
+on the next operation, without a cache or cooldown. These are component
+checks, not native Cowork invocation or live provider sign-in.

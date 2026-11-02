@@ -28,71 +28,10 @@
         "displayName": "Databricks",
         "icon": "media/databricks.svg"
       }
-    ],
-    "configuration": {
-      "title": "Databricks Unity Gateway",
-      "properties": {
-        "unityGateway.workspace": {
-          "type": "string",
-          "default": "",
-          "description": "Databricks workspace URL, for example https://my-workspace.cloud.databricks.com. Set by `ug configure`.",
-          "scope": "application"
-        },
-        "unityGateway.models": {
-          "type": "array",
-          "default": [],
-          "description": "Models to offer in the chat model picker. Set by `ug configure`.",
-          "items": {
-            "type": "object",
-            "required": [
-              "id",
-              "api"
-            ],
-            "properties": {
-              "id": {
-                "type": "string",
-                "description": "Model service name, for example system.ai.claude-sonnet-5-5."
-              },
-              "api": {
-                "type": "string",
-                "enum": [
-                  "chat_completions",
-                  "responses"
-                ],
-                "description": "The AI Gateway API the model is called through."
-              },
-              "maxInputTokens": {
-                "type": "integer",
-                "minimum": 1,
-                "description": "Prompt tokens the model accepts. Defaults to 128000."
-              },
-              "maxOutputTokens": {
-                "type": "integer",
-                "minimum": 1,
-                "description": "Tokens the model can write in one reply. Defaults to 32000."
-              }
-            }
-          },
-          "scope": "application"
-        },
-        "unityGateway.authCommand": {
-          "type": "string",
-          "default": "",
-          "description": "Command that prints a Databricks access token. Set by `ug configure`.",
-          "scope": "application"
-        }
-      }
-    },
-    "commands": [
-      {
-        "command": "unityGateway.refreshModels",
-        "title": "Refresh Models",
-        "category": "Unity Gateway"
-      }
     ]
   },
   "scripts": {
-    "build": "esbuild src/extension.ts --bundle --minify --legal-comments=none --outfile=../src/ucode/vscode/extension/out/extension.js --external:vscode --format=cjs --platform=node --target=node22 && node -e \"const fs = require('fs'); fs.copyFileSync('package.json', '../src/ucode/vscode/extension/package.json'); fs.cpSync('media', '../src/ucode/vscode/extension/media', { recursive: true })\"",
+    "build": "esbuild src/extension.ts --bundle --minify --legal-comments=none --outfile=../src/ucode/vscode/extension/out/extension.js --external:vscode --format=cjs --platform=node --target=node22 && node -e \"const m = require('./package.json'); delete m.scripts; delete m.devDependencies; require('fs').writeFileSync('../src/ucode/vscode/extension/package.json', JSON.stringify(m, null, 2) + '\\n')\"",
     "typecheck": "tsc",
     "test": "esbuild test/*.test.ts --bundle --platform=node --format=cjs --target=node22 --outdir=.test-out --alias:vscode=./test/vscode.ts --log-level=warning && node --test .test-out/*.test.js"
   },

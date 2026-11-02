@@ -69,6 +69,7 @@ from ucode.managed_files import (
     OS,
     ManagedFileWriteUnavailable,
     current_os,
+    explicit_managed_writes,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -95,6 +96,7 @@ from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ug_headers import ug_headers
 from ucode.ui import print_warning_err
+from ucode.workspace import workspace_headers, workspace_id_args
 
 from .args import LaunchOptions
 from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
@@ -242,6 +244,8 @@ def _provider_block(
     if request_tags:
         http_headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
     _apply_managed_headers(http_headers, managed_http_headers)
+    # Last, so an admin header can't select another workspace.
+    _apply_managed_headers(http_headers, workspace_headers(workspace))
     return {
         "name": "Databricks AI Gateway",
         "base_url": base_url,
@@ -778,6 +782,7 @@ def _ensure_otel_service(workspace: str, port: int) -> None:
         pythonw = Path(sys.executable).with_name("pythonw.exe")
         python = str(pythonw if pythonw.is_file() else sys.executable)
         argv = [python, "-m", "ucode.cli", "otel-proxy", "--host", workspace, "--port", str(port)]
+        argv += workspace_id_args(workspace)
         _ensure_scheduled_task(path, argv)
         return
     ug_path = ug_binary()
@@ -787,7 +792,16 @@ def _ensure_otel_service(workspace: str, port: int) -> None:
         )
     if current_os() == OS.MACOS:
         _ensure_launch_agent(
-            path, [ug_path, "otel-proxy", "--host", workspace, "--port", str(port)]
+            path,
+            [
+                ug_path,
+                "otel-proxy",
+                "--host",
+                workspace,
+                "--port",
+                str(port),
+                *workspace_id_args(workspace),
+            ],
         )
         return
     lines = [
@@ -795,7 +809,8 @@ def _ensure_otel_service(workspace: str, port: int) -> None:
         "[Service]",
         # systemd expands `$` in ExecStart arguments but never in the executable path.
         f"ExecStart={_systemd_quote(ug_path)} otel-proxy --host "
-        f"{_systemd_quote(workspace, exec_start=True)} --port {port}",
+        f"{_systemd_quote(workspace, exec_start=True)} --port {port}"
+        + "".join(f" {_systemd_quote(arg)}" for arg in workspace_id_args(workspace)),
         "Restart=on-failure",
         "RestartSec=1s",
     ]
@@ -937,7 +952,8 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
             parser=_parse_managed_config,
         )
     except ManagedFileWriteUnavailable:
-        if conflicts:
+        # `ug configure` must leave the machine-wide file correct, so it never degrades silently.
+        if conflicts or explicit_managed_writes():
             raise
         print_warning_err(
             f"Codex OS-managed settings could not be updated at {path}; continuing with local "
@@ -1063,7 +1079,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
     The managed file is the source of truth, so this is a wipe-and-rewrite, not a diff. Every other
     managed key is preserved, including the model configuration ug wrote earlier this run. Returns
     True when the managed file is the delivery mechanism, False when it cannot be used (unsupported
-    platform or a non-interactive run), so the caller routes those servers to the user-scope
+    platform, or a run that may not write it), so the caller routes those servers to the user-scope
     registration instead."""
     path = codex_managed_config_path()
     if (
@@ -1111,6 +1127,18 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
         )
     except ManagedFileWriteUnavailable:
         return False
+    # Codex merges this file over the user config key by key, so a same-name user entry of the other
+    # transport (stdio `command` vs HTTP `url`) would get both and stop Codex from starting.
+    user = read_toml_safe(user_mcp_config_path()).get(MANAGED_MCP_CONFIG_KEY)
+    if isinstance(user, dict):
+        conflicts = {
+            name
+            for name, entry in servers.items()
+            if isinstance(user.get(name), dict)
+            and ("command" in user[name]) != ("command" in entry)
+        }
+        if conflicts:
+            write_user_mcp_servers({}, conflicts)
     # Preserve the scope the model reconcile recorded (e.g. relay-compatible); an MCP-only write only
     # refreshes the fingerprint, it does not change how the file relates to the model settings.
     mark_managed_file_verified(state, "codex", path, scope=managed_file_scope(state, "codex"))

@@ -42,6 +42,7 @@ from urllib.parse import unquote
 import httpx
 
 from ucode.env import env_bool
+from ucode.workspace import workspace_headers
 
 # Header we overwrite with the freshly-minted Databricks credential. Any
 # client-supplied value is replaced, so a stale settings.json value can't leak.
@@ -255,6 +256,8 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     cache: TokenCache
     client: httpx.Client
     token_header = AI_GATEWAY_TOKEN_HEADER
+    # Applied last so neither the agent nor an admin header can select another workspace.
+    workspace_selector: Mapping[str, str] = {}
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -302,6 +305,14 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 self, self.cache.token, token_header, extra_strip=extra_strip
             )
             headers.update(self._added_headers())
+            if self.workspace_selector:
+                selector_names = {name.lower() for name in self.workspace_selector}
+                headers = {
+                    name: value
+                    for name, value in headers.items()
+                    if name.lower() not in selector_names
+                }
+                headers.update(self.workspace_selector)
             return headers
 
         try:
@@ -627,6 +638,7 @@ def _start_proxy(
                 "cache": cache,
                 "client": client,
                 "token_header": token_header,
+                "workspace_selector": workspace_headers(workspace),
                 **(handler_attrs or {}),
             },
         ),

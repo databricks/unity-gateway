@@ -5,7 +5,7 @@ import json
 import pytest
 
 from tests.integration.utils import evidence
-from tests.integration.utils.agents import claude, codex, copilot
+from tests.integration.utils.agents import antigravity, claude, codex, copilot
 from tests.integration.utils.evidence import (
     FileTask,
     SubagentCalculation,
@@ -84,6 +84,47 @@ def test_terminal_api_failure_reports_the_actual_error(screen):
 )
 def test_transient_retries_and_running_tasks_are_not_terminal_errors(screen):
     assert_no_terminal_api_error(screen)
+
+
+@pytest.mark.parametrize("reason", ["RESOURCE_EXHAUSTED", "REQUEST_LIMIT_EXCEEDED"])
+def test_antigravity_resource_exhausted_detects_provider_429(reason):
+    stdout = json.dumps(
+        {
+            "event": "result",
+            "result": {
+                "status": "ERROR",
+                "error": f"request failed (code 429): {reason}",
+            },
+        }
+    )
+
+    assert antigravity.resource_exhausted(stdout)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"status": "SUCCESS", "response": "RESOURCE_EXHAUSTED code 429"},
+        {"status": "ERROR", "error": "request failed (code 500): RESOURCE_EXHAUSTED"},
+        {"status": "ERROR", "error": "request failed (code 429): PERMISSION_DENIED"},
+    ],
+)
+def test_antigravity_resource_exhausted_rejects_non_retryable_results(result):
+    stdout = json.dumps({"event": "result", "result": result})
+
+    assert not antigravity.resource_exhausted(stdout)
+
+
+def test_antigravity_resource_exhausted_retry_delay_is_truncated_exponential(monkeypatch):
+    monkeypatch.setattr(antigravity.random, "uniform", lambda _start, _end: 0)
+
+    assert [antigravity.resource_exhausted_retry_delay(index) for index in range(5)] == [
+        5,
+        10,
+        20,
+        20,
+        20,
+    ]
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])

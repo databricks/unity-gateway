@@ -419,18 +419,18 @@ def arguments(
     )
     parser.add_argument(
         "--claude-bedrock-allow-all-provider",
-        default="main.ucode.e2e_bedrock_all_models_enabled",
+        default="main.ucode.ci_bedrock_mason_all_models",
         help="Bedrock MPS with allow_all_targets and no declared targets, for the #811 CUJ.",
     )
     parser.add_argument(
         "--claude-bedrock-allow-all-model",
-        default="global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        default="us.anthropic.claude-sonnet-4-6",
         help="Explicit Bedrock model id the allow_all CUJ pins (the service declares no targets).",
     )
     parser.add_argument(
         "--claude-bedrock-provider",
-        default="main.ucode.bedrock_e2e",
-        help="AWS Bedrock Anthropic MPS with a restricted allowed-models set (Sonnet + Haiku, no Opus), selected in the configure CUJ.",
+        default="main.ucode.ci_bedrock_mason_filtered_models",
+        help="AWS Bedrock Anthropic MPS with a restricted allowed-models set (Sonnet + Opus), selected in the configure CUJ.",
     )
     parser.add_argument(
         "--antigravity-provider",
@@ -959,8 +959,8 @@ def main() -> int:
         runtime_env["PATH"] = os.pathsep.join(map(str, runtime_paths))
         report["agents"] = {}
         if "antigravity" in agents:
-            # Antigravity CLI otherwise self-updates in the background mid-suite.
-            runtime_env["AGY_CLI_DISABLE_AUTO_UPDATE"] = "1"
+            # agy requires the literal "true"; "1" leaves background updates enabled.
+            runtime_env["AGY_CLI_DISABLE_AUTO_UPDATE"] = "true"
         for agent in agents:
             agent_command = agent_commands[agent]
             version = agent_version_output(
@@ -1006,7 +1006,7 @@ def main() -> int:
             if client_id and client_secret:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
-        test_dependencies = ["pytest==9.0.3", "httpx==0.28.1", "pyte==0.8.2"]
+        test_dependencies = ["pytest==9.0.3", "httpx==0.28.1", "pyte==0.8.2", "mcp==2.1.1"]
         test_dependencies.append("pexpect==4.9.0" if os.name == "posix" else "pywinpty==3.0.5")
         run(
             [

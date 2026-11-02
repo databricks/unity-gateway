@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from ucode import mcp
+from ucode import managed_files, mcp
 from ucode.agents import claude
 
 WS = "https://example.databricks.com"
@@ -31,6 +31,46 @@ class TestMcpChangeSummary:
 
     def test_no_changes_falls_back_to_saved(self):
         assert mcp._mcp_change_summary([], [], ["claude"]) == "Saved"
+
+
+def test_mcp_only_client_is_available_without_model_configuration():
+    state = {"workspace": WS, "mcp_clients": ["claude"]}
+    assert mcp.configured_mcp_clients(state, ["claude", "codex"]) == ["claude"]
+
+
+def test_restore_workspace_mcp_servers_uses_saved_name_and_destination_url(monkeypatch):
+    workspace = "https://second.cloud.databricks.com"
+    selected = {
+        "name": "system-ai-github",
+        "url": f"{workspace}/ai-gateway/mcp-services/system.ai.github",
+        "clients": ["claude"],
+    }
+    writes = []
+    monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
+    monkeypatch.setattr(mcp, "managed_mcp_server_names", lambda state, agents: set())
+    monkeypatch.setattr(
+        mcp,
+        "apply_mcp_server_changes",
+        lambda original, working, clients, ws, profile, **kwargs: writes.append(
+            (original, working, clients, ws, profile, kwargs)
+        ),
+    )
+
+    mcp.restore_workspace_mcp_servers(
+        {"workspace": workspace, "profile": "B", "mcp_servers": [selected]},
+        {"claude", "codex"},
+    )
+
+    assert writes == [
+        (
+            [],
+            [selected],
+            ["claude"],
+            workspace,
+            "B",
+            {"use_pat": False, "batch_agents": frozenset({"claude"})},
+        )
+    ]
 
 
 # The proxy argv every client registers as a stdio command. The leading element
@@ -1894,6 +1934,23 @@ class TestConfigureMcpFromLocation:
 class TestAddMcpCommand:
     """`ucode mcp add` (append) registers new servers without removing existing ones."""
 
+    def test_add_uses_original_server_name(self, monkeypatch):
+        saved: list[dict] = []
+        registered: list[str] = []
+        _stub_location_base(monkeypatch, {**CLAUDE_STATE, "mcp_servers": []})
+        monkeypatch.setattr(mcp, "list_mcp_services", lambda *a, **kw: (["system.ai.github"], None))
+        monkeypatch.setattr(
+            mcp,
+            "configure_client_mcp_server",
+            lambda client, name, *a, **kw: registered.append(name) or [],
+        )
+        monkeypatch.setattr(mcp, "save_state", lambda state: saved.append(state.copy()))
+
+        assert mcp.add_mcp_command(location="system.ai", agents={"claude"}) == 0
+        expected = "system-ai-github"
+        assert registered == [expected]
+        assert saved[-1]["mcp_servers"][0]["name"] == expected
+
     def test_keeps_servers_outside_location(self, monkeypatch):
         """Unlike a replace-mode `--location` run, `mcp add --location` preserves any
         server outside the location instead of removing it."""
@@ -3261,6 +3318,26 @@ class TestPurgeCrossWorkspaceSkillsEntry:
             capsys.readouterr().out
         )
 
+    def test_same_name_in_destination_only_protects_its_selected_client(self, monkeypatch):
+        from ucode import state as state_mod
+
+        monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
+        monkeypatch.setattr(state_mod, "build_agent_state", lambda state: {})
+        other = "https://other.databricks.com"
+        old = {"name": "shared", "url": f"{other}/mcp", "clients": ["claude", "codex"]}
+        selected = {"name": "shared", "url": f"{WS}/mcp", "clients": ["codex"]}
+        state_mod.save_state({"workspace": other, "mcp_servers": [old]})
+        state = {"workspace": WS, "mcp_servers": [selected]}
+        state_mod.save_state(state)
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude", "codex"])
+        writes = self._capture_batched_writes(monkeypatch, ["claude", "codex"])
+
+        mcp.purge_cross_workspace_mcp_residue(state, WS)
+
+        assert writes["claude"] == [({}, {"shared"})]
+        assert writes["codex"] == []
+        assert state_mod.load_state()["mcp_servers"] == [selected]
+
     @pytest.mark.parametrize(
         "failure",
         [RuntimeError("config is locked"), OSError("no such file"), None],
@@ -3579,6 +3656,40 @@ class TestReconcileManagedMcpServers:
 
         monkeypatch.setattr(mcp.claude, "reconcile_managed_mcp", claude_reconcile)
         monkeypatch.setattr(mcp.codex, "reconcile_managed_mcp", codex_reconcile)
+
+    @pytest.mark.parametrize("explicit", [True, False], ids=["configure", "other-run"])
+    def test_denied_managed_file_write_fails_only_configure(self, monkeypatch, explicit):
+        # `ug configure` must leave the machine-wide file correct, as for agent settings; other
+        # runs warn and fall back to user scope.
+        state = {"workspace": WS, "profile": None, "managed_mcp_servers": []}
+        applied: dict = {}
+        self._wire(
+            monkeypatch,
+            state=state,
+            configured=["codex"],
+            resolved=[{"name": "system-ai-github", "url": "u", "auth": "proxy"}],
+            applied=applied,
+            saved={},
+            setup_calls=[],
+        )
+        self._wire_managed_file(
+            monkeypatch, claude_eligible=False, codex_eligible=True, captured={}
+        )
+
+        def denied(state, servers):
+            raise managed_files.ManagedFileWriteUnavailable("sudo: a password is required")
+
+        monkeypatch.setattr(mcp.codex, "reconcile_managed_mcp", denied)
+        if explicit:
+            managed_files.request_explicit_managed_writes()
+
+        selector = {"mcp_servers": {"names": ["system.ai.github"]}}
+        if explicit:
+            with pytest.raises(managed_files.ManagedFileWriteUnavailable):
+                mcp.reconcile_managed_mcp_servers(selector, {"codex"})
+        else:
+            mcp.reconcile_managed_mcp_servers(selector, {"codex"})
+            assert [server["name"] for server in applied["working"]] == ["system-ai-github"]
 
     def test_eligible_agents_use_managed_file_not_user_scope(self, monkeypatch):
         # A qualifying claude/codex gets its resolved servers written to the OS-managed file and is
@@ -4500,3 +4611,19 @@ def test_setup_mcp_clients_user_messages_name_ug_not_ucode(monkeypatch, capsys):
         mcp.setup_mcp_clients(state, "Add MCP Servers", require_auth=False, agents={"codex"})
     with pytest.raises(RuntimeError, match="Run `ug configure` first"):
         mcp.setup_mcp_clients({}, "Add MCP Servers")
+
+
+class TestSameHostWorkspaceSwitch:
+    def test_entries_from_another_workspace_on_the_same_host_are_foreign(self):
+        from ucode.mcp import _partition_mcp_entries_by_workspace
+
+        entries = [{"name": "a", "url": "https://acme.cloud.databricks.com/api/2.0/mcp/x"}]
+        assert _partition_mcp_entries_by_workspace(
+            entries, "https://acme.cloud.databricks.com"
+        ) == (
+            entries,
+            [],
+        )
+        assert _partition_mcp_entries_by_workspace(
+            entries, "https://acme.cloud.databricks.com", same_host_switch=True
+        ) == ([], entries)

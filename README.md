@@ -152,7 +152,9 @@ ug configure --profile DEFAULT --agents claude,codex
 ug configure --user
 ```
 
-`--global` (the default) writes the machine-wide Claude Code and Codex managed settings with sudo.
+`--global` (the default) writes the machine-wide Claude Code and Codex managed settings with sudo,
+with or without a terminal: run headless as root (or with passwordless sudo), since a write that
+can't be authorized fails the command.
 `--user` skips them, like `UG_SKIP_OS_SETTINGS`, and needs no sudo; use it when you launch through
 `ug`. `UG_SKIP_OS_SETTINGS=1` neither writes nor checks the OS-managed files: ug trusts whatever is
 there and the agents apply their native precedence. Configure fails while a managed file for the agent exists, since managed settings take
@@ -161,6 +163,27 @@ The choice is saved for launches after a successful configure; `ug configure` wi
 and `ug revert` return to `--global`.
 `--user` also fails for a workspace that publishes a managed config, which must be installed
 machine-wide; use `--global` for it.
+
+### Hosts that serve several workspaces
+
+An account custom URL (such as `https://acme.cloud.databricks.com`) serves every workspace of the
+account. Select the workspace the way the Databricks CLI does:
+
+```bash
+ug configure --workspace 'https://acme.cloud.databricks.com/?w=1234567890123456'
+ug configure --profile acme   # a profile whose host is the custom URL and that has a workspace_id
+ug claude --workspace 'https://acme.cloud.databricks.com/?w=1234567890123456'
+```
+
+`?o=` and `?workspace_id=` work too. ug keeps the custom URL as the workspace URL, gets the account
+token from the profile, and sends the workspace id as `X-Databricks-Org-Id` and
+`X-Databricks-Workspace-Id` on every request to that host: its own requests, its proxies, and the
+headers it writes for each agent. On a host that serves one workspace the id is ignored. With no
+profile for the host yet, the first login names one `ug-<name>`.
+
+Not supported yet on these hosts: disaster-recovery stable connection ids, signing in to an MCP
+service connection that needs your own login, and the MDM bootstrap script. MCP servers are
+registered through `ug mcp-proxy`, never as the agent's own OAuth connection.
 
 ### Extra headers for one session
 
@@ -222,9 +245,11 @@ ug mcp add --agents cursor --names system.ai.github --workspace https://first.da
 ug mcp add --agents codex --names system.ai.github --profile DEFAULT
 ```
 
-With `--agents`, agents that aren't set up yet are set up first. Pass `--workspace`
-or `--profile` to pick the workspace instead of the picker; it becomes the current
-workspace.
+With `--agents`, installed agents can be registered for MCP without configuring their
+models. `--workspace` or `--profile` selects the workspace on a fresh setup. If another
+workspace is already active, run `ug configure --workspace <url>` to switch first;
+the switch replaces the agent's active MCP registrations with those saved for the
+selected workspace. Switching back restores the earlier workspace's saved servers.
 
 Remove configured servers:
 

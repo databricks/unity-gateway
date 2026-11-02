@@ -74,8 +74,8 @@ def clean_environment(home: Path) -> dict[str, str]:
             "CODEX_HOME": str(home / ".codex"),
             "DATABRICKS_CONFIG_FILE": str(home / ".databrickscfg"),
             "DISABLE_AUTOUPDATER": "1",
-            # Keep the pinned Antigravity CLI build from replacing itself mid-suite.
-            "AGY_CLI_DISABLE_AUTO_UPDATE": "1",
+            # agy requires the literal "true"; "1" leaves background updates enabled.
+            "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "NO_COLOR": "1",
             "TERM": "dumb",
