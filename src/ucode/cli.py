@@ -2807,7 +2807,7 @@ def otel_proxy_cmd(
         if relay_port:
             # The Codex app is pinned to this port, so fail (and restart) rather than move.
             relay, _cache, _client = gateway_proxy.start_relay_proxy(
-                host, token_provider, relay_port, codex=True, fallback_on_bind_error=False
+                host, token_provider, relay_port, agent=AGENT_CODEX, fallback_on_bind_error=False
             )
             threading.Thread(target=relay.serve_forever, daemon=True).start()
         # systemd stops this with SIGTERM, which exits without cleanup, and nothing needs it.

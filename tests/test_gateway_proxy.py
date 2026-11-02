@@ -625,7 +625,7 @@ class TestCodexRelayProxy:
         cache = Mock(token="tok1")
         monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: cache)
         server, _cache, upstream = gateway_proxy.start_relay_proxy(
-            "https://w", lambda _f: "t", 0, codex=True
+            "https://w", lambda _f: "t", 0, agent="codex"
         )
         server.server_close()
         upstream.close()

@@ -1652,8 +1652,8 @@ class TestCodexLaunch:
         popen = Mock(return_value=process)
         started = {}
 
-        def start_relay_proxy(workspace, token_provider, port, *, codex=False):
-            started.update(workspace=workspace, token=token_provider(False), codex=codex)
+        def start_relay_proxy(workspace, token_provider, port, *, agent="claude"):
+            started.update(workspace=workspace, token=token_provider(False), agent=agent)
             return server, cache, client
 
         monkeypatch.setattr(gateway_proxy, "start_relay_proxy", start_relay_proxy)
@@ -1678,7 +1678,7 @@ class TestCodexLaunch:
             )
 
         login_status.assert_called_once()
-        assert started == {"workspace": WS, "token": "tok", "codex": True}
+        assert started == {"workspace": WS, "token": "tok", "agent": "codex"}
         assert "OAUTH_TOKEN" not in os.environ
         argv = popen.call_args.args[0]
         assert any("http://127.0.0.1:54321/v1" in arg for arg in argv)

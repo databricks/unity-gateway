@@ -1836,7 +1836,7 @@ def launch(
             workspace,
             lambda force: _launch_token(state, workspace, force_refresh=force),
             0,
-            codex=True,
+            agent=AGENT_CODEX,
         )
         threading.Thread(target=relay[0].serve_forever, daemon=True).start()
         port = relay[0].server_address[1]

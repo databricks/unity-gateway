@@ -41,6 +41,7 @@ from urllib.parse import unquote
 
 import httpx
 
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
 from ucode.env import env_bool
 from ucode.workspace import workspace_headers
 
@@ -663,23 +664,32 @@ def _start_proxy(
     return server, cache, client
 
 
+# Each subscription relay's gateway route and request handler, by agent; another relayed
+# provider (e.g. Copilot's) adds an entry here.
+_RELAY_ROUTES: dict[str, tuple[str, type[_ProxyHandler]]] = {
+    AGENT_CLAUDE: ("ai-gateway/anthropic/", _RelayProxyHandler),
+    # Plain forwarding: the Anthropic hybrid reroute doesn't apply.
+    AGENT_CODEX: ("ai-gateway/codex/", _ProxyHandler),
+}
+
+
 def start_relay_proxy(
     workspace: str,
     token_provider: Callable[[bool], str],
     port: int,
     *,
-    codex: bool = False,
+    agent: str = AGENT_CLAUDE,
     fallback_on_bind_error: bool = True,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
-    """Start the subscription relay proxy: Claude's, or Codex's with ``codex`` (plain forwarding,
-    since the Anthropic hybrid reroute doesn't apply)."""
+    """Start ``agent``'s subscription relay proxy (see ``_RELAY_ROUTES``)."""
+    upstream_path, handler_type = _RELAY_ROUTES[agent]
     return _start_proxy(
         workspace,
         token_provider,
         port,
-        upstream_path="ai-gateway/codex/" if codex else "ai-gateway/anthropic/",
+        upstream_path=upstream_path,
         token_header=AI_GATEWAY_TOKEN_HEADER,
-        handler_type=_ProxyHandler if codex else _RelayProxyHandler,
+        handler_type=handler_type,
         force_refresh_near_expiry=False,
         fallback_on_bind_error=fallback_on_bind_error,
     )

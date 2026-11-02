@@ -4149,7 +4149,7 @@ class TestOtelProxyCommand:
         assert result.exit_code == 0, result.output
         assert start_relay.call_args.args[0] == workspace
         assert start_relay.call_args.args[2] == 43198
-        assert start_relay.call_args.kwargs == {"codex": True, "fallback_on_bind_error": False}
+        assert start_relay.call_args.kwargs == {"agent": "codex", "fallback_on_bind_error": False}
         relay[0].serve_forever.assert_called_once()
         otel[0].serve_forever.assert_called_once()
 
