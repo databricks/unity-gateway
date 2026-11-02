@@ -21,7 +21,12 @@ from utils.evidence import (
 )
 from utils.terminal import AgentTerminal
 
-pytestmark = [pytest.mark.live, pytest.mark.tui, pytest.mark.codex]
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.tui,
+    pytest.mark.codex,
+    pytest.mark.codex_smart_routing,
+]
 
 CODEX_NATIVE_START_MODEL = "gpt-5.6-sol"
 CODEX_NATIVE_CATALOG_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra"]

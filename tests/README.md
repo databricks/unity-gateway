@@ -826,10 +826,13 @@ dependency graph to reproduce a user's combination. Every relevant same-reposito
 PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
 Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
 journeys for both agents, in two parallel jobs. After smoke finishes, the full
-suite runs all 88 live cases across two parallel agent jobs: one Claude VM and one
-Codex VM, each running its configure, headless, and commands/lifecycle cases
-serially. Each agent is installed once for the full suite, and no two full jobs
-for the same agent overlap within a run.
+suite runs the remaining live cases in separate agent and OS jobs, with cases
+serial inside each VM. Codex smoke and general full/managed coverage retain
+0.154.0. Separate required full and managed matrix rows use 0.165.0 only for
+`codex_smart_routing` cases; CUJ4 also uses 0.165.0, while other CUJs retain
+0.154.0. The catalog-fallback routing-off case stays on the baseline version.
+The existing workflow contract tests collect both selections and require disjoint
+case sets whose union preserves coverage. Windows' existing native-toggle exclusions remain.
 CUJ7's five journeys collect eight cases in the required
 `E2E CUJs · CUJ 7 · Unmanaged model discovery` shard: configured Claude picker and
 Codex app-server discovery, fresh Claude/Codex model-location file tasks, and Claude

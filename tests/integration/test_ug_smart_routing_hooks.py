@@ -719,6 +719,7 @@ def test_smart_router_skill_turns_claude_subagent_routing_back_on(
 @pytest.mark.live
 @pytest.mark.codex
 @pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
 @SMART_ROUTER_VERSIONS
 def test_smart_router_routes_codex_subagent_at_launch(
     live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
@@ -759,6 +760,7 @@ def test_smart_router_routes_codex_subagent_at_launch(
 @pytest.mark.live
 @pytest.mark.codex
 @pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
 @SMART_ROUTER_VERSIONS
 def test_smart_router_skill_turns_codex_subagent_routing_off(
     live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
@@ -803,6 +805,7 @@ def test_smart_router_skill_turns_codex_subagent_routing_off(
 @pytest.mark.live
 @pytest.mark.codex
 @pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
 @SMART_ROUTER_VERSIONS
 def test_smart_router_skill_turns_codex_subagent_routing_back_on(
     live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION

@@ -921,7 +921,10 @@ v2 catalog and a user-owned observer hook, without test-supplied native feature 
 It checks the exact multiline assignment at PreToolUse, the router decision, and
 the actual native recipient, then checks completed parent and child models and
 preserved settings. Select it with
-`-- -k test_ug_codex_native_v2_plain_assignment_routing`.
+`--codex-version 0.165.0 -- -k test_ug_codex_native_v2_plain_assignment_routing`.
+The `codex_smart_routing` marker also selects the native launch/off/on journeys,
+managed routing banner, and catalog-fallback routing-on case. To reproduce the
+baseline lane, use `--codex-version 0.154.0 -- -m 'live and not codex_smart_routing'`.
 
 ```bash
 # Append one of these selections to the runner command:
@@ -1112,13 +1115,22 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs per OS). Full runs every other live case in two disjoint agent lanes;
-it excludes the smoke cases, which smoke already ran on the same OS:
+two agent jobs per OS). Full excludes the smoke cases, which smoke already ran
+on the same OS. Codex 0.154.0 remains the default for installation, smoke, general
+full/managed journeys, and dedicated CUJs. Routing cases run in separate required
+matrix rows with Codex 0.165.0; only the dedicated CUJ4 runner uses that newer pin.
+The full selections are disjoint within each agent and OS:
 
 | Agent lane | Marker |
 | --- | --- |
-| Claude | `live and claude and not soft_fail and not smoke` |
-| Codex | `live and codex and not soft_fail and not smoke` |
+| Claude | `live and claude and not soft_fail and not smoke and not codex_smart_routing` |
+| Codex 0.154.0 | `live and codex and not soft_fail and not smoke and not codex_smart_routing` |
+| Codex 0.165.0 | `live and codex and not soft_fail and not smoke and codex_smart_routing` |
+
+Managed Codex uses the same marker split on its managed workspace, retaining both-agent
+installation in each row. The catalog-fallback routing-off parameter, direct router-hook
+contracts, and command/protocol paths that bypass routing retain 0.154.0 coverage.
+The existing Windows exclusions for native skill-toggle journeys still apply.
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
 `continue-on-error` and is not part of the required `cujs` gate until it is stable.
@@ -1135,15 +1147,15 @@ Each lane installs only the agent CLIs it needs (one, except the managed OpenCod
 three), once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
 inside each fresh VM because configure/revert can touch machine-level settings;
-separate runners isolate those writes as well as the PTYs. All four agent × OS
-Full jobs run in parallel: cases share no workspace state, only inference capacity.
+separate runners isolate those writes as well as the PTYs. Full runs at most four
+matrix rows in parallel: cases share no workspace state, only inference capacity.
 They share that capacity with each other, the concurrently running agent e2e shards,
 and other PRs, so rate limits remain possible.
 No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
 The **All integration tests** check requires installation, workspace validation, smoke,
-both full lanes, and both **Managed config** lanes to pass for full/live runs. Each tracing
+all full rows, and all **Managed config** rows to pass for full/live runs. Each tracing
 journey is included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
 a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke, TUI,
 and installation subsets do not select managed tests and do not require them.
