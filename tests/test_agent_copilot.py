@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import subprocess
 from pathlib import Path
 
 import httpx
@@ -913,116 +912,17 @@ class TestCopilotUserMcpConfig:
         written = json.loads((tmp_path / "copilot-home" / "mcp-config.json").read_text())
         assert written["mcpServers"] == {"svc": self.ENTRY}
 
-    @staticmethod
-    def _stub_cli(monkeypatch, *, fail_add=False):
-        calls: list[list[str]] = []
-
-        def run(argv, **kwargs):
-            calls.append(argv)
-            if argv[2] == "add" and fail_add:
-                raise subprocess.CalledProcessError(1, argv)
-            stderr = f'Server "{argv[3]}" not found.' if argv[2] == "remove" else ""
-            return subprocess.CompletedProcess(argv, 1 if stderr else 0, "", stderr)
-
-        monkeypatch.setattr(copilot.subprocess_cross_os, "run", run)
-        monkeypatch.setattr(copilot.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        return calls
-
-    def test_defers_to_the_copilot_cli_for_a_config_it_cannot_parse(self, monkeypatch, capsys):
-        calls = self._stub_cli(monkeypatch)
-        path = copilot.copilot_mcp_config_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        jsonc = '{\n  // mine\n  "mcpServers": {"mine": {"x": 1},},\n}\n'
-        path.write_text(jsonc, encoding="utf-8")
-        copilot.LEGACY_MCP_CONFIG_PATH.write_text(json.dumps({"mcpServers": {"old": self.ENTRY}}))
-
-        removed = copilot.write_user_mcp_servers({"svc": self.ENTRY}, {"gone"})
-
-        assert removed == set()
-        assert calls == [
-            ["copilot", "mcp", "remove", "gone"],
-            ["copilot", "mcp", "remove", "old"],
-            ["copilot", "mcp", "add", "old", "--", "ug", "mcp-proxy"],
-            ["copilot", "mcp", "remove", "svc"],
-            ["copilot", "mcp", "add", "svc", "--", "ug", "mcp-proxy"],
-        ]
-        # The real CLI saves the file as plain JSON, so the original is kept for its comments.
-        assert copilot.MCP_CONFIG_ORIGINAL_PATH.read_text(encoding="utf-8") == jsonc
-        assert "without its comments" in " ".join(capsys.readouterr().out.split())
-        assert not copilot.LEGACY_MCP_CONFIG_PATH.exists()
-
-    def test_cli_edits_keep_only_the_first_original(self, monkeypatch, capsys):
-        self._stub_cli(monkeypatch)
-        path = copilot.copilot_mcp_config_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{\n  // first\n}\n", encoding="utf-8")
-        copilot.write_user_mcp_servers({"svc": self.ENTRY}, set())
-        capsys.readouterr()
-        path.write_text("{\n  // second\n}\n", encoding="utf-8")
-
-        copilot.write_user_mcp_servers({}, {"svc"})
-
-        assert copilot.MCP_CONFIG_ORIGINAL_PATH.read_text(encoding="utf-8") == "{\n  // first\n}\n"
-        assert "without its comments" not in capsys.readouterr().out
-
-    def test_a_cli_pass_with_nothing_to_change_keeps_no_original(self, monkeypatch):
-        calls = self._stub_cli(monkeypatch)
-        path = copilot.copilot_mcp_config_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{\n  // mine\n}\n", encoding="utf-8")
-        copilot.LEGACY_MCP_BACKUP_PATH.parent.mkdir(parents=True, exist_ok=True)
-        copilot.LEGACY_MCP_BACKUP_PATH.write_text("{}", encoding="utf-8")
-
-        copilot.migrate_legacy_mcp_config()
-
-        assert calls == []
-        assert not copilot.MCP_CONFIG_ORIGINAL_PATH.exists()
-        assert not copilot.LEGACY_MCP_BACKUP_PATH.exists()
-
-    def test_commented_config_without_the_copilot_cli_is_left_alone(self, monkeypatch):
-        # Without the Copilot CLI, ug has nothing to edit a file it can't parse with.
-        calls = self._stub_cli(monkeypatch)
-        monkeypatch.setattr(copilot.shutil, "which", lambda binary: None)
+    def test_a_config_ug_cannot_parse_is_left_alone(self):
         path = copilot.copilot_mcp_config_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         jsonc = '{\n  // mine\n  "mcpServers": {"mine": {"x": 1}},\n}\n'
         path.write_text(jsonc, encoding="utf-8")
+        copilot.LEGACY_MCP_CONFIG_PATH.write_text(json.dumps({"mcpServers": {"old": self.ENTRY}}))
 
         with pytest.raises(RuntimeError, match="Remove the comments"):
             copilot.write_user_mcp_servers({"svc": self.ENTRY}, set())
 
-        assert calls == []
         assert path.read_text(encoding="utf-8") == jsonc
-
-    def test_removing_the_last_server_deletes_a_config_with_nothing_else(self):
-        path = copilot.copilot_mcp_config_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"mcpServers": {"svc": self.ENTRY}}), encoding="utf-8")
-
-        assert copilot.write_user_mcp_servers({}, {"svc"}) == {"svc"}
-
-        assert not path.exists()
-
-    def test_removing_the_last_server_keeps_a_config_with_other_keys(self):
-        path = copilot.copilot_mcp_config_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"mcpServers": {"svc": self.ENTRY}, "x": 1}), encoding="utf-8")
-
-        copilot.write_user_mcp_servers({}, {"svc"})
-
-        assert json.loads(path.read_text(encoding="utf-8")) == {"mcpServers": {}, "x": 1}
-
-    def test_failed_cli_add_keeps_the_legacy_side_file(self, monkeypatch):
-        self._stub_cli(monkeypatch, fail_add=True)
-        path = copilot.copilot_mcp_config_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{not json", encoding="utf-8")
-        copilot.LEGACY_MCP_CONFIG_PATH.write_text(json.dumps({"mcpServers": {"old": self.ENTRY}}))
-
-        with pytest.raises(RuntimeError, match="Failed to add MCP server 'old'"):
-            copilot.migrate_legacy_mcp_config()
-
-        assert path.read_text(encoding="utf-8") == "{not json"
         assert copilot.LEGACY_MCP_CONFIG_PATH.exists()
 
     def test_failed_write_keeps_the_legacy_side_file(self, monkeypatch):

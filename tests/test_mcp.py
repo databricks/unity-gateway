@@ -3293,7 +3293,6 @@ class TestRevertMcpConfigs:
     def test_commented_copilot_config_without_its_cli_does_not_stop_the_revert(
         self, monkeypatch, capsys
     ):
-        monkeypatch.setattr(mcp.copilot.shutil, "which", lambda binary: None)
         user_config = mcp.copilot.copilot_mcp_config_path()
         user_config.parent.mkdir(parents=True, exist_ok=True)
         jsonc = '{\n  // mine\n  "mcpServers": {"svc": {"type": "local"}}\n}\n'
