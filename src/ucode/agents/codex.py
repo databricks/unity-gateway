@@ -999,18 +999,23 @@ def _sync_desktop_relay(
         relay_port = _service_port("relay-port")
         if provider is None or workspace is None:
             # Config first, so a failed write leaves the app's relay still served.
-            if isinstance(current, dict) and isinstance(providers, dict):
+            owned = isinstance(current, dict) and isinstance(providers, dict)
+            # The selector goes even without its table (e.g. removed by hand): Codex can't start
+            # a chat on a provider it can't find.
+            selected = doc.get("model_provider") == CODEX_APP_RELAY_PROVIDER_NAME
+            if owned:
                 del providers[CODEX_APP_RELAY_PROVIDER_NAME]
                 if not providers:
                     del doc["model_providers"]
-                if doc.get("model_provider") == CODEX_APP_RELAY_PROVIDER_NAME:
-                    del doc["model_provider"]
+            if selected:
+                del doc["model_provider"]
+            if owned or selected:
                 write_toml_file(_legacy_config_path(), doc)
             if tracing and workspace and relay_port:
                 _ensure_otel_service(workspace, _service_port("port") or _allocate_otel_port())
             elif not tracing:
                 _remove_otel_service()
-            return isinstance(current, dict)
+            return owned or selected
         if (
             doc.get("model_provider", CODEX_APP_RELAY_PROVIDER_NAME)
             != CODEX_APP_RELAY_PROVIDER_NAME

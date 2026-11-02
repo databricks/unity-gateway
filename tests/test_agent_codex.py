@@ -2495,6 +2495,18 @@ class TestCodexManagedConfig:
         assert codex._sync_desktop_relay({}, WS, "cat.s.mps") is False
         assert app_path.read_text() == ""
 
+    @pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
+    def test_desktop_relay_removal_drops_a_dangling_selector(self, tmp_path, monkeypatch):
+        # With the table already gone, a leftover selector would leave Codex unable to start.
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        app_path = codex._legacy_config_path()
+        app_path.parent.mkdir(parents=True, exist_ok=True)
+        app_path.write_text('model_provider = "DatabricksRelay"\nmodel = "gpt-5"\n')
+
+        assert codex._sync_desktop_relay({}, None, None) is True
+        assert read_toml_safe(app_path) == {"model": "gpt-5"}
+        assert codex._sync_desktop_relay({}, None, None) is False
+
     def test_desktop_relay_service_argv_includes_relay_port(self, tmp_path, monkeypatch):
         self._sudo_counting_env(tmp_path, monkeypatch)
         ensure = Mock()
