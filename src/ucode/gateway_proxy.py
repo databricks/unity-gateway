@@ -41,6 +41,7 @@ from urllib.parse import unquote
 
 import httpx
 
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
 from ucode.env import env_bool
 from ucode.workspace import workspace_headers
 
@@ -216,6 +217,10 @@ def forwarded_request_headers(
         key: value for key, value in handler.headers.items() if key.lower() not in strip_on_forward
     }
     headers[token_header] = f"Bearer {token}"
+    # Don't let httpx's default `Accept-Encoding: gzip, deflate` ask for a compressed body the
+    # client never requested: the response is relayed raw, and Codex can't decode gzip.
+    if not any(key.lower() == "accept-encoding" for key in headers):
+        headers["Accept-Encoding"] = "identity"
     return headers
 
 
@@ -659,19 +664,31 @@ def _start_proxy(
     return server, cache, client
 
 
+# Each subscription relay's gateway route and request handler, by agent; another relayed
+# provider (e.g. Copilot's) adds an entry here.
+_RELAY_ROUTES: dict[str, tuple[str, type[_ProxyHandler]]] = {
+    AGENT_CLAUDE: ("ai-gateway/anthropic/", _RelayProxyHandler),
+    # Plain forwarding: the Anthropic hybrid reroute doesn't apply.
+    AGENT_CODEX: ("ai-gateway/codex/", _ProxyHandler),
+}
+
+
 def start_relay_proxy(
     workspace: str,
     token_provider: Callable[[bool], str],
     port: int,
+    *,
+    agent: str = AGENT_CLAUDE,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
-    """Start the Claude subscription relay proxy."""
+    """Start ``agent``'s subscription relay proxy (see ``_RELAY_ROUTES``)."""
+    upstream_path, handler_type = _RELAY_ROUTES[agent]
     return _start_proxy(
         workspace,
         token_provider,
         port,
-        upstream_path="ai-gateway/anthropic/",
+        upstream_path=upstream_path,
         token_header=AI_GATEWAY_TOKEN_HEADER,
-        handler_type=_RelayProxyHandler,
+        handler_type=handler_type,
         force_refresh_near_expiry=False,
     )
 
