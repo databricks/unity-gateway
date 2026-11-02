@@ -869,30 +869,30 @@ class TestSubcommandRouting:
     @pytest.mark.parametrize(
         ("launch_args", "launch_env", "expected_version", "routed_tools"),
         [
-            ([], {}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, {"claude", "codex"}),
+            ([], {}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, {"claude"}),
             (
                 [],
                 {"ENABLE_SMART_ROUTING_V2": "1"},
                 smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-                {"claude", "codex"},
+                {"claude"},
             ),
             (
                 [],
                 {"ENABLE_SMART_ROUTING_V2": "0"},
                 smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-                {"claude", "codex"},
+                {"claude"},
             ),
             (
                 [],
                 {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0"},
                 smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-                {"claude", "codex"},
+                {"claude"},
             ),
             (
                 [],
                 {"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"},
                 smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-                {"claude", "codex"},
+                {"claude"},
             ),
             (
                 [],
@@ -960,6 +960,85 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         assert observed == [(tool in routed_tools, expected_env)]
         assert _routing_env() == env_before
+
+    @pytest.mark.parametrize(
+        ("tool", "launch_args", "launch_env", "managed_routing", "warned", "routed"),
+        [
+            ("codex", ["--enable-smart-routing"], {}, False, True, False),
+            ("codex", [], {}, True, True, False),
+            (
+                "codex",
+                ["--enable-smart-routing"],
+                {"SMART_ROUTER_CONFIG_VERSION": smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY},
+                False,
+                True,
+                False,
+            ),
+            (
+                "codex",
+                ["--enable-smart-routing"],
+                {"SMART_ROUTER_CONFIG_VERSION": smart_routing_config.SUBAGENT_ORCH_V0},
+                False,
+                False,
+                True,
+            ),
+            (
+                "codex",
+                [],
+                {"SMART_ROUTER_CONFIG_VERSION": smart_routing_config.SUBAGENT_ORCH_V0},
+                True,
+                False,
+                True,
+            ),
+            ("codex", [], {}, False, False, False),
+            ("codex", ["--disable-smart-routing"], {}, False, False, False),
+            ("codex", ["--disable-smart-routing"], {}, True, False, False),
+            ("codex", ["--enable-smart-routing", "app"], {}, False, False, False),
+            ("claude", ["--enable-smart-routing"], {}, False, False, True),
+            ("claude", [], {}, True, False, True),
+        ],
+        ids=[
+            "codex-enable-flag-default",
+            "codex-managed-default",
+            "codex-enable-flag-claude-only-version",
+            "codex-enable-flag-routing-version",
+            "codex-managed-routing-version",
+            "codex-no-routing",
+            "codex-disable-flag",
+            "codex-disable-flag-over-managed",
+            "codex-native-subcommand",
+            "claude-enable-flag",
+            "claude-managed-default",
+        ],
+    )
+    def test_warns_once_and_launches_unrouted_when_version_leaves_codex_unrouted(
+        self, monkeypatch, tool, launch_args, launch_env, managed_routing, warned, routed
+    ):
+        for name, value in launch_env.items():
+            monkeypatch.setenv(name, value)
+        managed = (
+            {"enabled_agents": {tool: {"smart_routing_enabled": True}}} if managed_routing else None
+        )
+        warnings: list[str] = []
+        notes: list[str] = []
+        monkeypatch.setattr(cli_mod, "print_warning", warnings.append)
+        monkeypatch.setattr(cli_mod, "print_note", notes.append)
+        observed = []
+
+        with _launch_policy_patches(managed) as calls:
+            calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
+                options.launch_smart_routing
+            )
+            result = runner.invoke(app, [tool, *launch_args])
+
+        assert result.exit_code == 0, result.output
+        unsupported = [
+            "Smart routing on Codex is currently not supported. Running without smart routing."
+        ]
+        assert [w for w in warnings if "Smart routing on" in w] == (unsupported if warned else [])
+        # An unrouted launch never reaches the routed path that installs skills and hooks.
+        assert observed == [routed]
+        assert any("one-time hook review" in note for note in notes) is routed
 
     @pytest.mark.parametrize(
         ("version", "launch_args", "routed"),

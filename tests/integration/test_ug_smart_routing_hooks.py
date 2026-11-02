@@ -22,6 +22,7 @@ from utils.evidence import (
     read_jsonl,
     tool_outputs,
 )
+from utils.harness import ANSI
 from utils.managed import MANAGED_CONFIG_FIXTURES, use_smart_routing_fixture
 from utils.request_recorder import TuiRequestRecorder, served_inference_request
 from utils.terminal import AgentTerminal
@@ -868,9 +869,11 @@ def test_smart_router_managed_default_leaves_codex_unrouted_at_launch(
     the Claude-only default preset, then spawn one tagged child in the real TUI without touching
     the Smart Router skill.
 
-    Expected: the launch installs only `smart-router` (no Smart Router Orchestrator). The tagged
-    calculation completes in a native child session with no subagent-routing banner, produces no
-    live gateway decision, and no first-prompt interposer starts.
+    Expected: ug warns that smart routing on Codex is not supported and launches as a plain,
+    unrouted Codex session: neither `smart-router` nor Smart Router Orchestrator is installed in
+    the fresh home. The tagged calculation completes in a native child session with no
+    subagent-routing banner, produces no live gateway decision, and no first-prompt interposer
+    starts.
     """
     session = live_session
     _select_smart_router_version(session, "codex", workspace, tmp_path, False, MANAGED_DEFAULT)
@@ -886,14 +889,22 @@ def test_smart_router_managed_default_leaves_codex_unrouted_at_launch(
         session, "codex", [str(session.binary), "codex"], "smart-router-managed-default"
     ) as tui:
         tui.boot()
-        installed_skills = sorted(
-            path.name
-            for path in (session.home / SKILL_ROOTS["codex"]).iterdir()
-            if path.is_dir() and path.name != ".system"
+        skill_root = session.home / SKILL_ROOTS["codex"]
+        installed_skills = (
+            sorted(
+                path.name
+                for path in skill_root.iterdir()
+                if path.is_dir() and path.name != ".system"
+            )
+            if skill_root.is_dir()
+            else []
         )
-        assert installed_skills == ["smart-router"], installed_skills
+        assert "smart-router" not in installed_skills, installed_skills
+        assert "smart-router-orchestrator" not in installed_skills, installed_skills
         _run_calculation(tui, session, "codex", "1+1", "2", False, routed=False)
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
+    launch_text = " ".join(ANSI.sub("", transcript).split())
+    assert "Smart routing on Codex is currently not supported." in launch_text, transcript
     session.assert_not_routed()

@@ -774,7 +774,8 @@ Preset parameterization augments only routing hooks, skill toggles, and first-pr
 their original legacy-env cases remain, and the Claude skill toggles add a managed-default case in
 which `smart_routing.enabled` alone routes Claude subagents with Smart Router Orchestrator and no
 first-prompt wrapper starts. Codex's managed default is covered by its launch-only opt-out test,
-`test_smart_router_managed_default_leaves_codex_unrouted_at_launch`. The skill toggles' legacy-env cases load the `_off` copy of the
+`test_smart_router_managed_default_leaves_codex_unrouted_at_launch`, which requires the
+unsupported warning in the launch output and neither Smart Router skill installed. The skill toggles' legacy-env cases load the `_off` copy of the
 workspace's routing fixture (`claude_smart_routing_off.json`, `codex_smart_routing_off.json`, or
 `codex_smart_routing_ca_off.json`): the same models without `smart_routing`, because managed
 smart routing overrides individual routing env vars.

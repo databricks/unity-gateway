@@ -226,6 +226,32 @@ def test_enabled_version_keeps_a_known_version(agent, version):
     assert applied == inherited
 
 
+@pytest.mark.parametrize(
+    ("selector", "routes"),
+    [
+        (None, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
+        ("unsupported_version", {AGENT_CLAUDE: True, AGENT_CODEX: False}),
+        (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
+        *(
+            (version, {AGENT_CLAUDE: True, AGENT_CODEX: True})
+            for version in sorted(set(config._VERSIONS) - {config.SUBAGENT_ORCH_V0_CLAUDE_ONLY})
+        ),
+    ],
+)
+def test_enabled_version_routes(selector, routes):
+    env = {ENABLE_SMART_ROUTING_ENV_VAR: "1", ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}
+    if selector is not None:
+        env[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = selector
+    before = env.copy()
+
+    for agent, expected in routes.items():
+        assert config.enabled_version_routes(env, agent=agent) is expected
+        applied = env.copy()
+        config.apply_enabled_version(applied, agent=agent)
+        assert v2.smart_routing_enabled(applied, default=False, agent=agent) is expected
+    assert env == before
+
+
 @pytest.mark.parametrize("agent, enabled", [(AGENT_CLAUDE, "1"), (AGENT_CODEX, "0")])
 def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabled, tmp_path):
     monkeypatch.setitem(
