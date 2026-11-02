@@ -310,6 +310,11 @@ without waiting, listing errors, the `skip_model_discovery` and `skip_preflight`
 of the process-local probe and listing caches. This suite does not assert live request overlap,
 probe/listing timing, or launch-time savings.
 
+Reusing a recent gateway check across discovery-skipping launches is covered only by component
+tests in `../test_cli.py`: reuse, the 15-minute window, credential changes, incomplete checks,
+`--refresh`, and launches that run discovery. This suite does not assert live reuse or
+launch-time savings.
+
 The sudo-session regression checks live in `../test_managed_files.py` and `../test_cli.py`.
 They cover shared-worker invocation counts, shutdown/cancellation, and temporary-file failure
 handling without sudo.

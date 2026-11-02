@@ -6871,6 +6871,106 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
         assert len(requests) == 2
 
 
+class TestConfigureSharedStateReusesRecentGatewayCheck:
+    """A launch that skips model discovery reuses a recent gateway probe and web-search lookup."""
+
+    WS = "https://example.databricks.com"
+
+    @pytest.fixture
+    def launch(self, monkeypatch):
+        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+        # Each call sees only what the previous launch saved, through a JSON round trip like disk.
+        saved: dict = {}
+        monkeypatch.setattr(cli_mod, "load_state", lambda: json.loads(saved.get("state", "{}")))
+        monkeypatch.setattr(
+            cli_mod, "save_state", lambda state: saved.__setitem__("state", json.dumps(state))
+        )
+        self.requests: list[str] = []
+        self.probe = MODEL_SERVICE_PROBE
+        self.web_search_models = ["system.ai.gpt-5"]
+
+        def probe(workspace, token):
+            self.requests.append("probe")
+            return self.probe
+
+        def web_search_lookup(workspace, token):
+            self.requests.append("web search")
+            return list(self.web_search_models), None
+
+        monkeypatch.setattr(cli_mod, "probe_unity_gateway_capabilities", probe)
+        monkeypatch.setattr(cli_mod, "discover_codex_models", web_search_lookup)
+
+        def run(*, profile="DEFAULT", reuse=True, skip_model_discovery=True):
+            return cli_mod.configure_shared_state(
+                self.WS,
+                profile=profile,
+                tools=["claude"],
+                skip_model_discovery=skip_model_discovery,
+                reuse_recent_gateway_check=reuse,
+            )
+
+        return run
+
+    def test_second_launch_reuses_the_check(self, launch, capsys):
+        first = launch()
+        second = launch()
+
+        assert sorted(self.requests) == ["probe", "web search"]
+        assert first["web_search_model"] == second["web_search_model"] == "system.ai.gpt-5"
+        output = _strip_ansi(capsys.readouterr().out)
+        assert output.count("Unity Gateway connected") == 2
+
+    def test_reuse_keeps_the_original_check_time(self, launch):
+        checked_at = launch()["launch_gateway_check"]["checked_at"]
+
+        assert launch()["launch_gateway_check"]["checked_at"] == checked_at
+
+    def test_refresh_and_configure_probe_again(self, launch):
+        launch()
+        launch(reuse=False)
+
+        assert sorted(self.requests) == ["probe", "probe", "web search", "web search"]
+
+    def test_expired_check_probes_again(self, launch, monkeypatch):
+        import ucode.cli as cli_mod
+
+        launch()
+        monkeypatch.setattr(cli_mod, "LAUNCH_GATEWAY_CHECK_MAX_AGE_SECONDS", 0)
+        launch()
+
+        assert sorted(self.requests) == ["probe", "probe", "web search", "web search"]
+
+    def test_other_credentials_probe_again(self, launch):
+        launch(profile="DEFAULT")
+        launch(profile="OTHER")
+
+        assert sorted(self.requests) == ["probe", "probe", "web search", "web search"]
+
+    @pytest.mark.parametrize("failure", ["no model service", "no web-search model"])
+    def test_incomplete_check_is_not_reused(self, launch, failure):
+        if failure == "no model service":
+            self.probe = GatewayProbe(True, "reachable, no accessible model services returned")
+        else:
+            self.web_search_models = []
+        launch()
+        launch()
+
+        assert sorted(self.requests) == ["probe", "probe", "web search", "web search"]
+
+    def test_launch_with_model_discovery_always_probes(self, launch, monkeypatch):
+        import ucode.cli as cli_mod
+
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: self.requests.append("listing") or ({}, ["system.ai.gpt-5"], [], [], None),
+        )
+        launch(skip_model_discovery=False)
+        launch(skip_model_discovery=False)
+
+        assert self.requests.count("probe") == 2
+
+
 class TestConfigureNoLongerValidates:
     @pytest.fixture(autouse=True)
     def _no_managed_config(self, monkeypatch):
@@ -7307,6 +7407,16 @@ class TestSkipPreflightFlag:
             result = runner.invoke(app, [tool, "--skip-preflight"])
         assert result.exit_code == 0, result.output
         assert cfg.call_args.kwargs["skip_preflight"] is True
+
+    @pytest.mark.parametrize(("args", "reuse"), [([], True), (["--refresh"], False)])
+    def test_refresh_flag_skips_recent_gateway_check(self, args, reuse):
+        cfg = MagicMock(return_value=MINIMAL_STATE)
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(cfg):
+                stack.enter_context(p)
+            result = runner.invoke(app, ["claude", *args])
+        assert result.exit_code == 0, result.output
+        assert cfg.call_args.kwargs["reuse_recent_gateway_check"] is reuse
 
     @pytest.mark.parametrize("tool", ["codex", "gemini"])
     def test_absent_flag_defaults_false(self, tool):

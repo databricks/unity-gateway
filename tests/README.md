@@ -484,6 +484,13 @@ no Claude model starts no worker. The skip-preflight tests also reject starting 
 worker. These component checks control the HTTP boundary with events; they do not establish
 live gateway timing, agent launch, or launch-time savings.
 
+`TestConfigureSharedStateReusesRecentGatewayCheck` in `test_cli.py` checks that a launch that
+skips model discovery reuses a recent passing gateway probe and web-search lookup without moving
+its check time, and checks again without reuse (`--refresh`, configure), after the window, for
+other credentials, after an incomplete check, and whenever discovery runs. `TestSkipPreflightFlag`
+checks that `--refresh` turns reuse off. These component checks do not establish live gateway
+timing or launch-time savings.
+
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,
 the four-worker limit, active and queued cancellation, isolated worker errors, and
