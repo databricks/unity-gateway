@@ -11,25 +11,72 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from typing import TYPE_CHECKING, Any
 
-import questionary
-from prompt_toolkit.formatted_text import to_formatted_text
-from prompt_toolkit.layout.containers import Window
-from prompt_toolkit.layout.dimension import Dimension
-from questionary.constants import INDICATOR_SELECTED, INDICATOR_UNSELECTED
-from questionary.prompts.common import InquirerControl
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn
 
-from ucode.ui.interactive_picker import _BACK as _BACK
-from ucode.ui.interactive_picker import PICKER_VISIBLE_ROWS as PICKER_VISIBLE_ROWS
-from ucode.ui.interactive_picker import StreamingInquirerControl as StreamingInquirerControl
-from ucode.ui.interactive_picker import _Back as _Back
-from ucode.ui.interactive_picker import merge_new_choices as merge_new_choices
-from ucode.ui.interactive_picker import picker_style as picker_style
-from ucode.ui.interactive_picker import scrolling_checkbox as scrolling_checkbox
+if TYPE_CHECKING:
+    import questionary
+
+
+class _Back:
+    """A wizard's back-navigation result, distinct from cancellation or an empty selection."""
+
+
+_BACK = _Back()
+PICKER_VISIBLE_ROWS = 10
+
+
+def __getattr__(name: str) -> Any:
+    # Preserve presentation imports without loading the interactive stack on every CLI invocation.
+    if name == "questionary":
+        import questionary
+
+        return questionary
+    if name in {"StreamingInquirerControl", "merge_new_choices"}:
+        from ucode.ui import interactive_picker
+
+        return getattr(interactive_picker, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def picker_style() -> questionary.Style:
+    from ucode.ui.interactive_picker import picker_style as make_style
+
+    return make_style()
+
+
+def scrolling_checkbox(
+    message: str,
+    choices: list[questionary.Choice | questionary.Separator],
+    instruction: str,
+    style: questionary.Style,
+    allow_back: bool = False,
+    background_loader: Callable[
+        [Callable[[list[questionary.Choice]], None], threading.Event], str | None
+    ]
+    | None = None,
+    loading_noun: str = "MCP services",
+    show_description: bool = False,
+    table: bool = False,
+) -> questionary.Question:
+    from ucode.ui.interactive_picker import scrolling_checkbox as make_checkbox
+
+    return make_checkbox(
+        message,
+        choices,
+        instruction,
+        style,
+        allow_back,
+        background_loader,
+        loading_noun,
+        show_description,
+        table,
+    )
+
 
 console = Console(highlight=False)
 err_console = Console(stderr=True, highlight=False)
@@ -56,7 +103,7 @@ def status_subprocess_stdout() -> int | None:
 # `_cap_choice_viewport`) rather than growing to fill the terminal, and the pickers append a
 # "↑/↓ scroll" note to their instruction line. The value is both the boundary and the number of
 # rows shown at once; matches interactive_picker's PICKER_VISIBLE_ROWS so both picker families agree.
-_SCROLL_HINT_THRESHOLD = 10
+_SCROLL_HINT_THRESHOLD = PICKER_VISIBLE_ROWS
 
 
 def _with_scroll_hint(instruction: str, option_count: int) -> str:
@@ -84,6 +131,10 @@ def _cap_choice_viewport(question: questionary.Question, option_count: int) -> N
     no ``InquirerControl`` window) leaves the picker as-is rather than raising — the list still works,
     it just falls back to terminal-fit sizing.
     """
+    from prompt_toolkit.layout.containers import Window
+    from prompt_toolkit.layout.dimension import Dimension
+    from questionary.prompts.common import InquirerControl
+
     if option_count <= _SCROLL_HINT_THRESHOLD:
         return
     application = getattr(question, "application", None)
@@ -391,6 +442,8 @@ def prompt_for_workspace(
     ``(url, profile_name)``; profile_name is ``None`` when the user typed a
     URL manually.
     """
+    import questionary
+
     console.print()
 
     if profiles:
@@ -445,6 +498,10 @@ def prompt_for_workspace(
 
 def _set_checkbox_markers(question: questionary.Question) -> None:
     """Replace questionary's radio-style dots on this prompt with familiar checkboxes."""
+    from prompt_toolkit.formatted_text import to_formatted_text
+    from questionary.constants import INDICATOR_SELECTED, INDICATOR_UNSELECTED
+    from questionary.prompts.common import InquirerControl
+
     # Questionary hardcodes its indicators. Wrap this control's formatted text so
     # its selection state and key bindings continue to drive the rendered markers.
     markers = {
@@ -474,6 +531,8 @@ def prompt_for_tools(
     the highlighted agent; Enter confirms only checked agents. Returns [] if the
     user submits an empty selection or cancels.
     """
+    import questionary
+
     style = questionary.Style(
         [
             # Theme-agnostic labels: agent names render in the terminal's
@@ -524,6 +583,8 @@ def prompt_for_multi_selection(
     ``searchable`` lets the user narrow a long list by typing; see
     :func:`prompt_for_selection` for why it trades away j/k navigation.
     """
+    import questionary
+
     style = questionary.Style(
         [
             ("pointer", "fg:cyan bold"),
@@ -643,6 +704,8 @@ def prompt_for_selection(
     rejects both at once, since j and k are also search characters — so it is opt-in for the pickers
     that are actually long (model and budget lists), leaving short ones on plain arrow keys.
     """
+    import questionary
+
     style = questionary.Style(
         [
             ("pointer", "fg:cyan bold"),

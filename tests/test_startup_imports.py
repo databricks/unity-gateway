@@ -20,6 +20,9 @@ _LAZY_MODULES = (
     "websockets",
     "ucode.gateway_proxy",
     "ucode.smart_routing.codex_interposer",
+    "questionary",
+    "prompt_toolkit",
+    "ucode.ui.interactive_picker",
 )
 
 
@@ -106,6 +109,64 @@ def test_installed_version_matches_importlib_metadata() -> None:
 def test_cli_import_defers_subcommand_specific_modules() -> None:
     _, loaded = _modules_loaded_after("import ucode.cli\nimport ucode.agents.claude", _LAZY_MODULES)
 
+    assert loaded == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--help"],
+        ["claude", "--help"],
+        ["auth-token", "--help"],
+        ["claude-router-hook", "route-first-prompt"],
+        ["codex-router-hook", "session-start"],
+    ],
+)
+def test_noninteractive_commands_skip_picker_imports(tmp_path, monkeypatch, arguments) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "0")
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
+    monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+    monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
+    output, loaded = _modules_loaded_after(
+        "import sys\n"
+        f"sys.argv = {['ug', *arguments]!r}\n"
+        "from ucode.entrypoint import main\n"
+        "try:\n"
+        "    main()\n"
+        "except SystemExit as exc:\n"
+        "    assert exc.code == 0, exc.code",
+        _LAZY_MODULES,
+    )
+
+    assert loaded == []
+    if "--help" in arguments:
+        assert "Usage:" in output
+    else:
+        assert output == ""
+
+
+def test_auth_token_helper_skips_picker_imports(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("DATABRICKS_BEARER", "ug-startup-test-bearer")
+    output, loaded = _modules_loaded_after(
+        "import sys\n"
+        "from contextlib import redirect_stdout\n"
+        "from io import StringIO\n"
+        "sys.argv = ['ug', 'auth-token', '--host', 'https://workspace.example.invalid']\n"
+        "from ucode.entrypoint import main\n"
+        "with redirect_stdout(StringIO()) as output:\n"
+        "    try:\n"
+        "        main()\n"
+        "    except SystemExit as exc:\n"
+        "        assert exc.code == 0, exc.code\n"
+        "assert output.getvalue() == 'ug-startup-test-bearer\\n', output.getvalue()",
+        _LAZY_MODULES,
+    )
+
+    assert output == ""
     assert loaded == []
 
 

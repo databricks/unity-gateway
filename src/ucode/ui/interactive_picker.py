@@ -30,8 +30,9 @@ from questionary.question import Question
 from questionary.styles import merge_styles_default
 
 from ucode.time_utils import parse_update_time
-
-PICKER_VISIBLE_ROWS = 10
+from ucode.ui import _BACK as _BACK
+from ucode.ui import PICKER_VISIBLE_ROWS as PICKER_VISIBLE_ROWS
+from ucode.ui import _Back as _Back
 
 # Cap the highlighted-row description preview so a long description stays within the
 # footer instead of dominating the screen.
@@ -103,15 +104,6 @@ def _detail_tokens(description: str) -> list[tuple[str, str]]:
             tokens.append(("", "\n"))
         tokens.extend(_description_footer_tokens(line))
     return tokens
-
-
-class _Back:
-    """Sentinel type: a wizard step returns the `_BACK` instance when the user
-    presses Left (←) to go back. Distinct from None (cancel) and [] (empty)."""
-
-
-# Singleton instance used everywhere; compare with `is _BACK`.
-_BACK = _Back()
 
 
 def picker_style() -> questionary.Style:

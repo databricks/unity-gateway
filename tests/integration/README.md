@@ -196,8 +196,10 @@ The shared wait also runs before CUJ4's Claude delegation sessions exit, after d
 evidence is checked, because Claude can resume a child after its first completed answer.
 
 `../test_startup_imports.py` covers the bare version fast path, deferred imports,
-metadata fallback, and other-argument dispatch as component checks. Installation
-checks still exercise real console-script help and version output; neither suite
+metadata fallback, and other-argument dispatch as component checks.
+Fresh interpreters also guard help, token-only auth output, and disabled routing hooks from importing questionary,
+prompt_toolkit, and the interactive picker; existing keyboard/component tests cover picker behavior.
+Installation checks still exercise real console-script help and version output; neither suite
 asserts end-to-end agent startup latency. The component suite also checks that
 version output alone cannot establish CLI health when startup dependencies are
 absent; use `--help` for the startup-import probe.
