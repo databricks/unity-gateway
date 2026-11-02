@@ -4572,9 +4572,10 @@ class TestEnsureDatabricksCliVersion:
         assert databricks_cli_installed() is True
         ensure_databricks_cli_version()
         ensure_databricks_cli_version(db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
-        assert db_mod.databricks_cli_version() == (1, 20, 0)
         assert Path(db_mod.databricks_cli_path()).parent == tmp_path
         assert len(probes) == 1
+        # `ug doctor` reports a freshly probed version.
+        assert db_mod.databricks_cli_version() == (1, 20, 0)
 
     def test_insufficient_cached_version_rechecks_before_upgrading(self, tmp_path, monkeypatch):
         env = self._fake_databricks(tmp_path, "Databricks CLI v1.0.0")
@@ -4607,12 +4608,134 @@ class TestEnsureDatabricksCliVersion:
         with monkeypatch.context() as installer_patch:
             installer_patch.setattr(db_mod, "run", install)
             db_mod._run_databricks_cli_installer(brew_subcommand="upgrade")
+        assert not db_mod.SAVED_CLI_VERSIONS_PATH.exists()
 
         # Check before ensure's higher-floor refresh can hide stale installer state.
         assert db_mod.databricks_cli_version() == (1, 20, 0)
         ensure_databricks_cli_version(db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
         assert db_mod.databricks_cli_version() == (1, 20, 0)
         assert installer_calls == [["brew", "upgrade", "databricks/tap/databricks"]]
+
+    def _record_probes(self, monkeypatch) -> list:
+        probes = []
+        original_run = db_mod.run
+
+        def record_probe(args, **kwargs):
+            probes.append(args)
+            return original_run(args, **kwargs)
+
+        monkeypatch.setattr(db_mod, "run", record_probe)
+        return probes
+
+    @staticmethod
+    def _start_new_process() -> None:
+        # A new ug process has no in-process discovery but reads the versions earlier ones saved.
+        clear_databricks_cli_cache(saved_versions=False)
+
+    @staticmethod
+    def _edit_saved_versions(edit) -> None:
+        saved = json.loads(db_mod.SAVED_CLI_VERSIONS_PATH.read_text())
+        for entry in saved.values():
+            edit(entry)
+        db_mod.SAVED_CLI_VERSIONS_PATH.write_text(json.dumps(saved))
+
+    def test_new_process_reuses_saved_version_without_probing(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
+        monkeypatch.setattr("os.environ", env)
+        ensure_databricks_cli_version()
+        self._start_new_process()
+        probes = self._record_probes(monkeypatch)
+
+        assert databricks_cli_installed() is True
+        ensure_databricks_cli_version()
+        ensure_databricks_cli_version(db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        assert Path(db_mod.databricks_cli_path()).parent == tmp_path
+        assert probes == []
+
+    def test_replaced_binary_is_probed_again(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.0.0")
+        monkeypatch.setattr("os.environ", env)
+        ensure_databricks_cli_version()
+        executable = Path(db_mod.databricks_cli_path())
+        self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
+        # Mark the executable as replaced even on a filesystem with coarse timestamps.
+        stat = executable.stat()
+        os.utime(executable, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+        self._start_new_process()
+        probes = self._record_probes(monkeypatch)
+
+        ensure_databricks_cli_version(db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+
+        assert len(probes) == 1
+        assert db_mod.databricks_cli_version() == (1, 20, 0)
+
+    def test_saved_version_expires_after_max_age(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
+        monkeypatch.setattr("os.environ", env)
+        ensure_databricks_cli_version()
+
+        def expire(entry):
+            entry["checked_at"] -= db_mod.SAVED_CLI_VERSION_MAX_AGE_SECONDS + 1
+
+        self._edit_saved_versions(expire)
+        self._start_new_process()
+        probes = self._record_probes(monkeypatch)
+
+        ensure_databricks_cli_version()
+
+        assert len(probes) == 1
+
+    def test_insufficient_saved_version_rechecks_before_upgrading(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
+        monkeypatch.setattr("os.environ", env)
+        ensure_databricks_cli_version()
+
+        # A wrapper such as dbexec updated the CLI it runs without changing its own file.
+        def downgrade(entry):
+            entry["version"] = [0, 299, 2]
+
+        self._edit_saved_versions(downgrade)
+        self._start_new_process()
+        monkeypatch.setattr(
+            db_mod,
+            "_run_databricks_cli_installer",
+            lambda **kwargs: pytest.fail("the installed CLI already meets the floor"),
+        )
+
+        ensure_databricks_cli_version()
+
+        saved = json.loads(db_mod.SAVED_CLI_VERSIONS_PATH.read_text())
+        assert [entry["version"] for entry in saved.values()] == [[1, 20, 0]]
+
+    def test_unparseable_version_is_not_saved(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "completely broken output")
+        monkeypatch.setattr("os.environ", env)
+
+        assert databricks_cli_installed() is True
+        assert not db_mod.SAVED_CLI_VERSIONS_PATH.exists()
+
+    def test_dry_run_saves_no_versions(self, tmp_path, monkeypatch):
+        import ucode.config_io as config_io_mod
+
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
+        monkeypatch.setattr("os.environ", env)
+        monkeypatch.setattr(config_io_mod, "_dry_run", True)
+
+        ensure_databricks_cli_version()
+
+        assert not db_mod.SAVED_CLI_VERSIONS_PATH.exists()
+
+    def test_path_refresh_keeps_saved_versions(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
+        env["LOCALAPPDATA"] = str(tmp_path / "appdata")
+        monkeypatch.setattr("os.environ", env)
+        ensure_databricks_cli_version()
+
+        # Adds the WinGet links directory to PATH; no binary was replaced.
+        db_mod._refresh_windows_path()
+
+        assert os.environ["PATH"] != str(tmp_path)
+        assert db_mod.SAVED_CLI_VERSIONS_PATH.exists()
 
     def test_auto_upgrades_when_version_too_old(self, tmp_path, monkeypatch):
         import ucode.databricks as db_mod
