@@ -50,9 +50,10 @@ from ucode.managed_files import (
     managed_settings_skipped,
     update_workspace_policy,
 )
-from ucode.os_compatibility.system_cross_os import is_admin
+from ucode.os_compatibility import system_cross_os
 from ucode.time_utils import parse_update_time
 from ucode.ui import console, normalize_workspace_url, print_warning
+from ucode.workspace import split_workspace_key, state_workspace_key
 
 MANAGED_CONFIG_PATH = UNITY_GATEWAY_MANAGED_SETTINGS_PATH
 # Per-user policy cache for platforms or modes without machine installation (Windows,
@@ -661,8 +662,12 @@ def save_managed_state(
     interactive: bool = False,
     allow_sudo: bool = False,
     sets_machine_workspace: bool = False,
+    allow_write: bool = True,
 ) -> None:
     """Install raw policy only when changed; remove a matching policy when it no longer exists.
+
+    With ``allow_write=False`` (a launch) nothing is written, even as root: a change that would
+    need a write raises :class:`RuntimeError` instead.
 
     ``sets_machine_workspace`` marks an explicit ``ug configure``, which decides the machine's
     workspace: a workspace that publishes no policy then also removes another workspace's
@@ -678,6 +683,7 @@ def save_managed_state(
     )
     if not config:
         if matches or (sets_machine_workspace and existing_workspace):
+            _require_policy_write(allow_write)
             update_workspace_policy(
                 MANAGED_CONFIG_PATH, None, interactive=interactive, allow_sudo=allow_sudo
             )
@@ -689,6 +695,7 @@ def save_managed_state(
         and _policy_content(existing_config) == _policy_content(config)
     ):
         return
+    _require_policy_write(allow_write)
     payload = {"workspace": workspace, "config": config}
     update_workspace_policy(
         MANAGED_CONFIG_PATH,
@@ -696,6 +703,13 @@ def save_managed_state(
         interactive=interactive,
         allow_sudo=allow_sudo,
     )
+
+
+def _require_policy_write(allow_write: bool) -> None:
+    if not allow_write:
+        raise RuntimeError(
+            "Workspace policy updates are only made by `ug configure`, never by a launch."
+        )
 
 
 def revert_machine_policy() -> str:
@@ -871,8 +885,8 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     refreshes on a timer, so an admin's edit reaches a machine with the next ``ug configure``.
     ``force_refresh`` (explicit configuration) always reads fresh. The installed policy changes
     only when the workspace or configuration changes; unchanged reads update only refresh metadata.
-    Only explicit configuration may invoke sudo. Non-root launches are read-only regardless of
-    terminal attachment or cached sudo access; root launches can install without sudo.
+    Only explicit configuration writes the machine policy. Launches are read-only regardless of
+    privilege, terminal attachment, or cached sudo access.
 
     The installed workspace is authoritative for launches; mismatched selections fail before
     saved reads or remote requests. Explicit configure can change the machine workspace.
@@ -882,13 +896,11 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     No-config and ``FEATURE_DISABLED`` remove a matching installed policy; if removal fails, launches
     keep using it with a warning rather than pretending it was removed.
     """
-    workspace = (
-        state.get("workspace")
-        if force_refresh
-        else managed_launch_workspace(state.get("workspace"))
-    )
+    selected = state_workspace_key(state)
+    workspace = selected if force_refresh else managed_launch_workspace(selected)
     if not workspace:
         return ManagedConfigResult(None, False)
+    host = split_workspace_key(workspace)[0]
     if not _machine_policy_installable() and _installed_config(workspace) is None:
         return _refresh_user_cache(state, workspace, force_refresh=force_refresh)
     if config_io.is_dry_run() and not force_refresh:
@@ -898,10 +910,10 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
         if cached is not None:
             return cached
     try:
-        token = get_databricks_token(workspace, state.get("profile"))
+        token = get_databricks_token(host, state.get("profile"))
     except RuntimeError as exc:
         return ManagedConfigResult(_persisted_fallback(workspace, str(exc)), False)
-    raw, reason = get_managed_config(workspace, token)
+    raw, reason = get_managed_config(host, token)
     if reason is not None:
         if not _is_feature_disabled(reason):
             fallback = _persisted_fallback(workspace, reason, refused=_is_permission_denied(reason))
@@ -924,6 +936,7 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
             interactive=force_refresh,
             allow_sudo=force_refresh,
             sets_machine_workspace=force_refresh,
+            allow_write=force_refresh,
         )
     except RuntimeError as exc:
         if force_refresh and _machine_policy_installable():
@@ -955,6 +968,11 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
                     f"installed policy at {MANAGED_CONFIG_PATH} was not updated. Run `ug configure` "
                     f"without {SKIP_OS_SETTINGS_ENV} as an administrator. {fallback_message}"
                 )
+            elif system_cross_os.is_admin():
+                print_warning(
+                    "Your workspace policy changed. Run `ug configure` to apply the update on "
+                    f"this machine. {fallback_message}"
+                )
             else:
                 print_warning(
                     "Your workspace policy changed. Ask your IT team or an administrator to apply "
@@ -981,9 +999,9 @@ def _machine_policy_installable() -> bool:
 
 
 def _can_install_policy(explicit_configure: bool) -> bool:
-    """Whether this run may install the machine policy: root, or an explicit ``ug configure``
-    (which may use sudo). A non-root launch never does."""
-    return _machine_policy_installable() and (explicit_configure or is_admin())
+    """Whether this run may install the machine policy: only an explicit ``ug configure``.
+    A launch never does, regardless of privilege."""
+    return _machine_policy_installable() and explicit_configure
 
 
 def _refresh_user_cache(state: dict, workspace: str, *, force_refresh: bool) -> ManagedConfigResult:
@@ -998,10 +1016,10 @@ def _refresh_user_cache(state: dict, workspace: str, *, force_refresh: bool) -> 
         if cached is not None:
             return cached
     try:
-        token = get_databricks_token(workspace, state.get("profile"))
+        token = get_databricks_token(split_workspace_key(workspace)[0], state.get("profile"))
     except RuntimeError as exc:
         return ManagedConfigResult(_persisted_fallback(workspace, str(exc)), False)
-    raw, reason = get_managed_config(workspace, token)
+    raw, reason = get_managed_config(split_workspace_key(workspace)[0], token)
     if reason is not None:
         if _is_feature_disabled(reason):
             _save_user_cache(workspace, {}, outcome=_OUTCOME_FEATURE_DISABLED)

@@ -24,6 +24,7 @@ _REAL_SUDO_REPLACE = managed_files._sudo_replace
 _REAL_MANAGED_FILES_SUPPORTED = managed_files.managed_files_supported
 _REAL_WINDOWS_REPLACE = managed_files._windows_replace
 _REAL_SUBPROCESS_RUN = managed_files.subprocess_cross_os.run
+_REAL_SUDO_NEEDS_PASSWORD = managed_files._sudo_needs_password
 
 
 @pytest.fixture(autouse=True)
@@ -762,7 +763,7 @@ class TestWorkspacePolicyWriter:
         managed_files.update_workspace_policy(
             policy_path, "new", interactive=True, allow_sudo=False
         )
-        assert calls[0][0:2] == ["/bin/sh", "-c"]
+        assert calls[0][0:4] == ["/usr/bin/env", "SUDO_UID=0", "/bin/sh", "-c"]
 
     def test_policy_dry_run_never_invokes_sudo(self, policy_path, monkeypatch):
         config_io.set_dry_run(True)
@@ -789,6 +790,8 @@ class TestWorkspacePolicyWriter:
 
 
 class TestWorkspacePolicyAsRoot:
+    _real_replace = staticmethod(managed_files._sudo_replace)
+
     def test_direct_root_run_points_sudo_uid_at_root(self, tmp_path, monkeypatch):
         """Under `sudo ug configure` SUDO_UID names the caller, but root owns the temp source."""
         path = tmp_path / "unitygateway" / "managed-settings.json"
@@ -809,9 +812,34 @@ class TestWorkspacePolicyAsRoot:
 
         managed_files.update_workspace_policy(path, '{"a": 1}\n', interactive=True)
 
-        command, kwargs = calls[0]
-        assert command[0] == "/bin/sh"
-        assert kwargs["env"]["SUDO_UID"] == "0"
+        command, _kwargs = calls[0]
+        assert command[0:3] == ["/usr/bin/env", "SUDO_UID=0", "/bin/sh"]
+
+    @pytest.mark.parametrize("interactive", [False, True], ids=["headless", "interactive"])
+    def test_agent_settings_writes_point_sudo_uid_at_root_too(
+        self, tmp_path, monkeypatch, interactive
+    ):
+        """The same direct-root rule for Claude/Codex managed settings, one-shot or not."""
+        path = tmp_path / "managed-settings.json"
+        monkeypatch.setattr(managed_files, "_validate_sudo_replace_target", lambda _path: None)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        monkeypatch.setattr(managed_files.os, "geteuid", lambda: 0, raising=False)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: interactive)
+        monkeypatch.setenv("SUDO_UID", "1000")
+        managed_files.request_explicit_managed_writes()
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run)
+        # Undo conftest's guard to reach the real one-shot writer.
+        monkeypatch.setattr(managed_files, "_sudo_replace", TestWorkspacePolicyAsRoot._real_replace)
+
+        managed_files._sudo_replace(path, "{}")
+
+        assert calls[0][0:3] == ["/usr/bin/env", "SUDO_UID=0", "/bin/sh"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="The managed writer is Unix-only")
@@ -1272,13 +1300,15 @@ class TestManagedWriteSkippedWarning:
         monkeypatch.setattr(managed_files, "print_warning", captured.append)
         return captured
 
-    def test_configure_names_the_file_it_could_not_write(self, warnings, tmp_path):
+    def test_batched_setup_names_the_file_it_could_not_write(self, warnings, tmp_path):
         path = tmp_path / "requirements.toml"
 
         with managed_files.managed_write_batch(["Codex"]):
             managed_files.warn_managed_write_skipped(path, {}, {"model_provider": "Databricks"})
 
-        assert warnings == [f"{path} wasn't updated because no admin privileges were detected."]
+        assert warnings == [
+            f"{path} wasn't updated: this run has no terminal to approve sudo. Run `ug configure` to update it."
+        ]
 
     def test_dry_run_stays_quiet(self, warnings, monkeypatch, tmp_path):
         monkeypatch.setattr(managed_files, "is_dry_run", lambda: True)
@@ -1970,15 +2000,27 @@ def test_revert_semantic_noop_preserves_bytes_without_sudo(tmp_path, backup_dir,
     assert path.read_text() == admin_text  # exact bytes preserved
 
 
+@pytest.mark.parametrize("command", [None, "ug configure", "ug revert"])
+@pytest.mark.parametrize("os_name", ["LINUX", "WINDOWS"])
 @pytest.mark.parametrize(
     ("interactive", "repair_existing", "expected"),
     [(False, False, False), (False, True, True), (True, False, True)],
 )
-def test_managed_writes_policy(monkeypatch, interactive, repair_existing, expected):
+def test_managed_writes_policy(
+    monkeypatch, command, os_name, interactive, repair_existing, expected
+):
+    # `ug configure` and `ug revert` always attempt the write; the write settles privilege.
+    monkeypatch.setattr(managed_files, "current_os", lambda: getattr(managed_files.OS, os_name))
     monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: interactive)
+    managed_files.request_explicit_managed_writes(command)
+    # Windows has no sudo to prompt with: only an elevated process (not this one) may write.
+    other_run = interactive and os_name == "LINUX"
+    repair = expected and os_name == "LINUX"
 
-    assert managed_files.managed_writes_allowed() is interactive
-    assert managed_files.managed_writes_allowed(repair_existing=repair_existing) is expected
+    assert managed_files.managed_writes_allowed() is (command is not None or other_run)
+    assert managed_files.managed_writes_allowed(repair_existing=repair_existing) is (
+        command is not None or repair
+    )
 
 
 @pytest.mark.parametrize("interactive", [False, True])
@@ -1987,3 +2029,65 @@ def test_sudo_command_derives_prompt_policy(monkeypatch, interactive):
 
     expected = ["/usr/bin/sudo", *([] if interactive else ["-n"]), "cp", "a", "b"]
     assert managed_files._sudo_command("cp", "a", "b") == expected
+
+
+class TestPasswordNote:
+    @pytest.fixture(autouse=True)
+    def _real_check(self, monkeypatch):
+        monkeypatch.setattr(managed_files, "_sudo_needs_password", _REAL_SUDO_NEEDS_PASSWORD)
+        monkeypatch.setattr(managed_files, "_sudo_needs_password_cache", None)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+
+    @staticmethod
+    def _fake_sudo(monkeypatch, returncode):
+        commands: list[list[str]] = []
+
+        def run(command, **kwargs):
+            commands.append(command)
+            return subprocess.CompletedProcess(command, returncode)
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run)
+        return commands
+
+    def test_passwordless_sudo_suppresses_the_note_and_is_checked_once(self, monkeypatch):
+        notes: list[str] = []
+        commands = self._fake_sudo(monkeypatch, 0)
+        monkeypatch.setattr(managed_files, "print_note", notes.append)
+
+        managed_files._print_managed_write_permission("Claude Code")
+        managed_files._print_managed_write_permission("Codex")
+
+        assert notes == []
+        assert commands == [["/usr/bin/sudo", "-n", "true"]]
+
+    def test_sudo_needing_a_password_still_prints_the_note(self, monkeypatch):
+        notes: list[str] = []
+        self._fake_sudo(monkeypatch, 1)
+        monkeypatch.setattr(managed_files, "print_note", notes.append)
+
+        managed_files._print_managed_write_permission("Codex")
+
+        assert notes == ["Enter password to configure settings for Codex."]
+
+    def test_passwordless_batch_still_reports_success(self, monkeypatch):
+        successes: list[str] = []
+        self._fake_sudo(monkeypatch, 0)
+        monkeypatch.setattr(managed_files, "print_note", lambda _message: None)
+        monkeypatch.setattr(managed_files, "print_success", successes.append)
+
+        with managed_files.managed_write_batch(["Codex"]):
+            managed_files._print_managed_write_permission("Codex")
+
+        assert successes == ["Settings configured for Codex"]
+
+    def test_no_sudo_call_on_windows_or_in_dry_run(self, monkeypatch):
+        commands = self._fake_sudo(monkeypatch, 0)
+
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
+        assert managed_files._sudo_needs_password() is True
+
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        config_io.set_dry_run(True)
+        assert managed_files._sudo_needs_password() is True
+
+        assert commands == []

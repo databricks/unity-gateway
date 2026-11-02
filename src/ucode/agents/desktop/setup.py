@@ -20,6 +20,7 @@ from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_
 from ucode.databricks import build_tool_base_url, get_databricks_token, list_anthropic_model_catalog
 from ucode.state import get_provider_service
 from ucode.ui import print_note, print_success, print_warning
+from ucode.workspace import workspace_headers, workspace_id_args
 
 _CLAUDE_MODEL_PATTERN = re.compile(r"\bclaude-", re.IGNORECASE)
 
@@ -111,7 +112,10 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
         headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
     elif parent_schema:
         headers[MODEL_SERVICE_PARENT_SCHEMA_HEADER] = parent_schema
-    for name, value in (state.get("claude_http_headers") or {}).items():
+    for name, value in {
+        **(state.get("claude_http_headers") or {}),
+        **workspace_headers(workspace),
+    }.items():
         existing = next((key for key in headers if key.casefold() == name.casefold()), None)
         if existing:
             del headers[existing]
@@ -143,6 +147,7 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
             "otel-headers",
             "--host",
             workspace,
+            *workspace_id_args(workspace),
             "--profile",
             profile,
         ],

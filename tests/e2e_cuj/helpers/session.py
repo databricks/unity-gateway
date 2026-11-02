@@ -68,11 +68,11 @@ class UserSession(IntegrationSession):
         return re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/-]+=*", r"\1<redacted>", text)
 
     def configure(self, args):
-        """Configure without a PTY so CI uses isolated user-local settings."""
+        """Configure headlessly, as a provisioning script would.
+
+        Like an interactive run, this writes the machine-wide agent settings and workspace policy;
+        the `cuj` fixture's teardown reverts them and asserts nothing is left behind."""
         self.run(*args, timeout=240)
-        assert not any(path.exists() for path in constants.MANAGED_PATHS), (
-            "Non-interactive CUJ configure unexpectedly created machine-wide settings"
-        )
 
     def revert_machine_wide(self, name, message):
         state_dir = self.home / ".ucode"
