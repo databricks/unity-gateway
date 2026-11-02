@@ -66,7 +66,7 @@ from ucode.ui import (
     spinner,
 )
 from ucode.ui.interactive_picker import CatalogChoice, picker_details
-from ucode.workspace import state_workspace_key
+from ucode.workspace import state_workspace_key, workspace_headers
 
 # Workspace-relative path fragments for the V2 AI Gateway MCP endpoints, shared by the URL-shape
 # checks (`_is_app_mcp_server`, `_mcp_server_location`) so the set stays in one place.
@@ -279,7 +279,9 @@ def _oauth_http_client(client: str, workspace: str, *, use_pat: bool) -> str | N
     (:func:`configure_client_mcp_server`) and batched (:func:`_managed_mcp_entry`) paths. It is
     URL-independent, so callers can compute it once per (client, workspace); the per-server half
     (:func:`_native_oauth_http_entry`) decides whether a *specific* URL warrants the native entry."""
-    if use_pat:
+    # A multi-workspace host's OAuth metadata doesn't carry the workspace selection, so an agent's
+    # own OAuth login can't reach the workspace there; the proxy sends the selection instead.
+    if use_pat or workspace_headers(workspace):
         return None
     if client not in PINNED_CIMD_CLIENT_IDS:
         return None

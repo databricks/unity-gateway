@@ -18,7 +18,12 @@ from ucode.databricks import (
     build_shared_base_urls,
 )
 from ucode.managed_files import CONFIG_SCOPES, DEFAULT_CONFIG_SCOPE
-from ucode.workspace import split_workspace_key, workspace_key
+from ucode.workspace import (
+    activate_state,
+    selector_headers,
+    split_workspace_key,
+    workspace_key,
+)
 
 STATE_PATH = APP_DIR / "state.json"
 STATE_VERSION = 3
@@ -54,8 +59,9 @@ def load_full_state() -> dict:
 def _split_saved_key(workspaces: object, key: str) -> tuple[str, str | None]:
     """:func:`split_workspace_key` for a saved key.
 
-    An older version saved a pasted URL as its key, so a ``<host>?w=<id>`` key only selects a
-    workspace when its block carries that ``workspace_id``, which this version always writes.
+    An older version saved a pasted URL as its key. A ``<host>?w=<id>`` key whose block exists
+    without that ``workspace_id`` (which this version always writes) is that older plain key; a
+    key with no block yet selects its workspace.
     """
     host, workspace_id = split_workspace_key(key)
     block = workspaces.get(key) if isinstance(workspaces, dict) else None
@@ -106,6 +112,7 @@ def load_state() -> dict:
     full = load_full_state()
     key = current_workspace_key(full)
     if not key:
+        activate_state({})
         return {}
     ws_state = full.get("workspaces", {}).get(key, {})
     if not isinstance(ws_state, dict):
@@ -117,6 +124,7 @@ def load_state() -> dict:
     else:
         ws_state.pop("workspace_id", None)
     ws_state.pop(ALIAS_OF_KEY, None)
+    activate_state(ws_state)
     return hydrate_state(ws_state)
 
 
@@ -143,6 +151,8 @@ def save_state(state: dict) -> None:
     if key:
         block = hydrate_state(_without_managed_overlay(state))
         _write_workspace_block(full, key, block, workspace_id)
+        host = split_workspace_key(key)[0] if workspace_id else key
+        activate_state({"workspace": host, "workspace_id": workspace_id})
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
@@ -187,6 +197,17 @@ def _without_managed_overlay(state: dict) -> dict:
     return persisted
 
 
+def _alias_target(workspaces: object, host: str) -> str | None:
+    block = workspaces.get(host) if isinstance(workspaces, dict) else None
+    aliased = block.get(ALIAS_OF_KEY) if isinstance(block, dict) else None
+    return aliased if isinstance(aliased, str) else None
+
+
+def aliased_workspace_key(host: str) -> str | None:
+    """The ``<host>?w=<id>`` key a multi-workspace host's bare-host copy points at, if any."""
+    return _alias_target(load_full_state().get("workspaces"), host)
+
+
 def set_current_workspace(workspace: str | None) -> None:
     """Select ``workspace`` (a ``workspaces`` key) without touching its block.
 
@@ -205,13 +226,11 @@ def set_current_workspace(workspace: str | None) -> None:
         full.pop(CURRENT_WORKSPACE_KEY, None)
     else:
         host, workspace_id = _split_saved_key(full.get("workspaces"), workspace)
-        alias_block = full.get("workspaces", {}).get(host)
-        if not workspace_id and isinstance(alias_block, dict):
+        aliased = None if workspace_id else _alias_target(full.get("workspaces"), host)
+        if aliased:
             # The bare host of a multi-workspace host means its current workspace.
-            aliased = alias_block.get(ALIAS_OF_KEY)
-            if isinstance(aliased, str):
-                workspace = aliased
-                host, workspace_id = split_workspace_key(aliased)
+            workspace = aliased
+            host, workspace_id = split_workspace_key(aliased)
         full["current_workspace"] = host
         if workspace_id:
             full[CURRENT_WORKSPACE_KEY] = workspace
@@ -348,6 +367,14 @@ def build_agent_state(state: dict) -> dict[str, dict]:
             "auth_refresh_interval_ms": AUTH_REFRESH_INTERVAL_MS,
         },
     }
+    workspace_id = state.get("workspace_id")
+    selector = selector_headers(workspace_id if isinstance(workspace_id, str) else None)
+    if selector:
+        agents["claude"]["env"]["ANTHROPIC_CUSTOM_HEADERS"] = "\n".join(
+            f"{name}: {value}" for name, value in selector.items()
+        )
+        for config in agents.values():
+            config["headers"] = dict(selector)
     return {
         name: {key: value for key, value in config.items() if value is not None}
         for name, config in agents.items()

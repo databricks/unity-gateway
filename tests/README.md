@@ -148,7 +148,11 @@ toggle, and keeps that state after the band hides. Checks ignore terminal stylin
 trailing UI controls; offline cases reject stale states, wrong routing scope, and command
 confirmations, and keep the band, the hint row, and the toggle reply apart.
 The mod's own tests (`native_claude/mod_tests`) cover the same rules for both toggles
-without a live agent.
+without a live agent. They also cover the hint row's ` · N subagents running` suffix:
+only native `running` statuses count, one uses singular wording, background work survives
+parent-turn completion and routing toggles, existing tails are preserved, and zero hides
+the count. A mounted row updates on the one-second timer without another prompt or a
+redraw when the count is unchanged. This count has no live TUI coverage.
 
 CUJ3 expects GPT Luna in both agents' catalogs and pickers, including Claude's gateway alias,
 and covers an explicit Claude headless task on that model.
@@ -472,6 +476,15 @@ across retries. The combined browser-flow case verifies connector readiness poll
 profile/token preservation, and replay without refreshing workspace credentials.
 PAT and non-401 errors retain their behavior.
 These checks do not establish live login or launch-time savings.
+
+`TestConfigureSharedStateOverlapsProbeAndListing` in `test_cli.py` checks that the
+model-service listing starts on a daemon thread before the gateway probe returns, that a
+probe failure raises its own error while the listing is still blocked, that a listing error
+propagates without saving state, that `skip_model_discovery` never starts the listing but
+keeps its web-search lookup, and that the overlap reuses the process-local probe and listing
+caches. The skip-preflight tests also reject starting a background worker. These component
+checks control the HTTP boundary with events; they do not establish live gateway timing,
+agent launch, or launch-time savings.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,

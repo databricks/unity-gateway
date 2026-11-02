@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 from importlib import metadata
@@ -6771,6 +6772,144 @@ class TestConfigureSharedStateUsePat:
         }
 
 
+class TestConfigureSharedStateOverlapsProbeAndListing:
+    """The model-service listing runs on a daemon thread while the gateway probe is in flight; the
+    probe still gates configure."""
+
+    WS = "https://example.databricks.com"
+    # Bounds every wait so a regression fails the test instead of hanging the suite.
+    WAIT_SECONDS = 5
+
+    def test_listing_runs_while_probe_is_in_flight(self, monkeypatch):
+        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+        listing_started = threading.Event()
+
+        def discover(workspace, token):
+            assert (workspace, token) == (self.WS, "token")
+            listing_started.set()
+            return {"opus": "system.ai.claude-opus-4-8"}, ["system.ai.gpt-5"], [], [], None
+
+        def probe(workspace, token):
+            # Returns only once the listing has started, so a sequential implementation fails.
+            assert listing_started.wait(self.WAIT_SECONDS), "listing did not overlap the probe"
+            return MODEL_SERVICE_PROBE
+
+        monkeypatch.setattr(cli_mod, "discover_model_services", discover)
+        monkeypatch.setattr(cli_mod, "probe_unity_gateway_capabilities", probe)
+
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+
+        assert state["claude_models"] == {"opus": "system.ai.claude-opus-4-8"}
+        assert state["codex_models"] == ["system.ai.gpt-5"]
+
+    def test_probe_failure_raises_without_waiting_for_listing(self, monkeypatch):
+        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+        listing_started = threading.Event()
+        release_listing = threading.Event()
+        listing_finished = threading.Event()
+        listing_threads: list[threading.Thread] = []
+
+        def discover(workspace, token):
+            listing_threads.append(threading.current_thread())
+            listing_started.set()
+            release_listing.wait(self.WAIT_SECONDS)
+            listing_finished.set()
+            return {}, [], [], [], None
+
+        def probe_get(url, token, **kwargs):
+            assert listing_started.wait(self.WAIT_SECONDS), "listing did not overlap the probe"
+            return None, "HTTP 404 Not Found: model service unavailable"
+
+        monkeypatch.setattr(cli_mod, "discover_model_services", discover)
+        monkeypatch.setattr(db_mod, "_http_get_json", probe_get)
+        monkeypatch.setattr(
+            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
+        )
+
+        try:
+            with pytest.raises(RuntimeError, match="not enabled"):
+                cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+            # The listing is still blocked, so the probe's error did not wait for it.
+            assert not listing_finished.is_set()
+            # Interpreter exit does not wait for a daemon thread either.
+            assert [thread.daemon for thread in listing_threads] == [True]
+        finally:
+            release_listing.set()
+            for thread in listing_threads:
+                thread.join(self.WAIT_SECONDS)
+
+    def test_listing_error_propagates_after_successful_probe(self, monkeypatch):
+        cli_mod, _, _, saved = TestConfigureSharedStateUsePat._stub_deps(
+            monkeypatch, pat_token=None
+        )
+
+        def discover(workspace, token):
+            raise RuntimeError("listing exploded")
+
+        monkeypatch.setattr(cli_mod, "discover_model_services", discover)
+
+        with pytest.raises(RuntimeError, match="listing exploded"):
+            cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+        assert saved == []
+
+    def test_skip_model_discovery_never_starts_the_listing(self, monkeypatch):
+        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+        started: list[object] = []
+        listings: list[str] = []
+        monkeypatch.setattr(cli_mod, "_start_in_background", lambda fn, *args: started.append(fn))
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: listings.append(w) or ({}, [], [], [], None),
+        )
+        monkeypatch.setattr(
+            cli_mod, "discover_codex_models", lambda w, t: (["system.ai.gpt-5"], None)
+        )
+
+        state = cli_mod.configure_shared_state(
+            self.WS, profile="DEFAULT", tools=["claude"], skip_model_discovery=True
+        )
+
+        assert started == []
+        assert listings == []
+        # Provider mode keeps its separate single-call web-search lookup.
+        assert state["web_search_model"] == "system.ai.gpt-5"
+
+    def test_overlapped_listing_composes_with_process_caches(self, monkeypatch):
+        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+        monkeypatch.setattr(
+            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
+        )
+        monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
+        listing_requested = threading.Event()
+        requests: list[str] = []
+        listing_page = {
+            "model_services": [
+                {"name": "model-services/system.ai.claude-opus-4-8"},
+                {"name": "model-services/system.ai.gpt-5"},
+            ]
+        }
+
+        def fake_get(url, token, **kwargs):
+            requests.append(url)
+            if "parent=" in url:
+                listing_requested.set()
+                return listing_page, None
+            assert listing_requested.wait(self.WAIT_SECONDS), "listing did not overlap the probe"
+            return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        first = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+        second = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+
+        for state in (first, second):
+            assert state["claude_models"] == {"opus": "system.ai.claude-opus-4-8"}
+            assert state["codex_models"] == ["system.ai.gpt-5"]
+        # One probe and one listing page; the second configure answers from both process caches.
+        assert len(requests) == 2
+
+
 class TestConfigureNoLongerValidates:
     @pytest.fixture(autouse=True)
     def _no_managed_config(self, monkeypatch):
@@ -7209,6 +7348,7 @@ class TestConfigureSharedStateSkipPreflight:
             _boom("probe_unity_gateway_capabilities"),
         )
         monkeypatch.setattr(cli_mod, "discover_model_services", _boom("discover_model_services"))
+        monkeypatch.setattr(cli_mod, "_start_in_background", _boom("_start_in_background"))
         monkeypatch.setattr(cli_mod, "discover_codex_models", _boom("discover_codex_models"))
         monkeypatch.setattr(cli_mod, "find_profile_name_for_host", lambda w: "resolved")
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {"codex": "u/codex"})
@@ -7270,6 +7410,36 @@ class TestConfigureSharedStateSkipPreflight:
 
         assert state["workspace_id"] == "111"
         assert state["use_pat"] is True
+
+    def test_bare_host_from_another_host_keeps_the_saved_workspace(self, monkeypatch):
+        from ucode import state as state_mod
+
+        cli_mod, saved = self._stub(monkeypatch)
+        shared = "https://acme.cloud.databricks.com"
+        other = "https://other.cloud.databricks.com"
+        block = {"workspace_id": "111", "profile": "acme"}
+        state_mod.STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        state_mod.STATE_PATH.write_text(
+            json.dumps(
+                {
+                    "state_version": state_mod.STATE_VERSION,
+                    "current_workspace": other,
+                    "workspaces": {
+                        f"{shared}?w=111": block,
+                        shared: {**block, state_mod.ALIAS_OF_KEY: f"{shared}?w=111"},
+                        other: {"profile": "other"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(cli_mod, "find_profile_name_for_workspace", lambda w, i: f"p-{i}")
+
+        state = cli_mod.configure_shared_state(shared, profile=None, skip_preflight=True)
+
+        assert state["workspace"] == shared
+        assert state["workspace_id"] == "111"
+        assert saved[-1]["workspace_id"] == "111"
 
     def test_switching_workspaces_on_one_host_purges_previous_mcp_entries(self, monkeypatch):
         cli_mod, _ = self._stub(monkeypatch)

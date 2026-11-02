@@ -26,7 +26,12 @@ Tests live in `tests/`.
 - Use `ucode.os_compatibility.subprocess_cross_os.run` / `ucode.os_compatibility.subprocess_cross_os.popen` for subprocesses; they resolve Windows npm wrappers automatically and default text streams to UTF-8 with replacement for invalid bytes. Keep commands as argument lists. Do not repeat these encoding defaults at callsites; explicit encoding/error overrides and binary mode remain supported. Ruff rejects direct `subprocess.run` / `subprocess.Popen` calls outside `os_compatibility/subprocess_cross_os.py` and tests.
 - Use `acquire_exclusive_file_lock` / `release_file_lock` from `ucode.os_compatibility.file_lock_cross_os` instead of calling `fcntl.flock`, `fcntl.lockf`, or `msvcrt.locking` directly. Ruff enforces this outside the compatibility module and tests.
 - Use `is_admin`, `windows_program_files_dir`, `windows_program_data_dir`, and `windows_system32_dir` from `ucode.os_compatibility.system_cross_os` instead of calling `IsUserAnAdmin` or reading `ProgramFiles`/`ProgramData`/`SystemRoot` directly.
-- Resolve a workspace URL from the user (`--workspace`, `UG_WORKSPACE`, a `--profile`'s host, the interactive picker) with `workspace.resolve_workspace` before using it as a `state.json` key or comparing it with saved state. It keeps the workspace id on a host that serves several workspaces and returns the key earlier versions saved on any other host. Split a saved key with `split_workspace_key` / `state_workspace_key`; never build one by string concatenation.
+- Resolve a workspace URL from the user (`--workspace`, `UG_WORKSPACE`, a `--profile`'s host, the interactive picker) with `workspace.resolve_workspace` before using it as a `state.json` key or comparing it with saved state. It keeps the workspace id on a host that serves several workspaces and returns the key earlier versions saved on any other host. Build a key with `workspace_key` (or `state_workspace_key` from a loaded state) and split one with `split_workspace_key`; never concatenate `?w=` by hand.
+- On a host that serves several workspaces, every request to it must carry the selected workspace:
+  - ug's own HTTP clients merge `workspace_headers(url)` into their headers (it returns nothing for other hosts and single-workspace hosts).
+  - A ug helper that an agent or an OS hook starts (`ug mcp-proxy`, `ug otel-*`, router and Cowork hooks, etc.) gets `*workspace_id_args(host)` on its argv, and its command takes a hidden `--workspace-id` and calls `workspace.pin(host, workspace_id)` before any request.
+  - Agent configs and launch headers are built from the saved `workspace_id` (`selector_headers`).
+  - Add a test beside `tests/test_workspace_selection.py::TestHelperArgv` for each new helper or client.
 - Use `launcher.exec_or_spawn` when handing the terminal to an agent. Shell strings and explicit executable overrides keep their existing subprocess semantics.
 - Add or update focused tests for behavior changes.
 - Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets, and a member-only `issue_comment` command that checks out the default branch (as in `fork-integration.yml`) for checks that need secrets on fork PRs.
@@ -122,7 +127,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 |-------|------------------------|---------------------|-------|
 | `apiKeyHelper` | Create/replace | Create/replace | Gateway auth-token helper |
 | `env.ANTHROPIC_BASE_URL` | Create/replace | Create/replace | Gateway endpoint URL |
-| `env.ANTHROPIC_CUSTOM_HEADERS` | Merge | Merge | Merge `ug`'s routing and attribution headers by name; other header lines left alone. Admin headers added under managed config |
+| `env.ANTHROPIC_CUSTOM_HEADERS` | Merge | Merge | Merge `ug`'s routing and attribution headers by name; other header lines left alone. Admin headers added under managed config. On a host that serves several workspaces, `X-Databricks-Org-Id` and `X-Databricks-Workspace-Id` are added last, so an admin header can't change the workspace |
 | `env.CLAUDE_CODE_API_KEY_HELPER_TTL_MS` | Create/replace | Create/replace | Auth-helper cache TTL |
 | `env.ENABLE_PROMPT_CACHING_1H` | Create/replace | Create/replace | Prompt-caching flag |
 | `env.ENABLE_TOOL_SEARCH` | Create/replace | Create/replace | Tool-search flag |
@@ -184,7 +189,7 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `model_provider` | Create/replace | Create/replace | Gateway provider (`Databricks`) |
 | `model` | Ignore | Create/replace | The config's default model |
 | `model_providers.Databricks` | Merge | Merge | Provider block: name, gateway base URL, wire API, `ug` auth command; other keys left alone |
-| `http_headers` | Merge | Merge | In `[model_providers.Databricks]`; merge `ug`'s routing headers by name, admin headers added under managed config. `UG_HEADERS` names not already present are added to the launch's `-c` flags only, never a file |
+| `http_headers` | Merge | Merge | In `[model_providers.Databricks]`; merge `ug`'s routing headers by name, admin headers added under managed config. `UG_HEADERS` names not already present are added to the launch's `-c` flags only, never a file. On a host that serves several workspaces, the workspace selector headers are added last |
 | `model_catalog_json` | Create/replace | Create/replace | In `~/.codex/config.toml`; `ug`'s own catalog reference, for a static model list |
 | `otel.trace_exporter` | Ignore | Create/replace | In `~/.codex/config.toml` when the config enables tracing, for Codex desktop; another exporter and other telemetry settings left alone |
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone. A same-name entry in `~/.codex/config.toml` of the other transport (stdio vs HTTP) is removed, since Codex would merge the two into an invalid entry |

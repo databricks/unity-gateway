@@ -96,6 +96,7 @@ from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ug_headers import ug_headers
 from ucode.ui import print_warning_err
+from ucode.workspace import workspace_headers, workspace_id_args
 
 from .args import LaunchOptions
 from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
@@ -243,6 +244,8 @@ def _provider_block(
     if request_tags:
         http_headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
     _apply_managed_headers(http_headers, managed_http_headers)
+    # Last, so an admin header can't select another workspace.
+    _apply_managed_headers(http_headers, workspace_headers(workspace))
     return {
         "name": "Databricks AI Gateway",
         "base_url": base_url,
@@ -779,6 +782,7 @@ def _ensure_otel_service(workspace: str, port: int) -> None:
         pythonw = Path(sys.executable).with_name("pythonw.exe")
         python = str(pythonw if pythonw.is_file() else sys.executable)
         argv = [python, "-m", "ucode.cli", "otel-proxy", "--host", workspace, "--port", str(port)]
+        argv += workspace_id_args(workspace)
         _ensure_scheduled_task(path, argv)
         return
     ug_path = ug_binary()
@@ -788,7 +792,16 @@ def _ensure_otel_service(workspace: str, port: int) -> None:
         )
     if current_os() == OS.MACOS:
         _ensure_launch_agent(
-            path, [ug_path, "otel-proxy", "--host", workspace, "--port", str(port)]
+            path,
+            [
+                ug_path,
+                "otel-proxy",
+                "--host",
+                workspace,
+                "--port",
+                str(port),
+                *workspace_id_args(workspace),
+            ],
         )
         return
     lines = [
@@ -796,7 +809,8 @@ def _ensure_otel_service(workspace: str, port: int) -> None:
         "[Service]",
         # systemd expands `$` in ExecStart arguments but never in the executable path.
         f"ExecStart={_systemd_quote(ug_path)} otel-proxy --host "
-        f"{_systemd_quote(workspace, exec_start=True)} --port {port}",
+        f"{_systemd_quote(workspace, exec_start=True)} --port {port}"
+        + "".join(f" {_systemd_quote(arg)}" for arg in workspace_id_args(workspace)),
         "Restart=on-failure",
         "RestartSec=1s",
     ]

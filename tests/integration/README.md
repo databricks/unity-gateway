@@ -6,6 +6,13 @@ still routing waiting for a later reply, distinct
 IDs for identical tasks, pending row and turn-spinner routing timers, and disabled/failed routing. These are not live
 parallel-agent TUI or gateway checks.
 
+Native hint-row component tests also cover ` · N subagents running` from Claude's agent
+list, excluding inactive statuses, singular wording, preservation of other hint text,
+background work after the parent turn ends, routing toggles, and hiding the count at zero.
+The one-second refresh updates a mounted row without another prompt and avoids redraws
+when the count is unchanged.
+The running count has no live TUI coverage.
+
 `../test_claude_launch_settings.py` covers oversized Windows Claude launch
 settings with controlled process boundaries: UTF-16 command length, merged
 settings, literal prompts, temporary-file lifetime and cleanup, launch failures,
@@ -303,6 +310,12 @@ recovery. Connection-login component tests also check invalidation on every logi
 attempt and fresh tokens on async proxy retries. This suite
 does not assert live token-fetch counts, stale-profile recovery, or launch-time
 savings; credential/profile routing is unchanged.
+
+Overlapping the model-service listing with the gateway probe is covered only by
+component tests in `../test_cli.py`: overlap, probe failure without waiting, listing
+errors, the `skip_model_discovery` and `skip_preflight` paths, and reuse of the process-local
+probe and listing caches. This suite does not assert live request overlap, probe/listing timing, or
+launch-time savings.
 
 The sudo-session regression checks live in `../test_managed_files.py` and `../test_cli.py`.
 They cover shared-worker invocation counts, shutdown/cancellation, and temporary-file failure
