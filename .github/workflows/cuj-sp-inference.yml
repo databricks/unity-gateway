@@ -1,0 +1,60 @@
+name: CUJ service principal inference (do not merge)
+
+# Draft-PR helper, not for merging: each push to its PR sends a few inference requests as the
+# shared CUJ service principal on CUJ 5's workspace, so the budget tier gets this month's spend.
+# Tune REQUESTS / MAX_TOKENS below and push, or use "Re-run all jobs".
+on:
+  pull_request:
+    paths:
+      - .github/workflows/cuj-sp-inference.yml
+
+permissions: {}
+
+jobs:
+  inference:
+    name: Inference as the CUJ service principal
+    # Repository secrets only reach pull requests from branches in this repository.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # One run at a time, so a quick second push can't double the spend.
+    concurrency: cuj-sp-inference
+    env:
+      HOST: https://dbc-497adeef-62c0.cloud.databricks.com
+      BUDGET_ID: 25c4ce5c-fcd6-4d00-8266-69030cc1a236
+      MODEL: system.ai.claude-sonnet-4-6
+      REQUESTS: "3"
+      MAX_TOKENS: "256"
+    steps:
+      - name: Send inference requests and report the budget
+        env:
+          CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          token=$(curl -fsS -u "$CLIENT_ID:$CLIENT_SECRET" "$HOST/oidc/v1/token" \
+            -d grant_type=client_credentials -d scope=all-apis | jq -r .access_token)
+          echo "::add-mask::$token"
+          auth=(-H "Authorization: Bearer $token")
+
+          report() {
+            curl -fsS "${auth[@]}" "$HOST/api/ai-gateway/v2/budget-spend-statuses?page_size=100" \
+              | jq --arg id "$BUDGET_ID" \
+                '.budget_spend_statuses[]? | select(.name | endswith($id)) | .alert_spend_statuses'
+            curl -fsS "${auth[@]}" -X POST -H "content-type: application/json" -d '{}' \
+              "$HOST/api/ai-gateway/v2/coding-agent-configs:recommendModel"
+            echo
+          }
+
+          echo "== Before"
+          report
+          body=$(jq -n --arg model "$MODEL" --argjson max "$MAX_TOKENS" '{model: $model,
+            max_tokens: $max, messages: [{role: "user",
+            content: "Write a short paragraph about lighthouses."}]}')
+          for i in $(seq "$REQUESTS"); do
+            curl -sS --fail-with-body "${auth[@]}" -H "content-type: application/json" \
+              -H "anthropic-version: 2023-06-01" -d "$body" \
+              "$HOST/ai-gateway/anthropic/v1/messages" | jq -c '{id, model, usage}'
+          done
+          echo "== After (spend can take a while to show up)"
+          report
