@@ -183,6 +183,10 @@ orchestration assertions from each agent's resolved flags. Both must complete a 
 child task. `subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed
 default without routing requests, new router decisions, recipe headers, or orchestrator context.
 
+Codex startup checks in `test_e2e_cuj_helpers.py` replay the 0.154/0.165 prompt layouts
+and delayed hook review. The driver waits for the model/directory footer before typing;
+the early startup draft is insufficient. These offline PTY checks do not run native agents.
+
 Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,
 complete per-agent validation, session precedence, and preserving the preset selector
 until managed-default agent selection.

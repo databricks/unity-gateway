@@ -396,9 +396,11 @@ class AgentTerminal(TerminalProcess):
                 and "Accessing workspace:" in text
                 and self.session.cwd.name in text
             ):
+                ready_since = None
                 self.choose("Accessing workspace:", "Yes, I trust this folder")
                 continue
             if "Hooks need review" in text:
+                ready_since = None
                 self.choose("Hooks need review", "Trust all and continue")
                 continue
             if (
@@ -406,6 +408,7 @@ class AgentTerminal(TerminalProcess):
                 and ("Press enter to continue" in text or "enter continue" in text)
                 and "update-notice" not in handled
             ):
+                ready_since = None
                 self.send("\x1b[B", "move selection off Update now to Skip")
                 self.send("\r", "continue with Skip selected")
                 handled.add("update-notice")
@@ -511,6 +514,14 @@ class AgentTerminal(TerminalProcess):
                 "Configured ug launched Codex's account-login flow instead of its gateway session:\n"
                 + text
             )
+            # Codex's startup draft precedes hook review and lacks the model/directory footer.
+            if self.agent == "codex" and not re.search(
+                rf"(?m)^[ \t]*[›❯>][ \t]+[^\n]*\n(?:[ \t]*\n)*"
+                rf"[ \t]*\S[^\n]* · [^\n]*{re.escape(self.session.cwd.name)}(?: · [^\n]*)?$",
+                text,
+            ):
+                ready_since = None
+                continue
             title = {
                 "claude": "Claude Code",
                 "copilot": "Copilot v",

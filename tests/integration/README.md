@@ -718,6 +718,12 @@ routed child asks to locate the random fixture beneath the disposable project,
 the terminal driver accepts that exact read-only command through Claude's real
 permission dialog; any broader permission request fails immediately.
 
+Codex boot waits for the prompt's model/directory status line before typing. Its
+startup draft may appear before hook review; the driver handles that review through
+the visible trust choice and starts a fresh readiness interval after onboarding.
+Offline PTY checks in `../test_e2e_cuj_helpers.py` cover the 0.154/0.165 layouts and
+delayed hook review, without running native agents or model requests.
+
 A fixture file contains an unpredictable value absent from the prompt. Success
 requires an assistant answer in the real agent transcript containing that value,
 plus normal TUI exit. Codex evidence requires its task-complete event.
