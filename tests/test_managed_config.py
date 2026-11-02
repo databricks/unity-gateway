@@ -1053,6 +1053,47 @@ class TestMachinePolicyRefresh:
         assert load_managed_configuration(WORKSPACE) == RAW_MANIFEST
         assert not mc_mod.REFRESH_TS_PATH.exists()
 
+    @pytest.mark.parametrize("installed", [False, True])
+    def test_configure_without_required_install_applies_the_fetched_policy(
+        self, monkeypatch, installed
+    ):
+        if installed:
+            save_managed_state(WORKSPACE, RAW_MANIFEST)
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (changed, None))
+
+        def denied(*args, **kwargs):
+            raise RuntimeError("sudo permission denied")
+
+        monkeypatch.setattr(mc_mod, "update_workspace_policy", denied)
+        warnings = []
+        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
+
+        result = refresh_managed_config(_state(), force_refresh=True, require_install=False)
+
+        assert result == (normalize_managed_config(changed), False)
+        assert load_managed_configuration(WORKSPACE) == (RAW_MANIFEST if installed else None)
+        assert len(warnings) == 1
+        assert "Configured with it for this run" in warnings[0]
+        launches = "the installed policy" if installed else "a fresh read"
+        assert f"launches keep using {launches}" in warnings[0]
+
+    def test_configure_without_required_install_warns_once_per_pending_policy(self, monkeypatch):
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (changed, None))
+
+        def denied(*args, **kwargs):
+            raise RuntimeError("sudo permission denied")
+
+        monkeypatch.setattr(mc_mod, "update_workspace_policy", denied)
+        warnings = []
+        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
+
+        for _ in range(2):
+            refresh_managed_config(_state(), force_refresh=True, require_install=False)
+
+        assert len(warnings) == 1
+
     def test_no_remote_policy_never_creates_machine_file(self, monkeypatch):
         monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (None, None))
         monkeypatch.setattr(

@@ -878,7 +878,9 @@ def _record_refresh(
         print_warning(f"Could not save the workspace policy refresh record: {exc}")
 
 
-def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> ManagedConfigResult:
+def refresh_managed_config(
+    state: dict, *, force_refresh: bool = False, require_install: bool | None = None
+) -> ManagedConfigResult:
     """Read the workspace policy; a launch replays what ``ug configure`` saved.
 
     A launch reads the control plane only when nothing is saved for the workspace yet; it never
@@ -891,11 +893,16 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     The installed workspace is authoritative for launches; mismatched selections fail before
     saved reads or remote requests. Explicit configure can change the machine workspace.
     Failed launch writes warn once per distinct pending policy and return the installed policy,
-    recording the outcome. Explicit configuration write failures raise instead.
+    recording the outcome. Explicit configuration write failures raise instead, unless
+    ``require_install`` is False: then they warn and apply the fetched policy to this run.
     Fetch failures retain the existing installed-policy fallback and record nothing.
     No-config and ``FEATURE_DISABLED`` remove a matching installed policy; if removal fails, launches
     keep using it with a warning rather than pretending it was removed.
     """
+    if require_install is None:
+        require_install = force_refresh
+    # An explicit configure that can do without the machine policy applies what it just read.
+    applies_fetched = force_refresh and not require_install
     selected = state_workspace_key(state)
     workspace = selected if force_refresh else managed_launch_workspace(selected)
     if not workspace:
@@ -939,7 +946,7 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
             allow_write=force_refresh,
         )
     except RuntimeError as exc:
-        if force_refresh and _machine_policy_installable():
+        if require_install and _machine_policy_installable():
             message = (
                 f"Could not install the workspace policy at {MANAGED_CONFIG_PATH}: {exc} "
                 "This machine-wide file needs sudo. Rerun `ug configure` from a terminal where you "
@@ -947,13 +954,13 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
             )
             raise ManagedPolicyInstallDenied(message) from exc
         installed = load_managed_state(workspace)
-        if installed is not None:
+        if installed is not None and not applies_fetched:
             result = ManagedConfigResult(
                 installed, raw is None and reason is not None and _is_feature_disabled(reason)
             )
             fallback_message = "Continuing with the installed policy."
         else:
-            # Nothing is installed for this workspace: the fetched policy still governs this run.
+            # Nothing usable is installed for this run: the fetched policy governs it.
             result = ManagedConfigResult(
                 normalize_managed_config(raw) if raw is not None else None,
                 reason is not None and _is_feature_disabled(reason),
@@ -962,7 +969,15 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
         pending_config_hash = _policy_hash(workspace, raw or {})
         entry = config_io.read_json_safe(REFRESH_TS_PATH).get(normalize_workspace_url(workspace))
         if not isinstance(entry, dict) or entry.get("pending_config_hash") != pending_config_hash:
-            if managed_settings_skipped():
+            if applies_fetched:
+                launches = "the installed policy" if installed is not None else "a fresh read"
+                print_warning(
+                    f"Could not install your workspace policy at {MANAGED_CONFIG_PATH}: {exc} "
+                    f"Configured with it for this run; launches keep using {launches} until it's "
+                    "installed. Rerun `ug configure` from a terminal where you can use sudo, or "
+                    "ask your IT team or an administrator."
+                )
+            elif managed_settings_skipped():
                 print_warning(
                     f"Your workspace policy changed, but {SKIP_OS_SETTINGS_ENV} is set, so the "
                     f"installed policy at {MANAGED_CONFIG_PATH} was not updated. Run `ug configure` "

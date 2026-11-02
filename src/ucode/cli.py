@@ -928,11 +928,12 @@ def _keep_installed_workspace_selected(state: dict) -> str | None:
     return installed
 
 
-def _read_policy_for_other_agent(state: dict) -> ManagedConfigResult:
-    """Read the policy for an agent other than Claude and Codex, which never installs it.
+def _read_policy_for_other_agent(state: dict, *, configure: bool = False) -> ManagedConfigResult:
+    """Read the policy for an agent other than Claude and Codex, which never requires installing it.
 
     Such a configure cannot switch the machine's workspace, so on a machine managed for another
     workspace it keeps the saved selection there and fails before writing the agent's config.
+    ``configure`` reads fresh and installs the policy when it can, so an admin's edit applies.
     """
     installed = _keep_installed_workspace_selected(state)
     if installed:
@@ -942,6 +943,8 @@ def _read_policy_for_other_agent(state: dict) -> ManagedConfigResult:
             f"`ug configure --workspace {state['workspace']}` from a terminal where you can use sudo "
             "to switch the machine, or ask your IT team or an administrator."
         )
+    if configure:
+        return refresh_managed_config(state, force_refresh=True, require_install=False)
     # --user must see a managed config for every agent, so it reads fresh; global keeps the cache.
     return refresh_managed_config(state, force_refresh=config_scope() == "user")
 
@@ -972,6 +975,10 @@ def _launch_workspace_state(workspace: str | None) -> dict:
             else:
                 state.pop("workspace_id", None)
     return state
+
+
+# The agents whose `ug configure --agent` reads the policy fresh and applies its MCP and skills.
+_FRESH_POLICY_AGENTS = ("claude", "codex", AGENT_COPILOT)
 
 
 def _setup_single_agent(
@@ -1007,8 +1014,8 @@ def _setup_single_agent(
         # Explicit configure always reads the workspace policy fresh, so it can install it.
         managed, _ = _refresh_configured_policy(state)
     elif apply_managed:
-        # Other agents only read the policy; they never install it.
-        managed, _ = _read_policy_for_other_agent(state)
+        # Other agents never need the policy installed; Copilot installs it when it can.
+        managed, _ = _read_policy_for_other_agent(state, configure=tool == AGENT_COPILOT)
     if apply_managed:
         refuse_user_scope_over_managed_config(state.get("workspace"), managed)
     if apply_managed and tool in MODEL_LOCATION_TOOLS:
@@ -1024,7 +1031,7 @@ def _setup_single_agent(
         from ucode.agents.desktop.setup import configure_claude_desktop
 
         configure_claude_desktop(state, parent_schema=parent_schema)
-    if apply_managed and tool in ("claude", "codex") and not is_dry_run():
+    if apply_managed and tool in _FRESH_POLICY_AGENTS and not is_dry_run():
         resolved_mcps = _configure_managed_mcp_servers(managed)
         skills_configured = _configure_managed_skills(managed)
         _restore_mcp_after_workspace_switch(previous_workspace, state)
@@ -1034,8 +1041,7 @@ def _setup_single_agent(
             )
     else:
         _restore_mcp_after_workspace_switch(previous_workspace, state)
-    # Only the Claude and Codex branch above reads the managed config fresh.
-    managed_refreshed = apply_managed and tool in ("claude", "codex")
+    managed_refreshed = apply_managed and tool in _FRESH_POLICY_AGENTS
     install_databricks_ai_tools_for_agents([tool], state, force_refresh=not managed_refreshed)
     provider_summary = "Databricks" if parent_schema else _provider_summary(tool, state)
     console.print(
