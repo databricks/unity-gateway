@@ -424,10 +424,7 @@ directly. Subagent-only routing launches the native TUI directly; first-prompt r
 uses the existing app-server interposer. Older or unrecognized Codex versions must be
 upgraded or launched with `--disable-smart-routing`.
 
-An inconclusive Codex version probe is retried once with a longer timeout. Claude
-first-prompt routing waits for `/model` to finish before replaying the prompt. If
-completion cannot be confirmed, UG stops automatic input and asks you to resend
-the prompt. Other launches can continue, and later manual model choices are preserved.
+An inconclusive Codex version probe is retried once with a longer timeout.
 
 ### Smart Router Orchestrator
 
