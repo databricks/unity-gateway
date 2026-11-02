@@ -231,7 +231,11 @@ command-specific imports in fresh interpreters. Component tests cover metadata l
 version suffixes, fallback, and unchanged dispatch for other arguments; they do not
 claim a live agent launch or end-to-end startup timing. An isolated interpreter
 without site packages also proves that intact metadata can produce version output
-while `--help` fails on a missing CLI startup dependency.
+while `--help` fails on a missing CLI startup dependency. The Smart Router Orchestrator
+prompt hook, which agents run before every prompt, is checked for Claude and Codex in a
+fresh interpreter: it returns the enabled workflow without loading Rich, TOML, package
+metadata, the Databricks client, or smart-routing launch code. This is an import guard,
+not a hook-latency measurement.
 `TestUpgrade` in `test_cli.py` covers both command names before, during, and after
 the distribution rename with mocked installer calls, including `--help` verification
 of the full CLI import path and failure recovery guidance.

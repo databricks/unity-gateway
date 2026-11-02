@@ -6,12 +6,11 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
-import tomlkit
-import tomlkit.exceptions
-
-from ucode.ui import console
+# Hooks and helpers that agents spawn import this module; TOML and Rich load only when used.
+if TYPE_CHECKING:
+    import tomlkit
 
 
 class ToolSpec(TypedDict):
@@ -34,6 +33,12 @@ def set_dry_run(value: bool) -> None:
 
 def is_dry_run() -> bool:
     return _dry_run
+
+
+def _print_dry_run(path: Path, content: str) -> None:
+    from ucode.ui import console
+
+    console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
 
 
 def ensure_parent_dir(path: Path) -> None:
@@ -94,7 +99,7 @@ def restore_file(config_path: Path, backup_path: Path, managed: bool) -> bool:
 
 def write_text_file(path: Path, content: str, *, encoding: str = "utf-8") -> None:
     if _dry_run:
-        console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
+        _print_dry_run(path, content)
         return
     ensure_parent_dir(path)
     try:
@@ -106,7 +111,7 @@ def write_text_file(path: Path, content: str, *, encoding: str = "utf-8") -> Non
 def write_json_file(path: Path, payload: dict) -> None:
     content = json.dumps(payload, indent=2) + "\n"
     if _dry_run:
-        console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
+        _print_dry_run(path, content)
         return
     ensure_parent_dir(path)
     try:
@@ -204,6 +209,9 @@ def apply_json_mcp_diff(
 
 
 def read_toml_safe(path: Path) -> tomlkit.TOMLDocument:
+    import tomlkit
+    import tomlkit.exceptions
+
     # See read_json_safe: keep `path.exists()` inside the try so a PermissionError on a locked
     # parent directory is treated as an empty document rather than propagating.
     try:
@@ -215,9 +223,11 @@ def read_toml_safe(path: Path) -> tomlkit.TOMLDocument:
 
 
 def write_toml_file(path: Path, doc: tomlkit.TOMLDocument) -> None:
+    import tomlkit
+
     content = tomlkit.dumps(doc)
     if _dry_run:
-        console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
+        _print_dry_run(path, content)
         return
     ensure_parent_dir(path)
     try:

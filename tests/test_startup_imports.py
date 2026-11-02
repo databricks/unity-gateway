@@ -165,6 +165,36 @@ def test_agent_helper_help_matches_the_cli(command) -> None:
     assert help_text("ucode.entrypoint") == help_text("ucode.cli")
 
 
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_orchestrator_prompt_hook_skips_cli_imports(tmp_path, agent) -> None:
+    # Agents run this hook before every prompt is submitted.
+    session = tmp_path / "env.json"
+    session.write_text("{}", encoding="utf-8")
+    probe = (
+        "import os\n"
+        "os.environ.update(ENABLE_SMART_ROUTER_ORCHESTRATOR='1', "
+        f"ENABLE_SMART_ROUTING_SUBAGENT_ONLY='1', UCODE_SESSION_ENV_FILE={str(session)!r})\n"
+        "from ucode.smart_routing import orchestrator\n"
+        "hook = orchestrator.hook_output({'hook_event_name': 'UserPromptSubmit'}, "
+        f"agent={agent!r})\n"
+        "print('is on for this session' in hook['hookSpecificOutput']['additionalContext'])"
+    )
+    deferred = (
+        "importlib.metadata",
+        "rich",
+        "tomlkit",
+        "ucode.databricks",
+        "ucode.smart_routing.v2",
+        "ucode.ui",
+        *_LAZY_MODULES,
+    )
+
+    output, loaded = _modules_loaded_after(probe, deferred)
+
+    assert output == "True"
+    assert loaded == []
+
+
 @pytest.mark.parametrize("reported_version", ["1.2.3", "1.2.3.post4", "1.2.3+abc123"])
 def test_metadata_reader_preserves_version_suffixes(
     tmp_path, monkeypatch, reported_version
