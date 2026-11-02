@@ -1106,28 +1106,36 @@ def _ensure_surface_env_header(env_headers: MutableMapping) -> None:
 
 
 def _managed_client_surface_sources() -> tuple[list[str], str]:
-    """Read effective managed surfaces and the environment binding Codex will use."""
+    """Read effective surfaces and the environment binding Codex will use."""
     default_binding = _LAUNCH_HEADER_ENV_VARS[CLIENT_SURFACES_HEADER]
     path = codex_managed_config_path()
-    if path is None:
-        return [], default_binding
-    try:
-        text = read_managed_file(path)
-        doc = _parse_managed_config(text) if text is not None else {}
-    except RuntimeError as exc:
-        raise RuntimeError(f"Cannot read Codex managed settings at {path}: {exc}") from exc
+    doc = {}
+    if path is not None:
+        try:
+            text = read_managed_file(path)
+            doc = _parse_managed_config(text) if text is not None else {}
+        except RuntimeError as exc:
+            raise RuntimeError(f"Cannot read Codex managed settings at {path}: {exc}") from exc
     providers = doc.get("model_providers")
     provider = providers.get(CODEX_MODEL_PROVIDER_NAME) if isinstance(providers, Mapping) else None
-    if not isinstance(provider, Mapping):
-        return [], default_binding
-    surfaces = [
-        value
-        for header, value in (_managed_provider_headers(doc) or {}).items()
-        if isinstance(header, str)
-        and header.casefold() == CLIENT_SURFACES_HEADER.casefold()
-        and isinstance(value, str)
-        and value.strip()
-    ]
+    if isinstance(provider, Mapping):
+        surfaces = [
+            value
+            for header, value in (_managed_provider_headers(doc) or {}).items()
+            if isinstance(header, str)
+            and header.casefold() == CLIENT_SURFACES_HEADER.casefold()
+            and isinstance(value, str)
+            and value.strip()
+        ]
+    else:
+        profile_doc = read_toml_safe(CODEX_CONFIG_PATH)
+        providers = profile_doc.get("model_providers")
+        provider = (
+            providers.get(CODEX_MODEL_PROVIDER_NAME) if isinstance(providers, Mapping) else None
+        )
+        if not isinstance(provider, Mapping):
+            return [], default_binding
+        surfaces = []
     env_headers = provider.get("env_http_headers")
     binding = _surface_env_binding(env_headers) if isinstance(env_headers, Mapping) else None
     binding = binding or default_binding

@@ -1561,6 +1561,52 @@ class TestCodexLaunch:
         }
         assert profile_path.read_bytes() == before
 
+    def test_profile_surface_env_binding_without_managed_provider(self, tmp_path, monkeypatch):
+        self._patch(tmp_path, monkeypatch)
+        profile_path = tmp_path / "ucode.config.toml"
+        profile_path.write_text(
+            profile_path.read_text(encoding="utf-8")
+            + "\n[model_providers.Databricks.http_headers]\n"
+            + 'Databricks-Custom-Client-Surfaces = "profile"\n'
+            + "\n[model_providers.Databricks.env_http_headers]\n"
+            + 'Databricks-Custom-Client-Surfaces = "ADMIN_SURFACES"\n',
+            encoding="utf-8",
+        )
+        before = profile_path.read_bytes()
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: tmp_path / "absent.toml")
+        monkeypatch.setenv("ADMIN_SURFACES", "admin")
+        monkeypatch.setenv("OPENUI_SESSION_ID", "session-123")
+        monkeypatch.setenv("UG_HEADERS", f"{codex.CLIENT_SURFACES_HEADER}: ug")
+        launches: list[tuple[str | None, str | None, dict]] = []
+
+        def capture_launch(argv):
+            provider_arg = next(
+                arg for arg in argv if arg.startswith("model_providers.Databricks=")
+            )
+            provider = tomllib.loads(provider_arg)["model_providers"]["Databricks"]
+            assert provider["env_http_headers"][codex.CLIENT_SURFACES_HEADER] == "ADMIN_SURFACES"
+            launches.append(
+                (
+                    os.environ.get("ADMIN_SURFACES"),
+                    os.environ.get("UG_CODEX_CLIENT_SURFACES"),
+                    provider["http_headers"],
+                )
+            )
+
+        monkeypatch.setattr(codex, "exec_or_spawn", capture_launch)
+
+        codex.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        assert launches == [
+            (
+                "admin, profile, ug, openui",
+                None,
+                {codex.CLIENT_SURFACES_HEADER: "admin, profile, ug, openui"},
+            )
+        ]
+        assert os.environ["ADMIN_SURFACES"] == "admin"
+        assert profile_path.read_bytes() == before
+
     @pytest.mark.parametrize(
         ("admin_surfaces", "expected"),
         [("omnigent", "omnigent, openui"), ("omnigent, OpenUI", "omnigent, OpenUI")],
