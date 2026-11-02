@@ -227,7 +227,10 @@ The `claude-router-hook` and `codex-router-hook` commands go to
 `ucode.smart_routing.hook_commands` the same way: their session and subagent records run in a fresh
 interpreter, write the routing canary or audit row, and skip the CLI, Databricks client, UI, and
 smart-routing launch modules. Routing events keep their `TestSubcommandRouting` coverage; no live
-router call is made.
+router call is made. `ug mcp web-search` and `ug mcp-proxy` go to `ucode.mcp_commands`: the
+web-search server answers `initialize` in a fresh interpreter without the CLI, Databricks client,
+UI, or workspace modules, and both commands' help matches the full CLI's. Search and proxy
+behavior stays in `test_mcp_web_search*.py` and `test_mcp_proxy.py`.
 
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.

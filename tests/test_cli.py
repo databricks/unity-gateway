@@ -8251,7 +8251,7 @@ class TestMcpProxyCmdForwardsUsePat:
 
     def _invoke(self, monkeypatch, *, flag, state):
         captured: dict = {}
-        monkeypatch.setattr("ucode.cli.load_state", lambda: state)
+        monkeypatch.setattr("ucode.state.load_saved_state", lambda: state)
         monkeypatch.setattr(
             "ucode.mcp_proxy.serve",
             lambda *a, **kw: captured.update(args=a, kwargs=kw),

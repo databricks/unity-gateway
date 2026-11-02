@@ -182,6 +182,25 @@ def test_router_hook_records_skip_the_cli(tmp_path, command, event, payload, art
     assert '"session_id": "s1"' in (tmp_path / ".ucode" / artifact).read_text(encoding="utf-8")
 
 
+def test_web_search_server_initializes_without_the_cli(tmp_path) -> None:
+    # Claude Code starts this server with every session that uses ug's web search.
+    request = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    probe = (
+        "import io, os, sys\n"
+        f"os.environ['HOME'] = {str(tmp_path)!r}\n"
+        "sys.argv = ['ug', 'mcp', 'web-search', '--managed-by-ucode']\n"
+        f"sys.stdin = io.StringIO({json.dumps(request)!r} + '\\n')\n"
+        "from ucode.entrypoint import main\n"
+        "try:\n    main()\nexcept SystemExit as exc:\n    assert not exc.code, exc.code"
+    )
+    deferred = ("ucode.cli", "ucode.databricks", "ucode.ui", "ucode.workspace")
+
+    output, loaded = _modules_loaded_after(probe, (*deferred, *_LAZY_MODULES))
+
+    assert json.loads(output)["result"]["serverInfo"]["name"] == "ucode-web-search"
+    assert loaded == []
+
+
 def test_agent_helpers_are_the_cli_hidden_helper_commands() -> None:
     from importlib import import_module
 
@@ -189,15 +208,29 @@ def test_agent_helpers_are_the_cli_hidden_helper_commands() -> None:
 
     from ucode import cli
 
-    commands = get_command(cli.app).commands
+    root = get_command(cli.app)
     for module in set(entrypoint._AGENT_HELPERS.values()):
         names = {name for name, owner in entrypoint._AGENT_HELPERS.items() if owner == module}
         assert names == set(import_module(module).COMMANDS)
-    assert all(commands[name].hidden for name in entrypoint._AGENT_HELPERS)
+    for path in entrypoint._AGENT_HELPERS:
+        *groups, name = path.split()
+        command = root
+        for group in groups:
+            command = command.commands[group]
+        # `ug mcp web-search` is listed under `ug mcp`; the others are hidden helpers.
+        assert command.commands[name].hidden is not bool(groups)
 
 
 @pytest.mark.parametrize(
-    "command", ["auth-token", "otel-headers", "claude-router-hook", "codex-router-hook"]
+    "command",
+    [
+        "auth-token",
+        "otel-headers",
+        "claude-router-hook",
+        "codex-router-hook",
+        "mcp web-search",
+        "mcp-proxy",
+    ],
 )
 def test_agent_helper_help_matches_the_cli(command) -> None:
     def help_text(module: str) -> str:
@@ -205,7 +238,7 @@ def test_agent_helper_help_matches_the_cli(command) -> None:
             [
                 sys.executable,
                 "-c",
-                f"import sys\nsys.argv = ['ug', {command!r}, '--help']\n"
+                f"import sys\nsys.argv = ['ug', *{command.split()!r}, '--help']\n"
                 f"from {module} import main\nmain()",
             ],
             stdin=subprocess.DEVNULL,

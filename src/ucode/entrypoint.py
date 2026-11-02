@@ -2,9 +2,9 @@
 
 Launchers such as isaac run ``ug --version`` on every start. Importing ``ucode.cli`` (Typer, Rich,
 questionary, every subcommand module) costs far more than printing the version, so a bare version
-request is answered here without importing it. Token helpers and smart-routing hooks that agents
-run at session start, per subagent, and on every token refresh go to the module that runs them
-without the full CLI. Every other invocation goes to ``ucode.cli.main``.
+request is answered here without importing it. Token helpers, smart-routing hooks, and stdio MCP
+servers that agents run at session start, per subagent, and on every token refresh go to the
+module that runs them without the full CLI. Every other invocation goes to ``ucode.cli.main``.
 """
 
 from __future__ import annotations
@@ -14,12 +14,14 @@ import sys
 
 _DISTRIBUTION = "unity_gateway"
 _VERSION_ARGV = (["--version"], ["-V"])
-# Each module's `COMMANDS`, named here so other invocations never import those modules.
+# Each module's `COMMANDS`, by command path, named here so other invocations never import them.
 _AGENT_HELPERS = {
     "auth-token": "ucode.agent_helpers",
     "otel-headers": "ucode.agent_helpers",
     "claude-router-hook": "ucode.smart_routing.hook_commands",
     "codex-router-hook": "ucode.smart_routing.hook_commands",
+    "mcp web-search": "ucode.mcp_commands",
+    "mcp-proxy": "ucode.mcp_commands",
 }
 
 
@@ -75,7 +77,8 @@ def main() -> None:
             version = ug_version()
         print(version)
         return
-    helper = _AGENT_HELPERS.get(sys.argv[1]) if sys.argv[1:] else None
+    args = sys.argv[1:]
+    helper = _AGENT_HELPERS.get(" ".join(args[:1])) or _AGENT_HELPERS.get(" ".join(args[:2]))
     if helper is not None:
         from importlib import import_module
 
