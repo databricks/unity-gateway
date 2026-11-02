@@ -178,8 +178,8 @@ class TestConfigure:
                 "name": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                 "family": "claude-sonnet-4-5",
                 "api": "anthropic",
-                "maxInputTokens": 168_000,
-                "maxOutputTokens": 32_000,
+                "maxInputTokens": 136_000,
+                "maxOutputTokens": 64_000,
             },
         ]
         printed = _printed(capsys)

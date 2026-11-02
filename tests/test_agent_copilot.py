@@ -160,6 +160,29 @@ class TestCatalogFromListings:
             ("system.ai.gpt-6-luna", "responses", (922_000, 128_000)),
         ]
 
+    def test_an_anthropic_route_listing_of_one_family_keeps_the_other_familys_models(self):
+        gateway = AnthropicModelCatalog(
+            model_ids=["system.ai.claude-opus-4-8"],
+            model_id_to_display_name={},
+            model_id_to_limits={"system.ai.claude-opus-4-8": (1_000_000, 128_000)},
+        )
+
+        models = copilot.catalog_from_listings([ModelServiceEntry(GPT)], [SONNET], gateway)
+
+        assert [(m.id, m.listed_limits) for m in models] == [
+            ("system.ai.claude-opus-4-8", (1_000_000, 128_000)),
+            (GPT, None),
+        ]
+
+    def test_an_anthropic_route_listing_of_endpoints_is_left_to_the_other_listings(self):
+        gateway = AnthropicModelCatalog(
+            model_ids=["databricks-claude-sonnet-4-6"], model_id_to_display_name={}
+        )
+
+        assert copilot.catalog_from_listings(
+            [ModelServiceEntry(GPT)], [SONNET], gateway
+        ) == catalog(SONNET, GPT)
+
     def test_an_anthropic_route_listing_without_usable_models_falls_back(self):
         gateway = AnthropicModelCatalog(
             model_ids=[], model_id_to_display_name={}, error_msg="HTTP 404"
@@ -656,9 +679,9 @@ class TestCopilotModelLimits:
             ("system.ai.claude-opus-4-8", (1_000_000, 128_000)),
             ("system.ai.claude-opus-6", (1_000_000, 128_000)),
             ("system.ai.claude-sonnet-4-6", (1_000_000, 128_000)),
-            ("system.ai.claude-haiku-4-5", (200_000, 32_000)),
-            ("system.ai.claude-sonnet-4-5", (200_000, 32_000)),
-            ("system.ai.claude-opus-4-5", (200_000, 32_000)),
+            ("system.ai.claude-haiku-4-5", (200_000, 64_000)),
+            ("system.ai.claude-sonnet-4-5", (200_000, 64_000)),
+            ("system.ai.claude-opus-4-5", (200_000, 64_000)),
             ("system.ai.claude-opus-4-1", (200_000, 32_000)),
             ("system.ai.claude-opus-4-0", (200_000, 32_000)),
         ],
