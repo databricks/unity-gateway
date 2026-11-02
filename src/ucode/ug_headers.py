@@ -29,15 +29,21 @@ def parse_header_line(line: str) -> tuple[str, str] | None:
     return (name, value) if _is_sendable_value(value) else None
 
 
+def merge_client_surfaces(*values: str) -> str:
+    """Combine client surfaces in order, ignoring repeated names regardless of casing."""
+    surfaces: dict[str, str] = {}
+    for value in values:
+        for item in value.split(","):
+            if surface := item.strip():
+                surfaces.setdefault(surface.casefold(), surface)
+    return ", ".join(surfaces.values())
+
+
 def _merge_header(headers: dict[str, tuple[str, str]], name: str, value: str) -> None:
     key = name.casefold()
     if key == _CLIENT_SURFACES_KEY and key in headers:
         name, previous = headers[key]
-        surfaces: dict[str, str] = {}
-        for item in (previous + "," + value).split(","):
-            if surface := item.strip():
-                surfaces.setdefault(surface.casefold(), surface)
-        value = ", ".join(surfaces.values())
+        value = merge_client_surfaces(previous, value)
     headers[key] = (name, value)
 
 

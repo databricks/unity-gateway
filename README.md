@@ -206,7 +206,9 @@ OpenUI attribution.
 - **Codex**: added to the launch's `-c` provider headers. Managed Codex settings on Unix and
   Windows read the merged client surfaces from a launch-only environment variable, while the
   configured surface remains in the managed file for launches without that variable. After
-  upgrading ug, run `ug configure` to add the mapping to an existing managed file.
+  upgrading ug, run `ug configure` to add the mapping to an existing managed file. An existing
+  administrator environment binding is preserved; ug merges its current value and any managed
+  static surfaces for a launch, while direct Codex launches keep the original binding.
 - **Claude Code**: added by a mod, even when managed settings set `ANTHROPIC_CUSTOM_HEADERS`.
   Only `ug configure` installs or upgrades it beside the managed settings (Linux and macOS, with
   sudo, not under `--user`); a launch never writes there. On those platforms, a missing or stale

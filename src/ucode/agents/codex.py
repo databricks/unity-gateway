@@ -13,7 +13,7 @@ import socket
 import sys
 import tempfile
 import threading
-from collections.abc import Callable, MutableMapping
+from collections.abc import Callable, Mapping, MutableMapping
 from pathlib import Path
 from subprocess import CalledProcessError, TimeoutExpired, list2cmdline
 from xml.sax.saxutils import escape
@@ -96,7 +96,7 @@ from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.smart_routing.routing import configured_router_name
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
-from ucode.ug_headers import ug_headers
+from ucode.ug_headers import merge_client_surfaces, ug_headers
 from ucode.ui import print_note, print_success, print_warning_err
 from ucode.workspace import workspace_headers, workspace_id_args
 
@@ -1045,9 +1045,15 @@ def _as_requirements(compose: Callable[[dict], dict]) -> Callable[[dict], dict]:
     def compose_requirements(base: dict) -> dict:
         doc = compose(base)
         doc.pop("model", None)
-        doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]["env_http_headers"] = dict(
-            _LAUNCH_HEADER_ENV_VARS
-        )
+        provider = doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]
+        env_headers = _provider_env_http_headers(provider)
+        for header, name in _LAUNCH_HEADER_ENV_VARS.items():
+            if header == CLIENT_SURFACES_HEADER:
+                continue
+            for existing in [key for key in env_headers if key.casefold() == header.casefold()]:
+                del env_headers[existing]
+            env_headers[header] = name
+        _ensure_surface_env_header(env_headers)
         return doc
 
     return compose_requirements
@@ -1059,16 +1065,75 @@ def _with_unix_surface_env_header(compose: Callable[[dict], dict]) -> Callable[[
     def compose_unix(base: dict) -> dict:
         doc = compose(base)
         provider = doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]
-        env_headers = provider.get("env_http_headers")
-        if isinstance(env_headers, MutableMapping):
-            env_headers[CLIENT_SURFACES_HEADER] = _LAUNCH_HEADER_ENV_VARS[CLIENT_SURFACES_HEADER]
-        else:
-            provider["env_http_headers"] = {
-                CLIENT_SURFACES_HEADER: _LAUNCH_HEADER_ENV_VARS[CLIENT_SURFACES_HEADER]
-            }
+        _ensure_surface_env_header(_provider_env_http_headers(provider))
         return doc
 
     return compose_unix
+
+
+def _provider_env_http_headers(provider: dict) -> MutableMapping:
+    env_headers = provider.get("env_http_headers")
+    if isinstance(env_headers, MutableMapping):
+        return env_headers
+    provider["env_http_headers"] = {}
+    return provider["env_http_headers"]
+
+
+def _surface_env_binding(env_headers: Mapping) -> str | None:
+    return next(
+        (
+            value
+            for header, value in env_headers.items()
+            if isinstance(header, str)
+            and header.casefold() == CLIENT_SURFACES_HEADER.casefold()
+            and isinstance(value, str)
+            and value.strip()
+        ),
+        None,
+    )
+
+
+def _ensure_surface_env_header(env_headers: MutableMapping) -> None:
+    if _surface_env_binding(env_headers) is not None:
+        return
+    for header in [
+        key
+        for key in env_headers
+        if isinstance(key, str) and key.casefold() == CLIENT_SURFACES_HEADER.casefold()
+    ]:
+        del env_headers[header]
+    env_headers[CLIENT_SURFACES_HEADER] = _LAUNCH_HEADER_ENV_VARS[CLIENT_SURFACES_HEADER]
+
+
+def _managed_client_surface_sources() -> tuple[list[str], str]:
+    """Read effective managed surfaces and the environment binding Codex will use."""
+    default_binding = _LAUNCH_HEADER_ENV_VARS[CLIENT_SURFACES_HEADER]
+    path = codex_managed_config_path()
+    if path is None:
+        return [], default_binding
+    try:
+        text = read_managed_file(path)
+        doc = _parse_managed_config(text) if text is not None else {}
+    except RuntimeError as exc:
+        raise RuntimeError(f"Cannot read Codex managed settings at {path}: {exc}") from exc
+    providers = doc.get("model_providers")
+    provider = providers.get(CODEX_MODEL_PROVIDER_NAME) if isinstance(providers, Mapping) else None
+    if not isinstance(provider, Mapping):
+        return [], default_binding
+    surfaces = [
+        value
+        for header, value in (_managed_provider_headers(doc) or {}).items()
+        if isinstance(header, str)
+        and header.casefold() == CLIENT_SURFACES_HEADER.casefold()
+        and isinstance(value, str)
+        and value.strip()
+    ]
+    env_headers = provider.get("env_http_headers")
+    binding = _surface_env_binding(env_headers) if isinstance(env_headers, Mapping) else None
+    binding = binding or default_binding
+    if binding != default_binding and (value := os.environ.get(binding)):
+        surfaces.insert(0, value)
+    return surfaces, binding
 
 
 MANAGED_MCP_CONFIG_KEY = "mcp_servers"
@@ -1323,40 +1388,57 @@ def _set_parent_schema_header(config: dict, parent_schema: str | None) -> None:
     _set_routing_header(config, MODEL_SERVICE_PARENT_SCHEMA_HEADER, parent_schema)
 
 
-def _export_launch_headers(config: dict) -> None:
+def _export_launch_headers(config: dict, client_surface_env_name: str) -> None:
     """Mirror launch headers into the variables read by managed Codex settings."""
     headers = {
         header.casefold(): value
         for header, value in (_managed_provider_headers(config) or {}).items()
     }
     for header, name in _LAUNCH_HEADER_ENV_VARS.items():
+        if header == CLIENT_SURFACES_HEADER:
+            name = client_surface_env_name
         value = headers.get(header.casefold())
         if isinstance(value, str) and value:
             os.environ[name] = value
         else:
             os.environ.pop(name, None)
+    if client_surface_env_name != _LAUNCH_HEADER_ENV_VARS[CLIENT_SURFACES_HEADER]:
+        os.environ.pop(_LAUNCH_HEADER_ENV_VARS[CLIENT_SURFACES_HEADER], None)
 
 
 def _render_launch_overlay(*args, **kwargs) -> dict:
     overlay = render_overlay(*args, **kwargs)
-    _add_launch_headers(overlay)
-    _export_launch_headers(overlay)
+    client_surface_env_name = _add_launch_headers(overlay)
+    _export_launch_headers(overlay, client_surface_env_name)
     return overlay
 
 
-def _add_launch_headers(config: dict) -> None:
+def _add_launch_headers(config: dict) -> str:
     """Add this launch's ``ug --header`` / ``UG_HEADERS`` to the provider's ``-c`` headers.
 
     Existing headers keep their values and client surfaces are merged. The headers reach only
     this launch's ``-c`` flags, never a config file."""
+    managed_surfaces, client_surface_env_name = _managed_client_surface_sources()
     headers = _managed_provider_headers(config)
-    merged = ug_headers(headers)
+    existing = dict(headers or {})
+    if managed_surfaces:
+        surface_keys = [
+            name for name in existing if name.casefold() == CLIENT_SURFACES_HEADER.casefold()
+        ]
+        profile_surfaces = [existing[name] for name in surface_keys]
+        for name in surface_keys:
+            del existing[name]
+        existing[surface_keys[0] if surface_keys else CLIENT_SURFACES_HEADER] = (
+            merge_client_surfaces(*managed_surfaces, *profile_surfaces)
+        )
+    merged = ug_headers(existing)
     if headers is not None:
         headers.clear()
         headers.update(merged)
     else:
         for name, value in merged.items():
             _set_routing_header(config, name, value)
+    return client_surface_env_name
 
 
 def _set_routing_header(config: dict, header: str, value: str | None) -> None:
@@ -1641,6 +1723,28 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
+    _, binding = _managed_client_surface_sources()
+    inherited = (
+        os.environ.get(binding)
+        if binding != _LAUNCH_HEADER_ENV_VARS[CLIENT_SURFACES_HEADER]
+        else None
+    )
+    try:
+        _launch(state, tool_args, options=options)
+    finally:
+        if binding != _LAUNCH_HEADER_ENV_VARS[CLIENT_SURFACES_HEADER]:
+            if inherited is None:
+                os.environ.pop(binding, None)
+            else:
+                os.environ[binding] = inherited
+
+
+def _launch(
+    state: dict,
+    tool_args: list[str],
+    *,
+    options: LaunchOptions,
+) -> None:
     relayed = bool(state.get("codex_relayed"))
     if options.launch_smart_routing:
         if relayed:
@@ -1704,8 +1808,8 @@ def launch(
         )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
-    _add_launch_headers(profile_doc)
-    _export_launch_headers(profile_doc)
+    client_surface_env_name = _add_launch_headers(profile_doc)
+    _export_launch_headers(profile_doc, client_surface_env_name)
     updating = tool_args[:1] == ["update"]
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")

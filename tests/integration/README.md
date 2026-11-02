@@ -169,9 +169,11 @@ The Claude mod entry point has separate native component checks in
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
 existing Claude skill-toggle journeys check the live recipe payload field (launch recipe at launch and after off/on, DISABLED after off).
 The native header-mod component tests cover OpenUI's process marker merging with managed
-headers and client surfaces. `../test_agent_codex.py` covers plain and smart-routed launch
-headers, Unix and Windows managed surface mappings, and profile preservation. These checks do
-not establish live OpenUI, Isaac, or gateway attribution coverage.
+headers and client surfaces.
+`../test_agent_codex.py` covers plain and smart-routed launch headers, Unix and Windows managed
+surface mappings, existing administrator environment bindings, later managed surface edits, and
+profile preservation. These checks do not establish live OpenUI, Isaac, or gateway attribution
+coverage.
 The required Isaac feedback form, evidence submission, and background delivery
 notifications need a separate manual Isaac check. The gateway toggle journey does
 not cover the form or notification timing. Use the released Isaac skill with the

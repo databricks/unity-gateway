@@ -85,9 +85,10 @@ ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching
 `-c` headers (plain and smart-routed) without writing its profile. OpenUI regressions cover
 `OPENUI_SESSION_ID` adding the `openui` surface, preserving existing headers and surfaces,
 case-insensitive deduplication, managed Codex settings on Unix and Windows mapping the merged
-surface from the launch environment, unchanged profile/managed files, and the next terminal launch
-dropping the automatic marker. Empty markers add nothing. No automated test checks the header at
-the gateway.
+surface from the launch environment, preserving an administrator's existing environment-backed
+surface mapping and later managed-file surface edits, unchanged profile/managed files, and the next
+terminal launch dropping the automatic marker. Empty markers add nothing. No automated test checks
+the header at the gateway.
 
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
