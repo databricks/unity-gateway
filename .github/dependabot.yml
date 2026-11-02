@@ -12,3 +12,18 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 7
+  - package-ecosystem: "npm"
+    directory: "/.github/agent-locks/gemini"
+    schedule:
+      interval: "weekly"
+    ignore:
+      - dependency-name: "@google/gemini-cli"
+        versions: [">=0.45.0"]
+    cooldown:
+      default-days: 7
+  - package-ecosystem: "npm"
+    directory: "/.github/agent-locks/pi"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7

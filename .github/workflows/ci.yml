@@ -148,7 +148,7 @@ jobs:
           - group: gemini
             name: Agent launch tests · Gemini
             keyword: TestGeminiLaunch or TestGeminiFreshInstall or TestGeminiAuthRecovery
-            package: '@google/gemini-cli'
+            npm_lock: .github/agent-locks/gemini
           - group: opencode
             name: Agent launch tests · OpenCode
             keyword: TestOpencodeLaunch
@@ -160,7 +160,7 @@ jobs:
           - group: pi
             name: Agent launch tests · Pi
             keyword: TestPiLaunch
-            package: '@earendil-works/pi-coding-agent'
+            npm_lock: .github/agent-locks/pi
     env:
       # See the test job: hosted runners can't reach the internal pypi-proxy,
       # so resolve against public PyPI (paired with the `uv lock` step below).
@@ -177,12 +177,15 @@ jobs:
       # short-lived (~1h); rotate when CI starts failing with 401s.
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
       AGENT_PACKAGE: ${{ matrix.package }}
+      NPM_LOCK: ${{ matrix.npm_lock }}
       TEST_KEYWORD: ${{ matrix.keyword }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: ${{ matrix.npm_lock && '22.19.0' || '' }}
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
       - name: Expose the Databricks CLI on Windows
@@ -191,8 +194,18 @@ jobs:
           test -f "$RUNNER_TEMP/.bin/databricks.exe"
           cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
       - name: Install the shard's agent CLI
-        if: ${{ matrix.package != '' }}
-        run: npm install -g "$AGENT_PACKAGE"
+        if: ${{ matrix.package != '' || matrix.npm_lock != '' }}
+        run: |
+          if [[ -z "$NPM_LOCK" ]]; then
+            npm install -g "$AGENT_PACKAGE"
+          else
+            npm ci --prefix "$NPM_LOCK"
+            if [[ "$RUNNER_OS" == "Windows" ]]; then
+              cygpath -w "$GITHUB_WORKSPACE/$NPM_LOCK/node_modules/.bin" >> "$GITHUB_PATH"
+            else
+              echo "$GITHUB_WORKSPACE/$NPM_LOCK/node_modules/.bin" >> "$GITHUB_PATH"
+            fi
+          fi
       - name: Install ug and test dependencies
         run: |
           uv lock
