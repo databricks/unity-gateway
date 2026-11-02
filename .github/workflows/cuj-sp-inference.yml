@@ -23,7 +23,7 @@ jobs:
       HOST: https://dbc-497adeef-62c0.cloud.databricks.com
       BUDGET_ID: 25c4ce5c-fcd6-4d00-8266-69030cc1a236
       MODEL: system.ai.claude-sonnet-4-6
-      REQUESTS: "3"
+      REQUESTS: "100"
       MAX_TOKENS: "256"
     steps:
       - name: Send inference requests and report the budget
