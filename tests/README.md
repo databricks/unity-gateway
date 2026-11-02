@@ -1,5 +1,11 @@
 # Test suites and user journeys
 
+`test_gateway_proxy_integration.py` exercises the loopback proxy over local sockets.
+Its SSE scenario checks response order and verifies TCP_NODELAY on the accepted
+proxy socket, avoiding timing thresholds while preventing Nagle buffering of small
+frames when a client delays acknowledgements. This is component coverage; it does
+not establish live gateway or agent streaming latency.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered

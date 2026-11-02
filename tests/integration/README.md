@@ -1,5 +1,9 @@
 # Integration tests
 
+`../test_gateway_proxy_integration.py` checks local proxy SSE response order and
+TCP_NODELAY on the accepted socket. These component checks avoid timing thresholds
+and do not establish live gateway or agent streaming latency.
+
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls
 still routing waiting for a later reply, distinct

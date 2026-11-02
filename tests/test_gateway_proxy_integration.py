@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -211,10 +212,20 @@ class TestRelayedProxyEndToEnd:
         assert req.header("Databricks-Model-Provider-Service") == "main.mcao.anthropic-mps"
         assert req.body == b'{"model":"claude","stream":true}'
 
-    def test_streams_sse_chunks_back_in_order(self, make_gateway):
+    def test_streams_sse_chunks_back_in_order(self, make_gateway, monkeypatch):
         # A relayed model turn streams SSE; the proxy must relay chunks through
         # rather than buffering the whole response. Assert the client receives the
         # full stream, in order, over a real socket.
+        nodelay_options = []
+        original_setup = gateway_proxy._ProxyHandler.setup
+
+        def capture_socket_options(handler):
+            original_setup(handler)
+            nodelay_options.append(
+                handler.connection.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
+            )
+
+        monkeypatch.setattr(gateway_proxy._ProxyHandler, "setup", capture_socket_options)
         chunks = [b"event: a\ndata: 1\n\n", b"event: b\ndata: 2\n\n", b"event: c\ndata: 3\n\n"]
         gw = make_gateway(chunks=chunks, sse_delay=0.02)
         with _running_proxy(gw) as proxy_url:
@@ -228,6 +239,7 @@ class TestRelayedProxyEndToEnd:
                     assert resp.status_code == 200
                     body = b"".join(resp.iter_raw())
         assert body == b"".join(chunks)
+        assert nodelay_options == [1]
 
     def test_upstream_401_triggers_refresh_and_relays_over_socket(self, make_gateway):
         # A 401 may be a stale swap token, so the proxy force-refreshes and retries
