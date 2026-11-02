@@ -285,7 +285,9 @@ class TestV2Launch:
             user_settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
             kwargs["prepare_model_switch"]("system.ai.claude-sonnet-5")
             # Simulate `/model` changing the user file, plus an unrelated concurrent edit.
-            user_settings.write_text(json.dumps({"model": "routed", "theme": "light", "new": True}))
+            user_settings.write_text(
+                json.dumps({"model": "system.ai.claude-sonnet-5", "theme": "light", "new": True})
+            )
             kwargs["restore_model_setting"]()
             captured["restored_during_run"] = json.loads(user_settings.read_text())
             # A later user choice must survive session exit.
@@ -962,23 +964,35 @@ class TestSubagentRouting:
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         first = v2._ClaudeModelSettingGuard(user_settings)
         second = v2._ClaudeModelSettingGuard(user_settings)
-        captured: list[str] = []
-
-        first.begin("system.ai.claude-opus-4-8")
+        assert first.begin("system.ai.claude-opus-4-8") is True
         user_settings.write_text(json.dumps({"model": "system.ai.claude-opus-4-8"}))
-
-        def run_second() -> None:
-            second.begin("system.ai.claude-sonnet-5")
-            captured.append(json.loads(user_settings.read_text())["model"])
+        try:
+            assert second.begin("system.ai.claude-sonnet-5") is False
+        finally:
+            first.restore()
+        assert second.begin("system.ai.claude-sonnet-5") is True
+        try:
+            assert json.loads(user_settings.read_text()) == {"model": "haiku"}
+        finally:
             second.restore()
 
-        thread = threading.Thread(target=run_second)
-        thread.start()
-        first.restore()
-        thread.join(timeout=5)
-
-        assert not thread.is_alive()
-        assert captured == ["haiku"]
+    def test_deferred_restore_does_not_interrupt_another_model_switch(self, tmp_path, monkeypatch):
+        user_settings = tmp_path / "settings.json"
+        user_settings.write_text(json.dumps({"model": "haiku"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        first = v2._ClaudeModelSettingGuard(user_settings)
+        second = v2._ClaudeModelSettingGuard(user_settings)
+        assert first.begin("sonnet") is True
+        first.defer()
+        assert second.begin("opus") is True
+        try:
+            user_settings.write_text(json.dumps({"model": "opus"}))
+            assert first.restore() is False
+            assert json.loads(user_settings.read_text()) == {"model": "opus"}
+        finally:
+            second.restore()
+        user_settings.write_text(json.dumps({"model": "sonnet"}))
+        assert first.restore() is True
         assert json.loads(user_settings.read_text()) == {"model": "haiku"}
 
 

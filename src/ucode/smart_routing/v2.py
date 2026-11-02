@@ -588,34 +588,59 @@ class _ClaudeModelSettingGuard:
         self._routed_model: str | None = None
         self._lock: TextIO | None = None
 
-    def begin(self, routed_model: str) -> None:
+    def _acquire_lock(self) -> bool:
         APP_DIR.mkdir(parents=True, exist_ok=True)
-        self._lock = open(APP_DIR / "claude-v2-model.lock", "a+", encoding="utf-8")
-        acquire_exclusive_file_lock(self._lock)
+        lock = open(APP_DIR / "claude-v2-model.lock", "a+", encoding="utf-8")
+        try:
+            acquire_exclusive_file_lock(lock, timeout=0)
+        except TimeoutError:
+            lock.close()
+            return False
+        except BaseException:
+            lock.close()
+            raise
+        self._lock = lock
+        return True
+
+    def begin(self, routed_model: str) -> bool:
+        if not self._acquire_lock():
+            return False
         self._before = read_json_safe(self.settings_path)
         self._routed_model = routed_model
+        return True
 
     def is_routed(self) -> bool:
         value = read_json_safe(self.settings_path).get("model")
         return isinstance(value, str) and value == self._routed_model
 
-    def restore(self) -> None:
+    def defer(self) -> None:
+        if self._lock is not None:
+            release_file_lock(self._lock)
+            self._lock.close()
+            self._lock = None
+
+    def abandon(self) -> None:
+        self._before = None
+        self._routed_model = None
+        self.defer()
+
+    def restore(self) -> bool:
         if self._before is None:
-            return
+            return True
+        if self._lock is None and not self._acquire_lock():
+            return False
         try:
             current = read_json_safe(self.settings_path)
-            if "model" in self._before:
-                current["model"] = self._before["model"]
-            else:
-                current.pop("model", None)
-            write_json_file(self.settings_path, current)
-            self._before = None
-            self._routed_model = None
+            # A later user choice is not the temporary /model write we own.
+            if current.get("model") == self._routed_model:
+                if "model" in self._before:
+                    current["model"] = self._before["model"]
+                else:
+                    current.pop("model", None)
+                write_json_file(self.settings_path, current)
         finally:
-            if self._lock is not None:
-                release_file_lock(self._lock)
-                self._lock.close()
-                self._lock = None
+            self.abandon()
+        return True
 
 
 def launch_claude(
@@ -763,6 +788,8 @@ def launch_claude(
                     prepare_model_switch=model_setting.begin,
                     model_switch_persisted=model_setting.is_routed,
                     restore_model_setting=model_setting.restore,
+                    defer_model_setting=model_setting.defer,
+                    abandon_model_setting=model_setting.abandon,
                     log_path=CLAUDE_PTY_LOG,
                 )
             else:

@@ -442,6 +442,10 @@ An explicit `--model`, from `ug claude --model` or a launcher such as Omnigent, 
 subagent routing when first-prompt routing is off; the main session stays on that model.
 With first-prompt routing on, an explicit model still skips routing.
 
+Claude first-prompt routing waits for `/model` to finish before replaying the prompt. If
+completion cannot be confirmed, UG stops automatic input and asks you to resend
+the prompt. Other launches can continue, and later manual model choices are preserved.
+
 ### Smart Router Orchestrator
 
 Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration.
