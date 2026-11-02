@@ -33,6 +33,8 @@ from ucode.state import (
     set_provider_service,
 )
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.ug_headers import extra_ug_headers
+from ucode.ui import print_warning_err
 from ucode.workspace import workspace_headers
 
 from .args import LaunchOptions
@@ -165,12 +167,33 @@ def render_env_overlay(
     }
 
 
+# Gemini CLI splits GEMINI_CLI_CUSTOM_HEADERS on this pattern, with no way to escape a comma.
+_CUSTOM_HEADERS_SPLIT_RE = re.compile(r",(?=\s*[^,:]+:)")
+
+
+def _with_launch_headers(custom_headers: str) -> str:
+    """Append this launch's ``ug --header`` / ``UG_HEADERS`` to ``GEMINI_CLI_CUSTOM_HEADERS``.
+
+    A header ug or the admin already sends keeps its value. The headers reach only this launch's
+    environment, never ``ucode.env``. A header Gemini CLI would split in two is skipped."""
+    present = [entry.partition(":")[0] for entry in _CUSTOM_HEADERS_SPLIT_RE.split(custom_headers)]
+    for name, value in extra_ug_headers(present).items():
+        if _CUSTOM_HEADERS_SPLIT_RE.search(value):
+            print_warning_err(
+                f"Not sending `--header {name}` to Gemini CLI: its value looks like several headers."
+            )
+            continue
+        custom_headers += f",{name}:{value}"
+    return custom_headers
+
+
 def build_runtime_env(
     workspace: str, model: str, token: str, *, provider: str | None = None
 ) -> dict[str, str]:
     _ensure_local_settings_selected_type()
     env = os.environ.copy()
     env.update(render_env_overlay(workspace, model, token, provider=provider))
+    env["GEMINI_CLI_CUSTOM_HEADERS"] = _with_launch_headers(env["GEMINI_CLI_CUSTOM_HEADERS"])
     # Newer Gemini CLI releases refuse to run in untrusted directories;
     # opt every launch into trust so `ucode gemini` works in any folder.
     env["GEMINI_CLI_TRUST_WORKSPACE"] = "true"

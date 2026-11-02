@@ -31,8 +31,10 @@ already uses). A token still reaches the process environment: `launch` exports
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import signal
+from collections.abc import Iterable
 
 from ucode.config_io import (
     APP_DIR,
@@ -53,6 +55,8 @@ from ucode.databricks import (
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.ug_headers import extra_ug_headers, ug_headers
+from ucode.ui import print_warning_err
 from ucode.workspace import workspace_headers
 
 from .args import LaunchOptions
@@ -72,6 +76,11 @@ SPEC: ToolSpec = {
     "config_path": PI_CONFIG_PATH,
     "backup_path": PI_BACKUP_PATH,
 }
+
+# `models.json` header values that read this launch's `ug --header` / UG_HEADERS from the environment.
+LAUNCH_HEADER_ENV_PREFIX = "UG_PI_HEADER_"
+# Pi 0.77.0 added the `${VAR}` syntax; earlier releases would send it literally.
+MINIMUM_PI_HEADER_ENV_VERSION = (0, 77, 0)
 
 PROVIDER_NAMES = (
     "databricks-claude",
@@ -105,6 +114,24 @@ def _resolve_model_selector(
     return model
 
 
+def _launch_header_refs(present: Iterable[str]) -> dict[str, str]:
+    """``${UG_PI_HEADER_<n>}`` references for this launch's ``ug --header`` / ``UG_HEADERS``.
+
+    Pi resolves the references from its environment, where ``build_runtime_env`` sets the values,
+    so ``models.json`` holds no header value. A header ug or the admin already sends keeps its value."""
+    extra = extra_ug_headers(present)
+    if not extra:
+        return {}
+    version = re.search(r"(\d+)\.(\d+)\.(\d+)", agent_version(SPEC["binary"]))
+    if not version or tuple(map(int, version.groups())) < MINIMUM_PI_HEADER_ENV_VERSION:
+        print_warning_err(
+            "Pi won't send your `ug --header` / UG_HEADERS headers: they need Pi 0.77.0 or newer."
+        )
+        return {}
+    indexes = {name: index for index, name in enumerate(ug_headers())}
+    return {name: f"${{{LAUNCH_HEADER_ENV_PREFIX}{indexes[name]}}}" for name in extra}
+
+
 def render_overlay(
     model: str,
     api_key: str,
@@ -130,6 +157,8 @@ def render_overlay(
     gateway_url = next(iter(pi_base_urls.values()), None)
     if gateway_url:
         ua_headers.update(workspace_headers(gateway_url))
+
+    ua_headers.update(_launch_header_refs(ua_headers))
 
     claude_ids = sorted(set(claude_models.values()))
     if claude_ids:
@@ -307,6 +336,8 @@ def build_runtime_env(token: str) -> dict[str, str]:
     env = os.environ.copy()
     env["OAUTH_TOKEN"] = token
     env["PI_CODING_AGENT_DIR"] = str(PI_CONFIG_DIR)
+    for index, value in enumerate(ug_headers().values()):
+        env[f"{LAUNCH_HEADER_ENV_PREFIX}{index}"] = value
     return env
 
 

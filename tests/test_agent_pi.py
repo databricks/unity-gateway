@@ -536,3 +536,43 @@ class TestBuildPiApiKey:
     def test_forwards_use_pat(self):
         assert "--use-pat" in pi.build_pi_api_key({"workspace": WS, "use_pat": True})
         assert "--use-pat" not in pi.build_pi_api_key({"workspace": WS})
+
+
+class TestUgHeaders:
+    def test_overlay_references_env_vars_instead_of_header_values(self, monkeypatch):
+        monkeypatch.setattr(pi, "agent_version", lambda _binary: "0.84.1")
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/a")
+
+        overlay, _ = _overlay("claude-sonnet", claude_models={"sonnet": "claude-sonnet"})
+
+        headers = overlay["providers"]["databricks-claude"]["headers"]
+        assert headers["x-databricks-traffic-id"] == "${UG_PI_HEADER_0}"
+        assert "liteswap" not in json.dumps(overlay)
+
+    def test_runtime_env_carries_the_header_values(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "X-A: 1\nX-B: 2")
+
+        env = pi.build_runtime_env("tok")
+
+        assert (env["UG_PI_HEADER_0"], env["UG_PI_HEADER_1"]) == ("1", "2")
+
+    def test_keeps_headers_ug_already_sends(self, monkeypatch):
+        monkeypatch.setattr(pi, "agent_version", lambda _binary: "0.84.1")
+        monkeypatch.setenv("UG_HEADERS", "user-agent: mine\nX-New: 1")
+
+        overlay, _ = _overlay("claude-sonnet", claude_models={"sonnet": "claude-sonnet"})
+
+        headers = overlay["providers"]["databricks-claude"]["headers"]
+        assert "user-agent" not in headers
+        assert headers["User-Agent"].startswith("ucode/")
+        assert headers["X-New"] == "${UG_PI_HEADER_1}"
+
+    @pytest.mark.parametrize("version", ["0.76.9", "unknown"])
+    def test_skips_headers_on_a_pi_without_env_references(self, monkeypatch, capsys, version):
+        monkeypatch.setattr(pi, "agent_version", lambda _binary: version)
+        monkeypatch.setenv("UG_HEADERS", "X-New: 1")
+
+        overlay, _ = _overlay("claude-sonnet", claude_models={"sonnet": "claude-sonnet"})
+
+        assert "X-New" not in overlay["providers"]["databricks-claude"]["headers"]
+        assert "Pi 0.77.0" in capsys.readouterr().err

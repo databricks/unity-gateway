@@ -53,6 +53,7 @@ from ucode.databricks import bare_model_name
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import get_provider_service, mark_tool_managed, save_state, set_provider_service
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.ug_headers import extra_ug_headers
 
 from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
 from .request_tags import request_tags_header_value
@@ -371,6 +372,8 @@ def proxy_headers(provider: str | None) -> dict[str, str]:
     if provider:
         # A Model Provider Service routes by this header; the URL still names its target model.
         headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
+    # This launch's `ug --header` / UG_HEADERS ride the proxy only, never a config file.
+    headers.update(extra_ug_headers(headers))
     return headers
 
 

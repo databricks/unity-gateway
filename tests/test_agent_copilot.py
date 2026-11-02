@@ -1348,3 +1348,17 @@ class TestWriteUserMcpServers:
         assert "gone" not in doc["mcpServers"]
         assert doc["mcpServers"]["mine"] == {"type": "local"}
         assert doc["mcpServers"]["svc"]["command"] == "ug"
+
+
+class TestProxyUgHeaders:
+    def test_adds_ug_headers_keeping_existing_ones(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: "1")
+        monkeypatch.setenv("UG_HEADERS", "x-team: other\nX-New: 1\nuser-agent: mine")
+
+        headers = copilot.proxy_headers({"copilot_http_headers": {"X-Team": "data"}})
+
+        assert headers["X-Team"] == "data"
+        assert headers["X-New"] == "1"
+        assert headers["User-Agent"].startswith("ucode/")
+        assert "x-team" not in headers
+        assert "user-agent" not in headers

@@ -87,8 +87,10 @@ before/after agent-version check.
 
 `test_ug_headers.py` covers the `UG_HEADERS` parser and the `--header` flag, `test_databricks.py`
 ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching a Codex launch's
-`-c` headers (plain and smart-routed) without writing its profile. No automated test checks the
-header at the gateway.
+`-c` headers (plain and smart-routed) without writing its profile. `test_agent_copilot.py`,
+`test_agent_antigravity.py`, `test_agent_gemini.py`, `test_agent_opencode.py` and `test_agent_pi.py`
+cover the same for their launches: the header added, an existing header kept, and no config file
+holding the value. No automated test checks the header at the gateway.
 
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch

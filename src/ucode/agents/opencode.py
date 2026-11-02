@@ -27,6 +27,7 @@ from ucode.databricks import (
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.ug_headers import extra_ug_headers
 from ucode.workspace import workspace_headers
 
 from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
@@ -469,10 +470,54 @@ def _configure_launch(state: dict, model: str | None = None) -> str:
     return token
 
 
+def launch_headers_config(config: dict) -> dict:
+    """Inline config adding this launch's ``ug --header`` / ``UG_HEADERS`` to ug's providers in ``config``.
+
+    A header ug or the admin already sends keeps its value. OpenCode merges the inline config
+    (``OPENCODE_CONFIG_CONTENT``) over opencode.json, so the headers reach only this launch and
+    never a config file. Models carry them too: OpenCode's per-model headers win over the
+    provider's."""
+    providers: dict = {}
+    configured = config.get("provider")
+    for _, name in PROVIDER_KEYS:
+        provider = configured.get(name) if isinstance(configured, dict) else None
+        if not isinstance(provider, dict):
+            continue
+        options = provider.get("options")
+        provider_headers = options.get("headers") if isinstance(options, dict) else None
+        provider_headers = provider_headers if isinstance(provider_headers, dict) else {}
+        entries = {
+            model: entry.get("headers") if isinstance(entry, dict) else None
+            for model, entry in (provider.get("models") or {}).items()
+        }
+        # Names ug sends on any of the provider's models are off limits for all of them.
+        taken = [
+            *provider_headers,
+            *(name for headers in entries.values() for name in headers or {}),
+        ]
+        extra = extra_ug_headers(taken)
+        if extra:
+            providers[name] = {
+                "options": {"headers": extra},
+                "models": {model: {"headers": extra} for model in entries},
+            }
+    return {"provider": providers} if providers else {}
+
+
 def build_runtime_env(token: str, state: dict | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env["OAUTH_TOKEN"] = token
     env["XDG_CONFIG_HOME"] = str(OPENCODE_XDG_CONFIG_HOME)
+    launch_config = launch_headers_config(read_json_safe(OPENCODE_CONFIG_PATH))
+    if launch_config:
+        # Keep an inline config the user already exports; its values win over ug's added headers.
+        try:
+            inherited = json.loads(env.get("OPENCODE_CONFIG_CONTENT") or "{}")
+        except ValueError:
+            inherited = {}
+        if isinstance(inherited, dict):
+            launch_config = deep_merge_dict(launch_config, inherited)
+        env["OPENCODE_CONFIG_CONTENT"] = json.dumps(launch_config)
     return env
 
 
