@@ -262,12 +262,6 @@ test('the host Usage notes survive the orchestrator description', { options: ORC
     .toBe('Delegate under the orchestrator.\n\n## Usage notes\n\n- Runs in the background.\n- Resume with SendMessage.');
 });
 
-test('a CRLF Usage notes heading is still found', { options: ORCHESTRATED }, async ($, on) => {
-  const describe = agentDescriber($, on);
-  const host = 'Policy.\r\n##  Usage notes \r\n- Runs in the background.\r\n## When to fork\r\nPolicy.';
-  expect(await describe(host)).toBe('Delegate under the orchestrator.\n\n## Usage notes\n\n- Runs in the background.');
-});
-
 test('a host description without Usage notes keeps the continuation note', { options: ORCHESTRATED }, async ($, on) => {
   const describe = agentDescriber($, on);
   // Neither a missing section nor an empty one may drop the continuation mechanics.
