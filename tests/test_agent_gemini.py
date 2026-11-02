@@ -265,3 +265,45 @@ class TestWriteUserMcpServers:
         assert doc["security"] == {"x": 1}  # untouched
         assert "mine" not in doc["mcpServers"]
         assert doc["mcpServers"]["svc"] == {"command": "ug", "args": ["mcp-proxy", "u"]}
+
+
+class TestUgHeaders:
+    def test_adds_ug_headers_to_the_launch_env_only(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/a")
+
+        env = gemini.build_runtime_env(WS, "gemini-2", "tok")
+        overlay = gemini.render_env_overlay(WS, "gemini-2", "tok")
+
+        assert env["GEMINI_CLI_CUSTOM_HEADERS"].endswith(
+            ",x-databricks-traffic-id:testenv://liteswap/a"
+        )
+        assert "x-databricks-traffic-id" not in overlay["GEMINI_CLI_CUSTOM_HEADERS"]
+
+    def test_keeps_headers_ug_already_sends(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "user-agent: mine\nX-New: 1")
+
+        env = gemini.build_runtime_env(WS, "gemini-2", "tok", provider="cat.sch.svc")
+        headers = env["GEMINI_CLI_CUSTOM_HEADERS"]
+
+        assert headers.count("User-Agent:") == 1
+        assert "mine" not in headers
+        assert headers.endswith(",X-New:1")
+
+    def test_skips_a_value_gemini_would_split(self, monkeypatch, capsys):
+        monkeypatch.setenv("UG_HEADERS", "X-Bad: a,b:c\nX-Ok: 1,2")
+
+        env = gemini.build_runtime_env(WS, "gemini-2", "tok")
+
+        assert "X-Bad" not in env["GEMINI_CLI_CUSTOM_HEADERS"]
+        assert env["GEMINI_CLI_CUSTOM_HEADERS"].endswith(",X-Ok:1,2")
+        assert "X-Bad" in capsys.readouterr().err
+
+    def test_launch_does_not_write_ug_headers_to_the_env_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gemini, "GEMINI_ENV_PATH", tmp_path / "ucode.env")
+        monkeypatch.setattr(gemini, "GEMINI_BACKUP_PATH", tmp_path / "ucode.env.backup")
+        monkeypatch.setattr(gemini, "save_state", lambda state: None)
+        monkeypatch.setenv("UG_HEADERS", "X-Team: eng")
+
+        gemini.write_tool_config({"workspace": WS}, "gemini-2", "tok")
+
+        assert "X-Team" not in (tmp_path / "ucode.env").read_text(encoding="utf-8")

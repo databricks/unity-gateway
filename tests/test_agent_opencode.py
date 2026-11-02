@@ -672,3 +672,56 @@ class TestWriteUserMcpServers:
         assert "gone" not in doc["mcp"]
         assert doc["mcp"]["mine"] == {"type": "local"}
         assert doc["mcp"]["svc"]["command"] == ["ug", "mcp-proxy", "u"]
+
+
+class TestUgHeaders:
+    def _write_config(self, tmp_path, monkeypatch, models=None):
+        path = tmp_path / "opencode.json"
+        monkeypatch.setattr(opencode, "OPENCODE_CONFIG_PATH", path)
+        overlay, _ = opencode.render_overlay(
+            "claude-sonnet", "tok", _base_urls(), models or {"anthropic": ["claude-sonnet"]}
+        )
+        path.write_text(json.dumps(overlay), encoding="utf-8")
+        return path
+
+    def test_adds_ug_headers_through_inline_config_without_writing_the_file(
+        self, tmp_path, monkeypatch
+    ):
+        path = self._write_config(tmp_path, monkeypatch)
+        before = path.read_text(encoding="utf-8")
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/a")
+
+        env = opencode.build_runtime_env("tok")
+
+        provider = json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"]["databricks-anthropic"]
+        header = {"x-databricks-traffic-id": "testenv://liteswap/a"}
+        assert provider["options"]["headers"] == header
+        assert provider["models"]["claude-sonnet"]["headers"] == header
+        assert path.read_text(encoding="utf-8") == before
+
+    def test_keeps_headers_ug_already_sends(self, tmp_path, monkeypatch):
+        self._write_config(tmp_path, monkeypatch)
+        monkeypatch.setenv("UG_HEADERS", "user-agent: mine\nauthorization: x\nX-New: 1")
+
+        env = opencode.build_runtime_env("tok")
+
+        provider = json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"]["databricks-anthropic"]
+        assert provider["options"]["headers"] == {"X-New": "1"}
+        assert provider["models"]["claude-sonnet"]["headers"] == {"X-New": "1"}
+
+    def test_keeps_an_inline_config_the_user_exports(self, tmp_path, monkeypatch):
+        self._write_config(tmp_path, monkeypatch)
+        monkeypatch.setenv("UG_HEADERS", "X-New: 1")
+        monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", '{"theme": "dark"}')
+
+        env = opencode.build_runtime_env("tok")
+
+        content = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+        assert content["theme"] == "dark"
+        assert content["provider"]["databricks-anthropic"]["options"]["headers"] == {"X-New": "1"}
+
+    def test_sets_no_inline_config_without_ug_headers(self, tmp_path, monkeypatch):
+        self._write_config(tmp_path, monkeypatch)
+        monkeypatch.delenv("OPENCODE_CONFIG_CONTENT", raising=False)
+
+        assert "OPENCODE_CONFIG_CONTENT" not in opencode.build_runtime_env("tok")

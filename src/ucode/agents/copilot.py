@@ -81,6 +81,7 @@ from ucode.os_compatibility.file_lock_cross_os import (
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.ug_headers import extra_ug_headers
 from ucode.ui import print_warning
 
 from .args import LaunchOptions, explicit_model_arg_value
@@ -890,6 +891,8 @@ def proxy_headers(state: dict) -> dict[str, str]:
         for existing in [key for key in headers if key.casefold() == name.strip().casefold()]:
             headers.pop(existing)
         headers[name.strip()] = value
+    # This launch's `ug --header` / UG_HEADERS ride the proxy only, never a config file.
+    headers.update(extra_ug_headers(headers))
     return headers
 
 

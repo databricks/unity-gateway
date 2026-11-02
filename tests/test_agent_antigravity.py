@@ -592,3 +592,26 @@ class TestLaunch:
     def test_no_gemini_models_is_actionable(self):
         with pytest.raises(RuntimeError, match="No Gemini model is available"):
             antigravity.launch({"workspace": WS}, [], options=LaunchOptions())
+
+
+class TestProxyUgHeaders:
+    def test_adds_ug_headers_keeping_existing_ones(self, monkeypatch):
+        monkeypatch.setattr(antigravity, "agent_version", lambda _binary: "1.4.9")
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: t\nuser-agent: mine")
+
+        headers = antigravity.proxy_headers(None)
+
+        assert headers["x-databricks-traffic-id"] == "t"
+        assert headers["User-Agent"].startswith("ucode/")
+        assert "user-agent" not in headers
+
+    def test_provider_header_is_not_overridden(self, monkeypatch):
+        monkeypatch.setattr(antigravity, "agent_version", lambda _binary: "1.4.9")
+        monkeypatch.setenv("UG_HEADERS", f"{MODEL_PROVIDER_SERVICE_HEADER.lower()}: other")
+
+        headers = antigravity.proxy_headers("cat.sch.svc")
+
+        assert headers == {
+            "User-Agent": headers["User-Agent"],
+            MODEL_PROVIDER_SERVICE_HEADER: "cat.sch.svc",
+        }

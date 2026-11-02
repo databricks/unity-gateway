@@ -193,15 +193,27 @@ UG_HEADERS="X-Team: eng" ug codex
 ```
 
 `--header` (repeatable) and `UG_HEADERS` (one `Name: value` per line) add headers to that launch's
-Databricks requests only: Claude Code's and Codex's gateway requests, and ug's own requests
-(workspace APIs, MCP proxy, web search, smart routing). A header already sent keeps its value.
-Nothing is written to a config file.
+Databricks requests only: the gateway requests of every agent `ug` launches except Cursor, and
+ug's own requests (workspace APIs, MCP proxy, web search, smart routing). A header already sent
+keeps its value. Nothing is written to a config file, except the `${...}` placeholders for Pi (below).
 
 - **Codex**: added to the launch's `-c` provider headers.
 - **Claude Code**: added by a mod, even when managed settings set `ANTHROPIC_CUSTOM_HEADERS`.
   Only `ug configure` installs or upgrades it beside the managed settings (Linux and macOS, with
   sudo, not under `--user`); a launch never writes there. When it is missing or out of date the
   launch warns and Claude doesn't send them.
+- **Copilot CLI** and **Antigravity**: added by the launch's local gateway proxy.
+- **Gemini CLI**: appended to the launch's `GEMINI_CLI_CUSTOM_HEADERS`. Gemini CLI splits that
+  variable on commas, so a header whose value looks like several headers (`a,b:c`) is skipped with
+  a warning.
+- **OpenCode**: added to ug's providers and models through the launch's `OPENCODE_CONFIG_CONTENT`
+  (merged over any value you export).
+- **Pi**: `models.json` holds `${UG_PI_HEADER_<n>}` references, and the launch's environment holds
+  the values. Needs Pi 0.77.0 or newer; older releases would send the reference text, so ug skips
+  the headers with a warning.
+- **Cursor**, **VS Code** and the desktop apps (Claude Desktop, Cowork, the Codex app): not
+  supported. `ug cursor` only wraps `cursor-agent`, which doesn't call the gateway, and ug
+  configures the others once, at configure time, without starting them.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `kilo`, `copilot`, `pi`, and `antigravity`. `cursor` can be included in `--agents` for MCP-only setup;

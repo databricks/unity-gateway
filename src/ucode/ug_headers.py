@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterable
 
 from ucode.constants import UG_HEADERS_ENV_VAR
 
@@ -40,3 +41,11 @@ def ug_headers() -> dict[str, str]:
         if parsed:
             headers[parsed[0].casefold()] = parsed
     return dict(headers.values())
+
+
+def extra_ug_headers(present: Iterable[str]) -> dict[str, str]:
+    """``ug_headers()`` without the names in ``present`` (any case).
+
+    A header ug or the admin already sends keeps its value, so an agent adds only what is left."""
+    taken = {name.casefold() for name in present}
+    return {name: value for name, value in ug_headers().items() if name.casefold() not in taken}
