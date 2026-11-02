@@ -16,10 +16,9 @@ import pytest
 from typer.testing import CliRunner
 
 from tests.test_desktop_marketplace import system_source as system_source
-from ucode import cli, config_io, desktop_auth, mcp, skills_download
+from ucode import cli, config_io, desktop_auth, managed_config, mcp, skills_download
 from ucode.agents.desktop import claude_config, cowork, mdm, setup, system_marketplace
 from ucode.databricks import AnthropicModelCatalog
-from ucode.managed_config import FetchedManagedConfig
 from ucode.skills_api import SkillRef
 
 WORKSPACE = "https://workspace.example"
@@ -53,7 +52,9 @@ def device(system_source, monkeypatch, tmp_path):
         activate=activate,
         home=home,
         manifest={
-            "enabled_agents": {"claude": {"otel_tracing_enabled": True}},
+            "enabled_agents": [
+                {"agent": "CODING_AGENT_CLAUDE_CODE", "config": {"tracing": {"enabled": True}}}
+            ],
             "mcp_servers": {"names": ["system.ai.slack"]},
             "skills": {"names": [SKILL.fqn]},
         },
@@ -63,7 +64,7 @@ def device(system_source, monkeypatch, tmp_path):
     state.auth = Mock(return_value="provisioning-secret")
     monkeypatch.setattr(mdm.databricks, "get_databricks_token", state.auth)
     monkeypatch.setattr(
-        mdm, "get_managed_config", lambda *a: FetchedManagedConfig(state.manifest, None)
+        managed_config, "fetch_managed_coding_agent_configs", lambda *a: ([state.manifest], None)
     )
     monkeypatch.setattr(
         setup,
@@ -168,7 +169,7 @@ def test_sync_update_and_remove_keep_one_registration_without_authentication(dev
     device.admin = True
     device.skill = device.skill.replace(b"Check tests.", b"Updated verification code.")
     device.manifest["mcp_servers"]["names"].append("system.ai.github")
-    device.manifest["enabled_agents"]["claude"]["otel_tracing_enabled"] = False
+    device.manifest["enabled_agents"][0]["config"]["tracing"]["enabled"] = False
     mdm.configure(WORKSPACE, "admin")
     assert "otlpEndpoint" not in plistlib.loads(mdm.POLICY_PATH.read_bytes())
     assert not (mdm.MDM_ROOT / "otel-headers.sh").exists()
@@ -190,6 +191,31 @@ def test_sync_update_and_remove_keep_one_registration_without_authentication(dev
     assert cowork._registered_marketplace_source(root) is None
     assert not (device.home / ".ucode" / mdm.USER_STATE_FILENAME).exists()
     device.auth.assert_not_called()
+
+
+def test_provision_accepts_agent_name_from_api(device):
+    device.manifest["enabled_agents"][0]["agent"] = "claude_code"
+    device.manifest["enabled_agents"][0]["config"]["http_headers"] = {"x-org-header": "value"}
+    mdm.configure(WORKSPACE, "admin")
+    policy = plistlib.loads(mdm.POLICY_PATH.read_bytes())
+    assert json.loads(policy["inferenceCustomHeaders"])["x-org-header"] == "value"
+    assert policy["otlpTracesEnabled"] == "true"
+
+
+def test_provision_rejects_workspace_without_claude(device):
+    device.manifest["enabled_agents"] = [{"agent": "CODING_AGENT_CODEX", "config": {}}]
+    with pytest.raises(RuntimeError, match="does not enable Claude"):
+        mdm.configure(WORKSPACE, "admin")
+    assert not mdm.POLICY_PATH.exists()
+    assert not device.source.exists()
+
+
+def test_provision_without_managed_config(device, monkeypatch):
+    monkeypatch.setattr(managed_config, "fetch_managed_coding_agent_configs", lambda *a: ([], None))
+    mdm.configure(WORKSPACE, "admin")
+    policy = plistlib.loads(mdm.POLICY_PATH.read_bytes())
+    assert json.loads(policy["inferenceModels"]) == [{"name": "system.ai.claude-sonnet-4-6"}]
+    assert not (device.source / "plugins/ug/.mcp.json").exists()
 
 
 def test_sync_migrates_user_source_and_preserves_unrelated_plugin(device):
@@ -220,7 +246,7 @@ def test_failed_update_preserves_previous_deployment(device, monkeypatch, failur
     device.skill += b"New version.\n"
     if failure == "fetch":
         monkeypatch.setattr(
-            mdm, "get_managed_config", lambda *a: FetchedManagedConfig(None, "denied")
+            managed_config, "fetch_managed_coding_agent_configs", lambda *a: (None, "denied")
         )
     elif failure == "malformed_mcp":
         device.manifest["mcp_servers"]["names"].append("bad-name")
@@ -238,7 +264,7 @@ def test_failed_update_preserves_previous_deployment(device, monkeypatch, failur
             return original(path, contents, mode=mode)
 
         # Force a policy change as well as a bundle change.
-        device.manifest["enabled_agents"]["claude"]["otel_tracing_enabled"] = False
+        device.manifest["enabled_agents"][0]["config"]["tracing"]["enabled"] = False
         monkeypatch.setattr(claude_config, "_write_or_remove", fail_once)
     with pytest.raises(RuntimeError):
         mdm.configure(WORKSPACE, "admin")

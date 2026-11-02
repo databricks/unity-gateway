@@ -522,6 +522,9 @@ reuse of provisioning authentication. It reuses the temporary filesystem transac
 workspace APIs, machine ownership, launchd, and Claude's registry/cache commands are simulated.
 A real isolated Python child verifies the runtime probe can read the installed package path;
 this catches binary stdout being passed to `Path` during provisioning.
+Managed-config responses use the API's agent list and pass through the real fetch gate
+and normalization; checks cover enum/name spellings, headers/tracing, omitted configs,
+and rejection when Claude is absent.
 This does not establish native macOS MDM, launchd, fresh-user GUI login, or tool/skill execution.
 The rollout checklist is in `docs/claude-desktop-mdm.md`.
 

@@ -174,6 +174,8 @@ Linux/Windows journeys. `../test_desktop_mdm.py` has component coverage for publ
 auth separation, cache refresh, ownership conflicts, rollback, and deferred cleanup using
 temporary paths and simulated external boundaries. Its runtime-probe regression uses a real
 isolated Python child to catch binary stdout being passed to `Path` during provisioning.
+Component fixtures also exercise API-format agent lists through the fetch gate and
+normalization, including headers/tracing, absent configs, and Claude enablement checks.
 Native launchd activation, first-user timing, managed-plist precedence, and tool/skill
 invocation remain untested here; follow
 [`docs/claude-desktop-mdm.md`](../../docs/claude-desktop-mdm.md) before fleet rollout.

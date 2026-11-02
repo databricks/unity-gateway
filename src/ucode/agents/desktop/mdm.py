@@ -16,7 +16,7 @@ from pathlib import Path
 
 from ucode import config_io, databricks, managed_files
 from ucode.agents.desktop import claude_config, cowork, setup, system_marketplace
-from ucode.managed_config import get_managed_config
+from ucode.managed_config import get_managed_config, normalize_managed_config
 from ucode.managed_resolve import (
     managed_enabled_tools,
     managed_provider_service,
@@ -344,7 +344,9 @@ def configure(workspace: str, profile: str | None, *, mcp_names: list[str] | Non
         fetched = get_managed_config(workspace, token)
         if fetched.reason:
             raise RuntimeError(f"Could not read workspace configuration: {fetched.reason}")
-        managed = fetched.manifest
+        managed = (
+            normalize_managed_config(fetched.manifest) if fetched.manifest is not None else None
+        )
         if managed is not None and "claude" not in managed_enabled_tools(managed):
             raise RuntimeError("The workspace configuration does not enable Claude.")
         state = {"workspace": workspace, "profile": profile}
