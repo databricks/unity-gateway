@@ -703,22 +703,6 @@ def configure_shared_state(
         profile = _find_profile_name(workspace, workspace_id)
         if profile:
             state["profile"] = profile
-    with spinner("Verifying Unity AI Gateway..."):
-        if not cli_custom_oauth:
-            token = get_databricks_token(workspace, profile)
-        # The listing is independent of the probe, so overlap the two round trips. The probe still
-        # gates the launch; its failure abandons the listing rather than waiting for it.
-        model_services_discovery = (
-            None
-            if skip_model_discovery
-            else _start_in_background(discover_model_services, workspace, token)
-        )
-        model_service_probe = probe_unity_gateway_capabilities(workspace, token)
-    if model_service_probe.resource_available:
-        print_success("Unity Gateway connected")
-    else:
-        print_warning(f"Model service: {model_service_probe.detail}")
-
     want_claude = (
         fetch_all
         or "claude" in tools
@@ -744,6 +728,28 @@ def configure_shared_state(
     want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
     want_copilot = fetch_all or "copilot" in tools
 
+    with spinner("Verifying Unity AI Gateway..."):
+        if not cli_custom_oauth:
+            token = get_databricks_token(workspace, profile)
+        # The listing is independent of the probe, so overlap the two round trips. The probe still
+        # gates the launch; its failure abandons the listing rather than waiting for it.
+        model_services_discovery = (
+            None
+            if skip_model_discovery
+            else _start_in_background(discover_model_services, workspace, token)
+        )
+        # Skipped discovery still looks up Claude's web-search model, which is independent too.
+        web_search_discovery = (
+            _start_in_background(discover_codex_models, workspace, token)
+            if skip_model_discovery and want_claude
+            else None
+        )
+        model_service_probe = probe_unity_gateway_capabilities(workspace, token)
+    if model_service_probe.resource_available:
+        print_success("Unity Gateway connected")
+    else:
+        print_warning(f"Model service: {model_service_probe.detail}")
+
     claude_reason: str | None = None
     gemini_reason: str | None = None
     codex_reason: str | None = None
@@ -761,9 +767,9 @@ def configure_shared_state(
         # pins no Databricks model, so the full family discovery is unused. Web
         # search (claude only) still needs one Responses-capable model, so fetch
         # just that with a single call.
-        if want_claude:
+        if web_search_discovery is not None:
             with spinner("Fetching available models..."):
-                ws_models, _ = discover_codex_models(workspace, token)
+                ws_models, _ = web_search_discovery.result()
             if ws_models:
                 web_search_model = ws_models[0]
     else:
