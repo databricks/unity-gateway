@@ -800,7 +800,7 @@ wheels = [
 [[package]]
 name = "pytest-rerunfailures"
 version = "16.7"
-source = { registry = "https://pypi-proxy.cloud.databricks.com/simple" }
+source = { registry = "https://pypi-proxy.cloud.databricks.com/simple/" }
 dependencies = [
     { name = "packaging" },
     { name = "pytest" },
