@@ -137,6 +137,20 @@ def resolve_environment(env: Mapping[str, str] | None = None, *, agent: str) -> 
     return resolved
 
 
+def smart_routing_enabled(
+    env: MutableMapping[str, str] | None, *, default: bool, agent: str
+) -> bool:
+    source = resolve_environment(env, agent=agent)
+    values = [
+        source.get(var) for var in (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)
+    ]
+    if "1" in values:
+        return True
+    if "0" in values:
+        return False
+    return default
+
+
 def apply_config(
     env: MutableMapping[str, str] | None = None, *, agent: str
 ) -> dict[str, str | None]:

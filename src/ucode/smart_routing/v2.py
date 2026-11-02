@@ -67,6 +67,7 @@ from ucode.smart_routing.claude_hooks import (
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
 from ucode.smart_routing.config import apply_config, apply_enabled_version, resolve_environment
+from ucode.smart_routing.config import smart_routing_enabled as smart_routing_enabled
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_note, print_warning
 
@@ -155,20 +156,6 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
         if model_ids:
             return AnthropicModelCatalog(model_ids, {})
     return None
-
-
-def smart_routing_enabled(
-    env: MutableMapping[str, str] | None, *, default: bool, agent: str
-) -> bool:
-    source = resolve_environment(env, agent=agent)
-    values = [
-        source.get(var) for var in (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)
-    ]
-    if "1" in values:
-        return True
-    if "0" in values:
-        return False
-    return default
 
 
 def first_prompt_routing_enabled(
