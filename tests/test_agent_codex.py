@@ -1897,6 +1897,9 @@ class TestCodexManagedConfig:
         assert doc["model_provider"] == "Databricks"
         assert "model" not in doc
         assert "Databricks" in doc["model_providers"]
+        assert doc["model_providers"]["Databricks"]["env_http_headers"] == {
+            codex.CLIENT_SURFACES_HEADER: "UG_CODEX_CLIENT_SURFACES"
+        }
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
 
     def test_relayed_writes_proxyless_provider_and_skips_managed_file(self, tmp_path, monkeypatch):
@@ -2024,6 +2027,56 @@ class TestCodexManagedConfig:
         assert launches == ["omnigent, ug, openui", "omnigent, ug"]
         assert config_path.read_bytes() == profile_before
         assert requirements_path.read_bytes() == requirements_before
+
+    def test_unix_managed_config_uses_launch_surfaces_without_persisting(
+        self, tmp_path, monkeypatch
+    ):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_path.parent.mkdir(parents=True)
+        managed_path.write_text(
+            '[model_providers.Databricks.env_http_headers]\nX-Admin = "ADMIN_HEADER"\n',
+            encoding="utf-8",
+        )
+        state = codex.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_http_headers": {codex.CLIENT_SURFACES_HEADER: "omnigent"},
+            }
+        )
+        managed = read_toml_safe(managed_path)["model_providers"]["Databricks"]
+        assert managed["http_headers"][codex.CLIENT_SURFACES_HEADER] == "omnigent"
+        assert managed["env_http_headers"] == {
+            "X-Admin": "ADMIN_HEADER",
+            codex.CLIENT_SURFACES_HEADER: "UG_CODEX_CLIENT_SURFACES",
+        }
+        assert (
+            "env_http_headers" not in read_toml_safe(config_path)["model_providers"]["Databricks"]
+        )
+        profile_before = config_path.read_bytes()
+        managed_before = managed_path.read_bytes()
+        launches: list[str | None] = []
+        monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "tok")
+        monkeypatch.setattr(
+            codex,
+            "exec_or_spawn",
+            lambda _argv: launches.append(os.environ.get("UG_CODEX_CLIENT_SURFACES")),
+        )
+        monkeypatch.setenv("OPENUI_SESSION_ID", "session-123")
+        monkeypatch.setenv("UG_HEADERS", "Databricks-Custom-Client-Surfaces: ug")
+
+        codex.launch(state, [], options=LaunchOptions())
+        assert launches[-1] == "omnigent, ug, openui"
+
+        monkeypatch.delenv("OPENUI_SESSION_ID")
+        codex.launch(state, [], options=LaunchOptions())
+        assert launches[-1] == "omnigent, ug"
+
+        monkeypatch.delenv("UG_HEADERS")
+        codex.launch(state, [], options=LaunchOptions())
+        assert launches[-1] == "omnigent"
+        assert config_path.read_bytes() == profile_before
+        assert managed_path.read_bytes() == managed_before
 
     @pytest.mark.parametrize("opt_out", ["env", "user_scope"])
     def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch, opt_out):
@@ -2379,7 +2432,10 @@ class TestCodexManagedConfig:
         local_provider = read_toml_safe(codex.CODEX_CONFIG_PATH)["model_providers"]["Databricks"]
         assert written["model_provider"] == "Databricks"
         assert written["approval_policy"] == "on-request"
-        assert written["model_providers"]["Databricks"] == local_provider
+        assert written["model_providers"]["Databricks"] == {
+            **local_provider,
+            "env_http_headers": {codex.CLIENT_SURFACES_HEADER: "UG_CODEX_CLIENT_SURFACES"},
+        }
         assert len(sudo_writes) == 1
 
     def test_invalid_managed_toml_is_not_modified(self, tmp_path, monkeypatch):

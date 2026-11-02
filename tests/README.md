@@ -84,9 +84,10 @@ before/after agent-version check.
 ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching a Codex launch's
 `-c` headers (plain and smart-routed) without writing its profile. OpenUI regressions cover
 `OPENUI_SESSION_ID` adding the `openui` surface, preserving existing headers and surfaces,
-case-insensitive deduplication, Windows `requirements.toml` reading the merged surface from the
-launch environment, unchanged profile/requirements files, and the next terminal launch dropping
-the automatic marker. Empty markers add nothing. No automated test checks the header at the gateway.
+case-insensitive deduplication, managed Codex settings on Unix and Windows mapping the merged
+surface from the launch environment, unchanged profile/managed files, and the next terminal launch
+dropping the automatic marker. Empty markers add nothing. No automated test checks the header at
+the gateway.
 
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
@@ -100,13 +101,16 @@ skips on a machine with Claude managed settings, which would replace the fixture
 (no rewrite when unchanged), keeping an admin's `prependPlugins`, a failed install never enabling
 the plugin, revert removing the files and keeping the guard, the sudo allowlist, `header_mod_active`
 needing every file, and an unreadable mod folder. `native_claude/test_mod.py` validates the mod and runs its merge tests
-(`native_claude/header_mod_tests`), including automatic OpenUI attribution alongside managed
-headers and launch surfaces, repeated surface names, idempotence, and absent/empty markers.
-`test_agent_claude.py` checks that a missing mod warns for OpenUI on supported hosts, while a
+(`native_claude/header_mod_tests`), including `UG_HEADERS` merging OpenUI's surface with managed
+headers, repeated surface names, idempotence, reapplication after a managed-header reset, and the
+marker alone leaving headers unchanged.
+`test_agent_claude.py` checks that the launcher appends OpenUI's surface to `UG_HEADERS` only for
+that launch, without copying the session ID, and that a missing mod warns on supported hosts. A
 marker alone does not warn on Windows or when OS-managed settings are disabled; explicit headers
 get platform-appropriate guidance.
-Claude re-reading `ANTHROPIC_CUSTOM_HEADERS` per request was
-checked by hand on Claude 2.1.304; no automated test sends a request through the installed mod.
+Claude re-reading `ANTHROPIC_CUSTOM_HEADERS` per request was checked by hand on Claude 2.1.304;
+the native component test invokes `turn.step`, but no automated test sends a request through the
+installed mod.
 
 The required Isaac feedback form and background delivery notifications need manual
 validation using the released Isaac skill and existing capture/retry CLI. Check

@@ -13,7 +13,7 @@ import socket
 import sys
 import tempfile
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from pathlib import Path
 from subprocess import CalledProcessError, TimeoutExpired, list2cmdline
 from xml.sax.saxutils import escape
@@ -120,8 +120,8 @@ _PROVIDER_HTTP_HEADERS_KEY_PATHS = [
     ["model_providers", CODEX_MODEL_PROVIDER_NAME, key]
     for key in ("http_headers", "auth", "requires_openai_auth")
 ]
-# Windows requirements.toml replaces the whole provider entry, so launch-scoped headers set with
-# `-c` would be dropped; Codex reads them from these variables instead.
+# Managed settings can outrank launch-scoped `-c` headers. Windows requirements.toml uses all of
+# these variables; Unix managed_config.toml uses the client-surface variable.
 _LAUNCH_HEADER_ENV_VARS = {
     MODEL_PROVIDER_SERVICE_HEADER: "UG_CODEX_MODEL_PROVIDER_SERVICE",
     MODEL_SERVICE_PARENT_SCHEMA_HEADER: "UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA",
@@ -970,8 +970,12 @@ def _reconcile_managed_config(
 ) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
     path = codex_managed_config_path()
-    if path is not None and path.name == CODEX_REQUIREMENTS_FILE:
-        compose = _as_requirements(compose)
+    if path is not None:
+        compose = (
+            _as_requirements(compose)
+            if path.name == CODEX_REQUIREMENTS_FILE
+            else _with_unix_surface_env_header(compose)
+        )
     if managed_settings_skipped():
         # Opted out: trust whatever OS-managed file exists and leave it untouched.
         return
@@ -1047,6 +1051,24 @@ def _as_requirements(compose: Callable[[dict], dict]) -> Callable[[dict], dict]:
         return doc
 
     return compose_requirements
+
+
+def _with_unix_surface_env_header(compose: Callable[[dict], dict]) -> Callable[[dict], dict]:
+    """Let a launch add client surfaces above Unix managed static headers."""
+
+    def compose_unix(base: dict) -> dict:
+        doc = compose(base)
+        provider = doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]
+        env_headers = provider.get("env_http_headers")
+        if isinstance(env_headers, MutableMapping):
+            env_headers[CLIENT_SURFACES_HEADER] = _LAUNCH_HEADER_ENV_VARS[CLIENT_SURFACES_HEADER]
+        else:
+            provider["env_http_headers"] = {
+                CLIENT_SURFACES_HEADER: _LAUNCH_HEADER_ENV_VARS[CLIENT_SURFACES_HEADER]
+            }
+        return doc
+
+    return compose_unix
 
 
 MANAGED_MCP_CONFIG_KEY = "mcp_servers"
@@ -1302,7 +1324,7 @@ def _set_parent_schema_header(config: dict, parent_schema: str | None) -> None:
 
 
 def _export_launch_headers(config: dict) -> None:
-    """Mirror launch headers into the variables read by Windows ``requirements.toml``."""
+    """Mirror launch headers into the variables read by managed Codex settings."""
     headers = {
         header.casefold(): value
         for header, value in (_managed_provider_headers(config) or {}).items()
