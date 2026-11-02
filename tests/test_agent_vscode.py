@@ -350,7 +350,8 @@ class TestCopilotModels:
         assert vscode.configure(self._state())
 
         assert [model["id"] for model in code.config["models"]] == [self.SONNET, self.GPT]
-        assert code.config["models"][1]["maxInputTokens"] == 922_000
+        assert code.config["models"][1]["maxInputTokens"] == 794_000
+        assert code.config["models"][1]["maxOutputTokens"] == 128_000
         assert "headers" not in code.config
         assert "defaultModel" not in code.config
 
