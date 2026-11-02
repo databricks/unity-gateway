@@ -679,6 +679,7 @@ def start_relay_proxy(
     port: int,
     *,
     agent: str = AGENT_CLAUDE,
+    fallback_on_bind_error: bool = True,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start ``agent``'s subscription relay proxy (see ``_RELAY_ROUTES``)."""
     upstream_path, handler_type = _RELAY_ROUTES[agent]
@@ -690,6 +691,7 @@ def start_relay_proxy(
         token_header=AI_GATEWAY_TOKEN_HEADER,
         handler_type=handler_type,
         force_refresh_near_expiry=False,
+        fallback_on_bind_error=fallback_on_bind_error,
     )
 
 
