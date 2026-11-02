@@ -57,8 +57,7 @@ test('OpenUI attribution merges with managed and launch surfaces', async ($, on)
     OPENUI_SESSION_ID: 'session-123',
     ANTHROPIC_CUSTOM_HEADERS:
       'User-Agent: ucode/1 claude/2\nDatabricks-Custom-Client-Surfaces: omnigent',
-    UG_HEADERS:
-      'databricks-custom-client-surfaces: ug\nX-Team: eng\nDatabricks-Custom-Client-Surfaces: openui',
+    UG_HEADERS: 'databricks-custom-client-surfaces: ug\nX-Team: eng',
   });
 
   await $.session.start(start);
@@ -68,50 +67,23 @@ test('OpenUI attribution merges with managed and launch surfaces', async ($, on)
   );
 });
 
-test('turn step reapplies launch surfaces after managed headers reset', async ($, on) => {
-  const managed = 'Databricks-Custom-Client-Surfaces: omnigent';
-  const env = setup(on, {
-    ANTHROPIC_CUSTOM_HEADERS: managed,
-    UG_HEADERS: 'Databricks-Custom-Client-Surfaces: openui',
-  });
-  on('turn.step', async function* () {
-    return { answer: '', toolUses: [] };
-  });
-
-  await $.session.start(start);
-  expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('Databricks-Custom-Client-Surfaces: omnigent, openui');
-
-  env.ANTHROPIC_CUSTOM_HEADERS = managed;
-  const step = await $.turn.step(
-    { model: 'claude-sonnet-4-5' } as Parameters<typeof $.turn.step>[0],
-  ).next();
-
-  expect(step).toEqual({ done: true, value: { answer: '', toolUses: [] } });
-  expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('Databricks-Custom-Client-Surfaces: omnigent, openui');
-});
-
 test('surface merging is case insensitive and idempotent', () => {
   const base = 'databricks-custom-client-surfaces: omnigent, OpenUI\nX-Team: admin';
-  expect(headerLines(base, 'Databricks-Custom-Client-Surfaces: openui')).toBeUndefined();
-  expect(headerLines(base, 'x-team: caller')).toBeUndefined();
+  expect(headerLines(base, 'Databricks-Custom-Client-Surfaces: openui', 'session-123')).toBeUndefined();
+  expect(headerLines(base, 'x-team: caller', 'session-123')).toBeUndefined();
 });
 
 test('repeated surface headers collapse without losing a surface', () => {
   expect(headerLines(
     'Databricks-Custom-Client-Surfaces: omnigent\ndatabricks-custom-client-surfaces: ug',
-    'Databricks-Custom-Client-Surfaces: openui',
+    undefined,
+    'session-123',
   )).toBe('Databricks-Custom-Client-Surfaces: omnigent, ug, openui');
 });
 
-test('the session marker alone does not change headers', async ($, on) => {
+test('terminal sessions and empty markers have no OpenUI attribution', () => {
   const base = 'User-Agent: ucode/1 claude/2';
-  const env = setup(on, {
-    ANTHROPIC_CUSTOM_HEADERS: base,
-    OPENUI_SESSION_ID: 'session-123',
-  });
-
-  await $.session.start(start);
-
-  expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(base);
   expect(headerLines(base, undefined)).toBeUndefined();
+  expect(headerLines(base, undefined, '')).toBeUndefined();
+  expect(headerLines(base, undefined, ' \t')).toBeUndefined();
 });

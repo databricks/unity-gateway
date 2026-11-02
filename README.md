@@ -207,8 +207,7 @@ OpenUI attribution.
   Windows read the merged client surfaces from a launch-only environment variable, while the
   configured surface remains in the managed file for launches without that variable. After
   upgrading ug, run `ug configure` to add the mapping to an existing managed file.
-- **Claude Code**: the launcher appends the `openui` surface to that launch's `UG_HEADERS`, and
-  the mod adds those headers even when managed settings set `ANTHROPIC_CUSTOM_HEADERS`.
+- **Claude Code**: added by a mod, even when managed settings set `ANTHROPIC_CUSTOM_HEADERS`.
   Only `ug configure` installs or upgrades it beside the managed settings (Linux and macOS, with
   sudo, not under `--user`); a launch never writes there. On those platforms, a missing or stale
   mod causes a warning and Claude doesn't send the headers. This prerequisite also applies to

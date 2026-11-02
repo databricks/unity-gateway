@@ -33,7 +33,6 @@ from ucode.config_io import (
 )
 from ucode.constants import (
     AI_GATEWAY_REQUEST_TAGS_HEADER,
-    CLIENT_SURFACES_HEADER,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
     MCP_USER_SCOPE,
@@ -2689,34 +2688,6 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
-    inherited_launch_headers = os.environ.get(UG_HEADERS_ENV_VAR)
-    openui_launch = bool(os.environ.get("OPENUI_SESSION_ID", "").strip())
-    if openui_launch:
-        os.environ[UG_HEADERS_ENV_VAR] = "\n".join(
-            filter(None, [inherited_launch_headers or "", f"{CLIENT_SURFACES_HEADER}: openui"])
-        )
-    try:
-        _launch_with_headers(
-            state,
-            tool_args,
-            options=options,
-            inherited_launch_headers=inherited_launch_headers or "",
-        )
-    finally:
-        if openui_launch:
-            if inherited_launch_headers is None:
-                os.environ.pop(UG_HEADERS_ENV_VAR, None)
-            else:
-                os.environ[UG_HEADERS_ENV_VAR] = inherited_launch_headers
-
-
-def _launch_with_headers(
-    state: dict,
-    tool_args: list[str],
-    *,
-    options: LaunchOptions,
-    inherited_launch_headers: str,
-) -> None:
     tool_args = _external_web_search_args(state, tool_args)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
@@ -2729,7 +2700,7 @@ def _launch_with_headers(
                 "never changes machine-wide files. Run `ug configure` from an interactive "
                 "terminal on Linux or macOS, without UG_SKIP_OS_SETTINGS."
             )
-        elif inherited_launch_headers.strip():
+        elif os.environ.get(UG_HEADERS_ENV_VAR, "").strip():
             print_warning(
                 "Claude Code won't send UG_HEADERS: ug's header mod is unavailable on this "
                 "platform or while OS-managed settings are disabled. On Linux or macOS, enable "

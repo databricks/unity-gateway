@@ -3204,38 +3204,6 @@ class TestClaudeLaunch:
         else:
             assert len(warnings) == 1
             assert expected_warning in warnings[0]
-        assert os.environ.get("UG_HEADERS") == extra_headers
-
-    def test_openui_surface_is_scoped_to_each_claude_launch(self, monkeypatch):
-        launch_headers: list[str | None] = []
-        inherited = "X-Team: eng\nDatabricks-Custom-Client-Surfaces: ug"
-        monkeypatch.setattr(claude, "header_mod_active", lambda: True)
-        monkeypatch.setattr(
-            claude,
-            "_launch_relayed",
-            lambda *_args: launch_headers.append(os.environ.get("UG_HEADERS")),
-        )
-        monkeypatch.setenv("UG_HEADERS", inherited)
-        monkeypatch.setenv("OPENUI_SESSION_ID", "session-123")
-
-        claude.launch({"claude_relayed": True}, [], options=LaunchOptions())
-
-        assert launch_headers == [f"{inherited}\nDatabricks-Custom-Client-Surfaces: openui"]
-        assert "session-123" not in launch_headers[0]
-        assert os.environ["UG_HEADERS"] == inherited
-
-        monkeypatch.delenv("OPENUI_SESSION_ID")
-        claude.launch({"claude_relayed": True}, [], options=LaunchOptions())
-
-        assert launch_headers[-1] == inherited
-        assert os.environ["UG_HEADERS"] == inherited
-
-        monkeypatch.delenv("UG_HEADERS")
-        monkeypatch.setenv("OPENUI_SESSION_ID", "session-456")
-        claude.launch({"claude_relayed": True}, [], options=LaunchOptions())
-
-        assert launch_headers[-1] == "Databricks-Custom-Client-Surfaces: openui"
-        assert "UG_HEADERS" not in os.environ
 
     def test_gateway_discovery_enabled_for_relayed_provider(self, monkeypatch):
         calls: list[tuple[dict, str, list[str]]] = []
