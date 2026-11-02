@@ -99,7 +99,7 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
   async provideLanguageModelChatInformation(): Promise<Model[]> {
     const { workspace, models, authCommand } = this.settings();
     if (!workspace || !authCommand || models.length === 0) {
-      this.log("No Databricks models: run `ug configure --agents vscode` to set them up.");
+      this.log("No Databricks models: run `ug configure --agents copilot` to set them up.");
       return [];
     }
     return models.map(({ id, name, family, api, maxInputTokens, maxOutputTokens }) => ({

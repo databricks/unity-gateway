@@ -59,7 +59,7 @@ describe("streamEvents", () => {
     requests = stubFetch([401, ""]);
     await rejectsWith(
       collect(streamEvents("https://ws", "/r", {}, new Tokens(tokenCommand(["a", "b"]).command), {}, new AbortController().signal)),
-      "Run `ug configure --agents vscode` to sign in again",
+      "Run `ug configure --agents copilot` to sign in again",
     );
     assert.equal(requests.length, 2);
   });
@@ -170,7 +170,7 @@ describe("DatabricksModels", () => {
       ],
     );
     assert.deepEqual(await new DatabricksModels(() => ({ ...settings(""), models: [] }), (line) => logs.push(line)).provideLanguageModelChatInformation(), []);
-    assert.deepEqual(logs, ["No Databricks models: run `ug configure --agents vscode` to set them up."]);
+    assert.deepEqual(logs, ["No Databricks models: run `ug configure --agents copilot` to set them up."]);
   });
 
   const answers: [number, string][] = [

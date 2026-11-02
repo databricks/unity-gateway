@@ -37,7 +37,7 @@ from ucode.managed_files import OS, current_os
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.system_cross_os import windows_program_files_dir
 from ucode.string_utils import model_picker_label
-from ucode.ui import console, print_heading, print_kv, print_warning
+from ucode.ui import console, print_heading, print_kv, print_note, print_warning
 
 EXTENSION_DIR = Path(__file__).resolve().parent.parent / "vscode" / "extension"
 EXTENSION_ID = "databricks.unity-gateway"
@@ -251,9 +251,10 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     after a warning, if any step fails."""
     code = find_code()
     if code is None:
-        print_warning(
-            "VS Code's `code` command wasn't found. Install VS Code (on macOS, also run "
-            "\"Shell Command: Install 'code' command in PATH\"), then rerun `ug configure --agents vscode`."
+        print_note(
+            "VS Code's `code` command wasn't found, so VS Code was skipped. To add it, install VS "
+            "Code (on macOS, also run \"Shell Command: Install 'code' command in PATH\"), then "
+            "rerun `ug configure --agents copilot`."
         )
         return False
     try:
@@ -276,7 +277,7 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
             f"{install_extension(code, config)} with {len(models)} models{source}",
         )
     except RuntimeError as exc:
-        print_warning(f"{exc} Rerun `ug configure --agents vscode` to try again.")
+        print_warning(f"{exc} Rerun `ug configure --agents copilot` to try again.")
         return False
     print_heading("Next, in VS Code:")
     for line in next_steps():
