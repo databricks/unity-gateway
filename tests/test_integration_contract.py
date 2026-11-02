@@ -464,7 +464,7 @@ def _workflow(name):
     return (Path(__file__).parent.parent / ".github/workflows" / name).read_text()
 
 
-def test_fork_integration_runs_only_member_requested_pr_heads():
+def test_fork_integration_runs_only_authorized_pr_heads():
     workflow = _workflow("fork-integration.yml")
     authorize = workflow.split("\n  authorize:\n", 1)[1].split("\n  reject:\n", 1)[0]
     reject = workflow.split("\n  reject:\n", 1)[1].split("\n  integration:\n", 1)[0]
@@ -477,8 +477,8 @@ def test_fork_integration_runs_only_member_requested_pr_heads():
     command = "startsWith(github.event.comment.body, '/integration-test ')"
     assert command in authorize and command in reject
     assert MEMBER_ONLY in authorize
-    assert f"!{MEMBER_ONLY}" in reject
-    assert "only Databricks org members can run integration tests" in reject
+    assert f"!({MEMBER_ONLY} ||" in reject
+    assert "prior contributors on their own PR can run integration tests" in reject
     assert "set -euo pipefail" in authorize
     assert '[[ "$sha" =~ ^[0-9a-f]{40}$ ]]' in authorize
     assert "state=pending" in authorize

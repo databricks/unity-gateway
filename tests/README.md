@@ -897,23 +897,30 @@ pending. The advisory Windows installation and headless lanes are not part of `A
 tests` yet. The descriptive jobs provide the actual coverage and diagnostics.
 
 Fork PRs get no secrets, so their `pull_request` run skips every credentialed integration
-job. After reviewing a PR, an org member comments `/integration-test` to run the Integration
-workflow with secrets on the PR's current head commit, or `/integration-test <sha>` to run
-only if the head is still the commit they reviewed. It posts a `Fork integration` status,
-and works on in-repo PRs too as an on-demand rerun. Each new push needs a new command.
+job. Org members can comment `/integration-test` on any PR; GitHub-classified `CONTRIBUTOR`s
+can request it only on their own PR. `/integration-test <sha>` additionally requires the
+current head to match that commit. Integration runs with CI secrets: this policy trusts
+prior contributors to run their own PR code. First-time contributors still need a member.
+It posts a `Fork integration` status, and works on in-repo PRs too as an on-demand rerun.
+Each new push needs a new command.
 It runs main's workflow definitions and never caches fork builds. `/ug-review` requests
 Open Code Review with the trusted UG rubric and inline findings.
 It reuses the review service principal through the Databricks gateway's Anthropic route.
 Adding either `ug-review` or `code-review` also requests
-review on in-repository PRs; fork PRs still require the member comment because
-their PR-triggered runs cannot access the gateway secret. Label removal and
-ordinary pushes do not rerun reviews. `test_ug_review_bot.py` covers gateway authentication,
+review on in-repository PRs. Fork reviews accept a member comment, or the author's comment
+when GitHub classifies them as a `CONTRIBUTOR`; the fork's PR-triggered run has no secrets.
+Label removal and ordinary pushes do not rerun reviews. `test_ug_review_bot.py` covers
+gateway authentication,
 OIDC-authenticated npm-proxy configuration and credential cleanup, and the workflow contract,
 not live inference or GitHub posting. The old custom
 Responses/diff/parser/summary-rendering tests are obsolete because that implementation
 is removed. `test_polly_review.py` covers the Polly review workflow contract and its
 summary helper. `/user-journey-check` runs the user-journey gate,
 which runs automatically only for in-repo PRs.
+`test_comment_command_authorization.py` evaluates integration/review job guards with synthetic
+GitHub events: members on any PR, prior contributors on their own PR, rejected first-time
+and unrelated contributors, ordinary comments, and non-PR issues. These component checks do
+not establish live GitHub event delivery or the timing of GitHub's contributor classification.
 
 ## Gaps and deferred scope
 
