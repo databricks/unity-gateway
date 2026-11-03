@@ -1,8 +1,8 @@
 """Safely manage root-owned, highest-precedence agent settings files.
 
 Interactive updates preserve unrelated policy, retain a private baseline for ``ucode revert``, and
-verify the privileged atomic replacement. Existing-file repairs may run without a terminal;
-the shared writer uses sudo's non-prompting mode without consuming the caller's standard input.
+verify the privileged atomic replacement. Without a terminal, writes use sudo's non-prompting mode
+without consuming the caller's standard input; managed settings are only repaired in place then.
 Windows has no sudo: only an elevated process writes there, with or without a terminal.
 """
 
