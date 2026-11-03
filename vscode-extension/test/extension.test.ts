@@ -177,6 +177,14 @@ describe("readConfig", () => {
     assert.equal(readConfig(JSON.stringify({ ...config, headers: ["X-Team"] })).headers, undefined);
   });
 
+  it("keeps a well-formed trace receiver setting only", () => {
+    const base = { workspace: "https://ws", authCommand: "ug auth-token", models: [] };
+    assert.deepEqual(readConfig(JSON.stringify({ ...base, otel: { port: 4555, secret: "s3_c-r" } })).otel, { port: 4555, secret: "s3_c-r" });
+    for (const otel of [{ port: 0, secret: "s" }, { port: 70_000, secret: "s" }, { port: 4555, secret: "a/b" }, { port: "4555", secret: "s" }, "x"]) {
+      assert.equal(readConfig(JSON.stringify({ ...base, otel })).otel, undefined, JSON.stringify(otel));
+    }
+  });
+
   it("keeps a default model only when it is one of the models", () => {
     const base = { workspace: "https://ws", authCommand: "ug auth-token", models: [{ id: "system.ai.opus", api: "completions" }, { id: "system.ai.sonnet", api: "unknown" }] };
     assert.equal(readConfig(JSON.stringify({ ...base, defaultModel: "system.ai.opus" })).defaultModel, "system.ai.opus");

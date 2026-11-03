@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shutil
+import socket
 import subprocess
 import tempfile
 import zipfile
@@ -35,6 +37,7 @@ from ucode.agents.copilot import (
     resolve_copilot_model,
     unservable_static_models,
 )
+from ucode.constants import LOOPBACK_HOST
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command
 from ucode.databricks import build_auth_shell_command
 from ucode.managed_files import OS, current_os
@@ -239,6 +242,27 @@ def managed_default_model(state: dict, catalog: list[CopilotModel]) -> str | Non
         return None
 
 
+# The extension's trace receiver, kept across configures so VS Code's settings keep pointing at it.
+OTEL_RECEIVER_STATE_KEY = "copilot_vscode_otel"
+
+
+def otel_receiver(state: dict) -> dict[str, object]:
+    """The loopback port and path secret of the extension's trace receiver, picked once."""
+    saved = state.get(OTEL_RECEIVER_STATE_KEY)
+    if (
+        isinstance(saved, dict)
+        and isinstance(saved.get("port"), int)
+        and isinstance(saved.get("secret"), str)
+    ):
+        return {"port": saved["port"], "secret": saved["secret"]}
+    with socket.socket() as probe:
+        probe.bind((LOOPBACK_HOST, 0))
+        port = probe.getsockname()[1]
+    receiver: dict[str, object] = {"port": port, "secret": secrets.token_urlsafe(24)}
+    state[OTEL_RECEIVER_STATE_KEY] = receiver
+    return receiver
+
+
 def auth_command(state: dict) -> str:
     workspace = state["workspace"]
     custom_oauth = state.get("custom_oauth")
@@ -268,7 +292,8 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     """Install the extension with this workspace's setup and the models of ``provider`` (a Model
     Provider Service), ``location`` (a ``<catalog>.<schema>``) or else the Copilot CLI's, with the
     workspace's managed headers, its managed default model and its selection on a host that serves
-    several workspaces. Returns False, after a warning, if any step fails."""
+    several workspaces, and when the workspace traces Copilot, the trace receiver. Returns False, after a warning, if any
+    step fails."""
     code = find_code()
     if code is None:
         print_note(
@@ -299,6 +324,8 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     headers.update(workspace_headers(state["workspace"]))
     if headers:
         config["headers"] = headers
+    if state.get("copilot_otel_tracing"):
+        config["otel"] = otel_receiver(state)
     source = f" from {provider or location}" if provider or location else ""
     try:
         print_kv(
