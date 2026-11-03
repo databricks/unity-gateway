@@ -124,12 +124,13 @@ A pre-existing `Claude/org-plugins/ug` installation must be removed by its owner
 configuration, so the organization loader cannot expose a duplicate UG plugin.
 
 Configure and revert share a user-level lock so concurrent commands cannot interleave
-source publication and registration changes. UG records the source, account/org, and owned root contents in `~/.ucode/claude-cowork.json`.
-Foreign or externally edited root bundles are preserved. Source publication uses staged
-replacement and rollback. If an existing registration fails to update or switch sources,
-UG attempts to restore its previous sources and registration; failed rollback retains the
-backup and reports its path. An initial registration failure retains source/state for retry
-or revert. Other plugins are preserved. Default `ug revert` removes UG's registration and
+source publication and registration changes. UG records the source, account/org, and owned
+root contents in `~/.ucode/claude-cowork.json`.
+Foreign or externally edited root bundles are preserved. Each source uses staged
+replacement with rollback if replacement fails. Publication and native plugin refresh are
+sequential: a failed refresh leaves the generated sources and tracking state for another
+configure attempt or revert. It does not restore the previous plugin version or registration.
+Other plugins are preserved. Default `ug revert` removes UG's registration and
 both owned sources.
 
 This configures the current user. The MCP executable and Databricks profile still refer to

@@ -178,78 +178,18 @@ def _configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
         system_marketplace.owned_bundle(selected_source, previous_state)
     system_marketplace.read_bundle(marketplace_root)
     hooks = _connector_hooks(mcp_config, workspace, profile, use_pat=bool(state.get("use_pat")))
-    _publish_plugin(
-        cowork_root,
-        marketplace_root,
-        system_source=selected_source if system_install else None,
-        previous_state=previous_state,
-        previous_source=previous_source,
-        skill_records=skill_records,
-        mcp_config=mcp_config,
-        hooks=hooks,
-    )
-    return True
-
-
-def _publish_plugin(
-    cowork_root: Path,
-    marketplace_root: Path,
-    *,
-    system_source: Path | None,
-    previous_state: dict,
-    previous_source: Path | None,
-    skill_records: list[dict],
-    mcp_config: dict,
-    hooks: dict | None,
-) -> None:
-    selected_source = system_source if system_source is not None else marketplace_root
     plugin_root = marketplace_root / "plugins" / PLUGIN_NAME
-    backup = Path(tempfile.mkdtemp(prefix="ug-desktop-rollback-")).resolve()
-    retain_backup = False
-    registration_attempted = False
-    try:
-        if marketplace_root.exists():
-            shutil.copytree(marketplace_root, backup / "user")
-        if system_source is not None and system_source.exists():
-            shutil.copytree(system_source, backup / "system")
-        try:
-            _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config, hooks)
-            if system_source is not None:
-                system_marketplace.install(marketplace_root, _state_path())
-            installed_state = _record_plugin_installation(
-                cowork_root, selected_source, previous_state
-            )
-            registration_attempted = True
-            _install_plugin(cowork_root, selected_source)
-        except Exception as exc:
-            # First-install failures retain enough state/source for retry or revert.
-            if registration_attempted and previous_source is None:
-                raise
-            try:
-                _restore_plugin_installation(
-                    backup,
-                    marketplace_root,
-                    cowork_root,
-                    previous_state,
-                    restore_system=system_source is not None,
-                    previous_source=previous_source if registration_attempted else None,
-                )
-            except Exception as rollback_error:
-                retain_backup = True
-                raise RuntimeError(
-                    f"Desktop update failed ({exc}); rollback failed ({rollback_error}). "
-                    f"Previous source files retained at {backup}. Retry configure or revert."
-                ) from rollback_error
-            raise
-    finally:
-        if not retain_backup:
-            shutil.rmtree(backup)
-
+    _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config, hooks)
+    if system_install:
+        system_marketplace.install(marketplace_root, _state_path())
+    installed_state = _record_plugin_installation(cowork_root, selected_source, previous_state)
+    _install_plugin(cowork_root, selected_source)
     for old_root in installed_state["previous_cowork_roots"]:
         if Path(old_root) != cowork_root:
             _remove_plugin_registration(Path(old_root))
     installed_state.pop("previous_cowork_roots", None)
     config_io.atomic_write_json(_state_path(), installed_state)
+    return True
 
 
 def _record_plugin_installation(
@@ -268,31 +208,6 @@ def _record_plugin_installation(
     )
     config_io.atomic_write_json(_state_path(), installed_state)
     return installed_state
-
-
-def _restore_plugin_installation(
-    backup: Path,
-    marketplace_root: Path,
-    cowork_root: Path,
-    previous_state: dict,
-    *,
-    restore_system: bool,
-    previous_source: Path | None,
-) -> None:
-    _remove_marketplace_source()
-    if (backup / "user").exists():
-        shutil.copytree(backup / "user", marketplace_root)
-    if restore_system:
-        if (backup / "system").exists():
-            system_marketplace.install(backup / "system", _state_path())
-        else:
-            system_marketplace.remove(_state_path())
-    if previous_source is not None:
-        _install_plugin(cowork_root, previous_source)
-    if previous_state:
-        config_io.atomic_write_json(_state_path(), previous_state)
-    else:
-        _state_path().unlink(missing_ok=True)
 
 
 def revert_cowork() -> bool:

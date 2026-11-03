@@ -261,7 +261,7 @@ def test_scope_switches_keep_one_registration_and_preserve_unrelated_plugin(syst
     }
 
 
-def test_install_failure_preserves_user_registration_and_state(
+def test_root_write_failure_leaves_registration_and_state_for_retry(
     system_source, tmp_path, monkeypatch
 ):
     original = {"version": 1, "cowork_root": str(tmp_path / "old")}
@@ -280,7 +280,10 @@ def test_install_failure_preserves_user_registration_and_state(
     with pytest.raises((RuntimeError, PermissionError)):
         cowork.configure_cowork(WORKSPACE, SERVERS)
     assert config_io.read_json_safe(cowork._state_path()) == original
-    assert marker.read_text() == "original source"
+    assert not marker.exists()
+    assert (cowork._marketplace_root() / "plugins/ug/.mcp.json").is_file()
+    registry = cowork.discover_cowork_root() / "cowork_plugins/known_marketplaces.json"
+    assert not registry.exists()
     assert not system_source.exists()
 
 
@@ -479,17 +482,13 @@ def test_system_source_link_is_preserved(system_source, tmp_path):
 
 
 @pytest.mark.parametrize("switch_scope", [False, True])
-def test_failed_refresh_restores_sources_registration_and_cache(
+def test_failed_refresh_retains_generated_sources_for_retry(
     system_source, monkeypatch, switch_scope
 ):
     if switch_scope:
         managed_files.set_config_scope("user")
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
     user_before = system_marketplace.read_bundle(cowork._marketplace_root())
-    system_before = system_marketplace.read_bundle(system_source)
-    state_before = cowork._state_path().read_bytes()
-    installed_before = system_marketplace.read_bundle(_installed_source())
-    previous_source = cowork._registered_marketplace_source(cowork.discover_cowork_root())
     managed_files.set_config_scope("global")
     run = cowork.subprocess_cross_os.run
     failed = False
@@ -506,11 +505,17 @@ def test_failed_refresh_restores_sources_registration_and_cache(
     monkeypatch.setattr(cowork.subprocess_cross_os, "run", fail_refresh)
     with pytest.raises(RuntimeError, match="refresh failed"):
         cowork.configure_cowork(WORKSPACE, [{**SERVERS[0], "name": "changed"}])
-    assert cowork._state_path().read_bytes() == state_before
-    assert system_marketplace.read_bundle(cowork._marketplace_root()) == user_before
-    assert system_marketplace.read_bundle(system_source) == system_before
-    assert system_marketplace.read_bundle(_installed_source()) == installed_before
-    assert cowork._registered_marketplace_source(cowork.discover_cowork_root()) == previous_source
+    generated = system_marketplace.read_bundle(cowork._marketplace_root())
+    assert generated != user_before
+    assert system_marketplace.read_bundle(system_source) == generated
+    state = config_io.read_json_safe(cowork._state_path())
+    assert state["marketplace_root"] == str(system_source)
+    assert state["system_digest"] == system_marketplace.bundle_digest(generated)
+    assert cowork.configure_cowork(WORKSPACE, [{**SERVERS[0], "name": "changed"}])
+    assert system_marketplace.read_bundle(_installed_source()) == system_marketplace.read_bundle(
+        system_source / "plugins/ug"
+    )
+    assert cowork._registered_marketplace_source(cowork.discover_cowork_root()) == system_source
 
 
 def test_changed_payload_updates_both_sources_and_installed_version(system_source):
@@ -555,10 +560,9 @@ def test_organization_loader_copy_blocks_duplicate_before_writes(
     assert (organization / "keep").read_text() == "older pilot"
 
 
-def test_failed_rollback_retains_recovery_sources(system_source, tmp_path, monkeypatch):
+def test_failed_refresh_retains_owned_sources_for_revert(system_source, monkeypatch):
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
     before = system_marketplace.read_bundle(cowork._marketplace_root())
-    monkeypatch.setattr(cowork.tempfile, "tempdir", str(tmp_path))
     run = cowork.subprocess_cross_os.run
 
     def fail_updates(argv, **kwargs):
@@ -567,15 +571,16 @@ def test_failed_rollback_retains_recovery_sources(system_source, tmp_path, monke
         return run(argv, **kwargs)
 
     monkeypatch.setattr(cowork.subprocess_cross_os, "run", fail_updates)
-    with pytest.raises(RuntimeError, match="rollback failed"):
+    with pytest.raises(RuntimeError, match="update unavailable"):
         cowork.configure_cowork(WORKSPACE, [{**SERVERS[0], "name": "changed"}])
-    backups = list(tmp_path.glob("ug-desktop-rollback-*"))
-    assert len(backups) == 1
-    assert system_marketplace.read_bundle(backups[0] / "user") == before
-    assert system_marketplace.read_bundle(backups[0] / "system") == before
+    generated = system_marketplace.read_bundle(system_source)
+    assert generated != before
+    assert generated == system_marketplace.read_bundle(cowork._marketplace_root())
     monkeypatch.setattr(cowork.subprocess_cross_os, "run", run)
     assert cowork.revert_cowork()
     assert not system_source.exists()
+    assert not cowork._marketplace_root().exists()
+    assert not cowork._state_path().exists()
 
 
 @pytest.mark.parametrize("operation", ["configure", "revert"])
