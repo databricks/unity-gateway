@@ -124,6 +124,9 @@ root-copy rollback are deferred. Component cases now require whole-directory rep
 and successful retry, while unrelated plugins stay intact. Native refresh failures leave
 generated sources/state for retry or revert. The existing user-source writer keeps its
 staged replacement; the prior plugin/cache is not restored across the whole configure.
+The configure/revert lock and its exclusion cases are removed. Account changes retain the
+original cleanup-before-generation flow; component tests cover failure/retry with unchanged
+state. Pending-cleanup queues and migration bookkeeping are deferred. Run commands serially.
 `../test_integration_contract.py` covers the Windows marketplace evidence helper's
 fallback to `C:\Program Files` when the isolated environment omits or empties both
 Program Files variables, and its preference for `ProgramW6432` over `ProgramFiles`.

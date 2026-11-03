@@ -438,8 +438,8 @@ Code authentication changes, with either the default scope or explicit `code=Fal
 `test_desktop_marketplace.py` covers identical user/root source publication, one active
 registration across repeated configure and scope switches, explicit cached-plugin refresh,
 stable content versions, binary/executable assets, initialized-account requirements,
-permission and registration failures, copy failure/retry, concurrent-command exclusion,
-scoped revert, previous-account cleanup, and legacy org-loader conflicts.
+permission and registration failures, copy failure/retry, scoped revert, previous-account
+cleanup, and legacy org-loader conflicts.
 Filesystem copies run in temporary directories: the macOS shell worker uses host OS
 command adapters without sudo; Windows filesystem logic runs with simulated elevation.
 Only the external Claude CLI registry/cache is simulated. These component checks do not
@@ -449,6 +449,10 @@ and root-copy rollback cases are replaced with whole-directory replacement, retr
 validation checks. Refresh failures verify retained sources, configure retry, and revert.
 The existing user-source writer keeps its staged replacement; automatic restoration across
 root publication and native registration is not supported.
+Lock-exclusion cases are removed with the configure/revert lock. State checks now require
+only the selected source/account in the existing version-1 record. Account-cleanup failures
+leave that record unchanged for retry, matching the original cleanup-before-generation flow.
+Concurrent configure/revert and queued old-account cleanup are not supported.
 
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
 It checks that Claude uses an available Slack tool despite a stale disconnect notice, actually

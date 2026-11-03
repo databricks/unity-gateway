@@ -312,13 +312,13 @@ def test_dry_run_leaves_no_state_or_bundle(system_source):
         config_io.set_dry_run(False)
 
 
-def test_previous_hash_tracking_does_not_block_revert(system_source):
+def test_configure_records_selected_source_for_revert(system_source):
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    state = config_io.read_json_safe(cowork._state_path())
-    state["pending_system_digest"] = "previous-installation-hash"
-    config_io.atomic_write_json(cowork._state_path(), state)
-    assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    assert "pending_system_digest" not in config_io.read_json_safe(cowork._state_path())
+    assert config_io.read_json_safe(cowork._state_path()) == {
+        "version": 1,
+        "cowork_root": str(cowork.discover_cowork_root()),
+        "marketplace_root": str(system_source),
+    }
     assert cowork.revert_cowork()
     assert not system_source.exists()
 
@@ -371,13 +371,20 @@ def test_failed_previous_account_cleanup_can_be_retried(system_source, tmp_path,
     monkeypatch.setattr(cowork, "_remove_plugin_registration", fail_old)
     with pytest.raises(RuntimeError, match="cleanup failed"):
         cowork.configure_cowork(WORKSPACE, SERVERS)
-    pending = config_io.read_json_safe(cowork._state_path())
-    assert pending["previous_cowork_roots"] == [str(old)]
-    assert pending["cowork_root"] == str(cowork.discover_cowork_root())
-    assert pending["marketplace_root"] == str(system_source)
+    assert config_io.read_json_safe(cowork._state_path()) == {
+        "version": 1,
+        "cowork_root": str(old),
+    }
+    assert not system_source.exists()
+    assert not cowork._marketplace_root().exists()
     monkeypatch.setattr(cowork, "_remove_plugin_registration", remove)
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    assert "previous_cowork_roots" not in config_io.read_json_safe(cowork._state_path())
+    assert config_io.read_json_safe(cowork._state_path()) == {
+        "version": 1,
+        "cowork_root": str(cowork.discover_cowork_root()),
+        "marketplace_root": str(system_source),
+    }
+    assert config_io.read_json_safe(old / "cowork_plugins/installed_plugins.json")["plugins"] == {}
 
 
 @pytest.mark.parametrize("opt_out", ["user", "environment"])
@@ -570,22 +577,3 @@ def test_failed_refresh_retains_owned_sources_for_revert(system_source, monkeypa
     assert not system_source.exists()
     assert not cowork._marketplace_root().exists()
     assert not cowork._state_path().exists()
-
-
-@pytest.mark.parametrize("operation", ["configure", "revert"])
-def test_concurrent_operation_does_not_change_sources_or_state(
-    system_source, monkeypatch, operation
-):
-    assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    before = cowork._marketplace_files(system_source)
-    state = cowork._state_path().read_bytes()
-    monkeypatch.setattr(cowork, "COWORK_LOCK_TIMEOUT_SECONDS", 0)
-    with cowork._locked():
-        with pytest.raises(RuntimeError, match="Timed out"):
-            if operation == "configure":
-                cowork.configure_cowork(WORKSPACE, [])
-            else:
-                cowork.revert_cowork()
-    assert cowork._marketplace_files(system_source) == before
-    assert cowork._marketplace_files(cowork._marketplace_root()) == before
-    assert cowork._state_path().read_bytes() == state

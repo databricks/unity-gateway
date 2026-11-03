@@ -180,7 +180,9 @@ exist. Scope changes replace that registration. Content-derived manifest version
 explicit native plugin update deliver changed skills/MCPs to the user cache. No org-plugin
 metadata or MDM policy is generated; an existing org-plugins/ug copy blocks duplicate loading.
 The 3P profile, executable/authentication bindings, and bookkeeping stay user-local.
-`~/.ucode/claude-cowork.json` records the source, account/org, and pending old-account cleanup.
+`~/.ucode/claude-cowork.json` records only the selected source and account/org, using the
+existing version-1 state. Account changes clean up the prior account before generation;
+there is no pending-cleanup queue, migration bookkeeping, or configure/revert lock.
 UG owns both generated marketplace directories; configure replaces their whole contents,
 including manual edits. Root publication uses the shared macOS sudo worker or Windows
 elevation, without ownership hashes or automatic rollback. Rerun configure after a failed

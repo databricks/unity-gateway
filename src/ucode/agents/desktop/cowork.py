@@ -6,11 +6,8 @@ import hashlib
 import json
 import os
 import shutil
-import stat
 import tempfile
 from collections import Counter
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -19,7 +16,6 @@ from ucode.agents.desktop.claude import claude_desktop_root_directory
 from ucode.databricks import build_mcp_proxy_argv
 from ucode.mcp_connection_login import connection_from_url
 from ucode.os_compatibility import subprocess_cross_os
-from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock, release_file_lock
 from ucode.skills_state import records_for_scope
 from ucode.ui import print_warning
 from ucode.workspace import workspace_id_args
@@ -38,7 +34,6 @@ CODE_MARKETPLACE_NAME = "unity-gateway-code"
 CODE_PLUGIN_ID = f"{PLUGIN_NAME}@{CODE_MARKETPLACE_NAME}"
 CODE_MARKETPLACE_DIRECTORY_NAME = "claude-code-marketplace"
 CODE_STATE_FILENAME = "claude-code-plugin.json"
-COWORK_LOCK_TIMEOUT_SECONDS = 5
 
 _COWORK_MARKERS = (
     "cowork_settings.json",
@@ -128,11 +123,6 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
     """Generate and install UG's Cowork plugin for the active workspace."""
     if config_io.is_dry_run():
         return False
-    with _locked():
-        return _configure_cowork(state, mcp_servers)
-
-
-def _configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
     workspace = state.get("workspace")
     if not isinstance(workspace, str) or not workspace:
         raise RuntimeError("No Databricks workspace is configured for Cowork.")
@@ -167,99 +157,35 @@ def _configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
         return False
 
     cowork_root = discover_cowork_root()
+    previous_root = previous_state.get("cowork_root")
+    if isinstance(previous_root, str) and previous_root and Path(previous_root) != cowork_root:
+        _remove_plugin_registration(Path(previous_root))
     marketplace_root = _marketplace_root()
     selected_source = system_path if system_install else marketplace_root
     assert selected_source is not None
-    previous_source = _registered_marketplace_source(cowork_root)
-    if previous_source is not None and previous_source not in (marketplace_root, system_path):
-        raise RuntimeError(
-            f"UG marketplace refers to another source at {previous_source}; left unchanged."
-        )
     hooks = _connector_hooks(mcp_config, workspace, profile, use_pat=bool(state.get("use_pat")))
     plugin_root = marketplace_root / "plugins" / PLUGIN_NAME
     _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config, hooks)
     if system_install:
         managed_files.replace_privileged_bundle(selected_source, marketplace_root)
-    installed_state = _record_plugin_installation(cowork_root, selected_source, previous_state)
-    _install_plugin(cowork_root, selected_source)
-    for old_root in installed_state["previous_cowork_roots"]:
-        if Path(old_root) != cowork_root:
-            _remove_plugin_registration(Path(old_root))
-    installed_state.pop("previous_cowork_roots", None)
-    config_io.atomic_write_json(_state_path(), installed_state)
-    return True
-
-
-def _record_plugin_installation(
-    cowork_root: Path, selected_source: Path, previous_state: dict
-) -> dict:
-    installed_state = config_io.read_json_safe(_state_path())
-    installed_state.pop("system_digest", None)
-    installed_state.pop("pending_system_digest", None)
-    pending_roots = list(previous_state.get("previous_cowork_roots", []))
-    previous_root = previous_state.get("cowork_root")
-    if previous_root and previous_root != str(cowork_root) and previous_root not in pending_roots:
-        pending_roots.append(previous_root)
-    installed_state.update(
-        version=3,
-        cowork_root=str(cowork_root),
-        marketplace_root=str(selected_source),
-        previous_cowork_roots=pending_roots,
+    config_io.atomic_write_json(
+        _state_path(),
+        {"version": 1, "cowork_root": str(cowork_root), "marketplace_root": str(selected_source)},
     )
-    config_io.atomic_write_json(_state_path(), installed_state)
-    return installed_state
+    _install_plugin(cowork_root, selected_source)
+    return True
 
 
 def revert_cowork() -> bool:
     """Remove only UG's Cowork plugin, marketplace registration, and generated source."""
     if config_io.is_dry_run():
         return False
-    with _locked():
-        return _revert_cowork()
-
-
-def _revert_cowork() -> bool:
-
     state_path = _state_path()
     state = config_io.read_json_safe(state_path)
-    changed = _remove_user_registrations(state)
-    if not managed_files.managed_settings_skipped():
-        path = managed_files.claude_desktop_marketplace_path()
-        if path is not None and (path.exists() or path.is_symlink()):
-            managed_files.replace_privileged_bundle(path, None)
-            changed = True
-    changed = _remove_marketplace_source() or changed
-    if state_path.exists():
-        state_path.unlink()
-        changed = True
-    return changed
-
-
-@contextmanager
-def _locked() -> Iterator[None]:
-    path = _state_path().with_suffix(".lock")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as handle:
-        try:
-            acquire_exclusive_file_lock(handle, timeout=COWORK_LOCK_TIMEOUT_SECONDS)
-        except TimeoutError as exc:
-            raise RuntimeError(
-                "Timed out waiting for another Cowork configure/revert; retry after it finishes."
-            ) from exc
-        try:
-            yield
-        finally:
-            release_file_lock(handle)
-
-
-def _remove_user_registrations(state: dict) -> bool:
     raw_root = state.get("cowork_root")
     roots: list[Path] = []
     if isinstance(raw_root, str) and raw_root:
         roots.append(Path(raw_root))
-    for raw_root in state.get("previous_cowork_roots", []):
-        if Path(raw_root) not in roots:
-            roots.append(Path(raw_root))
     for root in _cowork_roots():
         if root not in roots and _has_ug_registration(root):
             roots.append(root)
@@ -267,18 +193,22 @@ def _remove_user_registrations(state: dict) -> bool:
     changed = False
     for root in roots:
         changed = _remove_plugin_registration(root) or changed
-    return changed
-
-
-def _remove_marketplace_source() -> bool:
+    if not managed_files.managed_settings_skipped():
+        path = managed_files.claude_desktop_marketplace_path()
+        if path is not None and (path.exists() or path.is_symlink()):
+            managed_files.replace_privileged_bundle(path, None)
+            changed = True
     marketplace_root = _marketplace_root()
     if marketplace_root.exists() or marketplace_root.is_symlink():
         if marketplace_root.is_symlink():
             marketplace_root.unlink()
         else:
             shutil.rmtree(marketplace_root)
-        return True
-    return False
+        changed = True
+    if state_path.exists():
+        state_path.unlink()
+        changed = True
+    return changed
 
 
 def _cowork_sessions_root_exists() -> bool:
@@ -470,28 +400,16 @@ def _cowork_mcp_aliases(urls: dict[str, str]) -> dict[str, str]:
 
 
 def _marketplace_files(root: Path) -> dict[str, tuple[bytes, int]] | None:
-    for path in (root, *root.parents):
-        if path.is_symlink() or path.is_junction():
-            raise RuntimeError(f"Refusing linked Desktop plugin path: {path}")
     if not root.exists():
         return None
-    if not root.is_dir():
-        raise RuntimeError(f"Desktop plugin path is not a directory: {root}")
-    files = {}
-    for path in sorted(root.rglob("*")):
-        mode = path.lstat().st_mode
-        if (
-            path.is_symlink()
-            or path.is_junction()
-            or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode))
-        ):
-            raise RuntimeError(f"Refusing non-regular Desktop plugin content: {path}")
-        if path.is_file():
-            files[path.relative_to(root).as_posix()] = (
-                path.read_bytes(),
-                0o755 if mode & 0o111 else 0o644,
-            )
-    return files
+    return {
+        path.relative_to(root).as_posix(): (
+            path.read_bytes(),
+            0o755 if path.stat().st_mode & 0o111 else 0o644,
+        )
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
 
 
 def _marketplace_digest(files: dict[str, tuple[bytes, int]]) -> str:

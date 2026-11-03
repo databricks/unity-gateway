@@ -105,8 +105,7 @@ register the user source. Both use Desktop's normal user-level Cowork loader thr
 `claude plugin ... --cowork --json`, with one `ug@unity-gateway-cowork` registration
 for the selected account/org. Keeping both source copies does not install two plugins.
 Switching scope replaces the source registration; `--user` leaves existing root files
-untouched. A source registered elsewhere under UG's marketplace name is preserved
-and reported as a conflict.
+untouched.
 
 Start one Cowork task before configuring so Desktop creates its account/org directory.
 Quit Desktop, run configure, then reopen it and start a new task. Ambiguous profiles
@@ -123,8 +122,7 @@ user-local. No mobileconfig, registry policy, or organization-loader plugin is g
 A pre-existing `Claude/org-plugins/ug` installation must be removed by its owner before
 configuration, so the organization loader cannot expose a duplicate UG plugin.
 
-Configure and revert share a user-level lock so concurrent commands cannot interleave
-source publication and registration changes. UG records the source and account/org in
+UG records the selected source and account/org in
 `~/.ucode/claude-cowork.json`. UG owns the whole generated marketplace directory in each
 location: configure replaces its contents, including manual edits, and default `ug revert`
 removes both directories and UG's registration. `--user` leaves the root directory alone.
@@ -135,6 +133,8 @@ copies the generated source through sudo on macOS or an elevated process on Wind
 It has no ownership hashes or automatic rollback; rerun configure after a failed copy.
 A native refresh failure leaves generated sources and tracking state for retry or revert.
 The previous plugin version or registration is not restored automatically.
+Run configure and revert one at a time. Account changes use the existing cleanup flow
+before installing for the new account; no pending-cleanup queue or state migration is added.
 
 This configures the current user. The MCP executable and Databricks profile still refer to
 the installation selected by configure. A shared UG runtime, setup for new users, policy
