@@ -31,6 +31,8 @@ CLI_URL="$CLI_URL/databricks/setup-cli/main/install.sh"
 CLT_MARKER=/tmp/.com.apple.dt.CommandLineTools
 CLT_MARKER="$CLT_MARKER.installondemand.in-progress"
 
+# ug must be in a shared path: the machine-wide agent settings
+# run it by absolute path for every user.
 export UV_TOOL_DIR="$PREFIX/tools"
 export UV_TOOL_BIN_DIR=/usr/local/bin
 export UV_PYTHON_INSTALL_DIR="$PREFIX/python"
@@ -99,4 +101,5 @@ if ! DATABRICKS_BEARER="$(printf '%s' "$resp" \
 fi
 export DATABRICKS_BEARER
 
-ug configure --workspace "$WORKSPACE" --agents claude,codex </dev/null
+ug configure --global --workspace "$WORKSPACE" \
+  --agents claude,codex </dev/null
