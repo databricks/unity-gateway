@@ -66,6 +66,25 @@ CONNECTION_AUTH_REQUIRED_ERROR_CODE = -32006
 URL_ELICITATION_REQUIRED_ERROR_CODE = -32042
 AUTHENTICATE_TOOL_NAME = "authenticate"
 TOOLS_REFRESH_TIMEOUT_SECONDS = 5.0
+MCP_CLIENT_USER_AGENT_HEADER = "User-Agent"
+_HTTP_PRODUCT_CHARACTER = re.compile(r"[^!#$%&'*+.^_`|~0-9A-Za-z-]")
+
+
+def _client_user_agent(payload: JSONRPCRequest) -> str | None:
+    """Return a safe HTTP product for an MCP initialize request's clientInfo."""
+    if payload.method != "initialize" or not isinstance(payload.params, dict):
+        return None
+    client_info = payload.params.get("clientInfo")
+    if not isinstance(client_info, dict):
+        return None
+    name = client_info.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    product = _HTTP_PRODUCT_CHARACTER.sub("_", name.strip())
+    version = client_info.get("version")
+    if not isinstance(version, str) or not version.strip():
+        return product
+    return f"{product}/{_HTTP_PRODUCT_CHARACTER.sub('_', version.strip())}"
 
 
 def _httpx() -> ModuleType:
@@ -288,8 +307,13 @@ def _build_token_auth(
 class _McpBridge:
     """Bridge MCP messages and recover connection authentication failures."""
 
-    def __init__(self, connection_login: _ConnectionLogin) -> None:
+    def __init__(
+        self,
+        connection_login: _ConnectionLogin,
+        set_client_user_agent: Callable[[str], None] | None = None,
+    ) -> None:
         self.connection_login = connection_login
+        self.set_client_user_agent = set_client_user_agent or (lambda _value: None)
         self.pending_requests: dict[int | str, SessionMessage] = {}
         self.retried_requests: set[int | str] = set()
         self.authentication_required = False
@@ -566,6 +590,9 @@ class _McpBridge:
                         ) from message
                     payload = message.message
                     if isinstance(payload, JSONRPCRequest):
+                        client_user_agent = _client_user_agent(payload)
+                        if client_user_agent is not None:
+                            self.set_client_user_agent(client_user_agent)
                         if (
                             client is not None
                             and (self.authentication_required or self.authentication_tool_available)
@@ -690,7 +717,12 @@ async def _run(
             http_read, http_write = streams[0], streams[1]
             async with stdio_server(stdin=stdin, stdout=stdout) as (stdio_read, stdio_write):
                 # Bidirectional bridge: client stdin -> Databricks, Databricks -> client stdout.
-                bridge = _McpBridge(connection_login)
+                bridge = _McpBridge(
+                    connection_login,
+                    lambda value: http_client.headers.__setitem__(
+                        MCP_CLIENT_USER_AGENT_HEADER, value
+                    ),
+                )
                 async with anyio.create_task_group() as tg:
                     tg.start_soon(bridge.pump_upstream, http_read, stdio_write, http_write)
                     await bridge.pump_client(stdio_read, http_write, stdio_write)
