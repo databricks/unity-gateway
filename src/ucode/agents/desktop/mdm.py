@@ -522,50 +522,49 @@ def sync_user() -> bool:
     assert system_source is not None
     claude = configuration["runtime"]["claude"]
     user_state = Path.home() / ".ucode" / USER_STATE_FILENAME
-    with cowork._locked():
-        previous = config_io.read_json_safe(user_state)
-        registrations = previous.get("registrations", {})
-        if not configuration["enabled"]:
-            _cleanup_registrations(registrations, system_source, claude)
-            user_state.unlink(missing_ok=True)
-            return False
-        if not cowork._cowork_roots():
-            return False
-        _check_machine_path(system_source, required=True)
-        bundle = cowork._marketplace_files(system_source)
-        if bundle is None or cowork._marketplace_digest(bundle) != configuration["source_digest"]:
-            return False  # Publication may be between the source swap and deployment record.
-        root = cowork.discover_cowork_root()
-        source = cowork._registered_marketplace_source(root)
-        if source is not None and source not in (cowork._marketplace_root(), system_source):
-            raise RuntimeError("UG marketplace is registered to another source; left unchanged.")
-        org_plugin = managed_files.claude_desktop_org_plugin_path()
-        if org_plugin is not None and (org_plugin.exists() or org_plugin.is_symlink()):
-            raise RuntimeError("Remove the prior organization-loader UG plugin before MDM refresh.")
-        version = json.loads(
-            (system_source / "plugins/ug/.claude-plugin/plugin.json").read_bytes()
-        )["version"]
-        current = (
-            previous.get("cowork_root") == str(root)
-            and previous.get("source_digest") == configuration["source_digest"]
-            and source == system_source
-            and _cached_version(root) == version
-        )
-        if not current:
-            # Record the intended version before native commands so an interrupted refresh is removable.
-            registrations[str(root)] = sorted({*registrations.get(str(root), []), version})
-            config_io.atomic_write_json(user_state, {**previous, "registrations": registrations})
-            cowork._install_plugin(root, system_source, claude=claude)
-            if _cached_version(root) != version:
-                raise RuntimeError(
-                    "Desktop plugin refresh did not install the published version; retry refresh."
-                )
-        _cleanup_registrations(registrations, system_source, claude, keep=root)
-        updated = {
-            "cowork_root": str(root),
-            "source_digest": configuration["source_digest"],
-            "registrations": {str(root): [version]},
-        }
-        if updated != previous:
-            config_io.atomic_write_json(user_state, updated)
-        return not current
+    previous = config_io.read_json_safe(user_state)
+    registrations = previous.get("registrations", {})
+    if not configuration["enabled"]:
+        _cleanup_registrations(registrations, system_source, claude)
+        user_state.unlink(missing_ok=True)
+        return False
+    if not cowork._cowork_roots():
+        return False
+    _check_machine_path(system_source, required=True)
+    bundle = cowork._marketplace_files(system_source)
+    if bundle is None or cowork._marketplace_digest(bundle) != configuration["source_digest"]:
+        return False  # Publication may be between the source swap and deployment record.
+    root = cowork.discover_cowork_root()
+    source = cowork._registered_marketplace_source(root)
+    if source is not None and source not in (cowork._marketplace_root(), system_source):
+        raise RuntimeError("UG marketplace is registered to another source; left unchanged.")
+    org_plugin = managed_files.claude_desktop_org_plugin_path()
+    if org_plugin is not None and (org_plugin.exists() or org_plugin.is_symlink()):
+        raise RuntimeError("Remove the prior organization-loader UG plugin before MDM refresh.")
+    version = json.loads((system_source / "plugins/ug/.claude-plugin/plugin.json").read_bytes())[
+        "version"
+    ]
+    current = (
+        previous.get("cowork_root") == str(root)
+        and previous.get("source_digest") == configuration["source_digest"]
+        and source == system_source
+        and _cached_version(root) == version
+    )
+    if not current:
+        # Record the intended version before native commands so an interrupted refresh is removable.
+        registrations[str(root)] = sorted({*registrations.get(str(root), []), version})
+        config_io.atomic_write_json(user_state, {**previous, "registrations": registrations})
+        cowork._install_plugin(root, system_source, claude=claude)
+        if _cached_version(root) != version:
+            raise RuntimeError(
+                "Desktop plugin refresh did not install the published version; retry refresh."
+            )
+    _cleanup_registrations(registrations, system_source, claude, keep=root)
+    updated = {
+        "cowork_root": str(root),
+        "source_digest": configuration["source_digest"],
+        "registrations": {str(root): [version]},
+    }
+    if updated != previous:
+        config_io.atomic_write_json(user_state, updated)
+    return not current

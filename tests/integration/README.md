@@ -177,7 +177,8 @@ temporary paths and simulated external boundaries. Its runtime-probe regression 
 isolated Python child to catch binary stdout being passed to `Path` during provisioning.
 Component fixtures also exercise API-format agent lists through the fetch gate and
 normalization, including headers/tracing, absent configs, and Claude enablement checks.
-Native launchd activation, first-user timing, managed-plist precedence, and tool/skill
+User refresh follows the same serial registration flow without a shared Cowork lock;
+concurrent manual refresh/configure is deferred. Native launchd activation, first-user timing, managed-plist precedence, and tool/skill
 invocation remain untested here; follow
 [`docs/claude-desktop-mdm.md`](../../docs/claude-desktop-mdm.md) before fleet rollout.
 `../test_desktop_scope.py` additionally covers explicit `--global` routing into MDM,

@@ -525,6 +525,8 @@ this catches binary stdout being passed to `Path` during provisioning.
 Managed-config responses use the API's agent list and pass through the real fetch gate
 and normalization; checks cover enum/name spellings, headers/tracing, omitted configs,
 and rejection when Claude is absent.
+User sync no longer depends on a Cowork configure/revert lock. Serial update/removal and
+account-cleanup journeys remain covered; concurrent manual refresh/configure is deferred.
 This does not establish native macOS MDM, launchd, fresh-user GUI login, or tool/skill execution.
 The rollout checklist is in `docs/claude-desktop-mdm.md`.
 

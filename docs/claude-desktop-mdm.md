@@ -156,6 +156,7 @@ new contents. The plugin version is derived from its contents. Each user's refre
 updates the native installed cache; changing the root source alone is insufficient.
 Start a new task after a plugin update, and restart Desktop after policy changes.
 There is no automatic workspace-policy fetch from the login job: MDM controls publication.
+Run manual user refresh, ordinary configure, and revert one at a time; they have no shared lock.
 
 Publication validates policy/helper ownership, stages the source, and rolls back files and source
 on write failures. Incomplete skill discovery/download fails the deployment instead
