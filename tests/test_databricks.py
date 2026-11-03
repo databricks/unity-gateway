@@ -736,6 +736,32 @@ class TestDiscoverModelServices:
         assert db_mod.list_model_service_entries(WS, "token") == ([], "HTTP 503")
         assert db_mod.cached_model_service_entries(WS) is None
 
+    def test_partial_listing_keeps_models_and_reports_incomplete_discovery(self, monkeypatch):
+        pages = iter(
+            [
+                (
+                    {
+                        "model_services": [
+                            _model_service("system.ai.claude-opus-4-8"),
+                            _model_service("system.ai.gpt-5"),
+                        ],
+                        "next_page_token": "more",
+                    },
+                    None,
+                ),
+                (None, "HTTP 503"),
+            ]
+        )
+        monkeypatch.setattr(db_mod, "_get_model_services_page", lambda *args: next(pages))
+
+        claude, codex, gemini, oss, reason = db_mod.discover_model_services(WS, "token")
+
+        assert claude == {"opus": "system.ai.claude-opus-4-8"}
+        assert codex == ["system.ai.gpt-5"]
+        assert (gemini, oss) == ([], [])
+        assert reason == "HTTP 503"
+        assert db_mod.cached_model_service_entries(WS) is None
+
 
 class TestModelServiceExists:
     def test_true_when_listed_in_its_schema(self, monkeypatch):
@@ -5137,6 +5163,45 @@ class TestModelServicesCache:
         db_mod.list_model_services(WS, "tok")
         db_mod.list_model_services("https://other.databricks.com", "tok")
         assert calls["n"] == 2
+
+    @pytest.mark.parametrize("interruption", ["page-failure", "repeated-cursor", "page-limit"])
+    def test_partial_listing_is_not_cached_and_next_call_completes(self, monkeypatch, interruption):
+        first_page = {
+            "model_services": [_model_service("system.ai.gpt-5")],
+            "next_page_token": "more",
+        }
+        pages = iter(
+            [
+                (first_page, None),
+                (None, "HTTP 503") if interruption == "page-failure" else (first_page, None),
+            ]
+        )
+        monkeypatch.setattr(db_mod, "_get_model_services_page", lambda *args: next(pages))
+
+        entries, reason = db_mod.list_model_service_entries(
+            WS, "token", max_pages=1 if interruption == "page-limit" else 100
+        )
+
+        assert [entry.id for entry in entries] == ["system.ai.gpt-5"]
+        assert reason is not None
+        assert db_mod.cached_model_service_entries(WS) is None
+
+        complete_pages = iter(
+            [
+                (first_page, None),
+                ({"model_services": [_model_service("system.ai.claude-opus-4-8")]}, None),
+            ]
+        )
+        monkeypatch.setattr(db_mod, "_get_model_services_page", lambda *args: next(complete_pages))
+
+        entries, reason = db_mod.list_model_service_entries(WS, "token")
+
+        assert reason is None
+        assert [entry.id for entry in entries] == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.gpt-5",
+        ]
+        assert db_mod.cached_model_service_entries(WS) == entries
 
     def test_failures_are_not_cached(self, monkeypatch):
         # A transient error must not poison the rest of the process into believing there are no

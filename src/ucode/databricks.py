@@ -2371,9 +2371,9 @@ def list_model_service_entries(
     Pages through ``/api/2.1/unity-catalog/model-services`` scoped to the
     ``system.ai`` schema (``parent=schemas/system.ai``) with a bounded
     ``page_size`` (the endpoint 499s without one) and returns the de-duplicated
-    entries sorted by id. Returns (entries, reason); reason is None on success,
-    otherwise it describes why the list is empty (HTTP/network error or no
-    services). Scoping matters: the unscoped metastore listing walks every schema
+    entries sorted by id. Returns (entries, reason); reason is None on complete success,
+    otherwise it describes an empty or incomplete listing. Partial results remain usable
+    but are not cached. Scoping matters: the unscoped metastore listing walks every schema
     across dozens of ~2s pages (~50s on a busy workspace) only to keep the same
     ``system.ai.*`` subset — see ``_MODEL_SERVICE_PARENT_SCHEMA``.
 
@@ -2400,9 +2400,7 @@ def list_model_service_entries(
         url = f"{origin}/api/2.1/unity-catalog/model-services?{urlencode(params)}"
         payload, reason = _get_model_services_page(url, token)
         if payload is None:
-            # Surface the failure only if we have nothing yet; a mid-pagination
-            # blip still returns whatever we collected.
-            last_reason = reason
+            last_reason = reason or "model-services listing failed"
             break
         data = cast(dict, payload) if isinstance(payload, dict) else {}
         for service in data.get("model_services", []):
@@ -2417,14 +2415,17 @@ def list_model_service_entries(
             last_reason = None
             break
         if page_token in seen_tokens:
+            last_reason = "model-services listing repeated a page token"
             break
         seen_tokens.add(page_token)
+    else:
+        last_reason = f"model-services listing exceeded {max_pages} pages"
 
     listed = [entries[model_id] for model_id in sorted(entries)]
     if listed:
-        if use_cache:
+        if use_cache and last_reason is None:
             _MODEL_SERVICES_CACHE[workspace] = list(listed)
-        return listed, None
+        return listed, last_reason
     return [], last_reason or "model-services listing returned no models"
 
 
@@ -2524,7 +2525,7 @@ def discover_model_services(
     - ``gemini_models`` is the list of ``system.ai.*gemini-*`` ids, newest first.
     - ``oss_models`` is the list of OSS-model ``system.ai.*`` ids.
 
-    ``reason`` is None on success, else explains why nothing was found. Family
+    ``reason`` is None on complete success, else explains missing or incomplete results. Family
     bucketing is by name substring because the model-services API does not
     expose per-model API dialects.
     """
@@ -2553,12 +2554,13 @@ def discover_model_services(
             [],
             [],
             [],
-            (
+            reason
+            or (
                 "model-services returned model ids but none matched "
                 f"claude/gpt/gemini/oss families (got: {sample})"
             ),
         )
-    return claude_models, codex_models, gemini_models, oss_models, None
+    return claude_models, codex_models, gemini_models, oss_models, reason
 
 
 # --- Managed coding-agent config (admin-authored, developer-read) -----------

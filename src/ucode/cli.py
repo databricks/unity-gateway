@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from contextlib import contextmanager, redirect_stdout
@@ -75,6 +77,8 @@ from ucode.databricks import (
     apply_pat_environment,
     build_shared_base_urls,
     cached_model_service_entries,
+    clear_gateway_probe_cache,
+    clear_model_services_cache,
     databricks_cli_installed,
     discover_claude_models,
     discover_codex_models,
@@ -555,6 +559,70 @@ def _start_in_background[T](fn: Callable[..., T], *args: object) -> Future[T]:
     return future
 
 
+_LAUNCH_PREFLIGHT_STATE_KEY = "launch_preflight"
+_LAUNCH_PREFLIGHT_TTL_SECONDS = 300
+
+
+def _launch_preflight_identity(state: dict, token: str, skip_model_discovery: bool) -> str:
+    """Bind reusable discovery to the selected workspace and exact current credential."""
+    identity = [
+        state_workspace_key(state),
+        state.get("profile"),
+        state.get("custom_oauth"),
+        bool(state.get("use_pat")),
+        skip_model_discovery,
+        os.environ.get(UG_HEADERS_ENV_VAR),
+        token,
+    ]
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+
+
+def _can_reuse_launch_preflight(state: dict, identity: str, fields: set[str]) -> bool:
+    stamp = state.get(_LAUNCH_PREFLIGHT_STATE_KEY)
+    if (
+        not isinstance(stamp, dict)
+        or type(stamp.get("version")) is not int
+        or stamp["version"] != 1
+    ):
+        return False
+    verified_at = stamp.get("verified_at")
+    covered = stamp.get("fields")
+    return (
+        stamp.get("identity") == identity
+        and type(verified_at) in (int, float)
+        and 0 <= time.time() - verified_at < _LAUNCH_PREFLIGHT_TTL_SECONDS
+        and isinstance(covered, list)
+        and all(isinstance(field, str) for field in covered)
+        and fields.issubset(covered)
+        and _has_preflight_models(state, fields)
+    )
+
+
+def _has_preflight_models(state: dict, fields: set[str]) -> bool:
+    """Incomplete discovery remains retryable instead of becoming a warm-launch success."""
+    for field in fields:
+        value = state.get(field)
+        if field == "web_search_model":
+            models = [value]
+        elif field == "claude_models":
+            models = list(value.values()) if isinstance(value, dict) else None
+        elif field == "opencode_models":
+            if not isinstance(value, dict) or not all(
+                isinstance(family, list) and family for family in value.values()
+            ):
+                return False
+            models = [model for family in value.values() for model in family]
+        elif field == copilot_agent.CATALOG_STATE_KEY:
+            models = value.get("models") if isinstance(value, dict) else None
+        else:
+            models = value
+        if not isinstance(models, list) or not models:
+            return False
+        if not all(isinstance(model, str) and model.strip() for model in models):
+            return False
+    return True
+
+
 def configure_shared_state(
     workspace: str,
     profile: str | None = None,
@@ -566,6 +634,7 @@ def configure_shared_state(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     clear_custom_oauth: bool = False,
+    reuse_preflight: bool = False,
 ) -> dict:
     """Log into Databricks, verify AI Gateway, fetch model lists, persist state.
 
@@ -585,6 +654,8 @@ def configure_shared_state(
     in ``_launch_tool``) and the gateway was verified by that earlier configure.
     Only the local profile resolution and the shared state assembly still run;
     the saved model lists are preserved.
+    Configured launches may reuse successful verification and discovery for five minutes through
+    reuse_preflight. Authentication still runs, and a different credential always checks again.
     """
     workspace = normalize_workspace_url(workspace)
     if not split_workspace_key(workspace)[1]:
@@ -671,6 +742,12 @@ def configure_shared_state(
         state.pop("custom_oauth", None)
     state["base_urls"] = build_shared_base_urls(workspace)
 
+    # Evict before authentication too: a failed token refresh must not leave a reusable success.
+    # A warm hit restores the in-memory candidate with its original expiry after auth succeeds.
+    if not skip_preflight and previous_key == key and _LAUNCH_PREFLIGHT_STATE_KEY in prior_state:
+        unchecked_state = dict(prior_state)
+        unchecked_state.pop(_LAUNCH_PREFLIGHT_STATE_KEY)
+        save_state(unchecked_state)
     cli_custom_oauth = state.get("custom_oauth") if custom_oauth_cli_enabled(custom_oauth) else None
     if cli_custom_oauth:
         token = ensure_custom_oauth_cli_token(workspace, cli_custom_oauth, workspace_id)
@@ -725,22 +802,6 @@ def configure_shared_state(
         profile = _find_profile_name(workspace, workspace_id)
         if profile:
             state["profile"] = profile
-    with spinner("Verifying Unity AI Gateway..."):
-        if not cli_custom_oauth:
-            token = get_databricks_token(workspace, profile)
-        # The listing is independent of the probe, so overlap the two round trips. The probe still
-        # gates the launch; its failure abandons the listing rather than waiting for it.
-        model_services_discovery = (
-            None
-            if skip_model_discovery
-            else _start_in_background(discover_model_services, workspace, token)
-        )
-        model_service_probe = probe_unity_gateway_capabilities(workspace, token)
-    if model_service_probe.resource_available:
-        print_success("Unity Gateway connected")
-    else:
-        print_warning(f"Model service: {model_service_probe.detail}")
-
     want_claude = (
         fetch_all
         or "claude" in tools
@@ -765,6 +826,53 @@ def configure_shared_state(
     # configure must persist that discovered family too.
     want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
     want_copilot = fetch_all or "copilot" in tools
+    discovery_fields = {
+        field
+        for wanted, field in (
+            (want_claude, "claude_models"),
+            (want_gemini, "gemini_models"),
+            (want_codex, "codex_models"),
+            (want_oss, "oss_models"),
+            (want_copilot, copilot_agent.CATALOG_STATE_KEY),
+            (fetch_all or "opencode" in tools or "kilo" in tools, "opencode_models"),
+        )
+        if wanted
+    }
+    if skip_model_discovery:
+        discovery_fields = {"web_search_model"} if want_claude else set()
+    if not cli_custom_oauth:
+        token = get_databricks_token(workspace, profile)
+    preflight_identity = _launch_preflight_identity(state, token, skip_model_discovery)
+    if (
+        reuse_preflight
+        and not force_login
+        and previous_key == key
+        and _can_reuse_launch_preflight(state, preflight_identity, discovery_fields)
+    ):
+        save_state(state)
+        state["_discovery_reasons"] = {
+            "claude": None,
+            "gemini": None,
+            "codex": None,
+            "oss": None,
+            "copilot": None,
+        }
+        return state
+    state.pop(_LAUNCH_PREFLIGHT_STATE_KEY, None)
+    # Process-local listings are not credential-scoped; a fresh preflight must bypass them.
+    clear_gateway_probe_cache()
+    clear_model_services_cache()
+    with spinner("Verifying Unity AI Gateway..."):
+        model_services_discovery = (
+            None
+            if skip_model_discovery
+            else _start_in_background(discover_model_services, workspace, token)
+        )
+        model_service_probe = probe_unity_gateway_capabilities(workspace, token)
+    if model_service_probe.resource_available:
+        print_success("Unity Gateway connected")
+    else:
+        print_warning(f"Model service: {model_service_probe.detail}")
 
     claude_reason: str | None = None
     gemini_reason: str | None = None
@@ -785,7 +893,7 @@ def configure_shared_state(
         # just that with a single call.
         if want_claude:
             with spinner("Fetching available models..."):
-                ws_models, _ = discover_codex_models(workspace, token)
+                ws_models, codex_reason = discover_codex_models(workspace, token)
             if ws_models:
                 web_search_model = ws_models[0]
     else:
@@ -849,6 +957,25 @@ def configure_shared_state(
         if fetch_all or "opencode" in tools or "kilo" in tools:
             # Kilo is an OpenCode fork and consumes the same discovered view.
             state["opencode_models"] = opencode_models
+    reasons = {
+        "claude": claude_reason,
+        "gemini": gemini_reason,
+        "codex": codex_reason,
+        "oss": oss_reason,
+        "copilot": copilot_reason,
+    }
+    if (
+        model_service_probe.resource_available
+        and not any(reasons.values())
+        and _has_preflight_models(state, discovery_fields)
+        and (not skip_model_discovery or not want_claude or web_search_model is not None)
+    ):
+        state[_LAUNCH_PREFLIGHT_STATE_KEY] = {
+            "version": 1,
+            "identity": preflight_identity,
+            "verified_at": time.time(),
+            "fields": sorted(discovery_fields),
+        }
     save_state(state)
     # Scrub MCP entries that ucode wrote for the previous workspace so the new
     # workspace's agent configs aren't stale.
@@ -856,13 +983,7 @@ def configure_shared_state(
         purge_cross_workspace_mcp_residue(state, workspace)
     # Diagnostic reasons are transient — attach after save_state so they don't
     # land on disk but are available to the caller for this run.
-    state["_discovery_reasons"] = {
-        "claude": claude_reason,
-        "gemini": gemini_reason,
-        "codex": codex_reason,
-        "oss": oss_reason,
-        "copilot": copilot_reason,
-    }
+    state["_discovery_reasons"] = reasons
     return state
 
 
@@ -1255,13 +1376,31 @@ def _configure_workspace_command(
     state = states[0]
     save_state(state)
 
-    # A published managed config means the admin dictates the setup: apply it to every enabled agent
-    # now rather than prompting the developer to pick. Configure always reads fresh so it never
-    # applies a config the admin has since changed.
+    # Configure reads current policy and defaults to all enabled agents. An explicit --agents
+    # limits installation and setup to the requested agents that policy enables.
     managed, _ = _refresh_configured_policy(state)
     refuse_user_scope_over_managed_config(state.get("workspace"), managed)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     if managed is not None and managed_tools:
+        summary_managed = managed
+        if selected_tools is not None:
+            excluded = [name for name in selected_tools if name not in managed_tools]
+            managed_tools = [name for name in managed_tools if name in selected_tools]
+            if not managed_tools:
+                if selected_tools:
+                    _reject_disabled_agent(managed, selected_tools[0])
+                print_note("No coding agents selected — nothing to configure.")
+                return 0
+            if excluded:
+                displays = ", ".join(TOOL_SPECS[name]["display"] for name in excluded)
+                print_warning(
+                    f"Skipping agent(s) not enabled by your workspace configuration: {displays}."
+                )
+            # Unrequested agents were not attempted, so the summary must not call them failures.
+            summary_managed = {
+                **managed,
+                "enabled_agents": {name: managed["enabled_agents"][name] for name in managed_tools},
+            }
         refuse_user_scope_over_managed_files(managed_tools)
         configured_tools: list[str] = []
         for tool_name in managed_tools:
@@ -1316,7 +1455,7 @@ def _configure_workspace_command(
             ]
             if "claude" in configured_tools and resolved_mcps is not None and skills_configured:
                 _sync_claude_cowork_plugin(state, managed_mcp_servers=resolved_mcps)
-        _summarize_managed_config(managed, configured_tools, registered_mcps)
+        _summarize_managed_config(summary_managed, configured_tools, registered_mcps)
         return 0
 
     available_on_workspace: list[str] = []
@@ -3647,11 +3786,8 @@ def _launch_tool(
         smart_routing_enabled = managed_smart_routing_applies or (
             smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
         )
-        # Re-fetch model lists on every launch so newly-added Databricks
-        # endpoints show up without a manual `ug configure` (and so that
-        # tools like pi which read multiple model bundles never run on
-        # stale state from before a tool added a new bundle). Under a provider
-        # this heavy discovery is skipped (only a web-search model is fetched).
+        # Successful discovery is reusable briefly; a new model source, credential, or requested
+        # family checks again. Under a provider only the web-search model needs discovery.
         configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
         family_defaults = (
             claude_agent.get_family_defaults(
@@ -3684,6 +3820,7 @@ def _launch_tool(
                 family_defaults=family_defaults,
             ),
             skip_preflight=skip_preflight,
+            reuse_preflight=not refresh,
             **configure_kwargs,
         )
         # An admin-published managed config wins over the developer's own settings. Layered on after

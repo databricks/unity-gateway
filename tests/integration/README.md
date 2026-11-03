@@ -322,9 +322,13 @@ savings; credential/profile routing is unchanged.
 
 Overlapping the model-service listing with the gateway probe is covered only by
 component tests in `../test_cli.py`: overlap, probe failure without waiting, listing
-errors, the `skip_model_discovery` and `skip_preflight` paths, and reuse of the process-local
-probe and listing caches. This suite does not assert live request overlap, probe/listing timing, or
-launch-time savings.
+errors, the `skip_model_discovery` and `skip_preflight` paths, and explicit reconfiguration
+refreshing the process-local probe and listing caches. The same component file covers bounded
+persisted success reuse, fresh auth and credential/workspace/profile invalidation, model-field and
+discovery-mode coverage, malformed/expired stamps, and failed-refresh invalidation.
+`../test_databricks.py` checks that interrupted pagination retains usable models without caching an
+incomplete catalog. This suite does not assert live request overlap, cache timing, or launch-time
+savings.
 
 The sudo-session regression checks live in `../test_managed_files.py` and `../test_cli.py`.
 They cover shared-worker invocation counts, shutdown/cancellation, and temporary-file failure
@@ -733,7 +737,9 @@ journeys pass it). Tests disable optional Databricks AI Tools and retain
 `--skip-upgrade` as a deprecated no-op for compatibility. UG only upgrades
 agents below its required minimum; before/after version checks still enforce the
 selected versions. Fable, subset selection, and required-update policy are covered
-by unit/component tests, not dedicated live journeys. Tests use real onboarding
+by unit/component tests, not dedicated live journeys. The managed-config subset cases in
+`../test_cli.py` preserve default all-enabled setup, limit explicit `--agents` to enabled
+requests, and reject an entirely disabled selection before installing agents. Tests use real onboarding
 and trust choices, without seeded acceptance or disabled agent sandboxing. If a
 routed child asks to locate the random fixture beneath the disposable project,
 the terminal driver accepts that exact read-only command through Claude's real

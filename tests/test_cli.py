@@ -5376,9 +5376,19 @@ class TestConfigureAgentsSelection:
         cli_mod.configure_workspace_command()
         assert picked_for == ["claude"]
 
-    def test_managed_config_applies_all_enabled_and_skips_selection(self, monkeypatch):
-        # A managed config means the admin dictates the agents, so `ug configure` applies it to every
-        # enabled+available agent and does NOT prompt the developer to pick.
+    @pytest.mark.parametrize(
+        ("selected", "expected", "excluded"),
+        [
+            (None, ["claude", "codex", "pi"], None),
+            (["claude"], ["claude"], None),
+            (["codex", "claude"], ["claude", "codex"], None),
+            (["claude", "gemini"], ["claude"], "Gemini"),
+        ],
+        ids=["all-enabled", "claude-only", "requested-subset", "disabled-request-excluded"],
+    )
+    def test_managed_config_applies_selected_enabled_agents_without_picker(
+        self, monkeypatch, capsys, selected, expected, excluded
+    ):
         import ucode.cli as cli_mod
 
         state = {**MINIMAL_STATE, "available_tools": []}
@@ -5386,7 +5396,7 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(
             cli_mod,
             "refresh_managed_config",
-            lambda s, **_k: ({"enabled_agents": {"claude": {}, "codex": {}}}, False),
+            lambda s, **_k: ({"enabled_agents": {"claude": {}, "codex": {}, "pi": {}}}, False),
         )
         monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: True)
         installed: list[str] = []
@@ -5396,7 +5406,12 @@ class TestConfigureAgentsSelection:
             lambda tool, **kwargs: installed.append(tool) or True,
         )
         monkeypatch.setattr(cli_mod, "resolve_state", lambda managed, s, tool: s)
-        monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
+        summaries: list[list[str]] = []
+        monkeypatch.setattr(
+            cli_mod,
+            "_print_managed_summary",
+            lambda managed, *args, **kwargs: summaries.append(list(managed["enabled_agents"])),
+        )
         configured: list[str] = []
         monkeypatch.setattr(
             cli_mod,
@@ -5409,9 +5424,44 @@ class TestConfigureAgentsSelection:
             lambda options: pytest.fail("must not prompt for tools when a managed config exists"),
         )
 
-        assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
-        assert installed == ["claude", "codex"]
-        assert configured == ["claude", "codex"]
+        assert (
+            cli_mod.configure_workspace_command(
+                selected_tools=selected, workspaces=[("https://w.com", None)]
+            )
+            == 0
+        )
+        assert installed == expected
+        assert configured == expected
+        assert summaries == [expected]
+        output = " ".join(_strip_ansi(capsys.readouterr().out).split())
+        if excluded:
+            assert (
+                f"Skipping agent(s) not enabled by your workspace configuration: {excluded}"
+                in output
+            )
+        else:
+            assert "Skipping agent(s)" not in output
+
+    def test_managed_config_rejects_selection_without_enabled_agents(self, monkeypatch):
+        state = {**MINIMAL_STATE, "available_tools": []}
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(
+            cli_mod,
+            "refresh_managed_config",
+            lambda s, **kwargs: ({"enabled_agents": {"claude": {}, "codex": {}}}, False),
+        )
+        install = MagicMock()
+        configure = MagicMock()
+        monkeypatch.setattr(cli_mod, "install_tool_binary", install)
+        monkeypatch.setattr(cli_mod, "configure_selected_tools", configure)
+
+        with pytest.raises(RuntimeError, match="doesn't enable Gemini"):
+            cli_mod.configure_workspace_command(
+                selected_tools=["gemini"], workspaces=[("https://w.com", None)]
+            )
+
+        install.assert_not_called()
+        configure.assert_not_called()
 
     def test_managed_summary_separates_configured_and_failed_agents(self, capsys, monkeypatch):
         # An enabled agent that failed to configure is listed under "Failed to configure",
@@ -6666,7 +6716,7 @@ class TestConfigureSharedStateUsePat:
         assert "v2" not in message.lower()
         assert "v3" not in message.lower()
 
-    def test_second_configure_in_process_does_not_reprobe_the_gateway(self, monkeypatch):
+    def test_explicit_reconfigure_in_process_reprobes_the_gateway(self, monkeypatch):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
         calls: list[str] = []
 
@@ -6682,7 +6732,7 @@ class TestConfigureSharedStateUsePat:
         cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
         cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
 
-        assert len(calls) == 1
+        assert len(calls) == 2
 
     def test_use_pat_without_pat_profile_raises(self, monkeypatch):
         cli_mod, logins, _, _ = self._stub_deps(monkeypatch, pat_token=None)
@@ -6991,7 +7041,7 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
         # Provider mode keeps its separate single-call web-search lookup.
         assert state["web_search_model"] == "system.ai.gpt-5"
 
-    def test_overlapped_listing_composes_with_process_caches(self, monkeypatch):
+    def test_explicit_reconfigure_refreshes_probe_and_listing(self, monkeypatch):
         cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
@@ -7022,8 +7072,244 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
         for state in (first, second):
             assert state["claude_models"] == {"opus": "system.ai.claude-opus-4-8"}
             assert state["codex_models"] == ["system.ai.gpt-5"]
-        # One probe and one listing page; the second configure answers from both process caches.
-        assert len(requests) == 2
+        # Explicit reconfiguration refreshes both requests, including within one process.
+        assert len(requests) == 4
+
+
+class TestConfiguredLaunchPreflightCache:
+    WS = "https://example.databricks.com"
+
+    @pytest.fixture
+    def preflight(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from ucode import state as state_mod
+
+        TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token="pat-token")
+        monkeypatch.setattr(cli_mod, "load_state", state_mod.load_state)
+        monkeypatch.setattr(cli_mod, "save_state", real_save_state)
+        monkeypatch.setattr(cli_mod, "purge_cross_workspace_mcp_residue", lambda *a, **k: None)
+        authentication = MagicMock()
+        token = MagicMock(return_value="current-token")
+        probe = MagicMock(return_value=MODEL_SERVICE_PROBE)
+        listing = MagicMock(
+            return_value=(
+                {"opus": "system.ai.claude-opus-4-8"},
+                ["system.ai.gpt-5"],
+                ["system.ai.gemini-3"],
+                ["system.ai.glm-5"],
+                None,
+            )
+        )
+        now = [1000.0]
+        monkeypatch.setattr(cli_mod, "ensure_databricks_auth", authentication)
+        monkeypatch.setattr(cli_mod, "get_databricks_token", token)
+        monkeypatch.setattr(cli_mod, "probe_unity_gateway_capabilities", probe)
+        monkeypatch.setattr(cli_mod, "discover_model_services", listing)
+        monkeypatch.setattr(cli_mod.time, "time", lambda: now[0])
+
+        def configure(**overrides):
+            options = {"profile": "DEFAULT", "tools": ["claude"], "reuse_preflight": True}
+            options.update(overrides)
+            return cli_mod.configure_shared_state(options.pop("workspace", self.WS), **options)
+
+        return SimpleNamespace(
+            configure=configure,
+            load=state_mod.load_state,
+            save=real_save_state,
+            authentication=authentication,
+            token=token,
+            probe=probe,
+            listing=listing,
+            now=now,
+        )
+
+    def test_warm_launch_reuses_persisted_discovery_after_fresh_auth(self, preflight):
+        first = preflight.configure()
+        db_mod.clear_gateway_probe_cache()
+        db_mod.clear_model_services_cache()
+        preflight.now[0] += 10
+
+        second = preflight.configure()
+
+        assert second["claude_models"] == first["claude_models"]
+        assert second["launch_preflight"] == first["launch_preflight"]
+        assert preflight.authentication.call_count == preflight.token.call_count == 2
+        assert preflight.probe.call_count == preflight.listing.call_count == 1
+        assert "current-token" not in json.dumps(preflight.load())
+
+    @pytest.mark.parametrize("age", [300, 301, -1])
+    def test_expired_or_future_stamp_rechecks(self, preflight, age):
+        preflight.configure()
+        preflight.now[0] += age
+
+        preflight.configure()
+
+        assert preflight.probe.call_count == preflight.listing.call_count == 2
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"version": 2},
+            {"version": True},
+            {"verified_at": "1000"},
+            {"verified_at": True},
+            {"verified_at": float("nan")},
+            {"verified_at": float("inf")},
+            {"fields": [["claude_models"]]},
+        ],
+    )
+    def test_malformed_stamp_rechecks(self, preflight, change):
+        preflight.configure()
+        state = preflight.load()
+        state["launch_preflight"].update(change)
+        preflight.save(state)
+
+        preflight.configure()
+
+        assert preflight.probe.call_count == 2
+
+    @pytest.mark.parametrize(
+        "value", [None, {}, [], "not-a-catalog", {"opus": None}, {"opus": " "}]
+    )
+    def test_missing_or_malformed_cached_models_recheck(self, preflight, value):
+        preflight.configure()
+        state = preflight.load()
+        state["claude_models"] = value
+        preflight.save(state)
+
+        preflight.configure()
+
+        assert preflight.listing.call_count == 2
+
+    @pytest.mark.parametrize("change", ["token", "profile", "workspace", "workspace_id", "pat"])
+    def test_changed_identity_cannot_reuse_success(self, preflight, change):
+        first_workspace = self.WS + "?w=111" if change == "workspace_id" else self.WS
+        preflight.configure(workspace=first_workspace)
+        options = {"workspace": first_workspace}
+        if change == "token":
+            preflight.token.return_value = "new-token"
+        elif change == "profile":
+            options["profile"] = "OTHER"
+        elif change == "workspace":
+            options["workspace"] = "https://other.databricks.com"
+        elif change == "workspace_id":
+            options["workspace"] = self.WS + "?w=222"
+        else:
+            options["use_pat"] = True
+
+        preflight.configure(**options)
+
+        assert preflight.probe.call_count == preflight.listing.call_count == 2
+
+    def test_new_model_family_requires_discovery(self, preflight):
+        preflight.configure()
+
+        state = preflight.configure(tools=["codex"])
+
+        assert preflight.listing.call_count == 2
+        assert state["oss_models"] == ["system.ai.glm-5"]
+
+    def test_custom_oauth_profile_change_rechecks_same_token(self, preflight, monkeypatch):
+        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
+        custom_token = MagicMock(return_value="current-token")
+        monkeypatch.setattr(cli_mod, "ensure_custom_oauth_cli_token", custom_token)
+        config = {
+            "client_id": "client",
+            "redirect_url": "http://localhost:8020",
+            "scopes": ["all-apis"],
+            "profile": "custom-one",
+        }
+        preflight.configure(custom_oauth=config)
+
+        preflight.configure(custom_oauth={**config, "profile": "custom-two"})
+
+        assert custom_token.call_count == preflight.probe.call_count == 2
+
+    def test_changed_launch_routing_headers_recheck(self, preflight, monkeypatch):
+        preflight.configure()
+        monkeypatch.setenv("UG_HEADERS", "X-Team: selected-route")
+
+        preflight.configure()
+
+        assert preflight.probe.call_count == preflight.listing.call_count == 2
+
+    def test_full_configure_can_prime_single_agent_launch(self, preflight):
+        preflight.configure(tools=None, reuse_preflight=False, force_login=True)
+
+        preflight.configure()
+
+        assert preflight.listing.call_count == 1
+
+    def test_provider_discovery_mode_requires_a_new_probe(self, preflight, monkeypatch):
+        preflight.configure()
+        web_search = MagicMock(return_value=(["system.ai.gpt-5"], None))
+        monkeypatch.setattr(cli_mod, "discover_codex_models", web_search)
+
+        state = preflight.configure(skip_model_discovery=True)
+        preflight.configure(skip_model_discovery=True)
+
+        assert state["web_search_model"] == "system.ai.gpt-5"
+        assert preflight.probe.call_count == 2
+        assert web_search.call_count == 1
+
+    def test_empty_provider_discovery_keeps_fallback_but_does_not_cache_it(
+        self, preflight, monkeypatch
+    ):
+        monkeypatch.setattr(
+            cli_mod, "discover_codex_models", lambda *a: (["system.ai.gpt-5"], None)
+        )
+        preflight.configure(skip_model_discovery=True)
+        monkeypatch.setattr(cli_mod, "discover_codex_models", lambda *a: ([], None))
+
+        state = preflight.configure(skip_model_discovery=True, reuse_preflight=False)
+
+        assert state["web_search_model"] == "system.ai.gpt-5"
+        assert "launch_preflight" not in preflight.load()
+
+    @pytest.mark.parametrize("failure", ["authentication", "token", "probe", "listing"])
+    def test_failed_refresh_invalidates_prior_success(self, preflight, failure):
+        preflight.configure()
+        operation = getattr(preflight, failure)
+        operation.side_effect = RuntimeError("refresh failed")
+
+        with pytest.raises(RuntimeError, match="refresh failed"):
+            preflight.configure(reuse_preflight=False)
+        assert "launch_preflight" not in preflight.load()
+        operation.side_effect = None
+
+        preflight.configure()
+
+        assert preflight.probe.call_count >= 2
+        assert "launch_preflight" in preflight.load()
+
+    @pytest.mark.parametrize("failed", ["probe", "listing", "empty"])
+    def test_cold_failure_or_partial_discovery_never_seeds_success(self, preflight, failed):
+        if failed == "probe":
+            preflight.probe.side_effect = RuntimeError("gateway unavailable")
+            with pytest.raises(RuntimeError, match="gateway unavailable"):
+                preflight.configure()
+        else:
+            preflight.listing.return_value = (
+                {},
+                ["system.ai.gpt-5"],
+                [],
+                [],
+                "incomplete listing" if failed == "listing" else None,
+            )
+            preflight.configure()
+        assert "launch_preflight" not in preflight.load()
+
+    def test_refresh_bypasses_process_local_successes(self, preflight, monkeypatch):
+        preflight.configure()
+        clears = [MagicMock(), MagicMock()]
+        monkeypatch.setattr(cli_mod, "clear_gateway_probe_cache", clears[0])
+        monkeypatch.setattr(cli_mod, "clear_model_services_cache", clears[1])
+
+        preflight.configure(reuse_preflight=False)
+
+        assert all(clear.call_count == 1 for clear in clears)
+        assert preflight.probe.call_count == preflight.listing.call_count == 2
 
 
 class TestConfigureNoLongerValidates:
@@ -7372,17 +7658,17 @@ class TestConfigureSharedStateCopilotCatalog:
         monkeypatch.setattr(
             cli_mod, "load_full_state", lambda: {"workspaces": {self.WS: dest_block}}
         )
-        if listed is not None:
-            db_mod._MODEL_SERVICES_CACHE[self.WS] = [db_mod.ModelServiceEntry(m) for m in listed]
         reason = None if listed else "HTTP 503"
         sonnet = "system.ai.claude-sonnet-4-6"
-        monkeypatch.setattr(
-            cli_mod,
-            "discover_model_services",
-            lambda w, t: (
-                ({"sonnet": sonnet}, [], [], [], None) if listed else ({}, [], [], [], reason)
-            ),
-        )
+
+        def discover(workspace, token):
+            if listed is not None:
+                db_mod._MODEL_SERVICES_CACHE[workspace] = [
+                    db_mod.ModelServiceEntry(model) for model in listed
+                ]
+            return ({"sonnet": sonnet}, [], [], [], None) if listed else ({}, [], [], [], reason)
+
+        monkeypatch.setattr(cli_mod, "discover_model_services", discover)
         monkeypatch.setattr(cli_mod, "discover_claude_models", lambda w, t: ({}, reason))
         monkeypatch.setattr(cli_mod, "discover_codex_models", lambda w, t: ([], reason))
         return cli_mod.configure_shared_state(self.WS, tools=["copilot"])
@@ -7645,6 +7931,16 @@ class TestSkipPreflightFlag:
             result = runner.invoke(app, [tool])
         assert result.exit_code == 0, result.output
         assert cfg.call_args.kwargs["skip_preflight"] is False
+        assert cfg.call_args.kwargs["reuse_preflight"] is True
+
+    def test_refresh_forces_fresh_preflight(self):
+        cfg = MagicMock(return_value=MINIMAL_STATE)
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(cfg):
+                stack.enter_context(p)
+            result = runner.invoke(app, ["codex", "--refresh"])
+        assert result.exit_code == 0, result.output
+        assert cfg.call_args.kwargs["reuse_preflight"] is False
 
 
 class TestDeniedMachineWorkspaceSwitch:

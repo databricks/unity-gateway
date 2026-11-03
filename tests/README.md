@@ -504,10 +504,14 @@ These checks do not establish live login or launch-time savings.
 model-service listing starts on a daemon thread before the gateway probe returns, that a
 probe failure raises its own error while the listing is still blocked, that a listing error
 propagates without saving state, that `skip_model_discovery` never starts the listing but
-keeps its web-search lookup, and that the overlap reuses the process-local probe and listing
-caches. The skip-preflight tests also reject starting a background worker. These component
-checks control the HTTP boundary with events; they do not establish live gateway timing,
-agent launch, or launch-time savings.
+keeps its web-search lookup, and that explicit reconfiguration refreshes the process-local probe
+and listing caches. The skip-preflight tests also reject starting a background worker.
+`TestConfiguredLaunchPreflightCache` checks persisted five-minute success reuse after fresh auth,
+credential/profile/auth-mode/workspace-ID changes, family and discovery-mode coverage,
+expired/future/malformed stamps and model data, explicit refresh, and auth/probe/listing failure
+invalidation. Partial-pagination regressions in `test_databricks.py` retain useful models while
+leaving incomplete listings retryable and uncached. These component checks control HTTP and clock
+boundaries; they do not establish live gateway timing, agent launch, or launch-time savings.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,
@@ -624,6 +628,10 @@ Agent-picker regression coverage in `test_ui.py` and `test_cli.py` drives actual
 keyboard selection: nothing is selected by default, selecting Codex installs only
 Codex, and submitting an empty selection installs nothing. Rendering checks cover
 the selected and empty checkboxes. These are local component checks, not live gateway tests.
+Managed-config selection cases in `test_cli.py` check that a plain configure still installs all
+enabled agents, while explicit `--agents` installs only the requested enabled subset. Disabled
+requests warn when an enabled subset remains and fail before installation when none remains;
+unrequested agents are not reported as configuration failures. These are component checks.
 
 `test_claude_smart_routing_v2.py` checks plugin-qualified names, exact model
 definitions, and temporary plugin loading in both routing modes. The GLM-to-Haiku
