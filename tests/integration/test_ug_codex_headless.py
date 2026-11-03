@@ -218,17 +218,7 @@ def test_ug_codex_fresh_provider_launch(live_session, workspace, codex_provider)
     session.assert_not_routed()
 
 
-def test_ug_codex_headless_bedrock_mantle(
-    live_session, workspace, codex_bedrock_mantle_provider, codex_bedrock_mantle_model
-):
-    """Scenario: launch Codex through a Bedrock Mantle MPS (UC service-credential auth) that
-    allows every model, pinning its GPT-5.6 Mantle model id.
-
-    Expected: the real file task completes over the Responses API Codex uses and the completed
-    turn runs on the pinned model. Bedrock runtime has no Codex journey: its Responses route needs
-    bedrock:InvokeModel on the account's Bedrock project, which the CI service credential lacks.
-    """
-    session = live_session
+def _run_bedrock_codex_headless(session, workspace, provider, model):
     session.choose_codex_windows_sandbox()
     task = FileTask(session)
     session.run(
@@ -245,17 +235,45 @@ def test_ug_codex_headless_bedrock_mantle(
     result = session.run(
         "codex",
         "--provider",
-        codex_bedrock_mantle_provider,
+        provider,
         "--",
         "exec",
         "--skip-git-repo-check",
         "--json",
         "--model",
-        codex_bedrock_mantle_model,
+        model,
         "--",
         task.prompt,
         timeout=240,
     )
     task.assert_headless_answer("codex", result)
-    assert_completed_task_model(session, "codex", task.value, codex_bedrock_mantle_model)
+    assert_completed_task_model(session, "codex", task.value, model)
     session.assert_not_routed()
+
+
+def test_ug_codex_headless_bedrock_runtime(
+    live_session, workspace, codex_bedrock_runtime_provider, codex_bedrock_runtime_model
+):
+    """Scenario: launch Codex through the Bedrock runtime MPS (UC service-credential auth) that
+    allows every model, pinning its GPT-5.6 inference profile.
+
+    Expected: the real file task completes over the Responses API Codex uses and the completed
+    turn runs on the pinned model.
+    """
+    _run_bedrock_codex_headless(
+        live_session, workspace, codex_bedrock_runtime_provider, codex_bedrock_runtime_model
+    )
+
+
+def test_ug_codex_headless_bedrock_mantle(
+    live_session, workspace, codex_bedrock_mantle_provider, codex_bedrock_mantle_model
+):
+    """Scenario: launch Codex through a Bedrock Mantle MPS (UC service-credential auth) that
+    allows every model, pinning its GPT-5.6 Mantle model id.
+
+    Expected: the real file task completes over the Responses API Codex uses and the completed
+    turn runs on the pinned model.
+    """
+    _run_bedrock_codex_headless(
+        live_session, workspace, codex_bedrock_mantle_provider, codex_bedrock_mantle_model
+    )

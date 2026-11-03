@@ -245,6 +245,17 @@ def claude_bedrock_mantle_model():
 
 
 @pytest.fixture(scope="session")
+def codex_bedrock_runtime_provider():
+    # A Bedrock runtime MPS (allow_all, UC service credential) that serves GPT over Responses.
+    return os.environ["UG_INTEGRATION_CODEX_BEDROCK_RUNTIME_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_bedrock_runtime_model():
+    return os.environ["UG_INTEGRATION_CODEX_BEDROCK_RUNTIME_MODEL"]
+
+
+@pytest.fixture(scope="session")
 def codex_bedrock_mantle_provider():
     # A Bedrock Mantle MPS (allow_all, UC service credential) that serves GPT over Responses.
     return os.environ["UG_INTEGRATION_CODEX_BEDROCK_MANTLE_PROVIDER"]

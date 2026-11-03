@@ -170,6 +170,10 @@ def test_bedrock_defaults_use_service_credential_fixtures_and_frontier_models():
     assert args.claude_bedrock_allow_all_model == "us.anthropic.claude-sonnet-5-5"
     assert args.claude_bedrock_mantle_provider == "main.ucode.ci_bedrock_mantle_svc_cred_claude"
     assert args.claude_bedrock_mantle_model == "anthropic.claude-opus-5-5"
+    assert (
+        args.codex_bedrock_runtime_provider == "main.ucode.ci_bedrock_runtime_svc_cred_all_models"
+    )
+    assert args.codex_bedrock_runtime_model == "us.openai.gpt-5.6-terra"
     assert args.codex_bedrock_mantle_provider == "main.ucode.ci_bedrock_mantle_svc_cred_gpt"
     assert args.codex_bedrock_mantle_model == "openai.gpt-5.6-terra"
 
