@@ -1059,6 +1059,8 @@ class TestSubcommandRouting:
         monkeypatch.setattr(agents.subprocess_cross_os, "run", update)
         monkeypatch.setattr(cli_mod.smart_routing_v2, "launch_codex", launch_native)
         launch = cli_mod.launch_agent
+        # The managed default preset is Claude-only; an explicit version keeps Codex routed.
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_orch_v0")
         managed = {"enabled_agents": {"codex": {"smart_routing_enabled": True}}}
         env_before = _routing_env()
         with (
