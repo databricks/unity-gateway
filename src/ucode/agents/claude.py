@@ -2114,7 +2114,7 @@ def header_mod_active() -> bool:
     """Whether the managed file enables a header mod, so ``UG_HEADERS`` reaches Claude.
 
     That is ug's own, current with this release, or any other ``ug-headers@`` plugin enabled in the
-    file, such as Isaac's. Checked even under ``UG_SKIP_OS_SETTINGS``, which stops only ug from installing one."""
+    file. Checked even under ``UG_SKIP_OS_SETTINGS``, which stops only ug from installing one."""
     path = _managed_settings_path()
     if path is None:
         return False
