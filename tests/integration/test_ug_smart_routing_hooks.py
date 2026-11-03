@@ -587,12 +587,22 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
     }
     spawns = [call for call in calls.values() if call["name"] in {"Agent", "Task"}]
     assert len(spawns) == 1, spawns
-    followups = [call for call in calls.values() if call["name"] == "SendMessage"]
+    parent_records = [
+        record
+        for path, records in sessions.items()
+        if not is_child_session("claude", path, records)
+        for record in records
+    ]
+    followups = {
+        part["id"]: part
+        for record in parent_records
+        if record.get("type") == "assistant"
+        for part in record.get("message", {}).get("content", [])
+        if part.get("type") == "tool_use" and part.get("name") == "SendMessage"
+    }
     assert followups, calls
-    for call in followups:
-        assert_agent_resumed(
-            call, [record for rows in sessions.values() for record in rows], child_id
-        )
+    for call in followups.values():
+        assert_agent_resumed(call, parent_records, child_id)
     for task in (first, second):
         task.assert_completed(session, "claude")
         assert any(

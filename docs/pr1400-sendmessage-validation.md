@@ -65,3 +65,27 @@ pinning and verifying **Claude 2.1.317**: **1 passed, 185 deselected**, in 40.35
 seconds. The live model was `system.ai.claude-sonnet-4-6`. All 154 evidence/contract
 checks and the normal lint gate passed. This live run used an ID; recipient names
 have offline evidence coverage.
+
+## CI failure follow-up: task titles and child replies
+
+Run [41568748044](https://github.com/databricks/unity-gateway/actions/runs/41568748044)
+used Claude 2.1.317. Its child completed, but the task-view parser required the
+literal title `agent`; the native panel showed a routed agent type instead.
+The parser now accepts either title while still requiring the native footer and
+completed status. Offline PTY cases cover completed and running routed panels,
+and reject completed text without the native footer.
+
+Continuation checks now use only parent calls and results. A child's SendMessage
+reply to `main` is allowed; the parent's matching native result must still resolve
+to the original child. Exactly one spawn and one child transcript remain required.
+Replaying the failed run's actual screen and transcripts passes these updated
+assertions, including its child-to-parent reply.
+
+Fresh installed-package verification on the same staging workspace, with both
+requested and actual Claude versions recorded as **2.1.317**: **1 passed,
+185 deselected**, in 36.24 seconds. Parent and child used
+`system.ai.claude-sonnet-4-6`; one Agent call and one parent SendMessage resumed
+child `aea3d9bc45dc720dc`, which returned both file values.
+All **325** focused terminal-helper, evidence, and integration-contract checks
+passed, as did ruff check, ruff format check, and ty. The full integration suite
+was not rerun.
