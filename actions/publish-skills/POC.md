@@ -1,20 +1,30 @@
 # Validation results
 
-The original POC published 34 skills and 354 files from the public
-[Databricks agent skills repository](https://github.com/databricks/databricks-agent-skills/tree/main/skills)
-to an isolated nonproduction Unity Catalog schema. A second run made zero writes.
-It used OAuth M2M authentication and the same publisher invoked by `action.yml`.
-No Databricks compute was required.
+The migrated publisher was validated on 2026-11-03 against an isolated nonproduction
+Unity Catalog schema using local Databricks profile authentication. No notebook,
+job, cluster, or Unity Gateway CLI installation was needed.
 
-The checks covered custom UC names, nested and binary files, updates, explicit
-stale-file pruning, and preservation of ownership and grants. GitHub OIDC relies
-on SDK unified authentication and was not integration-tested in that original run.
+Source: [databricks/databricks-agent-skills](https://github.com/databricks/databricks-agent-skills),
+commit `a2d7a4e4ed2d72a66d690203475e0e808be48fc1`.
 
-The repository also contains unit tests, credential-free CLI/SDK end-to-end tests,
-and composite-action smoke checks. See [testing](docs/testing.md) for commands,
-coverage, and the protected workflow for repeating live tests in your own isolated
-schema. Historical test results do not replace a run against the release commit.
+| Check | Result |
+| --- | --- |
+| Initial directory publish | 34 skills created; 354 files uploaded |
+| Unchanged full-repository rerun | 34 unchanged; zero uploads or removals |
+| Custom mapped target | Passed |
+| Binary and nested file bytes | Passed |
+| Update and explicit stale-file pruning | Passed |
+| Removal without opt-in pruning | Rejected as expected |
+| Owner and grant preservation across updates | Passed |
+| Unit and real SDK-over-HTTP CLI tests | 22 passed |
+| Hosted composite-action smoke tests | Both directory and mapping dry runs passed |
+| Hosted publisher tests | Python 3.12 and 3.13 passed, including dependency audit |
 
-In-place bundle updates are not atomic. This POC establishes the API path and
-bounded concurrency; it is not a benchmark for very large repositories. Repository
-hosting does not establish official product support.
+The local staging test validates publisher API behavior with profile authentication.
+The hosted smoke tests require no workspace credentials. Customer GitHub OIDC
+federation and OAuth M2M configuration are separate prerequisites; these runs do
+not establish live hosted authentication for those setups.
+
+In-place updates are not atomic. This is not a large-scale performance benchmark.
+Hosting in this repository does not establish an additional product support SLA.
+See [testing](docs/testing.md) to reproduce the tests in your own isolated schema.
