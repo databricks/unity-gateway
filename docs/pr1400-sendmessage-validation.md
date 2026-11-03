@@ -52,3 +52,16 @@ These runs establish explicit spawn and continuation on this version and
 workspace. They do not establish automatic delegation quality, behavior on every
 newer Claude release, or a full integration-suite pass. Raw run artifacts live
 under `/tmp` and are disposable; this report retains the selected evidence.
+
+## Review follow-up: recipient names and Claude 2.1.317
+
+The continuation assertion now checks the matching native tool result's
+`resumedAgentId`, accepting either a name or an ID in `SendMessage.to`. A missing
+recipient produces a readable assertion. Eight offline cases cover both forms,
+missing/empty recipients, wrong children, failed sends, and unmatched results.
+
+Reran the installed-package journey on the same staging workspace with the runner
+pinning and verifying **Claude 2.1.317**: **1 passed, 185 deselected**, in 40.35
+seconds. The live model was `system.ai.claude-sonnet-4-6`. All 154 evidence/contract
+checks and the normal lint gate passed. This live run used an ID; recipient names
+have offline evidence coverage.

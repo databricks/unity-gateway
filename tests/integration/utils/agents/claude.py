@@ -7,6 +7,7 @@ from . import _evidence_id
 __all__ = [
     "EVIDENCE_KIND",
     "assistant_answers",
+    "assert_agent_resumed",
     "completed_task_models",
     "discovery_model_id",
     "model_in_picker",
@@ -42,6 +43,25 @@ def _is_subagent_handback(record: dict, part: dict) -> bool:
         and isinstance(part.get("id"), str)
         and isinstance(part.get("input", {}).get("message"), str)
     )
+
+
+def assert_agent_resumed(call: dict, records: list[dict], agent_id: str) -> None:
+    recipient = call.get("input", {}).get("to")
+    assert isinstance(recipient, str) and recipient.strip(), (
+        f"SendMessage requires a nonempty 'to' recipient: {call}"
+    )
+    for record in records:
+        content = record.get("message", {}).get("content")
+        if record.get("type") != "user" or not isinstance(content, list):
+            continue
+        if any(part.get("tool_use_id") == call["id"] for part in content):
+            result = record.get("toolUseResult")
+            # The native result resolves both names and IDs to the resumed child's ID.
+            assert isinstance(result, dict) and result.get("resumedAgentId") == agent_id, (
+                f"SendMessage to {recipient!r} did not resume {agent_id}: {result}"
+            )
+            return
+    raise AssertionError(f"No native tool result for SendMessage {call['id']}: {call}")
 
 
 def completed_task_models(records: list[dict], answer_value: str) -> set[str]:

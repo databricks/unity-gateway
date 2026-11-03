@@ -23,6 +23,56 @@ class _Session:
         pass
 
 
+@pytest.mark.parametrize("recipient", ["child-id", "child-name"])
+def test_claude_resume_accepts_id_or_name_resolved_to_original_child(recipient):
+    call = {"id": "send-1", "input": {"to": recipient}}
+    records = [
+        {"type": "user", "message": {"content": "An ordinary user prompt"}},
+        {
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "send-1"}]},
+            "toolUseResult": {"resumedAgentId": "child-id"},
+        },
+    ]
+    claude.assert_agent_resumed(call, records, "child-id")
+
+
+@pytest.mark.parametrize("recipient", [None, "", "  "])
+def test_claude_resume_missing_recipient_has_readable_assertion(recipient):
+    call = {"id": "send-1", "input": {} if recipient is None else {"to": recipient}}
+    with pytest.raises(AssertionError, match="requires a nonempty 'to' recipient"):
+        claude.assert_agent_resumed(call, [], "child-id")
+
+
+@pytest.mark.parametrize("result", [{"resumedAgentId": "other-child"}, {"success": False}])
+def test_claude_resume_rejects_wrong_child_or_failed_send(result):
+    records = [
+        {
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "send-1"}]},
+            "toolUseResult": result,
+        },
+    ]
+    with pytest.raises(AssertionError, match="did not resume child-id"):
+        claude.assert_agent_resumed(
+            {"id": "send-1", "input": {"to": "child-name"}}, records, "child-id"
+        )
+
+
+def test_claude_resume_requires_matching_native_result():
+    records = [
+        {
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "other-send"}]},
+            "toolUseResult": {"resumedAgentId": "child-id"},
+        },
+    ]
+    with pytest.raises(AssertionError, match="No native tool result for SendMessage send-1"):
+        claude.assert_agent_resumed(
+            {"id": "send-1", "input": {"to": "child-name"}}, records, "child-id"
+        )
+
+
 def _transcript_session(home, agent, transcripts):
     directory = home / {"claude": ".claude/projects", "codex": ".codex/sessions"}[agent]
     for name, records in transcripts.items():

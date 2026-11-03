@@ -163,8 +163,10 @@ a host description with a missing or empty section still gets the fixed SendMess
 continuation note, with the `fork` exception only when the host offers fork subagents.
 
 The live `test_smart_router_claude_resumes_same_subagent_with_send_message` journey
-spawns one child and follows up through `SendMessage`, requiring both hidden file
-answers in the same child transcript and exactly one Agent/Task call. Run it with
+spawns one child and follows up through `SendMessage` by ID or name, requiring
+the native result to resolve to the original child's ID, both hidden file answers
+in the same child transcript, and exactly one Agent/Task call. Offline checks reject
+missing recipients, wrong children, failed sends, and missing/crossed tool results. Run it with
 Claude 2.1.314+; description-only component checks do not prove continuation.
 
 CUJ3 expects GPT Luna in both agents' catalogs and pickers, including Claude's gateway alias,
