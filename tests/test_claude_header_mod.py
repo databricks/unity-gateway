@@ -318,44 +318,46 @@ def test_windows_writes_only_the_mod_files_and_needs_an_administrator(windows, m
         )
 
 
-def _another_tools_mod(tmp_path, monkeypatch):
-    """Managed settings enabling Isaac's copy of the mod, from its own marketplace folder."""
-    marketplace = tmp_path / "isaac-plugins"
-    (marketplace / "ug-headers/hooks").mkdir(parents=True)
-    (marketplace / "ug-headers/hooks/hooks.json").write_text("{}", encoding="utf-8")
+def _managed_plugins(tmp_path, monkeypatch, plugins, *, own_mod=False):
+    """Managed settings enabling ``plugins``, plus ug's own mod entries when ``own_mod``."""
+    doc = claude._enable_header_mod({}, tmp_path / "ucode-plugins") if own_mod else {}
+    doc["enabledPlugins"] = {**doc.get("enabledPlugins", {}), **plugins}
     managed_path = tmp_path / "managed-settings.json"
-    # ug's own entry comes first, so its folder is checked before Isaac's.
-    doc = claude._enable_header_mod({}, tmp_path / "ucode-plugins")
-    doc["extraKnownMarketplaces"]["isaac-managed"] = {
-        "source": {"source": "directory", "path": str(marketplace)}
-    }
-    doc["enabledPlugins"]["ug-headers@isaac-managed"] = True
     managed_path.write_text(json.dumps(doc), encoding="utf-8")
     monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
-    return marketplace
 
 
-def test_another_tools_header_mod_counts_even_when_os_settings_are_skipped(tmp_path, monkeypatch):
+def test_another_tools_header_mod_counts_by_its_enabled_flag(tmp_path, monkeypatch):
     # Isaac launches ug with UG_SKIP_OS_SETTINGS=1 and enables its own copy of the mod.
-    marketplace = _another_tools_mod(tmp_path, monkeypatch)
     monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+    _managed_plugins(tmp_path, monkeypatch, {"ug-headers@other-managed": True})
     assert claude.header_mod_active()
 
-    # An empty folder isn't a mod.
-    (marketplace / "ug-headers/hooks/hooks.json").unlink()
+    _managed_plugins(tmp_path, monkeypatch, {"ug-headers@other-managed": False})
     assert not claude.header_mod_active()
 
 
-def test_an_unreadable_mod_folder_does_not_hide_another_tools_mod(tmp_path, monkeypatch):
-    _another_tools_mod(tmp_path, monkeypatch)
-    is_file = claude.Path.is_file
+@pytest.mark.parametrize("plugins", [{}, {"other@other-managed": True}])
+def test_no_header_mod_plugin_reads_as_inactive(tmp_path, monkeypatch, plugins):
+    _managed_plugins(tmp_path, monkeypatch, plugins)
+    assert not claude.header_mod_active()
 
-    def denied_in_ug_folder(self):
-        if "ucode-plugins" in self.parts:
-            raise PermissionError(13, "Permission denied", str(self))
-        return is_file(self)
 
-    monkeypatch.setattr(claude.Path, "is_file", denied_in_ug_folder)
+def test_ugs_own_mod_needs_its_files_but_not_another_tools(tmp_path, monkeypatch):
+    _managed_plugins(tmp_path, monkeypatch, {}, own_mod=True)
+    assert not claude.header_mod_active()
+
+    _managed_plugins(tmp_path, monkeypatch, {"ug-headers@other-managed": True}, own_mod=True)
+    assert claude.header_mod_active()
+
+
+def test_an_unreadable_ug_folder_does_not_hide_another_tools_mod(tmp_path, monkeypatch):
+    _managed_plugins(tmp_path, monkeypatch, {"ug-headers@other-managed": True}, own_mod=True)
+
+    def denied(self):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(claude.Path, "is_file", denied)
     assert claude.header_mod_active()
 
 

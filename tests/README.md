@@ -69,7 +69,7 @@ skips on a machine with Claude managed settings, which would replace the fixture
 the plugin, revert removing the files and keeping the guard, the sudo allowlist, `header_mod_active`
 needing every file, an unreadable mod folder, and non-UTF-8 managed settings. It also covers
 headless configure (installing beside an existing managed file, skipping without one, and a
-terminal hint when sudo needs a password), the Windows install and removal under Program Files, another tool's `ug-headers` mod
+terminal hint when sudo needs a password), the Windows install and removal under Program Files, another tool's enabled `ug-headers@` plugin
 counting under `UG_SKIP_OS_SETTINGS`, and the launch warning for each reason. `native_claude/test_mod.py` validates the mod and runs its merge tests
 (`native_claude/header_mod_tests`). Claude re-reading `ANTHROPIC_CUSTOM_HEADERS` per request was
 checked by hand on Claude 2.1.304; no automated test sends a request through the installed mod.
