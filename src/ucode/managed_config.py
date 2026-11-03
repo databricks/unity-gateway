@@ -53,6 +53,7 @@ from ucode.managed_files import (
 from ucode.os_compatibility import system_cross_os
 from ucode.time_utils import parse_update_time
 from ucode.ui import console, normalize_workspace_url, print_warning
+from ucode.workspace import split_workspace_key, state_workspace_key
 
 MANAGED_CONFIG_PATH = UNITY_GATEWAY_MANAGED_SETTINGS_PATH
 # Per-user policy cache for platforms or modes without machine installation (Windows,
@@ -895,13 +896,11 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     No-config and ``FEATURE_DISABLED`` remove a matching installed policy; if removal fails, launches
     keep using it with a warning rather than pretending it was removed.
     """
-    workspace = (
-        state.get("workspace")
-        if force_refresh
-        else managed_launch_workspace(state.get("workspace"))
-    )
+    selected = state_workspace_key(state)
+    workspace = selected if force_refresh else managed_launch_workspace(selected)
     if not workspace:
         return ManagedConfigResult(None, False)
+    host = split_workspace_key(workspace)[0]
     if not _machine_policy_installable() and _installed_config(workspace) is None:
         return _refresh_user_cache(state, workspace, force_refresh=force_refresh)
     if config_io.is_dry_run() and not force_refresh:
@@ -911,10 +910,10 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
         if cached is not None:
             return cached
     try:
-        token = get_databricks_token(workspace, state.get("profile"))
+        token = get_databricks_token(host, state.get("profile"))
     except RuntimeError as exc:
         return ManagedConfigResult(_persisted_fallback(workspace, str(exc)), False)
-    raw, reason = get_managed_config(workspace, token)
+    raw, reason = get_managed_config(host, token)
     if reason is not None:
         if not _is_feature_disabled(reason):
             fallback = _persisted_fallback(workspace, reason, refused=_is_permission_denied(reason))
@@ -1017,10 +1016,10 @@ def _refresh_user_cache(state: dict, workspace: str, *, force_refresh: bool) -> 
         if cached is not None:
             return cached
     try:
-        token = get_databricks_token(workspace, state.get("profile"))
+        token = get_databricks_token(split_workspace_key(workspace)[0], state.get("profile"))
     except RuntimeError as exc:
         return ManagedConfigResult(_persisted_fallback(workspace, str(exc)), False)
-    raw, reason = get_managed_config(workspace, token)
+    raw, reason = get_managed_config(split_workspace_key(workspace)[0], token)
     if reason is not None:
         if _is_feature_disabled(reason):
             _save_user_cache(workspace, {}, outcome=_OUTCOME_FEATURE_DISABLED)

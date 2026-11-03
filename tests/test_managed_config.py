@@ -572,6 +572,33 @@ class TestRefreshManagedConfig:
         )
         assert saved == [(WORKSPACE, RAW_MANIFEST)]
 
+    def test_shared_host_binds_the_policy_to_the_workspace(self, monkeypatch):
+        """On a host serving several workspaces the policy is stored for one of them."""
+        fetched: list[str] = []
+        saved: list[tuple] = []
+        monkeypatch.setattr(
+            mc_mod,
+            "get_managed_config",
+            lambda ws, tok: fetched.append(ws) or (RAW_MANIFEST, None),
+        )
+        monkeypatch.setattr(
+            mc_mod, "save_managed_state", lambda ws, cfg, **kwargs: saved.append((ws, cfg))
+        )
+        shared = "https://acme.cloud.databricks.com"
+        refresh_managed_config(_state(workspace=shared, workspace_id="111"), force_refresh=True)
+        assert fetched == [shared]
+        assert saved == [(f"{shared}?w=111", RAW_MANIFEST)]
+
+    def test_policy_saved_for_a_pasted_url_matches_its_saved_workspace(self, monkeypatch):
+        from ucode.managed_config import managed_launch_workspace
+
+        pasted = "https://adb-1.azuredatabricks.net/?o=1"
+        mc_mod.MANAGED_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        mc_mod.MANAGED_CONFIG_PATH.write_text(
+            json.dumps({"workspace": pasted, "config": {}}), encoding="utf-8"
+        )
+        assert managed_launch_workspace(pasted) == pasted
+
     def test_no_managed_config_returns_none(self, monkeypatch):
         monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, tok: (None, None))
         monkeypatch.setattr(mc_mod, "save_managed_state", lambda ws, cfg, **kwargs: None)

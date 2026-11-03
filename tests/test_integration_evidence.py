@@ -5,7 +5,7 @@ import json
 import pytest
 
 from tests.integration.utils import evidence
-from tests.integration.utils.agents import claude, codex, copilot
+from tests.integration.utils.agents import antigravity, claude, codex, copilot
 from tests.integration.utils.evidence import (
     FileTask,
     SubagentCalculation,
@@ -13,6 +13,53 @@ from tests.integration.utils.evidence import (
     assistant_answer_contains,
     tool_outputs,
 )
+from tests.integration.utils.terminal import codex_command_approval_pending
+
+
+@pytest.mark.parametrize(
+    ("command", "environment", "missing", "expected"),
+    [
+        ("ug codex --disable-smart-routing", "local", None, True),
+        ("ug codex --enable-smart-routing", "local", None, None),
+        ("ug codex --disable-smart-routing", "remote", None, None),
+        ("ug codex --disable-smart-routing", "localhost", None, None),
+        ("ug codex --disable-smart-routing", "local", "prompt", False),
+        ("ug codex --disable-smart-routing", "local", "footer", False),
+        ("ug codex --disable-smart-routing", "local", "current-footer", False),
+        ("ug codex --disable-smart-routing", "local", "choice", None),
+    ],
+    ids=[
+        "exact",
+        "wrong-command",
+        "remote",
+        "not-local",
+        "no-prompt",
+        "no-footer",
+        "old-footer",
+        "no-choice",
+    ],
+)
+def test_codex_approval_requires_the_exact_local_command(command, environment, missing, expected):
+    prompt = "Would you like to run the following command?"
+    footer = "Press enter to confirm or esc to cancel"
+    choice = "› 1. Yes, proceed (y)"
+    screen = f"{prompt}\nEnvironment: {environment}\n  $ {command}\n{choice}\n{footer}"
+    if missing == "prompt":
+        screen = screen.replace(prompt, "")
+    elif missing == "footer":
+        screen = screen.replace(footer, "")
+    elif missing == "current-footer":
+        screen = screen + "\n" + screen.replace(footer, "")
+    elif missing == "choice":
+        screen = screen.replace(choice, "")
+
+    if expected is None:
+        with pytest.raises(AssertionError, match="unexpected command approval"):
+            codex_command_approval_pending(screen, "ug codex --disable-smart-routing")
+    else:
+        assert (
+            codex_command_approval_pending(screen, "ug codex --disable-smart-routing") is expected
+        )
 
 
 class _Session:
@@ -84,6 +131,47 @@ def test_terminal_api_failure_reports_the_actual_error(screen):
 )
 def test_transient_retries_and_running_tasks_are_not_terminal_errors(screen):
     assert_no_terminal_api_error(screen)
+
+
+@pytest.mark.parametrize("reason", ["RESOURCE_EXHAUSTED", "REQUEST_LIMIT_EXCEEDED"])
+def test_antigravity_resource_exhausted_detects_provider_429(reason):
+    stdout = json.dumps(
+        {
+            "event": "result",
+            "result": {
+                "status": "ERROR",
+                "error": f"request failed (code 429): {reason}",
+            },
+        }
+    )
+
+    assert antigravity.resource_exhausted(stdout)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"status": "SUCCESS", "response": "RESOURCE_EXHAUSTED code 429"},
+        {"status": "ERROR", "error": "request failed (code 500): RESOURCE_EXHAUSTED"},
+        {"status": "ERROR", "error": "request failed (code 429): PERMISSION_DENIED"},
+    ],
+)
+def test_antigravity_resource_exhausted_rejects_non_retryable_results(result):
+    stdout = json.dumps({"event": "result", "result": result})
+
+    assert not antigravity.resource_exhausted(stdout)
+
+
+def test_antigravity_resource_exhausted_retry_delay_is_truncated_exponential(monkeypatch):
+    monkeypatch.setattr(antigravity.random, "uniform", lambda _start, _end: 0)
+
+    assert [antigravity.resource_exhausted_retry_delay(index) for index in range(5)] == [
+        5,
+        10,
+        20,
+        20,
+        20,
+    ]
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])

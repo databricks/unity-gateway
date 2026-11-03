@@ -20,6 +20,8 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 WORKDIR /opt/ug-integration
 COPY scripts/run_integration.py scripts/run_integration.py
 COPY tests/integration tests/integration
+# Managed-config journeys (and the smart-routing module at import) read these fixtures.
+COPY tests/fixtures tests/fixtures
 RUN mkdir /results && chown integration:integration /results
 USER integration
 ENV HOME=/home/integration

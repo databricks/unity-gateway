@@ -1,0 +1,44 @@
+{
+  "name": "unity-gateway",
+  "displayName": "Databricks Unity Gateway",
+  "description": "Chat with Databricks AI Gateway models in VS Code through Unity Gateway (ug)",
+  "version": "0.1.0",
+  "publisher": "databricks",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/databricks/unity-gateway.git",
+    "directory": "vscode-extension"
+  },
+  "engines": {
+    "vscode": "^1.128.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "languageModelChatProviders": [
+      {
+        "vendor": "databricks-unity-gateway",
+        "displayName": "Databricks",
+        "icon": "media/databricks.svg"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --minify --legal-comments=none --outfile=../src/ucode/vscode/extension/out/extension.js --external:vscode --format=cjs --platform=node --target=node22 && node -e \"const m = require('./package.json'); delete m.scripts; delete m.devDependencies; require('fs').writeFileSync('../src/ucode/vscode/extension/package.json', JSON.stringify(m, null, 2) + '\\n')\"",
+    "typecheck": "tsc",
+    "test": "esbuild test/*.test.ts --bundle --platform=node --format=cjs --target=node22 --outdir=.test-out --alias:vscode=./test/vscode.ts --log-level=warning && node --test .test-out/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "@types/vscode": "1.125.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3"
+  }
+}

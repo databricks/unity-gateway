@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from decimal import Decimal
 
 from rich.markup import escape
@@ -13,7 +12,6 @@ from ucode.databricks import (
     ensure_databricks_auth,
     get_databricks_token,
     raise_for_invalid_access_token,
-    resolve_current_budget_spend,
 )
 from ucode.state import load_state
 from ucode.ui import (
@@ -24,25 +22,10 @@ from ucode.ui import (
     muted,
     print_note,
     spinner,
-    value,
 )
 
-USAGE_SPEND_API_ENV_VAR = "ENABLE_UG_USAGE_SPEND_API"
 _PER_USER_SCOPE = "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER"
 _DEFAULT_LIMIT_COUNT = 5
-
-
-def render_budget_summary(budget_spend: tuple[Decimal, Decimal]) -> str:
-    """Render the legacy spend summary and meter."""
-    spend, total_budget = budget_spend
-    fraction = float(spend / total_budget) if total_budget > 0 else 0.0
-    summary = f"{format_usd(spend)} of {format_usd(total_budget)} ({fraction:.0%})"
-    return "\n".join(
-        [
-            f"{label('Budget spend:')} {value(summary)}",
-            muted(format_meter(fraction)),
-        ]
-    )
 
 
 def _format_percent(percent: Decimal) -> str:
@@ -138,36 +121,19 @@ def usage(*, show_all: bool = False) -> int:
     if not workspace:
         raise RuntimeError("Workspace is not configured. Run `ug configure` first.")
 
-    spend_api_enabled = os.environ.get(USAGE_SPEND_API_ENV_VAR) == "1"
-    if show_all and not spend_api_enabled:
-        raise RuntimeError(f"Set {USAGE_SPEND_API_ENV_VAR}=1 to use ug usage --all.")
-
     profile = state.get("profile")
     apply_pat_environment(state)
     ensure_databricks_auth(workspace, profile)
     with spinner("Retrieving Databricks access token..."):
         token = get_databricks_token(workspace, profile)
 
-    if not spend_api_enabled:
-        with spinner("Checking budget spend..."):
-            budget_spend, reason = resolve_current_budget_spend(workspace, token)
-        raise_for_invalid_access_token(workspace, reason)
-        if budget_spend is None:
-            print_note(
-                "Usage information is unavailable. Ask your workspace admin to configure "
-                "Unity Gateway Budgets and add it to the workspace configuration."
-            )
-            return 0
-        console.print(render_budget_summary(budget_spend))
-        return 0
-
     budget_limits, reason = list_current_user_budget_spend_statuses(workspace, token)
     raise_for_invalid_access_token(workspace, reason)
     if reason is not None:
         if reason.startswith("HTTP 404 ") or "FEATURE_DISABLED" in reason:
             print_note(
-                "Expanded budget usage is not available for this workspace. "
-                f"Unset {USAGE_SPEND_API_ENV_VAR} to use the standard summary."
+                "Unity Gateway budget usage is not available for this workspace. "
+                "Contact your workspace admin for help."
             )
             return 0
         raise RuntimeError(f"Could not retrieve Unity Gateway spend limits: {reason}")

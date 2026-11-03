@@ -23,6 +23,25 @@ from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
 SELECTED = "[›❯>]"
 
 
+def codex_command_approval_pending(screen: str, expected_command: str) -> bool:
+    prompt = "Would you like to run the following command?"
+    if prompt not in screen:
+        return False
+    dialog = screen.rsplit(prompt, 1)[1]
+    if "Press enter to confirm or esc to cancel" not in dialog:
+        return False
+    command = re.search(
+        r"(?ms)^[ \t]*\$ (.*?)\n[ \t]*[›❯>][ \t]*1\. Yes, proceed \(y\)[ \t]*$",
+        dialog,
+    )
+    assert (
+        re.search(r"(?m)^[ \t]*Environment: local[ \t]*$", dialog) is not None
+        and command is not None
+        and command.group(1).strip() == expected_command
+    ), "Codex requested an unexpected command approval:\n" + dialog
+    return True
+
+
 def _claude_background_task_menu(text):
     return re.search(
         r"(?ms)^[ \t]*Background[ \t]*\n(.*?)"
@@ -362,17 +381,34 @@ class AgentTerminal(TerminalProcess):
             self.read()
             assert not self.ended, f"TUI exited before its prompt:\n{self.visible}"
             text = self.visible
-            if "Accessing workspace:" in text and self.session.cwd.name in text:
+            if self.agent == "antigravity":
+                # Antigravity redraws without clearing finished onboarding screens, so their text
+                # can linger; its gateway banner and idle prompt hint mean the prompt is ready.
+                if "Enterprise Gateway" in text and "? for shortcuts" in text:
+                    ready_since = ready_since or time.monotonic()
+                    if time.monotonic() - ready_since >= 1:
+                        self.actions.append({"reason": "prompt-ready", "screen": text})
+                        return
+                    continue
+                ready_since = None
+            if (
+                self.agent != "antigravity"
+                and "Accessing workspace:" in text
+                and self.session.cwd.name in text
+            ):
+                ready_since = None
                 self.choose("Accessing workspace:", "Yes, I trust this folder")
                 continue
             if "Hooks need review" in text:
+                ready_since = None
                 self.choose("Hooks need review", "Trust all and continue")
                 continue
             if (
                 "Update available" in text
-                and "Press enter to continue" in text
+                and ("Press enter to continue" in text or "enter continue" in text)
                 and "update-notice" not in handled
             ):
+                ready_since = None
                 self.send("\x1b[B", "move selection off Update now to Skip")
                 self.send("\r", "continue with Skip selected")
                 handled.add("update-notice")
@@ -395,6 +431,28 @@ class AgentTerminal(TerminalProcess):
                 (
                     "security-notes",
                     "Security notes" in text and "Enter to continue" in text,
+                    "\r",
+                ),
+                (
+                    "antigravity-color-scheme",
+                    self.agent == "antigravity"
+                    and "Choose your color scheme:" in text
+                    and "[Next]" in text,
+                    "\r",
+                ),
+                (
+                    "antigravity-trust-folder",
+                    self.agent == "antigravity"
+                    and "Do you trust the contents of this project?" in text
+                    and self.session.cwd.name in text
+                    and bool(re.search(r">\s*Yes, I trust this folder", text)),
+                    "\r",
+                ),
+                (
+                    "antigravity-terms",
+                    self.agent == "antigravity"
+                    and "Terms of Service & Data Use" in text
+                    and bool(re.search(r">\s*Done", text)),
                     "\r",
                 ),
                 (
@@ -448,11 +506,28 @@ class AgentTerminal(TerminalProcess):
                 "Configured ug launched Claude's account-login flow instead of its gateway session:\n"
                 + text
             )
+            assert not (self.agent == "antigravity" and "accounts.google.com" in text), (
+                "Configured ug launched Antigravity's Google sign-in instead of gateway mode:\n"
+                + text
+            )
             assert not ("Sign in with ChatGPT" in text and "Provide your own API key" in text), (
                 "Configured ug launched Codex's account-login flow instead of its gateway session:\n"
                 + text
             )
-            title = {"claude": "Claude Code", "copilot": "Copilot v"}.get(self.agent, "Codex")
+            # Codex's startup draft precedes hook review and lacks the model/directory footer.
+            if self.agent == "codex" and not re.search(
+                rf"(?m)^[ \t]*[›❯>][ \t]+[^\n]*\n(?:[ \t]*\n)*"
+                rf"[ \t]*\S[^\n]* · [^\n]*{re.escape(self.session.cwd.name)}(?: · [^\n]*)?$",
+                text,
+            ):
+                ready_since = None
+                continue
+            title = {
+                "claude": "Claude Code",
+                "copilot": "Copilot v",
+                # Antigravity's idle prompt shows its shortcut hint under the input box.
+                "antigravity": "? for shortcuts",
+            }.get(self.agent, "Codex")
             if (
                 title in text
                 and "Confirm folder trust" not in text
