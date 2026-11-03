@@ -164,7 +164,10 @@ passwordless sudo), since a write that can't be authorized fails the command.
 servers, skills, Databricks AI Tools, Claude Desktop, and Cowork. Only Claude Code and Codex
 (0.134.0 or newer) have machine-wide settings; other agents are skipped with a note, so a run that
 names only them does nothing. It fails for `--mcp`, `--enable-databricks-ai-tools`, a subscription
-relay, and `UG_SKIP_OS_SETTINGS`. Workspace MCP servers that only user settings can hold, the
+relay, and `UG_SKIP_OS_SETTINGS`. It also fails when `ug` or its Python is in a user's home folder
+(checked through symlinks), since every user's agents run them: install ug in a shared location
+first, as `scripts/mdm/macos-provision.sh` does with `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR`, and
+`UV_PYTHON_INSTALL_DIR`. Workspace MCP servers that only user settings can hold, the
 web_search MCP server, and a static Codex model list are skipped with a warning. ug still saves its
 own state in `~/.ucode` and your Databricks login. Only that run is limited: each user's first
 launch writes their per-user settings as usual.

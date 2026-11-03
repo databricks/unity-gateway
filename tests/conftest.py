@@ -117,6 +117,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # launch-like run.
     monkeypatch.setattr(managed_files_mod, "_explicit_managed_command", None)
     monkeypatch.setattr(managed_files_mod, "_machine_wide_only", False)
+    # The test interpreter lives in a developer's checkout; tests of the check itself override this.
+    monkeypatch.setattr("ucode.cli._require_shared_installation", lambda: None)
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
     # Launch seeds Claude's feature cache in `.claude.json`; never touch the developer's copy.
     monkeypatch.setattr(claude_mod, "CLAUDE_CODE_CONFIG_PATH", tmp_path / ".claude.json")

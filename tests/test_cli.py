@@ -33,6 +33,9 @@ from ucode.managed_config import ManagedConfigResult, normalize_managed_config
 from ucode.smart_routing import config as smart_routing_config
 from ucode.state import save_state as real_save_state
 
+# Captured before the autouse conftest stub replaces it; the installation-location tests restore it.
+_REAL_REQUIRE_SHARED = cli_mod._require_shared_installation
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -6559,6 +6562,42 @@ class TestConfigureScopeFlags:
         assert message in " ".join(_strip_ansi(result.output).split())
         mock_cfg.assert_not_called()
         assert managed_files.machine_wide_only() is False
+
+    @pytest.mark.parametrize(
+        ("ug", "per_user", "message"),
+        [
+            ("/home/me/.local/bin/ug", ["/home/me/.local/bin/ug"], "in a user's home folder"),
+            ("ug", [], "needs `ug` on PATH"),
+        ],
+    )
+    def test_global_flag_rejects_a_per_user_installation(self, monkeypatch, ug, per_user, message):
+        monkeypatch.setattr(cli_mod, "_require_shared_installation", _REAL_REQUIRE_SHARED)
+        monkeypatch.setattr(cli_mod, "ug_binary", lambda: ug)
+        monkeypatch.setattr(cli_mod, "per_user_paths", lambda paths: per_user)
+        result, mock_cfg = self._configure(["--global"])
+        output = " ".join(_strip_ansi(result.output).split())
+        assert result.exit_code == 1, output
+        assert message in output
+        for path in per_user:
+            assert path in output
+        mock_cfg.assert_not_called()
+
+    def test_global_flag_accepts_a_shared_installation(self, monkeypatch):
+        monkeypatch.setattr(cli_mod, "_require_shared_installation", _REAL_REQUIRE_SHARED)
+        monkeypatch.setattr(cli_mod, "ug_binary", lambda: "/usr/local/bin/ug")
+        checked: list = []
+        monkeypatch.setattr(cli_mod, "per_user_paths", lambda paths: checked.extend(paths) or [])
+        result, mock_cfg = self._configure(["--global"])
+        assert result.exit_code == 0, result.output
+        assert checked == ["/usr/local/bin/ug", sys.executable]
+        mock_cfg.assert_called_once()
+
+    def test_default_run_allows_a_per_user_installation(self, monkeypatch):
+        monkeypatch.setattr(cli_mod, "_require_shared_installation", _REAL_REQUIRE_SHARED)
+        monkeypatch.setattr(cli_mod, "per_user_paths", lambda paths: list(paths))
+        result, mock_cfg = self._configure()
+        assert result.exit_code == 0, result.output
+        mock_cfg.assert_called_once()
 
     def test_global_flag_rejects_skip_os_settings(self, monkeypatch):
         monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")

@@ -2091,3 +2091,41 @@ class TestPasswordNote:
         assert managed_files._sudo_needs_password() is True
 
         assert commands == []
+
+
+class TestPerUserPaths:
+    def _roots(self, monkeypatch, tmp_path):
+        home = tmp_path / "profiles" / "me"
+        home.mkdir(parents=True)
+        monkeypatch.setattr(managed_files.Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setattr(
+            managed_files.system_cross_os, "user_profiles_dir", lambda: tmp_path / "profiles"
+        )
+        shared = tmp_path / "usr" / "local" / "bin"
+        shared.mkdir(parents=True)
+        return home, shared
+
+    def test_reports_paths_in_any_users_home(self, monkeypatch, tmp_path):
+        home, shared = self._roots(monkeypatch, tmp_path)
+        mine = str(home / ".local" / "bin" / "ug")
+        theirs = str(tmp_path / "profiles" / "other" / "bin" / "python")
+        ok = str(shared / "ug")
+
+        assert managed_files.per_user_paths([mine, theirs, ok]) == [mine, theirs]
+
+    def test_follows_a_shared_symlink_into_a_home(self, monkeypatch, tmp_path):
+        home, shared = self._roots(monkeypatch, tmp_path)
+        target = home / ".local" / "share" / "ug"
+        target.parent.mkdir(parents=True)
+        target.write_text("", encoding="utf-8")
+        link = shared / "ug"
+        link.symlink_to(target)
+
+        assert managed_files.per_user_paths([str(link)]) == [str(link)]
+
+    def test_without_a_profiles_folder_checks_only_home(self, monkeypatch, tmp_path):
+        home, _ = self._roots(monkeypatch, tmp_path)
+        monkeypatch.setattr(managed_files.system_cross_os, "user_profiles_dir", lambda: None)
+        other = str(tmp_path / "profiles" / "other" / "ug")
+
+        assert managed_files.per_user_paths([str(home / "ug"), other]) == [str(home / "ug")]

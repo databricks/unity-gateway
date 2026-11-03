@@ -144,6 +144,22 @@ def machine_wide_only() -> bool:
     return _machine_wide_only
 
 
+def per_user_paths(paths: list[str]) -> list[str]:
+    """The ``paths`` inside a user's home folder, where other users may not be able to run them.
+
+    Checks each path both as given and with symlinks resolved, since a shared ``/usr/local/bin/ug``
+    can still point into one user's home."""
+    roots = [Path.home()]
+    if (profiles := system_cross_os.user_profiles_dir()) is not None:
+        roots.append(profiles)
+    found = []
+    for path in paths:
+        candidates = {Path(path).absolute(), Path(path).resolve()}
+        if any(c.is_relative_to(root) for c in candidates for root in roots):
+            found.append(path)
+    return found
+
+
 def managed_settings_skipped() -> bool:
     """Whether OS-managed settings are opted out via ``UG_SKIP_OS_SETTINGS`` or the ``user`` scope.
 

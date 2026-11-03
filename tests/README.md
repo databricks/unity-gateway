@@ -78,7 +78,9 @@ Enterprise MPS; see `integration/README.md`).
 `ug configure --global` (machine-wide settings only) is covered by unit/component checks:
 `TestConfigureScopeFlags` in `test_cli.py` (the flag lasts one run, per-user-only agents are
 skipped as a no-op, `--mcp`/AI Tools/`UG_SKIP_OS_SETTINGS` are rejected, the picker offers only
-Claude/Codex, and skills, MCP restore, Desktop and Cowork are skipped), the `global_flag` tests in `test_agent_claude.py` and `test_agent_codex.py` (only the
+Claude/Codex, skills, MCP restore, Desktop and Cowork are skipped, and an installation in a
+user's home folder is rejected; `TestPerUserPaths` in `test_managed_files.py` and
+`test_user_profiles_dir` in `test_system_cross_os.py` cover the location check), the `global_flag` tests in `test_agent_claude.py` and `test_agent_codex.py` (only the
 managed file is written; relay, legacy Codex and platforms without one fail), and
 `test_mcp.py` (no user-scope MCP fallback). No live or integration journey covers `--global`; the
 sudo write is mocked.

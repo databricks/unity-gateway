@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
@@ -98,6 +99,7 @@ from ucode.databricks import (
     resolve_provider_launch_model,
     resolve_provider_service,
     run_databricks_login,
+    ug_binary,
 )
 from ucode.env import env_bool
 from ucode.managed_budget import (
@@ -128,6 +130,7 @@ from ucode.managed_files import (
     machine_wide_only,
     managed_settings_skipped,
     managed_write_session,
+    per_user_paths,
     request_explicit_managed_writes,
     set_config_scope,
     set_machine_wide_only,
@@ -5021,6 +5024,7 @@ def _check_machine_wide_only_request(
             "`ug configure --global` isn't supported on this platform: it has no machine-wide "
             "Claude Code or Codex settings. Run `ug configure` without --global."
         )
+    _require_shared_installation()
     if mcp is not None:
         raise RuntimeError(
             "--mcp registers MCP servers in per-user settings, so it can't be combined with "
@@ -5031,6 +5035,35 @@ def _check_machine_wide_only_request(
             "Databricks AI Tools install into per-user settings, so "
             "--enable-databricks-ai-tools can't be combined with --global."
         )
+
+
+def _require_shared_installation() -> None:
+    """Reject ``ug configure --global`` when other users couldn't run this ug installation.
+
+    The machine-wide settings run ``ug`` (and some helpers, its Python) for every user, so an
+    installation in one user's home folder would leave everyone else's agents unable to authenticate.
+    """
+    ug = ug_binary()
+    if not os.path.isabs(ug):
+        raise RuntimeError(
+            "`ug configure --global` needs `ug` on PATH, since machine-wide settings run it by its "
+            "full path. Install ug where every user can run it, then rerun."
+        )
+    found = per_user_paths([ug, sys.executable])
+    if not found:
+        return
+    example = (
+        ""
+        if sys.platform == "win32"
+        else " For example, as root: `UV_TOOL_DIR=/usr/local/unity-gateway/tools "
+        "UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_INSTALL_DIR=/usr/local/unity-gateway/python "
+        "uv tool install git+https://github.com/databricks/unity-gateway` (see scripts/mdm)."
+    )
+    raise RuntimeError(
+        "`ug configure --global` writes settings every user's agents run, but this ug "
+        f"installation is in a user's home folder: {', '.join(found)}. Reinstall ug in a shared "
+        f"location every user can run, then rerun from that installation.{example}"
+    )
 
 
 # Agents ug configures only through per-user settings, by any name `--agent`/`--agents` accept.
