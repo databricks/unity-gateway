@@ -90,7 +90,7 @@ fi
 resp="$(printf 'user = "%s:%s"\n' "$5" "$6" \
   | curl -sS -K - \
       -d grant_type=client_credentials \
-      -d scope=all-apis \
+      --data-urlencode 'scope=ai-gateway:read unity-catalog:read' \
       "$WORKSPACE/oidc/v1/token")"
 if ! DATABRICKS_BEARER="$(printf '%s' "$resp" \
     | plutil -extract access_token raw -o - -)"; then

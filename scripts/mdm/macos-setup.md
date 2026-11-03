@@ -46,9 +46,9 @@ A service principal is used only while the Jamf policy runs, to download the wor
    principal → Add new**, and name it, for example, `ug-jamf-provisioning`.
 2. On its **Configurations** tab, leave only **Workspace access** enabled. Grant nothing else: the
    policy run only reads the coding-agent config and lists models.
-3. On its **Secrets** tab, choose **Generate secret** with a short lifetime, and copy the client id
-   and secret. The secret is shown only once. The script requests the `all-apis` OAuth scope, so
-   the client needs it.
+3. On its **Secrets** tab, choose **Generate secret** with a short lifetime. Under **Scope**, choose
+   **Other APIs**, add the `ai-gateway` and `unity-catalog` scopes, and set each to **Read**. Copy
+   the client id and secret; the secret is shown only once.
 4. Check that it can see your models. With a token for the service principal:
 
    ```bash
@@ -105,7 +105,13 @@ UG_SKIP_OS_SETTINGS=1 ug codex
 ```
 
 To avoid typing the variable, they can add `export UG_SKIP_OS_SETTINGS=1` to `~/.zshrc`. Without it,
-a launch may try to update the machine-wide settings with sudo and stop.
+a launch may try to update the machine-wide settings with sudo and stop. Admins may also deploy
+aliases in a shell profile:
+
+```bash
+alias claude='UG_SKIP_OS_SETTINGS=1 ug claude'
+alias codex='UG_SKIP_OS_SETTINGS=1 ug codex'
+```
 
 ## Rotate the secret
 
@@ -118,7 +124,7 @@ a launch may try to update the machine-wide settings with sudo and stop.
 | Policy log shows | Cause |
 | --- | --- |
 | `Token request to … failed: {"error":"invalid_client"…}` | Wrong client id or secret in parameters 5 and 6, or the secret expired. |
-| `Token request … failed: … Scopes … are not assigned to the client` | The client lacks the `all-apis` OAuth scope. |
+| `Token request … failed: … Scopes … are not assigned to the client` | The secret lacks the `ai-gateway:read` and `unity-catalog:read` scopes. |
 | `Token request … failed` with an HTTP 403 page | The workspace blocks the Mac's network (IP access list or private link). |
 | `Connection refused` or a timeout fetching PyPI or GitHub | A network or DNS block on the Mac. See the access list in "Before you start". |
 | `None of the coding agents enabled by your workspace configuration are available` | No enabled agent has models the service principal can use, for example Claude Code configured with non-Claude models. |
