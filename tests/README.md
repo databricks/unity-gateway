@@ -163,6 +163,17 @@ only native `running` statuses count, one uses singular wording, background work
 parent-turn completion and routing toggles, existing tails are preserved, and zero hides
 the count. A mounted row updates on the one-second timer without another prompt or a
 redraw when the count is unchanged. This count has no live TUI coverage.
+They also check the Agent `tool.describe` hook: a host `Usage notes` section is kept, and
+a host description with a missing or empty section still gets the fixed SendMessage
+continuation note, with the `fork` exception only when the host offers fork subagents.
+
+The live `test_smart_router_claude_resumes_same_subagent_with_send_message` journey
+spawns one child and follows up through `SendMessage` by ID or name, requiring
+the native result to resolve to the original child's ID, both hidden file answers
+in the same child transcript, and exactly one Agent/Task call. Only parent SendMessage
+calls are checked for continuation; child replies to the parent are allowed. Offline checks reject
+missing recipients, wrong children, failed sends, and missing/crossed tool results. Run it with
+Claude 2.1.314+; description-only component checks do not prove continuation.
 
 CUJ3 expects GPT Luna in both agents' catalogs and pickers, including Claude's gateway alias,
 and covers an explicit Claude headless task on that model.
@@ -179,9 +190,11 @@ The live fixture compares configuration before and after the journey, even on fa
 CUJs never republish configuration or create a remote reservation.
 CUJ helper tests also verify that unsupported agent names fail rather than defaulting to Codex.
 Offline PTY checks verify that the Claude background-task wait observes "No tasks currently
-running" or a native task menu containing only completed rows before sending `/exit`, without
-stopping tasks or confirming an exit dialog. Running/scheduled sections, incomplete row counts,
-and completed-task text outside the native menu cannot satisfy the wait.
+running", a native task menu containing only completed rows, or a completed task detail panel
+before sending `/exit`, without stopping tasks or confirming an exit dialog. Detail panels
+accept native and routed agent-type titles and require the native footer and completed status.
+Running/scheduled sections, incomplete row counts, and completed-task text outside the native
+task view cannot satisfy the wait.
 The live Claude subagent skill-toggle journeys use this wait after their final calculation.
 CUJ4's Claude delegation sessions also use it after verifying delegated file tasks: a completed
 answer does not prove that a resumed child has stopped running.
