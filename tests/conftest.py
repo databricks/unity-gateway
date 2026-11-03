@@ -53,6 +53,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     from ucode.agents import codex as codex_mod
     from ucode.agents import vscode as vscode_mod
     from ucode.agents.desktop import claude as desktop_mod
+    from ucode.agents.desktop import cowork as cowork_mod
 
     state_dir = tmp_path / ".ucode"
     state_dir.mkdir()
@@ -60,6 +61,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
     monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
+    monkeypatch.setattr(cowork_mod, "_code_config_root", lambda: tmp_path / ".claude")
     # No test may run the developer's `code` or look at their installed VS Code extensions.
     monkeypatch.setattr(vscode_mod, "find_code", lambda: None)
     monkeypatch.setattr(vscode_mod, "_find_command", lambda command: None)
