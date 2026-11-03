@@ -7,10 +7,12 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from contextlib import contextmanager, redirect_stdout
+from dataclasses import asdict
 from enum import StrEnum
 from importlib import metadata
 from typing import Annotated, Any
@@ -2960,6 +2962,16 @@ def codex_router_hook_cmd(
     )
     if output is not None:
         sys.stdout.write(json.dumps(output))
+
+
+@app.command("smart-router-describe", hidden=True)
+def smart_router_describe_cmd() -> None:
+    """Print, as JSON, which agents this environment's smart-routing settings route.
+
+    For launchers that decide whether to offer a routing control. Offline: a workspace's managed
+    config and launch flags are not reflected.
+    """
+    sys.stdout.write(json.dumps(asdict(smart_routing_v2.describe_routing())) + "\n")
 
 
 @app.command("claude-router-hook", hidden=True)
