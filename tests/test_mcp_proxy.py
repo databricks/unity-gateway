@@ -15,7 +15,8 @@ import httpx
 import pytest
 
 from ucode import databricks as db_mod
-from ucode import mcp_connection_login, mcp_proxy
+from ucode import mcp_proxy
+from ucode.os_compatibility import browser_cross_os
 
 WS = "https://example.databricks.com"
 URL = f"{WS}/api/2.0/mcp/functions/system/ai"
@@ -277,7 +278,7 @@ class TestDatabricksTokenAuth:
             return subprocess.CompletedProcess(argv, 0)
 
         monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
-        monkeypatch.setattr(mcp_connection_login.subprocess_cross_os, "run", launch)
+        monkeypatch.setattr(browser_cross_os.subprocess_cross_os, "run", launch)
         auth = mcp_proxy._build_token_auth(CONN_URL, WS, "p")
         sent = []
 
