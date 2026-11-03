@@ -29,7 +29,7 @@ from ucode.databricks import (
 )
 from ucode.env import env_bool
 from ucode.managed_config import refresh_managed_config
-from ucode.managed_files import config_scope, managed_write_batch
+from ucode.managed_files import config_scope, machine_wide_only, managed_write_batch
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import get_model_location, get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
@@ -121,6 +121,12 @@ def install_databricks_ai_tools_for_agents(
     reuses that read instead of adding another control-plane round trip.
     """
     if not state.get("databricks_ai_tools_enabled"):
+        return
+    if machine_wide_only():
+        # AI Tools install into per-user agent settings.
+        print_note(
+            "Skipped Databricks AI Tools: `ug configure --global` writes only machine-wide settings."
+        )
         return
     # An admin's managed config governs the workspace, so ucode does not
     # self-install AI Tools under one (may become a managed-config option later).

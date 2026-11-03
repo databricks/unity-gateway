@@ -30,6 +30,17 @@ denied, the agent does not launch.
 The local file is always written. The OS-managed file is additionally reconciled during interactive
 configuration, except for Claude subscription relay.
 
+## Machine-wide Only
+
+An explicit `ug configure --global` writes only the OS-managed files: the Claude and Codex per-user
+config files, user MCP registrations, skills, Databricks AI Tools, Claude Desktop, Cowork, and the
+Codex app settings are left unchanged. The run backs up a pre-existing per-user file under
+`~/.ucode` as usual, so `ug revert` restores it rather than deleting it. Agents without OS-managed
+files are skipped, so a run naming only them is a no-op. A subscription relay, Codex older than
+0.134.0, `UG_SKIP_OS_SETTINGS`, and platforms without managed files fail. Each user's later launch
+writes their per-user settings. The limit applies to that run only and is not saved; the saved scope stays
+`global`.
+
 ## Per-user Scope
 
 `ug configure --user` (saved as `config_scope` in `~/.ucode/state.json`, default `global`) skips the

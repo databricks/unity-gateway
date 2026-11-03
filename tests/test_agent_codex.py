@@ -1888,6 +1888,42 @@ class TestCodexManagedConfig:
         assert "Databricks" in doc["model_providers"]
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
 
+    def test_global_flag_writes_only_managed_config(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        desktop: list = []
+        monkeypatch.setattr(codex, "_sync_desktop_tracing", lambda *a: desktop.append(a))
+        monkeypatch.setattr(codex, "_sync_desktop_relay", lambda *a, **k: desktop.append(a))
+        monkeypatch.setattr(
+            codex, "prepare_codex_catalog", lambda *a: pytest.fail("catalog is per-user")
+        )
+        managed_files.set_machine_wide_only(True)
+        state = {"workspace": WS, "codex_models": ["gpt-5"], "codex_static_models": ["gpt-5"]}
+
+        codex.write_tool_config(state)
+
+        assert read_toml_safe(managed_path)["model_provider"] == "Databricks"
+        assert "model_catalog_json" not in read_toml_safe(managed_path)
+        assert not config_path.exists()
+        assert not codex.CODEX_MODEL_CATALOG_PATH.exists()
+        assert desktop == []
+        assert codex.configured_paths(state) == []
+
+    def test_global_flag_rejects_relay_legacy_and_missing_managed_file(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_files.set_machine_wide_only(True)
+
+        with pytest.raises(RuntimeError, match="ChatGPT subscription relay"):
+            codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+        monkeypatch.setattr(codex, "_use_legacy_layout", lambda: True)
+        with pytest.raises(RuntimeError, match="read only per-user settings"):
+            codex.write_tool_config({"workspace": WS})
+        monkeypatch.setattr(codex, "_use_legacy_layout", lambda: False)
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+        with pytest.raises(RuntimeError, match="no machine-wide Codex settings"):
+            codex.write_tool_config({"workspace": WS})
+        assert not config_path.exists()
+        assert not managed_path.exists()
+
     def test_relayed_writes_proxyless_provider_and_skips_managed_file(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
         config_path.parent.mkdir(parents=True)

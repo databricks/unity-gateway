@@ -68,6 +68,7 @@ from ucode.managed_files import (
     claude_header_mod_root,
     current_os,
     explicit_managed_writes,
+    machine_wide_only,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -317,7 +318,7 @@ def _with_workspace_selector(lines: list[str], workspace: str) -> list[str]:
 
 def configured_paths(state: dict) -> list[str]:
     """The Claude config file ug writes; the OS-managed file is added by the dispatcher."""
-    return [str(CLAUDE_SETTINGS_PATH)]
+    return [] if machine_wide_only() else [str(CLAUDE_SETTINGS_PATH)]
 
 
 def managed_settings_path() -> Path | None:
@@ -1544,6 +1545,11 @@ def write_tool_config(
     passes them explicitly (see ``managed_model_inputs``).
     """
     external_search = external_provider_selected()
+    if relayed and machine_wide_only():
+        raise RuntimeError(
+            "`ug configure --global` can't configure a Claude subscription relay: it runs only "
+            "through per-user settings. Run `ug configure` without --global."
+        )
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
     # revert would restore that snapshot instead of deleting the file.
@@ -1562,6 +1568,14 @@ def write_tool_config(
         picker_catalog = derived.picker_catalog
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
+    if web_search_model is not None and machine_wide_only():
+        # The web_search MCP server is registered in per-user settings, so keep Claude's own
+        # WebSearch rather than denying it without a replacement.
+        print_note(
+            "Skipped the web_search MCP server: `ug configure --global` writes only machine-wide "
+            "settings. Claude Code keeps its built-in WebSearch."
+        )
+        web_search_model = None
     should_write_tracing_settings = (
         bool(state.get("claude_otel_tracing")) and managed_config_present
     )
@@ -1757,14 +1771,16 @@ def write_tool_config(
         return merged
 
     managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
-    write_json_file(
-        CLAUDE_SETTINGS_PATH,
-        _compose(
-            read_json_safe(CLAUDE_SETTINGS_PATH),
-            enforce_model_default_hierarchy=source_scoped_defaults,
-            managed_settings_snapshots=None,
-        ),
-    )
+    # `ug configure --global` writes only the machine-wide file below.
+    if not machine_wide_only():
+        write_json_file(
+            CLAUDE_SETTINGS_PATH,
+            _compose(
+                read_json_safe(CLAUDE_SETTINGS_PATH),
+                enforce_model_default_hierarchy=source_scoped_defaults,
+                managed_settings_snapshots=None,
+            ),
+        )
 
     # The admin's settings may not displace anything ug writes, except the hooks and deny lists ug
     # only merges its own entries into.
@@ -1808,7 +1824,9 @@ def write_tool_config(
             _ug_registered_mcp_names(
                 state,
                 base.get(MANAGED_MCP_SETTINGS_KEY),
-                web_search=bool(web_search_model and not external_search),
+                # Under --global, keep allowing a web_search server an earlier run registered.
+                web_search=bool(web_search_model and not external_search)
+                or (machine_wide_only() and bool(state.get(WEB_SEARCH_MCP_STATE_KEY))),
             ),
         ),
         [*managed_file_keys, *passthrough.paths],
@@ -2210,6 +2228,11 @@ def _reconcile_managed_settings(
         # Opted out: trust whatever OS-managed file exists and leave it untouched.
         return
     path = _managed_settings_path()
+    if path is None and machine_wide_only():
+        raise RuntimeError(
+            "`ug configure --global` can't configure Claude Code here: this platform has no "
+            "machine-wide Claude Code settings. Run `ug configure` without --global."
+        )
     if path is None:
         print_warning(
             "Machine-wide Claude settings aren't supported on this platform; skipped the managed "

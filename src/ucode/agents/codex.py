@@ -71,6 +71,7 @@ from ucode.managed_files import (
     ManagedFileWriteUnavailable,
     current_os,
     explicit_managed_writes,
+    machine_wide_only,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -463,6 +464,8 @@ def configured_paths(state: dict) -> list[str]:
 
     Includes the model catalog only when a managed static list drives it (same condition as
     :func:`write_tool_config`), so the summary names it exactly when it was written."""
+    if machine_wide_only():
+        return []
     paths = [str(CODEX_CONFIG_PATH)]
     static_models = state.get("codex_static_models")
     if (
@@ -490,6 +493,26 @@ def write_tool_config(
     databricks_profile = state.get("profile")
     static_models = state.get("codex_static_models")
     static_models = static_models if isinstance(static_models, list) and static_models else None
+
+    if machine_wide_only():
+        if relayed:
+            # The relay provider is written only to per-user settings; it skips the managed file.
+            raise RuntimeError(
+                "`ug configure --global` can't configure a Codex ChatGPT subscription relay: it "
+                "runs only through per-user settings. Run `ug configure` without --global."
+            )
+        if _use_legacy_layout():
+            raise RuntimeError(
+                f"`ug configure --global` needs Codex {LEGACY_LAYOUT_CODEX_VERSION_TEXT} or "
+                "newer: earlier versions read only per-user settings. Upgrade Codex and retry."
+            )
+        if static_models and not provider:
+            # The static model list reaches Codex only through a per-user catalog reference.
+            print_warning_err(
+                "Skipped your workspace's Codex model list: `ug configure --global` writes only "
+                "machine-wide settings, and Codex reads that list from per-user settings."
+            )
+            static_models = None
 
     if _use_legacy_layout():
         if relayed:
@@ -548,10 +571,12 @@ def write_tool_config(
         _detach_app_catalog_after_failure()
         raise
 
-    _remove_legacy_ucode_profile()
+    if not machine_wide_only():
+        _remove_legacy_ucode_profile()
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
     # revert would restore that snapshot instead of deleting the file.
+    # The backup goes under ~/.ucode, so `--global` keeps it: revert deletes an unbacked file.
     if not is_tool_managed(state, "codex"):
         backup_existing_file(CODEX_CONFIG_PATH, CODEX_BACKUP_PATH)
     overlay = render_overlay(
@@ -583,21 +608,23 @@ def write_tool_config(
         _set_provider_header(base, None)
         return base
 
-    if catalog is not None:
-        sync_app_model_catalog(catalog)
-    elif not is_dry_run():
-        detach_app_model_catalog()
-        if CODEX_MODEL_CATALOG_PATH.exists():
-            CODEX_MODEL_CATALOG_PATH.unlink()
+    # `ug configure --global` writes only the machine-wide file below.
+    if not machine_wide_only():
+        if catalog is not None:
+            sync_app_model_catalog(catalog)
+        elif not is_dry_run():
+            detach_app_model_catalog()
+            if CODEX_MODEL_CATALOG_PATH.exists():
+                CODEX_MODEL_CATALOG_PATH.unlink()
 
-    doc = read_toml_safe(CODEX_CONFIG_PATH)
-    compose(doc)
-    sync_smart_routing_hooks(
-        doc,
-        state,
-        enabled=False,
-    )
-    write_toml_file(CODEX_CONFIG_PATH, doc)
+        doc = read_toml_safe(CODEX_CONFIG_PATH)
+        compose(doc)
+        sync_smart_routing_hooks(
+            doc,
+            state,
+            enabled=False,
+        )
+        write_toml_file(CODEX_CONFIG_PATH, doc)
     _reconcile_managed_config(
         state, lambda base: compose(base, include_catalog=False), relayed=relayed
     )
@@ -610,6 +637,9 @@ def write_tool_config(
     save_state(state)
     # The desktop proxy reads authentication from the saved workspace.
     tracing = bool(state.get("codex_otel_tracing"))
+    if machine_wide_only():
+        # The Codex app settings in ~/.codex/config.toml are per-user.
+        return state
     if _explicit_configure:  # like Claude Desktop, only `ug configure` changes the app
         _sync_desktop_relay(state, workspace, provider if relayed else None, tracing=tracing)
     _sync_desktop_tracing(workspace if tracing else None)
@@ -1102,6 +1132,11 @@ def _reconcile_managed_config(
     if managed_settings_skipped():
         # Opted out: trust whatever OS-managed file exists and leave it untouched.
         return
+    if path is None and machine_wide_only():
+        raise RuntimeError(
+            "`ug configure --global` can't configure Codex here: this platform has no "
+            "machine-wide Codex settings. Run `ug configure` without --global."
+        )
     if path is None:
         print_warning_err(
             "Machine-wide Codex settings aren't supported on this platform; skipped the managed "

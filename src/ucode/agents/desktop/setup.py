@@ -18,6 +18,7 @@ from ucode.agents.desktop.cowork import configure_cowork, revert_cowork
 from ucode.config_io import is_dry_run
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_SCHEMA_HEADER
 from ucode.databricks import build_tool_base_url, get_databricks_token, list_anthropic_model_catalog
+from ucode.managed_files import machine_wide_only
 from ucode.state import get_provider_service
 from ucode.ui import print_note, print_success, print_warning
 from ucode.workspace import workspace_headers, workspace_id_args
@@ -27,6 +28,12 @@ _CLAUDE_MODEL_PATTERN = re.compile(r"\bclaude-", re.IGNORECASE)
 
 def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -> None:
     if sys.platform not in ("darwin", "win32", "linux"):
+        return
+    if machine_wide_only():
+        # Desktop profiles live in the user's own Claude-3p configLibrary.
+        print_note(
+            "Skipped Claude Desktop: `ug configure --global` writes only machine-wide settings."
+        )
         return
     if is_dry_run():
         print_note("Would configure Claude Desktop alongside Claude Code.")
@@ -39,6 +46,9 @@ def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -
 
 def configure_claude_cowork(state: dict, mcp_servers: list[dict]) -> None:
     if sys.platform not in ("darwin", "win32", "linux"):
+        return
+    if machine_wide_only():
+        # The Cowork plugin is installed for the user's own Claude account.
         return
     if is_dry_run():
         print_note("Would configure Claude Cowork workspace skills and MCP servers.")

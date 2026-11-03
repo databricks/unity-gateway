@@ -156,9 +156,18 @@ ug configure --profile DEFAULT --agents claude,codex
 ug configure --user
 ```
 
-`--global` (the default) writes the machine-wide Claude Code and Codex managed settings with sudo,
-with or without a terminal: run headless as root (or with passwordless sudo), since a write that
-can't be authorized fails the command.
+By default, `ug configure` writes both the per-user settings and the machine-wide Claude Code and
+Codex managed settings with sudo, with or without a terminal: run headless as root (or with
+passwordless sudo), since a write that can't be authorized fails the command.
+`--global` writes only the machine-wide managed settings and leaves every per-user setting alone:
+`~/.claude/ucode-settings.json`, `~/.codex/ucode.config.toml` and `~/.codex/config.toml`, user MCP
+servers, skills, Databricks AI Tools, Claude Desktop, and Cowork. Only Claude Code and Codex
+(0.134.0 or newer) have machine-wide settings; other agents are skipped with a note, so a run that
+names only them does nothing. It fails for `--mcp`, `--enable-databricks-ai-tools`, a subscription
+relay, and `UG_SKIP_OS_SETTINGS`. Workspace MCP servers that only user settings can hold, the
+web_search MCP server, and a static Codex model list are skipped with a warning. ug still saves its
+own state in `~/.ucode` and your Databricks login. Only that run is limited: each user's first
+launch writes their per-user settings as usual.
 `--user` skips them, like `UG_SKIP_OS_SETTINGS`, and needs no sudo; use it when you launch through
 `ug`. `UG_SKIP_OS_SETTINGS=1` neither writes nor checks the OS-managed files: ug trusts whatever is
 there and the agents apply their native precedence. Configure fails while a managed file for the agent exists, since managed settings take

@@ -36,7 +36,11 @@ from ucode.databricks import (
     raise_for_invalid_access_token,
     workspace_hostname,
 )
-from ucode.managed_files import ManagedFileWriteUnavailable, explicit_managed_writes
+from ucode.managed_files import (
+    ManagedFileWriteUnavailable,
+    explicit_managed_writes,
+    machine_wide_only,
+)
 from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
     CLAUDE_CODE_CIMD_CLIENT_ID,
@@ -1243,6 +1247,26 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
             written = False
         if is_eligible and written:
             delivered.update((name, agent) for name in entries)
+
+    if machine_wide_only():
+        # `ug configure --global` leaves per-user MCP registrations alone, so neither the fallback
+        # nor the cleanup below runs, and the saved fallback list stays as the last run left it.
+        skipped = sorted(
+            {
+                name
+                for server in working
+                if (name := _server_name(server))
+                for client in _mcp_server_clients(server)
+                if client in clients and (name, client) not in delivered
+            }
+        )
+        if skipped:
+            print_warning(
+                "Skipped your workspace's MCP servers that can only be registered in per-user "
+                f"settings: {', '.join(skipped)}. Run `ug configure` without --global to register "
+                "them."
+            )
+        return working
 
     # Drop prior user-scope registrations for servers now on a managed file, but keep a (name,
     # client) the developer also owns in their own mcp_servers (managed precedence covers it; Codex
