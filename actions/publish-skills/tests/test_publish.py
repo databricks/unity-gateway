@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from databricks.sdk.errors import NotFound
+from databricks.sdk.errors import AlreadyExists, NotFound
 
 from publish import load_bundles, publish_bundle, remote_files
 
@@ -182,3 +182,53 @@ def test_api_cannot_return_paths_outside_bundle():
     ]
     with pytest.raises(ValueError):
         remote_files(w, "/Skills/a/b/c")
+
+
+def test_create_race_does_not_modify_the_other_writers_skill(tmp_path):
+    b = bundle(tmp_path)
+    w = client()
+    w.ai_gateway.get_skill.side_effect = NotFound("missing")
+    w.ai_gateway.create_skill.side_effect = AlreadyExists("raced")
+    result = publish_bundle(w, b, False)
+    assert result["status"] == "failed"
+    assert "serialize writers" in result["error"]
+    w.files.upload.assert_not_called()
+    w.files.delete.assert_not_called()
+    w.ai_gateway.finalize_skill.assert_not_called()
+
+
+@pytest.mark.parametrize("finalized", [False, True])
+def test_missing_bundle_directory_recovers_only_unfinalized_skill(tmp_path, finalized):
+    b = bundle(tmp_path)
+    w = client(finalized=finalized)
+    w.files.list_directory_contents.side_effect = NotFound("missing bundle")
+    result = publish_bundle(w, b, False)
+    assert result["status"] == ("failed" if finalized else "updated")
+    assert w.files.upload.call_count == (0 if finalized else len(b.files))
+    assert w.ai_gateway.finalize_skill.call_count == (0 if finalized else 1)
+
+
+@pytest.mark.parametrize("key", ["skills", "directories"])
+@pytest.mark.parametrize("value", ["", "{}", "bad", "false", "123"])
+def test_null_and_non_list_mapping_entries_have_actionable_errors(tmp_path, key, value):
+    (tmp_path / "skills.yaml").write_text(f"version: 1\n{key}: {value}\n")
+    with pytest.raises(
+        ValueError, match="zero skills" if not value else f"{key} must be a list"
+    ):
+        load_bundles(tmp_path, "skills.yaml")
+
+
+def test_missing_nested_directory_is_not_treated_as_empty_bundle(tmp_path):
+    b = bundle(tmp_path)
+    w = client(finalized=False)
+    w.files.list_directory_contents.side_effect = [
+        [
+            SimpleNamespace(
+                path="/Skills/acme/skills/guide/references", is_directory=True
+            )
+        ],
+        NotFound("missing nested directory"),
+    ]
+    assert publish_bundle(w, b, False)["status"] == "failed"
+    w.files.upload.assert_not_called()
+    w.ai_gateway.finalize_skill.assert_not_called()

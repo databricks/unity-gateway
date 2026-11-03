@@ -15,7 +15,7 @@ from pathlib import Path, PurePosixPath
 
 import yaml
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.errors import AlreadyExists, NotFound
+from databricks.sdk.errors import AlreadyExists, DatabricksError, NotFound
 from databricks.sdk.service.catalog import Skill
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,254}$")
@@ -121,6 +121,11 @@ def load_bundles(
         raise ValueError(
             "Mapping requires version: 1; supported keys: version, skills, directories"
         )
+    for key in ("skills", "directories"):
+        if config.get(key) is None:
+            config[key] = []
+        if not isinstance(config[key], list):
+            raise ValueError(f"Mapping {key} must be a list of entries")
     mappings = []
     for entry in config.get("skills", []):
         if not isinstance(entry, dict) or set(entry) != {"path", "target"}:
@@ -154,12 +159,20 @@ def load_bundles(
     return [read_bundle(root, path, target) for path, target in mappings]
 
 
-def remote_files(w: WorkspaceClient, base: str) -> set[str]:
+def remote_files(
+    w: WorkspaceClient, base: str, *, allow_missing_root: bool = False
+) -> set[str]:
     pending = [base]
     files = set()
     while pending:
         directory = pending.pop()
-        for entry in w.files.list_directory_contents(directory):
+        try:
+            entries = list(w.files.list_directory_contents(directory))
+        except NotFound:
+            if directory == base and allow_missing_root:
+                return set()
+            raise
+        for entry in entries:
             if not entry.path:
                 raise ValueError("Files API returned an entry without a path")
             path = PurePosixPath(entry.path)
@@ -188,7 +201,12 @@ def publish_bundle(w: WorkspaceClient, bundle: Bundle, prune_files: bool) -> dic
             existing = w.ai_gateway.get_skill(name=name)
         except NotFound:
             existing = None
-        current = remote_files(w, base) if existing else set()
+        current = set()
+        if existing:
+            # Only an unfinalized skill may lack its root after an interrupted upload.
+            current = remote_files(
+                w, base, allow_missing_root=not existing.finalize_time
+            )
         stale = current - bundle.files.keys()
         if stale and not prune_files:
             raise ValueError(
@@ -286,7 +304,13 @@ def main() -> int:
             )
             # Existing schemas are deliberate: don't silently create governance boundaries.
             for schema in sorted({".".join(b.target.split(".")[:2]) for b in bundles}):
-                w.schemas.get(schema)
+                try:
+                    w.schemas.get(schema)
+                except DatabricksError as error:
+                    raise ValueError(
+                        f"Destination schema {schema} must already exist and be accessible "
+                        f"to the publishing identity ({type(error).__name__})"
+                    ) from None
             with ThreadPoolExecutor(max_workers=args.workers) as pool:
                 report["results"] = list(
                     pool.map(lambda b: publish_bundle(w, b, args.prune_files), bundles)
@@ -295,6 +319,7 @@ def main() -> int:
         report["error"] = (
             str(error)
             if isinstance(error, (ValueError, OSError, yaml.YAMLError))
+            and not isinstance(error, DatabricksError)
             else type(error).__name__
         )
     report_path = Path(args.report).resolve()

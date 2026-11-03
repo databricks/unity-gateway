@@ -33,15 +33,18 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+    - id: python
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
       with:
         python-version: '3.12'
+        update-environment: false
     - name: Install isolated publisher dependencies
       shell: bash
       env:
         ACTION_DIR: ${{ github.action_path }}
+        PYTHON: ${{ steps.python.outputs.python-path }}
       run: |
-        python -m venv "$RUNNER_TEMP/uc-skills-action-venv"
+        "$PYTHON" -m venv "$RUNNER_TEMP/uc-skills-action-venv"
         "$RUNNER_TEMP/uc-skills-action-venv/bin/python" -m pip install --disable-pip-version-check -r "$ACTION_DIR/requirements.txt"
     - name: Publish mapped skills
       id: publish

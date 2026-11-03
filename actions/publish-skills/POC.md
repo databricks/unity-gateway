@@ -16,7 +16,7 @@ commit `a2d7a4e4ed2d72a66d690203475e0e808be48fc1`.
 | Update and explicit stale-file pruning | Passed |
 | Removal without opt-in pruning | Rejected as expected |
 | Owner and grant preservation across updates | Passed |
-| Unit and real SDK-over-HTTP CLI tests | 22 passed |
+| Unit and real SDK-over-HTTP CLI tests | 38 passed after review fixes |
 | Hosted composite-action smoke tests | Both directory and mapping dry runs passed |
 | Hosted publisher tests | Python 3.12 and 3.13 passed, including dependency audit |
 
@@ -28,3 +28,5 @@ not establish live hosted authentication for those setups.
 In-place updates are not atomic. This is not a large-scale performance benchmark.
 Hosting in this repository does not establish an additional product support SLA.
 See [testing](docs/testing.md) to reproduce the tests in your own isolated schema.
+
+Review validation also ran the live roundtrip with `python -O`; explicit checks verified remote bytes, pruning, ownership, and grants without relying on Python assertions.

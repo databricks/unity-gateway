@@ -17,7 +17,15 @@ BASE = "/Skills/acme/skills/custom-guide"
 
 @pytest.fixture
 def api():
-    state = {"skill": None, "files": {}, "writes": [], "requests": [], "fail": False}
+    state = {
+        "skill": None,
+        "files": {},
+        "writes": [],
+        "requests": [],
+        "fail": False,
+        "errors": [],
+        "schema_failure": False,
+    }
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -45,6 +53,11 @@ def api():
                 return self.respond(404, {"error_code": "NOT_FOUND"})
             assert self.headers.get("Authorization") == "Bearer local-test-only"
             if method == "GET" and path == "/api/2.1/unity-catalog/schemas/acme.skills":
+                if state["schema_failure"]:
+                    return self.respond(
+                        403,
+                        {"error_code": "PERMISSION_DENIED", "message": "private-data"},
+                    )
                 return self.respond(200, {"full_name": "acme.skills"})
             if path == "/api/2.1/unity-catalog/skills/acme.skills.custom-guide":
                 return self.respond(
@@ -97,10 +110,17 @@ def api():
             state["writes"].append((method, path))
             return self.respond(200, state["skill"] or {})
 
-        do_GET = handle_request
-        do_POST = handle_request
-        do_PUT = handle_request
-        do_DELETE = handle_request
+        def checked_request(self):
+            try:
+                self.handle_request()
+            except Exception as error:  # noqa: BLE001 -- surface fixture thread failures in teardown
+                state["errors"].append(repr(error))
+                self.respond(400, {"message": "fixture failure"})
+
+        do_GET = checked_request
+        do_POST = checked_request
+        do_PUT = checked_request
+        do_DELETE = checked_request
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -111,6 +131,7 @@ def api():
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+        assert not state["errors"], state["errors"]
 
 
 @pytest.fixture
@@ -151,7 +172,17 @@ def run_cli(root, tmp_path, host, *arguments):
     env = {
         key: value
         for key, value in os.environ.items()
-        if not key.startswith(("DATABRICKS_", "GITHUB_", "GH_", "HTTP_", "HTTPS_"))
+        if not key.upper().startswith(
+            (
+                "DATABRICKS_",
+                "GITHUB_",
+                "GH_",
+                "HTTP_",
+                "HTTPS_",
+                "ALL_PROXY",
+                "NO_PROXY",
+            )
+        )
     }
     env.update(
         DATABRICKS_HOST=host,
@@ -229,7 +260,13 @@ def test_upload_failure_has_failing_exit_and_redacted_report(api, checkout, tmp_
     result, report = run_cli(checkout, tmp_path, host)
     assert result.returncode == 1
     assert report["results"][0]["status"] == "failed"
-    assert "private-data" not in json.dumps(report) + result.stdout
+    assert (
+        "private-data"
+        not in json.dumps(report)
+        + result.stdout
+        + result.stderr
+        + (tmp_path / "summary.md").read_text()
+    )
     assert not any(path.endswith("/finalize") for _, path in state["writes"])
 
 
@@ -253,3 +290,34 @@ def test_invalid_checkout_fails_before_http(api, checkout, tmp_path):
     assert result.returncode == 1
     assert "frontmatter" in report["error"]
     assert state["requests"] == []
+
+
+def test_schema_failure_names_destination_without_leaking_api_body(
+    api, checkout, tmp_path
+):
+    host, state = api
+    state["schema_failure"] = True
+    result, report = run_cli(checkout, tmp_path, host)
+    assert result.returncode == 1
+    assert "acme.skills" in report["error"]
+    assert "must already exist and be accessible" in report["error"]
+    assert (
+        "private-data"
+        not in json.dumps(report)
+        + result.stdout
+        + result.stderr
+        + (tmp_path / "summary.md").read_text()
+    )
+    assert not state["writes"]
+
+
+def test_lowercase_proxies_do_not_escape_local_fixture(
+    api, checkout, tmp_path, monkeypatch
+):
+    host, _ = api
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:1")
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:1")
+    monkeypatch.setenv("all_proxy", "http://127.0.0.1:1")
+    monkeypatch.setenv("no_proxy", "example.invalid")
+    result, report = run_cli(checkout, tmp_path, host)
+    assert result.returncode == 0, (result.stderr, report)

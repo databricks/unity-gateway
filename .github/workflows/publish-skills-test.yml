@@ -1,15 +1,17 @@
 name: Publish skills action
 on:
   pull_request:
+    paths: ['actions/publish-skills/**', '.github/workflows/publish-skills-test.yml']
   push:
     branches: [main]
+    paths: ['actions/publish-skills/**', '.github/workflows/publish-skills-test.yml']
   merge_group:
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
   group: publish-skills-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   tests:
     name: Publisher tests (Python ${{ matrix.python }})
@@ -32,6 +34,7 @@ jobs:
       - run: python -m pip install -r requirements.txt -r requirements-dev.txt
       - run: python -m pytest tests -q
       - run: ruff check . && ruff format --check .
+      - run: zizmor --offline action.yml ../../.github/workflows/publish-skills-test.yml
       - run: python -m pip_audit -r requirements.txt --strict --vulnerability-service osv --timeout 20
   smoke:
     name: Publisher composite action

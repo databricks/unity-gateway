@@ -41,34 +41,60 @@ with tempfile.TemporaryDirectory() as temporary:
         return result
 
     first = publish(True)
-    assert first["status"] in {"created", "updated", "unchanged"}, first
+    if first["status"] not in {"created", "updated", "unchanged"}:
+        raise AssertionError(first)
     skill_before = w.ai_gateway.get_skill(name=f"skills/{target}")
     grants_before = w.grants.get(securable_type="skill", full_name=target).as_dict()
-    assert skill_before.bundle_name == "roundtrip-guide"
-    assert publish(True)["status"] == "unchanged"
+    if not (skill_before.bundle_name == "roundtrip-guide"):
+        raise AssertionError(
+            "Roundtrip verification failed: skill_before.bundle_name == 'roundtrip-guide'"
+        )
+    if not (publish(True)["status"] == "unchanged"):
+        raise AssertionError(
+            "Roundtrip verification failed: publish(True)['status'] == 'unchanged'"
+        )
     (folder / "SKILL.md").write_text(
         (folder / "SKILL.md").read_text().replace("Version one", "Version two")
     )
     (folder / "references/obsolete.txt").unlink()
     (folder / "references/new.txt").write_text("Current reference")
-    assert publish(False)["status"] == "failed"
+    if not (publish(False)["status"] == "failed"):
+        raise AssertionError(
+            "Roundtrip verification failed: publish(False)['status'] == 'failed'"
+        )
     updated = publish(True)
-    assert (
+    if not (
         updated["status"] == "updated"
         and updated["uploaded"] == 2
-        and updated["removed"] == 1
-    ), updated
-    assert remote_files(w, base) == {"SKILL.md", "asset.bin", "references/new.txt"}
+        and (updated["removed"] == 1)
+    ):
+        raise AssertionError(updated)
+    if not (remote_files(w, base) == {"SKILL.md", "asset.bin", "references/new.txt"}):
+        raise AssertionError(
+            "Roundtrip verification failed: remote_files(w, base) == {'SKILL.md', 'asset.bin', 'references/new.txt'}"
+        )
     for relative, content in load_bundles(root, "skills.yaml")[0].files.items():
         with w.files.download(f"{base}/{relative}").contents as stream:
-            assert stream.read() == content
+            if not (stream.read() == content):
+                raise AssertionError(
+                    "Roundtrip verification failed: stream.read() == content"
+                )
     skill_after = w.ai_gateway.get_skill(name=f"skills/{target}")
-    assert skill_before.effective_owner == skill_after.effective_owner
-    assert (
+    if not (skill_before.effective_owner == skill_after.effective_owner):
+        raise AssertionError(
+            "Roundtrip verification failed: skill_before.effective_owner == skill_after.effective_owner"
+        )
+    if not (
         grants_before
         == w.grants.get(securable_type="skill", full_name=target).as_dict()
-    )
-    assert publish(True)["status"] == "unchanged"
+    ):
+        raise AssertionError(
+            "Roundtrip verification failed: grants_before == w.grants.get(securable_type='skill', full_name=target).as_dict()"
+        )
+    if not (publish(True)["status"] == "unchanged"):
+        raise AssertionError(
+            "Roundtrip verification failed: publish(True)['status'] == 'unchanged'"
+        )
 report = {
     "results": results,
     "ownership_preserved": True,
