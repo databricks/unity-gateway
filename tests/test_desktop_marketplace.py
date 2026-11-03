@@ -217,12 +217,39 @@ def test_global_configure_writes_both_sources_and_one_user_install(system_source
     assert not cowork._state_path().exists()
 
 
-def test_global_needs_cowork_account_before_writes(system_source, tmp_path):
+@pytest.mark.parametrize("scope", ["global", "user"])
+def test_first_configure_skips_uninitialized_cowork(system_source, tmp_path, scope):
+    managed_files.set_config_scope(scope)
     shutil.rmtree(tmp_path / "Desktop")
-    with pytest.raises(RuntimeError, match="start Claude Cowork"):
-        cowork.configure_cowork(WORKSPACE, SERVERS)
+    assert not cowork.configure_cowork(WORKSPACE, SERVERS)
     assert not system_source.exists()
     assert not cowork._marketplace_root().exists()
+    assert not cowork._state_path().exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell worker")
+@pytest.mark.parametrize("system_source", ["macos"], indirect=True)
+@pytest.mark.parametrize("entry_type", ["symlink", "hardlink", "fifo"])
+def test_macos_root_copy_rejects_linked_and_special_source_files(
+    system_source, tmp_path, entry_type
+):
+    source = _source(tmp_path)
+    managed_files.replace_privileged_bundle(system_source, source)
+    original = cowork._marketplace_files(system_source)
+    skill = source / "plugins/ug/skills/review/SKILL.md"
+    extra = skill.with_name("extra")
+    if entry_type == "symlink":
+        extra.symlink_to(skill)
+    elif entry_type == "hardlink":
+        extra.hardlink_to(skill)
+    else:
+        os.mkfifo(extra)
+
+    with pytest.raises(RuntimeError, match="Desktop plugin source must contain only caller-owned"):
+        managed_files.replace_privileged_bundle(system_source, source)
+
+    assert cowork._marketplace_files(system_source) == original
+    assert not list(system_source.parent.glob(".ug-install*"))
 
 
 def test_scope_switches_keep_one_registration_and_preserve_unrelated_plugin(system_source):

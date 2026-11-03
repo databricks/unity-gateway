@@ -288,6 +288,11 @@ replace_bundle() (
         printf '%s\n' "Invalid Desktop plugin source owner" >&2
         exit 1
     fi
+    invalid=$(find "$source_path" \( ! -user "$SUDO_UID" -o \( ! -type d ! -type f \) -o \( -type f -links +1 \) \) -print) || exit 1
+    if [ -n "$invalid" ]; then
+        printf '%s\n' "Desktop plugin source must contain only caller-owned directories and regular files without hard links" >&2
+        exit 1
+    fi
     mkdir -p "$parent" || exit 1
     staging=$(mktemp -d "$parent/.ug-install.XXXXXX") || exit 1
     trap 'rm -rf "$staging"' 0

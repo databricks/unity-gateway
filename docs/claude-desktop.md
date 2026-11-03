@@ -107,7 +107,14 @@ for the selected account/org. Keeping both source copies does not install two pl
 Switching scope replaces the source registration; `--user` leaves existing root files
 untouched.
 
+The root source still uses the configuring user's executable path, workspace, and CLI
+profile. It is shared: another user's global configure replaces those bindings, and
+global revert removes the source. This does not provision Desktop for other users;
+shared-runtime bindings and fresh-user setup remain MDM follow-up work.
+
 Start one Cowork task before configuring so Desktop creates its account/org directory.
+If Cowork has not created its sessions directory, first-time configure skips the plugin
+in both scopes. Run configure again after starting Cowork.
 Quit Desktop, run configure, then reopen it and start a new task. Ambiguous profiles
 warn without changes. Run configure as your normal user on macOS; UG uses its shared
 sudo session for root writes. Global configure on Windows requires an elevated terminal.
@@ -121,6 +128,8 @@ The 3P connection profile, telemetry helper, runtime authentication, and UG stat
 user-local. No mobileconfig, registry policy, or organization-loader plugin is generated.
 A pre-existing `Claude/org-plugins/ug` installation must be removed by its owner before
 configuration, so the organization loader cannot expose a duplicate UG plugin.
+Before copying as root, the macOS worker rejects source entries owned by another user,
+symbolic links, hard-linked files, and special files.
 
 UG records the selected source and account/org in
 `~/.ucode/claude-cowork.json`. UG owns the whole generated marketplace directory in each

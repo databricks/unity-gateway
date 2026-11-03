@@ -439,7 +439,9 @@ Code authentication changes, with either the default scope or explicit `code=Fal
 registration across repeated configure and scope switches, explicit cached-plugin refresh,
 stable content versions, binary/executable assets, initialized-account requirements,
 permission and registration failures, copy failure/retry, scoped revert, previous-account
-cleanup, and legacy org-loader conflicts.
+cleanup, and legacy org-loader conflicts. First-time configure skips uninitialized Cowork
+in both scopes without writing a source or state. The macOS worker rejects symbolic links,
+hard-linked files, and special files in source bundles while preserving the installed source.
 Filesystem copies run in temporary directories: the macOS shell worker uses host OS
 command adapters without sudo; Windows filesystem logic runs with simulated elevation.
 Only the external Claude CLI registry/cache is simulated. These component checks do not

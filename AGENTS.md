@@ -191,6 +191,10 @@ The existing user-source writer retains its staged replacement and rollback. Use
 revert leaves the root bundle; global revert removes both sources. Explicit MCP/skill changes
 resync the selected path; launches do not.
 Shared-runtime installation, fresh-user setup, and automatic login refresh remain MDM work.
+First-time configure skips the plugin in either scope when the Cowork sessions directory
+does not exist. The shared root bundle retains the configuring user's runtime/profile
+bindings; another user's global configure/revert replaces/removes that source. Before
+copying as root, the macOS worker rejects foreign-owned entries, links, and special files.
 Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
 custom registration names and full proxy URLs are preserved. Its name and display name
 are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old

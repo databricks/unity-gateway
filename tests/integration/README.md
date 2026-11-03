@@ -119,6 +119,8 @@ registration and generated user source, plus the generated root source on Window
 Source switching, copy and refresh failure/retry, scoped revert, target validation,
 and duplicate prevention have isolated component coverage in
 `../test_desktop_marketplace.py`; those checks do not establish native Desktop sync or ACLs.
+Component coverage also checks first-run skipping in both scopes and the macOS worker's
+rejection of symbolic links, hard-linked files, and special files before copying.
 UG fully owns the generated root directory; root ownership hashes, edit preservation, and
 root-copy rollback are deferred. Component cases now require whole-directory replacement
 and successful retry, while unrelated plugins stay intact. Native refresh failures leave

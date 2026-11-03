@@ -139,7 +139,7 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
             f"An organization plugin already exists at {org_plugin}. Remove the previous UG "
             "pilot, or ask its administrator to remove it, before installing the marketplace plugin."
         )
-    if not system_install and not previous_state and not _cowork_sessions_root_exists():
+    if not previous_state and not _cowork_sessions_root_exists():
         return False
 
     profile = state.get("profile")
