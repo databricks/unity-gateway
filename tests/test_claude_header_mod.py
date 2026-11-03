@@ -30,7 +30,7 @@ def _managed_env(tmp_path, monkeypatch, managed_doc=None):
     monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backup_dir)
     monkeypatch.setattr(managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json")
 
-    def _write(target, text, **_kwargs):
+    def _write(target, text):
         writes.append(str(target))
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
@@ -162,6 +162,14 @@ def test_unreadable_mod_folder_reads_as_inactive(tmp_path, monkeypatch):
         raise PermissionError(13, "Permission denied", str(self))
 
     monkeypatch.setattr(claude.Path, "is_file", denied)
+    assert claude.header_mod_active() is False
+
+
+def test_non_utf8_managed_settings_read_as_inactive(tmp_path, monkeypatch):
+    managed_path = tmp_path / "managed.json"
+    managed_path.write_bytes("{}".encode("utf-16"))
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
+
     assert claude.header_mod_active() is False
 
 

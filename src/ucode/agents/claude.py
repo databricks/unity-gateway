@@ -1967,7 +1967,8 @@ def _allow_ug_mcp_servers(settings: dict, admin_allowlist: list | None, names: s
 
 
 CLAUDE_HEADER_MOD_MARKETPLACE = "ucode-managed"
-CLAUDE_HEADER_MOD_ID = f"ug-headers@{CLAUDE_HEADER_MOD_MARKETPLACE}"
+_HEADER_MOD_PREFIX = "ug-headers@"
+CLAUDE_HEADER_MOD_ID = f"{_HEADER_MOD_PREFIX}{CLAUDE_HEADER_MOD_MARKETPLACE}"
 _CLAUDE_GUARD_MOD_ID = "sec-default@builtin"
 # The header mod's managed-file entries. Revert removes them; they never count as conflicts, since
 # nothing in ug's own settings file can be overridden by them.
@@ -2037,9 +2038,9 @@ def request_explicit_configure(requested: bool = True) -> None:
 def _install_header_mod(root: Path | None, *, managed_file_exists: bool) -> bool:
     """Install or update the header mod's files, returning whether this run did.
 
-    A headless run installs them only beside a managed file it can repair, since it can't create
-    one to enable them in. A failure only costs ``ug --header`` for Claude; the caller then doesn't
-    enable the mod."""
+    They are installed only where the managed file can be written, since the mod is enabled in
+    that file. A failure only costs ``ug --header`` for Claude; the caller then doesn't enable
+    the mod."""
     if root is None or is_dry_run():
         return False
     if not managed_writes_allowed(repair_existing=managed_file_exists):
@@ -2078,23 +2079,27 @@ def header_mod_active() -> bool:
         return False
     try:
         settings = _parse_managed_settings(read_managed_file(path) or "{}")
-    except RuntimeError:
+    except (RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
         return False
     plugins = settings.get("enabledPlugins")
     marketplaces = settings.get("extraKnownMarketplaces")
     if not isinstance(plugins, dict) or not isinstance(marketplaces, dict):
         return False
     for plugin_id, enabled in plugins.items():
-        name, _, marketplace = plugin_id.partition("@")
+        _, _, marketplace = plugin_id.partition("@")
         entry = marketplaces.get(marketplace)
         source = entry.get("source") if isinstance(entry, dict) else None
-        if name != "ug-headers" or enabled is not True or not isinstance(source, dict):
+        if (
+            not plugin_id.startswith(_HEADER_MOD_PREFIX)
+            or enabled is not True
+            or not isinstance(source, dict)
+        ):
             continue
         if source.get("source") != "directory" or not isinstance(source.get("path"), str):
             continue
         root = Path(source["path"])
         # One unreadable folder must not hide another tool's working copy.
-        with suppress(OSError):
+        with suppress(OSError, ValueError):
             if marketplace != CLAUDE_HEADER_MOD_MARKETPLACE:
                 if (root / "ug-headers/hooks/hooks.json").is_file():
                     return True
