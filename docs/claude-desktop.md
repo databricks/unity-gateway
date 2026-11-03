@@ -31,8 +31,9 @@ launches and `ug agents add` do not configure Desktop.
 
 `ug configure` also installs `ug@unity-gateway-code` in the regular Claude Code
 plugin scope. The Code tab and terminal Claude Code load its
-`unity-gateway-connectors` skill, with shared discovery guidance and Code-specific
-authentication instructions. Start a new Code session after configuring.
+`unity-gateway-connectors` skill, with Code-specific discovery and authentication
+instructions. Cowork's generated skill text is unchanged. Start a new Code session
+after configuring.
 
 Before the first connector call, the skill checks current connection/authentication
 status; loaded tool definitions do not establish that sign-in is complete. If the
@@ -71,6 +72,11 @@ Code and Cowork plugin installation are independent and best-effort. A Cowork
 setup failure does not block the Code plugin or native MCP configuration. The
 component checks do not establish Desktop GUI discovery or successful connector
 calls; validate those in a fresh Code session.
+
+The opt-in `tests/connector_behavior/` suite includes Code requests with cached Gmail
+tools and native HTTP/proxy authentication success or cancellation. It uses a real
+Claude model with synthetic connector tools and CLI results; this measures adherence
+to the generated guidance, not Desktop browser sign-in or live Gmail access.
 
 ## Cowork workspace skills and MCP servers
 
@@ -127,9 +133,8 @@ When the plugin has MCP servers, UG adds two things so Claude uses them on the f
     be stale, which connectors answered or needed sign-in, and to check current tools before
     calling one unavailable.
 - A `unity-gateway-connectors` skill. On every connector request, including after a break,
-  Claude loads the guidance and checks tools and current sign-in requirements. It signs in
-  first when required, even if service tools are visible. If only `authenticate` appears,
-  it signs in. If tools are missing or `pending` without a sign-in requirement, it waits 5 seconds
+  Claude checks the tools exposed now and calls a relevant one. If only `authenticate`
+  appears, it signs in. If tools are missing or `pending`, it actually waits 5 seconds
   (shell `sleep 5` or an exposed wait tool) and rechecks, at most twice, then reports that
   the tools are not exposed without guessing a cause. It acts in the same turn instead of
   asking whether to check or promising to retry.
@@ -137,21 +142,18 @@ When the plugin has MCP servers, UG adds two things so Claude uses them on the f
 Native Cowork execution of these hooks still needs Desktop validation.
 
 Connection-status notices can become stale. The skill directs Claude to rediscover tools and
-try a relevant discovered tool, resolving any current sign-in requirement first, before
-reporting a configured connector disconnected or unavailable.
+try a relevant discovered tool before reporting a configured connector disconnected or unavailable.
 It must base availability claims on observed discovery results or tool errors, rather than a
 status reminder alone. If no callable tools are exposed after these checks, it reports that
 the connector's tools are not exposed in this session, without inventing a disconnect,
 reconnection, or authentication diagnosis.
 
 The opt-in `tests/connector_behavior/` suite sends the generated skill to a real Claude model
-with synthetic connector tools. It checks a stale disconnect notice with tools already available,
+with synthetic Slack tools. It checks a stale disconnect notice with tools already available,
 tools appearing after an actual wait, and tools remaining absent through both waits.
 The first two cases run both with only the skill description initially visible and with the
-skill loaded before the break. Code cases check authentication before cached Gmail tools are
-called, with native HTTP/proxy sign-in success and cancellation. These tests measure model
-compliance; they do not exercise Desktop's native tool exposure, sleep/resume, or proxy
-transport recovery. See
+skill loaded before the break. These tests measure model compliance; they do not exercise
+Desktop's native tool exposure, sleep/resume, or proxy transport recovery. See
 `tests/README.md` for the explicit workspace, profile, and model inputs.
 
 The skill distinguishes configured connectors from authenticated connections. It directs
@@ -160,9 +162,8 @@ only the exact names exposed or returned. It forbids guessing tool names, repeat
 call, authenticating another connector, or spawning a subagent solely to make tools appear.
 If no supported wait action exists, or tools remain absent after the bounded wait, Claude
 reports that limitation without inventing its cause.
-If discovery reports a sign-in requirement, or exposes only `authenticate`, Claude calls that
-discovered tool even if service tools are listed, rediscovers after sign-in, and retries the
-original request in the same turn without asking for another message.
+If discovery exposes only `authenticate`, Claude should call that discovered tool, rediscover after
+sign-in, and retry the original request in the same turn without asking for another message.
 An unavailable tool name and permission denials alone do not establish an authentication failure.
 When access is denied and an authentication tool is available, the guidance directs Claude
 to attempt sign-in once before recommending administrator or network changes. This includes

@@ -690,6 +690,17 @@ def test_revert_retains_owned_files_when_claude_cli_is_missing(tmp_path, monkeyp
     assert state_path.exists()
 
 
+@pytest.mark.parametrize("options", [{}, {"code": False}], ids=["default", "explicit-cowork"])
+def test_cowork_connector_skill_preserves_previous_guidance(tmp_path, options):
+    """Code authentication changes must not alter Cowork's existing prompt."""
+    cowork._write_connector_skill(tmp_path, ["slack", "gmail"], **options)
+    actual = (tmp_path / cowork.CONNECTOR_SKILL_NAME / "SKILL.md").read_text(encoding="utf-8")
+    expected = (Path(__file__).parent / "fixtures" / "cowork_connector_skill.md").read_text(
+        encoding="utf-8"
+    )
+    assert actual == expected
+
+
 @pytest.mark.parametrize("code", [False, True])
 def test_connector_skill_description_is_bounded_with_many_connectors(tmp_path, code):
     names = [f"connector_{i:03}_with_a_long_service_name" for i in range(100)]

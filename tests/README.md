@@ -374,8 +374,8 @@ execution remains unverified.
 
 `test_code_plugin.py` covers the Code-scoped UG connector plugin with real
 files and controlled native CLI boundaries: original registration names, Claude-only
-filtering, Code-only native OAuth instructions, no duplicate MCP servers or downloaded skills,
-no Cowork hooks,
+filtering, Code-only discovery/authentication instructions, no duplicate MCP servers or
+downloaded skills, no Cowork hooks,
 refresh after workspace changes and last-connector removal, scoped cleanup,
 repeat cleanup, saved-root cleanup even after source deletion, config-root changes,
 retained source after a failed removal, dry-run behavior, and
@@ -402,7 +402,9 @@ cleanup, and unrelated-plugin preservation. CLI component tests
 cover managed setup after successful skill/MCP reconciliation, preservation after transient
 reconciliation failures, and cleanup for unmanaged or non-Claude configurations. These tests
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
-late MCP connection, tool discovery, or inference behavior.
+late MCP connection, tool discovery, or inference behavior. A frozen fixture verifies that
+Cowork's skill text, including its description, stays identical to the version before the
+Code authentication changes, with either the default scope or explicit `code=False`.
 
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
 It checks that Claude uses an available Slack tool despite a stale disconnect notice, actually

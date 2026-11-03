@@ -504,10 +504,48 @@ def _write_connector_skill(
     connectors = ", ".join(f"`{name}`" for name in server_names)
     prefix = (
         "Use for requests about these Unity Gateway connectors, including after a break. "
-        "Load this skill before the first connector call for tool discovery and sign-in recovery. "
-        "Loaded tools do not prove authentication; resolve a reported sign-in requirement first. "
+        "Check current tools and call a relevant available tool before answering. "
+        "Load this skill for missing tools or sign-in recovery; never stop at a promise to retry. "
         "Connectors: "
     )
+    service_steps = (
+        "Call a relevant service tool if present, "
+        "even if an earlier notice says the connector disconnected.\n"
+        "2. If only the connector's `authenticate` tool appears, call that exact tool once.\n"
+        "3. If no matching tools are exposed at startup, after resume, or while `pending`, your "
+    )
+    auth_fallback = (
+        "If no authentication tool is available, relay any sign-in link or recovery instructions "
+        "returned by the connector. Do not invent a settings path or assume an access denial or "
+    )
+    manual_sign_in = ""
+    if code:
+        prefix = (
+            "Use for requests about these Unity Gateway connectors, including after a break. "
+            "Load this skill before the first connector call for tool discovery and sign-in recovery. "
+            "Loaded tools do not prove authentication; resolve a reported sign-in requirement first. "
+            "Connectors: "
+        )
+        service_steps = (
+            "Check any current authentication status before a service call. A current sign-in "
+            "requirement takes priority over available tool definitions; use the client's "
+            "authentication flow first. Otherwise, call a relevant service tool if present, "
+            "even if an earlier notice says the connector disconnected.\n"
+            "2. If the connector requires sign-in and exposes an `authenticate` tool, call that "
+            "exact tool once, even when service tools are also listed. If only `authenticate` "
+            "appears, call it once.\n"
+            "3. If no matching tools are exposed at startup, after resume, or while `pending`, "
+            "and no current sign-in requirement is reported, your "
+        )
+        auth_fallback = (
+            "If authentication cannot be completed with the client's supported actions, relay any "
+            "sign-in link or recovery instructions returned by the connector. Do not invent a "
+            "settings path or assume an access denial or "
+        )
+        manual_sign_in = (
+            "If sign-in needs user interaction, explain what is needed and stop service "
+            "calls until it succeeds. "
+        )
     suffix = "."
     visible = []
     # Skill descriptions have a 1,024-character limit; the full list stays in the body.
@@ -551,22 +589,14 @@ def _write_connector_skill(
     guidance = (
         "Act on the requested connector in this turn, including after a break. Do not ask "
         "whether to check or retry. Never end the turn promising to wait or retry: perform "
-        "the action. If sign-in needs user interaction, explain what is needed and stop service "
-        "calls until it succeeds. Old connection-status notices do not establish current "
-        "availability.\n\n"
+        "the action. "
+        f"{manual_sign_in}"
+        "Old connection-status notices do not establish current availability.\n\n"
         f"{code_auth}"
         "1. Check the tools exposed now. Use supported discovery if available (`ToolSearch` only "
         "if exposed). Use exact exposed or discovered tool names only; plugin/catalog search "
-        "results alone do not make service tools callable. Check any current authentication "
-        "status before a service call. A current sign-in requirement takes priority over "
-        "available tool definitions; use the client's authentication flow first. Otherwise, "
-        "call a relevant service tool if present, even if an earlier notice says the connector "
-        "disconnected.\n"
-        "2. If the connector requires sign-in and exposes an `authenticate` tool, call that exact "
-        "tool once, even when service tools are also listed. If only `authenticate` appears, "
-        "call it once.\n"
-        "3. If no matching tools are exposed at startup, after resume, or while `pending`, and "
-        "no current sign-in requirement is reported, your "
+        "results alone do not make service tools callable. "
+        f"{service_steps}"
         "next action is an actual wait: wait 5 seconds by running `sleep 5` through an exposed "
         "shell or an exposed wait tool, then recheck tools. If they are still missing, wait "
         "another 5 seconds and recheck once more. Stop waiting as soon as tools appear.\n"
@@ -595,9 +625,7 @@ def _write_connector_skill(
         "same turn. Do not ask the user to send another message. If sign-in is canceled, fails, "
         "or times out, explain the observed failure and the "
         "recovery instructions returned by the tool. Do not claim success.\n\n"
-        "If authentication cannot be completed with the client's supported actions, relay any "
-        "sign-in link or recovery instructions returned by the connector. Do not invent a "
-        "settings path or assume an access denial or "
+        f"{auth_fallback}"
         "generic tool failure means the user's token expired."
     )
     skill_dir.mkdir(parents=True)

@@ -50,8 +50,8 @@ and capability-hook activation are not covered here; interactive selection is un
 
 `../test_code_plugin.py` covers the Code-scoped UG connector plugin with real
 files and controlled native CLI boundaries: original registration names, Claude-only
-filtering, Code-only native OAuth instructions, no duplicate MCP servers or downloaded skills,
-no Cowork hooks,
+filtering, Code-only discovery/authentication instructions, no duplicate MCP servers or
+downloaded skills, no Cowork hooks,
 refresh after workspace changes and last-connector removal, scoped cleanup,
 repeat cleanup, saved-root cleanup even after source deletion, config-root changes,
 retained source after a failed removal, dry-run behavior, and
@@ -602,7 +602,9 @@ a repeated revert also returns 0. This does not establish native Desktop coverag
 `../test_cowork_plugin.py` covers Cowork-root discovery, generated plugin contents,
 scoped Claude plugin commands, install/update selection, PAT/custom-OAuth behavior, and
 owned-file cleanup. It checks bounded skill descriptions and full connector lists for both
-Code and Cowork. Alias checks cover short UC names, unchanged proxy routing, custom-name
+Code and Cowork. A frozen fixture verifies that both default and explicit Cowork generation
+preserve the pre-Code-authentication skill text, including its description.
+Alias checks cover short UC names, unchanged proxy routing, custom-name
 preservation, order-independent collisions, and repeated replacement of old keys.
 Manifest checks require the `ug` name and display name in both manifests.
 Legacy-registration component checks cover replacement after successful install/update,
