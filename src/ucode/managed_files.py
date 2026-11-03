@@ -787,7 +787,6 @@ def revert_managed_file(
     display: str,
     parser: ManagedParser,
     dumper: ManagedDumper,
-    keep_empty_file: bool = False,
 ) -> str:
     """Restore one managed file from its baseline while preserving later external edits."""
     manifest = _load_manifest()
@@ -825,10 +824,7 @@ def revert_managed_file(
             current_text if is_semantically_equal(reverted, current_doc) else dumper(reverted)
         )
 
-    emptied = keep_empty_file and desired_text is None and current_text is not None
-    if emptied:
-        desired_text = dumper({})
-
+    emptied = False
     if desired_text != current_text:
         if not managed_writes_allowed():
             if current_os() is not OS.WINDOWS:
@@ -839,7 +835,12 @@ def revert_managed_file(
             raise RuntimeError(_windows_admin_required_message(display, path, "ug revert"))
         try:
             if desired_text is None:
-                _privileged_remove(path)
+                try:
+                    _privileged_remove(path)
+                except (OSError, subprocess.CalledProcessError):
+                    desired_text = dumper({})
+                    _privileged_replace(path, desired_text)
+                    emptied = True
             else:
                 _privileged_replace(path, desired_text)
         except (OSError, subprocess.CalledProcessError) as exc:

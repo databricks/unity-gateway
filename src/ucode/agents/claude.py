@@ -454,11 +454,7 @@ def revert_managed_settings() -> str:
         return _dump_managed_settings(settings)
 
     status = revert_managed_file(
-        "claude",
-        display="Claude Code",
-        parser=_parse_managed_settings,
-        dumper=dump,
-        keep_empty_file=True,
+        "claude", display="Claude Code", parser=_parse_managed_settings, dumper=dump
     )
     _remove_header_mod()
     return status

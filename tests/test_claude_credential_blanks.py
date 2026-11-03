@@ -144,7 +144,7 @@ def test_revert_removes_blanks_added_by_configure_after_a_launch_rewrite(env):
     assert _blanks(env.managed) == BLANKS  # kept by the launch's rewrite
 
     claude.revert_managed_settings()
-    assert env.managed.read_text(encoding="utf-8") == "{}\n"
+    assert not env.managed.exists()
 
 
 def test_admin_passthrough_cannot_override_the_blanks(env):
