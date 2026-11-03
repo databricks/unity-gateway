@@ -300,6 +300,11 @@ V2 AI Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
 
+UG automatically shares the MCP proxy across agents to reduce memory usage while
+keeping each connection's session and credentials separate. No configuration changes
+are needed. If a proxy connection closes unexpectedly, reconnect the MCP server in
+your agent.
+
 Claude-only setup also discovers GPT models for its generated `web_search`
 server; installing or configuring Codex is not required. Search registration
 requires an available Responses-capable model.
@@ -682,3 +687,21 @@ opening a public issue.
 ## License
 
 See [LICENSE.md](./LICENSE.md) and [NOTICE.md](./NOTICE.md).
+
+## Publish skills from GitHub
+
+Use the [Publish skills action](actions/publish-skills/README.md) to sync skill
+folders in your GitHub repository to Unity Catalog on each push. No notebook, job,
+or Unity Gateway CLI installation is required. After configuring Databricks
+authentication and UC permissions, add this step to your workflow:
+
+```yaml
+- uses: databricks/unity-gateway/actions/publish-skills@main
+  with:
+    skills-directory: skills
+    target-schema: acme.team_skills
+```
+
+The [setup guide](actions/publish-skills/README.md) includes complete OIDC and OAuth
+workflows, custom folder mappings, sharing permissions, and verification steps.
+Use `@main` for automatic updates or pin a reviewed commit for reproducible runs.
