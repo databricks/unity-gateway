@@ -3302,6 +3302,20 @@ class TestPurgeCrossWorkspaceSkillsEntry:
             monkeypatch.setattr(getattr(mcp, client), "write_user_mcp_servers", make(client))
         return writes
 
+    def test_global_flag_leaves_cross_workspace_residue(self, monkeypatch):
+        # `ug configure --global` writes no per-user MCP registrations, removals included.
+        foreign = {"name": "old", "url": "https://other.databricks.com/x", "clients": ["claude"]}
+        state = {"workspace": WS, "mcp_servers": [foreign]}
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude", "codex"])
+        writes = self._capture_batched_writes(monkeypatch, ["claude", "codex"])
+        monkeypatch.setattr(mcp, "save_state", lambda s: pytest.fail("must not rewrite the record"))
+        managed_files.set_machine_wide_only(True)
+
+        mcp.purge_cross_workspace_mcp_residue(state, WS)
+
+        assert all(calls == [] for calls in writes.values())
+        assert state["mcp_servers"] == [foreign]
+
     def test_workspace_switch_removes_residue_once_per_client(self, monkeypatch):
         from ucode import state as state_mod
 

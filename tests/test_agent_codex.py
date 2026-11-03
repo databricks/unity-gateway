@@ -957,6 +957,15 @@ class TestCodexAppCatalog:
         assert "model_catalog_json" not in read_toml_safe(shared_path)
         assert not codex.CODEX_MODEL_CATALOG_PATH.exists()
 
+    def test_global_flag_keeps_app_catalog_reference(self, monkeypatch):
+        monkeypatch.setattr(
+            codex,
+            "_read_app_config",
+            lambda: pytest.fail("`ug configure --global` must not touch the app settings"),
+        )
+        managed_files.set_machine_wide_only(True)
+        assert codex.detach_app_model_catalog() is False
+
     def test_failed_static_validation_detaches_previous_app_catalog(self, monkeypatch):
         codex.sync_app_model_catalog({"models": [{"slug": "old-model"}]})
         original_catalog = codex.CODEX_MODEL_CATALOG_PATH.read_bytes()
@@ -2846,6 +2855,26 @@ class TestCodexReconcileManagedMcp:
         http = codex.managed_mcp_http_entry("u", "client")
         codex.reconcile_managed_mcp({}, {"stdio-now-http": http, "same": http})
         assert set(read_toml_safe(user_path)["mcp_servers"]) == {"same", "mine"}
+
+    def test_global_flag_keeps_user_entry_and_skips_the_conflicting_server(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        import tomllib
+
+        user_path = tmp_path / "config.toml"
+        original = '[mcp_servers.stdio-now-http]\ncommand = "/opt/ug"\nargs = []\n'
+        user_path.write_text(original, encoding="utf-8")
+        monkeypatch.setattr(codex, "user_mcp_config_path", lambda: user_path)
+        captured: dict = {}
+        self._wire(monkeypatch, None, captured)
+        managed_files.set_machine_wide_only(True)
+        http = codex.managed_mcp_http_entry("u", "client")
+
+        codex.reconcile_managed_mcp({}, {"stdio-now-http": http, "other": http})
+
+        assert user_path.read_text(encoding="utf-8") == original
+        assert set(tomllib.loads(captured["text"])["mcp_servers"]) == {"other"}
+        assert "stdio-now-http" in " ".join(capsys.readouterr().err.split())
 
     def test_empty_map_clears_table_preserving_model_keys(self, monkeypatch):
         import tomllib

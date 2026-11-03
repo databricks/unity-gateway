@@ -236,6 +236,24 @@ class TestConfigureWiresAiToolsInstall:
             "claude", state, None, provider="main.default.relay", provider_models=None, relayed=True
         )
 
+    def test_configure_selected_tools_fails_global_run_after_other_agents(self, monkeypatch):
+        from ucode import managed_files
+
+        def configure_one(tool, state, provider, **_kw):
+            if tool == "codex":
+                raise RuntimeError("needs Codex 0.134.0")
+            return state
+
+        monkeypatch.setattr(agents_mod, "_configure_one", configure_one)
+        monkeypatch.setattr(agents_mod, "save_state", lambda _state: None)
+        state: dict = {}
+        managed_files.set_machine_wide_only(True)
+
+        with pytest.raises(RuntimeError, match="could not configure Codex"):
+            agents_mod.configure_selected_tools(state, ["claude", "codex"])
+        # The agents that did configure are still recorded.
+        assert state["available_tools"] == ["claude"]
+
     def test_configure_selected_tools_triggers_install(self, monkeypatch):
         captured = self._stub_configure(monkeypatch)
         agents_mod.configure_selected_tools(

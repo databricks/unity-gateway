@@ -1339,6 +1339,19 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
             f"Cannot safely update Codex managed settings at {path}: {exc}. ucode did not modify "
             "the file. Repair it or contact your administrator."
         ) from exc
+    user = read_toml_safe(user_mcp_config_path()).get(MANAGED_MCP_CONFIG_KEY)
+    if machine_wide_only() and isinstance(user, dict):
+        # `ug configure --global` can't remove the user's same-name entry of the other transport,
+        # and Codex can't start with both, so leave that server out of the managed file instead.
+        kept_out = sorted(_transport_conflicts(user, servers))
+        if kept_out:
+            print_warning_err(
+                f"Skipped Codex managed MCP server(s) {', '.join(kept_out)}: "
+                f"{user_mcp_config_path()} defines the same name with another transport, which "
+                "`ug configure --global` doesn't change. Remove those entries, or run "
+                "`ug configure` without --global."
+            )
+            servers = {name: entry for name, entry in servers.items() if name not in kept_out}
     # Nothing managed to clear: never create or rewrite the file just to remove an absent key.
     if not servers and MANAGED_MCP_CONFIG_KEY not in existing:
         return True
@@ -1364,20 +1377,23 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
         return False
     # Codex merges this file over the user config key by key, so a same-name user entry of the other
     # transport (stdio `command` vs HTTP `url`) would get both and stop Codex from starting.
-    user = read_toml_safe(user_mcp_config_path()).get(MANAGED_MCP_CONFIG_KEY)
     if isinstance(user, dict):
-        conflicts = {
-            name
-            for name, entry in servers.items()
-            if isinstance(user.get(name), dict)
-            and ("command" in user[name]) != ("command" in entry)
-        }
+        conflicts = _transport_conflicts(user, servers)
         if conflicts:
             write_user_mcp_servers({}, conflicts)
     # Preserve the scope the model reconcile recorded (e.g. relay-compatible); an MCP-only write only
     # refreshes the fingerprint, it does not change how the file relates to the model settings.
     mark_managed_file_verified(state, "codex", path, scope=managed_file_scope(state, "codex"))
     return True
+
+
+def _transport_conflicts(user: dict, servers: dict[str, dict]) -> set[str]:
+    """Names in ``servers`` whose user entry uses the other transport (stdio vs HTTP)."""
+    return {
+        name
+        for name, entry in servers.items()
+        if isinstance(user.get(name), dict) and ("command" in user[name]) != ("command" in entry)
+    }
 
 
 def read_managed_mcp_urls() -> dict[str, str]:
@@ -1558,8 +1574,11 @@ def _read_app_config() -> tomlkit.TOMLDocument:
 
 
 def detach_app_model_catalog() -> bool:
-    """Remove only a shared catalog reference owned by ucode."""
-    if is_dry_run():
+    """Remove only a shared catalog reference owned by ucode.
+
+    ``ug configure --global`` keeps it: the app settings are per-user, and the user's next launch
+    validates the catalog again."""
+    if is_dry_run() or machine_wide_only():
         return False
     doc = _read_app_config()
     if not _is_ucode_catalog_reference(doc.get("model_catalog_json")):

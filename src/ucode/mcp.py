@@ -1795,6 +1795,10 @@ def _batch_remove_stale_servers(batch_remove: dict[str, set[str]]) -> set[str]:
 def purge_cross_workspace_mcp_residue(
     state: dict, workspace: str, *, same_host_switch: bool = False
 ) -> None:
+    if machine_wide_only():
+        # `ug configure --global` leaves per-user MCP registrations, and their saved records, alone;
+        # the next run without --global purges them.
+        return
     installed = set(available_mcp_clients())
     # Collect every removal as {client: {names}} and apply it as one batched write per client below,
     # rather than a CLI/config removal per server (see `_batch_remove_stale_servers`).
