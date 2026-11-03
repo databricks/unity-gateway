@@ -113,6 +113,7 @@ alone. For each listed field, `ug` does one of:
 - **Create/replace**: `ug` owns the whole value and writes it.
 - **Merge**: `ug` writes only its own entries within a shared value and leaves the rest alone.
 - **Ignore**: `ug` does not touch the field.
+- **Launch-only (-c), never written**: `ug` overrides the value for that session without changing the saved file.
 
 The two columns show what `ug` does without and with a [managed config](https://docs.databricks.com/aws/en/ai-gateway/coding-agent-configure-govern), the coding agent config admins publish through the API.
 
@@ -195,5 +196,6 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `otel.trace_exporter` | Ignore | Create/replace | In `~/.codex/config.toml` when the config enables tracing, for Codex desktop; another exporter and other telemetry settings left alone |
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone. A same-name entry in `~/.codex/config.toml` of the other transport (stdio vs HTTP) is removed, since Codex would merge the two into an invalid entry |
 | Smart Router and Smart Router Orchestrator hooks | Merge | Merge | Launch-only `PreToolUse`, plus `UserPromptSubmit` and compact `SessionStart` with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; Codex combines them with its native hook sources and applies project trust; `features.hooks` is enabled for a smart-routed launch |
+| Native v2 collaboration | Launch-only (-c), never written | Launch-only (-c), never written | `features.multi_agent_v2.non_code_mode_only=false` and matching `root_agent_usage_hint_text` / `subagent_usage_hint_text` override saved values for the session; only for smart routing on Codex 0.164.0 or newer. User config files, general developer instructions, and native delegation-mode controls are preserved |
 
 </details>

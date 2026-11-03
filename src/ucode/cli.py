@@ -2927,7 +2927,7 @@ def codex_router_hook_cmd(
     )
 
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
+        payload = json.loads(sys.stdin.buffer.read() or b"{}")
     except ValueError:
         return
     if not isinstance(payload, dict):

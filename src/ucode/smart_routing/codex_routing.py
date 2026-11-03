@@ -30,6 +30,7 @@ SPAWN_AGENT_TOOL_SUFFIX = "spawn_agent"
 CANARY_PATH = APP_DIR / "codex-smart-routing-canary.json"
 AUDIT_PATH = APP_DIR / "codex-smart-routing-audit.jsonl"
 DECISIONS_PATH = APP_DIR / "codex-smart-routing-decisions.jsonl"
+MAX_AUDIT_RATIONALE_CHARS = 1000
 SUBAGENT_NOTICE_CONFIG = routing.SubagentNoticeConfig(
     name_field="task_name",
     prompt_field="message",
@@ -87,7 +88,17 @@ def route_pre_tool_use(
     if audit_decision:
 
         def record(payload, task, decision, requested):
-            routing.write_decision_record(DECISIONS_PATH, payload, task, decision, requested)
+            # Bound diagnostic text without changing the router input or native hook output.
+            audit = replace(
+                decision,
+                rationale=decision.rationale[:MAX_AUDIT_RATIONALE_CHARS],
+                raw_rationale=decision.raw_rationale[:MAX_AUDIT_RATIONALE_CHARS]
+                if decision.raw_rationale is not None
+                else None,
+            )
+            routing.write_decision_record(
+                DECISIONS_PATH, payload, task, audit, requested, include_task_text=False
+            )
 
     name_suffix = " [orchestrator on]" if orchestrator.enabled(agent=AGENT_CODEX) else ""
     return routing.route_spawn_tool(

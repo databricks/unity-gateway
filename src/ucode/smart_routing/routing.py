@@ -9,6 +9,7 @@ options, spawn-tool detector, model-id translation, and artifact paths.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -287,10 +288,8 @@ def resolve_spawn_route(
         return None
     # Derive the routing task from the first available plaintext field. The
     # harness-specific names are tried in order: `prompt`/`description` (Claude
-    # Code's Agent tool), `message` (Codex's spawn_agent — encrypted at
-    # send-time but readable here because the PreToolUse hook fires before
-    # that), then `task_name` / `agent_name` (weaker labels), then the generic
-    # default.
+    # Code's Agent tool), `message` (Codex's plaintext native spawn_agent assignment), then `task_name` /
+    # `agent_name` (weaker labels for other payloads), then the generic default.
     task = next(
         (
             value
@@ -401,14 +400,24 @@ def write_decision_record(
     task_name: str,
     decision: RoutingDecision,
     requested_model: str,
+    *,
+    include_task_text: bool = True,
 ) -> None:
     """Record a routing decision so a later SubagentStart can reconcile it."""
+    task_fields = (
+        {"task_name": task_name}
+        if include_task_text
+        else {
+            "task_sha256": hashlib.sha256(task_name.encode("utf-8")).hexdigest(),
+            "task_length": len(task_name),
+        }
+    )
     _append_jsonl(
         decisions_path,
         {
             "decision_id": uuid.uuid4().hex,
             "session_id": payload.get("session_id"),
-            "task_name": task_name,
+            **task_fields,
             "router_model": decision.model,
             "requested_model": requested_model,
             "route_options": [
