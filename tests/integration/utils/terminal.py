@@ -53,7 +53,7 @@ def _claude_background_task_menu(text):
 def _claude_background_task_detail(text):
     # With a single task, /tasks opens that task's detail panel instead of the list.
     return re.search(
-        r"(?ms)^[ \t]*agent › .+?\n[ \t]*(\S.*?)[ \t]*\n.*"
+        r"(?ms)^[ \t]*[^\s\n][^\n]* › [^\n]+\n[ \t]*(\S[^\n]*?)[ \t]*\n.*"
         r"^[ \t]*← to go back · Esc/Enter/Space to close.*\Z",
         text,
     )

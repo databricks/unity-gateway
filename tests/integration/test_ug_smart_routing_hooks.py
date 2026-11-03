@@ -14,7 +14,9 @@ import os
 from pathlib import Path
 
 import pytest
+from utils.agents.claude import assert_agent_resumed
 from utils.evidence import (
+    FileTask,
     SubagentCalculation,
     agent_sessions,
     assert_subagent_routed,
@@ -540,6 +542,108 @@ def _assert_claude_not_wrapped(session, transcript: str) -> None:
     session.assert_not_routed()
     canary = session.home / ".ucode" / "claude-smart-routing-canary.json"
     assert canary.is_file(), f"routing hooks were not armed: {canary}"
+
+
+@pytest.mark.live
+@pytest.mark.claude
+@pytest.mark.managed_fixture
+def test_smart_router_claude_resumes_same_subagent_with_send_message(
+    live_session, workspace, tmp_path
+):
+    """Scenario: with orchestration on, spawn one Claude child, then give it a follow-up.
+
+    Expected: on Claude 2.1.314+ the parent uses SendMessage to continue the original
+    child. Both hidden file values appear in that same child's completed answers,
+    exactly one Agent/Task call occurs, and no second child session is created.
+    """
+    session = live_session
+    _select_smart_router_version(session, "claude", workspace, tmp_path, True, "subagent_orch_v0")
+    session.run(
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-validate",
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    )
+    first = FileTask(session)
+    with AgentTerminal(
+        session, "claude", [str(session.binary), "claude"], "smart-router-resume-child"
+    ) as tui:
+        tui.boot()
+        tui.submit(first.delegate_prompt + " Spawn exactly one agent in total.")
+        tui.wait_for_task(first)
+        tui.wait_for(
+            lambda _: first.completed(session, "claude", child=True),
+            "the original child's completed answer",
+            timeout=180,
+        )
+        tui.wait_for_background_tasks()
+        children = {
+            path: records
+            for path, records in agent_sessions(session, "claude").items()
+            if is_child_session("claude", path, records)
+        }
+        session.record("agent-sessions-before-followup.json", agent_sessions(session, "claude"))
+        assert len(children) == 1, list(children)
+        child_path = next(iter(children))
+        child_id = Path(child_path).stem.removeprefix("agent-")
+
+        second = FileTask(session)
+        tui.submit(
+            "Continue the same subagent using SendMessage and ask it to do this follow-up: "
+            f"{second.prompt} Do not spawn another agent or read the file yourself. "
+            "Wait for that agent's answer and reply with only the value it returned."
+        )
+        tui.wait_for_task(second)
+        tui.wait_for(
+            lambda _: any(
+                second.value in answer
+                for answer in assistant_answers(
+                    "claude", agent_sessions(session, "claude").get(child_path, [])
+                )
+            ),
+            "the original child's completed follow-up answer",
+            timeout=180,
+        )
+        _assert_claude_session_finished(session, tui)
+
+    sessions = agent_sessions(session, "claude")
+    session.record("agent-sessions.json", sessions)
+    assert [path for path in sessions if is_child_session("claude", path, sessions[path])] == [
+        child_path
+    ]
+    calls = {
+        part["id"]: part
+        for records in sessions.values()
+        for record in records
+        if record.get("type") == "assistant"
+        for part in record.get("message", {}).get("content", [])
+        if part.get("type") == "tool_use"
+    }
+    spawns = [call for call in calls.values() if call["name"] in {"Agent", "Task"}]
+    assert len(spawns) == 1, spawns
+    parent_records = [
+        record
+        for path, records in sessions.items()
+        if not is_child_session("claude", path, records)
+        for record in records
+    ]
+    followups = {
+        part["id"]: part
+        for record in parent_records
+        if record.get("type") == "assistant"
+        for part in record.get("message", {}).get("content", [])
+        if part.get("type") == "tool_use" and part.get("name") == "SendMessage"
+    }
+    assert followups, calls
+    for call in followups.values():
+        assert_agent_resumed(call, parent_records, child_id)
+    for task in (first, second):
+        task.assert_completed(session, "claude")
+        assert any(
+            task.value in answer for answer in assistant_answers("claude", sessions[child_path])
+        )
 
 
 @pytest.mark.live
