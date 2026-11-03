@@ -271,5 +271,14 @@ test('a host description without Usage notes keeps the continuation note', { opt
     expect(description).toContain(CONTINUE);
     expect(description).toContain('starts a fresh agent with no memory of prior runs');
     expect(description).not.toContain('Policy');
+    expect(description).not.toContain('fork');
   }
+});
+
+test('the continuation note keeps the fork exception when the host offers forks', { options: ORCHESTRATED }, async ($, on) => {
+  const describe = agentDescriber($, on);
+  const host = 'Policy.\n- Use SendMessage; a new call starts fresh (except subagent_type: "fork", which inherits your context).';
+  const description = await describe(host);
+  expect(description).toContain('starts a fresh agent with no memory of prior runs (except subagent_type: "fork"), so the prompt');
+  expect(description).not.toContain('Policy');
 });

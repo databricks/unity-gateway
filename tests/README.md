@@ -160,7 +160,7 @@ the count. A mounted row updates on the one-second timer without another prompt 
 redraw when the count is unchanged. This count has no live TUI coverage.
 They also check the Agent `tool.describe` hook: a host `Usage notes` section is kept, and
 a host description with a missing or empty section still gets the fixed SendMessage
-continuation note.
+continuation note, with the `fork` exception only when the host offers fork subagents.
 
 CUJ3 expects GPT Luna in both agents' catalogs and pickers, including Claude's gateway alias,
 and covers an explicit Claude headless task on that model.

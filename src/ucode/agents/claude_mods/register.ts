@@ -18,7 +18,12 @@ type Environment = Record<string, string | undefined>;
 // Kept when a host description has no Usage notes section, so continuation stays native.
 // Copied from Claude Code 2.1.314's Agent Usage notes; its compact layout (no such section)
 // words this differently. Update with tests/integration/test_ug_smart_routing_hooks.py.
-const CONTINUATION_NOTE = "- To continue a previously spawned agent, use SendMessage with the agent's ID or name as the `to` field — that resumes it with full context. A new Agent call starts a fresh agent with no memory of prior runs, so the prompt must be self-contained.";
+// Like the host, add the fork exception only when the host offers fork subagents.
+const FORK = 'subagent_type: "fork"';
+function continuationNote(host: string): string {
+  const fork = host.includes(FORK) ? ` (except ${FORK})` : '';
+  return `- To continue a previously spawned agent, use SendMessage with the agent's ID or name as the \`to\` field — that resumes it with full context. A new Agent call starts a fresh agent with no memory of prior runs${fork}, so the prompt must be self-contained.`;
+}
 
 async function readEnvironment($: EngineInterface): Promise<Environment> {
   return {
@@ -143,7 +148,7 @@ export function register(on: On, options: PluginOptions): void {
     const instructions = options.orchestratorInstructions as string;
     if (!await readOrchestratorState($, options)) return next(e);
     // Preserve the host's waiting and follow-up mechanics without its ownership policy.
-    const notes = e.description.split('\n## Usage notes\n')[1]?.split('\n## ')[0].trim() || CONTINUATION_NOTE;
+    const notes = e.description.split('\n## Usage notes\n')[1]?.split('\n## ')[0].trim() || continuationNote(e.description);
     return next({...e, description: `${instructions}\n\n## Usage notes\n\n${notes}`});
   });
 
