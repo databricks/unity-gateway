@@ -105,8 +105,9 @@ user's home folder is rejected, an agent failure fails the run only after the ot
 managed file is written; relay, legacy Codex and platforms without one fail), and
 `test_mcp.py` (no user-scope MCP fallback).
 `TestConfigureSharedStateMcpCleanup::test_explicit_configure_switch_restores_saved_mcp_entries` covers
-a `--global` workspace switch followed by a normal configure of the same workspace. No live or integration journey covers `--global`; the
-sudo write is mocked.
+a `--global` workspace switch followed by a normal configure of the same workspace; these
+unit checks mock the sudo write. `integration/test_ug_configure_scope.py` covers the files a real
+`--global` run writes from a shared installation, and the later launch (see `integration/README.md`).
 
 `test_mcp.py` and `test_cli.py` cover Claude/Codex MCP setup without their CLIs:
 finding an existing config, creating one with `--agents`, and reporting status
