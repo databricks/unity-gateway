@@ -441,10 +441,13 @@ def _request_claude_routing_decision(
     token: str,
     prompt: str,
     model_ids: list[str],
+    attribution_headers: Mapping[str, str] | None = None,
 ) -> tuple[routing.RoutingDecision | None, str | None]:
     route_options = routing.route_options_for(_canonical_claude_models(model_ids), "claude")
     if not route_options:
         return None, "Anthropic models endpoint returned no Claude models"
+    if attribution_headers is None:
+        attribution_headers = routing.attribution_headers("claude")
     return routing.select_route(
         workspace,
         token,
@@ -452,6 +455,7 @@ def _request_claude_routing_decision(
         route_options,
         router_name=routing.configured_router_name(),
         timeout=CLAUDE_ROUTE_SELECTION_TIMEOUT_S,
+        attribution_headers=attribution_headers,
     )
 
 
@@ -509,11 +513,17 @@ def route_claude_subagent(
     ``hook_output`` returns the legacy PreToolUse hook response instead, with its plain-text
     notice, for hooks that earlier UG versions persisted in settings files.
     """
+    attribution = routing.attribution_headers(
+        "claude",
+        session_id=payload.get("session_id"),
+        agent_id=payload.get("agent_id"),
+        harness_custom_headers=os.environ.get("ANTHROPIC_CUSTOM_HEADERS"),
+    )
     route = routing.resolve_spawn_route(
         payload,
         is_spawn_agent=claude_routing.is_spawn_agent_tool,
         decision_fn=lambda task: _request_claude_routing_decision(
-            workspace, token, task, available_models
+            workspace, token, task, available_models, attribution_headers=attribution
         ),
         default_task_label="Claude Code subagent task",
         model_id_mapper=lambda model: model,

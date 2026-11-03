@@ -208,6 +208,29 @@ test('a turn that ends while the reply waits on a background agent keeps its car
   await final.unmount();
 });
 
+test('the router hears which subagent made the call, and nothing for the main loop', async ($, on) => {
+  const payloads: any[] = [];
+  const calls: any[] = [];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', ($, e) => {
+    const payload = JSON.parse(e.init.stdin);
+    payloads.push(payload);
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: 'system.ai.claude-sonnet-5', rationale: 'Small task',
+      updatedInput: { ...payload.tool_input, subagent_type: 'ug-smart-router:routed' },
+    }) } };
+  });
+  on('tool.call', ($, e) => { calls.push(e); return { result: 'ok' }; });
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'call-main', ...originalInput });
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'call-nested', agentId: 'agent-parent', ...originalInput });
+  expect('agent_id' in payloads[0]).toBe(false);
+  expect(payloads[0].tool_input).toEqual(originalInput);
+  expect(payloads[1].agent_id).toBe('agent-parent');
+  expect(payloads[1].tool_input).toEqual(originalInput);
+  expect(calls.map((call) => call.subagent_type)).toEqual(['ug-smart-router:routed', 'ug-smart-router:routed']);
+  expect(calls[1].agentId).toBe('agent-parent');
+});
+
 for (const [name, result, warningCount] of [
   ['disabled', { value: { exitCode: 0, stdout: '', stderr: '' } }, 0],
   ['command failure', { value: { exitCode: 1, stdout: '', stderr: 'failure' } }, 1],
