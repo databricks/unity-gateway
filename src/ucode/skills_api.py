@@ -51,6 +51,8 @@ class SkillRef:
     to preview a skill in the interactive picker. ``metastore_id``, ``skill_id``, and
     ``uc_update_time`` are UC attribution metadata recorded when the skill is
     downloaded (see ``skills_state``); the download flow never reads them.
+    ``created_by`` and ``create_time`` are list metadata for the browser; the UC
+    creator is not necessarily the author of the skill bundle.
     """
 
     catalog: str
@@ -61,6 +63,8 @@ class SkillRef:
     metastore_id: str | None = None
     skill_id: str | None = None
     uc_update_time: str | None = None
+    created_by: str | None = None
+    create_time: str | None = None
 
     @property
     def fqn(self) -> str:
@@ -124,6 +128,8 @@ def _skill_ref(skill: dict) -> SkillRef | None:
         metastore_id=_non_empty_str(skill.get("metastore_id")),
         skill_id=_non_empty_str(skill.get("id")),
         uc_update_time=_non_empty_str(skill.get("update_time")),
+        created_by=_non_empty_str(skill.get("created_by")),
+        create_time=_non_empty_str(skill.get("create_time")),
     )
 
 

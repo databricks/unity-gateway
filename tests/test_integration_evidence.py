@@ -5,7 +5,7 @@ import json
 import pytest
 
 from tests.integration.utils import evidence
-from tests.integration.utils.agents import claude, codex
+from tests.integration.utils.agents import antigravity, claude, codex, copilot
 from tests.integration.utils.evidence import (
     FileTask,
     SubagentCalculation,
@@ -13,6 +13,53 @@ from tests.integration.utils.evidence import (
     assistant_answer_contains,
     tool_outputs,
 )
+from tests.integration.utils.terminal import codex_command_approval_pending
+
+
+@pytest.mark.parametrize(
+    ("command", "environment", "missing", "expected"),
+    [
+        ("ug codex --disable-smart-routing", "local", None, True),
+        ("ug codex --enable-smart-routing", "local", None, None),
+        ("ug codex --disable-smart-routing", "remote", None, None),
+        ("ug codex --disable-smart-routing", "localhost", None, None),
+        ("ug codex --disable-smart-routing", "local", "prompt", False),
+        ("ug codex --disable-smart-routing", "local", "footer", False),
+        ("ug codex --disable-smart-routing", "local", "current-footer", False),
+        ("ug codex --disable-smart-routing", "local", "choice", None),
+    ],
+    ids=[
+        "exact",
+        "wrong-command",
+        "remote",
+        "not-local",
+        "no-prompt",
+        "no-footer",
+        "old-footer",
+        "no-choice",
+    ],
+)
+def test_codex_approval_requires_the_exact_local_command(command, environment, missing, expected):
+    prompt = "Would you like to run the following command?"
+    footer = "Press enter to confirm or esc to cancel"
+    choice = "› 1. Yes, proceed (y)"
+    screen = f"{prompt}\nEnvironment: {environment}\n  $ {command}\n{choice}\n{footer}"
+    if missing == "prompt":
+        screen = screen.replace(prompt, "")
+    elif missing == "footer":
+        screen = screen.replace(footer, "")
+    elif missing == "current-footer":
+        screen = screen + "\n" + screen.replace(footer, "")
+    elif missing == "choice":
+        screen = screen.replace(choice, "")
+
+    if expected is None:
+        with pytest.raises(AssertionError, match="unexpected command approval"):
+            codex_command_approval_pending(screen, "ug codex --disable-smart-routing")
+    else:
+        assert (
+            codex_command_approval_pending(screen, "ug codex --disable-smart-routing") is expected
+        )
 
 
 class _Session:
@@ -86,6 +133,47 @@ def test_transient_retries_and_running_tasks_are_not_terminal_errors(screen):
     assert_no_terminal_api_error(screen)
 
 
+@pytest.mark.parametrize("reason", ["RESOURCE_EXHAUSTED", "REQUEST_LIMIT_EXCEEDED"])
+def test_antigravity_resource_exhausted_detects_provider_429(reason):
+    stdout = json.dumps(
+        {
+            "event": "result",
+            "result": {
+                "status": "ERROR",
+                "error": f"request failed (code 429): {reason}",
+            },
+        }
+    )
+
+    assert antigravity.resource_exhausted(stdout)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"status": "SUCCESS", "response": "RESOURCE_EXHAUSTED code 429"},
+        {"status": "ERROR", "error": "request failed (code 500): RESOURCE_EXHAUSTED"},
+        {"status": "ERROR", "error": "request failed (code 429): PERMISSION_DENIED"},
+    ],
+)
+def test_antigravity_resource_exhausted_rejects_non_retryable_results(result):
+    stdout = json.dumps({"event": "result", "result": result})
+
+    assert not antigravity.resource_exhausted(stdout)
+
+
+def test_antigravity_resource_exhausted_retry_delay_is_truncated_exponential(monkeypatch):
+    monkeypatch.setattr(antigravity.random, "uniform", lambda _start, _end: 0)
+
+    assert [antigravity.resource_exhausted_retry_delay(index) for index in range(5)] == [
+        5,
+        10,
+        20,
+        20,
+        20,
+    ]
+
+
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 def test_tagged_calculation_requires_the_native_child_answer(tmp_path, agent):
     session = _Session(tmp_path)
@@ -155,6 +243,42 @@ def test_codex_model_identity_rejects_prompt_only_evidence():
     assert codex.completed_task_models(records, "withheld-file-value") == set()
 
 
+def test_copilot_model_identity_uses_only_answering_assistant_messages():
+    records = [
+        {"type": "user.message", "data": {"content": "withheld-file-value"}},
+        {
+            "type": "assistant.message",
+            "data": {"content": "Reading the file.", "model": "system.ai.claude-haiku-4-5"},
+        },
+        {
+            "type": "assistant.message",
+            "data": {"content": "withheld-file-value", "model": "system.ai.gpt-5-4-nano"},
+        },
+        {"type": "assistant.message"},
+        {"type": "assistant.message", "data": {"content": None, "model": "system.ai.gpt-5"}},
+    ]
+    assert copilot.completed_task_models(records, "withheld-file-value") == {
+        "system.ai.gpt-5-4-nano"
+    }
+    assert copilot.assistant_answers(records) == ["Reading the file.", "withheld-file-value"]
+
+
+def test_copilot_model_identity_rejects_an_answer_without_a_model():
+    records = [{"type": "assistant.message", "data": {"content": "withheld-file-value"}}]
+    with pytest.raises(AssertionError, match="completed-task model"):
+        copilot.completed_task_models(records, "withheld-file-value")
+
+
+def test_copilot_selected_models_follow_start_then_switches():
+    records = [
+        {"type": "session.start", "data": {"selectedModel": "dbx-anthropic/claude"}},
+        {"type": "session.model_change", "data": {"newModel": "dbx-responses/gpt"}},
+        {"type": "session.model_change", "data": {}},
+        {"type": "assistant.message", "data": {"model": "system.ai.gpt"}},
+    ]
+    assert copilot.selected_models(records) == ["dbx-anthropic/claude", "dbx-responses/gpt"]
+
+
 def test_claude_model_identity_uses_assistant_answer_not_tool_output():
     records = [
         {
@@ -174,6 +298,50 @@ def test_claude_model_identity_uses_assistant_answer_not_tool_output():
         },
     ]
     assert claude.completed_task_models(records, "value") == {"catalog.models.claude_sonnet"}
+
+
+def test_claude_assistant_answers_include_subagent_handback():
+    records = [
+        {
+            "type": "assistant",
+            "isSidechain": True,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-use",
+                        "name": "SubagentHandback",
+                        "input": {"message": "child answer"},
+                    }
+                ],
+            },
+        }
+    ]
+
+    assert claude.assistant_answers(records) == ["child answer"]
+
+
+def test_claude_assistant_answers_ignore_parent_handback():
+    records = [
+        {
+            "type": "assistant",
+            "isSidechain": False,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-use",
+                        "name": "SubagentHandback",
+                        "input": {"message": "not a child answer"},
+                    }
+                ],
+            },
+        }
+    ]
+
+    assert claude.assistant_answers(records) == []
 
 
 def completed_records(agent, model, answer="value", turn_id="matching"):
@@ -304,3 +472,59 @@ def test_tool_outputs_exclude_user_echoes_and_assistant_claims(agent):
         },
     ]
     assert tool_outputs(agent, records) == []
+
+
+@pytest.mark.parametrize("orchestrator_on", [False, True])
+def test_codex_generic_routing_label_correlates_to_tagged_prompt(orchestrator_on):
+    suffix = " [orchestrator on]" if orchestrator_on else ""
+    panel = (
+        "│ Using Unity Gateway Smart Router - Subagent │\n"
+        f"│ Subagent : subagent{suffix} │\n"
+        "│ Selected Model : gpt-6-luna │\n└──────────┘\n"
+    )
+    prompt = '› Spawn a child with task name "ug_subagent_ab12"\n  and return its answer.\n\n'
+    screen = prompt + panel + "› Ask Codex to do anything\n"
+    assert evidence.codex_routing_display_for_task(
+        screen, "ug_subagent_ab12", orchestrator_on=orchestrator_on
+    )
+    assert not evidence.codex_routing_display_for_task(
+        screen, "ug_subagent_other", orchestrator_on=orchestrator_on
+    )
+    assert not evidence.codex_routing_display_for_task(
+        panel + prompt, "ug_subagent_ab12", orchestrator_on=orchestrator_on
+    )
+    assert not evidence.codex_routing_display_for_task(
+        prompt + "› Another task\n\n" + panel,
+        "ug_subagent_ab12",
+        orchestrator_on=orchestrator_on,
+    )
+    assert not evidence.codex_routing_display_for_task(
+        screen, "ug_subagent_ab12", orchestrator_on=not orchestrator_on
+    )
+
+
+def test_codex_compacted_prompt_uses_adjacent_native_spawn():
+    panel = (
+        "• Context compacted\n\n"
+        "│ Using Unity Gateway Smart Router - Subagent │\n"
+        "│ Subagent : subagent [orchestrator on] │\n"
+        "│ Selected Model : gpt-6-luna │\n└──────────┘\n\n"
+    )
+    spawn = "• Spawned child-id (gpt-6-luna)\n  └ Task name: ug_subagent_ab12. Calculate 2+2.\n\n"
+    assert evidence.codex_routing_display_for_task(
+        panel + spawn, "ug_subagent_ab12", orchestrator_on=True
+    )
+    assert not evidence.codex_routing_display_for_task(
+        panel + spawn, "ug_subagent_other", orchestrator_on=True
+    )
+    assert not evidence.codex_routing_display_for_task(
+        panel + "• Answer: ug_subagent_ab12=4\n", "ug_subagent_ab12", orchestrator_on=True
+    )
+    assert not evidence.codex_routing_display_for_task(
+        panel + "› New prompt\n\n" + spawn, "ug_subagent_ab12", orchestrator_on=True
+    )
+    assert not evidence.codex_routing_display_for_task(
+        panel + "• Spawned other-child\n  └ Another task\n\n" + spawn,
+        "ug_subagent_ab12",
+        orchestrator_on=True,
+    )

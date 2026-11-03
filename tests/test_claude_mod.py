@@ -1,6 +1,7 @@
 """Generated plugin contents for the native Claude mod entry point."""
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -51,17 +52,22 @@ def test_launch_options_resolve_versions_without_mutating_input(version):
     expected = config._VERSIONS.get(version, {}).get(
         AGENT_CLAUDE, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
     )
+    isaac = shutil.which("isaac")
     assert v2._claude_mod_launch_options(env) == {
         **expected,
         "unset": [],
         "recipe": "custom_recipe",
         "routeCommand": [],
+        "orchestratorInstructions": "",
+        "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
+        "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
     }
     # Taking the baseline must not alter the caller's launch environment.
     assert env == before
 
 
 def test_launch_options_preserve_empty_and_absent_values():
+    isaac = shutil.which("isaac")
     assert v2._claude_mod_launch_options({"ENABLE_SMART_ROUTING_V2": ""}) == {
         "ENABLE_SMART_ROUTING_V2": "",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "",
@@ -72,8 +78,11 @@ def test_launch_options_preserve_empty_and_absent_values():
             "ENABLE_SMART_ROUTER_ORCHESTRATOR",
             "ENABLE_SMART_ROUTING_SAVINGS",
         ],
-        "recipe": "task_v3",
+        "recipe": "stable",
         "routeCommand": [],
+        "orchestratorInstructions": "",
+        "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
+        "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
     }
 
 

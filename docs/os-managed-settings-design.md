@@ -12,20 +12,36 @@ The two stacked PRs make precedence handling deterministic:
 2. The Codex PR reuses that lifecycle for TOML, applies it to Codex, and removes the old optional
    managed-settings path.
 
-After both PRs merge, interactive configuration reconciles the agent's OS-managed file by default.
-Non-interactive execution uses local settings when the managed file is compatible. Both agents repair
-conflicting managed settings using `sudo -n`, which requires existing authorization and never prompts
-for a password. If that repair is denied, the agent does not launch.
+`ug configure` and `ug revert` reconcile the agent's OS-managed file whether or not a terminal is
+attached, so an interactive and a headless run take the same path. The write settles privilege:
+root writes directly, a terminal lets sudo prompt, and otherwise `sudo -n` either succeeds or the
+command fails, naming root, a sudo terminal, and `--user`. A non-interactive launch uses local
+settings when the managed file is compatible, and repairs conflicting managed settings using
+`sudo -n`, which requires existing authorization and never prompts for a password. If that repair is
+denied, the agent does not launch.
 
 ## Configuration Files
 
 | Agent | Local ucode configuration | OS-managed configuration |
 | --- | --- | --- |
 | Claude Code | `~/.claude/ucode-settings.json` | Linux: `/etc/claude-code/managed-settings.json`; macOS: `/Library/Application Support/ClaudeCode/managed-settings.json`; Windows: `C:\Program Files\ClaudeCode\managed-settings.json` |
-| Codex | `~/.codex/ucode.config.toml` | Linux and macOS: `/etc/codex/managed_config.toml`; none on Windows |
+| Codex | `~/.codex/ucode.config.toml` | Linux and macOS: `/etc/codex/managed_config.toml`; Windows: `C:\ProgramData\OpenAI\Codex\requirements.toml` |
 
 The local file is always written. The OS-managed file is additionally reconciled during interactive
 configuration, except for Claude subscription relay.
+
+## Per-user Scope
+
+`ug configure --user` (saved as `config_scope` in `~/.ucode/state.json`, default `global`) skips the
+OS-managed files like `UG_SKIP_OS_SETTINGS`: no administrator permission, and managed MCP servers
+register in user scope. Because OS-managed settings take precedence over user settings,
+`ug configure --user` fails before configuring any agent while a selected agent's OS-managed file
+exists (including Windows `requirements.toml`), whoever wrote it; `ug revert`, removal, or
+`--global` resolves it. Launches don't check: a managed file added later simply takes precedence.
+`UG_SKIP_OS_SETTINGS` doesn't check either: ug trusts the OS-managed files present and leaves them
+untouched. `ug configure` without `--user` and `ug revert` reset the scope to `global`.
+`ug configure --user` also fails when the selected workspace publishes a managed config, since that
+config must be installed machine-wide.
 
 ## Interactive Detection
 
@@ -34,15 +50,33 @@ output does not affect the decision. Without a TTY, either agent may repair an e
 file through one-shot `sudo -n` with stdin disconnected; absent or compatible files remain local-only.
 A denied repair blocks launch.
 
-`managed_writes_allowed` centralizes this policy: its default remains interactive-only, while the
-shared reconciliation/writer permits an existing-file repair attempt. The writer derives sudo's
+`managed_writes_allowed` centralizes this policy: `ug configure` and `ug revert` always may write;
+for launches its default remains interactive-only, while the shared reconciliation/writer permits an
+existing-file repair attempt. The writer derives sudo's
 prompt mode and stdin handling itself; the predicate does not probe or grant authorization.
 
 Windows has no `sudo`, so the terminal doesn't matter there: an elevated (or SYSTEM) process may
 write `C:\Program Files\ClaudeCode\managed-settings.json` directly, which lets device provisioning
-run `ug configure` headlessly. Standard users can't write under Program Files. For them, as for a
-headless Linux/macOS run, an absent or compatible file stays local-only without a message, and a
-conflicting file stops the command with a request to rerun it elevated.
+run `ug configure` headlessly. Standard users can't write under Program Files, so their
+`ug configure` fails with a request to rerun it elevated. For a launch, as for a headless
+Linux/macOS launch, an absent or compatible file stays local-only, and a conflicting file stops the
+command. A batched setup outside `ug configure` that can't write (such as `ug agents add` without a
+terminal) warns that the machine-wide file wasn't updated; launches, which reconfigure on every
+run, stay quiet.
+
+Codex has no admin-only config layer on Windows, so the same elevated runs write
+`C:\ProgramData\OpenAI\Codex\requirements.toml`, which Codex 0.156.0 and later enforce over the
+user's config and `-c`. It takes only requirement keys: UG writes `model_provider` and the
+`Databricks` provider entry, but not `model` or `mcp_servers` (managed MCP servers stay in user
+scope there). A required provider entry replaces the configured one instead of merging, so the
+launch-scoped headers reach Codex through `env_http_headers` and the
+`UG_CODEX_MODEL_PROVIDER_SERVICE`, `UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA`,
+`UG_CODEX_SMART_ROUTER_RECIPE`, and `UG_CODEX_REQUEST_TAGS` variables that `ug codex` sets at
+launch. Standard users can create folders under ProgramData and keep control of the ones they
+create, so before each write UG makes Administrators the owner of `OpenAI` and `Codex`, resets
+`OpenAI` to its inherited permissions, and lets standard users only read `Codex`, like the
+root-owned 0755 folders on Linux and macOS. It changes only those two folders, not files already in
+them, and refuses to write through a linked `OpenAI` or `Codex` folder.
 
 This is a new shared ucode distinction. The previous implementation inferred interactivity from
 command shape in some flows and did not guard managed-file writes consistently.
@@ -55,9 +89,10 @@ command shape in some flows and did not guard managed-file writes consistently.
 | Interactive | Unrelated or partially populated | Preserve unrelated values and add or update all ucode-owned values. |
 | Interactive | Conflicting | Back up the baseline, replace the conflicting ucode-owned values, and verify. |
 | Interactive | Already identical | Continue without a backup, write, or `sudo` invocation. |
-| Non-interactive | Absent | Use the local ucode file. Do not create the managed file. |
-| Non-interactive | Ucode-owned values absent or equal | Use the local ucode file. Do not modify the managed file. |
-| Non-interactive | Ucode-owned value conflicts | Repair through `sudo -n`; stop before launching if authorization or verification fails. |
+| `ug configure`, any terminal | Any | As Interactive. Without a terminal, root writes directly and others use `sudo -n`; a denied write fails the command. |
+| Non-interactive launch | Absent | Use the local ucode file. Do not create the managed file. |
+| Non-interactive launch | Ucode-owned values absent or equal | Use the local ucode file. Do not modify the managed file. |
+| Non-interactive launch | Ucode-owned value conflicts | Repair through `sudo -n`; stop before launching if authorization or verification fails. |
 | Any | Invalid, unreadable, or symlinked | Stop without modifying the file because precedence cannot be established safely. |
 
 `ucode configure`, first-time `ucode claude` or `ucode codex`, and later launches all use the same

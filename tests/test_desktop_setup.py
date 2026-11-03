@@ -7,11 +7,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from typer.testing import CliRunner
 
-from ucode import cli, desktop_setup
+from ucode import cli
 from ucode import state as state_store
 from ucode.agents.desktop import claude as claude_desktop
 from ucode.agents.desktop import claude_config as desktop_config
+from ucode.agents.desktop import setup as desktop_setup
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_SCHEMA_HEADER
 from ucode.databricks import AnthropicModelCatalog
 
@@ -478,24 +480,60 @@ def test_configure_overwrites_reserved_uuid_without_ownership_record(desktop, ca
     }
 
 
-def test_managed_static_catalog_does_not_fetch_discovery(desktop, monkeypatch):
-    def forbidden(*args, **kwargs):
-        pytest.fail("A managed static catalog must not trigger discovery")
+def test_managed_static_catalog_uses_discovery_only_for_labels(desktop, monkeypatch):
+    haiku = "main.models.claude-haiku-4-5"
+    extra = "system.ai.claude-sonnet-5"
+    calls = []
 
-    monkeypatch.setattr(desktop_setup, "list_anthropic_model_catalog", forbidden)
+    def catalog(workspace, token, **kwargs):
+        calls.append((workspace, token, kwargs))
+        return AnthropicModelCatalog(
+            model_ids=[extra, haiku],
+            model_id_to_display_name={haiku: "Claude Haiku 4.5", extra: "Claude Sonnet 5"},
+        )
+
+    monkeypatch.setattr(desktop_setup, "list_anthropic_model_catalog", catalog)
     desktop_setup.configure_claude_desktop(
         {
             "workspace": "https://workspace.example",
             "profile": "chosen-profile",
-            "claude_static_models": ["main.models.claude-haiku-4-5", "main.models.gpt-5-6-sol"],
+            "claude_static_models": [haiku, "main.models.gpt-5-6-sol"],
             "claude_http_headers": {"X-Admin": "configured"},
         }
     )
+    assert calls == [
+        (
+            "https://workspace.example",
+            "component-token",
+            {"provider": None, "parent_schema": None},
+        )
+    ]
     profile = configured_profile(desktop)
     assert profile["inferenceModels"] == [
-        {"name": "main.models.claude-haiku-4-5"},
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5"},
     ]
     assert profile["inferenceCustomHeaders"]["X-Admin"] == "configured"
+
+
+def test_managed_static_catalog_keeps_ids_when_label_discovery_fails(desktop, monkeypatch):
+    haiku = "main.models.claude-haiku-4-5"
+    monkeypatch.setattr(
+        desktop_setup,
+        "list_anthropic_model_catalog",
+        lambda *args, **kwargs: AnthropicModelCatalog(
+            model_ids=[], model_id_to_display_name={}, error_msg="Discovery unavailable"
+        ),
+    )
+
+    desktop_setup.configure_claude_desktop(
+        {
+            "workspace": "https://workspace.example",
+            "profile": "chosen-profile",
+            "claude_static_models": [haiku],
+        }
+    )
+
+    assert configured_profile(desktop)["inferenceModels"] == [{"name": haiku}]
 
 
 def test_configure_refreshes_model_labels_from_discovery(desktop, monkeypatch):
@@ -587,7 +625,6 @@ def test_discovery_and_native_headers_use_same_source(desktop, monkeypatch, pare
 @pytest.mark.parametrize(
     "key,value",
     [
-        ("claude_relayed", True),
         ("custom_oauth", {"client_id": "custom"}),
         ("use_pat", True),
         ("profile", None),
@@ -600,6 +637,47 @@ def test_unsupported_auth_warns_without_modifying_profiles(desktop, capsys, key,
     assert (desktop / "_meta.json").read_bytes() == before
     assert list(desktop.glob("*.json")) == [desktop / "_meta.json"]
     assert "Could not configure Claude Desktop" in capsys.readouterr().out
+
+
+def test_subscription_relay_uses_direct_gateway_and_combined_helper(desktop, monkeypatch):
+    claude_binary = os.path.abspath(os.path.join("bin", "claude"))
+    monkeypatch.setattr(desktop_setup.shutil, "which", lambda binary: claude_binary)
+    state = {
+        "workspace": "https://workspace.example",
+        "profile": "chosen-profile",
+        "claude_relayed": True,
+        "provider_services": {"claude": "main.models.subscription"},
+    }
+
+    desktop_setup.configure_claude_desktop(state)
+
+    profile = configured_profile(desktop)
+    assert profile["inferenceGatewayBaseUrl"] == ("https://workspace.example/ai-gateway/anthropic")
+    assert profile["inferenceCredentialHelperArgs"][-3:] == [
+        "--relay",
+        "--claude-binary",
+        claude_binary,
+    ]
+    assert profile["inferenceCustomHeaders"][MODEL_PROVIDER_SERVICE_HEADER] == (
+        "main.models.subscription"
+    )
+
+
+def test_subscription_relay_without_claude_code_preserves_profiles(desktop, monkeypatch, capsys):
+    before = (desktop / "_meta.json").read_bytes()
+    monkeypatch.setattr(desktop_setup.shutil, "which", lambda binary: None)
+
+    desktop_setup.configure_claude_desktop(
+        {
+            "workspace": "https://workspace.example",
+            "profile": "chosen-profile",
+            "claude_relayed": True,
+        }
+    )
+
+    assert (desktop / "_meta.json").read_bytes() == before
+    assert list(desktop.glob("*.json")) == [desktop / "_meta.json"]
+    assert "Install Claude Code" in capsys.readouterr().out
 
 
 def test_discovery_failure_is_warning_and_preserves_profile(desktop, monkeypatch, capsys):
@@ -645,7 +723,7 @@ def test_profile_lock_timeout_warns_and_preserves_state(desktop, monkeypatch, ca
     assert "retry" in output
 
 
-def test_revert_failure_clears_workspace_state_and_allows_retry(desktop, monkeypatch, capsys):
+def test_revert_failure_retains_workspace_state_and_allows_retry(desktop, monkeypatch):
     previous_id = "12345678-1234-4abc-8def-123456789abc"
     (desktop / f"{previous_id}.json").write_text("{}")
     metadata_path = desktop / "_meta.json"
@@ -670,17 +748,28 @@ def test_revert_failure_clears_workspace_state_and_allows_retry(desktop, monkeyp
     def lock_timeout(handle, *, timeout):
         raise TimeoutError("Lock is held by another operation")
 
+    runner = CliRunner()
     with monkeypatch.context() as blocked:
         blocked.setattr(desktop_config, "acquire_exclusive_file_lock", lock_timeout)
-        assert cli.revert() == 1
+        failed = runner.invoke(cli.app, ["revert"])
 
-    assert state_store.load_state() == {}
-    assert state_store.load_full_state()["workspaces"] == {}
+    assert failed.exit_code == 1, failed.output
+    warnings = [line for line in failed.output.splitlines() if line.startswith("! ")]
+    assert len(warnings) == 2, failed.output
+    assert "Could not revert Claude Desktop" in warnings[0]
+    assert (
+        warnings[1] == "! ug state retained. Fix the Claude Desktop error and run ug revert again."
+    )
+    assert "Claude Desktop profile: failed" in failed.output
+
+    assert state_store.load_state()["workspace"] == state["workspace"]
+    assert state["workspace"] in state_store.load_full_state()["workspaces"]
     assert selection_path.read_bytes() == selection_before
     assert {path.name: path.read_bytes() for path in desktop.glob("*.json")} == profiles_before
-    assert "ug state cleared" in capsys.readouterr().out
 
-    assert cli.revert() == 0
+    retried = runner.invoke(cli.app, ["revert"])
+    assert retried.exit_code == 0, retried.output
+    assert state_store.load_state() == {}
     assert not (desktop / f"{claude_desktop.PROFILE_ID}.json").exists()
     assert not selection_path.exists()
     assert json.loads(metadata_path.read_text()) == {
@@ -688,7 +777,8 @@ def test_revert_failure_clears_workspace_state_and_allows_retry(desktop, monkeyp
         "appliedId": previous_id,
     }
     assert (desktop / f"{previous_id}.json").read_text() == "{}"
-    assert cli.revert() == 0
+    repeated = runner.invoke(cli.app, ["revert"])
+    assert repeated.exit_code == 0, repeated.output
 
 
 def test_dry_run_does_not_discover_or_create_profiles(desktop, monkeypatch):
@@ -743,6 +833,13 @@ def test_revert_without_desktop_ownership_leaves_existing_settings_untouched(des
     assert desktop_setup.revert_desktop() == "unchanged"
 
     assert {path.name: path.read_bytes() for path in desktop.iterdir()} == before
+
+
+def test_revert_cleans_cowork_when_native_desktop_is_unavailable(monkeypatch):
+    monkeypatch.setattr(desktop_setup, "claude_desktop_directory", lambda: None)
+    monkeypatch.setattr(desktop_setup, "revert_claude_cowork", lambda: "removed")
+
+    assert desktop_setup.revert_desktop() == "removed"
 
 
 def test_reconfigure_recreates_deleted_profile_with_fixed_id(desktop, capsys):

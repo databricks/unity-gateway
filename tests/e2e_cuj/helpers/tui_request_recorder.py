@@ -1,8 +1,9 @@
 """CUJ configuration glue for the shared real-workspace request recorder."""
 
 import json
+import subprocess
+import tempfile
 from copy import deepcopy
-from datetime import UTC, datetime
 from pathlib import Path
 
 from tests.integration.utils.request_recorder import (
@@ -14,7 +15,9 @@ from tests.integration.utils.request_recorder import (
 from tests.integration.utils.request_recorder import (
     TuiRequestRecorder as RequestRecorder,
 )
+from ucode.managed_files import managed_file_fingerprint
 
+from .constants import WORKSPACE_POLICY_PATH
 from .session import UserSession
 
 
@@ -31,15 +34,24 @@ class TuiRequestRecorder(RequestRecorder):
         self.retarget_session(session.home)
 
     def prepare_launch(self) -> None:
-        """Keep the recorder-scoped managed-config cache fresh for a no-preflight launch."""
+        """Keep the recorded policy fingerprint current for a no-preflight launch.
+
+        A launch replays the saved policy without refetching. A configure without a terminal
+        installs no machine policy, so there is nothing to update.
+        """
         if self._session_home is None:
             raise RuntimeError("configure_session must run before prepare_launch")
-        path = self._session_home / ".ucode" / "managed-config.json"
-        payload = json.loads(path.read_text())
-        if payload.get("workspace") != self.url:
-            raise AssertionError("Managed-config cache does not target the recorder")
-        payload["retrieved_at"] = datetime.now(UTC).isoformat()
-        path.write_text(json.dumps(payload, indent=2) + "\n")
+        if not WORKSPACE_POLICY_PATH.exists():
+            return
+        if json.loads(WORKSPACE_POLICY_PATH.read_text()).get("workspace") != self.url:
+            raise AssertionError("The installed workspace policy does not target the recorder")
+        refresh_path = self._session_home / ".ucode" / "refresh_ts.json"
+        refresh = json.loads(refresh_path.read_text())
+        refresh[self.url] = {
+            **refresh[self.url],
+            "policy_fingerprint": managed_file_fingerprint(WORKSPACE_POLICY_PATH),
+        }
+        refresh_path.write_text(json.dumps(refresh, indent=2) + "\n")
 
     def retarget_session(self, home: Path) -> None:
         """Retarget a session configured outside configure_session, e.g. in a terminal."""
@@ -56,11 +68,23 @@ class TuiRequestRecorder(RequestRecorder):
         state["current_workspace"] = self.url
         state_path.write_text(json.dumps(state, indent=2) + "\n")
 
-        managed_path = home / ".ucode" / "managed-config.json"
-        managed = json.loads(managed_path.read_text())
-        if managed.get("workspace") != upstream:
-            raise AssertionError("ug configure wrote no upstream managed-config cache")
-        managed["workspace"] = self.url
-        managed_path.write_text(json.dumps(managed, indent=2) + "\n")
+        refresh_path = home / ".ucode" / "refresh_ts.json"
+        # A read that installs nothing leaves no stamp; launches then read through the recorder.
+        if refresh_path.is_file():
+            refresh = json.loads(refresh_path.read_text())
+            if upstream in refresh:
+                refresh[self.url] = refresh[upstream]
+                refresh_path.write_text(json.dumps(refresh, indent=2) + "\n")
+        if WORKSPACE_POLICY_PATH.exists():
+            # A terminal configure installed the root-owned policy; point it at the recorder too.
+            policy = json.loads(WORKSPACE_POLICY_PATH.read_text())
+            if policy.get("workspace") != upstream:
+                raise AssertionError("ug configure installed no upstream workspace policy")
+            policy["workspace"] = self.url
+            with tempfile.NamedTemporaryFile("w", suffix=".json", dir=home) as staged:
+                staged.write(json.dumps(policy, indent=2) + "\n")
+                staged.flush()
+                # Copying over the existing file keeps its root ownership and 0644 mode.
+                subprocess.run(["sudo", "cp", staged.name, str(WORKSPACE_POLICY_PATH)], check=True)
         self._session_home = home
         self.prepare_launch()

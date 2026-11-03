@@ -1,6 +1,6 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
-import { registerStatusBand, showStatusBand } from './smart-routing-status.ts';
-import { registerSubagentRouting } from './subagent-routing.ts';
+import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
+import { endSubagentRoutingTurn, registerSubagentRouting } from './subagent-routing.ts';
 import {
   CLI_AGENT,
   CLI_MODULE,
@@ -23,6 +23,27 @@ async function readEnvironment($: EngineInterface): Promise<Environment> {
     ENABLE_SMART_ROUTING_SAVINGS: await $.env.get('ENABLE_SMART_ROUTING_SAVINGS'),
     CLAUDE_CODE_EXTRA_BODY: await $.env.get('CLAUDE_CODE_EXTRA_BODY'),
   };
+}
+
+async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
+  if (!options.orchestratorInstructions) return false;
+  const current = await readEnvironment($);
+  const sessionFile = await $.env.get('UCODE_SESSION_ENV_FILE');
+  if (sessionFile) {
+    try {
+      const overrides = JSON.parse(await $.fs.read(sessionFile));
+      for (const key of [
+        'ENABLE_SMART_ROUTING_V2',
+        'ENABLE_SMART_ROUTING_SUBAGENT_ONLY',
+        'ENABLE_SMART_ROUTER_ORCHESTRATOR',
+      ]) {
+        if (typeof overrides?.[key] === 'string') current[key] = overrides[key];
+      }
+    } catch {
+      // Match the routing hooks' inherited-environment fallback for unreadable controls.
+    }
+  }
+  return isRoutingEnabled(current) && current.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1';
 }
 
 async function writeEnvironment($: EngineInterface, env: Environment): Promise<void> {
@@ -85,6 +106,7 @@ async function setRouting(
     if (syncSessionControls) {
       await writeSessionControls($, enabled, sessionControlArgs);
     }
+    $.ui.invalidate('tool.describe');
   } catch (error) {
     // Restore earlier successful writes if a later environment write is denied.
     await writeEnvironment($, previous);
@@ -96,6 +118,7 @@ export function register(on: On, options: PluginOptions): void {
   registerSavings(on, options);
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
+  let orchestratorActive = Boolean(options.orchestratorInstructions);
 
   on('session.start', async ($, e, next) => {
     if (launchedEnabled) {
@@ -104,6 +127,51 @@ export function register(on: On, options: PluginOptions): void {
     }
     await savingsSessionStart($);
     return next(e);
+  });
+
+  // Claude permits one unmatched turn.step handler, so orchestration and savings share it.
+  on('turn.step', async function* ($, e, next) {
+    const active = await readOrchestratorState($, options);
+    if (active !== orchestratorActive) {
+      orchestratorActive = active;
+      // A CLI/skill toggle changes the session file without notifying this process.
+      $.ui.invalidate('tool.describe');
+    }
+    // Fires for every model request, including subagents. Forward the stream unchanged.
+    const request = e as any;
+    const agent = str(request.agentId);
+    const trackSavings = await ready($);
+    let baseline: string | null = null;
+    if (trackSavings) {
+      if (agent === null) {
+        lastMainModel = str(request.model) ?? lastMainModel;
+        firstMainModel ??= lastMainModel;
+        userSwitched ||= lastMainModel !== firstMainModel;
+      } else baseline = lastMainModel ?? (await mainModel($));
+    }
+    // Read before the request runs: a concurrent main request may switch it.
+    const beforeUserSwitch = !userSwitched;
+    const result = yield* next(e);
+    try {
+      const usage = (result as any)?.usage;
+      const served = str(request.model) ?? str(usage?.model);
+      // Main is its own baseline: routing leaves the main model alone.
+      const base = agent === null ? served : baseline;
+      if (trackSavings && await ready($) && usage && served && base) {
+        accumulate(agent ?? 'main', base, served, beforeUserSwitch, usage);
+        dirty = true;
+      }
+    } catch {}
+    return result;
+  });
+
+  on('tool.describe', {tool: ['Agent', 'Task']}, async ($, e, next) => {
+    const instructions = options.orchestratorInstructions as string;
+    if (!await readOrchestratorState($, options)) return next(e);
+    // Preserve the host's waiting and follow-up mechanics without its ownership policy.
+    const notes = e.description.split('\n## Usage notes\n')[1]?.split('\n## ')[0].trim();
+    const description = notes ? `${instructions}\n\n## Usage notes\n\n${notes}` : instructions;
+    return next({...e, description});
   });
 
   // The installed smart-router skill already supplies the slash command.
@@ -122,7 +190,7 @@ export function register(on: On, options: PluginOptions): void {
     }
     return next(e);
   });
-  registerIsaacFeedback(on, feedback);
+  registerIsaacFeedback(on, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string);
   on('command.run', {command: 'smart-router'}, async ($, e) => {
     const action = e.args.trim();
     try {
@@ -136,6 +204,12 @@ export function register(on: On, options: PluginOptions): void {
   });
   registerStatusBand(on, () => savingsShown);
   registerSubagentRouting(on, options);
+  // Claude allows one unmatched turn.complete handler per plugin, so both modules share it.
+  on('turn.complete', ($, e, next) => {
+    endSubagentRoutingTurn(e.isAborted);
+    if (endStatusBandTurn()) $.ui.invalidate('ui.render');
+    return next(e);
+  });
 }
 
 // Smart-routing savings estimate, drawn above the prompt in place of the status band,
@@ -379,37 +453,6 @@ function registerSavings(on: On, options: PluginOptions): void {
   usagePath = str(raw.savings_usage);
   enabled = pricer.length > 0 && usagePath !== null;
   version = str(raw.orchestrator_version);
-
-  // Fires for every request to a model, subagents included (e.agentId is set).
-  // yield* forwards the streamed response untouched; only the finished result's
-  // usage is read.
-  on('turn.step', async function* ($, e, next) {
-    const request = e as any;
-    const agent = str(request.agentId);
-    const active = await ready($);
-    let baseline: string | null = null;
-    if (active) {
-      if (agent === null) {
-        lastMainModel = str(request.model) ?? lastMainModel;
-        firstMainModel ??= lastMainModel;
-        userSwitched ||= lastMainModel !== firstMainModel;
-      } else baseline = lastMainModel ?? (await mainModel($));
-    }
-    // Read before the request runs: a concurrent main request may switch it.
-    const beforeUserSwitch = !userSwitched;
-    const result = yield* next(e);
-    try {
-      const usage = (result as any)?.usage;
-      const served = str(request.model) ?? str(usage?.model);
-      // Main is its own baseline: routing leaves the main model alone.
-      const base = agent === null ? served : baseline;
-      if (active && await ready($) && usage && served && base) {
-        accumulate(agent ?? 'main', base, served, beforeUserSwitch, usage);
-        dirty = true;
-      }
-    } catch {}
-    return result;
-  });
 
   // Price at the end of each turn, off the turn's critical path. The status band holds the
   // event's one unmatched hook, so this one matches every turn instead.

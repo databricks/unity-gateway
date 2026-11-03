@@ -6,12 +6,17 @@ import json
 import time
 import urllib.request
 
-DEFAULT_TRACE_TABLE_PREFIX = "unity_gateway"
-TRACE_TABLE_SUFFIX = "_otel_spans"
-# A statement stays PENDING while its warehouse starts or queues it; a stopped classic or pro
-# warehouse can take minutes to start, which is warehouse latency, not a missing trace.
+# A statement stays PENDING while its warehouse starts or queues it; that time must not
+# consume the execution budget. Callers may impose a shorter overall deadline.
 WAREHOUSE_WAIT_SECONDS = 600
 STATEMENT_RUN_SECONDS = 180
+STATEMENT_DEADLINE_SECONDS = WAREHOUSE_WAIT_SECONDS + STATEMENT_RUN_SECONDS
+# Spans reach the table asynchronously after the agent exits; poll for the row this long.
+TRACE_ROW_DEADLINE_SECONDS = 300
+TRACE_ROW_POLL_INTERVAL_SECONDS = 15
+
+DEFAULT_TRACE_TABLE_PREFIX = "unity_gateway"
+TRACE_TABLE_SUFFIX = "_otel_spans"
 
 
 def resolve_trace_table(workspace: str, bearer: str) -> str:
@@ -83,7 +88,10 @@ def query_count(
     warehouse_id: str,
     statement: str,
     parameters: list[dict[str, str]],
+    *,
+    timeout: float = STATEMENT_DEADLINE_SECONDS,
 ) -> int:
+    started = time.monotonic()
     request = urllib.request.Request(
         f"{workspace.rstrip('/')}/api/2.0/sql/statements",
         data=json.dumps(
@@ -101,14 +109,18 @@ def query_count(
         result = json.load(response)
 
     statement_id = result.get("statement_id")
-    submitted_at = time.monotonic()
+    deadline = started + timeout
     running_since: float | None = None
     while (state := result.get("status", {}).get("state")) in {"PENDING", "RUNNING"}:
         now = time.monotonic()
+        assert now < deadline, (
+            f"SQL statement did not finish within {timeout:g} seconds "
+            f"(elapsed {now - started:.0f}s, state {state})"
+        )
         if state == "RUNNING" and running_since is None:
             running_since = now
         if running_since is None:
-            assert now - submitted_at < WAREHOUSE_WAIT_SECONDS, (
+            assert now - started < WAREHOUSE_WAIT_SECONDS, (
                 f"SQL statement {statement_id} stayed PENDING on warehouse {warehouse_id} "
                 f"for {WAREHOUSE_WAIT_SECONDS} seconds"
             )
@@ -129,3 +141,29 @@ def query_count(
     rows = result.get("result", {}).get("data_array", [])
     assert rows and rows[0], "SQL count query returned no row"
     return int(rows[0][0])
+
+
+def wait_for_count(
+    workspace: str,
+    bearer: str,
+    warehouse_id: str,
+    statement: str,
+    parameters: list[dict[str, str]],
+    *,
+    timeout: float = TRACE_ROW_DEADLINE_SECONDS,
+    interval: float = TRACE_ROW_POLL_INTERVAL_SECONDS,
+) -> int:
+    """Poll a COUNT query until it is positive or `timeout` elapses; return the last count.
+
+    Callers assert on the result, so a count that never appears still fails honestly.
+    """
+    started = time.monotonic()
+    deadline = started + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        count = query_count(
+            workspace, bearer, warehouse_id, statement, parameters, timeout=max(remaining, 60)
+        )
+        if count > 0 or time.monotonic() + interval >= deadline:
+            return count
+        time.sleep(interval)

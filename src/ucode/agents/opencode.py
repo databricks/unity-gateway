@@ -26,7 +26,8 @@ from ucode.databricks import (
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import mark_tool_managed, save_state
-from ucode.telemetry import agent_version, ug_version
+from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.workspace import workspace_headers
 
 from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
 from .request_tags import request_tags_header_value
@@ -304,11 +305,15 @@ def render_overlay(
     # provider `options`), since OpenCode's per-model `headers` win over the
     # provider-level ones after its own UA injection.
     ua_header = {
-        "User-Agent": f"ucode/{ug_version()} opencode/{agent_version('opencode')}",
+        "User-Agent": ucode_user_agent(ug_version(), f"opencode/{agent_version('opencode')}"),
     }
     request_tags = request_tags_header_value()
     if request_tags:
         ua_header[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
+    gateway_url = next(iter(opencode_base_urls.values()), None)
+    selector = workspace_headers(gateway_url) if gateway_url else {}
+    auth_headers.update(selector)
+    ua_header.update(selector)
 
     anthropic_models = opencode_models.get("anthropic") or []
     gemini_models = opencode_models.get("gemini") or []

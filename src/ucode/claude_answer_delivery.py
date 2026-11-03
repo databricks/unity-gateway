@@ -455,9 +455,13 @@ def run(argv: list[str], *, session_path: Path, stdin_prompt: bytes | None) -> i
         results = [event for event in events if event.get("type") == "result"]
         if output_format == "stream-json":
             for event in events:
-                print(json.dumps(event, ensure_ascii=False))
+                print(json.dumps(event, ensure_ascii=False), file=sys.__stdout__, flush=True)
         elif output_format == "json":
-            print(json.dumps(events if verbose else results[-1], ensure_ascii=False))
+            print(
+                json.dumps(events if verbose else results[-1], ensure_ascii=False),
+                file=sys.__stdout__,
+                flush=True,
+            )
         else:
             result = results[-1]
             if result.get("is_error"):
@@ -466,7 +470,7 @@ def run(argv: list[str], *, session_path: Path, stdin_prompt: bytes | None) -> i
                     file=sys.stderr,
                 )
             else:
-                print(result.get("result", ""))
+                print(result.get("result", ""), file=sys.__stdout__, flush=True)
         return _exit_status(proc.returncode) or (1 if failed else 0)
     finally:
         if buffered:

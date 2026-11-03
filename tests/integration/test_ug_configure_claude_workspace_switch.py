@@ -29,8 +29,8 @@ def test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch(
     """Scenario: configure the managed workspace, register its skills MCP connection, then
     configure a second real workspace in the same fresh home and use Claude there.
 
-    Expected: the switch warns once, removes the old skills server from Claude's real config and
-    the new workspace state, preserves the old workspace bucket, remains stable on repeat
+    Expected: the switch reports one removal, removes the old skills server from Claude's real
+    config and the new workspace state, preserves the old workspace bucket, remains stable on repeat
     configure, and Claude completes a real task against the second workspace. This covers the
     normal black-box cleanup path; injected subprocess failures stay in unit/component coverage.
     """
@@ -72,7 +72,8 @@ def test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch(
         "--disable-databricks-ai-tools",
         timeout=240,
     )
-    assert switched.stdout.count("Dropping 1 stale MCP entry") == 1, switched.stdout
+    removal = "Removed 1 MCP entry left over from previously-configured workspaces"
+    assert switched.stdout.count(removal) == 1, switched.stdout
     assert SKILLS_SERVER in switched.stdout, switched.stdout
     missing = session.run(
         "mcp", "get", SKILLS_SERVER, binary=session.which("claude"), timeout=60, ok=False
@@ -98,7 +99,7 @@ def test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch(
         "--disable-databricks-ai-tools",
         timeout=240,
     )
-    assert "Dropping 1 stale MCP entry" not in repeated.stdout, repeated.stdout
+    assert removal not in repeated.stdout, repeated.stdout
     still_missing = session.run(
         "mcp", "get", SKILLS_SERVER, binary=session.which("claude"), timeout=60, ok=False
     )

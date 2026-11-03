@@ -24,6 +24,7 @@ from .catalog_discovery_expectations import (
     OTHER_MODEL_SCHEMA,
 )
 from .helpers.constants import CLAUDE, CODEX
+from .helpers.desktop import assert_claude_desktop_unchanged, enable_claude_desktop
 from .helpers.evidence import (
     SessionEvidence,
     assert_claude_headless_model,
@@ -89,18 +90,25 @@ class TestCatalogDiscovery(BaseCujTest):
     def test_catalog_discovery_claude_picker_preserves_default(self, cuj):
         """Scenario: configure, launch ug claude, inspect its picker, then submit a task.
 
-        Expected: only Sonnet/Haiku/Kimi appear; Gemini and decoys are absent.
+        Expected: only Sonnet/Haiku/Kimi/GPT Luna appear; Gemini and decoys are absent.
         Dismissing the picker without a selection preserves Sonnet for the completed task.
+        Existing Desktop files remain unchanged: scoped aliases such as claude_haiku do not
+        match Desktop's Claude-family filter. CUJ1/CUJ2 check complete compatible profiles.
         """
         session, workspace, recorder = cuj
+        config_library = enable_claude_desktop(session, workspace.url)
         recorder.configure_session(session, ["configure", "--skip-upgrade"])
+        assert_claude_desktop_unchanged(session, config_library)
 
         parent_catalog = _catalog_display_names(workspace, CLAUDE, MODEL_SCHEMA)
         decoy_catalog = _catalog_display_names(workspace, CLAUDE, OTHER_MODEL_SCHEMA)
         assert set(parent_catalog) == {
             claude.discovery_model_id(model) for model in CLAUDE_MODELS
         }, parent_catalog
-        assert set(decoy_catalog) == {claude.discovery_model_id(CLAUDE_DECOY)}, decoy_catalog
+        assert set(decoy_catalog) == {
+            claude.discovery_model_id(CLAUDE_DECOY),
+            claude.discovery_model_id(CODEX_DECOY),
+        }, decoy_catalog
         default_display_name = parent_catalog[claude.discovery_model_id(CLAUDE_DEFAULT)]
 
         task = claude_file_task(session)
@@ -295,7 +303,7 @@ class TestCatalogDiscovery(BaseCujTest):
     def test_catalog_discovery_claude_explicit_model_completes_task(self, cuj, model):
         """Scenario: configure, then run a Claude print task with another compatible scoped model.
 
-        Expected: each Haiku/Kimi task completes with the explicitly requested model.
+        Expected: each Haiku/Kimi/GPT Luna task completes with the explicitly requested model.
         """
         session, _, recorder = cuj
         recorder.configure_session(session, ["configure", "--skip-upgrade"])

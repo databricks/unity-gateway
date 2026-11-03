@@ -31,7 +31,8 @@ from ucode.databricks import (
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import mark_tool_managed, save_state
-from ucode.telemetry import agent_version, ug_version
+from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.workspace import workspace_headers
 
 from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
 
@@ -256,8 +257,12 @@ def render_overlay(
     # The User-Agent must be set on each per-model `headers` entry; a
     # provider-level `headers["User-Agent"]` does not take effect.
     ua_header = {
-        "User-Agent": f"ucode/{ug_version()} kilo/{agent_version('kilo')}",
+        "User-Agent": ucode_user_agent(ug_version(), f"kilo/{agent_version('kilo')}"),
     }
+    gateway_url = next(iter(opencode_base_urls.values()), None)
+    selector = workspace_headers(gateway_url) if gateway_url else {}
+    auth_headers.update(selector)
+    ua_header.update(selector)
 
     anthropic_models = opencode_models.get("anthropic") or []
     gemini_models = opencode_models.get("gemini") or []

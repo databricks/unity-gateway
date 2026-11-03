@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -11,6 +12,7 @@ import threading
 import time
 import urllib.request
 from collections.abc import Callable, Mapping, MutableMapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
@@ -38,12 +40,11 @@ from ucode.constants import (
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
 )
-from ucode.custom_oauth import custom_oauth_cli_enabled, get_custom_client_token
+from ucode.custom_oauth import custom_oauth_cli_enabled, launch_token
 from ucode.databricks import (
     AnthropicModelCatalog,
     build_auth_token_argv,
     fetch_endpoint_rates,
-    get_databricks_token,
     list_anthropic_model_catalog,
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
@@ -69,13 +70,21 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
-from ucode.smart_routing.config import apply_config, resolve_environment
+from ucode.smart_routing.config import apply_config, apply_enabled_version, resolve_environment
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_note, print_warning
 
 LEGACY_STATE_KEY = "smart_routing_enabled"
 
 CODEX_INTERPOSER_LOG = APP_DIR / "codex-v2-interposer.log"
+
+# Native v2's default role hints assume direct tools even when code mode exposes them.
+CODEX_V2_COLLABORATION_GUIDANCE = """Use collaboration tools through the interface in their tool definitions. When listed in the code executor's `tools` namespace, invoke their exact declared names through `functions.exec`. When exposed as direct tools, call them directly.
+
+Use `spawn_agent` to create an agent, `followup_task` to start another turn on an existing agent, and `send_message` to send a message without starting a turn. The tool descriptions define valid task paths, history inheritance, model overrides, and concurrency limits. Full-history forks inherit the parent's model and effort. Set model or effort overrides only when the user, AGENTS.md, or skill instructions request them, and use `fork_turns="none"` with overrides.
+
+All agents share the current working directory and filesystem; coordinate edits. Messages identify their sender and recipient. Child final answers are delivered to their parent. Use `wait_agent` when a result is needed and no independent work remains; prefer longer waits to repeated polling.
+"""
 
 CLAUDE_TARGET_MODEL = "system.ai.claude-sonnet-4-6[1m]"  # TODO(lilly): replace with smart router.
 CLAUDE_PTY_LOG = APP_DIR / "claude-v2-pty.log"
@@ -124,19 +133,6 @@ def remove_smart_router_session_skills(agent: str) -> None:
             uninstall_agent_skill(skill, agent, config_io.APP_DIR.parent)
         except (OSError, RuntimeError, ValueError) as exc:
             print_warning(f"Could not remove the {skill} skill: {exc}")
-
-
-def _launch_token(state: dict, workspace: str) -> str:
-    custom_oauth = state.get("custom_oauth")
-    if custom_oauth_cli_enabled(custom_oauth) and isinstance(custom_oauth, dict):
-        return get_custom_client_token(
-            workspace,
-            custom_oauth["client_id"],
-            custom_oauth["redirect_url"],
-            scopes=custom_oauth["scopes"],
-            profile=custom_oauth.get("profile"),
-        )
-    return get_databricks_token(workspace, state.get("profile"))
 
 
 def _model_picker_catalog() -> AnthropicModelCatalog | None:
@@ -205,11 +201,29 @@ def first_prompt_routing_enabled(
     )
 
 
-def enable_smart_routing(
-    env: MutableMapping[str, str] | None = None, *, agent: str
-) -> dict[str, str | None]:
-    """Set the full smart-routing env var and return the prior value of every routing var."""
-    return override_smart_routing(True, env, agent=agent)
+@dataclass(frozen=True)
+class RoutingDescription:
+    """The agents a launch would route, as `ug smart-router-describe` prints them."""
+
+    # Bump on any incompatible change: launchers parse the printed JSON.
+    schema: int = field(default=1, init=False)
+    harnesses: tuple[str, ...]
+
+
+def describe_routing(env: MutableMapping[str, str] | None = None) -> RoutingDescription:
+    """The agents a launch with this environment would route.
+
+    Depends only on the environment, so callers may cache it per ug version and routing env:
+    a workspace's managed config and launch flags are not applied.
+    """
+    source = os.environ if env is None else env
+    return RoutingDescription(
+        harnesses=tuple(
+            agent
+            for agent in (AGENT_CLAUDE, AGENT_CODEX)
+            if smart_routing_enabled(source, default=False, agent=agent)
+        )
+    )
 
 
 def override_smart_routing(
@@ -219,13 +233,12 @@ def override_smart_routing(
     agent: str,
 ) -> dict[str, str | None]:
     """Set an explicit launch-scoped routing choice and return the prior values."""
+    if enabled:
+        return apply_enabled_version(env, agent=agent)
     target = os.environ if env is None else env
     previous = {var: target.get(var) for var in SMART_ROUTING_ENV_KEYS}
     previous.update(apply_config(target, agent=agent))
-    if enabled:
-        target[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
-    else:
-        target.update(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
+    target.update(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
     return previous
 
 
@@ -310,11 +323,6 @@ def _unwrapped_claude_model_id(model: str) -> str:
     return routing.unwrap_anthropic_gateway_model(model)
 
 
-def _claude_router_model_id(model: str) -> str:
-    """Unwrap an Anthropic gateway id and drop Claude Code's `[1m]` hint, then normalize."""
-    return routing.normalize_model(_unwrapped_claude_model_id(model).removesuffix("[1m]"))
-
-
 def _claude_model_overrides(model_ids: list[str]) -> dict[str, str]:
     overrides: dict[str, str] = {}
     prefix = "system.ai."
@@ -326,8 +334,12 @@ def _claude_model_overrides(model_ids: list[str]) -> dict[str, str]:
 
 def _routed_claude_agent_slug(model: str) -> str:
     canonical = _canonical_claude_model_id(model)
-    normalized = routing.normalize_model(canonical)
-    safe = "".join(character if character.isalnum() else "-" for character in normalized)
+    readable = canonical.rsplit("/", 1)[-1]
+    for prefix in ("databricks-", "system.ai."):
+        if readable.startswith(prefix):
+            readable = readable[len(prefix) :]
+            break
+    safe = "".join(character if character.isalnum() else "-" for character in readable.lower())
     slug = "-".join(part for part in safe.split("-") if part)
     digest = hashlib.sha256(canonical.encode()).hexdigest()[:8]
     return f"{CLAUDE_ROUTED_AGENT_PREFIX}{slug[:36]}-{digest}"
@@ -350,12 +362,20 @@ def _routed_claude_agent_definitions(model_ids: list[str]) -> dict[str, dict[str
 
 def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
     source = resolve_environment(env, agent=AGENT_CLAUDE)
+    isaac = shutil.which("isaac")
     return {
         **{key: source.get(key, "") for key in SMART_ROUTING_ENV_KEYS},
         # Native plugin options cannot represent null; preserve absent versus empty values.
         "unset": [key for key in SMART_ROUTING_ENV_KEYS if key not in source],
         "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
         "routeCommand": [],
+        "orchestratorInstructions": (
+            orchestrator.CLAUDE_AGENT_DESCRIPTION
+            if orchestrator.enabled(source, agent=AGENT_CLAUDE)
+            else ""
+        ),
+        "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
+        "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
     }
 
 
@@ -442,6 +462,11 @@ def _start_savings_price_refresh(
     ).start()
 
 
+def _claude_mod_launch_args(options: Mapping[str, object]) -> list[str]:
+    # Replayed prompt snapshots bypass tool.describe, even after cache invalidation.
+    return ["--system-prompt-snapshot", "off"] if options.get("orchestratorInstructions") else []
+
+
 def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
     """Write exact-model agents for launch-scoped loading through --plugin-dir."""
     write_json_file(
@@ -452,6 +477,24 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             "description": "Launch-scoped agents for Unity Gateway smart routing.",
             "author": {"name": "Databricks"},
             "userConfig": {
+                "orchestratorInstructions": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Orchestrator delegation instructions",
+                    "description": "Agent tool guidance for an eligible orchestration launch",
+                },
+                "isaacExecutable": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Isaac executable",
+                    "description": "Isaac CLI resolved at launch for feedback submission",
+                },
+                "isaacFeedbackDirectory": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Isaac feedback directory",
+                    "description": "Absolute directory for locally captured feedback",
+                },
                 "routeCommand": {
                     "type": "string",
                     "multiple": True,
@@ -537,18 +580,14 @@ def _request_claude_routing_decision(
     prompt: str,
     model_ids: list[str],
 ) -> tuple[routing.RoutingDecision | None, str | None]:
-    available: dict[str, str] = {}
-    for model in _canonical_claude_models(model_ids):
-        available.setdefault(_claude_router_model_id(model), model)
-    if not available:
+    route_options = routing.route_options_for(_canonical_claude_models(model_ids), "claude")
+    if not route_options:
         return None, "Anthropic models endpoint returned no Claude models"
-    route_options = [(model, "claude") for model in available]
     return routing.select_route(
         workspace,
         token,
         prompt,
         route_options,
-        lambda selected: available.get(_claude_router_model_id(selected)),
         router_name=routing.configured_router_name(),
         timeout=CLAUDE_ROUTE_SELECTION_TIMEOUT_S,
     )
@@ -748,7 +787,7 @@ def launch_claude(
         raise RuntimeError(
             "Smart routing needs a configured workspace; run `ucode configure claude` first."
         )
-    token = _launch_token(state, workspace)
+    token = launch_token(state, workspace)
     os.environ[OAUTH_TOKEN_ENV_VAR] = token
     # if modelPicker is defined, then skip model discovery.
     picker_catalog = _model_picker_catalog()
@@ -839,15 +878,16 @@ def launch_claude(
             # The savings pricer reads rates from this cache, since it runs after every turn and
             # can't wait on the network; the refresh below fills it.
             price_cache = pricing.price_cache_path(APP_DIR, workspace)
-            settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
-                "options"
-            ] = {
+            mod_options = {
                 **_claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env}),
                 "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),
                 **_claude_savings_launch_options(
                     launch_dir, price_cache=price_cache, baseline_session_start=route_first_prompt
                 ),
             }
+            settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
+                "options"
+            ] = mod_options
             if savings_enabled():
                 _start_savings_price_refresh(
                     workspace,
@@ -865,6 +905,7 @@ def launch_claude(
                 binary,
                 "--settings",
                 str(settings_path),
+                *_claude_mod_launch_args(mod_options),
                 *model_args,
                 "--plugin-dir",
                 str(plugin_dir),
@@ -940,7 +981,7 @@ def launch_codex(
             "Smart routing could not determine a starting Codex model for this workspace."
         )
 
-    os.environ[OAUTH_TOKEN_ENV_VAR] = _launch_token(state, workspace)
+    os.environ[OAUTH_TOKEN_ENV_VAR] = launch_token(state, workspace)
     catalog_models = custom_catalog_models()
     available_models = catalog_models or _cached_routing_models(state)
     if not available_models:
@@ -962,6 +1003,15 @@ def launch_codex(
         overlay["model_catalog_json"] = str(catalog_path)
     overlay["hooks"] = _v2_hooks(state, available_models)
     overlay["features.hooks"] = True
+    overlay["features.multi_agent_v2.non_code_mode_only"] = False
+    overlay["features.multi_agent_v2.root_agent_usage_hint_text"] = (
+        "You are /root, the primary agent coordinating the user's task.\n\n"
+        + CODEX_V2_COLLABORATION_GUIDANCE
+    )
+    overlay["features.multi_agent_v2.subagent_usage_hint_text"] = (
+        "You are a child agent completing the task assigned by your parent. "
+        "Your assigned task path identifies you.\n\n" + CODEX_V2_COLLABORATION_GUIDANCE
+    )
     session_env_path = _prepare_smart_router_session("codex")
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
@@ -1000,7 +1050,7 @@ def launch_codex(
             app_server_url,
             available_models=available_models,
             workspace=workspace,
-            token_provider=lambda: _launch_token(state, workspace),
+            token_provider=lambda: launch_token(state, workspace),
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
         )

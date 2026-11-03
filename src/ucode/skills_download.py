@@ -50,6 +50,7 @@ from ucode.ui import (
     prompt_yes_no,
     scrolling_checkbox,
 )
+from ucode.ui.interactive_picker import CatalogChoice, picker_details
 
 # `.claude/skills` (Claude) + `.agents/skills` (the alias other agents read).
 SKILL_BASE_DIR_NAMES = (".claude/skills", ".agents/skills")
@@ -639,17 +640,60 @@ def configure_selected_skills_download_command(fqns: list[str], path: str | None
 # --- Interactive picker (selective download) --------------------------------
 
 
-def _skill_download_choice(ref: SkillRef, roots: list[Path]) -> questionary.Choice:
-    """Picker row for one skill: value is its FQN, title flags an on-disk bundle.
+def _skill_download_choice(
+    ref: SkillRef,
+    roots: list[Path],
+    *,
+    workspace: str | None = None,
+    downloads: list[dict] | None = None,
+) -> questionary.Choice:
+    """Distinguish an attributed UC install from an unrelated bundle-name collision.
 
-    On-disk skills stay selectable, since re-downloading is a legitimate update and
-    the existing overwrite prompt confirms it. The detail footer previews the
-    description behind a bold bundle-name label (the row itself shows the FQN, so the
-    bundle name is the one identifier not otherwise on screen).
+    A checkmark requires this UC source's record at every target root and SKILL.md
+    still on disk. Older workspace-only records are usable only in the same workspace.
+    Installed skills remain selectable for updates; overwrite confirmation still applies.
     """
-    on_disk = " (on disk)" if existing_skill_on_disk(roots, ref.bundle_name) else ""
-    description = f"{ref.bundle_name}: {ref.description}" if ref.description else None
-    return questionary.Choice(title=f"{ref.fqn}{on_disk}", value=ref.fqn, description=description)
+    targets = {str((root / ref.bundle_name).resolve()) for root in roots}
+    records = list_downloaded() if downloads is None else downloads
+    attributed: set[str] = set()
+    for record in records:
+        if record.get("fqn") != ref.fqn or record.get("bundle_name") != ref.bundle_name:
+            continue
+        if ref.metastore_id:
+            if record.get("metastore_id") != ref.metastore_id:
+                continue
+        elif workspace is None or record.get("workspace", "").rstrip("/") != workspace.rstrip("/"):
+            continue
+        if ref.skill_id and record.get("skill_id") and record["skill_id"] != ref.skill_id:
+            continue
+        attributed.update(str(Path(directory).resolve()) for directory in record.get("dirs") or [])
+    installed = (
+        bool(targets)
+        and targets <= attributed
+        and all((Path(target) / "SKILL.md").is_file() for target in targets)
+    )
+    status = "✓ Installed" if installed else "✗ Not installed"
+    description = (
+        picker_details(
+            ref.fqn,
+            ref.description,
+            created_by=ref.created_by,
+            create_time=ref.create_time,
+            update_time=ref.uc_update_time,
+            bundle_name=ref.bundle_name,
+        )
+        + f"\nStatus: {status}"
+    )
+    if not installed and existing_skill_on_disk(roots, ref.bundle_name):
+        description += "\nLocal bundle: Already on disk; UC source does not match or installation is incomplete"
+    return CatalogChoice(
+        title=ref.fqn,
+        value=ref.fqn,
+        name=ref.securable_name,
+        location=f"{ref.catalog}.{ref.schema}",
+        status=status,
+        description=description,
+    )
 
 
 def _skills_download_background_loader(
@@ -660,8 +704,19 @@ def _skills_download_background_loader(
     def loader(
         append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
     ) -> str | None:
+        downloads_by_fqn: dict[str, list[dict]] = {}
+        for record in list_downloaded():
+            downloads_by_fqn.setdefault(record.get("fqn", ""), []).append(record)
+
         def on_skills(refs: list[SkillRef]) -> None:
-            append([_skill_download_choice(ref, roots) for ref in refs])
+            append(
+                [
+                    _skill_download_choice(
+                        ref, roots, workspace=workspace, downloads=downloads_by_fqn.get(ref.fqn, [])
+                    )
+                    for ref in refs
+                ]
+            )
 
         found, reason = list_all_skills(
             workspace, token, on_skills=on_skills, cancel_event=cancel_event
@@ -683,11 +738,12 @@ def prompt_for_skill_download_choices(
     selection = scrolling_checkbox(
         "Skills:",
         choices=[],
-        instruction="(space to toggle, ctrl-a all, enter to save, type to filter)",
+        instruction="(space toggle, ^A all, enter save, type filter, pgup/pgdn details)",
         style=picker_style(),
         background_loader=background_loader,
         loading_noun="skills",
         show_description=True,
+        table=True,
     ).ask()
     if selection is None:
         return None
