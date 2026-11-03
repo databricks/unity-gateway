@@ -40,6 +40,11 @@ export async function* streamEvents(
       throw new Error(`AI Gateway returned ${response.status}: ${(await response.text()).slice(0, 300)}`);
     }
   }
+  if (response.headers.get("content-type")?.startsWith("text/html")) {
+    await response.body.cancel();
+    // What a host that serves several workspaces answers when it can't tell which one is meant.
+    throw new Error("AI Gateway answered with a web page instead of the model's reply. Run `ug configure --agents copilot` again, then retry.");
+  }
   const decoder = new TextDecoder();
   let buffer = "";
   for await (const chunk of response.body) {

@@ -33,6 +33,8 @@ export interface Settings {
   readonly authCommand: string;
   /** The Model Provider Service the models belong to, or "" for the workspace's own models. */
   readonly provider: string;
+  /** Selects the workspace on a host that serves several; empty otherwise. */
+  readonly headers: Readonly<Record<string, string>>;
 }
 
 /** Routes a request to a Model Provider Service; its models aren't served without it. */
@@ -78,8 +80,14 @@ export const readConfig = (text: string | undefined): Settings => {
       })),
     authCommand: String(get("authCommand") ?? ""),
     provider: typeof get("provider") === "string" ? String(get("provider")) : "",
+    headers: stringValues(get("headers")),
   };
 };
+
+const stringValues = (value: unknown): Record<string, string> =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+    : {};
 
 /** The gateway attributes requests by this User-Agent. */
 export const userAgent = (copilotChatVersion: unknown): string =>
@@ -124,12 +132,12 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken,
   ): Promise<void> {
-    const { workspace, authCommand, provider } = this.settings();
+    const { workspace, authCommand, provider, headers: selector } = this.settings();
     this.tokens ??= new Tokens(authCommand, (expiresAt) => this.log(`Fetched a Databricks token (expires ${new Date(expiresAt).toISOString()})`));
     const turn = { model: model.id, messages, tools: options.tools ?? [], toolRequired: options.toolMode === vscode.LanguageModelChatToolMode.Required };
     const abort = new AbortController();
     const cancelled = token.onCancellationRequested(() => abort.abort());
-    const headers = { ...this.headers(), ...(provider ? { [PROVIDER_HEADER]: provider } : {}) };
+    const headers = { ...this.headers(), ...selector, ...(provider ? { [PROVIDER_HEADER]: provider } : {}) };
     const tokens = this.tokens;
     const stream = (path: string, body: object, extra: Record<string, string> = {}) =>
       streamEvents(workspace, path, body, tokens, { ...headers, ...extra }, abort.signal);

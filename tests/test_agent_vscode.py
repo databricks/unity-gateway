@@ -130,6 +130,14 @@ class TestConfigure:
         )
         assert "Next, in VS Code: 1. If VS Code is open," in printed
 
+    def test_selects_the_workspace_on_a_host_that_serves_several(self, code):
+        assert vscode.configure({**STATE, "workspace_id": "6051921418418893"})
+
+        assert code.config["headers"] == {
+            "X-Databricks-Org-Id": "6051921418418893",
+            "X-Databricks-Workspace-Id": "6051921418418893",
+        }
+
     def test_models_with_the_same_label_show_their_ids(self, code, monkeypatch):
         monkeypatch.setattr(
             vscode,

@@ -38,6 +38,7 @@ from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.system_cross_os import windows_program_files_dir
 from ucode.string_utils import model_picker_label
 from ucode.ui import console, print_heading, print_kv, print_note, print_warning
+from ucode.workspace import selector_headers
 
 EXTENSION_DIR = Path(__file__).resolve().parent.parent / "vscode" / "extension"
 EXTENSION_ID = "databricks.unity-gateway"
@@ -270,6 +271,9 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     }
     if provider:
         config["provider"] = provider
+    # A host that serves several workspaces answers a request without them with its sign-in page.
+    if selector := selector_headers(state.get("workspace_id")):
+        config["headers"] = selector
     source = f" from {provider or location}" if provider or location else ""
     try:
         print_kv(
