@@ -35,7 +35,7 @@ _CLAUDE_FAMILY_SLOTS = {
 }
 
 # Agents whose writers support the per-agent managed OTLP tracing flag.
-OTEL_TRACING_TOOLS = ("claude", "codex")
+OTEL_TRACING_TOOLS = ("claude", "codex", "copilot")
 
 # Agents that receive the config's harness-native `agent_native_settings`. Claude only, matching the
 # server: Codex's MCP lockdown is the requirements.toml [mcp_servers] allowlist, which ug doesn't

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import zipfile
 from pathlib import Path
@@ -347,6 +348,23 @@ class TestCopilotModels:
         assert "Skipping system.ai.gemini-4-argon from your workspace's managed config" in (
             _printed(capsys)
         )
+
+    def test_a_traced_workspace_gets_one_trace_receiver_across_configures(self, code):
+        state = self._state(copilot_otel_tracing=True)
+
+        assert vscode.configure(state)
+        first = code.config["otel"]
+        assert vscode.configure(state)
+
+        assert code.config["otel"] == first
+        assert state[vscode.OTEL_RECEIVER_STATE_KEY] == first
+        assert 0 < first["port"] < 65536
+        assert re.fullmatch(r"[\w-]{20,}", first["secret"])
+
+    def test_an_untraced_workspace_gets_no_trace_receiver(self, code):
+        assert vscode.configure(self._state())
+
+        assert "otel" not in code.config
 
     @pytest.mark.parametrize("default", [GPT, "gpt-6-luna"])
     def test_passes_the_managed_default_model_as_the_catalog_names_it(self, code, default):

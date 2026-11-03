@@ -366,6 +366,36 @@ class TestGatewayAuthProxyEndToEnd:
         assert req.header("x-api-key") is None
         assert req.header("Authorization") == "Bearer dbx-token"
 
+    def test_forwards_traces_and_drops_metrics_on_allowed_otel_paths(self, make_gateway):
+        gw = make_gateway()
+        traces, metrics = "/ai-gateway/otel/v1/traces", "/ai-gateway/otel/v1/metrics"
+        with _running_gateway_auth_proxy(
+            gw,
+            _counting_token("dbx-token"),
+            allowed_path_prefixes=(*gateway_proxy.GATEWAY_MODEL_PATH_PREFIXES, traces, metrics),
+            discarded_paths=(metrics,),
+        ) as proxy_url:
+            sent = httpx.post(
+                f"{proxy_url}{traces}",
+                headers={"x-api-key": _SESSION_SECRET, "Content-Type": "application/x-protobuf"},
+                content=b"\x0a\x00",
+                timeout=10,
+            )
+            dropped = httpx.post(
+                f"{proxy_url}{metrics}",
+                headers={"x-api-key": _SESSION_SECRET},
+                content=b"\x0a\x00",
+                timeout=10,
+            )
+            unauthenticated = httpx.post(f"{proxy_url}{metrics}", content=b"", timeout=10)
+        assert sent.status_code == 200
+        assert (dropped.status_code, dropped.content) == (200, b"")
+        assert unauthenticated.status_code == 401
+        assert [req.path for req in gw.requests] == [traces]
+        assert gw.requests[0].header("Authorization") == "Bearer dbx-token"
+        assert gw.requests[0].header("x-api-key") is None
+        assert gw.requests[0].body == b"\x0a\x00"
+
     @pytest.mark.parametrize("credential", [None, "Bearer wrong", "Basic session-secret"])
     def test_rejects_missing_or_wrong_secret_without_forwarding(self, make_gateway, credential):
         gw = make_gateway()
