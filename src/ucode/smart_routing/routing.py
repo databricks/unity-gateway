@@ -19,13 +19,14 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ucode.smart_routing.rationale import format_rationale
-from ucode.ug_headers import ug_headers
+from ucode.telemetry import ucode_user_agent, ug_version
+from ucode.ug_headers import parse_header_line, ug_headers
 from ucode.workspace import workspace_headers
 
 ROUTER_NAME = "stable"
@@ -201,6 +202,37 @@ def route_options_for(models: Iterable[str], harness: str) -> list[tuple[str, st
     return [(model, harness) for model in dict.fromkeys(models)]
 
 
+# Per-harness session and subagent header names that AI Gateway reads.
+_SESSION_HEADER_NAMES = {
+    "claude": ("x-claude-code-session-id", "x-claude-code-agent-id"),
+    "codex": ("session-id", "thread-id"),
+}
+
+
+def attribution_headers(
+    harness: str,
+    *,
+    session_id: Any = None,
+    agent_id: Any = None,
+    harness_headers: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Headers that attribute a routing call to the harness session and subagent that made it.
+
+    ``harness_headers`` are the custom headers the harness sends on its own inference requests;
+    without a User-Agent there, it names ucode. Session and agent IDs come from the hook payload.
+    Absent or unsendable values are omitted, never sent empty.
+    """
+    session_name, agent_name = _SESSION_HEADER_NAMES[harness]
+    ids = {session_name: session_id, agent_name: agent_id}
+    headers: dict[str, tuple[str, str]] = {}
+    for name, value in [*(harness_headers or {}).items(), *ids.items()]:
+        parsed = parse_header_line(f"{name}: {value}") if isinstance(value, str) else None
+        if parsed:
+            headers[parsed[0].casefold()] = parsed
+    headers.setdefault("user-agent", ("User-Agent", ucode_user_agent(ug_version())))
+    return dict(headers.values())
+
+
 def select_route(
     workspace: str,
     token: str,
@@ -209,6 +241,7 @@ def select_route(
     *,
     router_name: str,
     timeout: float = REQUEST_TIMEOUT_S,
+    attribution_headers: Mapping[str, str] | None = None,
 ) -> tuple[RoutingDecision | None, str | None]:
     """POST one ``routes:select`` request and return the router's pick.
 
@@ -229,6 +262,7 @@ def select_route(
         workspace.rstrip("/") + ROUTING_PATH,
         data=json.dumps(body).encode("utf-8"),
         headers={
+            **(attribution_headers or {}),
             **ug_headers(),
             **workspace_headers(workspace),
             "Authorization": f"Bearer {token}",

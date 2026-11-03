@@ -352,6 +352,48 @@ test('a turn that ends while the reply waits on a background agent keeps its car
   await final.unmount();
 });
 
+test('the router hears which subagent made the call, and nothing for the main loop', async ($, on) => {
+  const payloads: any[] = [];
+  const calls: any[] = [];
+  const spawns: any[] = [];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', ($, e) => {
+    const payload = JSON.parse(e.init.stdin);
+    payloads.push(payload);
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: 'system.ai.claude-sonnet-5', rationale: 'Small task',
+    }) } };
+  });
+  on('tool.call', ($, e) => { calls.push(e); return { result: 'ok' }; });
+  on('agent.spawn', ($, e) => { spawns.push(e); return { model: 'claude-sonnet-5', agentId: `child-${e.tool_use_id}` }; });
+  on('fs.write', () => ({ value: undefined }));
+  on('ui.log', () => ({ value: undefined }));
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'call-main', ...originalInput });
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'call-nested', agentId: 'agent-parent', ...originalInput });
+  expect('agent_id' in payloads[0]).toBe(false);
+  expect(payloads[0].tool_input).toEqual(originalInput);
+  expect(payloads[1].agent_id).toBe('agent-parent');
+  expect(payloads[1].tool_input).toEqual(originalInput);
+  // The reviewed call is forwarded untouched; the model is applied at agent.spawn.
+  expect(calls).toEqual([
+    { tool: 'Agent', tool_use_id: 'call-main', ...originalInput },
+    { tool: 'Agent', tool_use_id: 'call-nested', agentId: 'agent-parent', ...originalInput },
+  ]);
+  const spawn = (tool_use_id: string, parentAgentId: string) => ({
+    tool_use_id, prompt: originalInput.prompt, description: originalInput.description,
+    subagentType: originalInput.subagent_type, parentModel: 'claude-opus-4-8',
+    provider: { plugin: 'engine', tier: 'core' as const }, background: false, fork: false,
+    name: 'caller-address', permissionMode: 'default' as const,
+    parentAgentId, cwd: '/workspace',
+  });
+  await $.agent.spawn(spawn('call-main', 'main'));
+  await $.agent.spawn(spawn('call-nested', 'agent-parent'));
+  expect(spawns).toEqual([
+    { ...spawn('call-main', 'main'), model: 'system.ai.claude-sonnet-5' },
+    { ...spawn('call-nested', 'agent-parent'), model: 'system.ai.claude-sonnet-5' },
+  ]);
+});
+
 for (const [name, result, warningCount] of [
   ['disabled', { value: { exitCode: 0, stdout: '', stderr: '' } }, 0],
   ['command failure', { value: { exitCode: 1, stdout: '', stderr: 'failure' } }, 1],
