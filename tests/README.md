@@ -632,6 +632,9 @@ Managed-config selection cases in `test_cli.py` check that a plain configure sti
 enabled agents, while explicit `--agents` installs only the requested enabled subset. Disabled
 requests warn when an enabled subset remains and fail before installation when none remains;
 unrequested agents are not reported as configuration failures. These are component checks.
+`integration/test_ug_configure_selected_managed_agents.py` exercises the managed-fixture input
+enabling Claude, Codex, and Pi against the real workspace. Selecting only Claude must leave
+Codex's generated config and Pi's binary/files absent and complete a real TUI file-reading task.
 
 `test_claude_smart_routing_v2.py` checks plugin-qualified names, exact model
 definitions, and temporary plugin loading in both routing modes. The GLM-to-Haiku
