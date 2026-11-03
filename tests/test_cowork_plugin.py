@@ -690,9 +690,10 @@ def test_revert_retains_owned_files_when_claude_cli_is_missing(tmp_path, monkeyp
     assert state_path.exists()
 
 
-def test_connector_skill_description_is_bounded_with_many_connectors(tmp_path):
+@pytest.mark.parametrize("code", [False, True])
+def test_connector_skill_description_is_bounded_with_many_connectors(tmp_path, code):
     names = [f"connector_{i:03}_with_a_long_service_name" for i in range(100)]
-    cowork._write_connector_skill(tmp_path, names)
+    cowork._write_connector_skill(tmp_path, names, code=code)
     text = (tmp_path / cowork.CONNECTOR_SKILL_NAME / "SKILL.md").read_text()
     description = json.loads(text.splitlines()[2].removeprefix("description: "))
     assert len(description) <= 1024

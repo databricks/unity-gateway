@@ -77,6 +77,7 @@ def configure_code(mcp_servers: list[dict]) -> bool:
         marketplace_name=CODE_MARKETPLACE_NAME,
         description="Unity Gateway connector guidance for Claude Code",
         connector_names=server_names,
+        code=True,
     )
     config_io.atomic_write_json(state_path, {"version": 1, "config_root": str(config_root)})
     _install_plugin(
@@ -389,6 +390,7 @@ def _write_marketplace(
     marketplace_name: str = MARKETPLACE_NAME,
     description: str = "Unity Gateway workspace skills and MCP servers for Cowork",
     connector_names: list[str] | None = None,
+    code: bool = False,
 ) -> None:
     marketplace_root.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(
@@ -427,7 +429,7 @@ def _write_marketplace(
         _copy_skills(staging_plugin / "skills", skill_records)
         names = list(mcp_config["mcpServers"]) if connector_names is None else connector_names
         if names:
-            _write_connector_skill(staging_plugin / "skills", names)
+            _write_connector_skill(staging_plugin / "skills", names, code=code)
 
         if backup.exists():
             shutil.rmtree(backup)
@@ -491,7 +493,9 @@ def _connector_hooks(
     }
 
 
-def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
+def _write_connector_skill(
+    destination: Path, server_names: list[str], *, code: bool = False
+) -> None:
     # Skill descriptions are in context from the first turn; plugin MCP tools connect
     # lazily, so without this Claude asks whether a connector exists instead of using it.
     skill_dir = destination / CONNECTOR_SKILL_NAME
@@ -500,8 +504,8 @@ def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
     connectors = ", ".join(f"`{name}`" for name in server_names)
     prefix = (
         "Use for requests about these Unity Gateway connectors, including after a break. "
-        "Check current tools and call a relevant available tool before answering. "
-        "Load this skill for missing tools or sign-in recovery; never stop at a promise to retry. "
+        "Load this skill before the first connector call for tool discovery and sign-in recovery. "
+        "Loaded tools do not prove authentication; resolve a reported sign-in requirement first. "
         "Connectors: "
     )
     suffix = "."
@@ -513,16 +517,56 @@ def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
             break
         visible.append(f"`{name}`")
     description = prefix + (", ".join(visible) or "configured workspace services") + suffix
+    code_auth = (
+        (
+            "## Claude Code and Desktop Code tab authentication\n\n"
+            "Before the first service call, check current connection/authentication status even "
+            "if tool definitions are cached. If no status is exposed, resolve the installed Claude "
+            "CLI's absolute executable path through an exposed shell and run its `mcp list` once. "
+            "Keep the session's working directory and CLAUDE_CONFIG_DIR for all CLI commands. "
+            "Use the requested service's registration from the configured list below; a similarly "
+            "named connector on another MCP server has separate authentication.\n\n"
+            "If status says `Needs authentication`, or discovery or a tool result requires sign-in, "
+            "authenticate before calling service tools. Prefer the connector's exact exposed "
+            "`authenticate` tool. Native HTTP OAuth may have no such tool: check the resolved "
+            "CLI's `mcp login --help`, then run the quoted executable with "
+            "`mcp login <registered-name>` once if supported. Use the exact native registration "
+            "name, not a Cowork alias or tool name. Relay browser URL/callback instructions; "
+            "do not read credential files or copy tokens. Do not start another login while one "
+            "is pending.\n\n"
+            "After confirmed sign-in success, rediscover tools and resume the task. If tools stay "
+            "absent, use an exposed reconnect action if available and the bounded waits below; "
+            "report when a new session is needed instead of repeating login. If the CLI is missing, "
+            "login is unsupported, or user interaction is required, explain the blocker and "
+            "direct the user to that server's Authenticate button if Code displays one. This "
+            "button is a client action, not an MCP tool. The interactive terminal Claude Code "
+            "fallback is `/mcp`, select the registered server, then Authenticate; `/mcp` is not "
+            "a shell command. Failed, canceled, or timed-out login "
+            "is not success. `Waiting for the result` alone does not establish an auth failure; "
+            "do not start duplicate service calls or login loops based on that message.\n\n"
+        )
+        if code
+        else ""
+    )
     guidance = (
         "Act on the requested connector in this turn, including after a break. Do not ask "
         "whether to check or retry. Never end the turn promising to wait or retry: perform "
-        "the action. Old connection-status notices do not establish current availability.\n\n"
+        "the action. If sign-in needs user interaction, explain what is needed and stop service "
+        "calls until it succeeds. Old connection-status notices do not establish current "
+        "availability.\n\n"
+        f"{code_auth}"
         "1. Check the tools exposed now. Use supported discovery if available (`ToolSearch` only "
         "if exposed). Use exact exposed or discovered tool names only; plugin/catalog search "
-        "results alone do not make service tools callable. Call a relevant service tool if present, "
-        "even if an earlier notice says the connector disconnected.\n"
-        "2. If only the connector's `authenticate` tool appears, call that exact tool once.\n"
-        "3. If no matching tools are exposed at startup, after resume, or while `pending`, your "
+        "results alone do not make service tools callable. Check any current authentication "
+        "status before a service call. A current sign-in requirement takes priority over "
+        "available tool definitions; use the client's authentication flow first. Otherwise, "
+        "call a relevant service tool if present, even if an earlier notice says the connector "
+        "disconnected.\n"
+        "2. If the connector requires sign-in and exposes an `authenticate` tool, call that exact "
+        "tool once, even when service tools are also listed. If only `authenticate` appears, "
+        "call it once.\n"
+        "3. If no matching tools are exposed at startup, after resume, or while `pending`, and "
+        "no current sign-in requirement is reported, your "
         "next action is an actual wait: wait 5 seconds by running `sleep 5` through an exposed "
         "shell or an exposed wait tool, then recheck tools. If they are still missing, wait "
         "another 5 seconds and recheck once more. Stop waiting as soon as tools appear.\n"
@@ -551,8 +595,9 @@ def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
         "same turn. Do not ask the user to send another message. If sign-in is canceled, fails, "
         "or times out, explain the observed failure and the "
         "recovery instructions returned by the tool. Do not claim success.\n\n"
-        "If no authentication tool is available, relay any sign-in link or recovery instructions "
-        "returned by the connector. Do not invent a settings path or assume an access denial or "
+        "If authentication cannot be completed with the client's supported actions, relay any "
+        "sign-in link or recovery instructions returned by the connector. Do not invent a "
+        "settings path or assume an access denial or "
         "generic tool failure means the user's token expired."
     )
     skill_dir.mkdir(parents=True)

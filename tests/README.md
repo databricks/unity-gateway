@@ -374,7 +374,8 @@ execution remains unverified.
 
 `test_code_plugin.py` covers the Code-scoped UG connector plugin with real
 files and controlled native CLI boundaries: original registration names, Claude-only
-filtering, no duplicate MCP servers or downloaded skills, no Cowork hooks,
+filtering, Code-only native OAuth instructions, no duplicate MCP servers or downloaded skills,
+no Cowork hooks,
 refresh after workspace changes and last-connector removal, scoped cleanup,
 repeat cleanup, saved-root cleanup even after source deletion, config-root changes,
 retained source after a failed removal, dry-run behavior, and
@@ -387,7 +388,8 @@ alongside every seeded user setting; unexpected additions or changes still fail.
 
 `test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
 generated marketplace/plugin/MCP manifests, the generated connector skill naming Claude-only
-MCP servers with its two 5-second retries and one sign-in recovery attempt for access/IP
+MCP servers with its two 5-second retries, bounded descriptions and full connector lists for
+both Code and Cowork, and one sign-in recovery attempt for access/IP
 denials with a stop on persistent denial, the generated `SessionStart` hook command,
 current-workspace managed-skill selection,
 Claude-only MCP filtering, absolute proxy executables, saved PAT mode, custom-OAuth refusal,
@@ -410,9 +412,13 @@ before the break. Assertions require actual tool calls and an answer containing 
 returned only by the synthetic Slack tool. The missing-tools scenario requires both real
 five-second waits and rejects invented reconnect/sign-in instructions. An idle-resume case
 shows only the skill description plus the `UserPromptSubmit` hook note and requires Claude to
-wait and use Slack instead of trusting the disconnect notice. Model requests are not
-retried. Slack tools are synthetic to isolate skill compliance from connector credentials;
-these are not native Cowork, Slack, proxy reconnect, or Desktop sleep/resume tests.
+wait and use Slack instead of trusting the disconnect notice. Code cases start with cached
+Gmail tools and require successful authentication before service calls, through either
+native HTTP CLI login or a proxy's exposed authentication tool. Cancellation must finish
+without calling Gmail; login and service calls in the same model response are rejected.
+Model requests are not retried. Connector tools and CLI results are synthetic to isolate
+skill compliance from credentials; these are not native Desktop OAuth, Gmail, Cowork,
+proxy reconnect, or sleep/resume tests.
 
 The suite is excluded from default collection. Run it with an explicitly chosen workspace,
 profile, and exact Claude model-service name; missing inputs fail rather than skip:

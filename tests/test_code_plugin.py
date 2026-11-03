@@ -74,8 +74,23 @@ def test_code_plugin_uses_native_names_without_duplicate_servers_or_hooks(code_p
     assert "`slack`" not in skill
     assert "codex" not in skill
     assert "wait 5 seconds" in skill
+    assert "mcp login <registered-name>" in skill
+    assert "CLAUDE_CONFIG_DIR" in skill
     assert calls[-1] == ["plugin", "install", cowork.CODE_PLUGIN_ID, "--json"]
     assert installed == {"personal@other", cowork.PLUGIN_ID, cowork.CODE_PLUGIN_ID}
+
+
+def test_native_auth_guidance_is_scoped_to_code(code_plugins):
+    cowork.configure_code([_server("system-ai-gmail")])
+    code_skill = (_plugin_root() / "skills" / cowork.CONNECTOR_SKILL_NAME / "SKILL.md").read_text()
+    cowork_skill_root = cowork.config_io.APP_DIR / "cowork-skills"
+    cowork._write_connector_skill(cowork_skill_root, ["gmail"])
+    cowork_skill = (cowork_skill_root / cowork.CONNECTOR_SKILL_NAME / "SKILL.md").read_text()
+
+    assert "`system-ai-gmail`" in code_skill
+    assert "mcp login <registered-name>" in code_skill
+    assert "mcp login" not in cowork_skill
+    assert "`gmail`" in cowork_skill
 
 
 def test_code_plugin_refresh_replaces_names_and_removes_stale_guidance(code_plugins):

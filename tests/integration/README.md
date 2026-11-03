@@ -50,7 +50,8 @@ and capability-hook activation are not covered here; interactive selection is un
 
 `../test_code_plugin.py` covers the Code-scoped UG connector plugin with real
 files and controlled native CLI boundaries: original registration names, Claude-only
-filtering, no duplicate MCP servers or downloaded skills, no Cowork hooks,
+filtering, Code-only native OAuth instructions, no duplicate MCP servers or downloaded skills,
+no Cowork hooks,
 refresh after workspace changes and last-connector removal, scoped cleanup,
 repeat cleanup, saved-root cleanup even after source deletion, config-root changes,
 retained source after a failed removal, dry-run behavior, and
@@ -600,7 +601,8 @@ a repeated revert also returns 0. This does not establish native Desktop coverag
 
 `../test_cowork_plugin.py` covers Cowork-root discovery, generated plugin contents,
 scoped Claude plugin commands, install/update selection, PAT/custom-OAuth behavior, and
-owned-file cleanup. Alias checks cover short UC names, unchanged proxy routing, custom-name
+owned-file cleanup. It checks bounded skill descriptions and full connector lists for both
+Code and Cowork. Alias checks cover short UC names, unchanged proxy routing, custom-name
 preservation, order-independent collisions, and repeated replacement of old keys.
 Manifest checks require the `ug` name and display name in both manifests.
 Legacy-registration component checks cover replacement after successful install/update,
@@ -623,9 +625,12 @@ native Cowork browser recovery.
 Generated-guidance checks include one sign-in attempt for access/IP denials and stopping
 authentication retries if the denial persists. They verify the instructions, not model compliance.
 The separately selected `../connector_behavior/` suite tests model compliance using a real Claude
-model and synthetic Slack tools: available tools despite a stale notice, tools appearing after
-an actual wait, and tools absent through the wait limit. It does not establish native Desktop
-sleep/resume, discovery, or proxy reconnection coverage. Run instructions and explicit
+model and synthetic connector tools: available Slack tools despite a stale notice, tools appearing
+after an actual wait, and tools absent through the wait limit. Code cases require sign-in before
+cached Gmail tools are called, with native HTTP CLI login or proxy authentication. Successful
+sign-in resumes the task; cancellation stops without a service call. CLI results are synthetic;
+these cases do not establish native Desktop OAuth, Gmail, sleep/resume, discovery, or proxy
+reconnection coverage. Run instructions and explicit
 workspace/profile/model requirements are in `../README.md`.
 Gmail/Calendar component regressions cover service-scoped login URLs in failed tool results
 and structured login elicitations: automatic sign-in, one request replay, cancellation,
