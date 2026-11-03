@@ -18,7 +18,11 @@ cleans up the files when Claude exits.
 The same entry point routes Agent/Task calls in a native `tool.call` hook. It pipes the
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
 the `routeCommand` plugin option, and continues the call with the returned input. The
-matching Agent row shows a spinner and elapsed seconds while the router answers. Claude
+display label uses a random animal from a list of 100, without repeats until the list
+is exhausted; later cycles append `2`, `3`, and so on. Each call keeps its name while
+the plugin is loaded. Only the render label changes: execution inputs and audit IDs
+stay intact. Parallel decision cards use the same animal names beside their tasks.
+The matching Agent row shows a spinner and elapsed seconds while the router answers. Claude
 hides that row once a second Agent call joins it, so while any call is routing, the turn's
 spinner line also reads `Selecting a model… Ns` or `Selecting models for N agents… Ns`,
 timed from the oldest waiting call; Claude's own glyph and counters stay.

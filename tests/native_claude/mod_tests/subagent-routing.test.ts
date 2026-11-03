@@ -16,6 +16,51 @@ const reply = (id: string) => ({
   ...panel, component: 'AssistantMessage' as const, requestId: id,
   props: { text: 'reply', isFirstOfReply: true },
 });
+
+test('animal names stay distinct and stable without changing routed calls or row controls', async ($, on) => {
+  const input = { ...originalInput, subagent_type: 'ug-smart-router:ucode-route-sonnet-hash', run_in_background: true };
+  const names: string[] = [];
+  const forwarded: any[] = [];
+  const displayInputs: any[] = [];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', ($, event) => {
+    expect(JSON.parse(event.init.stdin).tool_input).toEqual(input);
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: 'system.ai.claude-haiku-5-5', rationale: 'Selected for the task',
+      updatedInput: { ...input, subagent_type: 'ug-smart-router:ucode-route-haiku-hash' },
+    }) } };
+  });
+  on('tool.call', ($, event) => { forwarded.push(event); return { result: 'ok' }; });
+  on('ui.render', ($, event) => {
+    displayInputs.push(event.props);
+    return { type: 'Text', props: {}, children: [`${event.props.tool}(${event.props.input.description}) · Backgrounded agent`] };
+  });
+
+  for (let index = 0; index < 101; index++) {
+    const id = `animal-${index}`;
+    await $.tool.call({ tool: 'Agent', tool_use_id: id, ...input });
+    const event = { ...row(id), props: { ...row(id).props, input } };
+    for (let render = 0; render < 2; render++) {
+      const mounted = await $.ui.mount(event);
+      const displayed = displayInputs[displayInputs.length - 1];
+      const name = displayed.tool;
+      expect(name).toMatch(/^[A-Z][a-z]+(?: 2)?$/);
+      expect(displayed).toEqual({ ...event.props, tool: name });
+      expect(event.props.input).toEqual(input);
+      expect(await mounted.find({ type: 'Text', text: /Backgrounded agent/ })).toBeDefined();
+      expect(await mounted.find({ type: 'Text', text: 'claude-haiku-5-5' })).toBeDefined();
+      expect(await mounted.find({ type: 'Text', text: /ucode-route-|ug-smart-router:/ })).toBeUndefined();
+      if (render === 0) names.push(name);
+      else expect(name).toBe(names[index]);
+      await mounted.unmount();
+    }
+    expect(forwarded[index]).toEqual({ ...input, subagent_type: 'ug-smart-router:ucode-route-haiku-hash', tool: 'Agent', tool_use_id: id });
+  }
+  expect(new Set(names).size).toBe(101);
+  expect(names.slice(0, 100).every((name) => !name.includes(' '))).toBe(true);
+  expect(names[100]).toMatch(/ 2$/);
+});
+
 test('a lone call keeps its decision under its own row and draws no card', async ($, on) => {
   const calls: any[] = [];
   const logs: string[] = [];
@@ -253,13 +298,17 @@ test('a waiting call shows a spinner on its row and its card keeps the routing t
   });
   on('tool.call', () => ({ result: 'ok' }));
   let seenSpinner: any;
+  const seenNames = new Map<string, string>();
   on('ui.render', ($, e) => {
+    if (e.component === 'ToolUse') seenNames.set(e.requestId, e.props.tool);
     if (e.component !== 'Spinner') return { type: 'Text', props: {}, children: ['original Agent row'] };
     seenSpinner = e.props;
     return { type: 'Text', props: {}, children: [e.props.message ?? e.props.word] };
   });
   const call = $.tool.call({ tool: 'Agent', tool_use_id: 'call-a', ...originalInput });
   const waiting = await $.ui.mount(row('call-a'));
+  const firstName = seenNames.get('call-a');
+  expect(firstName).toMatch(/^[A-Z][a-z]+$/);
   expect(await waiting.find({ type: 'Text', text: 'Selecting a model… 0s' })).toBeDefined();
   await waiting.unmount();
   now += 2_500;
@@ -281,12 +330,16 @@ test('a waiting call shows a spinner on its row and its card keeps the routing t
   await call;
   await parallel;
   const done = await $.ui.mount(row('call-a'));
+  expect(seenNames.get('call-a')).toBe(firstName);
+  expect(seenNames.get('call-b')).not.toBe(firstName);
   expect(await done.find({ type: 'Text', text: /Selecting a model|Selected Model/ })).toBeUndefined();
   await done.unmount();
   const idle = await $.ui.mount(spinner);
   expect(await idle.find({ type: 'Text', text: 'Genieing' })).toBeDefined();
   await idle.unmount();
   const cards = await $.ui.mount(reply('after'));
+  expect(await cards.find({ type: 'Text', text: firstName! })).toBeDefined();
+  expect(await cards.find({ type: 'Text', text: seenNames.get('call-b')! })).toBeDefined();
   expect(await cards.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();
   expect(await cards.find({ type: 'Text', text: ' (routed in 3.2s)' })).toBeDefined();
   await cards.unmount();

@@ -1,6 +1,19 @@
 import type { On, PluginOptions } from 'claude-code'
 
-type RoutingRecord = { task: string; model: string; rationale: string; seconds?: number }
+type RoutingRecord = { name: string; task: string; model: string; rationale: string; seconds?: number }
+
+const ANIMALS = [
+  'Otter', 'Panda', 'Lynx', 'Fox', 'Badger', 'Beaver', 'Bison', 'Bobcat', 'Camel', 'Caribou',
+  'Cheetah', 'Chipmunk', 'Cougar', 'Coyote', 'Deer', 'Dingo', 'Dolphin', 'Donkey', 'Elephant', 'Elk',
+  'Ferret', 'Gazelle', 'Giraffe', 'Goat', 'Gopher', 'Gorilla', 'Hamster', 'Hare', 'Hedgehog', 'Hippo',
+  'Horse', 'Hyena', 'Ibex', 'Impala', 'Jaguar', 'Kangaroo', 'Koala', 'Lemur', 'Leopard', 'Lion',
+  'Llama', 'Marmot', 'Meerkat', 'Mink', 'Mole', 'Mongoose', 'Moose', 'Mouse', 'Narwhal', 'Ocelot',
+  'Okapi', 'Orca', 'Pangolin', 'Platypus', 'Porcupine', 'Possum', 'Puma', 'Quokka', 'Rabbit', 'Raccoon',
+  'Reindeer', 'Rhino', 'Seal', 'Sloth', 'Squirrel', 'Tapir', 'Tiger', 'Vole', 'Walrus', 'Warthog',
+  'Weasel', 'Whale', 'Wolf', 'Wombat', 'Yak', 'Zebra', 'Albatross', 'Crane', 'Crow', 'Dove',
+  'Eagle', 'Falcon', 'Finch', 'Flamingo', 'Heron', 'Ibis', 'Jay', 'Kestrel', 'Kiwi', 'Lark',
+  'Magpie', 'Osprey', 'Owl', 'Parrot', 'Pelican', 'Penguin', 'Puffin', 'Raven', 'Robin', 'Swan',
+]
 
 const shortModel = (model: string): string => model.replace(/^system\.ai\./, '').replace(/^databricks-/, '')
 // Claude's own spinner glyphs, played forwards then back as Claude does.
@@ -51,7 +64,7 @@ const card = ($: any, e: any, record: RoutingRecord) => {
     flexDirection: 'column',
     paddingLeft: 2,
     marginBottom: 1,
-    children: [Text({ bold: true, children: [record.task] }), ...selection($, e, record, '↳ ', 2)],
+    children: [Text({ bold: true, children: [record.name, ' — ', record.task] }), ...selection($, e, record, '↳ ', 2)],
   })
 }
 
@@ -66,6 +79,8 @@ export function endSubagentRoutingTurn(aborted: boolean): void {
 }
 
 export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
+  const names = new Map<string, string>()
+  const unusedNames = [...ANIMALS]
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
   const pending = new Map<string, number | undefined>()
   // Claude folds parallel Agent rows into its own block, which no hook reaches, so a call
@@ -85,6 +100,12 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     let route
     let spinner: { cancel: () => void } | undefined
     if (tool_use_id) {
+      if (!names.has(tool_use_id)) {
+        if (!unusedNames.length) unusedNames.push(...ANIMALS)
+        const animal = unusedNames.splice(Math.floor(Math.random() * unusedNames.length), 1)[0]
+        const cycle = Math.floor(names.size / ANIMALS.length)
+        names.set(tool_use_id, cycle ? `${animal} ${cycle + 1}` : animal)
+      }
       // Parallel calls start together, so one still routing means this call is not alone.
       if (pending.size) {
         for (const id of pending.keys()) {
@@ -131,6 +152,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       pending.delete(tool_use_id)
       if (route) {
         records.set(tool_use_id, {
+          name: names.get(tool_use_id)!,
           task: input.description || input.subagent_type || tool,
           model: shortModel(route.model),
           rationale: route.rationale,
@@ -145,8 +167,12 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   })
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    const original = await next(e)
     const record = records.get(e.requestId)
+    const name = names.get(e.requestId)
+    const original = await next(name && (record || pending.has(e.requestId)) ? {
+      ...e,
+      props: { ...e.props, tool: name },
+    } : e)
     if (!record && !pending.has(e.requestId)) return original
 
     const { Box, Text } = $.ui.resolve(e)
@@ -164,8 +190,6 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       })] })
     }
     if (grouped.has(e.requestId)) return original
-    // Claude's row can name only the agent type, so the routed model is always shown,
-    // with the reason aligned under "Selected Model" after the arrow.
     return Box({ flexDirection: 'column', children: [original, ...selection($, e, record, '  ↳ ', 4)] })
   })
 

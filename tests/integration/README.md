@@ -1,7 +1,9 @@
 # Integration tests
 
-Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
-its Agent row, parallel calls as cards above the parent's next reply in call order, calls
+Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
+before numbered reuse, stable names during routing and in parallel cards, and unchanged
+execution inputs and row controls. They cover a lone call's decision under its Agent row,
+parallel calls as cards above the parent's next reply in call order, calls
 still routing waiting for a later reply, distinct
 IDs for identical tasks, pending row and turn-spinner routing timers, and disabled/failed routing. These are not live
 parallel-agent TUI or gateway checks.
