@@ -234,7 +234,7 @@ class TestOpen:
         monkeypatch.setattr(
             cli_mod, "load_state", lambda: {"workspace": "example.cloud.databricks.com/"}
         )
-        monkeypatch.setattr(cli_mod.webbrowser, "open", opened)
+        monkeypatch.setattr(cli_mod, "open_in_browser", opened)
 
         result = runner.invoke(app, ["open"])
 
@@ -246,7 +246,7 @@ class TestOpen:
         monkeypatch.setattr(
             cli_mod, "load_state", lambda: {"workspace": "https://example.cloud.databricks.com"}
         )
-        monkeypatch.setattr(cli_mod.webbrowser, "open", lambda url: False)
+        monkeypatch.setattr(cli_mod, "open_in_browser", lambda url: False)
 
         result = runner.invoke(app, ["open"])
 
@@ -256,7 +256,7 @@ class TestOpen:
     def test_requires_configured_workspace(self, monkeypatch):
         opened = MagicMock()
         monkeypatch.setattr(cli_mod, "load_state", lambda: {})
-        monkeypatch.setattr(cli_mod.webbrowser, "open", opened)
+        monkeypatch.setattr(cli_mod, "open_in_browser", opened)
 
         result = runner.invoke(app, ["open"])
 

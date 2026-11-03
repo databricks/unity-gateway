@@ -12,19 +12,34 @@ from ucode.os_compatibility import subprocess_cross_os
 __all__ = ["open_in_browser"]
 
 _OPEN_TIMEOUT_SECONDS = 10
+# Console browsers webbrowser may pick on a headless box; they "succeed" without showing anything.
+_TEXT_BROWSERS = frozenset({"www-browser", "lynx", "links", "elinks", "w3m"})
 
 
 def open_in_browser(url: str) -> bool:
     """Open ``url`` in the default browser; return whether a browser accepted it.
 
     ``webbrowser`` runs in a child process with no stdin so a terminal browser (lynx, w3m) picked on
-    a headless Linux box cannot take over the user's terminal. WSL has no Linux browser by default,
-    so it falls back to ``wslview`` to reach the Windows one.
+    a headless Linux box cannot take over the user's terminal. Headless Linux (SSH, no display, no
+    forwarding ``BROWSER``) returns False up front, since a console browser would falsely report
+    success. WSL has no Linux browser by default, so it falls back to ``wslview``.
     """
-    if _open_with_webbrowser(url):
+    if _is_wsl():
+        if _open_with_webbrowser(url):
+            return True
+        wslview = shutil.which("wslview")
+        return bool(wslview) and _run_quietly([wslview, url])
+    if sys.platform == "linux" and not _linux_can_show_browser():
+        return False
+    return _open_with_webbrowser(url)
+
+
+def _linux_can_show_browser() -> bool:
+    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
         return True
-    wslview = shutil.which("wslview") if _is_wsl() else None
-    return bool(wslview) and _run_quietly([wslview, url])
+    # Remote editors (e.g. VS Code over SSH) set BROWSER to a helper that opens the local browser.
+    browser = os.environ.get("BROWSER", "").split(os.pathsep)[0].strip()
+    return bool(browser) and os.path.basename(browser.split()[0]) not in _TEXT_BROWSERS
 
 
 def _open_with_webbrowser(url: str) -> bool:
