@@ -1023,7 +1023,7 @@ def _setup_single_agent(
         skills_configured = _configure_managed_skills(managed)
         _restore_mcp_after_workspace_switch(previous_workspace, state)
         if tool == "claude" and resolved_mcps is not None and skills_configured:
-            _sync_claude_workspace_plugins(state, managed_mcp_servers=resolved_mcps)
+            _sync_claude_cowork_plugin(state, managed_mcp_servers=resolved_mcps)
     else:
         _restore_mcp_after_workspace_switch(previous_workspace, state)
     # Only the Claude and Codex branch above reads the managed config fresh.
@@ -1313,7 +1313,7 @@ def _configure_workspace_command(
                 str(server["name"]) for server in (resolved_mcps or []) if server.get("name")
             ]
             if "claude" in configured_tools and resolved_mcps is not None and skills_configured:
-                _sync_claude_workspace_plugins(state, managed_mcp_servers=resolved_mcps)
+                _sync_claude_cowork_plugin(state, managed_mcp_servers=resolved_mcps)
         _summarize_managed_config(managed, configured_tools, registered_mcps)
         return 0
 
@@ -1387,7 +1387,7 @@ def _configure_workspace_command(
 
         configure_claude_desktop(state)
         if not is_dry_run():
-            _sync_claude_workspace_plugins(state)
+            _sync_claude_cowork_plugin(state)
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
         spec = TOOL_SPECS[tool_name]
@@ -2044,7 +2044,7 @@ def _not_installed_message(agents: list[str]) -> str:
     return f"Not installed or not set up: {names}. Install the CLI on PATH, then rerun."
 
 
-def _sync_claude_workspace_plugins(
+def _sync_claude_cowork_plugin(
     state: dict | None = None, *, managed_mcp_servers: list[dict] | None = None
 ) -> None:
     """Keep Claude Code and Cowork plugins aligned with workspace MCPs and skills."""
@@ -2075,7 +2075,7 @@ def _configure_optional_setup(state: dict, tools: list[str]) -> None:
     install_databricks_ai_tools_for_agents(tools, state)
     configure_mcp_command()
     if "claude" in tools:
-        _sync_claude_workspace_plugins()
+        _sync_claude_cowork_plugin()
 
 
 @mcp_app.command("add")
@@ -2201,7 +2201,7 @@ def mcp_add(
         )
         add_mcp_command(location=location, services=selected, agents=scope)
         added = True
-        _sync_claude_workspace_plugins()
+        _sync_claude_cowork_plugin()
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -2238,7 +2238,7 @@ def mcp_remove(
     )
     try:
         remove_mcp_command(agents=requested_agents)
-        _sync_claude_workspace_plugins()
+        _sync_claude_cowork_plugin()
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -2452,7 +2452,7 @@ def skills_add(
                 configure_location_skills_download_command(locations, path=path)
             else:
                 configure_skills_download_picker_command(path=path)
-        _sync_claude_workspace_plugins()
+        _sync_claude_cowork_plugin()
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -2550,7 +2550,7 @@ def skills_remove(
                     f"(invalid: {', '.join(invalid)})."
                 )
             remove_downloaded_skills_command([], sorted(requested_skills), path=path)
-            _sync_claude_workspace_plugins()
+            _sync_claude_cowork_plugin()
             return
         locations = _parse_skill_locations(location)
         if path is not None and not locations:
@@ -2558,7 +2558,7 @@ def skills_remove(
         if not locations and not _stdin_is_interactive():
             raise RuntimeError("--location or --names is required for `ug skills remove`.")
         remove_downloaded_skills_command(locations, path=path)
-        _sync_claude_workspace_plugins()
+        _sync_claude_cowork_plugin()
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -4936,7 +4936,7 @@ def configure(
                     "interactive picker."
                 )
             configure_mcp_command(services=services)
-            _sync_claude_workspace_plugins()
+            _sync_claude_cowork_plugin()
         if (
             fully_interactive
             and not combined_optional_setup
@@ -4944,7 +4944,7 @@ def configure(
             and prompt_yes_no("Configure MCP servers now?")
         ):
             configure_mcp_command()
-            _sync_claude_workspace_plugins()
+            _sync_claude_cowork_plugin()
         save_config_scope(scope)
     except typer.Exit:
         # `typer.Exit` subclasses RuntimeError, so it has to be re-raised ahead of the handler

@@ -195,7 +195,7 @@ def test_cowork_failure_does_not_prevent_code_plugin_setup(code_plugins, monkeyp
         raise RuntimeError("Cowork has not started")
 
     monkeypatch.setattr(desktop_setup, "configure_cowork", fail)
-    cli._sync_claude_workspace_plugins(
+    cli._sync_claude_cowork_plugin(
         {
             "available_tools": ["claude"],
             "mcp_servers": [_server("system-ai-slack")],
