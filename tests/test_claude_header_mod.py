@@ -30,7 +30,7 @@ def _managed_env(tmp_path, monkeypatch, managed_doc=None):
     monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backup_dir)
     monkeypatch.setattr(managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json")
 
-    def _write(target, text):
+    def _write(target, text, **_kwargs):
         writes.append(str(target))
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
