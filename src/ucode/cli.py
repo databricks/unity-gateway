@@ -1036,12 +1036,11 @@ def _setup_single_agent(
     # Only the Claude and Codex branch above reads the managed config fresh.
     managed_refreshed = apply_managed and tool in ("claude", "codex")
     install_databricks_ai_tools_for_agents([tool], state, force_refresh=not managed_refreshed)
-    spec = TOOL_SPECS[tool]
     provider_summary = "Databricks" if parent_schema else _provider_summary(tool, state)
     console.print(
         Panel(
             f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]\n"
-            f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
+            f"[bold]{_summary_label(tool)}:[/bold] [green]configured[/green] "
             f"[dim](Provider: {provider_summary})[/dim]",
             title="Configuration Complete",
             style="green",
@@ -1421,16 +1420,15 @@ def _configure_workspace_command(
             _sync_claude_cowork_plugin(state)
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
-        spec = TOOL_SPECS[tool_name]
+        label = _summary_label(tool_name)
         if tool_name in configured_set:
             summary_lines.append(
-                f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
+                f"[bold]{label}:[/bold] [green]configured[/green] "
                 f"[dim](Provider: {_provider_summary(tool_name, state)})[/dim]"
             )
         else:
             summary_lines.append(
-                f"[bold]{spec['display']}:[/bold] [yellow]not configured "
-                "(see warnings above)[/yellow]"
+                f"[bold]{label}:[/bold] [yellow]not configured (see warnings above)[/yellow]"
             )
     console.print(
         Panel(
@@ -1450,6 +1448,14 @@ def _agent_label(tool: str) -> str:
     if tool == AGENT_COPILOT:
         # Configuring copilot also sets up Copilot Chat in VS Code.
         return "GitHub Copilot (CLI and VS Code)"
+    return str(TOOL_SPECS[tool]["display"])
+
+
+def _summary_label(tool: str) -> str:
+    """An agent's name in ``ug configure``'s Configuration Complete box, which also covers VS Code
+    for copilot."""
+    if tool == AGENT_COPILOT:
+        return "GitHub Copilot"
     return str(TOOL_SPECS[tool]["display"])
 
 
