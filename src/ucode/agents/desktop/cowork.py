@@ -62,13 +62,6 @@ def configure_code(mcp_servers: list[dict]) -> bool:
         return False
     config_root = _code_config_root()
     previous_root = previous_state.get("config_root")
-    if isinstance(previous_root, str) and previous_root and Path(previous_root) != config_root:
-        _remove_plugin_registration(
-            Path(previous_root),
-            cowork=False,
-            marketplace_name=CODE_MARKETPLACE_NAME,
-            plugin_ids=(CODE_PLUGIN_ID,),
-        )
     _write_marketplace(
         marketplace_root,
         marketplace_root / "plugins" / PLUGIN_NAME,
@@ -79,7 +72,6 @@ def configure_code(mcp_servers: list[dict]) -> bool:
         connector_names=server_names,
         code=True,
     )
-    config_io.atomic_write_json(state_path, {"version": 1, "config_root": str(config_root)})
     _install_plugin(
         config_root,
         marketplace_root,
@@ -87,6 +79,14 @@ def configure_code(mcp_servers: list[dict]) -> bool:
         marketplace_name=CODE_MARKETPLACE_NAME,
         plugin_id=CODE_PLUGIN_ID,
     )
+    if isinstance(previous_root, str) and previous_root and Path(previous_root) != config_root:
+        _remove_plugin_registration(
+            Path(previous_root),
+            cowork=False,
+            marketplace_name=CODE_MARKETPLACE_NAME,
+            plugin_ids=(CODE_PLUGIN_ID,),
+        )
+    config_io.atomic_write_json(state_path, {"version": 1, "config_root": str(config_root)})
     return True
 
 

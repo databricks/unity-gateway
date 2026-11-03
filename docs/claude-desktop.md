@@ -72,6 +72,9 @@ Cowork session or account directory. Configure and MCP additions/removals refres
 the guidance. Removing the last MCP leaves an empty plugin so stale connector names
 are no longer advertised. `ug revert` removes this plugin, its marketplace
 registration, and generated source while preserving unrelated plugins.
+When the Code config directory changes, installation in the new directory must succeed
+before UG removes the old registration or updates the saved root. A failed installation
+keeps the old registration and saved root available for cleanup or retry.
 
 MCP-only Claude setup (`ug mcp add --agents claude`) is also eligible for Code
 guidance without model setup. During managed configure, successful MCP reconciliation

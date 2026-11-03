@@ -72,7 +72,7 @@ def test_code_plugin_uses_native_names_without_duplicate_servers_or_hooks(code_p
     skill = (root / "skills" / cowork.CONNECTOR_SKILL_NAME / "SKILL.md").read_text()
     assert "`system-ai-slack`" in skill
     assert "`slack`" not in skill
-    assert "codex" not in skill
+    assert "`codex`" not in skill
     assert "wait 5 seconds" in skill
     assert "mcp login <registered-name>" in skill
     assert "CLAUDE_CONFIG_DIR" in skill
@@ -170,15 +170,71 @@ def test_code_root_switch_removes_only_previous_code_registration(
     monkeypatch.setattr(cowork, "_code_config_root", lambda: new_root)
     cowork.configure_code([_server("new-workspace-gmail")])
 
-    assert calls[:2] == [
+    assert calls[-2:] == [
         (["plugin", "uninstall", cowork.CODE_PLUGIN_ID, "--json"], str(tmp_path / "code-config")),
         (
             ["plugin", "marketplace", "remove", cowork.CODE_MARKETPLACE_NAME, "--json"],
             str(tmp_path / "code-config"),
         ),
     ]
-    assert all(root == str(new_root) for _, root in calls[2:])
+    assert calls[-3] == (["plugin", "install", cowork.CODE_PLUGIN_ID, "--json"], str(new_root))
+    assert all(root == str(new_root) for _, root in calls[:-2])
     assert all("--cowork" not in argv for argv, _ in calls)
+    state_path = cowork.config_io.APP_DIR / cowork.CODE_STATE_FILENAME
+    assert json.loads(state_path.read_text())["config_root"] == str(new_root)
+
+
+def test_code_root_switch_install_failure_preserves_old_registration_and_retries(
+    code_plugins, monkeypatch, tmp_path
+):
+    _, old_plugins = code_plugins
+    cowork.configure_code([_server("system-ai-slack")])
+    old_root = tmp_path / "code-config"
+    new_root = tmp_path / "another-code-config"
+    state_path = cowork.config_io.APP_DIR / cowork.CODE_STATE_FILENAME
+    old_state = state_path.read_bytes()
+    plugins = {str(old_root): old_plugins, str(new_root): {"personal@another"}}
+    calls = []
+    fail_install = True
+
+    def run(argv, **kwargs):
+        root = kwargs["env"]["CLAUDE_CONFIG_DIR"]
+        calls.append((argv[1:], root))
+        installed = plugins[root]
+        stdout = '{"outcome":"ok"}'
+        if argv[1:3] == ["plugin", "validate"]:
+            stdout = "valid"
+        elif argv[1:3] == ["plugin", "list"]:
+            stdout = json.dumps([{"id": plugin_id} for plugin_id in sorted(installed)])
+        elif argv[1:3] == ["plugin", "install"]:
+            if fail_install:
+                return SimpleNamespace(returncode=1, stdout="", stderr="installation failed")
+            installed.add(argv[3])
+        elif argv[1:3] == ["plugin", "uninstall"]:
+            installed.discard(argv[3])
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(cowork.subprocess_cross_os, "run", run)
+    monkeypatch.setattr(cowork, "_code_config_root", lambda: new_root)
+
+    with pytest.raises(RuntimeError, match="installation failed"):
+        cowork.configure_code([_server("system-ai-slack")])
+
+    assert plugins[str(old_root)] == {"personal@other", cowork.PLUGIN_ID, cowork.CODE_PLUGIN_ID}
+    assert plugins[str(new_root)] == {"personal@another"}
+    assert state_path.read_bytes() == old_state
+    assert all(root == str(new_root) for _, root in calls)
+
+    fail_install = False
+    assert cowork.configure_code([_server("system-ai-slack")])
+    assert plugins[str(old_root)] == {"personal@other", cowork.PLUGIN_ID}
+    assert plugins[str(new_root)] == {"personal@another", cowork.CODE_PLUGIN_ID}
+    assert json.loads(state_path.read_text())["config_root"] == str(new_root)
+
+    assert cowork.revert_code()
+    assert plugins[str(new_root)] == {"personal@another"}
+    assert plugins[str(old_root)] == {"personal@other", cowork.PLUGIN_ID}
+    assert not state_path.exists()
 
 
 def test_code_setup_is_best_effort_and_dry_run_does_not_install(code_plugins, monkeypatch, capsys):

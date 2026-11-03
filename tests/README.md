@@ -377,7 +377,8 @@ files and controlled native CLI boundaries: original registration names, Claude-
 filtering, Code-only discovery/authentication instructions, no duplicate MCP servers or
 downloaded skills, no Cowork hooks,
 refresh after workspace changes and last-connector removal, scoped cleanup,
-repeat cleanup, saved-root cleanup even after source deletion, config-root changes,
+repeat cleanup, saved-root cleanup even after source deletion, config-root changes that
+retain the old registration and saved root on installation failure, successful retry,
 retained source after a failed removal, dry-run behavior, and
 Code setup succeeding when Cowork setup fails. Native Desktop GUI discovery and
 live connector calls remain unverified.
