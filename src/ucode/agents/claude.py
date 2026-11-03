@@ -2126,7 +2126,7 @@ def header_mod_active() -> bool:
         for file, content in _header_mod_files(root).items():
             if not file.is_file() or file.read_text(encoding="utf-8") != content:
                 return False
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
         return False
     return True
 
