@@ -1,8 +1,8 @@
 """Safely manage root-owned, highest-precedence agent settings files.
 
 Interactive updates preserve unrelated policy, retain a private baseline for ``ucode revert``, and
-verify the privileged atomic replacement. Existing-file repairs may run without a terminal;
-the shared writer uses sudo's non-prompting mode without consuming the caller's standard input.
+verify the privileged atomic replacement. Without a terminal, writes use sudo's non-prompting mode
+without consuming the caller's standard input; managed settings are only repaired in place then.
 Windows has no sudo: only an elevated process writes there, with or without a terminal.
 """
 
@@ -182,7 +182,7 @@ def reconcile_privileged_files(files: dict[Path, str], *, display: str) -> None:
         if current_os() is OS.WINDOWS:
             _windows_replace(path, text)
         else:
-            _sudo_replace(path, text, allow_create=True)
+            _sudo_replace(path, text)
 
 
 def remove_privileged_tree(root: Path) -> None:
@@ -1616,13 +1616,11 @@ def _sudo_remove(path: Path) -> None:
             _restore_immutable(path, original_flags)
 
 
-def _sudo_replace(path: Path, desired_text: str, *, allow_create: bool = False) -> None:
+def _sudo_replace(path: Path, desired_text: str) -> None:
     """Atomically replace ``path`` while preserving metadata and file flags.
 
-    Without a terminal it only repairs an existing file, unless ``allow_create``."""
+    Callers decide whether a write is allowed; without a terminal this runs ``sudo -n``."""
     _validate_sudo_replace_target(path)
-    if not allow_create and not managed_writes_allowed(repair_existing=path.is_file()):
-        raise RuntimeError("Refusing to create managed settings non-interactively.")
     non_interactive = not _sudo_may_prompt()
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=path.suffix or ".tmp", delete=False, encoding="utf-8"

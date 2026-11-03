@@ -2079,9 +2079,9 @@ def request_explicit_configure(requested: bool = True) -> None:
 def _install_header_mod(root: Path | None, *, managed_file_exists: bool) -> bool:
     """Install or update the header mod's files, returning whether this run did.
 
-    A headless run installs them only beside a managed file it can repair, since it can't create
-    one to enable them in. A failure only costs ``ug --header`` for Claude; the caller then doesn't
-    enable the mod."""
+    They are installed only where the managed file can be written, since the mod is enabled in
+    that file. A failure only costs ``ug --header`` for Claude; the caller then doesn't enable
+    the mod."""
     if root is None or is_dry_run():
         return False
     if not managed_writes_allowed(repair_existing=managed_file_exists):
