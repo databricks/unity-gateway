@@ -182,7 +182,21 @@ def test_unknown_ownership_fails_without_changes(search_config, mode):
 
 
 @pytest.mark.parametrize(
-    "scope", ["project", "ancestor", "local", "managed", "exclusive", "policy", "env", "caller"]
+    "scope",
+    [
+        "project",
+        "ancestor",
+        "local",
+        "managed",
+        "exclusive",
+        "policy",
+        "policy_drop_in",
+        "policy_user",
+        "policy_project",
+        "policy_project_local",
+        "env",
+        "caller",
+    ],
 )
 def test_conflicting_scope_is_preserved(search_config, scope):
     conflicting = {"mcpServers": {"web_search": {"command": "custom"}}}
@@ -200,6 +214,15 @@ def test_conflicting_scope_is_preserved(search_config, scope):
         write_json_file(search_config.managed.with_name("managed-mcp.json"), conflicting)
     elif scope == "policy":
         write_json_file(search_config.managed, {"deniedMcpServers": [{"serverName": "web_search"}]})
+    elif scope.startswith("policy_"):
+        policy = {"deniedMcpServers": [{"serverName": "web_search"}]}
+        path = {
+            "policy_drop_in": search_config.managed.with_name("managed-settings.d") / "10.json",
+            "policy_user": Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json",
+            "policy_project": search_config.project / ".claude" / "settings.json",
+            "policy_project_local": search_config.project / ".claude" / "settings.local.json",
+        }[scope]
+        write_json_file(path, policy)
     elif scope == "env":
         write_json_file(claude.CLAUDE_USER_SETTINGS_PATH, {"env": {PROVIDER_ENV: "ucode"}})
     else:

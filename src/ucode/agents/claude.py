@@ -1362,6 +1362,26 @@ def _external_web_search_args(state: dict, tool_args: list[str]) -> list[str]:
         return tool_args
 
 
+def _managed_settings_files(managed_path: Path) -> list[Path]:
+    """The managed settings file and its ``managed-settings.d`` drop-ins."""
+    return [managed_path, *sorted(managed_path.with_name("managed-settings.d").glob("*.json"))]
+
+
+def _active_user_settings_path() -> Path:
+    """The user settings file Claude Code reads, which ``CLAUDE_CONFIG_DIR`` relocates."""
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(config_dir) / "settings.json" if config_dir else CLAUDE_USER_SETTINGS_PATH
+
+
+def _project_settings_files(directories: Sequence[Path]) -> list[Path]:
+    """The project and local settings files Claude Code reads from each of ``directories``."""
+    return [
+        path
+        for directory in directories
+        for path in (directory / ".claude/settings.json", directory / ".claude/settings.local.json")
+    ]
+
+
 def _prepare_external_web_search_args(state: dict, tool_args: list[str]) -> list[str]:
     """Shadow only a verified ug registration, without rewriting shared MCP configuration.
 
@@ -1419,17 +1439,10 @@ def _prepare_external_web_search_args(state: dict, tool_args: list[str]) -> list
         raise _external_search_conflict("managed MCP scope cannot be inspected on this platform")
     if managed_path.with_name("managed-mcp.json").exists():
         raise _external_search_conflict("managed-mcp.json has exclusive control over MCP servers")
-    user_settings = (
-        Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json"
-        if os.environ.get("CLAUDE_CONFIG_DIR")
-        else CLAUDE_USER_SETTINGS_PATH
-    )
-    settings_paths = [managed_path, user_settings, CLAUDE_SETTINGS_PATH]
-    settings_paths.extend(sorted(managed_path.with_name("managed-settings.d").glob("*.json")))
-    for directory in directories:
-        settings_paths.extend(
-            [directory / ".claude/settings.json", directory / ".claude/settings.local.json"]
-        )
+    managed_files = _managed_settings_files(managed_path)
+    settings_paths = [managed_files[0], _active_user_settings_path(), CLAUDE_SETTINGS_PATH]
+    settings_paths.extend(managed_files[1:])
+    settings_paths.extend(_project_settings_files(directories))
     settings = [_search_config(path) for path in settings_paths]
     caller_settings, _ = _extract_caller_settings(options)
     settings.extend(_load_caller_settings(value) for value in caller_settings)
