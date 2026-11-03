@@ -372,6 +372,15 @@ nothing without a readable transcript or previous reply. Other events are ignore
 stdout holds only the hook JSON. Probes and token minting are faked; native Cowork hook
 execution remains unverified.
 
+`test_code_plugin.py` covers the Code-scoped UG connector plugin with real
+files and controlled native CLI boundaries: original registration names, Claude-only
+filtering, no duplicate MCP servers or downloaded skills, no Cowork hooks,
+refresh after workspace changes and last-connector removal, scoped cleanup,
+repeat cleanup, saved-root cleanup even after source deletion, config-root changes,
+retained source after a failed removal, dry-run behavior, and
+Code setup succeeding when Cowork setup fails. Native Desktop GUI discovery and
+live connector calls remain unverified.
+
 `test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
 generated marketplace/plugin/MCP manifests, the generated connector skill naming Claude-only
 MCP servers with its two 5-second retries and one sign-in recovery attempt for access/IP

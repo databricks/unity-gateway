@@ -1,4 +1,4 @@
-"""Install Unity Gateway workspace skills and MCP servers into Claude Cowork."""
+"""Install Unity Gateway workspace plugins into Claude Cowork and Code."""
 
 from __future__ import annotations
 
@@ -29,6 +29,10 @@ MARKETPLACE_DIRECTORY_NAME = "claude-cowork-marketplace"
 CONNECTOR_SKILL_NAME = "unity-gateway-connectors"
 SESSION_START_HOOK_TIMEOUT_SECONDS = 30
 PROMPT_HOOK_TIMEOUT_SECONDS = 20
+CODE_MARKETPLACE_NAME = "unity-gateway-code"
+CODE_PLUGIN_ID = f"{PLUGIN_NAME}@{CODE_MARKETPLACE_NAME}"
+CODE_MARKETPLACE_DIRECTORY_NAME = "claude-code-marketplace"
+CODE_STATE_FILENAME = "claude-code-plugin.json"
 
 _COWORK_MARKERS = (
     "cowork_settings.json",
@@ -36,6 +40,81 @@ _COWORK_MARKERS = (
     "cowork_plugins/known_marketplaces.json",
     "cowork_plugins/installed_plugins.json",
 )
+
+
+def configure_code(mcp_servers: list[dict]) -> bool:
+    """Install connector guidance alongside Code's existing MCP registrations."""
+    server_names = list(
+        dict.fromkeys(
+            server["name"]
+            for server in mcp_servers
+            if "claude" in (server.get("clients") or [])
+            and isinstance(server.get("name"), str)
+            and server["name"]
+            and isinstance(server.get("url"), str)
+            and server["url"]
+        )
+    )
+    marketplace_root = config_io.APP_DIR / CODE_MARKETPLACE_DIRECTORY_NAME
+    state_path = config_io.APP_DIR / CODE_STATE_FILENAME
+    previous_state = config_io.read_json_safe(state_path)
+    if not server_names and not previous_state and not marketplace_root.exists():
+        return False
+    config_root = _code_config_root()
+    previous_root = previous_state.get("config_root")
+    if isinstance(previous_root, str) and previous_root and Path(previous_root) != config_root:
+        _remove_plugin_registration(
+            Path(previous_root),
+            cowork=False,
+            marketplace_name=CODE_MARKETPLACE_NAME,
+            plugin_ids=(CODE_PLUGIN_ID,),
+        )
+    _write_marketplace(
+        marketplace_root,
+        marketplace_root / "plugins" / PLUGIN_NAME,
+        [],
+        {"mcpServers": {}},
+        marketplace_name=CODE_MARKETPLACE_NAME,
+        description="Unity Gateway connector guidance for Claude Code",
+        connector_names=server_names,
+    )
+    config_io.atomic_write_json(state_path, {"version": 1, "config_root": str(config_root)})
+    _install_plugin(
+        config_root,
+        marketplace_root,
+        cowork=False,
+        marketplace_name=CODE_MARKETPLACE_NAME,
+        plugin_id=CODE_PLUGIN_ID,
+    )
+    return True
+
+
+def revert_code() -> bool:
+    marketplace_root = config_io.APP_DIR / CODE_MARKETPLACE_DIRECTORY_NAME
+    state_path = config_io.APP_DIR / CODE_STATE_FILENAME
+    state = config_io.read_json_safe(state_path)
+    if not state and not marketplace_root.exists() and not marketplace_root.is_symlink():
+        return False
+    raw_root = state.get("config_root")
+    config_root = Path(raw_root) if isinstance(raw_root, str) and raw_root else _code_config_root()
+    _remove_plugin_registration(
+        config_root,
+        cowork=False,
+        marketplace_name=CODE_MARKETPLACE_NAME,
+        plugin_ids=(CODE_PLUGIN_ID,),
+    )
+    if marketplace_root.is_symlink():
+        marketplace_root.unlink()
+    elif marketplace_root.exists():
+        shutil.rmtree(marketplace_root)
+    state_path.unlink(missing_ok=True)
+    return True
+
+
+def _code_config_root() -> Path:
+    return (
+        Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser().absolute()
+    )
 
 
 def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
@@ -117,17 +196,24 @@ def _cowork_sessions_root_exists() -> bool:
     return root is not None and (root / "local-agent-mode-sessions").is_dir()
 
 
-def _remove_plugin_registration(cowork_root: Path) -> bool:
-    """Remove UG's plugin and marketplace registration from one Cowork root."""
+def _remove_plugin_registration(
+    config_root: Path,
+    *,
+    cowork: bool = True,
+    marketplace_name: str = MARKETPLACE_NAME,
+    plugin_ids: tuple[str, ...] = (PLUGIN_ID, LEGACY_PLUGIN_ID),
+) -> bool:
+    """Remove only UG's plugin and marketplace from the selected scope."""
 
     claude = _claude_binary()
     env = os.environ.copy()
-    env["CLAUDE_CONFIG_DIR"] = str(cowork_root)
+    env["CLAUDE_CONFIG_DIR"] = str(config_root)
+    scope = ["--cowork"] if cowork else []
     plugin_result = False
-    for plugin_id in (PLUGIN_ID, LEGACY_PLUGIN_ID):
+    for plugin_id in plugin_ids:
         result = _run_claude_json(
             claude,
-            ["plugin", "uninstall", plugin_id, "--cowork", "--json"],
+            ["plugin", "uninstall", plugin_id, *scope, "--json"],
             env,
             accepted_failures=("not installed", "not_installed", "not found"),
         )
@@ -138,8 +224,8 @@ def _remove_plugin_registration(cowork_root: Path) -> bool:
             "plugin",
             "marketplace",
             "remove",
-            MARKETPLACE_NAME,
-            "--cowork",
+            marketplace_name,
+            *scope,
             "--json",
         ],
         env,
@@ -299,6 +385,10 @@ def _write_marketplace(
     skill_records: list[dict],
     mcp_config: dict,
     hooks: dict | None = None,
+    *,
+    marketplace_name: str = MARKETPLACE_NAME,
+    description: str = "Unity Gateway workspace skills and MCP servers for Cowork",
+    connector_names: list[str] | None = None,
 ) -> None:
     marketplace_root.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(
@@ -310,13 +400,13 @@ def _write_marketplace(
         (staging / ".claude-plugin").mkdir(parents=True)
         (staging_plugin / ".claude-plugin").mkdir(parents=True)
         marketplace: dict[str, object] = {
-            "name": MARKETPLACE_NAME,
+            "name": marketplace_name,
             "owner": {"name": "Databricks"},
             "plugins": [
                 {
                     "name": PLUGIN_NAME,
                     "displayName": PLUGIN_DISPLAY_NAME,
-                    "description": "Unity Gateway workspace skills and MCP servers for Cowork",
+                    "description": description,
                     "source": f"./plugins/{PLUGIN_NAME}",
                 }
             ],
@@ -324,7 +414,7 @@ def _write_marketplace(
         plugin: dict[str, object] = {
             "name": PLUGIN_NAME,
             "displayName": PLUGIN_DISPLAY_NAME,
-            "description": "Unity Gateway workspace skills and MCP servers for Cowork",
+            "description": description,
             "author": {"name": "Databricks"},
         }
         if mcp_config["mcpServers"]:
@@ -335,8 +425,9 @@ def _write_marketplace(
         _write_json(staging / ".claude-plugin" / "marketplace.json", marketplace)
         _write_json(staging_plugin / ".claude-plugin" / "plugin.json", plugin)
         _copy_skills(staging_plugin / "skills", skill_records)
-        if mcp_config["mcpServers"]:
-            _write_connector_skill(staging_plugin / "skills", list(mcp_config["mcpServers"]))
+        names = list(mcp_config["mcpServers"]) if connector_names is None else connector_names
+        if names:
+            _write_connector_skill(staging_plugin / "skills", names)
 
         if backup.exists():
             shutil.rmtree(backup)
@@ -484,10 +575,18 @@ def _claude_skill_directory(record: dict) -> Path | None:
     )
 
 
-def _install_plugin(cowork_root: Path, marketplace_root: Path) -> None:
+def _install_plugin(
+    config_root: Path,
+    marketplace_root: Path,
+    *,
+    cowork: bool = True,
+    marketplace_name: str = MARKETPLACE_NAME,
+    plugin_id: str = PLUGIN_ID,
+) -> None:
     claude = _claude_binary()
     env = os.environ.copy()
-    env["CLAUDE_CONFIG_DIR"] = str(cowork_root)
+    env["CLAUDE_CONFIG_DIR"] = str(config_root)
+    scope = ["--cowork"] if cowork else []
     _run_claude(
         claude,
         ["plugin", "validate", str(marketplace_root)],
@@ -495,7 +594,7 @@ def _install_plugin(cowork_root: Path, marketplace_root: Path) -> None:
     )
     _run_claude_json(
         claude,
-        ["plugin", "marketplace", "add", str(marketplace_root), "--cowork", "--json"],
+        ["plugin", "marketplace", "add", str(marketplace_root), *scope, "--json"],
         env,
         accepted_failures=("already exists", "already_exists", "already registered"),
     )
@@ -505,24 +604,24 @@ def _install_plugin(cowork_root: Path, marketplace_root: Path) -> None:
             "plugin",
             "marketplace",
             "update",
-            MARKETPLACE_NAME,
-            "--cowork",
+            marketplace_name,
+            *scope,
             "--json",
         ],
         env,
     )
     installed = _run_claude_json(
         claude,
-        ["plugin", "list", "--cowork", "--json"],
+        ["plugin", "list", *scope, "--json"],
         env,
     )
-    action = "update" if _contains_plugin_id(installed) else "install"
+    action = "update" if _contains_plugin_id(installed, plugin_id=plugin_id) else "install"
     _run_claude_json(
         claude,
-        ["plugin", action, PLUGIN_ID, "--cowork", "--json"],
+        ["plugin", action, plugin_id, *scope, "--json"],
         env,
     )
-    if _contains_plugin_id(installed, plugin_id=LEGACY_PLUGIN_ID):
+    if cowork and _contains_plugin_id(installed, plugin_id=LEGACY_PLUGIN_ID):
         _run_claude_json(
             claude,
             ["plugin", "uninstall", LEGACY_PLUGIN_ID, "--cowork", "--json"],
@@ -534,7 +633,7 @@ def _install_plugin(cowork_root: Path, marketplace_root: Path) -> None:
 def _claude_binary() -> str:
     executable = shutil.which("claude")
     if not executable or not Path(executable).is_absolute():
-        raise RuntimeError("Claude CLI is required to configure Cowork plugins.")
+        raise RuntimeError("Claude CLI is required to configure Unity Gateway plugins.")
     return executable
 
 

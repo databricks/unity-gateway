@@ -178,6 +178,16 @@ custom registration names and full proxy URLs are preserved. Its name and displa
 are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old
 `unity-gateway@unity-gateway-cowork` registration only after installing/updating `ug`;
 revert removes both IDs. New sessions use the `mcp__plugin_ug_...` tool namespace.
+Claude Code also receives `ug@unity-gateway-code` in its regular user plugin scope,
+shared with the Desktop Code tab. The generated source lives at
+`~/.ucode/claude-code-marketplace`, with its config root recorded in
+`~/.ucode/claude-code-plugin.json`; native plugin installation owns only that
+marketplace's `extraKnownMarketplaces` entry and its `enabledPlugins` entry.
+This plugin contains only the shared `unity-gateway-connectors` skill with native
+MCP registration names. Existing MCP registrations and downloaded skill files stay
+in their native locations; Cowork hooks are not installed in Code. Code setup is
+independent of Cowork account discovery and best-effort. MCP updates refresh both
+plugins, and revert removes both while preserving unrelated plugins.
 See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>

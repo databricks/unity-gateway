@@ -27,6 +27,32 @@ the customer's MDM process. Explicit-agent, selected-agent, and managed configur
 flows all set up Desktop after successful Claude Code configuration. Ordinary agent
 launches and `ug agents add` do not configure Desktop.
 
+## Code tab connector guidance
+
+`ug configure` also installs `ug@unity-gateway-code` in the regular Claude Code
+plugin scope. The Code tab and terminal Claude Code load its
+`unity-gateway-connectors` skill, which uses the same tool-discovery and sign-in
+recovery guidance as Cowork. Start a new Code session after configuring.
+
+Code already reads the MCP servers registered by UG in its native configuration,
+and downloaded skills from its own skill directory. Its UG plugin contains only
+the generated connector guidance, using the original MCP registration names such
+as `system-ai-slack`. It does not add another copy of the servers, downloaded
+skills, or Cowork's session hooks.
+
+The generated marketplace lives at `~/.ucode/claude-code-marketplace`;
+`~/.ucode/claude-code-plugin.json` records its installation scope for cleanup.
+Installation uses `CLAUDE_CONFIG_DIR` when set, otherwise `~/.claude`; it does not require a
+Cowork session or account directory. Configure and MCP additions/removals refresh
+the guidance. Removing the last MCP leaves an empty plugin so stale connector names
+are no longer advertised. `ug revert` removes this plugin, its marketplace
+registration, and generated source while preserving unrelated plugins.
+
+Code and Cowork plugin installation are independent and best-effort. A Cowork
+setup failure does not block the Code plugin or native MCP configuration. The
+component checks do not establish Desktop GUI discovery or successful connector
+calls; validate those in a fresh Code session.
+
 ## Cowork workspace skills and MCP servers
 
 Whenever Claude is configured, `ug configure` also installs a generated

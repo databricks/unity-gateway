@@ -48,6 +48,15 @@ Claude answer delivery has offline transcript and subprocess coverage in
 streaming JSON when UG redirects diagnostics to stderr. Live model/gateway selection
 and capability-hook activation are not covered here; interactive selection is unsupported.
 
+`../test_code_plugin.py` covers the Code-scoped UG connector plugin with real
+files and controlled native CLI boundaries: original registration names, Claude-only
+filtering, no duplicate MCP servers or downloaded skills, no Cowork hooks,
+refresh after workspace changes and last-connector removal, scoped cleanup,
+repeat cleanup, saved-root cleanup even after source deletion, config-root changes,
+retained source after a failed removal, dry-run behavior, and
+Code setup succeeding when Cowork setup fails. Native Desktop GUI discovery and
+live connector calls remain unverified.
+
 Claude Desktop has installed-CLI lifecycle and subscription-relay coverage on Linux and
 Windows. The lifecycle journey configures twice and reverts against an isolated native profile
 path, preserves an unrelated profile and metadata, then runs the exact generated credential
