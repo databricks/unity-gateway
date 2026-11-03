@@ -382,6 +382,13 @@ retained source after a failed removal, dry-run behavior, and
 Code setup succeeding when Cowork setup fails. Native Desktop GUI discovery and
 live connector calls remain unverified.
 
+`test_cli.py` and `test_desktop_configure_cli.py` cover Code eligibility for MCP-only
+Claude setup, merged server inputs for both plugins, and Code refresh after successful MCP
+reconciliation despite skill-download failures in both single-agent and managed configure.
+MCP failures preserve both plugins; Cowork retains its model and skill-success gates.
+These component tests mock both plugin setup boundaries to avoid invoking an installed
+Claude CLI; they do not establish native Desktop or live connector behavior.
+
 CUJ6 compares parsed Claude user settings across repeated configure calls. Its
 preservation check requires the exact UG Code plugin and marketplace entries
 alongside every seeded user setting; unexpected additions or changes still fail.

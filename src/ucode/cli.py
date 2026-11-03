@@ -1022,8 +1022,10 @@ def _setup_single_agent(
         resolved_mcps = _configure_managed_mcp_servers(managed)
         skills_configured = _configure_managed_skills(managed)
         _restore_mcp_after_workspace_switch(previous_workspace, state)
-        if tool == "claude" and resolved_mcps is not None and skills_configured:
-            _sync_claude_cowork_plugin(state, managed_mcp_servers=resolved_mcps)
+        if tool == "claude" and resolved_mcps is not None:
+            _sync_claude_cowork_plugin(
+                state, managed_mcp_servers=resolved_mcps, sync_cowork=skills_configured
+            )
     else:
         _restore_mcp_after_workspace_switch(previous_workspace, state)
     # Only the Claude and Codex branch above reads the managed config fresh.
@@ -1312,8 +1314,10 @@ def _configure_workspace_command(
             registered_mcps = [
                 str(server["name"]) for server in (resolved_mcps or []) if server.get("name")
             ]
-            if "claude" in configured_tools and resolved_mcps is not None and skills_configured:
-                _sync_claude_cowork_plugin(state, managed_mcp_servers=resolved_mcps)
+            if "claude" in configured_tools and resolved_mcps is not None:
+                _sync_claude_cowork_plugin(
+                    state, managed_mcp_servers=resolved_mcps, sync_cowork=skills_configured
+                )
         _summarize_managed_config(managed, configured_tools, registered_mcps)
         return 0
 
@@ -2045,14 +2049,17 @@ def _not_installed_message(agents: list[str]) -> str:
 
 
 def _sync_claude_cowork_plugin(
-    state: dict | None = None, *, managed_mcp_servers: list[dict] | None = None
+    state: dict | None = None,
+    *,
+    managed_mcp_servers: list[dict] | None = None,
+    sync_cowork: bool = True,
 ) -> None:
     """Keep Claude Code and Cowork plugins aligned with workspace MCPs and skills."""
     current_state = state if state is not None else load_state()
     configured_tools = set(current_state.get("available_tools") or []) | set(
         current_state.get("last_configured_tools") or []
     )
-    if "claude" not in configured_tools:
+    if "claude" not in configured_tools | set(current_state.get("mcp_clients") or []):
         return
 
     user_mcp_servers = list(current_state.get("mcp_servers") or [])
@@ -2062,7 +2069,8 @@ def _sync_claude_cowork_plugin(
 
     mcp_servers = [*user_mcp_servers, *managed_mcp_servers]
     configure_claude_code_plugin(mcp_servers)
-    configure_claude_cowork(current_state, mcp_servers)
+    if sync_cowork and "claude" in configured_tools:
+        configure_claude_cowork(current_state, mcp_servers)
 
 
 def _configure_optional_setup(state: dict, tools: list[str]) -> None:

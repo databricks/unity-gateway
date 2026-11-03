@@ -68,6 +68,11 @@ the guidance. Removing the last MCP leaves an empty plugin so stale connector na
 are no longer advertised. `ug revert` removes this plugin, its marketplace
 registration, and generated source while preserving unrelated plugins.
 
+MCP-only Claude setup (`ug mcp add --agents claude`) is also eligible for Code
+guidance without model setup. During managed configure, successful MCP reconciliation
+refreshes Code even if skill downloads fail. Cowork keeps its existing model-setup
+and skill-success requirements. Failed MCP reconciliation preserves both plugins.
+
 Code and Cowork plugin installation are independent and best-effort. A Cowork
 setup failure does not block the Code plugin or native MCP configuration. The
 component checks do not establish Desktop GUI discovery or successful connector

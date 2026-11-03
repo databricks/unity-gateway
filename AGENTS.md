@@ -183,11 +183,14 @@ shared with the Desktop Code tab. The generated source lives at
 `~/.ucode/claude-code-marketplace`, with its config root recorded in
 `~/.ucode/claude-code-plugin.json`; native plugin installation owns only that
 marketplace's `extraKnownMarketplaces` entry and its `enabledPlugins` entry.
-This plugin contains only the shared `unity-gateway-connectors` skill with native
-MCP registration names. Existing MCP registrations and downloaded skill files stay
-in their native locations; Cowork hooks are not installed in Code. Code setup is
-independent of Cowork account discovery and best-effort. MCP updates refresh both
-plugins, and revert removes both while preserving unrelated plugins.
+This plugin contains only the generated `unity-gateway-connectors` skill with Code-specific
+authentication guidance and native MCP registration names. Existing MCP registrations and
+downloaded skill files stay in their native locations; Cowork hooks are not installed in Code.
+Code setup is independent of Cowork account discovery and best-effort. Model-configured Claude and
+explicit Claude MCP clients are eligible. Managed configure refreshes Code after successful
+MCP reconciliation even if skill downloads fail; Cowork keeps its existing model and skill
+requirements. MCP updates refresh eligible plugins, and revert removes both while preserving
+unrelated plugins.
 See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>
