@@ -171,7 +171,8 @@ Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
 
 macOS `--mdm-desktop` provisioning and its per-user LaunchAgent are outside these
 Linux/Windows journeys. `../test_desktop_mdm.py` has component coverage for publication,
-auth separation, cache refresh, ownership conflicts, rollback, and deferred cleanup using
+auth separation, cache refresh, machine-policy conflicts, generated-source replacement,
+rollback, and deferred cleanup using
 temporary paths and simulated external boundaries. Its runtime-probe regression uses a real
 isolated Python child to catch binary stdout being passed to `Path` during provisioning.
 Component fixtures also exercise API-format agent lists through the fetch gate and

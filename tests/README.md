@@ -517,8 +517,8 @@ This check does not establish native install/update failure recovery or Desktop 
 `test_desktop_mdm.py` covers macOS-only/root CLI guards, provisioning without a Cowork
 account, string-encoded machine policy, shared command bindings without admin credentials,
 managed skill assets/connectors, one native registration, explicit update and deferred
-removal, interrupted-account cleanup, foreign-file preservation, rollback, dry run, and
-reuse of provisioning authentication. It reuses the temporary filesystem transaction fixture;
+removal, interrupted-account cleanup, foreign-policy preservation, generated-source replacement,
+rollback, dry run, and reuse of provisioning authentication. It reuses the temporary directory-copy fixture;
 workspace APIs, machine ownership, launchd, and Claude's registry/cache commands are simulated.
 A real isolated Python child verifies the runtime probe can read the installed package path;
 this catches binary stdout being passed to `Path` during provisioning.

@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 
 from ucode import config_io, databricks, managed_files
-from ucode.agents.desktop import claude_config, cowork, setup, system_marketplace
+from ucode.agents.desktop import claude_config, cowork, setup
 from ucode.managed_config import get_managed_config, normalize_managed_config
 from ucode.managed_resolve import (
     managed_enabled_tools,
@@ -194,7 +194,6 @@ def _publish(
     system_path = managed_files.claude_desktop_marketplace_path()
     assert system_path is not None
     _check_machine_path(system_path)
-    system_marketplace.owned_bundle(system_path, previous)
     state_before = claude_config.read_optional_bytes(state_path)
     backup = Path(tempfile.mkdtemp(prefix="ug-mdm-rollback-")).resolve()
     (backup / "files.json").write_bytes(
@@ -215,10 +214,7 @@ def _publish(
         if system_path.exists():
             shutil.copytree(system_path, backup / "marketplace")
         try:
-            if source is None:
-                system_marketplace.remove(state_path)
-            else:
-                system_marketplace.install(source, state_path)
+            managed_files.replace_privileged_bundle(system_path, source)
             state = _read_machine_state()
             owned = dict(previous.get("files", {}))
             for path, (data, _) in files.items():
@@ -248,9 +244,9 @@ def _publish(
                 retain_backup = True
             try:
                 if (backup / "marketplace").exists():
-                    system_marketplace.install(backup / "marketplace", state_path)
+                    managed_files.replace_privileged_bundle(system_path, backup / "marketplace")
                 else:
-                    system_marketplace.remove(state_path)
+                    managed_files.replace_privileged_bundle(system_path, None)
                 claude_config.write_configuration(
                     [
                         (
@@ -416,8 +412,8 @@ def configure(workspace: str, profile: str | None, *, mcp_names: list[str] | Non
                 "workspace": workspace,
                 "profile": user_profile,
                 "runtime": runtime,
-                "source_digest": system_marketplace.bundle_digest(
-                    system_marketplace.read_bundle(source) or {}
+                "source_digest": cowork._marketplace_digest(
+                    cowork._marketplace_files(source) or {}
                 ),
             }
             agent = plistlib.dumps(
@@ -536,11 +532,8 @@ def sync_user() -> bool:
         if not cowork._cowork_roots():
             return False
         _check_machine_path(system_source, required=True)
-        bundle = system_marketplace.read_bundle(system_source)
-        if (
-            bundle is None
-            or system_marketplace.bundle_digest(bundle) != configuration["source_digest"]
-        ):
+        bundle = cowork._marketplace_files(system_source)
+        if bundle is None or cowork._marketplace_digest(bundle) != configuration["source_digest"]:
             return False  # Publication may be between the source swap and deployment record.
         root = cowork.discover_cowork_root()
         source = cowork._registered_marketplace_source(root)

@@ -70,7 +70,9 @@ account URLs requiring a workspace-ID selector are rejected.
 If ordinary no-flag `ug configure` or a pilot already owns the root marketplace,
 revert that installation through its original owner before deploying MDM. Likewise,
 remove a previous third-party mobileconfig through its MDM owner. UG refuses to
-overwrite foreign or externally edited machine files. Remove any previous
+overwrite foreign or externally edited policy/helper files. The generated root marketplace
+directory belongs entirely to UG and is replaced on provisioning, including manual edits.
+Remove any previous
 `/Library/Application Support/Claude/org-plugins/ug` pilot before refreshing plugins.
 
 ## Provisioning and authentication
@@ -155,7 +157,7 @@ updates the native installed cache; changing the root source alone is insufficie
 Start a new task after a plugin update, and restart Desktop after policy changes.
 There is no automatic workspace-policy fetch from the login job: MDM controls publication.
 
-Publication validates ownership, stages the source, and rolls back files and source
+Publication validates policy/helper ownership, stages the source, and rolls back files and source
 on write failures. Incomplete skill discovery/download fails the deployment instead
 of publishing a partial set. A failed rollback reports retained recovery files.
 Do not treat these transactions as power-loss recovery guarantees.

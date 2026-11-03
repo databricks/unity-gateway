@@ -12,7 +12,7 @@ from tests.test_desktop_marketplace import system_source as system_source
 from tests.test_desktop_mdm import WORKSPACE
 from tests.test_desktop_mdm import device as device
 from ucode import cli, config_io, managed_files
-from ucode.agents.desktop import claude, cowork, mdm, setup, system_marketplace
+from ucode.agents.desktop import claude, cowork, mdm, setup
 
 
 @pytest.fixture
@@ -84,7 +84,7 @@ def test_desktop_scope_selects_profile_sources_and_registration(
     source = cowork._marketplace_root() if flags else device.source
     assert registration[cowork.MARKETPLACE_NAME]["source"]["path"] == str(source)
     if not flags:
-        assert system_marketplace.read_bundle(source) == system_marketplace.read_bundle(
+        assert cowork._marketplace_files(source) == cowork._marketplace_files(
             cowork._marketplace_root()
         )
 
@@ -92,18 +92,18 @@ def test_desktop_scope_selects_profile_sources_and_registration(
 def test_global_preserves_existing_desktop_user_files(desktop_configuration, device):
     result = _configure("--user")
     assert result.exit_code == 0, result.output
-    profile = system_marketplace.read_bundle(claude.claude_desktop_directory())
-    source = system_marketplace.read_bundle(cowork._marketplace_root())
-    registration = system_marketplace.read_bundle(cowork.discover_cowork_root())
+    profile = cowork._marketplace_files(claude.claude_desktop_directory())
+    source = cowork._marketplace_files(cowork._marketplace_root())
+    registration = cowork._marketplace_files(cowork.discover_cowork_root())
     state = cowork._state_path().read_bytes()
 
     result = _configure("--global")
 
     assert result.exit_code == 0, result.output
     assert mdm.POLICY_PATH.exists()
-    assert system_marketplace.read_bundle(claude.claude_desktop_directory()) == profile
-    assert system_marketplace.read_bundle(cowork._marketplace_root()) == source
-    assert system_marketplace.read_bundle(cowork.discover_cowork_root()) == registration
+    assert cowork._marketplace_files(claude.claude_desktop_directory()) == profile
+    assert cowork._marketplace_files(cowork._marketplace_root()) == source
+    assert cowork._marketplace_files(cowork.discover_cowork_root()) == registration
     assert cowork._state_path().read_bytes() == state
 
 

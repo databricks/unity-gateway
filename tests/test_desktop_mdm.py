@@ -17,7 +17,7 @@ from typer.testing import CliRunner
 
 from tests.test_desktop_marketplace import system_source as system_source
 from ucode import cli, config_io, desktop_auth, managed_config, mcp, skills_download
-from ucode.agents.desktop import claude_config, cowork, mdm, setup, system_marketplace
+from ucode.agents.desktop import claude_config, cowork, mdm, setup
 from ucode.databricks import AnthropicModelCatalog
 from ucode.skills_api import SkillRef
 
@@ -93,8 +93,8 @@ def _installed(root):
 
 def _snapshot(device):
     return {
-        "source": system_marketplace.read_bundle(device.source),
-        "mdm": system_marketplace.read_bundle(mdm.MDM_ROOT),
+        "source": cowork._marketplace_files(device.source),
+        "mdm": cowork._marketplace_files(mdm.MDM_ROOT),
         "policy": mdm.POLICY_PATH.read_bytes(),
         "agent": mdm.AGENT_PATH.read_bytes(),
     }
@@ -130,8 +130,8 @@ def test_provision_without_account_has_no_admin_credentials_or_user_writes(devic
     assert (plugin / "hooks/hooks.json").is_file()
     assert not (plugin / "version.json").exists()
     for bundle in (
-        system_marketplace.read_bundle(device.source),
-        system_marketplace.read_bundle(mdm.MDM_ROOT),
+        cowork._marketplace_files(device.source),
+        cowork._marketplace_files(mdm.MDM_ROOT),
     ):
         for data, _ in bundle.values():
             assert b"provisioning-secret" not in data
@@ -159,7 +159,7 @@ def test_sync_update_and_remove_keep_one_registration_without_authentication(dev
     root = cowork.discover_cowork_root()
     assert mdm.sync_user()
     installed = _installed(root)
-    assert system_marketplace.read_bundle(installed) == system_marketplace.read_bundle(
+    assert cowork._marketplace_files(installed) == cowork._marketplace_files(
         device.source / "plugins/ug"
     )
     assert cowork._registered_marketplace_source(root) == device.source
@@ -272,14 +272,19 @@ def test_failed_update_preserves_previous_deployment(device, monkeypatch, failur
 
 
 @pytest.mark.parametrize("target", ["policy", "source"])
-def test_foreign_policy_or_marketplace_is_never_adopted(device, target):
+def test_existing_policy_is_preserved_and_generated_source_is_replaced(device, target):
     path = mdm.POLICY_PATH if target == "policy" else device.source / "foreign.txt"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.parent.chmod(0o755)
     path.write_text("IT-owned")
-    with pytest.raises(RuntimeError, match="not this"):
+    if target == "policy":
+        with pytest.raises(RuntimeError, match="not this"):
+            mdm.configure(WORKSPACE, "admin")
+        assert path.read_text() == "IT-owned"
+    else:
         mdm.configure(WORKSPACE, "admin")
-    assert path.read_text() == "IT-owned"
+        assert not path.exists()
+        assert (device.source / "plugins/ug/.mcp.json").is_file()
 
 
 def test_partial_refresh_can_be_removed_after_account_switch(device, monkeypatch, tmp_path):
@@ -365,11 +370,11 @@ def test_refresh_preserves_conflicting_installations(device, monkeypatch, tmp_pa
     else:
         other.mkdir()
         monkeypatch.setattr(mdm.managed_files, "claude_desktop_org_plugin_path", lambda: other)
-    before = system_marketplace.read_bundle(root)
+    before = cowork._marketplace_files(root)
     device.admin = False
     with pytest.raises(RuntimeError):
         mdm.sync_user()
-    assert system_marketplace.read_bundle(root) == before
+    assert cowork._marketplace_files(root) == before
     assert other.exists()
 
 
