@@ -1161,16 +1161,15 @@ class TestWindowsManagedWrites:
 
         assert windows.read_text(encoding="utf-8") == '{"apiKeyHelper": "old"}\n'
 
-    def test_elevated_revert_removes_created_file(self, windows, monkeypatch):
+    def test_elevated_revert_empties_created_claude_file(self, windows, monkeypatch):
         monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        monkeypatch.setattr(claude_agent, "_managed_settings_path", lambda: windows)
         self._reconcile(windows, '{"apiKeyHelper": "ug"}\n')
 
-        result = managed_files.revert_managed_file(
-            "claude", display="Claude Code", parser=json.loads, dumper=json.dumps
-        )
+        result = claude_agent.revert_managed_settings()
 
-        assert result == "removed"
-        assert not windows.exists()
+        assert result == "emptied"
+        assert windows.read_text(encoding="utf-8") == "{}\n"
 
     def test_non_admin_revert_quits_with_admin_hint(self, windows, monkeypatch):
         monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
@@ -1790,7 +1789,10 @@ class TestManagedFileLifecycle:
         path.write_text("changed-content", encoding="utf-8")
         assert managed_files.managed_file_is_verified(state, "claude", path) is False
 
-    def test_revert_restores_exact_original(self, tmp_path, backup_dir, monkeypatch):
+    @pytest.mark.parametrize("keep_empty_file", [False, True])
+    def test_revert_restores_exact_original(
+        self, tmp_path, backup_dir, monkeypatch, keep_empty_file
+    ):
         path = tmp_path / "managed.json"
         path.write_text('{"enterprise": true}\n', encoding="utf-8")
         monkeypatch.setattr(
@@ -1812,13 +1814,15 @@ class TestManagedFileLifecycle:
             display="Claude Code",
             parser=json.loads,
             dumper=lambda doc: json.dumps(doc) + "\n",
+            keep_empty_file=keep_empty_file,
         )
 
         assert result == "restored"
         assert path.read_text() == '{"enterprise": true}\n'
         assert json.loads((backup_dir / "manifest.json").read_text())["files"] == {}
 
-    def test_revert_removes_file_created_by_ucode(self, tmp_path, backup_dir, monkeypatch):
+    @pytest.mark.parametrize("keep_empty_file", [False, True])
+    def test_revert_file_created_by_ucode(self, tmp_path, backup_dir, monkeypatch, keep_empty_file):
         path = tmp_path / "managed.json"
         monkeypatch.setattr(
             managed_files,
@@ -1840,12 +1844,60 @@ class TestManagedFileLifecycle:
             display="Claude Code",
             parser=json.loads,
             dumper=lambda doc: json.dumps(doc) + "\n",
+            keep_empty_file=keep_empty_file,
         )
 
-        assert result == "removed"
-        assert not path.exists()
+        if keep_empty_file:
+            assert result == "emptied"
+            assert path.read_text(encoding="utf-8") == "{}\n"
+        else:
+            assert result == "removed"
+            assert not path.exists()
+        assert json.loads((backup_dir / "manifest.json").read_text())["files"] == {}
+        assert (
+            managed_files.revert_managed_file(
+                "claude",
+                display="Claude Code",
+                parser=json.loads,
+                dumper=json.dumps,
+                keep_empty_file=keep_empty_file,
+            )
+            == "unchanged"
+        )
+        assert path.exists() is keep_empty_file
 
-    def test_revert_preserves_external_changes(self, tmp_path, backup_dir, monkeypatch):
+    def test_revert_does_not_recreate_a_missing_file(self, tmp_path, backup_dir, monkeypatch):
+        path = tmp_path / "managed.json"
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+        managed_files.reconcile_managed_file(
+            path,
+            '{"ucode": true}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["ucode"]],
+            parser=json.loads,
+        )
+        path.unlink()
+
+        managed_files.revert_managed_file(
+            "claude",
+            display="Claude Code",
+            parser=json.loads,
+            dumper=json.dumps,
+            keep_empty_file=True,
+        )
+
+        assert not path.exists()
+        assert json.loads((backup_dir / "manifest.json").read_text())["files"] == {}
+
+    @pytest.mark.parametrize("keep_empty_file", [False, True])
+    def test_revert_preserves_external_changes(
+        self, tmp_path, backup_dir, monkeypatch, keep_empty_file
+    ):
         path = tmp_path / "managed.json"
         path.write_text('{"enterprise": "original"}\n', encoding="utf-8")
         monkeypatch.setattr(
@@ -1871,6 +1923,7 @@ class TestManagedFileLifecycle:
             display="Claude Code",
             parser=json.loads,
             dumper=lambda doc: json.dumps(doc, sort_keys=True) + "\n",
+            keep_empty_file=keep_empty_file,
         )
 
         assert result == "ucode entries removed; external changes preserved"

@@ -194,7 +194,8 @@ If ucode cannot complete a write or revert, the backup remains available for a l
 `ucode revert` extends the existing local-file restoration with managed-file restoration:
 
 - If the current file exactly matches ucode's last-applied snapshot, restore the exact baseline.
-- If ucode created the file, delete it.
+- If ucode created the file and it still matches the last-applied snapshot, clear Claude Code's
+  managed settings to `{}` while keeping the file; delete Codex's managed file.
 - If an administrator or MDM changed the file later, perform a three-way revert.
 - Restore original values only where the current value still matches ucode's last-applied value.
 - Remove only list entries added by ucode while preserving externally added entries.

@@ -787,6 +787,7 @@ def revert_managed_file(
     display: str,
     parser: ManagedParser,
     dumper: ManagedDumper,
+    keep_empty_file: bool = False,
 ) -> str:
     """Restore one managed file from its baseline while preserving later external edits."""
     manifest = _load_manifest()
@@ -824,6 +825,10 @@ def revert_managed_file(
             current_text if is_semantically_equal(reverted, current_doc) else dumper(reverted)
         )
 
+    emptied = keep_empty_file and desired_text is None and current_text is not None
+    if emptied:
+        desired_text = dumper({})
+
     if desired_text != current_text:
         if not managed_writes_allowed():
             if current_os() is not OS.WINDOWS:
@@ -850,6 +855,8 @@ def revert_managed_file(
             )
 
     _delete_backup(tool, manifest, entry)
+    if emptied:
+        return "emptied"
     if original_text is None and desired_text is None:
         return "removed"
     if current_text != last_text:

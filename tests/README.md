@@ -992,6 +992,9 @@ not establish native Windows socket behavior.
 `test_managed_files.py` covers a lazy sudo worker shared across multiple managed-file writes,
 no elevation for unchanged files, target/symlink rejection, bounded shutdown and cancellation,
 and real-shell copy/rename failure handling in temporary directories.
+Revert coverage checks retaining an empty Claude settings file, repeated revert, an already-missing
+file, exact baseline restoration, and preservation of external edits. Header-mod and credential
+tests also check that Claude revert leaves `{}` in the managed file.
 `test_cli.py` covers the workspace configure session boundary.
 These are unit/component checks; they do not establish live sudo password-prompt behavior.
 

@@ -1,5 +1,10 @@
 # Integration tests
 
+Claude revert retaining an empty OS-managed settings file is covered by component tests in
+`../test_managed_files.py`, `../test_claude_header_mod.py`, and
+`../test_claude_credential_blanks.py`. These use temporary paths and do not establish native
+macOS/Windows or live privileged-write coverage.
+
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls
 still routing waiting for a later reply, distinct

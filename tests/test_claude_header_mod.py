@@ -186,13 +186,14 @@ def test_failed_install_never_enables_a_missing_plugin(tmp_path, monkeypatch):
 
 
 def test_revert_removes_the_mod_files_and_folders(tmp_path, monkeypatch):
-    _managed_path, root, _writes = _managed_env(tmp_path, monkeypatch)
+    managed_path, root, _writes = _managed_env(tmp_path, monkeypatch)
     claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
     assert (root / "ug-headers/hooks/register.ts").is_file()
 
     claude.revert_managed_settings()
 
     assert not root.exists()
+    assert managed_path.read_text(encoding="utf-8") == "{}\n"
 
 
 def test_revert_keeps_the_guard_when_an_admin_extended_the_list(tmp_path, monkeypatch):
