@@ -8,7 +8,9 @@ an agent choosing to spawn a subagent. The TUI journeys additionally invoke the 
 Smart Router skill and spawn real children before and after its session-local toggles.
 """
 
+import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -24,7 +26,7 @@ from utils.evidence import (
 )
 from utils.managed import MANAGED_CONFIG_FIXTURES, use_smart_routing_fixture
 from utils.request_recorder import TuiRequestRecorder, served_inference_request
-from utils.terminal import AgentTerminal
+from utils.terminal import AgentTerminal, codex_command_approval_pending
 
 pytestmark = pytest.mark.harness_latest
 
@@ -129,9 +131,28 @@ def _run_calculation(
         return task
 
     assert new_decisions, new_decisions
-    assert all(task.marker in decision.get("task_name", "") for decision in new_decisions), (
-        new_decisions
-    )
+    if agent == "codex":
+        # Correlate the audit hashes with plaintext assignments in native rollouts.
+        assignments = set()
+        for records in agent_sessions(session, agent).values():
+            for row in records:
+                item = row.get("payload", {})
+                if row.get("type") != "response_item" or item.get("type") != "agent_message":
+                    continue
+                for part in item.get("content", []):
+                    text = part.get("text", "")
+                    if part.get("type") != "input_text" or not text.startswith(
+                        "Message Type: NEW_TASK\n"
+                    ):
+                        continue
+                    _, separator, assignment = text.partition("\nPayload:\n")
+                    if separator and task.marker in assignment:
+                        assignments.add(
+                            hashlib.sha256(assignment.strip().encode("utf-8")).hexdigest()
+                        )
+        assert all(row["task_sha256"] in assignments for row in new_decisions), new_decisions
+    else:
+        assert all(task.marker in row.get("task_name", "") for row in new_decisions), new_decisions
     decision = new_decisions[0]
     if agent == "claude":
         model = decision["requested_model"].removeprefix("system.ai.").removeprefix("databricks-")
@@ -209,9 +230,20 @@ def _toggle_with_skill(
 
     before_answers, before_confirmations = completion_counts()
     tui.submit(invocation)
+    approval_sent = False
+    flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
+    python = (
+        '& "$env:UCODE_SMART_ROUTER_PYTHON"' if os.name == "nt" else '"$UCODE_SMART_ROUTER_PYTHON"'
+    )
+    command = f"{python} -m ucode.cli codex {flag}"
 
     def toggled(screen):
-        if tui.approve_windows_command(screen):
+        nonlocal approval_sent
+        # Fresh remote Codex sessions can be read-only. Approve only this
+        # requested toggle through the native dialog, keeping the sandbox intact.
+        if not approval_sent and codex_command_approval_pending(screen, command):
+            tui.send("\r", f"approve the session-local Smart Router toggle {state} once")
+            approval_sent = True
             return False
         try:
             controls_now = json.loads(controls[0].read_text())
@@ -383,7 +415,10 @@ def test_smart_routing_codex_route_subagent_hook(
     assert len(rows) == 1, rows
     row = rows[0]
     assert row["session_id"] == payload["session_id"], row
-    assert row["task_name"] == payload["tool_input"]["message"], row
+    assignment = payload["tool_input"]["message"]
+    assert row["task_sha256"] == hashlib.sha256(assignment.encode("utf-8")).hexdigest(), row
+    assert row["task_length"] == len(assignment), row
+    assert "task_name" not in row, row
     assert row["requested_model"] == updated["model"], row
 
 
@@ -707,6 +742,7 @@ def test_smart_router_skill_turns_claude_subagent_routing_back_on(
 @pytest.mark.live
 @pytest.mark.codex
 @pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
 @SMART_ROUTER_VERSIONS
 def test_smart_router_routes_codex_subagent_at_launch(
     live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
@@ -747,6 +783,7 @@ def test_smart_router_routes_codex_subagent_at_launch(
 @pytest.mark.live
 @pytest.mark.codex
 @pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
 @SMART_ROUTER_VERSIONS
 def test_smart_router_skill_turns_codex_subagent_routing_off(
     live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
@@ -791,6 +828,7 @@ def test_smart_router_skill_turns_codex_subagent_routing_off(
 @pytest.mark.live
 @pytest.mark.codex
 @pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
 @SMART_ROUTER_VERSIONS
 def test_smart_router_skill_turns_codex_subagent_routing_back_on(
     live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
