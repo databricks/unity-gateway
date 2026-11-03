@@ -153,6 +153,7 @@ class TestHelp:
             "otel-headers",
             "codex-router-hook",
             "claude-router-hook",
+            "smart-router-describe",
         ):
             assert command not in output
 
@@ -8507,9 +8508,9 @@ class TestMcpProxyCmdForwardsUsePat:
 
     def _invoke(self, monkeypatch, *, flag, state):
         captured: dict = {}
-        monkeypatch.setattr("ucode.cli.load_state", lambda: state)
+        monkeypatch.setattr("ucode.mcp_proxy_runtime.load_proxy_state", lambda **_: state)
         monkeypatch.setattr(
-            "ucode.mcp_proxy.serve",
+            "ucode.mcp_proxy_runtime.serve",
             lambda *a, **kw: captured.update(args=a, kwargs=kw),
         )
         args = ["mcp-proxy", "--url", "https://x/mcp", "--host", "https://x"]
