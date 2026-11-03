@@ -522,6 +522,13 @@ def _install_plugin(cowork_root: Path, marketplace_root: Path) -> None:
         ["plugin", action, PLUGIN_ID, "--cowork", "--json"],
         env,
     )
+    # Updating an installed plugin does not restore missing or disabled enablement.
+    _run_claude_json(
+        claude,
+        ["plugin", "enable", PLUGIN_ID, "--cowork", "--json"],
+        env,
+        accepted_failures=("already enabled",),
+    )
     if _contains_plugin_id(installed, plugin_id=LEGACY_PLUGIN_ID):
         _run_claude_json(
             claude,

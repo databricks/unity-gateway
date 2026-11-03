@@ -73,6 +73,10 @@ through the real Claude CLI before configuration; its registry entry and install
 survive installation, reconfiguration, and revert unchanged. Revert also removes UG's marketplace
 registration and generated source directory.
 
+Both journeys also require UG's plugin to be enabled in Cowork settings. The system.ai
+lifecycle journey disables it through Claude's CLI before reconfiguring and verifies that
+configure restores enablement while preserving the installed MCP payload.
+
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.web_search and allow
 the test identity to invoke it. No dedicated Desktop MCP test, separate fixture-workspace step,
@@ -590,8 +594,9 @@ scoped Claude plugin commands, install/update selection, PAT/custom-OAuth behavi
 owned-file cleanup. Alias checks cover short UC names, unchanged proxy routing, custom-name
 preservation, order-independent collisions, and repeated replacement of old keys.
 Manifest checks require the `ug` name and display name in both manifests.
-Legacy-registration component checks cover replacement after successful install/update,
-preservation on install failure, scoped cleanup, and unrelated-plugin preservation.
+Legacy-registration component checks cover replacement after successful install/update and
+enablement, preservation on install or enablement failure, scoped cleanup, and unrelated-plugin
+preservation.
 `../test_desktop_configure_cli.py` covers managed orchestration and
 cleanup. Both are mocked component coverage; the integration suite does not launch Cowork,
 connect a plugin MCP server, discover its deferred tool, or run a task through it.

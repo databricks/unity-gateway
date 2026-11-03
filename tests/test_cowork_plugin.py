@@ -118,6 +118,18 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
         stdout = "[]" if argv[1:4] == ["plugin", "list", "--cowork"] else '{"outcome":"ok"}'
         if argv[1:3] == ["plugin", "validate"]:
             stdout = "valid"
+        elif argv[1:3] == ["plugin", "enable"]:
+            return SimpleNamespace(
+                returncode=1,
+                stdout=json.dumps(
+                    {
+                        "outcome": "failed",
+                        "failureCode": "already_in_goal_state",
+                        "message": f'Plugin "{cowork.PLUGIN_ID}" is already enabled at user scope',
+                    }
+                ),
+                stderr="",
+            )
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(cowork.subprocess_cross_os, "run", run)
@@ -207,11 +219,12 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
         ["plugin", "marketplace"],
         ["plugin", "list"],
         ["plugin", "install"],
+        ["plugin", "enable"],
     ]
     assert all(call[1]["env"]["CLAUDE_CONFIG_DIR"] == str(cowork_root) for call in calls)
     assert calls[-1][0][1:] == [
         "plugin",
-        "install",
+        "enable",
         "ug@unity-gateway-cowork",
         "--cowork",
         "--json",
@@ -264,7 +277,7 @@ def test_configure_updates_installed_plugin(tmp_path, monkeypatch):
         )
         assert list(json.loads(mcp_path.read_text())["mcpServers"]) == ["github"]
 
-    assert calls[-1][1:3] == ["plugin", "update"]
+    assert [argv[1:3] for argv in calls[-2:]] == [["plugin", "update"], ["plugin", "enable"]]
     assert all(argv[1:3] != ["plugin", "uninstall"] for argv in calls)
 
 
@@ -312,7 +325,7 @@ def test_install_replaces_legacy_registration_after_success(
     cowork._install_plugin(cowork_root, tmp_path / "marketplace")
 
     assert installed == {"ug@unity-gateway-cowork", "other@unrelated"}
-    assert calls[-2:] == [
+    assert calls[-3:] == [
         [
             "plugin",
             "update" if already_installed else "install",
@@ -320,11 +333,13 @@ def test_install_replaces_legacy_registration_after_success(
             "--cowork",
             "--json",
         ],
+        ["plugin", "enable", cowork.PLUGIN_ID, "--cowork", "--json"],
         ["plugin", "uninstall", cowork.LEGACY_PLUGIN_ID, "--cowork", "--json"],
     ]
 
 
-def test_install_failure_preserves_legacy_registration(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failed_action", ["install", "enable"])
+def test_install_failure_preserves_legacy_registration(tmp_path, monkeypatch, failed_action):
     monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
     calls = []
 
@@ -335,7 +350,7 @@ def test_install_failure_preserves_legacy_registration(tmp_path, monkeypatch):
             stdout = "valid"
         elif argv[1:3] == ["plugin", "list"]:
             stdout = json.dumps([{"pluginId": cowork.LEGACY_PLUGIN_ID}])
-        elif argv[1:3] == ["plugin", "install"]:
+        elif argv[1:3] == ["plugin", failed_action]:
             return SimpleNamespace(returncode=1, stdout="", stderr="installation failed")
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
@@ -344,7 +359,7 @@ def test_install_failure_preserves_legacy_registration(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="installation failed"):
         cowork._install_plugin(tmp_path / "cowork", tmp_path / "marketplace")
 
-    assert calls[-1] == ["plugin", "install", cowork.PLUGIN_ID, "--cowork", "--json"]
+    assert calls[-1] == ["plugin", failed_action, cowork.PLUGIN_ID, "--cowork", "--json"]
     assert all(argv[:2] != ["plugin", "uninstall"] for argv in calls)
 
 
