@@ -5826,7 +5826,7 @@ class TestConfigureAgentsSelection:
 
         assert result.exit_code == 0, result.output
         assert "(Provider: Databricks)" in _strip_ansi(result.output)
-        refresh.assert_called_once_with(state, force_refresh=True, require_install=False)
+        refresh.assert_called_once_with(state, force_refresh=True)
         configure.assert_called_once_with(
             "copilot", state, parent_schema="main.models", with_vscode=True
         )
