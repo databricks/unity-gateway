@@ -152,11 +152,10 @@ def test_mod_files_are_on_the_sudo_allowlist():
 
 def test_unreadable_mod_folder_reads_as_inactive(tmp_path, monkeypatch):
     # A folder the user can't enter (an earlier install under umask 027) must warn, not crash.
-    managed_path = tmp_path / "managed.json"
-    managed_path.write_text(
-        json.dumps(claude._enable_header_mod({}, tmp_path / "ucode-plugins")), encoding="utf-8"
-    )
-    monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
+    monkeypatch.setattr(claude, "claude_header_mod_root", lambda: tmp_path)
+    managed = tmp_path / "managed.json"
+    managed.write_text(json.dumps({"enabledPlugins": {claude.CLAUDE_HEADER_MOD_ID: True}}))
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed)
 
     def denied(self):
         raise PermissionError(13, "Permission denied", str(self))
@@ -166,10 +165,10 @@ def test_unreadable_mod_folder_reads_as_inactive(tmp_path, monkeypatch):
 
 
 def test_non_utf8_managed_settings_read_as_inactive(tmp_path, monkeypatch):
-    managed_path = tmp_path / "managed.json"
-    managed_path.write_bytes("{}".encode("utf-16"))
-    monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
-
+    managed = tmp_path / "managed.json"
+    managed.write_bytes("{}".encode("utf-16"))
+    monkeypatch.setattr(claude, "claude_header_mod_root", lambda: None)
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed)
     assert claude.header_mod_active() is False
 
 
@@ -318,60 +317,26 @@ def test_windows_writes_only_the_mod_files_and_needs_an_administrator(windows, m
         )
 
 
-def _managed_plugins(tmp_path, monkeypatch, plugins, *, own_mod=False):
-    """Managed settings enabling ``plugins``, plus ug's own mod entries when ``own_mod``."""
-    doc = claude._enable_header_mod({}, tmp_path / "ucode-plugins") if own_mod else {}
-    doc["enabledPlugins"] = {**doc.get("enabledPlugins", {}), **plugins}
-    managed_path = tmp_path / "managed-settings.json"
-    managed_path.write_text(json.dumps(doc), encoding="utf-8")
-    monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
-
-
-def test_another_tools_header_mod_counts_by_its_enabled_flag(tmp_path, monkeypatch):
-    # Isaac launches ug with UG_SKIP_OS_SETTINGS=1 and enables its own copy of the mod.
-    monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
-    _managed_plugins(tmp_path, monkeypatch, {"ug-headers@other-managed": True})
-    assert claude.header_mod_active()
-
-    _managed_plugins(tmp_path, monkeypatch, {"ug-headers@other-managed": False})
-    assert not claude.header_mod_active()
-
-
-@pytest.mark.parametrize("plugins", [{}, {"other@other-managed": True}])
-def test_no_header_mod_plugin_reads_as_inactive(tmp_path, monkeypatch, plugins):
-    _managed_plugins(tmp_path, monkeypatch, plugins)
-    assert not claude.header_mod_active()
-
-
-def test_ugs_own_mod_needs_its_files_but_not_another_tools(tmp_path, monkeypatch):
-    _managed_plugins(tmp_path, monkeypatch, {}, own_mod=True)
-    assert not claude.header_mod_active()
-
-    _managed_plugins(tmp_path, monkeypatch, {"ug-headers@other-managed": True}, own_mod=True)
+def test_header_mod_active_accepts_another_installers_copy_without_ug_files(tmp_path, monkeypatch):
+    # TODO: remove with the special case once other installers use ug to update managed settings.
+    _managed_path, root, _writes = _managed_env(
+        tmp_path, monkeypatch, {"enabledPlugins": {"ug-headers@other-managed": True}}
+    )
+    assert not root.exists()
     assert claude.header_mod_active()
 
 
-def test_an_unreadable_ug_folder_does_not_hide_another_tools_mod(tmp_path, monkeypatch):
-    _managed_plugins(tmp_path, monkeypatch, {"ug-headers@other-managed": True}, own_mod=True)
+def test_header_mod_active_rejects_disabled_absent_or_unrelated_plugins(tmp_path, monkeypatch):
+    managed_path, _root, _writes = _managed_env(
+        tmp_path, monkeypatch, {"enabledPlugins": {"ug-headers@other-managed": False}}
+    )
+    assert not claude.header_mod_active()
 
-    def denied(self):
-        raise PermissionError(13, "Permission denied", str(self))
-
-    monkeypatch.setattr(claude.Path, "is_file", denied)
-    assert claude.header_mod_active()
-
-
-def test_missing_mod_warning_matches_why_ug_cant_install_it(tmp_path, monkeypatch):
-    monkeypatch.setattr(claude, "claude_header_mod_root", lambda: tmp_path)
-    monkeypatch.setattr(claude, "current_os", lambda: OS.LINUX)
-    assert "Run `ug configure` to install it" in claude._header_mod_missing_warning()
-
-    monkeypatch.setattr(claude, "current_os", lambda: OS.WINDOWS)
-    assert "`ug configure` as an administrator" in claude._header_mod_missing_warning()
-
-    monkeypatch.setattr(claude, "claude_header_mod_root", lambda: None)
-    assert "on this platform" in claude._header_mod_missing_warning()
-
-    monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
-    message = claude._header_mod_missing_warning()
-    assert "UG_SKIP_OS_SETTINGS" in message and "enable its header mod" in message
+    for doc in (
+        {"enabledPlugins": {}},
+        {},
+        {"enabledPlugins": {"other@other-managed": True}},
+        {"enabledPlugins": {"ug-headers@ucode-managed": True}},  # ug's own files are missing
+    ):
+        managed_path.write_text(json.dumps(doc), encoding="utf-8")
+        assert not claude.header_mod_active()

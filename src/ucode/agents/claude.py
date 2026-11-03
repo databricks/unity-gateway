@@ -14,7 +14,7 @@ import sys
 import threading
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -2111,62 +2111,33 @@ def _remove_header_mod() -> None:
 
 
 def header_mod_active() -> bool:
-    """Whether the managed file enables a header mod, so ``UG_HEADERS`` reaches Claude.
+    """Whether a header mod is installed and enabled, so ``UG_HEADERS`` reaches Claude.
 
-    That is ug's own, current with this release, or any other ``ug-headers@`` plugin enabled in the
-    file. Checked even under ``UG_SKIP_OS_SETTINGS``, which stops only ug from installing one."""
+    That is ug's own mod, or another installer's copy enabled in the managed settings.
+    """
+    root = claude_header_mod_root()
     path = _managed_settings_path()
     if path is None:
         return False
     try:
         settings = _parse_managed_settings(read_managed_file(path) or "{}")
-    except (RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
+        plugins = settings.get("enabledPlugins")
+        if not isinstance(plugins, dict):
+            return False
+        # TODO: remove once other installers use ug to update managed settings.
+        if any(
+            key.startswith(_HEADER_MOD_PREFIX) and key != CLAUDE_HEADER_MOD_ID and value is True
+            for key, value in plugins.items()
+        ):
+            return True
+        if root is None or plugins.get(CLAUDE_HEADER_MOD_ID) is not True:
+            return False
+        for file, content in _header_mod_files(root).items():
+            if not file.is_file() or file.read_text(encoding="utf-8") != content:
+                return False
+    except (OSError, RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
         return False
-    plugins = settings.get("enabledPlugins")
-    if not isinstance(plugins, dict):
-        return False
-    # Another tool's copy counts once it is enabled, wherever it keeps its files.
-    if any(
-        plugin_id.startswith(_HEADER_MOD_PREFIX)
-        and plugin_id != CLAUDE_HEADER_MOD_ID
-        and enabled is True
-        for plugin_id, enabled in plugins.items()
-    ):
-        return True
-    marketplaces = settings.get("extraKnownMarketplaces")
-    entry = (
-        marketplaces.get(CLAUDE_HEADER_MOD_MARKETPLACE) if isinstance(marketplaces, dict) else None
-    )
-    source = entry.get("source") if isinstance(entry, dict) else None
-    if plugins.get(CLAUDE_HEADER_MOD_ID) is not True or not isinstance(source, dict):
-        return False
-    if source.get("source") != "directory" or not isinstance(source.get("path"), str):
-        return False
-    # An unreadable folder reads as a missing mod.
-    with suppress(OSError, ValueError):
-        return all(
-            file.is_file() and file.read_text(encoding="utf-8") == content
-            for file, content in _header_mod_files(Path(source["path"])).items()
-        )
-    return False
-
-
-def _header_mod_missing_warning() -> str:
-    """Why this launch's ``UG_HEADERS`` won't reach Claude, and what fixes it."""
-    lead = "Claude Code won't send your `ug --header` / UG_HEADERS headers: "
-    if managed_settings_skipped():
-        return lead + (
-            "its OS-managed settings enable no header mod, and UG_SKIP_OS_SETTINGS or "
-            "`ug configure --user` keeps ug from installing its own. Run `ug configure` once "
-            "without either, or have the tool that manages those settings enable its header mod."
-        )
-    if claude_header_mod_root() is None:
-        return lead + "ug can't install its header mod on this platform."
-    elevated = " as an administrator" if current_os() is OS.WINDOWS else ""
-    return lead + (
-        "ug's header mod isn't installed or is out of date, and a launch never changes "
-        f"machine-wide files. Run `ug configure`{elevated} to install it."
-    )
+    return True
 
 
 def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> None:
@@ -2767,7 +2738,11 @@ def launch(
     workspace = state.get("workspace")
     ensure_hooks_modules_gate()
     if os.environ.get(UG_HEADERS_ENV_VAR, "").strip() and not header_mod_active():
-        print_warning(_header_mod_missing_warning())
+        print_warning(
+            "Claude Code won't send your `ug --header` / UG_HEADERS headers: no header mod is enabled "
+            "or ug's is out of date, and a launch never changes machine-wide files. Run `ug configure` "
+            "without UG_SKIP_OS_SETTINGS or `--user`."
+        )
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.
