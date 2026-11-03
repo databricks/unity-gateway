@@ -2984,8 +2984,9 @@ def smart_router_describe_cmd() -> None:
     config and launch flags are not reflected.
     """
     import sys
+    from dataclasses import asdict
 
-    sys.stdout.write(json.dumps(smart_routing_v2.describe_routing()) + "\n")
+    sys.stdout.write(json.dumps(asdict(smart_routing_v2.describe_routing())) + "\n")
 
 
 @app.command("claude-router-hook", hidden=True)

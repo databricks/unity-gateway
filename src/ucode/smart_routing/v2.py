@@ -11,6 +11,7 @@ import sys
 import time
 import urllib.request
 from collections.abc import Callable, Mapping, MutableMapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
@@ -71,9 +72,6 @@ from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_
 from ucode.ui import print_note, print_warning
 
 LEGACY_STATE_KEY = "smart_routing_enabled"
-
-# Bump on any incompatible change to describe_routing's output; launchers parse it.
-DESCRIBE_ROUTING_SCHEMA = 1
 
 CODEX_INTERPOSER_LOG = APP_DIR / "codex-v2-interposer.log"
 
@@ -193,21 +191,29 @@ def first_prompt_routing_enabled(
     )
 
 
-def describe_routing(env: MutableMapping[str, str] | None = None) -> dict:
+@dataclass(frozen=True)
+class RoutingDescription:
+    """The agents a launch would route, as `ug smart-router-describe` prints them."""
+
+    # Bump on any incompatible change: launchers parse the printed JSON.
+    schema: int = field(default=1, init=False)
+    harnesses: tuple[str, ...]
+
+
+def describe_routing(env: MutableMapping[str, str] | None = None) -> RoutingDescription:
     """The agents a launch with this environment would route.
 
     Depends only on the environment, so callers may cache it per ug version and routing env:
     a workspace's managed config and launch flags are not applied.
     """
     source = os.environ if env is None else env
-    return {
-        "schema": DESCRIBE_ROUTING_SCHEMA,
-        "harnesses": [
+    return RoutingDescription(
+        harnesses=tuple(
             agent
             for agent in (AGENT_CLAUDE, AGENT_CODEX)
             if smart_routing_enabled(source, default=False, agent=agent)
-        ],
-    }
+        )
+    )
 
 
 def override_smart_routing(

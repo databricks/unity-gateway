@@ -258,12 +258,12 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
 @pytest.mark.parametrize(
     ("version", "harnesses"),
     [
-        (config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, [AGENT_CLAUDE, AGENT_CODEX]),
-        (config.SUBAGENT_ONLY_V0, [AGENT_CLAUDE, AGENT_CODEX]),
-        (config.SUBAGENT_ONLY_V1, [AGENT_CLAUDE, AGENT_CODEX]),
-        (config.SUBAGENT_ORCH_V0, [AGENT_CLAUDE, AGENT_CODEX]),
-        (config.SUBAGENT_ORCH_V1, [AGENT_CLAUDE, AGENT_CODEX]),
-        (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, [AGENT_CLAUDE]),
+        (config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, (AGENT_CLAUDE, AGENT_CODEX)),
+        (config.SUBAGENT_ONLY_V0, (AGENT_CLAUDE, AGENT_CODEX)),
+        (config.SUBAGENT_ONLY_V1, (AGENT_CLAUDE, AGENT_CODEX)),
+        (config.SUBAGENT_ORCH_V0, (AGENT_CLAUDE, AGENT_CODEX)),
+        (config.SUBAGENT_ORCH_V1, (AGENT_CLAUDE, AGENT_CODEX)),
+        (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, (AGENT_CLAUDE,)),
     ],
 )
 def test_describe_routing_reports_each_version_over_shell_flags(version, harnesses, shell_value):
@@ -280,25 +280,25 @@ def test_describe_routing_reports_each_version_over_shell_flags(version, harness
     }
     original = source.copy()
 
-    assert v2.describe_routing(source) == {"schema": 1, "harnesses": harnesses}
+    assert v2.describe_routing(source) == v2.RoutingDescription(harnesses=harnesses)
     assert source == original
 
 
 @pytest.mark.parametrize(
     ("source", "harnesses"),
     [
-        ({}, []),
-        ({SMART_ROUTER_CONFIG_VERSION_ENV_VAR: "  "}, []),
-        ({ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1"}, []),
+        ({}, ()),
+        ({SMART_ROUTER_CONFIG_VERSION_ENV_VAR: "  "}, ()),
+        ({ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1"}, ()),
         (
             {
                 SMART_ROUTER_CONFIG_VERSION_ENV_VAR: "unsupported_version",
                 ENABLE_SMART_ROUTING_ENV_VAR: "1",
             },
-            [AGENT_CLAUDE, AGENT_CODEX],
+            (AGENT_CLAUDE, AGENT_CODEX),
         ),
-        ({ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}, [AGENT_CLAUDE, AGENT_CODEX]),
+        ({ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}, (AGENT_CLAUDE, AGENT_CODEX)),
     ],
 )
 def test_describe_routing_without_a_known_version_reports_shell_flags(source, harnesses):
-    assert v2.describe_routing(source) == {"schema": 1, "harnesses": harnesses}
+    assert v2.describe_routing(source) == v2.RoutingDescription(harnesses=harnesses)
