@@ -1374,6 +1374,10 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
             parser=_parse_managed_config,
         )
     except ManagedFileWriteUnavailable:
+        # Without --global the caller falls back to user scope; `--global` has no fallback, so a
+        # denied write must fail the run rather than leave the servers silently undelivered.
+        if machine_wide_only():
+            raise
         return False
     # Codex merges this file over the user config key by key, so a same-name user entry of the other
     # transport (stdio `command` vs HTTP `url`) would get both and stop Codex from starting.

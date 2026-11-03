@@ -2876,6 +2876,24 @@ class TestCodexReconcileManagedMcp:
         assert set(tomllib.loads(captured["text"])["mcp_servers"]) == {"other"}
         assert "stdio-now-http" in " ".join(capsys.readouterr().err.split())
 
+    @pytest.mark.parametrize("machine_wide_only", [False, True])
+    def test_denied_write_fails_only_a_global_run(self, monkeypatch, machine_wide_only):
+        # Without --global the caller falls back to user scope; `--global` has none, so it fails.
+        self._wire(monkeypatch, None, {})
+
+        def deny(*a, **k):
+            raise managed_files.ManagedFileWriteUnavailable("sudo denied")
+
+        monkeypatch.setattr(codex, "reconcile_managed_file", deny)
+        managed_files.set_machine_wide_only(machine_wide_only)
+        servers = {"system-ai-github": codex.managed_mcp_entry(self.ARGV)}
+
+        if machine_wide_only:
+            with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="sudo denied"):
+                codex.reconcile_managed_mcp({}, servers)
+        else:
+            assert codex.reconcile_managed_mcp({}, servers) is False
+
     def test_empty_map_clears_table_preserving_model_keys(self, monkeypatch):
         import tomllib
 

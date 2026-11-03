@@ -1219,6 +1219,10 @@ def reconcile_managed_mcp(
             parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
+        # Without --global the caller falls back to user scope; `--global` has no fallback, so a
+        # denied write must fail the run rather than leave the servers silently undelivered.
+        if machine_wide_only():
+            raise
         return False
     # Preserve the scope the model reconcile recorded (e.g. relay-compatible); an MCP-only write only
     # refreshes the fingerprint, it does not change how the file relates to the model settings.
