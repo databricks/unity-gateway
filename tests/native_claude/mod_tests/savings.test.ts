@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing';
+import type { On } from 'claude-code';
+import { expect, mock, test } from 'claude-code/testing';
 
 const options = {
   ENABLE_SMART_ROUTING_V2: '0',
@@ -53,4 +54,75 @@ test('a denied savings read preserves orchestration, startup and model requests'
   }
   expect(requests).toBe(2);
   expect((await $.turn.complete({ answer: 'done' })).text).toBe('done');
+});
+
+async function savingsRow($: any, on: On) {
+  const state = { controls: {} as Record<string, string>, failWrites: false, writes: 0, prices: 0 };
+  const clock = mock.clock(on);
+  const env: Record<string, unknown> = { ...options, UCODE_SESSION_ENV_FILE: '/session/env.json' };
+  on('env.get', (_, e) => ({ value: env[e.name] }));
+  on('env.set', (_, e) => {
+    env[e.name] = e.value;
+    return { value: undefined };
+  });
+  on('fs.read', (_, e) => ({ value: JSON.stringify(e.path === '/session/env.json' ? state.controls : {
+    version: 1,
+    start_model: 'claude-opus-4-8',
+    first_main_model: 'claude-opus-4-8',
+    main_model: 'claude-opus-4-8',
+    first_prompt_seen: true,
+    entries: [{
+      agent: 'child', baseline: 'claude-opus-4-8', served: 'claude-sonnet-4-6',
+      before_user_switch: true, usage: { input_tokens: 100, output_tokens: 10 },
+    }],
+  }) }));
+  on('fs.write', () => {
+    state.writes += 1;
+    return state.failWrites ? { deny: 'ENOSPC' } : { value: undefined };
+  });
+  on('process.run', () => {
+    state.prices += 1;
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      savings: { saved: true, amount: '$0.18', percent: '60%' },
+    }) } };
+  });
+  on('session.start', () => ({ cwd: '/session' }));
+  on('turn.complete', () => ({ text: 'done' }));
+  on('turn.step', async function* (_, e) {
+    return { turnId: e.turnId, index: e.index, answer: 'done', toolUses: [], usage: { input_tokens: 1, output_tokens: 1 } };
+  });
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: ['theirs'] }));
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/session' });
+  const row = await $.ui.mount({ plugin: 'ug-smart-router', surface: 'terminal', component: 'AbovePrompt', props: {} });
+  await clock.advance(1);
+  expect(JSON.stringify(await row.drawn())).toContain('$0.18');
+  return { state, clock, row };
+}
+
+test('saved off/on controls hide and restore a mounted savings row', { options }, async ($, on) => {
+  const { state, clock, row } = await savingsRow($, on);
+  state.controls = { ENABLE_SMART_ROUTING_SAVINGS: '0' };
+  await clock.advance(1000);
+  expect(JSON.stringify(await row.drawn())).not.toContain('$0.18');
+  state.controls = {};
+  await clock.advance(1000);
+  expect(JSON.stringify(await row.drawn())).toContain('$0.18');
+});
+
+test('a failed usage write removes the stale estimate until a later write succeeds', { options }, async ($, on) => {
+  const { state, clock, row } = await savingsRow($, on);
+  const priced = state.prices;
+  state.failWrites = true;
+  await $.turn.step({ turnId: 'turn', index: 0, messageCount: 1, model: 'claude-opus-4-8' }).next();
+  await $.turn.complete({ answer: 'done', isAborted: false });
+  await clock.advance(1);
+  expect(state.writes).toBe(2);
+  expect(state.prices).toBe(priced);
+  expect(JSON.stringify(await row.drawn())).not.toContain('$0.18');
+
+  state.failWrites = false;
+  await $.turn.complete({ answer: 'retry', isAborted: false });
+  await clock.advance(1);
+  expect(state.prices).toBe(priced + 1);
+  expect(JSON.stringify(await row.drawn())).toContain('$0.18');
 });

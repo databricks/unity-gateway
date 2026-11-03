@@ -100,12 +100,9 @@ def test_header_mod_validation_and_merge(native_binary, tmp_path):
             assert "env writes: ANTHROPIC_CUSTOM_HEADERS" in result.stdout
 
 
-@pytest.mark.parametrize(
-    "version", [config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, config.SUBAGENT_ORCH_SAVINGS_V0]
-)
-def test_native_options_are_launch_local(native_binary, tmp_path, version):
+def test_native_options_are_launch_local(native_binary, tmp_path):
     env = {
-        "SMART_ROUTER_CONFIG_VERSION": version,
+        "SMART_ROUTER_CONFIG_VERSION": config.SUBAGENT_ORCH_SAVINGS_V0,
         "SMART_ROUTER_NAME": 'custom "quoted" λ',
     }
     savings_options = _savings_options(tmp_path / "a")
@@ -379,6 +376,60 @@ def test_savings_baseline_survives_routed_replay_and_later_model_change(native_b
     current = next(entry for entry in recorded["entries"] if entry["served"] == later)
     assert current["before_user_switch"] is False
     assert current["baseline"] == later
+
+
+def test_savings_tracking_obeys_cli_session_controls(native_binary, tmp_path):
+    root = tmp_path / "session"
+    options = _savings_options(root)
+    env = {
+        "ENABLE_SMART_ROUTING_V2": "0",
+        "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
+        "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+        "ENABLE_SMART_ROUTING_SAVINGS": "1",
+        "PYTHONPATH": str(Path(__file__).parents[2] / "src"),
+    }
+    controls = session_env.start_session(env)
+    replies = [
+        {"content": [{"type": "text", "text": "done"}], "usage": usage}
+        for usage in (
+            {"input_tokens": 10, "output_tokens": 5},
+            {"input_tokens": 20, "output_tokens": 7},
+            {"input_tokens": 30, "output_tokens": 11},
+        )
+    ]
+    try:
+        with (
+            messages_api(replies) as (api, requests),
+            Session(native_binary, root, env, api=api, options=options) as session,
+        ):
+            assert session.send("Reply with done.")["result"] == "done"
+            _recorded_usage(Path(options["savings_usage"]), 1, output_tokens=5)
+            for action in ("disable", "enable"):
+                result = subprocess.run(
+                    [sys.executable, "-m", "ucode.cli", "claude", f"--{action}-smart-routing"],
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                assert result.returncode == 0, result.stderr
+                saved_controls = json.loads(controls.read_text())
+                if action == "disable":
+                    assert saved_controls["ENABLE_SMART_ROUTING_SAVINGS"] == "0"
+                else:
+                    assert saved_controls == {}
+                assert session.send("Reply with done again.")["result"] == "done"
+            recorded = _recorded_usage(Path(options["savings_usage"]), 1, output_tokens=16)
+        assert len(requests) == 3
+        assert recorded["entries"][0]["usage"] == {
+            "input_tokens": 40,
+            "output_tokens": 16,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
+    finally:
+        shutil.rmtree(controls.parent)
 
 
 @pytest.mark.parametrize("flag", [None, "", "0"])

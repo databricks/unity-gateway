@@ -195,11 +195,14 @@ native suite, options reach the mod unchanged, configured aliases resolve to mod
 and disabled sessions create no usage file even with stale savings options. A controlled
 local Messages API drives real main and subagent requests and checks exact input, output,
 and cache-token totals. Native model commands and a blocked-prompt replay check the
-pre-routing baseline and preserve earlier usage after a later model change. Capability
-tests deny the savings flag read and verify that startup and requests still run.
+pre-routing baseline and preserve earlier usage after a later model change. CLI off/on
+controls exclude disabled turns from the totals; pricer subprocesses honor the saved
+controls and fall back to inherited settings when the file is malformed. Native UI
+component tests check that off/on hides/restores a mounted row and failed usage writes
+hide stale estimates until a successful write. Capability tests deny the savings flag
+read and verify that startup and requests still run.
 These are native component checks, not live gateway/model or TUI coverage.
-Endpoint-price refresh failures, orchestrator-version display, and the above-prompt
-savings row are not covered automatically.
+Endpoint-price refresh failures and orchestrator-version display are not covered automatically.
 
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model

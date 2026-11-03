@@ -1654,8 +1654,11 @@ Native component tests check opt-in usage-file creation, opt-out preservation, r
 model aliases, and continued requests after a denied savings-flag read. A controlled
 local Messages API exercises real Claude main/subagent requests and token accounting.
 Native model commands and a blocked-prompt replay verify baseline capture before routing
-and preserve prior usage after later model changes. Python launch tests check separate
-price caches for workspaces sharing a host, and pricing tests keep model versions distinct.
+and preserve prior usage after later model changes. CLI off/on excludes disabled turns
+from native usage totals. Native UI component tests cover mounted-row updates after
+CLI toggles and hiding stale estimates on failed usage writes. Pricer subprocesses read
+the saved session controls. Python launch tests check separate price caches for workspaces
+sharing a host, and pricing tests keep model versions distinct.
 Live savings accumulation, display, and session off/on are not covered by the
 integration suite.
 

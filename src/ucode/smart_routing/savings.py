@@ -14,7 +14,7 @@ the user changed the main model are priced against the model selected before sub
 prompt, so a manual selection before routing becomes the baseline. A negative
 result (routing chose pricier models) is shown as a cost increase.
 
-Stdlib-only besides ``pricing`` on purpose: the mod runs this in a fresh process after every turn,
+Keep imports lightweight: the mod runs this in a fresh process after every turn,
 and the CLI's usual imports take about a second.
 """
 
@@ -26,7 +26,6 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 from ucode.constants import AGENT_CLAUDE, ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR
-from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.pricing import (
     ModelPrice,
     TokenUsage,
@@ -34,6 +33,7 @@ from ucode.smart_routing.pricing import (
     read_price_cache,
     token_cost,
 )
+from ucode.smart_routing.session_env import effective_environment
 
 MODULE = "ucode.smart_routing.savings"
 # The file the mod writes its token sums to, in the launch directory; the mod reads its path from
@@ -160,7 +160,8 @@ def main(argv: list[str] | None = None) -> int:
             price_cache=args.price_cache,
             baseline_session_start=args.baseline_session_start,
         )
-        if resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR) == "1"
+        if effective_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR)
+        == "1"
         else json.dumps({"savings": None})
     )
     print(line)

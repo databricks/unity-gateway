@@ -228,7 +228,8 @@ and `prompt.submit` captures the baseline before first-prompt routing. That capt
 persisted with the totals so a mod reload does not replace it with the routed model.
 Savings failures, including denied reads of its environment flag, leave model requests
 running. Savings handlers are registered only when the launch options explicitly enable
-the feature.
+the feature. A failed usage-file write hides the estimate and retains the in-memory
+totals for the next turn's write.
 
 The entire savings mod requires `ENABLE_SMART_ROUTING_SAVINGS=1`. Otherwise no usage
 is tracked or written, no endpoint rates are fetched, no pricer runs, and no savings row is
@@ -236,4 +237,5 @@ shown; the three options stay at their declared defaults.
 All existing versioned configurations set the flag to `"0"`. Select
 `SMART_ROUTER_CONFIG_VERSION=subagent_orch_savings_v0` to enable it with subagent
 routing and orchestration. Session routing off/on also disables/restores savings
-from the launch baseline.
+from the launch baseline. Both the mod and pricer read the saved session controls;
+CLI toggles update a mounted savings row within one second.

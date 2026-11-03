@@ -306,3 +306,22 @@ class TestPricerCommand:
         result = self.run(price_cache, usage, flag=flag)
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout) == {"savings": None}
+
+    def test_pricer_obeys_session_controls(self, tmp_path, price_cache, monkeypatch):
+        usage = write_usage(tmp_path, [entry("a1", OPUS_ID, SONNET_ID, SUBAGENT_USAGE)])
+        controls = tmp_path / "session-env.json"
+        monkeypatch.setenv("UCODE_SESSION_ENV_FILE", str(controls))
+        for overrides, expected in (
+            ({"ENABLE_SMART_ROUTING_SAVINGS": "0"}, None),
+            ({}, saved("$0.18", "60%")),
+        ):
+            controls.write_text(json.dumps(overrides))
+            result = self.run(price_cache, usage)
+            assert result.returncode == 0, result.stderr
+            assert json.loads(result.stdout) == {"savings": expected}
+
+        controls.write_text("invalid JSON")
+        fallback = self.run(price_cache, usage)
+        assert fallback.returncode == 0, fallback.stderr
+        assert json.loads(fallback.stdout) == {"savings": saved("$0.18", "60%")}
+        assert b"using the inherited environment" in fallback.stderr

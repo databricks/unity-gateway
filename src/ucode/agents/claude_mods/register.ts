@@ -35,24 +35,29 @@ async function readEnvironment($: EngineInterface): Promise<Environment> {
   };
 }
 
-async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
-  if (!options.orchestratorInstructions) return false;
-  const current = await readEnvironment($);
-  const sessionFile = await $.env.get('UCODE_SESSION_ENV_FILE');
-  if (sessionFile) {
-    try {
+async function withSessionControls($: EngineInterface, current: Environment): Promise<Environment> {
+  try {
+    const sessionFile = await $.env.get('UCODE_SESSION_ENV_FILE');
+    if (sessionFile) {
       const overrides = JSON.parse(await $.fs.read(sessionFile));
       for (const key of [
         'ENABLE_SMART_ROUTING_V2',
         'ENABLE_SMART_ROUTING_SUBAGENT_ONLY',
         'ENABLE_SMART_ROUTER_ORCHESTRATOR',
+        'ENABLE_SMART_ROUTING_SAVINGS',
       ]) {
         if (typeof overrides?.[key] === 'string') current[key] = overrides[key];
       }
-    } catch {
-      // Match the routing hooks' inherited-environment fallback for unreadable controls.
     }
+  } catch {
+    // Match the routing hooks' inherited-environment fallback for unreadable controls.
   }
+  return current;
+}
+
+async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
+  if (!options.orchestratorInstructions) return false;
+  const current = await withSessionControls($, await readEnvironment($));
   return isRoutingEnabled(current) && current.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1';
 }
 
@@ -233,23 +238,9 @@ export function register(on: On, options: PluginOptions): void {
   });
 }
 
-// Smart-routing savings estimate, drawn above the prompt in place of the status band,
-// with the orchestrator skill version labeled as the Unity Gateway Smart Router's.
-// Per turn request (main agent and subagents) it sums token usage by
-// (agent, baseline, served, before_user_switch), where served is
-// the model the request named (the model service billed; the id the API reports
-// back is a gateway deployment's, which drifts) and baseline is what the request
-// would have used without routing: the main model in effect for a subagent, served
-// itself for main (routing never changes the main model mid-session). First-prompt
-// routing switches the main model once, before the first request, so a later
-// change is the user's; requests before it are flagged, and priced from
-// start_model under that routing. The first prompt captures the user's model
-// before the router's /model command, including any manual choice made at launch.
-// Claude Code's side queries (title, compaction, helpers) are not turn steps, so
-// they never count. A hooks module has no Node APIs and the price table lives in
-// Python, so after each turn it writes the sums to the launch's savings_usage
-// file and runs the savings_pricer command (ucode.smart_routing.savings) on it.
-// Everything is best effort and swallows errors.
+// Price turn-step usage by the requested model ID; gateway response IDs can drift.
+// Subagents use the current main model as their baseline. First-prompt routing uses
+// the user's pre-routing model until a later manual switch. See docs/claude-mod.md.
 
 const USAGE_VERSION = 1;
 const PRICER_TIMEOUT_MS = 20_000;
@@ -378,11 +369,19 @@ async function readSavingsFlag($: EngineInterface): Promise<string | undefined> 
   }
 }
 
+async function readSavingsState($: EngineInterface): Promise<boolean> {
+  if (!enabled) return false;
+  const current = await withSessionControls($, {
+    ENABLE_SMART_ROUTING_SAVINGS: await readSavingsFlag($),
+  });
+  return current.ENABLE_SMART_ROUTING_SAVINGS === '1';
+}
+
 // State is seeded once per module instance, by whichever hook runs first;
 // concurrent hooks wait on the same load.
 async function ready($: any): Promise<boolean> {
   try {
-    if (!enabled || await readSavingsFlag($) !== '1') return false;
+    if (!await readSavingsState($)) return false;
     seeding ??= loadUsage($);
     await seeding;
     return true;
@@ -442,9 +441,13 @@ async function writeAndPrice($: any): Promise<void> {
   } catch (error) {
     // Retry at the next turn.complete rather than pricing a file that is not there.
     dirty = true;
+    setEstimate($, null);
     throw error;
   }
-  const next = await runPricer($);
+  setEstimate($, await runPricer($));
+}
+
+function setEstimate($: EngineInterface, next: Estimate | null): void {
   if (JSON.stringify(next) !== JSON.stringify(estimate)) {
     estimate = next;
     // Claude Code only redraws the band when its props change, not when module state does.
@@ -502,6 +505,8 @@ function registerSavings(on: On, options: PluginOptions): void {
   usagePath = str(raw.savings_usage);
   enabled = pricer.length > 0 && usagePath !== null;
   version = str(raw.orchestrator_version);
+  let savingsActive = false;
+  let refresh: { cancel: () => void } | undefined;
 
   // Price at the end of each turn, off the turn's critical path. The status band holds the
   // event's one unmatched hook, so this one matches every turn instead.
@@ -512,10 +517,24 @@ function registerSavings(on: On, options: PluginOptions): void {
   });
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    savingsActive = await readSavingsState($);
+    // CLI toggles change the file without updating Claude's cached render props.
+    if (enabled && !refresh) {
+      try {
+        refresh = $.clock.every(1000, async () => {
+          try {
+            const active = await readSavingsState($);
+            if (active !== savingsActive) {
+              savingsActive = active;
+              $.ui.invalidate('ui.render');
+            }
+          } catch {}
+        });
+      } catch {}
+    }
     // Decided before the inner handlers run, so the status band sees it whichever
     // handler Claude Code runs first.
-    savingsShown =
-      enabled && estimate !== null && (await readSavingsFlag($)) === '1';
+    savingsShown = savingsActive && estimate !== null;
     const theirs = await next(e);
     if (!savingsShown) return theirs;
     const ui = $.ui.resolve(e);
