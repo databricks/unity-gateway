@@ -215,7 +215,8 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     prior selection. The exact generated helper returns a credential accepted by the live models
     API and completes a Messages request on a configured system.ai Claude model. The installed
     Cowork plugin discovers web_search and finds Databricks' official website.
-    Repeat configure preserves both configurations; an unrelated personal plugin survives
+    Repeat configure re-enables a disabled UG plugin and preserves both configurations;
+    an unrelated personal plugin survives
     configure and revert unchanged. This checks native Linux/Windows commands
     and protocols, not Desktop GUI, skill execution, or browser login; CI supplies a bearer.
     """
@@ -274,6 +275,21 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     _assert_unrelated_cowork_plugin(root, unrelated_plugin)
     anyio.run(assert_desktop_mcp, session, servers["web_search"], workspace)
 
+    claude_config_dir = session.env["CLAUDE_CONFIG_DIR"]
+    session.env["CLAUDE_CONFIG_DIR"] = str(root)
+    try:
+        session.run(
+            "plugin",
+            "disable",
+            "ug@unity-gateway-cowork",
+            "--cowork",
+            "--json",
+            binary=session.which("claude"),
+        )
+    finally:
+        session.env["CLAUDE_CONFIG_DIR"] = claude_config_dir
+    settings = json.loads((root / "cowork_settings.json").read_text())
+    assert settings["enabledPlugins"]["ug@unity-gateway-cowork"] is False
     session.run(*configure_args, timeout=240)
     assert _desktop_profile(session, config_library, workspace) == profile
     assert installed_cowork_servers(session, root) == servers

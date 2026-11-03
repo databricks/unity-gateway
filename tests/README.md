@@ -359,12 +359,17 @@ install/update selection, idempotent cleanup, and saved-root removal. Alias chec
 short service-first names, unchanged proxy routing, custom-name preservation,
 order-independent collisions, and repeated replacement of old keys. Manifest checks require
 the `ug` name and display name in both manifests. Legacy-registration checks cover
-replacement after successful install/update, preservation on install failure, scoped
+replacement after successful install/update and enablement, preservation on install or
+enablement failure, scoped
 cleanup, and unrelated-plugin preservation. CLI component tests
 cover managed setup after successful skill/MCP reconciliation, preservation after transient
 reconciliation failures, and cleanup for unmanaged or non-Claude configurations. These tests
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
 late MCP connection, tool discovery, or inference behavior.
+
+The installed-CLI Desktop lifecycle journey disables UG's plugin through Claude's CLI
+and verifies that reconfigure enables it again. Both Desktop journeys assert enablement
+alongside the installed MCP payload; these checks do not launch the Desktop GUI.
 
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
 It checks that Claude uses an available Slack tool despite a stale disconnect notice, actually

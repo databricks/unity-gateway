@@ -46,6 +46,9 @@ to use the updated skills. MCP entries run the absolute
 stored in the plugin. Saved PAT mode is supported. Custom OAuth is not yet supported for
 Cowork MCP servers.
 
+Configure explicitly enables UG's plugin after installing or updating it. Reconfigure
+repairs a disabled plugin or missing enablement setting while preserving other plugins.
+
 The plugin's name and display name are `ug`, shortening the connector prefix to
 `ug plugin:`. Reconfigure installs the new plugin before uninstalling the old
 `unity-gateway@unity-gateway-cowork` registration, if present. This also changes

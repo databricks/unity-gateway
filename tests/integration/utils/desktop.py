@@ -31,6 +31,8 @@ def prepare_cowork_home(session) -> Path:
 def installed_cowork_servers(session, root: Path) -> dict:
     state = json.loads((session.home / ".ucode/claude-cowork.json").read_text())
     assert Path(state["cowork_root"]) == root
+    settings = json.loads((root / "cowork_settings.json").read_text())
+    assert settings["enabledPlugins"]["ug@unity-gateway-cowork"] is True
     installed = json.loads((root / "cowork_plugins/installed_plugins.json").read_text())
     entries = installed["plugins"]["ug@unity-gateway-cowork"]
     assert len(entries) == 1, entries
