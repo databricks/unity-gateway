@@ -12,11 +12,11 @@ class TestCodexConfigArgs:
     def test_mcp_servers_override_each_entry_not_the_whole_table(self):
         args = codex_config_args({"mcp_servers": {"a": {"command": "ug"}, "b": {"command": "x"}}})
 
-        assert args == [
-            "--config",
-            'mcp_servers.a={command="ug"}',
-            "--config",
-            'mcp_servers.b={command="x"}',
+        assert args[0::2] == ["--config", "--config"]
+        parsed = [tomlkit.parse(arg).unwrap() for arg in args[1::2]]
+        assert parsed == [
+            {"mcp_servers": {"a": {"command": "ug"}}},
+            {"mcp_servers": {"b": {"command": "x"}}},
         ]
 
     def test_layers_provider_overrides_without_replacing_user_config(self, monkeypatch):
