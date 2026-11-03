@@ -57,6 +57,8 @@ repeat cleanup, saved-root cleanup even after source deletion, config-root chang
 retained source after a failed removal, dry-run behavior, and
 Code setup succeeding when Cowork setup fails. Native Desktop GUI discovery and
 live connector calls remain unverified.
+Generated-plugin component tests cover the packaged Code/Cowork Markdown templates;
+Cowork's frozen prompt fixture protects its previous content.
 
 `../test_cli.py` and `../test_desktop_configure_cli.py` cover MCP-only Claude eligibility
 for Code guidance and Code refresh despite skill-download failures in single-agent and

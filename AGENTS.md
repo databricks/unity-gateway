@@ -191,6 +191,8 @@ explicit Claude MCP clients are eligible. Managed configure refreshes Code after
 MCP reconciliation even if skill downloads fail; Cowork keeps its existing model and skill
 requirements. MCP updates refresh eligible plugins, and revert removes both while preserving
 unrelated plugins.
+Code and Cowork skill templates live in `src/ucode/agents/desktop/connector_skills/`;
+the generator inserts connector names and bounds each description.
 See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>

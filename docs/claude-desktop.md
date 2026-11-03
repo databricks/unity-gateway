@@ -35,6 +35,11 @@ plugin scope. The Code tab and terminal Claude Code load its
 instructions. Cowork's generated skill text is unchanged. Start a new Code session
 after configuring.
 
+Both variants use the skill name `unity-gateway-connectors`. Their descriptions and
+instructions live in packaged Markdown templates under
+`src/ucode/agents/desktop/connector_skills/`: `code.md` and `cowork.md`.
+Generation inserts the current connector names and bounds the discovery description.
+
 Before the first connector call, the skill checks current connection/authentication
 status; loaded tool definitions do not establish that sign-in is complete. If the
 client exposes no status, it uses the installed Claude CLI's `mcp list`, keeping the
