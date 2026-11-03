@@ -20,8 +20,9 @@ call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list 
 the `routeCommand` plugin option, and continues the call with the returned input. The
 display label uses a random animal from a list of 100, without repeats until the list
 is exhausted; later cycles append `2`, `3`, and so on. Each call keeps its name while
-the plugin is loaded. Only the render label changes: execution inputs and audit IDs
-stay intact. Parallel decision cards use the same animal names beside their tasks.
+the plugin is loaded. A routed call without its own `name` is given the animal as its
+agent name, so Claude's messages from that subagent read `Message from Otter`; a call's
+own name is kept. Other execution inputs and audit IDs stay intact. Parallel decision cards use the same animal names beside their tasks.
 The native bottom subagent panel uses Claude's `subagentStatusLine` extension, outside
 `ui.render`. After a routed spawn succeeds, the mod saves its animal name against the
 returned child ID in the temporary plugin directory, with the session ID. The plugin's

@@ -54,7 +54,7 @@ test('animal names stay distinct and stable without changing routed calls or row
       else expect(name).toBe(names[index]);
       await mounted.unmount();
     }
-    expect(forwarded[index]).toEqual({ ...input, subagent_type: 'ug-smart-router:ucode-route-haiku-hash', tool: 'Agent', tool_use_id: id });
+    expect(forwarded[index]).toEqual({ ...input, subagent_type: 'ug-smart-router:ucode-route-haiku-hash', name: names[index], tool: 'Agent', tool_use_id: id });
   }
   expect(new Set(names).size).toBe(101);
   expect(names.slice(0, 100).every((name) => !name.includes(' '))).toBe(true);
@@ -404,4 +404,16 @@ test('a waiting call shows a spinner on its row and its card keeps the routing t
   expect(await cards.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();
   expect(await cards.find({ type: 'Text', text: ' (routed in 3.2s)' })).toBeDefined();
   await cards.unmount();
+});
+
+test('a name the call gave is kept as the routed agent name', async ($, on) => {
+  const forwarded: any[] = [];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', ($, event) => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+    model: 'system.ai.claude-haiku-5-5', rationale: 'Selected for the task',
+    updatedInput: { ...JSON.parse(event.init.stdin).tool_input, subagent_type: 'ug-smart-router:haiku' },
+  }) } }));
+  on('tool.call', ($, event) => { forwarded.push(event); return { result: 'ok' }; });
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'named', ...originalInput, name: 'scout' });
+  expect(forwarded[0].name).toBe('scout');
 });

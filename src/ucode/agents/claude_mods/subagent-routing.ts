@@ -162,8 +162,10 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       $.ui.invalidate('ui.render')
     }
     if (!route) return next(e)
+    // Claude labels a subagent's messages with its name, else its routed agent type.
+    const name = route.updatedInput.name || (tool_use_id && names.get(tool_use_id))
     // Preserve Claude's permission checks and every other mod's tool handlers.
-    return next({ ...route.updatedInput, tool, tool_use_id, agentId })
+    return next({ ...route.updatedInput, ...(name ? { name } : {}), tool, tool_use_id, agentId })
   })
 
   on('agent.spawn', async ($, e, next) => {
