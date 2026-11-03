@@ -933,7 +933,11 @@ def _token_provider(state: dict) -> Callable[[bool], str]:
 def proxy_headers(state: dict) -> dict[str, str]:
     """Headers the proxy adds to every gateway request; admin-managed headers win by name."""
     headers = {
-        "User-Agent": ucode_user_agent(ug_version(), f"copilot/{agent_version(SPEC['binary'])}")
+        "User-Agent": ucode_user_agent(ug_version(), f"copilot/{agent_version(SPEC['binary'])}"),
+        # Makes the gateway map or drop the Anthropic betas its serving backend lacks. Without it,
+        # Copilot's tool search beta (`advanced-tool-use-2025-11-20`, sent once it has enough MCP
+        # tools) gets a 400 from Claude served through Bedrock.
+        "x-databricks-use-coding-agent-mode": "true",
     }
     request_tags = request_tags_header_value()
     if request_tags:

@@ -1082,6 +1082,13 @@ class TestProxyHeaders:
 
         assert headers["User-Agent"] == f"ucode/0.9.0 copilot/1.0.91 {client_platform()}"
 
+    def test_asks_the_gateway_for_coding_agent_mode(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: "1")
+
+        headers = copilot.proxy_headers({})
+
+        assert headers["x-databricks-use-coding-agent-mode"] == "true"
+
     def test_adds_request_tags(self, monkeypatch):
         monkeypatch.setattr(copilot, "agent_version", lambda binary: "1")
         monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", '{"team":"ug"}')
@@ -1104,7 +1111,11 @@ class TestProxyHeaders:
             }
         )
 
-        assert headers == {"user-agent": "admin-agent", "X-Team": "data"}
+        assert headers == {
+            "x-databricks-use-coding-agent-mode": "true",
+            "user-agent": "admin-agent",
+            "X-Team": "data",
+        }
 
 
 class TestTokenProvider:
