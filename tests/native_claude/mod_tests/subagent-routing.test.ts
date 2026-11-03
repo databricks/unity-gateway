@@ -61,6 +61,67 @@ test('animal names stay distinct and stable without changing routed calls or row
   expect(names[100]).toMatch(/ 2$/);
 });
 
+test('bottom-bar names join the actual spawned child ID without changing the spawn', async ($, on) => {
+  const writes: any[] = [];
+  const forwarded: any[] = [];
+  const shown = new Map<string, string>();
+  let failWrite = false;
+  const logs: string[] = [];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', ($, e) => {
+    const { tool_input } = JSON.parse(e.init.stdin);
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: 'system.ai.claude-sonnet-5', rationale: 'Selected for the task',
+      updatedInput: tool_input,
+    }) } };
+  });
+  on('tool.call', () => ({ result: 'ok' }));
+  on('agent.spawn', ($, e) => {
+    forwarded.push(e);
+    return e.name === 'denied' ? { deny: 'Permission denied' }
+      : { model: 'claude-sonnet-5', agentId: `child-${e.tool_use_id}` };
+  });
+  on('fs.write', ($, e) => {
+    if (failWrite) throw new Error('Read-only filesystem');
+    writes.push(e);
+    return { value: undefined };
+  });
+  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
+  on('ui.render', ($, e) => {
+    shown.set(e.requestId, e.props.tool);
+    return { type: 'Text', props: {}, children: [e.props.tool] };
+  });
+  for (const id of ['call-a', 'call-b', 'denied']) {
+    await $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
+    const mounted = await $.ui.mount(row(id));
+    await mounted.unmount();
+  }
+  // Reverse completion order, identical descriptions: no joining by task text or order.
+  for (const id of ['call-b', 'call-a', 'denied', 'unrouted']) {
+    const spawn = {
+      tool_use_id: id, prompt: originalInput.prompt, description: originalInput.description,
+      subagentType: originalInput.subagent_type, parentModel: 'claude-opus-4-8',
+      provider: { plugin: 'engine', tier: 'core' as const }, background: true, fork: false,
+      name: id === 'denied' ? 'denied' : 'caller-address', permissionMode: 'default',
+      parentAgentId: 'parent', cwd: '/workspace',
+    };
+    const result = await $.agent.spawn(spawn);
+    expect(forwarded[forwarded.length - 1]).toEqual(spawn);
+    expect(result).toEqual(id === 'denied' ? { deny: 'Permission denied' }
+      : { model: 'claude-sonnet-5', agentId: `child-${id}` });
+  }
+  expect(writes.length).toBe(2);
+  for (const [index, id] of ['call-b', 'call-a'].entries()) {
+    expect(writes[index].path.endsWith(`/agent-names/agent-child-${id}.json`)).toBe(true);
+    expect(JSON.parse(writes[index].text)).toEqual({ session_id: 'session-1', name: shown.get(id) });
+  }
+  failWrite = true;
+  const result = await $.agent.spawn(forwarded[0]);
+  expect(result).toEqual({ model: 'claude-sonnet-5', agentId: 'child-call-b' });
+  expect(writes.length).toBe(2);
+  expect(logs).toEqual(['Could not save the subagent display name; its bottom bar will use the native label.']);
+});
+
 test('a lone call keeps its decision under its own row and draws no card', async ($, on) => {
   const calls: any[] = [];
   const logs: string[] = [];

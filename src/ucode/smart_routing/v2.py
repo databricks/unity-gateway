@@ -423,9 +423,21 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
         "routing-state.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
+        "subagent-statusline.py",
     ):
         write_text_file(plugin_dir / "hooks" / name, (mods / name).read_text(encoding="utf-8"))
     write_json_file(plugin_dir / "hooks" / "hooks.json", {"modules": ["./register.ts"]})
+    write_json_file(
+        plugin_dir / "settings.json",
+        {
+            "subagentStatusLine": {
+                "type": "command",
+                "command": subprocess_cross_os.shell_command(
+                    [sys.executable, str(plugin_dir / "hooks" / "subagent-statusline.py")]
+                ),
+            }
+        },
+    )
 
 
 def _request_claude_routing_decision(

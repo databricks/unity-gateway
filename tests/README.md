@@ -64,6 +64,13 @@ nothing above the prompt, pending row and turn-spinner routing timers, and disab
 routing. They do not establish live
 parallel-agent TUI or gateway coverage.
 
+The bottom-bar regression in the native mod suite checks the spawn's returned child ID
+against its transcript animal name, reverse completion order, unchanged spawn parameters,
+denied/unrouted spawns, and nonblocking mapping-write failures. `test_claude_mod.py` exercises
+the generated `subagentStatusLine` command, including paths with spaces, child-ID lookup,
+session isolation, missing/partial records, progress/token updates, and terminal-control
+filtering. These component checks do not establish interactive native-panel rendering.
+
 `test_agent_antigravity.py` covers the Antigravity CLI agent: Databricks-to-Antigravity model
 names (dotted versions, `-preview` names and their tiers, image models dropped), the `agy models`
 selection-id lookup, the gateway-mode environment, skills.json/mcp_config.json merges and the

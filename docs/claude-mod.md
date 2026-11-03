@@ -22,6 +22,15 @@ display label uses a random animal from a list of 100, without repeats until the
 is exhausted; later cycles append `2`, `3`, and so on. Each call keeps its name while
 the plugin is loaded. Only the render label changes: execution inputs and audit IDs
 stay intact. Parallel decision cards use the same animal names beside their tasks.
+The native bottom subagent panel uses Claude's `subagentStatusLine` extension, outside
+`ui.render`. After a routed spawn succeeds, the mod saves its animal name against the
+returned child ID in the temporary plugin directory, with the session ID. The plugin's
+default status-line command reads that mapping and displays the same animal, current
+task label, token count, and running elapsed time. Claude retains the row controls and
+refreshes the custom text on its own status-line cadence. Unmapped tasks, stale-session
+records, and unreadable records retain native rendering; a failed write never prevents
+the agent from starting. User-configured status lines keep Claude's normal precedence.
+The mapping is removed with the launch directory, not written to user settings.
 The matching Agent row shows a spinner and elapsed seconds while the router answers. Claude
 hides that row once a second Agent call joins it, so while any call is routing, the turn's
 spinner line also reads `Selecting a model… Ns` or `Selecting models for N agents… Ns`,
