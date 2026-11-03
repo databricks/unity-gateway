@@ -292,7 +292,7 @@ def test_backend_disconnect_reports_reconnect(reset):
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)
-        with socket.create_connection(listener.getsockname()) as relay_socket:
+        with socket.create_connection(listener.getsockname(), timeout=3) as relay_socket:
             backend_socket, _ = listener.accept()
             if reset:
                 # SO_LINGER's fields are unsigned shorts on Windows and ints on Unix.
@@ -303,12 +303,13 @@ def test_backend_disconnect_reports_reconnect(reset):
                 )
             backend_socket.close()
             read_fd, write_fd = os.pipe()
-            try:
-                with os.fdopen(read_fd, "rb") as stdin:
+            with os.fdopen(read_fd, "rb") as stdin:
+                try:
                     with pytest.raises(RuntimeError, match="disconnected.*Reconnect"):
                         mcp_proxy_runtime.relay(relay_socket, stdin, io.BytesIO(), io.BytesIO())
-            finally:
-                os.close(write_fd)
+                finally:
+                    # Unblock the relay's reader before closing its fd on Windows.
+                    os.close(write_fd)
 
 
 def test_backend_crash_fails_session_and_next_agent_restarts(clients, peer, tmp_path):
