@@ -25,6 +25,7 @@ from typer.testing import CliRunner
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 import ucode.managed_files as managed_files
+from ucode import agents
 from ucode.agents import copilot as copilot_agent
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
@@ -152,6 +153,7 @@ class TestHelp:
             "otel-headers",
             "codex-router-hook",
             "claude-router-hook",
+            "smart-router-describe",
         ):
             assert command not in output
 
@@ -956,6 +958,64 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 0, result.output
         assert observed == [(tool in routed_tools, expected_env)]
+        assert _routing_env() == env_before
+
+    @pytest.mark.parametrize("installed_version", ["0.145.0", "0.163.0"])
+    @pytest.mark.parametrize("recovery", ["decline", "upgrade", "disable"])
+    def test_managed_codex_routing_requires_upgrade_or_explicit_disable(
+        self, tmp_path, monkeypatch, installed_version, recovery
+    ):
+        codex = cli_mod.codex_agent
+        version = installed_version
+        updates, routed, plain = [], [], []
+        profile = tmp_path / "ucode.config.toml"
+        profile.write_text('model_provider = "Databricks"\n', encoding="utf-8")
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile)
+        monkeypatch.setattr(codex, "agent_version", lambda *_args, **_kwargs: version)
+        monkeypatch.setattr(codex, "_launch_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: plain.append(argv))
+        monkeypatch.setenv(agents.AUTO_UPGRADE_AGENT_ENV, "0")
+        monkeypatch.setattr(agents.shutil, "which", lambda binary: f"/tools/{binary}")
+
+        def update(argv, **_kwargs):
+            nonlocal version
+            if argv[-1:] == ["--version"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="0.265.0\n", stderr="")
+            assert argv == ["codex", "update"]
+            updates.append(argv)
+            version = "0.164.0"
+            return subprocess.CompletedProcess(argv, 0)
+
+        def launch_native(*_args, **_kwargs):
+            routed.append(version)
+            raise SystemExit(0)
+
+        # Keep managed selection, version checks and updater orchestration real;
+        # isolate native execution and the external workspace through the existing fixture.
+        monkeypatch.setattr(agents.subprocess_cross_os, "run", update)
+        monkeypatch.setattr(cli_mod.smart_routing_v2, "launch_codex", launch_native)
+        launch = cli_mod.launch_agent
+        managed = {"enabled_agents": {"codex": {"smart_routing_enabled": True}}}
+        env_before = _routing_env()
+        with (
+            _launch_policy_patches(managed) as calls,
+            patch(
+                "ucode.agents.prompt_yes_no_default", return_value=recovery == "upgrade"
+            ) as prompt,
+        ):
+            calls["launch"].side_effect = launch
+            args = ["codex", "--disable-smart-routing"] if recovery == "disable" else ["codex"]
+            result = runner.invoke(app, args)
+
+        assert result.exit_code == (1 if recovery == "decline" else 0), result.output
+        assert routed == (["0.164.0"] if recovery == "upgrade" else [])
+        assert bool(plain) == (recovery == "disable")
+        assert updates == ([["codex", "update"]] if recovery == "upgrade" else [])
+        assert prompt.call_count == (0 if recovery == "disable" else 1)
+        if recovery == "decline":
+            output = " ".join(_strip_ansi(result.output).split())
+            assert f"found {installed_version}" in output
+            assert "--disable-smart-routing" in output
         assert _routing_env() == env_before
 
     @pytest.mark.parametrize(
@@ -4626,6 +4686,7 @@ class TestConfigureAgentFlag:
             patch("ucode.cli.configure_mcp_command") as mock_mcp,
             patch("ucode.cli.load_state", return_value=configured_state),
             patch("ucode.cli.load_managed_mcp_servers", return_value=[]),
+            patch("ucode.agents.desktop.setup.configure_claude_code_plugin") as mock_configure_code,
             patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure_cowork,
         ):
             cli_mod._configure_optional_setup(state, ["claude", "codex"])
@@ -4635,6 +4696,7 @@ class TestConfigureAgentFlag:
         mock_save.assert_called_once_with(state)
         mock_install.assert_called_once_with(["claude", "codex"], state)
         mock_mcp.assert_called_once_with()
+        mock_configure_code.assert_called_once_with(configured_state["mcp_servers"])
         mock_configure_cowork.assert_called_once_with(
             configured_state, configured_state["mcp_servers"]
         )
@@ -4662,10 +4724,12 @@ class TestConfigureAgentFlag:
         ]
         with (
             patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.agents.desktop.setup.configure_claude_code_plugin") as mock_code,
             patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure,
         ):
             cli_mod._sync_claude_cowork_plugin(state, managed_mcp_servers=managed)
 
+        mock_code.assert_called_once_with([*state["mcp_servers"], *managed])
         mock_configure.assert_called_once_with(state, [*state["mcp_servers"], *managed])
 
     def test_cowork_sync_loads_managed_mcp_servers_when_not_supplied(self):
@@ -4686,11 +4750,13 @@ class TestConfigureAgentFlag:
         with (
             patch("ucode.cli.load_state", side_effect=AssertionError("must not reload state")),
             patch("ucode.cli.load_managed_mcp_servers", return_value=managed) as mock_managed,
+            patch("ucode.agents.desktop.setup.configure_claude_code_plugin") as mock_code,
             patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure,
         ):
             cli_mod._sync_claude_cowork_plugin(state)
 
         mock_managed.assert_called_once_with(state, {"claude"})
+        mock_code.assert_called_once_with(managed)
         mock_configure.assert_called_once_with(state, managed)
 
     def test_cowork_sync_preserves_explicit_empty_managed_mcp_state(self):
@@ -4706,20 +4772,36 @@ class TestConfigureAgentFlag:
                 "ucode.cli.load_managed_mcp_servers",
                 side_effect=AssertionError("explicit managed state must be preserved"),
             ),
+            patch("ucode.agents.desktop.setup.configure_claude_code_plugin") as mock_code,
             patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure,
         ):
             cli_mod._sync_claude_cowork_plugin(state, managed_mcp_servers=[])
 
+        mock_code.assert_called_once_with([])
         mock_configure.assert_called_once_with(state, [])
 
-    def test_cowork_sync_skips_when_claude_is_not_configured(self):
+    @pytest.mark.parametrize("mcp_clients", [[], ["codex"], ["claude"]])
+    def test_cowork_sync_skips_when_claude_is_not_configured(self, mcp_clients):
         import ucode.cli as cli_mod
 
-        state = {**MINIMAL_STATE, "available_tools": ["codex"]}
-        with patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure:
-            cli_mod._sync_claude_cowork_plugin(state)
+        servers = [{"name": "system-ai-github", "clients": ["claude"]}]
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": ["codex"],
+            "mcp_clients": mcp_clients,
+            "mcp_servers": servers,
+        }
+        with (
+            patch("ucode.agents.desktop.setup.configure_claude_code_plugin") as mock_code,
+            patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure,
+        ):
+            cli_mod._sync_claude_cowork_plugin(state, managed_mcp_servers=[])
 
         mock_configure.assert_not_called()
+        if "claude" in mcp_clients:
+            mock_code.assert_called_once_with(servers)
+        else:
+            mock_code.assert_not_called()
 
     def test_optional_setup_decline_does_nothing(self):
         import ucode.cli as cli_mod
@@ -8448,9 +8530,9 @@ class TestMcpProxyCmdForwardsUsePat:
 
     def _invoke(self, monkeypatch, *, flag, state):
         captured: dict = {}
-        monkeypatch.setattr("ucode.cli.load_state", lambda: state)
+        monkeypatch.setattr("ucode.mcp_proxy_runtime.load_proxy_state", lambda **_: state)
         monkeypatch.setattr(
-            "ucode.mcp_proxy.serve",
+            "ucode.mcp_proxy_runtime.serve",
             lambda *a, **kw: captured.update(args=a, kwargs=kw),
         )
         args = ["mcp-proxy", "--url", "https://x/mcp", "--host", "https://x"]

@@ -27,6 +27,70 @@ the customer's MDM process. Explicit-agent, selected-agent, and managed configur
 flows all set up Desktop after successful Claude Code configuration. Ordinary agent
 launches and `ug agents add` do not configure Desktop.
 
+## Code tab connector guidance
+
+`ug configure` also installs `ug@unity-gateway-code` in the regular Claude Code
+plugin scope. The Code tab and terminal Claude Code load its
+`unity-gateway-connectors` skill, with Code-specific discovery and authentication
+instructions. Cowork's generated skill text is unchanged. Start a new Code session
+after configuring.
+
+Both variants use the skill name `unity-gateway-connectors`. Their descriptions and
+instructions live in packaged Markdown templates under
+`src/ucode/agents/desktop/connector_skills/`: `code.md` and `cowork.md`.
+Generation inserts the current connector names and bounds the discovery description.
+
+Before the first connector call, the skill checks current connection/authentication
+status; loaded tool definitions do not establish that sign-in is complete. If the
+client exposes no status, it uses the installed Claude CLI's `mcp list`, keeping the
+session's working directory and `CLAUDE_CONFIG_DIR`. A current sign-in requirement
+takes priority even when service tools are already visible.
+
+For proxy connections, Claude uses the discovered `authenticate` tool. Native HTTP
+OAuth may expose no authentication tool: the skill checks CLI support, then uses
+`claude mcp login <registered-name>` with the exact native server name and relays
+browser/callback instructions. After confirmed success it rediscovers tools and
+resumes the request. Failed or canceled sign-in stops service calls. If login is
+unavailable or needs user interaction, Claude explains the blocker and points to
+that server's Authenticate button when Code displays one. The button is a client
+action, not an MCP tool. The terminal Claude Code fallback is
+`/mcp` → select the server → Authenticate. That is an interactive client command,
+not a shell command or an assumed Desktop menu.
+An operation stuck at “Waiting for the result” alone does not establish an auth
+failure and must not trigger duplicate calls or repeated login attempts.
+
+Code already reads the MCP servers registered by UG in its native configuration,
+and downloaded skills from its own skill directory. Its UG plugin contains only
+the generated connector guidance, using the original MCP registration names such
+as `system-ai-slack`. It does not add another copy of the servers, downloaded
+skills, or Cowork's session hooks.
+
+The generated marketplace lives at `~/.ucode/claude-code-marketplace`;
+`~/.ucode/claude-code-plugin.json` records its installation scope for cleanup.
+Installation uses `CLAUDE_CONFIG_DIR` when set, otherwise `~/.claude`; it does not require a
+Cowork session or account directory. Configure and MCP additions/removals refresh
+the guidance. Removing the last MCP leaves an empty plugin so stale connector names
+are no longer advertised. `ug revert` removes this plugin, its marketplace
+registration, and generated source while preserving unrelated plugins.
+When the Code config directory changes, installation in the new directory must succeed
+before UG removes the old registration or updates the saved root. A failed installation
+keeps the old registration and saved root available for cleanup or retry.
+
+MCP-only Claude setup (`ug mcp add --agents claude`) is also eligible for Code
+guidance without model setup. During managed configure, successful MCP reconciliation
+refreshes Code even if skill downloads fail. Cowork keeps its existing model-setup
+and skill-success requirements. Failed MCP reconciliation preserves both plugins.
+
+Code and Cowork plugin installation are independent and best-effort. A Cowork
+setup failure does not block the Code plugin or native MCP configuration. The
+component checks do not establish Desktop GUI discovery or successful connector
+calls; validate those in a fresh Code session.
+
+The opt-in `tests/connector_behavior/` suite includes Code requests with cached Gmail
+tools and native HTTP/proxy authentication success or cancellation. It uses a real
+Claude model with synthetic connector tools and CLI results; this measures adherence
+to the generated guidance, not Desktop browser sign-in or live Gmail access.
+
 ## Cowork workspace skills and MCP servers
 
 Whenever Claude is configured, `ug configure` also installs a generated

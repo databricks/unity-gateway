@@ -53,8 +53,10 @@ failures also log a diagnostic.
 In eligible Smart Router Orchestrator launches, `tool.describe` replaces the native
 Agent/Task delegation advice with the orchestrator's instructions. It changes only the
 description, preserving the native input schema and execution. The host's `Usage notes`
-section stays intact for native continuation mechanics. The orchestrator instructions
-explicitly tell the parent to end its current turn when only background work remains
+section stays intact for native continuation mechanics; when the host description has
+no such section, the mod keeps a fixed note on resuming an agent through SendMessage,
+with the host's `fork` exception when the host offers fork subagents.
+The orchestrator instructions explicitly tell the parent to end its current turn when only background work remains
 and wait for the completion notification, without launching another worker to wait.
 The notification must arrive from the host; the parent must not invent a completion
 or predict the result. A waiting status hands control back to the host without

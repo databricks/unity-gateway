@@ -8,7 +8,7 @@ import plistlib
 import re
 import sys
 from pathlib import Path
-from subprocess import CalledProcessError
+from subprocess import CalledProcessError, CompletedProcess, TimeoutExpired
 from unittest.mock import Mock
 
 import pytest
@@ -34,11 +34,24 @@ class TestCodexSpec:
 
 
 class TestMinimumVersion:
-    @pytest.mark.parametrize("version", ["0.145.0", "0.148.0", "1.0.0"])
-    def test_supported_version(self, monkeypatch, version):
+    @pytest.mark.parametrize(
+        "version,smart_routing_allowed",
+        [
+            ("0.145.0", False),
+            ("0.148.0", False),
+            ("0.163.0", False),
+            ("0.164.0", True),
+            ("0.165.0", True),
+            ("1.0.0", True),
+        ],
+    )
+    def test_supported_version(self, monkeypatch, version, smart_routing_allowed):
         monkeypatch.setattr(codex, "agent_version", lambda _binary: version)
 
         assert codex.minimum_version_error() is None
+        assert (
+            codex.minimum_version_error(smart_routing_enabled=True) is None
+        ) == smart_routing_allowed
 
     def test_older_version_requires_update(self, monkeypatch):
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.144.0")
@@ -47,9 +60,42 @@ class TestMinimumVersion:
         assert codex.minimum_version_error() == expected
 
     def test_unknown_version_does_not_block(self, monkeypatch):
-        monkeypatch.setattr(codex, "agent_version", lambda _binary: "unknown")
+        monkeypatch.setattr(codex, "agent_version", lambda _binary, **_kwargs: "unknown")
 
         assert codex.minimum_version_error() is None
+        with pytest.raises(RuntimeError, match="codex --version"):
+            codex.minimum_version_error(smart_routing_enabled=True)
+
+    @pytest.mark.parametrize(
+        ("version", "allowed"),
+        [("0.165.0", True), ("0.163.0", False), ("unknown", False), (None, False)],
+    )
+    def test_smart_routing_rechecks_an_unknown_version_with_a_longer_bound(
+        self, monkeypatch, version, allowed
+    ):
+        probe = Mock(
+            side_effect=[
+                TimeoutExpired(cmd=["codex", "--version"], timeout=2),
+                CompletedProcess(args=[], returncode=0, stdout=version, stderr="")
+                if version is not None
+                else TimeoutExpired(cmd=["codex", "--version"], timeout=10),
+            ]
+        )
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", probe)
+        codex.agent_version.cache_clear()
+        try:
+            assert codex.minimum_version_error() is None
+            for _ in range(2):
+                if version in (None, "unknown"):
+                    with pytest.raises(RuntimeError, match="codex --version"):
+                        codex.minimum_version_error(smart_routing_enabled=True)
+                else:
+                    assert (
+                        codex.minimum_version_error(smart_routing_enabled=True) is None
+                    ) == allowed
+            assert [call.kwargs["timeout"] for call in probe.call_args_list] == [2, 10]
+        finally:
+            codex.agent_version.cache_clear()
 
 
 class TestHasUcodeConfig:

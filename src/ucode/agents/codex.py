@@ -131,6 +131,8 @@ _LAUNCH_ROUTING_HEADER_ENV_VARS = {
 }
 MINIMUM_CODEX_VERSION = (0, 145, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.145.0"
+MINIMUM_SMART_ROUTING_CODEX_VERSION = (0, 164, 0)
+MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT = "0.164.0"
 # Codex 0.134.0 introduced per-profile config files; older releases use the legacy layout.
 LEGACY_LAYOUT_CODEX_VERSION = (0, 134, 0)
 LEGACY_LAYOUT_CODEX_VERSION_TEXT = "0.134.0"
@@ -173,9 +175,28 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
     return int(major), int(minor), int(patch)
 
 
-def minimum_version_error() -> str | None:
+def minimum_version_error(*, smart_routing_enabled: bool = False) -> str | None:
     version = agent_version(SPEC["binary"])
     parsed = _parse_version(version)
+    if smart_routing_enabled:
+        if parsed is None:
+            # The short telemetry probe can time out on a cold npm wrapper.
+            version = agent_version(SPEC["binary"], timeout=10)
+            parsed = _parse_version(version)
+        if parsed is None:
+            raise RuntimeError(
+                "Could not determine the installed Codex version. "
+                f"Smart routing requires Codex {MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT} "
+                "or newer. Run `codex --version` to check the installation, "
+                "or launch with --disable-smart-routing."
+            )
+        if parsed >= MINIMUM_SMART_ROUTING_CODEX_VERSION:
+            return None
+        return (
+            f"Codex smart routing requires Codex {MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT} "
+            f"or newer for readable delegated assignments; found {version}. "
+            "Upgrade Codex or launch with --disable-smart-routing."
+        )
     if parsed is None or parsed >= MINIMUM_CODEX_VERSION:
         return None
     return f"ug requires Codex {MINIMUM_CODEX_VERSION_TEXT} or newer; found {version}."
@@ -1857,7 +1878,10 @@ def launch(
 
 def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
+    from ucode.agents import ensure_minimum_version
+
     binary = SPEC["binary"]
+    ensure_minimum_version("codex", lambda: minimum_version_error(smart_routing_enabled=True))
 
     configured_model = _smart_routing_config_model(state)
     # Prefer the custom catalog if it exists.
