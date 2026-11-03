@@ -4956,8 +4956,9 @@ def configure(
         bool,
         typer.Option(
             "--global",
-            help="Write only the machine-wide Claude Code and Codex managed settings, with sudo, "
-            "and no per-user settings. Without --global or --user, both are written.",
+            help="Write machine-wide Claude Code/Codex settings and provision Claude Desktop through "
+            "macOS MDM (requires root and a shared runtime). Desktop user settings are left alone. "
+            "Without --global, Desktop writes only user-level files.",
         ),
     ] = False,
     user_scope: Annotated[

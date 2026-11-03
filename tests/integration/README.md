@@ -179,6 +179,10 @@ normalization, including headers/tracing, absent configs, and Claude enablement 
 Native launchd activation, first-user timing, managed-plist precedence, and tool/skill
 invocation remain untested here; follow
 [`docs/claude-desktop-mdm.md`](../../docs/claude-desktop-mdm.md) before fleet rollout.
+`../test_desktop_scope.py` additionally covers explicit `--global` routing into MDM,
+no-flag/`--user` source placement, preservation of user files, fresh-account provisioning,
+failure status and dry run through the CLI with external boundaries isolated. The new flag
+routing has not been tested through native macOS Desktop or a live MDM deployment.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.web_search and allow

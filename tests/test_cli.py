@@ -6697,6 +6697,7 @@ class TestConfigureScopeFlags:
     def test_global_scope_proceeds_with_managed_config(self):
         with (
             self._single_agent_env({"enabled_agents": {}}),
+            patch("ucode.agents.desktop.mdm.configure"),
             patch(
                 "ucode.cli.configure_single_tool", side_effect=lambda _tool, state, **_kw: state
             ) as mock_single,

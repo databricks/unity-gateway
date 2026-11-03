@@ -1,8 +1,10 @@
 # Claude Desktop through Unity Gateway
 
 For macOS fleet provisioning as root, use
-[`ug configure --agents claude --mdm-desktop`](claude-desktop-mdm.md).
-The behavior below describes ordinary configure without that flag.
+[`ug configure --agents claude --global`](claude-desktop-mdm.md).
+The behavior below describes configure without a scope flag or with `--user`.
+Explicit `--global` uses the macOS MDM path and leaves Desktop's user files unchanged;
+on Windows and Linux it skips Desktop. `--mdm-desktop` retains the Desktop-only MDM path.
 
 After Claude Code is successfully configured, `ug configure` also creates and
 selects a `Unity Gateway - <CLI profile name>` profile for Claude Desktop on macOS,
@@ -109,8 +111,8 @@ scope is `global`. Neither path publishes or removes a root marketplace or manag
 Claude Code and other CLI agents retain their own scope handling.
 
 Explicit `--global` skips these per-user Desktop writers. Machine policy, shared-runtime
-bindings, the root marketplace, and automatic per-user refresh are supplied by the separate
-macOS MDM deployment change. It uses these machine locations:
+bindings, the root marketplace, and automatic per-user refresh use the
+[macOS MDM deployment path](claude-desktop-mdm.md). It uses these machine locations:
 
 - Policy: `/Library/Managed Preferences/com.anthropic.claudefordesktop.plist`
 - Marketplace: `/Library/Application Support/UnityGateway/claude-cowork-marketplace`

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import subprocess
 import sys
 
 from ucode.agents.desktop.claude import (
@@ -30,10 +31,25 @@ def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -
     if sys.platform not in ("darwin", "win32", "linux"):
         return
     if machine_wide_only():
-        # Desktop profiles live in the user's own Claude-3p configLibrary.
-        print_note(
-            "Skipped Claude Desktop: `ug configure --global` writes only machine-wide settings."
-        )
+        if sys.platform != "darwin":
+            print_note(
+                "Skipped Claude Desktop: --global MDM provisioning currently supports macOS only."
+            )
+            return
+        from ucode.agents.desktop import mdm
+
+        if state.get("use_pat") or state.get("custom_oauth"):
+            raise RuntimeError(
+                "Desktop MDM provisioning does not support PAT/custom OAuth profiles."
+            )
+        try:
+            mdm.configure(state["workspace"], state.get("profile"))
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise RuntimeError(f"Desktop MDM provisioning failed: {exc}") from exc
+        if not is_dry_run():
+            print_success(
+                "Claude Desktop MDM deployment configured. Users authenticate when they open Desktop."
+            )
         return
     if is_dry_run():
         print_note("Would configure Claude Desktop alongside Claude Code.")

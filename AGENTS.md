@@ -182,7 +182,7 @@ user-authored, and other-workspace skills are excluded. The user-scope source li
 this user source, the user 3P profile, and native Cowork registration/cache, even when saved
 scope is `global`. They never publish or remove root Desktop files. Explicit `--global`
 is detected by the command-local `machine_wide_only` switch and skips ordinary Desktop
-profile/plugin setup; macOS MDM provisioning is a separate follow-up. CLI-agent behavior
+profile/plugin setup and instead provisions Desktop through macOS MDM. CLI-agent behavior
 is unchanged by these Desktop guards.
 Ordinary plugin setup requires Desktop's local account/org directory and uses scoped
 `claude plugin ... --cowork --json` with `CLAUDE_CONFIG_DIR`. First configure skips if no

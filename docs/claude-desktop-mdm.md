@@ -1,18 +1,35 @@
 # Claude Desktop deployment through MDM on macOS
 
-Run `ug configure --agents claude --mdm-desktop` as root from your MDM script.
+Run `ug configure --agents claude --global` as root from your MDM script.
 Provide a workspace URL or an administrator's Databricks CLI profile:
 
 ```sh
 /opt/unitygateway/venv/bin/ug configure \
-  --agents claude --mdm-desktop --workspace https://workspace.databricks.com
+  --agents claude --global --workspace https://workspace.databricks.com
 ```
 
-This configures Desktop only. It publishes a machine policy and a root marketplace
+For Desktop, this publishes a machine policy and a root marketplace
 without needing an initialized Desktop account. A LaunchAgent installs and refreshes
 the marketplace through each user's normal Cowork plugin registration. It does not use
 the organization plugin loader, which behaved differently for connector discovery in
-the earlier pilot. Windows and Linux reject `--mdm-desktop`.
+the earlier pilot. This command also configures Claude Code; other requested agents
+keep their own scope handling. Use `--mdm-desktop` instead of `--global` for the existing
+Desktop-only provisioning command. Windows and Linux skip Desktop under `--global`
+and reject `--mdm-desktop`.
+
+| Configure scope | Desktop files written |
+| --- | --- |
+| No flag | User 3P profile, user and root marketplace sources, one user registration/cache |
+| `--user` | User 3P profile, user marketplace source and registration/cache; root files untouched |
+| `--global` | macOS managed plist, root marketplace, shared helpers/state and LaunchAgent; existing user profile/source untouched |
+
+The no-flag root marketplace applies on macOS and Windows. Linux and
+`UG_SKIP_OS_SETTINGS` use the user source; the latter is incompatible with MDM.
+The explicit `--global` selection lasts for that configure run only. It is not inferred
+from the saved `global` scope, so subsequent no-flag configure still writes both sources.
+MDM provisioning does not create a provisioning-user Desktop profile, source or registration.
+Afterward, the LaunchAgent runs as each logged-in user and maintains the native plugin
+registration/cache and user tracking required by Desktop.
 
 ## Prerequisites
 
@@ -50,7 +67,7 @@ no managed skills/connectors. `--mcp system.ai.slack,system.ai.github` can addit
 select named MCP services. The first version requires a dedicated workspace hostname;
 account URLs requiring a workspace-ID selector are rejected.
 
-If ordinary global `ug configure` or a pilot already owns the root marketplace,
+If ordinary no-flag `ug configure` or a pilot already owns the root marketplace,
 revert that installation through its original owner before deploying MDM. Likewise,
 remove a previous third-party mobileconfig through its MDM owner. UG refuses to
 overwrite foreign or externally edited machine files. Remove any previous
@@ -60,7 +77,7 @@ overwrite foreign or externally edited machine files. Remove any previous
 
 ```sh
 export PATH="/opt/unitygateway/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-/opt/unitygateway/venv/bin/ug configure --agents claude --mdm-desktop \
+/opt/unitygateway/venv/bin/ug configure --agents claude --global \
   --workspace https://workspace.databricks.com
 ```
 
@@ -79,10 +96,15 @@ The existing helper permits browser sign-in only on an interactive Desktop auth 
 Background refresh never initiates authentication. Connector consent, subscription
 relay login when configured, and subsequent token refresh remain per-user operations.
 
-`--user`, `--use-pat`, custom OAuth options, model-source overrides, and Databricks AI
-Tools installation flags cannot be combined with this mode. `--dry-run` reports the
-machine destinations without authentication, discovery, or writes. Normal configure
-and revert behavior is unchanged when `--mdm-desktop` is absent.
+`--user` cannot be combined with `--global` or `--mdm-desktop`. Desktop MDM does not
+support PAT/custom OAuth profiles. The Desktop-only `--mdm-desktop` path also rejects
+model-source overrides and Databricks AI Tools installation flags; its `--mcp` selects
+additional services. `--global` uses workspace-managed skills and connectors.
+Desktop provisioning errors fail `--global`, rather than becoming best-effort warnings.
+`--mdm-desktop --dry-run` reports machine destinations without authentication,
+discovery or writes. With `--global --dry-run`, Desktop also only reports its destinations;
+other agents retain their normal dry-run behavior. No-flag configure, `--user`,
+and ordinary revert retain their existing behavior.
 
 ## Files and startup
 

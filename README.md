@@ -189,14 +189,17 @@ machine-wide: run `ug configure` without `--user`, or ask your administrator to 
 For Claude Desktop, default `ug configure` and `--user` both write only the user's
 3P JSON profile, generated marketplace, and native Cowork registration/cache. They leave
 root files untouched. Explicit `--global` skips those user-level Desktop writers; machine
-policy and plugin provisioning are separate macOS MDM work. CLI-agent scope handling is
+policy and plugin provisioning use the macOS MDM path. CLI-agent scope handling is
 unchanged. If Desktop has not initialized a Cowork account directory, ordinary configure
 skips plugin setup until that directory exists. See
 [Desktop plugin installation](docs/claude-desktop.md#cowork-workspace-skills-and-mcp-servers).
 
-For macOS MDM deployment, run `ug configure --agents claude --mdm-desktop --workspace <url>`
+For macOS MDM deployment, run `ug configure --agents claude --global --workspace <url>`
 as root with a preinstalled shared runtime. This publishes Desktop's managed plist and root
 marketplace, then refreshes each user's normal plugin registration through a LaunchAgent.
+It leaves Desktop's user profile and marketplace source unchanged. Windows and Linux skip
+Desktop under `--global`. `--mdm-desktop` remains available for Desktop-only provisioning,
+without configuring Claude Code or other agents.
 Provisioning credentials stay separate from users' Desktop authentication.
 See [MDM prerequisites, deployment, and validation](docs/claude-desktop-mdm.md).
 

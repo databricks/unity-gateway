@@ -528,6 +528,13 @@ and rejection when Claude is absent.
 This does not establish native macOS MDM, launchd, fresh-user GUI login, or tool/skill execution.
 The rollout checklist is in `docs/claude-desktop-mdm.md`.
 
+`test_desktop_scope.py` exercises the configure CLI with real Desktop writers in temporary
+directories: no flag writes both sources, `--user` writes only the user source, and explicit
+`--global` publishes MDM without changing the user's profile, source or registration. It also
+checks provisioning before account creation, failure exit status, dry run, command-local scope,
+and skipping Desktop on platforms without MDM support. CLI-agent setup and external services
+are isolated; this is component coverage, not native macOS or live connector coverage.
+
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
 It checks that Claude uses an available Slack tool despite a stale disconnect notice, discovers
 deferred tools without login, and asks the user to retry when tools remain unavailable. These
