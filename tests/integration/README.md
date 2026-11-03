@@ -13,6 +13,13 @@ The one-second refresh updates a mounted row without another prompt and avoids r
 when the count is unchanged.
 The running count has no live TUI coverage.
 
+`test_ug_smart_routing_hooks.py::test_smart_router_claude_resumes_same_subagent_with_send_message`
+checks live continuation with orchestration enabled on Claude 2.1.314+: one initial
+Agent/Task call, a `SendMessage` addressed to that child's ID, and two completed
+hidden file tasks in the same child transcript. A second spawn or child session
+fails the test. Select it through the runner with `--claude-version 2.1.314` and
+`-- -k test_smart_router_claude_resumes_same_subagent_with_send_message`.
+
 `../test_claude_launch_settings.py` covers oversized Windows Claude launch
 settings with controlled process boundaries: UTF-16 command length, merged
 settings, literal prompts, temporary-file lifetime and cleanup, launch failures,

@@ -162,6 +162,11 @@ They also check the Agent `tool.describe` hook: a host `Usage notes` section is 
 a host description with a missing or empty section still gets the fixed SendMessage
 continuation note, with the `fork` exception only when the host offers fork subagents.
 
+The live `test_smart_router_claude_resumes_same_subagent_with_send_message` journey
+spawns one child and follows up through `SendMessage`, requiring both hidden file
+answers in the same child transcript and exactly one Agent/Task call. Run it with
+Claude 2.1.314+; description-only component checks do not prove continuation.
+
 CUJ3 expects GPT Luna in both agents' catalogs and pickers, including Claude's gateway alias,
 and covers an explicit Claude headless task on that model.
 Its Claude decoy catalog includes both Claude and Codex decoys; neither belongs in the scoped picker.
