@@ -675,3 +675,21 @@ opening a public issue.
 ## License
 
 See [LICENSE.md](./LICENSE.md) and [NOTICE.md](./NOTICE.md).
+
+## Publish skills from GitHub
+
+Use the [Publish skills action](actions/publish-skills/README.md) to sync skill
+folders in your GitHub repository to Unity Catalog on each push. No notebook, job,
+or Unity Gateway CLI installation is required. After configuring Databricks
+authentication and UC permissions, add this step to your workflow:
+
+```yaml
+- uses: databricks/unity-gateway/actions/publish-skills@main
+  with:
+    skills-directory: skills
+    target-schema: acme.team_skills
+```
+
+The [setup guide](actions/publish-skills/README.md) includes complete OIDC and OAuth
+workflows, custom folder mappings, sharing permissions, and verification steps.
+Use `@main` for automatic updates or pin a reviewed commit for reproducible runs.
