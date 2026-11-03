@@ -114,7 +114,9 @@ Claude-only one checking the status band and hint row at launch and across off/o
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
 CUJ4 matches both Codex 0.154.0's top-level tools and 0.162.1's Responses Lite
 `additional_tools` input items. Encrypted child messages match the routed task name
-to the recipient; plaintext prompts still match exactly. Both require tools.
+to the recipient. Codex 0.165.0 plaintext child messages match the exact `NEW_TASK`
+envelope, including sender, recipient, and routed prompt. Both child formats require
+tools and follow the routing checkpoint. User prompts still match exactly.
 The shared preset CUJ runs both agents for every version and derives routing and
 orchestration assertions from each agent's resolved flags. Both must complete a native
 child task. `subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed
@@ -696,6 +698,7 @@ test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
 test_ug_codex_app_server.py             # actual client/server initialize exchange
 test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven subagent toggles
+test_ug_codex_v2_routing.py              # exact native v2 assignments and routed child execution
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_claude_desktop.py     # Desktop lifecycle, system.ai/relay inference, installed Cowork MCP; no GUI
 test_ug_configure_codex_desktop.py      # stubbed managed Codex desktop catalog pointer, no GUI
@@ -735,6 +738,12 @@ routed child asks to locate the random fixture beneath the disposable project,
 the terminal driver accepts that exact read-only command through Claude's real
 permission dialog; any broader permission request fails immediately.
 
+Codex boot waits for the prompt's model/directory status line before typing. Its
+startup draft may appear before hook review; the driver handles that review through
+the visible trust choice and starts a fresh readiness interval after onboarding.
+Offline PTY checks in `../test_e2e_cuj_helpers.py` cover the 0.154/0.165 layouts and
+delayed hook review, without running native agents or model requests.
+
 A fixture file contains an unpredictable value absent from the prompt. Success
 requires an assistant answer in the real agent transcript containing that value,
 plus normal TUI exit. Codex evidence requires its task-complete event.
@@ -764,6 +773,13 @@ is enabled. Claude checks each local mod confirmation and the recorded `smart_ro
 on the following calculation's real gateway requests. Codex verifies saved session controls,
 a new CLI confirmation in native tool-result records, and a new assistant answer after each
 skill invocation.
+If Codex requests permission to read the controls, the driver approves only the exact
+public toggle command through the native dialog, leaving the sandbox intact.
+Offline cases in `../test_integration_evidence.py` cover wrong commands, non-local
+environments, and incomplete dialogs, including stale confirmation text. Session-control
+checks in `../test_smart_router.py` verify that denied reads and raw or wrapped write
+failures leave controls unchanged. Permission failures request native approval;
+full-disk errors retain their own diagnostic. These checks do not simulate a native approval.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
 With orchestration enabled through legacy flags, a preset, or the managed default, both routed
@@ -773,8 +789,9 @@ Their off-phase child is an explicit user-requested delegation;
 these journeys do not establish automatic orchestration behavior. Root-only
 activation, compaction, retained skills in ineligible sessions,
 role-contract preservation, and isolation from legacy preference files
-lack dedicated regression coverage. Codex's native hook merging, project trust,
-and execution of pre-existing hooks are not exercised by this integration suite.
+lack dedicated regression coverage. The native v2 journey covers a pre-existing
+observer hook alongside UG's hook and normal TUI trust. Other hook combinations
+remain uncovered.
 
 Preset parameterization augments only routing hooks, skill toggles, and first-prompt routing;
 their original legacy-env cases remain, and the skill toggles add a managed-default case in
@@ -926,6 +943,18 @@ configured unmanaged cases 7 and 8 run in `e2e_cuj/test_cuj7_model_discovery.py`
 The complete integration suite collects 130 executions (127 with Claude and Codex selected).
 See the named coverage and gaps matrix in
 [../README.md](../README.md).
+
+The native v2 assignment journey requires Codex 0.164.0 or newer. It uses a bundled
+v2 catalog and a user-owned observer hook, without test-supplied native feature flags.
+It checks the exact multiline assignment at PreToolUse and the actual native recipient,
+and matches the router decision's SHA-256 digest and character count to that assignment.
+The launch/off/on journeys match audit digests against native assignment text;
+CUJ4 matches them against the recorded real router requests. Full native plaintext,
+completed parent and child models, and preserved settings remain required. Select it with
+`--codex-version 0.165.0 -- -k test_ug_codex_native_v2_plain_assignment_routing`.
+The `codex_smart_routing` marker also selects the native launch/off/on journeys,
+managed routing banner, and catalog-fallback routing-on case. To reproduce the
+baseline lane, use `--codex-version 0.154.0 -- -m 'live and not codex_smart_routing'`.
 
 ```bash
 # Append one of these selections to the runner command:
@@ -1116,13 +1145,22 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs per OS). Full runs every other live case in two disjoint agent lanes;
-it excludes the smoke cases, which smoke already ran on the same OS:
+two agent jobs per OS). Full excludes the smoke cases, which smoke already ran
+on the same OS. Codex 0.154.0 remains the default for installation, smoke, general
+full/managed journeys, and dedicated CUJs. Routing cases run in separate required
+matrix rows with Codex 0.165.0; only the dedicated CUJ4 runner uses that newer pin.
+The full selections are disjoint within each agent and OS:
 
 | Agent lane | Marker |
 | --- | --- |
-| Claude | `live and claude and not soft_fail and not smoke` |
-| Codex | `live and codex and not soft_fail and not smoke` |
+| Claude | `live and claude and not soft_fail and not smoke and not codex_smart_routing` |
+| Codex 0.154.0 | `live and codex and not soft_fail and not smoke and not codex_smart_routing` |
+| Codex 0.165.0 | `live and codex and not soft_fail and not smoke and codex_smart_routing` |
+
+Managed Codex uses the same marker split on its managed workspace, retaining both-agent
+installation in each row. The catalog-fallback routing-off parameter, direct router-hook
+contracts, and command/protocol paths that bypass routing retain 0.154.0 coverage.
+The existing Windows exclusions for native skill-toggle journeys still apply.
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
 `continue-on-error` and is not part of the required `cujs` gate until it is stable.
@@ -1139,15 +1177,15 @@ Each lane installs only the agent CLIs it needs (one, except the managed OpenCod
 three), once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
 inside each fresh VM because configure/revert can touch machine-level settings;
-separate runners isolate those writes as well as the PTYs. All four agent × OS
-Full jobs run in parallel: cases share no workspace state, only inference capacity.
+separate runners isolate those writes as well as the PTYs. Full runs at most four
+matrix rows in parallel: cases share no workspace state, only inference capacity.
 They share that capacity with each other, the concurrently running agent e2e shards,
 and other PRs, so rate limits remain possible.
 No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
 The **All integration tests** check requires installation, workspace validation, smoke,
-both full lanes, and both **Managed config** lanes to pass for full/live runs. Each tracing
+all full rows, and all **Managed config** rows to pass for full/live runs. Each tracing
 journey is included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
 a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke, TUI,
 and installation subsets do not select managed tests and do not require them.
@@ -1261,8 +1299,9 @@ its independently fetched IDs. The configured Codex journey subsequently runs re
 verifies that the shared pointer and stable catalog are gone, and checks that a user-owned setting
 survives. These requests send no inference prompts. Both agents must reject personal source
 overrides. This checks desktop startup configuration and cleanup, not GUI rendering or inference.
-Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable links
-recreated by version checks, while continuing to compare persistent agent files.
+Codex state comparisons exclude `.codex/tmp/arg0` and `.codex/tmp/arg0-linux`, the disposable
+executable links recreated by version checks. The links can point to hundreds of MB, so they
+are excluded before reading file contents. Persistent agent files stay compared byte for byte.
 In addition, `test_ug_configure_managed_codex_catalog_fallback` injects the intentionally nonexistent
 `system.ai.gpt-99`, keeping it out of the real workspace while launching Codex through that
 workspace on the valid default model `system.ai.gpt-5-6-sol`. With legacy smart routing off and
@@ -1332,10 +1371,15 @@ bypass, only `@rohita5l` or `@lilly-luo` can post the exact PR comment
 visible `skip-user-journey-test` label, causing the gate to rerun. Editing or deleting the
 comment removes the label and reruns the gate; manually adding the label does not bypass it.
 
-The separate member-triggered `/ug-review` workflow runs the pinned Open Code Review
+The separate comment-triggered `/ug-review` workflow runs the pinned Open Code Review
 action through the Databricks gateway's Anthropic route. Adding `ug-review` or `code-review` also
-requests review on in-repository PRs; fork PRs use the member comment to access
-secrets safely. `../test_ug_review_bot.py` covers gateway authentication,
+requests review on in-repository PRs. Members can request reviews on any PR; GitHub-classified
+`CONTRIBUTOR`s can request them on their own PR. `/integration-test` uses the same policy
+and runs PR code with CI secrets, explicitly trusting prior contributors. First-time
+contributors still need a member. `../test_comment_command_authorization.py` covers the job
+conditions with synthetic events, including integration commands with or without a SHA,
+not live GitHub delivery or contributor classification.
+`../test_ug_review_bot.py` covers gateway authentication,
 OIDC-authenticated npm-proxy configuration and credential cleanup, and the workflow
 contract as component tests. This integration suite does not establish
 live review-model access or GitHub comment posting.
