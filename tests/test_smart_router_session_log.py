@@ -133,7 +133,9 @@ def test_filesystem_errors_are_nonfatal(log_dir, decision, monkeypatch, failure)
 
 def test_claude_subagent_audit_writes_one_timed_record(log_dir, tmp_path, decision, monkeypatch):
     monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
-    monkeypatch.setattr(v2, "_request_claude_routing_decision", lambda *args: (decision, None))
+    monkeypatch.setattr(
+        v2, "_request_claude_routing_decision", lambda *args, **kwargs: (decision, None)
+    )
     payload = {
         "session_id": "s1",
         "tool_name": "Agent",
@@ -158,7 +160,9 @@ def test_claude_subagent_audit_writes_one_timed_record(log_dir, tmp_path, decisi
 
 
 def test_no_session_record_without_audit_or_route(log_dir, decision, monkeypatch):
-    monkeypatch.setattr(v2, "_request_claude_routing_decision", lambda *args: (decision, None))
+    monkeypatch.setattr(
+        v2, "_request_claude_routing_decision", lambda *args, **kwargs: (decision, None)
+    )
     payload = {"session_id": "s1", "tool_name": "Agent", "tool_input": {"prompt": "inspect"}}
     kwargs = {
         "workspace": "https://example.com",

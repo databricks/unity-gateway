@@ -143,7 +143,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[]
     if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
-    const { tool, tool_use_id, agentId: _agentId, ...input } = e
+    const { tool, tool_use_id, agentId, ...input } = e
     let route
     let spinner: { cancel: () => void } | undefined
     if (tool_use_id) {
@@ -176,7 +176,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     try {
       const session_id = await $.session.id()
       const result = await $.process.run(command, {
-        stdin: JSON.stringify({ session_id, tool_use_id, tool_name: tool, tool_input: input }),
+        stdin: JSON.stringify({ session_id, agent_id: agentId, tool_use_id, tool_name: tool, tool_input: input }),
         timeoutMs: 35000,
       })
       if (result.exitCode !== 0) throw new Error('Router command failed')

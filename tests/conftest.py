@@ -40,6 +40,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     privileged writer for an OS-managed agent config.
     """
     import ucode.agents as agents_mod
+    import ucode.codex_config as codex_config_mod
     import ucode.config_io as config_io_mod
     import ucode.databricks as databricks_mod
     import ucode.managed_config as managed_config_mod
@@ -179,6 +180,12 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.delenv("UCODE_SMART_ROUTER_PYTHON", raising=False)
     # `ug --header` exports this to the agent, so an outer session's value would leak into launches.
     monkeypatch.delenv("UG_HEADERS", raising=False)
+    # The routing hooks copy harness headers from these, so the developer's own values would leak.
+    monkeypatch.delenv("ANTHROPIC_CUSTOM_HEADERS", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setattr(
+        codex_config_mod, "DEFAULT_CODEX_CONFIG_PATH", tmp_path / ".codex" / "ucode.config.toml"
+    )
     # When the suite runs inside a ug smart-routing session, these ambient env vars
     # make smart_routing_enabled()/configured_router_name() read the host's live
     # routing state, leaking a Databricks-Smart-Router-Recipe header into
