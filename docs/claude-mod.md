@@ -189,3 +189,18 @@ UG passes the resolved routing flags and recipe in the existing launch settings 
 `pluginConfigs["ug-smart-router"].options`. Claude supplies these to `register(on, options)`.
 `unset` lists originally absent flags because native options cannot carry null values.
 The source remains static; no additional launch snapshot file is created.
+
+### Original and routed choices
+
+`~/.ucode/claude-smart-routing-decisions.jsonl` records `original_model` and
+`original_subagent_type` from Claude's unmodified Agent input, alongside UG's
+`router_model` and `requested_model`. `session_id` plus `tool_use_id` joins a row
+to the original transcript call even when tasks run concurrently. These are local
+audit fields, not new gateway metrics or an OTel export.
+
+`original_model` is a raw selector (such as `sonnet`), not a resolved model ID.
+When Claude omits it, the field stays null; the original agent type is retained,
+but no inherited model or counterfactual native choice is guessed. The existing
+`requested_model` remains UG's routed target, not Claude's original choice.
+Actual execution still requires the child transcript or the separate subagent-start
+audit; that event can omit its model. Existing records are not backfilled.

@@ -403,11 +403,16 @@ def write_decision_record(
     requested_model: str,
 ) -> None:
     """Record a routing decision so a later SubagentStart can reconcile it."""
+    tool_input = payload.get("tool_input")
+    original_input = tool_input if isinstance(tool_input, dict) else {}
     _append_jsonl(
         decisions_path,
         {
             "decision_id": uuid.uuid4().hex,
             "session_id": payload.get("session_id"),
+            "tool_use_id": payload.get("tool_use_id"),
+            "original_model": original_input.get("model"),
+            "original_subagent_type": original_input.get("subagent_type"),
             "task_name": task_name,
             "router_model": decision.model,
             "requested_model": requested_model,

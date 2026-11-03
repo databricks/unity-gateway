@@ -13,6 +13,11 @@ The one-second refresh updates a mounted row without another prompt and avoids r
 when the count is unchanged.
 The running count has no live TUI coverage.
 
+`../test_claude_routing.py` and `../test_claude_smart_routing_v2.py` cover preserving
+the original model selector, agent type and tool-call ID in local routing records,
+including null omitted selectors. They do not verify inherited model resolution,
+actual execution or a remote metrics export.
+
 `../test_claude_launch_settings.py` covers oversized Windows Claude launch
 settings with controlled process boundaries: UTF-16 command length, merged
 settings, literal prompts, temporary-file lifetime and cleanup, launch failures,

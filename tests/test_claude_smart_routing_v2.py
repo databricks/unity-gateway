@@ -721,6 +721,7 @@ class TestSubagentRouting:
         output = v2.route_claude_subagent(
             {
                 "tool_name": "Agent",
+                "tool_use_id": "original-sonnet-call",
                 "tool_input": {
                     "subagent_type": "Explore",
                     "prompt": "inspect the parser",
@@ -752,6 +753,9 @@ class TestSubagentRouting:
         )
         decision_record = json.loads(decisions_path.read_text())
         assert decision_record["requested_model"] == "system.ai.claude-opus-4-8"
+        assert decision_record["original_model"] == "sonnet"
+        assert decision_record["original_subagent_type"] == "Explore"
+        assert decision_record["tool_use_id"] == "original-sonnet-call"
 
     def test_decision_log_keeps_the_request_menu_and_router(self, tmp_path, monkeypatch):
         monkeypatch.delenv("SMART_ROUTER_NAME", raising=False)
