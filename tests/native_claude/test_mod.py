@@ -3,31 +3,17 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from uuid import uuid4
 
-import pytest
 from session import Session
 
 from ucode.agents.claude import _header_mod_files
-from ucode.smart_routing import config
+from ucode.smart_routing import config, orchestrator, session_env
 from ucode.smart_routing.v2 import _claude_mod_launch_options, _write_routed_claude_plugin
-
-
-@pytest.fixture(scope="module")
-def native_binary():
-    binary = Path(os.environ.get("UCODE_TEST_CLAUDE_BINARY", ""))
-    expected = os.environ.get("UCODE_TEST_CLAUDE_VERSION", "")
-    assert binary.is_absolute() and binary.is_file() and expected, (
-        "Set UCODE_TEST_CLAUDE_BINARY to an absolute executable and UCODE_TEST_CLAUDE_VERSION."
-    )
-    result = subprocess.run([str(binary), "--version"], capture_output=True, text=True, timeout=10)
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == f"{expected} (Claude Code)", result.stdout
-    return str(binary)
 
 
 def test_mod_validation_and_event_forwarding(native_binary, tmp_path):
@@ -84,6 +70,120 @@ def test_native_options_are_launch_local(native_binary, tmp_path):
         assert a.observe()["options"] == _claude_mod_launch_options(env)
         assert b.observe()["options"] == _claude_mod_launch_options({})
         assert not (a.plugin / "hooks/launch.json").exists()
+
+
+def test_orchestrator_instructions_follow_native_toggles(native_binary, tmp_path):
+    """Native and CLI toggles update request guidance without changing the Agent schema.
+
+    Inference deliberately fails without credentials; this checks the serialized request,
+    not a model response or delegation quality.
+    """
+
+    def agent_tool(session):
+        session.send("Reply with OK.", expect_error=True)
+        records = [
+            json.loads(line)
+            for path in session.root.rglob("*.jsonl")
+            for line in path.read_text().splitlines()
+        ]
+        shapes = {
+            record["shapeHash"]: record["shape"]
+            for record in records
+            if record.get("type") == "api-request-shape"
+        }
+        requests = [record for record in records if record.get("type") == "api-request"]
+        assert requests, "Claude did not record a serialized API request"
+        tools = shapes[requests[-1]["shapeHash"]]["tools"]
+        return next(tool for tool in tools if tool["name"] == "Agent")
+
+    env = {
+        "ENABLE_SMART_ROUTING_V2": "0",
+        "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
+        "ENABLE_SMART_ROUTER_ORCHESTRATOR": "1",
+        "PYTHONPATH": str(Path(__file__).parents[2] / "src"),
+    }
+    controls = session_env.start_session(env)
+    try:
+        with Session(
+            native_binary,
+            tmp_path / "no-orchestrator",
+            {**env, "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0"},
+        ) as session:
+            native_tool = agent_tool(session)
+        assert native_tool["description"] != orchestrator.CLAUDE_AGENT_DESCRIPTION
+        with Session(native_binary, tmp_path / "routed", env) as session:
+            routed_tool = agent_tool(session)
+            assert {**routed_tool, "description": native_tool["description"]} == native_tool
+            description = routed_tool["description"]
+            assert description.startswith(orchestrator.CLAUDE_AGENT_DESCRIPTION)
+            assert "notification in a later turn" in description
+            assert "end the current turn and wait for that notification" in description
+            assert "Agents run in the background by default." in description
+            assert "do NOT sleep, poll, or proactively check on its progress" in description
+            assert "starts a fresh agent with no memory of prior runs" in description
+            for policy in (
+                "## When not to use",
+                "## When to fork",
+                "Never delegate understanding",
+                "When in doubt, don't spawn",
+            ):
+                assert policy not in description
+            for action in ("off", "on"):
+                result = session.send(f"/smart-router {action}")
+                assert f"Smart Router is {action}" in result["result"]
+                assert agent_tool(session) == (routed_tool if action == "on" else native_tool)
+                saved = json.loads(controls.read_text())
+                if action == "on":
+                    assert saved == {}
+                else:
+                    assert saved["ENABLE_SMART_ROUTER_ORCHESTRATOR"] == "0"
+            for action, flag in (
+                ("off", "--disable-smart-routing"),
+                ("on", "--enable-smart-routing"),
+            ):
+                result = subprocess.run(
+                    [sys.executable, "-m", "ucode.cli", "claude", flag],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                assert result.returncode == 0, result.stderr
+                assert f"Smart Router is {action}" in result.stdout
+                assert agent_tool(session) == (routed_tool if action == "on" else native_tool)
+        transcript = next(session.root.glob("config/projects/*/*.jsonl"))
+        records = [json.loads(line) for line in transcript.read_text().splitlines()]
+        last = next(record for record in reversed(records) if record.get("type") == "assistant")
+        # Successful inference records this attachment. Seed that resume input without
+        # a model service; the real host must ignore its stale description after toggling.
+        snapshot = {
+            "type": "attachment",
+            "uuid": str(uuid4()),
+            "parentUuid": last["parentUuid"],
+            "sessionId": last["sessionId"],
+            "timestamp": last["timestamp"],
+            "attachment": {
+                "type": "prompt_snapshot",
+                "systemPrompt": ["Saved session prompt."],
+                "tools": [{"name": "Agent", "description": routed_tool["description"]}],
+            },
+        }
+        records.insert(records.index(last), snapshot)
+        last["parentUuid"] = snapshot["uuid"]
+        transcript.write_text("".join(json.dumps(record) + "\n" for record in records))
+        with Session(native_binary, tmp_path / "resumed", env, resume=transcript) as session:
+            for action in ("off", "on"):
+                result = session.send(f"/smart-router {action}")
+                assert f"Smart Router is {action}" in result["result"]
+                assert agent_tool(session) == (routed_tool if action == "on" else native_tool)
+        for label, overrides, expected in (
+            ("omni", {"ISAAC_LAUNCH_MODE": "omni"}, routed_tool),
+            ("no-marker", {"UCODE_SESSION_ENV_FILE": str(tmp_path / "missing.json")}, native_tool),
+        ):
+            with Session(native_binary, tmp_path / label, {**env, **overrides}) as session:
+                assert agent_tool(session) == expected
+    finally:
+        shutil.rmtree(controls.parent)
 
 
 def test_native_process_inherits_settings_and_runs_python_cli(native_binary, tmp_path):

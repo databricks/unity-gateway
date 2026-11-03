@@ -362,7 +362,21 @@ class AgentTerminal(TerminalProcess):
             self.read()
             assert not self.ended, f"TUI exited before its prompt:\n{self.visible}"
             text = self.visible
-            if "Accessing workspace:" in text and self.session.cwd.name in text:
+            if self.agent == "antigravity":
+                # Antigravity redraws without clearing finished onboarding screens, so their text
+                # can linger; its gateway banner and idle prompt hint mean the prompt is ready.
+                if "Enterprise Gateway" in text and "? for shortcuts" in text:
+                    ready_since = ready_since or time.monotonic()
+                    if time.monotonic() - ready_since >= 1:
+                        self.actions.append({"reason": "prompt-ready", "screen": text})
+                        return
+                    continue
+                ready_since = None
+            if (
+                self.agent != "antigravity"
+                and "Accessing workspace:" in text
+                and self.session.cwd.name in text
+            ):
                 self.choose("Accessing workspace:", "Yes, I trust this folder")
                 continue
             if "Hooks need review" in text:
@@ -395,6 +409,28 @@ class AgentTerminal(TerminalProcess):
                 (
                     "security-notes",
                     "Security notes" in text and "Enter to continue" in text,
+                    "\r",
+                ),
+                (
+                    "antigravity-color-scheme",
+                    self.agent == "antigravity"
+                    and "Choose your color scheme:" in text
+                    and "[Next]" in text,
+                    "\r",
+                ),
+                (
+                    "antigravity-trust-folder",
+                    self.agent == "antigravity"
+                    and "Do you trust the contents of this project?" in text
+                    and self.session.cwd.name in text
+                    and bool(re.search(r">\s*Yes, I trust this folder", text)),
+                    "\r",
+                ),
+                (
+                    "antigravity-terms",
+                    self.agent == "antigravity"
+                    and "Terms of Service & Data Use" in text
+                    and bool(re.search(r">\s*Done", text)),
                     "\r",
                 ),
                 (
@@ -448,11 +484,20 @@ class AgentTerminal(TerminalProcess):
                 "Configured ug launched Claude's account-login flow instead of its gateway session:\n"
                 + text
             )
+            assert not (self.agent == "antigravity" and "accounts.google.com" in text), (
+                "Configured ug launched Antigravity's Google sign-in instead of gateway mode:\n"
+                + text
+            )
             assert not ("Sign in with ChatGPT" in text and "Provide your own API key" in text), (
                 "Configured ug launched Codex's account-login flow instead of its gateway session:\n"
                 + text
             )
-            title = {"claude": "Claude Code", "copilot": "Copilot v"}.get(self.agent, "Codex")
+            title = {
+                "claude": "Claude Code",
+                "copilot": "Copilot v",
+                # Antigravity's idle prompt shows its shortcut hint under the input box.
+                "antigravity": "? for shortcuts",
+            }.get(self.agent, "Codex")
             if (
                 title in text
                 and "Confirm folder trust" not in text

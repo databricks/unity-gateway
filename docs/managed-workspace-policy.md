@@ -40,9 +40,10 @@ configuration, not just headers; ug preserves raw fields rather than silently re
   Without a user-selected workspace, launch uses the installed workspace. Explicit administrator
   configure can replace the machine workspace; launch cannot switch it.
 - Unchanged policy does not invoke sudo or touch installed bytes/metadata.
-- Non-root launches never install or remove workspace policy, even in a terminal or with cached
-  sudo access. They do not run `sudo -n -l`, start a sudo worker, or request a password.
-  This avoids elevation attempts on MDM machines; IT/root provisioning owns the update.
+- Launches never install, update, or remove workspace policy, whether run as root or not, in a
+  terminal or with cached sudo access. They do not run `sudo -n -l`, start a sudo worker, or request a password.
+  This avoids elevation attempts on MDM machines; `ug configure` (including root/IT provisioning
+  runs) owns the update.
 - Explicit configure may request sudo in a terminal or use `sudo -n` in scripts.
   Root-run configure/refresh installs directly without sudo.
 - A deferred launch update warns: “Your workspace policy changed. Ask your IT team or an
@@ -51,8 +52,8 @@ configuration, not just headers; ug preserves raw fields rather than silently re
   that run, but only if there is no installed policy for another workspace; a workspace mismatch is an
   error, not unmanaged fallback. The warning is shown only once per distinct pending policy
   change, not at every recheck.
-- No-config or feature-disabled removes a matching installed policy during configure or a root
-  refresh. A non-root launch warns and retains it.
+- No-config or feature-disabled removes a matching installed policy during configure. A launch warns
+  and retains it.
 - `ug configure` sets the machine's workspace: configuring a workspace that publishes no policy
   also removes another workspace's installed policy. A launch never changes the machine's
   workspace; selecting another workspace is refused.
@@ -111,7 +112,7 @@ Where the machine cannot hold the policy (Windows, `UG_SKIP_OS_SETTINGS=1`, or `
 --user`) and none is installed for the workspace, ug keeps its earlier behavior unchanged: the
 fetched policy is cached per user in `~/.ucode/managed-config.json`, a launch replays it, and a
 failed `ug configure` fetch falls back to it. Windows support for the installed policy is a
-follow-up. A non-root Linux or macOS launch with nothing installed applies the fetched policy to
+follow-up. A Linux or macOS launch (root or not) with nothing installed applies the fetched policy to
 that run without installing or caching it, so a first launch before any `ug configure` is still
 managed. An installed policy still wins: with `UG_SKIP_OS_SETTINGS=1`
 a developer's launch reads it read-only, never writes OS-managed files, and builds only user-owned
@@ -123,6 +124,6 @@ launches do not poll; the installed workspace selects the remote source for `ug 
 For fleet-managed installations, schedule root/MDM provisioning about every **four hours**
 (`14400` seconds) rather than once daily. This bounds the usual stale-policy window without requiring
 developer elevation; offline/sleeping machines can still lag. This is separate from a developer's
-`ug configure`. The PR's baseline has no MDM scheduler, and current main's
-`scripts/mdm-bootstrap.sh` is a one-shot bootstrap with no 24-hour refresh default. The deployment's
-actual scheduler must set the four-hour interval; this change does not invent a background daemon.
+`ug configure`. On macOS, `scripts/mdm/macos-provision.sh` runs once per policy execution and has no
+scheduler of its own, so the deployment's scheduler must set the interval; JAMF's shortest recurring
+policy frequency is once a day.

@@ -395,7 +395,8 @@ class TestCujManagedConfiguration(BaseCujTest):
         """Scenario: configure a fresh session against the published two-agent policy.
 
         Expected: configure selects both agents without a picker and writes their managed settings
-        and a Desktop profile containing the policy's Databricks-hosted Claude models.
+        and the complete Desktop profile/metadata for its Databricks-hosted Claude models,
+        including the expected OTLP fields.
         """
         session, workspace, _ = cuj
         config_library = enable_claude_desktop(session, workspace.url)
@@ -416,11 +417,16 @@ class TestCujManagedConfiguration(BaseCujTest):
             session,
             config_library,
             workspace.url,
-            model_ids=CLAUDE_FAMILY_MODELS,
+            models=[
+                {"name": option["model"], "labelOverride": option["label"]}
+                for option in CLAUDE_PICKER_OPTIONS
+                if option["model"] in CLAUDE_FAMILY_MODELS
+            ],
             custom_headers={
                 "x-databricks-use-coding-agent-mode": "true",
                 **claude_headers,
             },
+            otel_enabled=True,
         )
         codex_models = session.codex_model_ids(
             ["app-server", "--listen", "stdio://"], name="managed-sentinel-codex-models"

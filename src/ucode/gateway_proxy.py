@@ -41,7 +41,9 @@ from urllib.parse import unquote
 
 import httpx
 
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
 from ucode.env import env_bool
+from ucode.workspace import workspace_headers
 
 # Header we overwrite with the freshly-minted Databricks credential. Any
 # client-supplied value is replaced, so a stale settings.json value can't leak.
@@ -215,6 +217,10 @@ def forwarded_request_headers(
         key: value for key, value in handler.headers.items() if key.lower() not in strip_on_forward
     }
     headers[token_header] = f"Bearer {token}"
+    # Don't let httpx's default `Accept-Encoding: gzip, deflate` ask for a compressed body the
+    # client never requested: the response is relayed raw, and Codex can't decode gzip.
+    if not any(key.lower() == "accept-encoding" for key in headers):
+        headers["Accept-Encoding"] = "identity"
     return headers
 
 
@@ -255,6 +261,8 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     cache: TokenCache
     client: httpx.Client
     token_header = AI_GATEWAY_TOKEN_HEADER
+    # Applied last so neither the agent nor an admin header can select another workspace.
+    workspace_selector: Mapping[str, str] = {}
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -302,6 +310,14 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 self, self.cache.token, token_header, extra_strip=extra_strip
             )
             headers.update(self._added_headers())
+            if self.workspace_selector:
+                selector_names = {name.lower() for name in self.workspace_selector}
+                headers = {
+                    name: value
+                    for name, value in headers.items()
+                    if name.lower() not in selector_names
+                }
+                headers.update(self.workspace_selector)
             return headers
 
         try:
@@ -492,8 +508,12 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     allowed_path_prefixes: tuple[str, ...]
     sign_in_hint: str
     dropped_chat_completions_fields: frozenset[str]
+    path_rewriter: Callable[[str], str] | None = None
+    body_rewriter: Callable[[str, bytes], bytes] | None = None
 
     def _request_body(self, body: bytes | None) -> bytes | None:
+        if body and self.body_rewriter is not None:
+            body = self.body_rewriter(self.path, body)
         if not body or not self.dropped_chat_completions_fields:
             return body
         if not self.path.split("?", 1)[0].endswith("/chat/completions"):
@@ -551,6 +571,13 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
         if not self._has_session_secret():
             self._reject(401, "Missing or invalid Unity Gateway session credential.")
             return
+        if self.path_rewriter is not None:
+            rewritten = self.path_rewriter(self.path)
+            # A rewrite must stay on a path the session may reach.
+            if not _is_allowed_gateway_path(rewritten, self.allowed_path_prefixes):
+                self._reject(404, "This path is not served by the Unity Gateway proxy.")
+                return
+            self.path = rewritten
         super()._handle()
 
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
@@ -616,6 +643,7 @@ def _start_proxy(
                 "cache": cache,
                 "client": client,
                 "token_header": token_header,
+                "workspace_selector": workspace_headers(workspace),
                 **(handler_attrs or {}),
             },
         ),
@@ -636,20 +664,34 @@ def _start_proxy(
     return server, cache, client
 
 
+# Each subscription relay's gateway route and request handler, by agent; another relayed
+# provider (e.g. Copilot's) adds an entry here.
+_RELAY_ROUTES: dict[str, tuple[str, type[_ProxyHandler]]] = {
+    AGENT_CLAUDE: ("ai-gateway/anthropic/", _RelayProxyHandler),
+    # Plain forwarding: the Anthropic hybrid reroute doesn't apply.
+    AGENT_CODEX: ("ai-gateway/codex/", _ProxyHandler),
+}
+
+
 def start_relay_proxy(
     workspace: str,
     token_provider: Callable[[bool], str],
     port: int,
+    *,
+    agent: str = AGENT_CLAUDE,
+    fallback_on_bind_error: bool = True,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
-    """Start the Claude subscription relay proxy."""
+    """Start ``agent``'s subscription relay proxy (see ``_RELAY_ROUTES``)."""
+    upstream_path, handler_type = _RELAY_ROUTES[agent]
     return _start_proxy(
         workspace,
         token_provider,
         port,
-        upstream_path="ai-gateway/anthropic/",
+        upstream_path=upstream_path,
         token_header=AI_GATEWAY_TOKEN_HEADER,
-        handler_type=_RelayProxyHandler,
+        handler_type=handler_type,
         force_refresh_near_expiry=False,
+        fallback_on_bind_error=fallback_on_bind_error,
     )
 
 
@@ -681,14 +723,18 @@ def start_gateway_auth_proxy(
     sign_in_hint: str,
     on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
     dropped_chat_completions_fields: Iterable[str] = (),
+    allowed_path_prefixes: tuple[str, ...] = GATEWAY_MODEL_PATH_PREFIXES,
+    path_rewriter: Callable[[str], str] | None = None,
+    body_rewriter: Callable[[str, bytes], bytes] | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start a per-session proxy for agents that only hold a static credential.
 
     The agent sends ``session_secret`` as its API key; the proxy accepts it only on
-    gateway model paths and forwards with a fresh Databricks token plus
+    ``allowed_path_prefixes`` and forwards with a fresh Databricks token plus
     ``added_headers``, after removing ``dropped_chat_completions_fields`` from Chat
-    Completions request bodies. Binds an OS-assigned port, read from
-    ``server.server_address[1]``.
+    Completions request bodies. ``path_rewriter`` maps an accepted request path to the
+    gateway path it is forwarded to, and ``body_rewriter(path, body)`` adjusts a request
+    body for the gateway. Binds an OS-assigned port, read from ``server.server_address[1]``.
     """
     return _start_proxy(
         workspace,
@@ -702,9 +748,12 @@ def start_gateway_auth_proxy(
         handler_attrs={
             "session_secret": session_secret,
             "added_headers": dict(added_headers),
-            "allowed_path_prefixes": GATEWAY_MODEL_PATH_PREFIXES,
+            "allowed_path_prefixes": allowed_path_prefixes,
             "sign_in_hint": sign_in_hint,
             "dropped_chat_completions_fields": frozenset(dropped_chat_completions_fields),
+            # staticmethod: a plain function on the handler class would bind as a method.
+            "path_rewriter": staticmethod(path_rewriter) if path_rewriter else None,
+            "body_rewriter": staticmethod(body_rewriter) if body_rewriter else None,
         },
         on_refresh_failure=on_refresh_failure,
     )

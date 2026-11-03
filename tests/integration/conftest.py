@@ -18,6 +18,8 @@ from utils.evidence import fresh_id
 from utils.harness import UserSession
 from utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
 
+AGENT_BINARIES = {"antigravity": "agy"}
+
 
 def pytest_collection_modifyitems(config, items):
     agents = os.environ.get("UG_INTEGRATION_AGENTS", "claude,codex").split(",")
@@ -28,7 +30,7 @@ def pytest_collection_modifyitems(config, items):
             raise pytest.UsageError("Use the integration runner; unit fixtures were inherited.")
         if any(
             item.get_closest_marker(a) and a not in agents
-            for a in ("claude", "codex", "opencode", "copilot")
+            for a in ("claude", "codex", "opencode", "copilot", "antigravity")
         ):
             deselected.append(item)
         else:
@@ -175,7 +177,9 @@ def session(request, installed_binary):
 
 @pytest.fixture
 def live_session(session, workspace):
-    for binary in ["databricks", *os.environ["UG_INTEGRATION_AGENTS"].split(",")]:
+    agents = os.environ["UG_INTEGRATION_AGENTS"].split(",")
+    # Agents run under their own binary names (`ug antigravity` launches `agy`).
+    for binary in ["databricks", *(AGENT_BINARIES.get(agent, agent) for agent in agents)]:
         if not shutil.which(binary, path=session.env["PATH"]):
             pytest.fail(f"Required integration binary is missing: {binary}")
     session.env["DATABRICKS_BEARER"] = os.environ["DATABRICKS_BEARER"]
@@ -194,7 +198,7 @@ def claude_relayed_provider():
 
 @pytest.fixture(scope="session")
 def claude_bedrock_provider():
-    # A Bedrock MPS that restricts its allowed models to an explicit set (Sonnet + Haiku, no Opus).
+    # A Bedrock MPS that restricts its allowed models to an explicit set (Sonnet + Opus).
     return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_PROVIDER"]
 
 
@@ -227,6 +231,18 @@ def claude_bedrock_allow_all_provider():
 def claude_bedrock_allow_all_model():
     # An allow_all service declares no targets, so a launch must name the Bedrock model id itself.
     return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def antigravity_provider():
+    return os.environ["UG_INTEGRATION_ANTIGRAVITY_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def antigravity_provider_models():
+    # Targets of the Gemini MPS, newest first: `ug configure` pins the first.
+    models = os.environ["UG_INTEGRATION_ANTIGRAVITY_PROVIDER_MODELS"].split(",")
+    return [model.strip() for model in models if model.strip()]
 
 
 @pytest.fixture(scope="session")
