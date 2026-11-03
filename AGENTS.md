@@ -34,7 +34,7 @@ Tests live in `tests/`.
   - Add a test beside `tests/test_workspace_selection.py::TestHelperArgv` for each new helper or client.
 - Use `launcher.exec_or_spawn` when handing the terminal to an agent. Shell strings and explicit executable overrides keep their existing subprocess semantics.
 - Add or update focused tests for behavior changes.
-- Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets, and a member-only `issue_comment` command that checks out the default branch (as in `fork-integration.yml`) for checks that need secrets on fork PRs.
+- Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets. For checks that need secrets on fork PRs, use the default-branch `issue_comment` workflows. Members/owners may request any PR; GitHub-classified `CONTRIBUTOR`s may request only their own PR (as in `fork-integration.yml`). This policy trusts prior contributors to run PR code with CI secrets; first-time contributors need a member.
 - Do not modify generated or lock files unless the dependency graph intentionally changes.
 
 ## Smart-routing configuration
@@ -113,6 +113,7 @@ alone. For each listed field, `ug` does one of:
 - **Create/replace**: `ug` owns the whole value and writes it.
 - **Merge**: `ug` writes only its own entries within a shared value and leaves the rest alone.
 - **Ignore**: `ug` does not touch the field.
+- **Launch-only (-c), never written**: `ug` overrides the value for that session without changing the saved file.
 
 The two columns show what `ug` does without and with a [managed config](https://docs.databricks.com/aws/en/ai-gateway/coding-agent-configure-govern), the coding agent config admins publish through the API.
 
@@ -177,6 +178,21 @@ custom registration names and full proxy URLs are preserved. Its name and displa
 are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old
 `unity-gateway@unity-gateway-cowork` registration only after installing/updating `ug`;
 revert removes both IDs. New sessions use the `mcp__plugin_ug_...` tool namespace.
+Claude Code also receives `ug@unity-gateway-code` in its regular user plugin scope,
+shared with the Desktop Code tab. The generated source lives at
+`~/.ucode/claude-code-marketplace`, with its config root recorded in
+`~/.ucode/claude-code-plugin.json`; native plugin installation owns only that
+marketplace's `extraKnownMarketplaces` entry and its `enabledPlugins` entry.
+This plugin contains only the generated `unity-gateway-connectors` skill with Code-specific
+authentication guidance and native MCP registration names. Existing MCP registrations and
+downloaded skill files stay in their native locations; Cowork hooks are not installed in Code.
+Code setup is independent of Cowork account discovery and best-effort. Model-configured Claude and
+explicit Claude MCP clients are eligible. Managed configure refreshes Code after successful
+MCP reconciliation even if skill downloads fail; Cowork keeps its existing model and skill
+requirements. MCP updates refresh eligible plugins, and revert removes both while preserving
+unrelated plugins.
+Code and Cowork skill templates live in `src/ucode/agents/desktop/connector_skills/`;
+the generator inserts connector names and bounds each description.
 See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>
@@ -188,11 +204,13 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 |-------|------------------------|---------------------|-------|
 | `model_provider` | Create/replace | Create/replace | Gateway provider (`Databricks`) |
 | `model` | Ignore | Create/replace | The config's default model |
-| `model_providers.Databricks` | Merge | Merge | Provider block: name, gateway base URL, wire API, `ug` auth command; other keys left alone |
+| `model_providers.Databricks` | Merge | Merge | Provider block: name, gateway base URL, wire API, `ug` auth command; other keys left alone. A relayed (ChatGPT subscription) provider sets `requires_openai_auth` instead of the auth command and skips the managed file |
 | `http_headers` | Merge | Merge | In `[model_providers.Databricks]`; merge `ug`'s routing headers by name, admin headers added under managed config. `UG_HEADERS` names not already present are added to the launch's `-c` flags only, never a file. On a host that serves several workspaces, the workspace selector headers are added last |
+| `model_provider`, `model_providers.DatabricksRelay` (app) | Ignore | Ignore | In `~/.codex/config.toml`, only for a relayed (ChatGPT subscription) provider, for Codex desktop, and only by `ug configure` (like Claude Desktop): a loopback relay block with the MPS header served by the login service. Its own name keeps a managed `Databricks` provider from merging into it, and marks it as ug's to replace or remove; a user-defined `model_provider` is left alone |
 | `model_catalog_json` | Create/replace | Create/replace | In `~/.codex/config.toml`; `ug`'s own catalog reference, for a static model list |
 | `otel.trace_exporter` | Ignore | Create/replace | In `~/.codex/config.toml` when the config enables tracing, for Codex desktop; another exporter and other telemetry settings left alone |
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone. A same-name entry in `~/.codex/config.toml` of the other transport (stdio vs HTTP) is removed, since Codex would merge the two into an invalid entry |
 | Smart Router and Smart Router Orchestrator hooks | Merge | Merge | Launch-only `PreToolUse`, plus `UserPromptSubmit` and compact `SessionStart` with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; Codex combines them with its native hook sources and applies project trust; `features.hooks` is enabled for a smart-routed launch |
+| Native v2 collaboration | Launch-only (-c), never written | Launch-only (-c), never written | `features.multi_agent_v2.non_code_mode_only=false` and matching `root_agent_usage_hint_text` / `subagent_usage_hint_text` override saved values for the session; only for smart routing on Codex 0.164.0 or newer. User config files, general developer instructions, and native delegation-mode controls are preserved |
 
 </details>

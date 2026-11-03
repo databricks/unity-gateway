@@ -7,10 +7,12 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from contextlib import contextmanager, redirect_stdout
+from dataclasses import asdict
 from enum import StrEnum
 from importlib import metadata
 from typing import Annotated, Any
@@ -140,6 +142,7 @@ from ucode.managed_resolve import (
     resolve_state,
 )
 from ucode.mcp import (
+    CONFIG_WRITABLE_MCP_CLIENTS,
     MCP_CLIENTS,
     McpServiceListingRateLimited,
     add_mcp_command,
@@ -1021,8 +1024,10 @@ def _setup_single_agent(
         resolved_mcps = _configure_managed_mcp_servers(managed)
         skills_configured = _configure_managed_skills(managed)
         _restore_mcp_after_workspace_switch(previous_workspace, state)
-        if tool == "claude" and resolved_mcps is not None and skills_configured:
-            _sync_claude_cowork_plugin(state, managed_mcp_servers=resolved_mcps)
+        if tool == "claude" and resolved_mcps is not None:
+            _sync_claude_cowork_plugin(
+                state, managed_mcp_servers=resolved_mcps, sync_cowork=skills_configured
+            )
     else:
         _restore_mcp_after_workspace_switch(previous_workspace, state)
     # Only the Claude and Codex branch above reads the managed config fresh.
@@ -1311,8 +1316,10 @@ def _configure_workspace_command(
             registered_mcps = [
                 str(server["name"]) for server in (resolved_mcps or []) if server.get("name")
             ]
-            if "claude" in configured_tools and resolved_mcps is not None and skills_configured:
-                _sync_claude_cowork_plugin(state, managed_mcp_servers=resolved_mcps)
+            if "claude" in configured_tools and resolved_mcps is not None:
+                _sync_claude_cowork_plugin(
+                    state, managed_mcp_servers=resolved_mcps, sync_cowork=skills_configured
+                )
         _summarize_managed_config(managed, configured_tools, registered_mcps)
         return 0
 
@@ -2000,7 +2007,8 @@ def _configure_agents_for_mcp(
     """Select MCP clients for one workspace without changing agent model settings."""
     scope = {a if a == "cursor" else normalize_tool(a) for a in requested}
     installed = available_mcp_clients()
-    not_installed = sorted(scope - set(installed))
+    # A named client whose user MCP config UG writes directly needs no CLI on PATH.
+    not_installed = sorted(scope - set(installed) - CONFIG_WRITABLE_MCP_CLIENTS.keys())
     if not_installed:
         raise RuntimeError(_not_installed_message(not_installed))
     previous_workspace = current_workspace_key(load_full_state())
@@ -2043,25 +2051,28 @@ def _not_installed_message(agents: list[str]) -> str:
 
 
 def _sync_claude_cowork_plugin(
-    state: dict | None = None, *, managed_mcp_servers: list[dict] | None = None
+    state: dict | None = None,
+    *,
+    managed_mcp_servers: list[dict] | None = None,
+    sync_cowork: bool = True,
 ) -> None:
-    """Keep Claude Cowork's generated plugin aligned with workspace MCPs and skills."""
+    """Keep Claude Code and Cowork plugins aligned with workspace MCPs and skills."""
     current_state = state if state is not None else load_state()
     configured_tools = set(current_state.get("available_tools") or []) | set(
         current_state.get("last_configured_tools") or []
     )
-    if "claude" not in configured_tools:
+    if "claude" not in configured_tools | set(current_state.get("mcp_clients") or []):
         return
 
     user_mcp_servers = list(current_state.get("mcp_servers") or [])
     if managed_mcp_servers is None:
         managed_mcp_servers = load_managed_mcp_servers(current_state, {"claude"})
-    from ucode.agents.desktop.setup import configure_claude_cowork
+    from ucode.agents.desktop.setup import configure_claude_code_plugin, configure_claude_cowork
 
-    configure_claude_cowork(
-        current_state,
-        [*user_mcp_servers, *managed_mcp_servers],
-    )
+    mcp_servers = [*user_mcp_servers, *managed_mcp_servers]
+    configure_claude_code_plugin(mcp_servers)
+    if sync_cowork and "claude" in configured_tools:
+        configure_claude_cowork(current_state, mcp_servers)
 
 
 def _configure_optional_setup(state: dict, tools: list[str]) -> None:
@@ -2107,7 +2118,8 @@ def mcp_add(
         typer.Option(
             "--agents",
             help="Comma-separated coding agents to register the server(s) for (e.g. "
-            "claude,codex,cursor). MCP registration is independent of model setup. Without --agents, "
+            "claude,codex,cursor). Claude/Codex user config can be written even without a CLI on "
+            "PATH. MCP registration is independent of model setup. Without --agents, "
             "the server is registered for every already-configured agent.",
         ),
     ] = None,
@@ -2130,11 +2142,11 @@ def mcp_add(
         ),
     ] = None,
 ) -> None:
-    """Add Databricks MCP servers to installed coding tools.
+    """Add Databricks MCP servers to supported coding tools.
 
     Purely additive: it never removes MCP servers that are already configured, only registers new
-    ones (use `ug mcp remove` to remove). Pass --agents to target (and, if needed, set up) specific
-    agents. Explicit MCP setup never configures agent models or machine-wide settings.
+    ones (use `ug mcp remove` to remove). Pass --agents to target specific clients. Explicit MCP
+    setup never configures agent models or machine-wide settings.
     """
     selected = None if names is None else {s.strip() for s in names.split(",") if s.strip()}
     requested_agents = (
@@ -2591,24 +2603,10 @@ def mcp_proxy_cmd(
     ] = False,
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
-    """Bridge a coding agent's stdio MCP transport to a Databricks MCP endpoint.
+    """Bridge a coding agent's stdio MCP transport to a Databricks MCP endpoint."""
+    from ucode.mcp_proxy_runtime import run_proxy
 
-    Each configured client spawns this as a local stdio MCP server (see
-    `ug mcp add`); it forwards messages to ``--url`` and injects a
-    freshly-minted token on every upstream request, so it never expires
-    mid-session. Not meant for interactive use — the agent manages this
-    process's lifecycle."""
-    from ucode.mcp_proxy import serve
-
-    state = load_state()
-    workspace = host or state.get("workspace")
-    if not workspace:
-        print_err("No workspace configured. Run `ug configure` first.")
-        raise typer.Exit(1)
-    if workspace_id:
-        pin(workspace, workspace_id)
-    profile = profile or state.get("profile")
-    serve(url, workspace, profile, use_pat=use_pat or bool(state.get("use_pat")))
+    run_proxy(url, host, profile, use_pat, workspace_id)
 
 
 @app.command("cowork-hook", hidden=True)
@@ -2790,8 +2788,9 @@ def otel_proxy_cmd(
     host: Annotated[str, typer.Option("--host")],
     port: Annotated[int, typer.Option("--port", min=1, max=65535)],
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
+    relay_port: Annotated[int | None, typer.Option("--relay-port", min=1, max=65535)] = None,
 ) -> None:
-    """Run the same OTLP proxy as a Codex CLI session, for desktop."""
+    """Run the same OTLP proxy (and, with --relay-port, ChatGPT relay) as Codex CLI, for desktop."""
     from ucode import gateway_proxy
 
     try:
@@ -2801,9 +2800,14 @@ def otel_proxy_cmd(
         if not state:
             raise RuntimeError(f"No saved configuration for {host}. Run `ug configure` first.")
         apply_pat_environment(state)
-        server, _cache, _client = gateway_proxy.start_otel_proxy(
-            host, codex_agent._otel_token_provider(state, host), port=port
-        )
+        token_provider = codex_agent._otel_token_provider(state, host)
+        server, _cache, _client = gateway_proxy.start_otel_proxy(host, token_provider, port=port)
+        if relay_port:
+            # The Codex app is pinned to this port, so fail (and restart) rather than move.
+            relay, _cache, _client = gateway_proxy.start_relay_proxy(
+                host, token_provider, relay_port, agent=AGENT_CODEX, fallback_on_bind_error=False
+            )
+            threading.Thread(target=relay.serve_forever, daemon=True).start()
         # systemd stops this with SIGTERM, which exits without cleanup, and nothing needs it.
         server.serve_forever()
     except (OSError, RuntimeError) as exc:
@@ -2918,7 +2922,7 @@ def codex_router_hook_cmd(
     )
 
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
+        payload = json.loads(sys.stdin.buffer.read() or b"{}")
     except ValueError:
         return
     if not isinstance(payload, dict):
@@ -2965,6 +2969,16 @@ def codex_router_hook_cmd(
     )
     if output is not None:
         sys.stdout.write(json.dumps(output))
+
+
+@app.command("smart-router-describe", hidden=True)
+def smart_router_describe_cmd() -> None:
+    """Print, as JSON, which agents this environment's smart-routing settings route.
+
+    For launchers that decide whether to offer a routing control. Offline: a workspace's managed
+    config and launch flags are not reflected.
+    """
+    sys.stdout.write(json.dumps(asdict(smart_routing_v2.describe_routing())) + "\n")
 
 
 @app.command("claude-router-hook", hidden=True)
@@ -4789,6 +4803,7 @@ def configure(
         set_config_scope(scope)
         claude_agent.request_explicit_configure()
         request_explicit_managed_writes()
+        codex_agent.request_explicit_configure()
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")

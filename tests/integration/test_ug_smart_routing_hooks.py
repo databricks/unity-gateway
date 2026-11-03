@@ -8,11 +8,15 @@ an agent choosing to spawn a subagent. The TUI journeys additionally invoke the 
 Smart Router skill and spawn real children before and after its session-local toggles.
 """
 
+import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
+from utils.agents.claude import assert_agent_resumed
 from utils.evidence import (
+    FileTask,
     SubagentCalculation,
     agent_sessions,
     assert_subagent_routed,
@@ -25,7 +29,7 @@ from utils.evidence import (
 from utils.harness import ANSI
 from utils.managed import MANAGED_CONFIG_FIXTURES, use_smart_routing_fixture
 from utils.request_recorder import TuiRequestRecorder, served_inference_request
-from utils.terminal import AgentTerminal
+from utils.terminal import AgentTerminal, codex_command_approval_pending
 
 pytestmark = pytest.mark.harness_latest
 
@@ -130,9 +134,28 @@ def _run_calculation(
         return task
 
     assert new_decisions, new_decisions
-    assert all(task.marker in decision.get("task_name", "") for decision in new_decisions), (
-        new_decisions
-    )
+    if agent == "codex":
+        # Correlate the audit hashes with plaintext assignments in native rollouts.
+        assignments = set()
+        for records in agent_sessions(session, agent).values():
+            for row in records:
+                item = row.get("payload", {})
+                if row.get("type") != "response_item" or item.get("type") != "agent_message":
+                    continue
+                for part in item.get("content", []):
+                    text = part.get("text", "")
+                    if part.get("type") != "input_text" or not text.startswith(
+                        "Message Type: NEW_TASK\n"
+                    ):
+                        continue
+                    _, separator, assignment = text.partition("\nPayload:\n")
+                    if separator and task.marker in assignment:
+                        assignments.add(
+                            hashlib.sha256(assignment.strip().encode("utf-8")).hexdigest()
+                        )
+        assert all(row["task_sha256"] in assignments for row in new_decisions), new_decisions
+    else:
+        assert all(task.marker in row.get("task_name", "") for row in new_decisions), new_decisions
     decision = new_decisions[0]
     if agent == "claude":
         model = decision["requested_model"].removeprefix("system.ai.").removeprefix("databricks-")
@@ -210,9 +233,20 @@ def _toggle_with_skill(
 
     before_answers, before_confirmations = completion_counts()
     tui.submit(invocation)
+    approval_sent = False
+    flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
+    python = (
+        '& "$env:UCODE_SMART_ROUTER_PYTHON"' if os.name == "nt" else '"$UCODE_SMART_ROUTER_PYTHON"'
+    )
+    command = f"{python} -m ucode.cli codex {flag}"
 
     def toggled(screen):
-        if tui.approve_windows_command(screen):
+        nonlocal approval_sent
+        # Fresh remote Codex sessions can be read-only. Approve only this
+        # requested toggle through the native dialog, keeping the sandbox intact.
+        if not approval_sent and codex_command_approval_pending(screen, command):
+            tui.send("\r", f"approve the session-local Smart Router toggle {state} once")
+            approval_sent = True
             return False
         try:
             controls_now = json.loads(controls[0].read_text())
@@ -384,7 +418,10 @@ def test_smart_routing_codex_route_subagent_hook(
     assert len(rows) == 1, rows
     row = rows[0]
     assert row["session_id"] == payload["session_id"], row
-    assert row["task_name"] == payload["tool_input"]["message"], row
+    assignment = payload["tool_input"]["message"]
+    assert row["task_sha256"] == hashlib.sha256(assignment.encode("utf-8")).hexdigest(), row
+    assert row["task_length"] == len(assignment), row
+    assert "task_name" not in row, row
     assert row["requested_model"] == updated["model"], row
 
 
@@ -526,6 +563,108 @@ def _assert_claude_not_wrapped(session, transcript: str) -> None:
     session.assert_not_routed()
     canary = session.home / ".ucode" / "claude-smart-routing-canary.json"
     assert canary.is_file(), f"routing hooks were not armed: {canary}"
+
+
+@pytest.mark.live
+@pytest.mark.claude
+@pytest.mark.managed_fixture
+def test_smart_router_claude_resumes_same_subagent_with_send_message(
+    live_session, workspace, tmp_path
+):
+    """Scenario: with orchestration on, spawn one Claude child, then give it a follow-up.
+
+    Expected: on Claude 2.1.314+ the parent uses SendMessage to continue the original
+    child. Both hidden file values appear in that same child's completed answers,
+    exactly one Agent/Task call occurs, and no second child session is created.
+    """
+    session = live_session
+    _select_smart_router_version(session, "claude", workspace, tmp_path, True, "subagent_orch_v0")
+    session.run(
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-validate",
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    )
+    first = FileTask(session)
+    with AgentTerminal(
+        session, "claude", [str(session.binary), "claude"], "smart-router-resume-child"
+    ) as tui:
+        tui.boot()
+        tui.submit(first.delegate_prompt + " Spawn exactly one agent in total.")
+        tui.wait_for_task(first)
+        tui.wait_for(
+            lambda _: first.completed(session, "claude", child=True),
+            "the original child's completed answer",
+            timeout=180,
+        )
+        tui.wait_for_background_tasks()
+        children = {
+            path: records
+            for path, records in agent_sessions(session, "claude").items()
+            if is_child_session("claude", path, records)
+        }
+        session.record("agent-sessions-before-followup.json", agent_sessions(session, "claude"))
+        assert len(children) == 1, list(children)
+        child_path = next(iter(children))
+        child_id = Path(child_path).stem.removeprefix("agent-")
+
+        second = FileTask(session)
+        tui.submit(
+            "Continue the same subagent using SendMessage and ask it to do this follow-up: "
+            f"{second.prompt} Do not spawn another agent or read the file yourself. "
+            "Wait for that agent's answer and reply with only the value it returned."
+        )
+        tui.wait_for_task(second)
+        tui.wait_for(
+            lambda _: any(
+                second.value in answer
+                for answer in assistant_answers(
+                    "claude", agent_sessions(session, "claude").get(child_path, [])
+                )
+            ),
+            "the original child's completed follow-up answer",
+            timeout=180,
+        )
+        _assert_claude_session_finished(session, tui)
+
+    sessions = agent_sessions(session, "claude")
+    session.record("agent-sessions.json", sessions)
+    assert [path for path in sessions if is_child_session("claude", path, sessions[path])] == [
+        child_path
+    ]
+    calls = {
+        part["id"]: part
+        for records in sessions.values()
+        for record in records
+        if record.get("type") == "assistant"
+        for part in record.get("message", {}).get("content", [])
+        if part.get("type") == "tool_use"
+    }
+    spawns = [call for call in calls.values() if call["name"] in {"Agent", "Task"}]
+    assert len(spawns) == 1, spawns
+    parent_records = [
+        record
+        for path, records in sessions.items()
+        if not is_child_session("claude", path, records)
+        for record in records
+    ]
+    followups = {
+        part["id"]: part
+        for record in parent_records
+        if record.get("type") == "assistant"
+        for part in record.get("message", {}).get("content", [])
+        if part.get("type") == "tool_use" and part.get("name") == "SendMessage"
+    }
+    assert followups, calls
+    for call in followups.values():
+        assert_agent_resumed(call, parent_records, child_id)
+    for task in (first, second):
+        task.assert_completed(session, "claude")
+        assert any(
+            task.value in answer for answer in assistant_answers("claude", sessions[child_path])
+        )
 
 
 @pytest.mark.live
@@ -729,6 +868,7 @@ def test_smart_router_skill_turns_claude_subagent_routing_back_on(
 @pytest.mark.live
 @pytest.mark.codex
 @pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
 @CODEX_SMART_ROUTER_VERSIONS
 def test_smart_router_routes_codex_subagent_at_launch(
     live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
@@ -768,6 +908,7 @@ def test_smart_router_routes_codex_subagent_at_launch(
 @pytest.mark.live
 @pytest.mark.codex
 @pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
 @CODEX_SMART_ROUTER_VERSIONS
 def test_smart_router_skill_turns_codex_subagent_routing_off(
     live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
@@ -811,6 +952,7 @@ def test_smart_router_skill_turns_codex_subagent_routing_off(
 @pytest.mark.live
 @pytest.mark.codex
 @pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
 @CODEX_SMART_ROUTER_VERSIONS
 def test_smart_router_skill_turns_codex_subagent_routing_back_on(
     live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION

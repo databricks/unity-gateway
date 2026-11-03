@@ -42,8 +42,15 @@ def test_decision_is_reconciled_with_actual_subagent_model(tmp_path, monkeypatch
     audit = tmp_path / "audit.jsonl"
     monkeypatch.setattr(claude_routing, "DECISIONS_PATH", decisions)
     monkeypatch.setattr(claude_routing, "AUDIT_PATH", audit)
-    decision = routing.RoutingDecision(model="system.ai.claude-opus-4-8")
-    routing.write_decision_record(decisions, {"session_id": "s1"}, "x", decision, decision.model)
+    task = "Review this code: " + "x" * 10000
+    decision = routing.RoutingDecision(
+        model="system.ai.claude-opus-4-8", rationale="why " * 1000, raw_rationale="raw " * 1000
+    )
+    routing.write_decision_record(decisions, {"session_id": "s1"}, task, decision, decision.model)
+    saved = json.loads(decisions.read_text())
+    assert saved["task_name"] == task
+    assert saved["rationale"] == decision.rationale
+    assert saved["raw_rationale"] == decision.raw_rationale
 
     record = claude_routing.record_subagent_start(
         {"session_id": "s1", "agent_id": "a1", "model": "system.ai.claude-opus-4-8"}

@@ -181,7 +181,11 @@ def test_managed_fixture_claude_model_picker_reflects_the_config(live_session, w
 
 @pytest.mark.managed_fixture
 @pytest.mark.codex
-@pytest.mark.parametrize("routing", ["0", "1"], ids=["routing-off", "routing-on"])
+@pytest.mark.parametrize(
+    "routing",
+    ["0", pytest.param("1", marks=pytest.mark.codex_smart_routing)],
+    ids=["routing-off", "routing-on"],
+)
 def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, routing):
     """Scenario: configure Codex from an injected model list containing an unknown GPT model.
 
@@ -266,6 +270,7 @@ def test_managed_fixture_claude_smart_routing_banner(live_session, workspace):
 @pytest.mark.managed_fixture
 @pytest.mark.codex
 @pytest.mark.harness_latest
+@pytest.mark.codex_smart_routing
 def test_managed_fixture_codex_smart_routing_banner(live_session, workspace):
     """Scenario: an admin config lists Codex models with smart routing enabled, and launch uses
     the first-prompt-and-subagent selector.

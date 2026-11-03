@@ -148,12 +148,22 @@ def test_mod_files_are_on_the_sudo_allowlist():
 def test_unreadable_mod_folder_reads_as_inactive(tmp_path, monkeypatch):
     # A folder the user can't enter (an earlier install under umask 027) must warn, not crash.
     monkeypatch.setattr(claude, "claude_header_mod_root", lambda: tmp_path)
-    monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "managed.json")
+    managed = tmp_path / "managed.json"
+    managed.write_text(json.dumps({"enabledPlugins": {claude.CLAUDE_HEADER_MOD_ID: True}}))
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed)
 
     def denied(self):
         raise PermissionError(13, "Permission denied", str(self))
 
     monkeypatch.setattr(claude.Path, "is_file", denied)
+    assert claude.header_mod_active() is False
+
+
+def test_non_utf8_managed_settings_read_as_inactive(tmp_path, monkeypatch):
+    managed = tmp_path / "managed.json"
+    managed.write_bytes("{}".encode("utf-16"))
+    monkeypatch.setattr(claude, "claude_header_mod_root", lambda: None)
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed)
     assert claude.header_mod_active() is False
 
 
@@ -208,3 +218,28 @@ def test_header_mod_active_needs_every_file(tmp_path, monkeypatch):
 
     (root / "ug-headers/.claude-plugin/plugin.json").unlink()
     assert not claude.header_mod_active()
+
+
+def test_header_mod_active_accepts_another_installers_copy_without_ug_files(tmp_path, monkeypatch):
+    # TODO: remove with the special case once other installers use ug to update managed settings.
+    _managed_path, root, _writes = _managed_env(
+        tmp_path, monkeypatch, {"enabledPlugins": {"ug-headers@other-managed": True}}
+    )
+    assert not root.exists()
+    assert claude.header_mod_active()
+
+
+def test_header_mod_active_rejects_disabled_absent_or_unrelated_plugins(tmp_path, monkeypatch):
+    managed_path, _root, _writes = _managed_env(
+        tmp_path, monkeypatch, {"enabledPlugins": {"ug-headers@other-managed": False}}
+    )
+    assert not claude.header_mod_active()
+
+    for doc in (
+        {"enabledPlugins": {}},
+        {},
+        {"enabledPlugins": {"other@other-managed": True}},
+        {"enabledPlugins": {"ug-headers@ucode-managed": True}},  # ug's own files are missing
+    ):
+        managed_path.write_text(json.dumps(doc), encoding="utf-8")
+        assert not claude.header_mod_active()

@@ -1083,8 +1083,8 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     developer's own servers and every other key in the file are preserved. Returns the subset of
     ``remove`` names that were actually present (so callers can report only real removals).
 
-    If the file exists but can't be parsed as a JSON object, we must not clobber it, so we defer to
-    the per-server ``claude`` CLI (which edits the file in place) for exactly the changed entries."""
+    If the file exists but can't be parsed as a JSON object, we must not clobber it. Defer to the
+    CLI when available; otherwise report the invalid config."""
     removed: set[str] = set()
 
     def mutate(config: dict) -> bool:
@@ -1098,7 +1098,12 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
         config["mcpServers"] = servers
         return True
 
-    if not _update_claude_config(claude_code_config_path(), mutate):
+    path = claude_code_config_path()
+    if not _update_claude_config(path, mutate):
+        if shutil.which("claude") is None:
+            raise RuntimeError(
+                f"Claude Code config at {path} is invalid. Fix it or install the CLI."
+            )
         for name in remove:
             # Clean every scope (not short-circuited), recording the name if any scope had it.
             if [scope for scope in MCP_CLEANUP_SCOPES if remove_claude_mcp_server(name, scope)]:
@@ -2004,6 +2009,7 @@ def _allow_ug_mcp_servers(settings: dict, admin_allowlist: list | None, names: s
 
 CLAUDE_HEADER_MOD_MARKETPLACE = "ucode-managed"
 CLAUDE_HEADER_MOD_ID = f"ug-headers@{CLAUDE_HEADER_MOD_MARKETPLACE}"
+_HEADER_MOD_PREFIX = "ug-headers@"
 _CLAUDE_GUARD_MOD_ID = "sec-default@builtin"
 # The header mod's managed-file entries. Revert removes them; they never count as conflicts, since
 # nothing in ug's own settings file can be overridden by them.
@@ -2096,20 +2102,33 @@ def _remove_header_mod() -> None:
 
 
 def header_mod_active() -> bool:
-    """Whether ug's header mod is installed and enabled, so ``UG_HEADERS`` reaches Claude."""
+    """Whether a header mod is installed and enabled, so ``UG_HEADERS`` reaches Claude.
+
+    That is ug's own mod, or another installer's copy enabled in the managed settings.
+    """
     root = claude_header_mod_root()
     path = _managed_settings_path()
-    if root is None or path is None:
+    if path is None:
         return False
     try:
+        settings = _parse_managed_settings(read_managed_file(path) or "{}")
+        plugins = settings.get("enabledPlugins")
+        if not isinstance(plugins, dict):
+            return False
+        # TODO: remove once other installers use ug to update managed settings.
+        if any(
+            key.startswith(_HEADER_MOD_PREFIX) and key != CLAUDE_HEADER_MOD_ID and value is True
+            for key, value in plugins.items()
+        ):
+            return True
+        if root is None or plugins.get(CLAUDE_HEADER_MOD_ID) is not True:
+            return False
         for file, content in _header_mod_files(root).items():
             if not file.is_file() or file.read_text(encoding="utf-8") != content:
                 return False
-        settings = _parse_managed_settings(read_managed_file(path) or "{}")
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
         return False
-    plugins = settings.get("enabledPlugins")
-    return isinstance(plugins, dict) and plugins.get(CLAUDE_HEADER_MOD_ID) is True
+    return True
 
 
 def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> None:

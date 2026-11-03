@@ -65,6 +65,10 @@ When Claude Code or Codex is older than the minimum version `ug` supports, `ug`
 asks before upgrading it in place. Set `UG_AUTO_UPGRADE_AGENT=1` to upgrade
 without asking, for example from a launcher that manages the agent install.
 
+Codex smart routing now requires 0.164.0, including existing managed-enabled
+workspaces. See the [compatibility and upgrade note](#codex-smart-routing-compatibility)
+for upgrading or launching with `--disable-smart-routing`.
+
 Use `ug opencode --model system.ai.glm-5-3` (or `-m`) to select a configured
 model for one launch. OpenCode's `provider/model` form is also accepted.
 Unknown Databricks models produce an error; this option does not add models
@@ -222,10 +226,10 @@ subscription token and Databricks gateway token on macOS, Windows, and Linux.
 
 ## MCP Servers
 
-Register Databricks MCP servers for configured MCP-capable agents. Cursor Agent
-is MCP-only and is included when `cursor-agent` is installed:
+Use `ug mcp add` to register Databricks MCP servers for coding agents. Cursor
+Agent supports MCP only and requires `cursor-agent` on PATH.
 
-Run `ug mcp add` without selectors to browse a table of services by name, UC location,
+Run `ug mcp add` without options to browse services by name, UC location,
 and status. ✓ means configured (or managed by the workspace); ✗ means not configured.
 Configured and managed services stay visible as read-only rows. `[ ]`/`[x]` indicate
 what you select for this operation; `[-]` marks a read-only row.
@@ -245,11 +249,15 @@ ug mcp add --agents cursor --names system.ai.github --workspace https://first.da
 ug mcp add --agents codex --names system.ai.github --profile DEFAULT
 ```
 
-With `--agents`, installed agents can be registered for MCP without configuring their
-models. `--workspace` or `--profile` selects the workspace on a fresh setup. If another
-workspace is already active, run `ug configure --workspace <url>` to switch first;
-the switch replaces the agent's active MCP registrations with those saved for the
-selected workspace. Switching back restores the earlier workspace's saved servers.
+`--agents` adds MCP servers without changing an agent's models. Claude Code and
+Codex work even if their CLI is not on PATH: UG writes their user MCP config
+directly. If that file already exists, UG detects the client without its CLI.
+This works on macOS, Windows, and Linux; other agents need their CLI on PATH.
+Without a CLI, status shows the saved config but cannot check the connection.
+
+`--workspace` or `--profile` selects the workspace on a fresh setup. To switch
+an existing setup, run `ug configure --workspace <url>` first. The switch uses
+that workspace's saved MCP servers; switching back restores the previous ones.
 
 Remove configured servers:
 
@@ -279,6 +287,11 @@ it does not require CLI `auth login --resource` or a CLI upgrade.
 V2 AI Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
+
+UG automatically shares the MCP proxy across agents to reduce memory usage while
+keeping each connection's session and credentials separate. No configuration changes
+are needed. If a proxy connection closes unexpectedly, reconnect the MCP server in
+your agent.
 
 Claude-only setup also discovers GPT models for its generated `web_search`
 server; installing or configuring Codex is not required. Search registration
@@ -420,7 +433,11 @@ Claude and Codex routing reasons summarize the task profile in plain language, s
 "This task has a clear target and limited scope." A separate sentence explains when
 model availability requires a higher tier. Custom gateway notices are retained, and
 older or unrecognized responses keep their original wording. Diagnostic records keep
-the displayed reason in `rationale` and the gateway's full explanation in `raw_rationale`.
+the displayed reason in `rationale` and the gateway's explanation in `raw_rationale`.
+Codex decision records cap each reason at 1,000 characters and identify the assignment
+by `task_sha256` (SHA-256 of its UTF-8 text) and `task_length` (characters). The router
+and native child still receive the complete assignment. Reasons can quote task content,
+so these logs may still contain sensitive details. Claude's audit format is unchanged.
 
 On Windows, Claude smart routing uses subagent hooks only. If first-prompt routing
 is enabled, ug warns and falls back to subagent routing because the first-prompt
@@ -443,6 +460,33 @@ turns routing off for the launch, including over a workspace config.
 An explicit `--model`, from `ug claude --model` or a launcher such as Omnigent, keeps
 subagent routing when first-prompt routing is off; the main session stays on that model.
 With first-prompt routing on, an explicit model still skips routing.
+
+### Codex smart-routing compatibility
+
+Smart routing now requires Codex 0.164.0
+or newer, including workspaces that already enable managed smart routing. Users on
+Codex 0.145–0.163 who previously launched successfully must upgrade or explicitly
+run `ug codex --disable-smart-routing`. UG offers its usual upgrade prompt for a
+known older version and checks the result before launching. Declining, failing, or
+remaining below 0.164.0 after the upgrade keeps the routed launch blocked. This
+intentional requirement ensures native v2 provides readable delegated assignments;
+UG does not silently disable routing. Ordinary launches still support Codex 0.145.0
+and newer. The general integration CI baseline remains 0.154.0; routing cases use
+0.165.0.
+
+An inconclusive Codex version probe is retried once with a longer timeout. If the
+version is still unknown, UG stops without offering or running an update and asks
+you to check `codex --version`. `--disable-smart-routing` also bypasses this routing
+version check.
+
+For a routed launch, UG's `-c` overrides take precedence over saved values for
+`features.multi_agent_v2.non_code_mode_only` (set to `false`),
+`features.multi_agent_v2.root_agent_usage_hint_text`, and
+`features.multi_agent_v2.subagent_usage_hint_text` (set to UG's collaboration guidance).
+Custom values for these fields do not apply during that session. The saved config
+files are unchanged, as are native delegation-mode controls. Requests use the
+configured Databricks provider directly. Subagent-only routing launches the native
+TUI directly; first-prompt routing uses the existing app-server interposer.
 
 ### Smart Router Orchestrator
 
@@ -515,6 +559,11 @@ Once opted in, orchestration follows the existing smart-routing launch eligibili
 and session controls. Turning Smart Router off through its skill stops new automatic delegation;
 turning it on restores orchestration only in opted-in sessions. Explicit user
 requests for subagents still use normal harness behavior while routing is off.
+If Codex cannot read or write the private session controls due to permissions, the skill requests native
+approval for the exact toggle command. Declining leaves routing unchanged;
+the directory permissions and sandbox configuration are preserved.
+Other write failures, such as a full disk, report the underlying error without
+requesting approval.
 Stored skill files do not activate orchestration without an opted-in configuration,
 or in non-routed sessions. Existing Isaac pilot gating
 and UG launch exclusions still apply.
@@ -555,6 +604,14 @@ not in the protected policy file.
 This policy is separate from agent-file backups and is not removed by `ug revert`.
 See [managed workspace policy](docs/managed-workspace-policy.md) for permissions and trade-offs.
 Managed policy headers must not contain secrets: the policy is readable by all local users.
+
+### Codex desktop ChatGPT relay
+
+When `ug configure` sets up Codex with a relayed OpenAI provider, it also points the Codex app's
+`~/.codex/config.toml` at a loopback relay served by the same login service below (plain `codex`
+then uses it too). Like Claude Desktop, `ug codex --provider` doesn't change the app. Restart the
+app and sign in with ChatGPT. A provider you already set is left alone; `ug revert` removes ug's
+entries.
 
 ### Codex desktop tracing
 
@@ -625,3 +682,21 @@ opening a public issue.
 ## License
 
 See [LICENSE.md](./LICENSE.md) and [NOTICE.md](./NOTICE.md).
+
+## Publish skills from GitHub
+
+Use the [Publish skills action](actions/publish-skills/README.md) to sync skill
+folders in your GitHub repository to Unity Catalog on each push. No notebook, job,
+or Unity Gateway CLI installation is required. After configuring Databricks
+authentication and UC permissions, add this step to your workflow:
+
+```yaml
+- uses: databricks/unity-gateway/actions/publish-skills@main
+  with:
+    skills-directory: skills
+    target-schema: acme.team_skills
+```
+
+The [setup guide](actions/publish-skills/README.md) includes complete OIDC and OAuth
+workflows, custom folder mappings, sharing permissions, and verification steps.
+Use `@main` for automatic updates or pin a reviewed commit for reproducible runs.
