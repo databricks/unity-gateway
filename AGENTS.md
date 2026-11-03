@@ -180,13 +180,14 @@ exist. Scope changes replace that registration. Content-derived manifest version
 explicit native plugin update deliver changed skills/MCPs to the user cache. No org-plugin
 metadata or MDM policy is generated; an existing org-plugins/ug copy blocks duplicate loading.
 The 3P profile, executable/authentication bindings, and bookkeeping stay user-local.
-`~/.ucode/claude-cowork.json` records the source, account/org, pending old-account cleanup,
-and root ownership hashes. Foreign/edited root bundles are preserved. Root-write failures
-retain the previous registration; native refresh failures leave generated sources and tracking
-state for retry/revert, without restoring the previous plugin or registration. Each source's
-staged replacement retains its own rollback. User-scope revert leaves the root bundle and
-its ownership record; global revert removes both owned sources. Privileged bundle writes use the shared macOS sudo worker or
-Windows elevation. Explicit MCP/skill changes resync the selected path; launches do not.
+`~/.ucode/claude-cowork.json` records the source, account/org, and pending old-account cleanup.
+UG owns both generated marketplace directories; configure replaces their whole contents,
+including manual edits. Root publication uses the shared macOS sudo worker or Windows
+elevation, without ownership hashes or automatic rollback. Rerun configure after a failed
+root copy. Native refresh failures leave generated sources and tracking state for retry/revert.
+The existing user-source writer retains its staged replacement and rollback. User-scope
+revert leaves the root bundle; global revert removes both sources. Explicit MCP/skill changes
+resync the selected path; launches do not.
 Shared-runtime installation, fresh-user setup, and automatic login refresh remain MDM work.
 Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
 custom registration names and full proxy URLs are preserved. Its name and display name

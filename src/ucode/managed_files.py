@@ -188,15 +188,34 @@ def claude_desktop_org_plugin_path() -> Path | None:
     return None
 
 
-def replace_privileged_bundle(path: Path, request: Path) -> None:
-    """Apply a staged Desktop bundle transaction through the existing sudo session."""
-    if path != claude_desktop_marketplace_path() or current_os() is not OS.MACOS:
+def replace_privileged_bundle(path: Path, source: Path | None) -> None:
+    """Copy or remove UG's Desktop marketplace in its system directory."""
+    if path != claude_desktop_marketplace_path():
         raise RuntimeError(f"Refusing unexpected privileged bundle target: {path}")
+    if is_dry_run():
+        return
+    for folder in (path, *path.parents):
+        if folder.is_symlink() or folder.is_junction():
+            raise RuntimeError(f"Refusing linked Desktop plugin path: {folder}")
+    if current_os() is OS.WINDOWS:
+        if not system_cross_os.is_admin():
+            raise RuntimeError(
+                "Desktop plugin installation requires an elevated terminal on Windows."
+            )
+        if path.exists():
+            shutil.rmtree(path)
+        if source is not None:
+            shutil.copytree(source, path)
+        return
+    if current_os() is not OS.MACOS:
+        raise RuntimeError("System Desktop marketplaces require macOS or Windows.")
     if _sudo_may_prompt():
         _print_managed_write_permission("Claude Desktop")
     try:
         with managed_write_session():
-            _session_worker().replace(path, str(request), operation="BUNDLE")
+            _session_worker().replace(
+                path, str(source.resolve()) if source is not None else "-", operation="BUNDLE"
+            )
     except (OSError, subprocess.SubprocessError) as exc:
         detail = str(getattr(exc, "stderr", None) or exc).strip()
         raise ManagedFileWriteUnavailable(

@@ -1,4 +1,4 @@
-"""System Desktop bundles, migration, and preservation without a native Desktop process."""
+"""System Desktop sources, source switching, and scoped cleanup without a native Desktop process."""
 
 import json
 import os
@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from ucode import config_io, managed_files
-from ucode.agents.desktop import cowork, system_marketplace
+from ucode.agents.desktop import cowork
 from ucode.skills_state import SkillInstall, record_downloads, records_for_scope
 
 WORKSPACE = {"workspace": "https://workspace.example", "profile": "chosen"}
@@ -25,7 +25,7 @@ SERVERS = [{"name": "slack", "url": "https://workspace.example/mcp/slack", "clie
     ]
 )
 def system_source(tmp_path, monkeypatch, request):
-    """Use temporary destinations; exercise the real filesystem transaction for each backend."""
+    """Use temporary destinations; exercise the real directory copy for each backend."""
     path = tmp_path.resolve() / "system" / "claude-cowork-marketplace"
     monkeypatch.setattr(managed_files, "claude_desktop_marketplace_path", lambda: path)
     monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS(request.param))
@@ -48,7 +48,7 @@ def system_source(tmp_path, monkeypatch, request):
             """
 mv() {
     case "$1" in
-        */request/new)
+        */new)
             if [ "${UG_TEST_BUNDLE_FAIL:-}" = rename ]; then return 73; fi ;;
     esac
     command mv "$@"
@@ -144,63 +144,56 @@ def _installed_source():
     return Path(entries[0]["installPath"])
 
 
-def test_install_update_noop_and_revert_preserve_other_plugins(system_source, tmp_path):
+def test_install_update_and_revert_preserve_other_plugins(system_source, tmp_path):
     source = _source(tmp_path)
-    state = config_io.APP_DIR / "test-state.json"
     unrelated = system_source.parent / "personal"
     unrelated.mkdir(parents=True)
     (unrelated / "keep").write_text("personal plugin")
 
-    system_marketplace.install(source, state)
-    first = system_marketplace.read_bundle(system_source)
+    managed_files.replace_privileged_bundle(system_source, source)
+    first = cowork._marketplace_files(system_source)
     manifest = json.loads((system_source / "plugins/ug/.claude-plugin/plugin.json").read_text())
     assert manifest == {"name": "ug", "version": "1.0.0"}
     assert not (system_source / "version.json").exists()
-    assert system_marketplace.read_bundle(source) == first
+    assert cowork._marketplace_files(source) == first
     assert (system_source / "plugins/ug/skills/review/image.bin").read_bytes() == b"\x00\xff\x80"
     if os.name != "nt":
         assert (system_source / "plugins/ug/skills/review/run.sh").stat().st_mode & 0o777 == 0o755
-    timestamp = system_source.stat().st_mtime_ns
-    system_marketplace.install(source, state)
-    assert system_marketplace.read_bundle(system_source) == first
-    assert system_source.stat().st_mtime_ns == timestamp
+    managed_files.replace_privileged_bundle(system_source, source)
+    assert cowork._marketplace_files(system_source) == first
 
     (source / "plugins/ug/skills/review/image.bin").unlink()
     (source / "plugins/ug/skills/review/SKILL.md").write_text("Updated skill")
-    system_marketplace.install(source, state)
+    managed_files.replace_privileged_bundle(system_source, source)
     assert not (system_source / "plugins/ug/skills/review/image.bin").exists()
     assert (system_source / "plugins/ug/skills/review/SKILL.md").read_text() == "Updated skill"
-    assert system_marketplace.read_bundle(source) == system_marketplace.read_bundle(system_source)
-    assert system_marketplace.remove(state)
+    assert cowork._marketplace_files(source) == cowork._marketplace_files(system_source)
+    managed_files.replace_privileged_bundle(system_source, None)
     assert not system_source.exists()
-    assert not system_marketplace.remove(state)
+    managed_files.replace_privileged_bundle(system_source, None)
+    assert not system_source.exists()
     assert (unrelated / "keep").read_text() == "personal plugin"
 
 
-def test_foreign_or_edited_installation_is_preserved(system_source, tmp_path):
+def test_ug_directory_is_replaced_without_ownership_hashes(system_source, tmp_path):
     source = _source(tmp_path)
-    state = config_io.APP_DIR / "test-state.json"
     system_source.mkdir(parents=True)
-    custom = system_source / "it-owned.txt"
-    custom.write_text("IT installation")
-    with pytest.raises(RuntimeError, match="not this user's UG installation"):
-        system_marketplace.install(source, state)
-    assert not system_marketplace.remove(state)
-    assert custom.read_text() == "IT installation"
-    custom.unlink()
-    system_source.rmdir()
-    system_marketplace.install(source, state)
-    (system_source / "plugins/ug/skills/review/SKILL.md").write_text("External edit")
-    before = state.read_bytes()
-    with pytest.raises(RuntimeError, match="edited outside UG"):
-        system_marketplace.remove(state)
-    assert (system_source / "plugins/ug/skills/review/SKILL.md").read_text() == "External edit"
-    assert state.read_bytes() == before
+    custom = system_source / "manual.txt"
+    custom.write_text("Manual content in UG's directory")
+    managed_files.replace_privileged_bundle(system_source, source)
+    assert not custom.exists()
+    skill = system_source / "plugins/ug/skills/review/SKILL.md"
+    skill.write_text("External edit")
+    managed_files.replace_privileged_bundle(system_source, source)
+    assert skill.read_text() == "Review carefully"
+    skill.write_text("Another edit")
+    managed_files.replace_privileged_bundle(system_source, None)
+    assert not system_source.exists()
 
 
 def test_global_configure_writes_both_sources_and_one_user_install(system_source):
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    assert system_marketplace.read_bundle(system_source) == system_marketplace.read_bundle(
+    assert cowork._marketplace_files(system_source) == cowork._marketplace_files(
         cowork._marketplace_root()
     )
     plugin = system_source / "plugins/ug"
@@ -209,18 +202,14 @@ def test_global_configure_writes_both_sources_and_one_user_install(system_source
     hooks = json.loads((plugin / "hooks/hooks.json").read_text())
     assert hooks == cowork._connector_hooks(mcp, **WORKSPACE, use_pat=False)
     assert cowork._registered_marketplace_source(cowork.discover_cowork_root()) == system_source
-    assert system_marketplace.read_bundle(_installed_source()) == system_marketplace.read_bundle(
-        plugin
-    )
+    assert cowork._marketplace_files(_installed_source()) == cowork._marketplace_files(plugin)
     assert not (plugin / "version.json").exists()
     assert "installationPreference" not in json.loads(
         (plugin / ".claude-plugin/plugin.json").read_text()
     )
-    before = system_marketplace.read_bundle(system_source)
-    timestamp = system_source.stat().st_mtime_ns
+    before = cowork._marketplace_files(system_source)
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    assert system_marketplace.read_bundle(system_source) == before
-    assert system_source.stat().st_mtime_ns == timestamp
+    assert cowork._marketplace_files(system_source) == before
     _installed_source()
     assert cowork.revert_cowork()
     assert not system_source.exists()
@@ -252,9 +241,9 @@ def test_scope_switches_keep_one_registration_and_preserve_unrelated_plugin(syst
         installed = config_io.read_json_safe(registry)["plugins"]
         assert set(installed) == {cowork.PLUGIN_ID, "personal@other"}
         assert installed["personal@other"] == [{"installPath": "untouched"}]
-        assert system_marketplace.read_bundle(
-            cowork._marketplace_root()
-        ) == system_marketplace.read_bundle(system_source)
+        assert cowork._marketplace_files(cowork._marketplace_root()) == cowork._marketplace_files(
+            system_source
+        )
     assert cowork.revert_cowork()
     assert config_io.read_json_safe(registry)["plugins"] == {
         "personal@other": [{"installPath": "untouched"}]
@@ -290,21 +279,21 @@ def test_root_write_failure_leaves_registration_and_state_for_retry(
 @pytest.mark.parametrize("opt_out", ["user", "environment"])
 def test_opt_out_keeps_root_source_untouched(system_source, monkeypatch, opt_out):
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    before = system_marketplace.read_bundle(system_source)
+    before = cowork._marketplace_files(system_source)
     if opt_out == "user":
         managed_files.set_config_scope("user")
     else:
         monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
     assert cowork.configure_cowork(WORKSPACE, [])
-    assert system_marketplace.read_bundle(system_source) == before
+    assert cowork._marketplace_files(system_source) == before
     assert (
         cowork._registered_marketplace_source(cowork.discover_cowork_root())
         == cowork._marketplace_root()
     )
     assert not (_installed_source() / ".mcp.json").exists()
     assert cowork.revert_cowork()
-    assert system_marketplace.read_bundle(system_source) == before
-    assert config_io.read_json_safe(cowork._state_path())["system_digest"]
+    assert cowork._marketplace_files(system_source) == before
+    assert not cowork._state_path().exists()
     monkeypatch.delenv("UG_SKIP_OS_SETTINGS", raising=False)
     managed_files.set_config_scope("global")
     assert cowork.revert_cowork()
@@ -323,49 +312,50 @@ def test_dry_run_leaves_no_state_or_bundle(system_source):
         config_io.set_dry_run(False)
 
 
-def test_pending_installation_can_be_reverted(system_source):
+def test_previous_hash_tracking_does_not_block_revert(system_source):
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
     state = config_io.read_json_safe(cowork._state_path())
-    state["pending_system_digest"] = state.pop("system_digest")
+    state["pending_system_digest"] = "previous-installation-hash"
     config_io.atomic_write_json(cowork._state_path(), state)
+    assert cowork.configure_cowork(WORKSPACE, SERVERS)
+    assert "pending_system_digest" not in config_io.read_json_safe(cowork._state_path())
     assert cowork.revert_cowork()
     assert not system_source.exists()
 
 
-def test_failed_update_restores_previous_bundle(system_source, tmp_path, monkeypatch):
+def test_failed_root_copy_can_be_retried(system_source, tmp_path, monkeypatch):
     source = _source(tmp_path)
-    state = config_io.APP_DIR / "test-state.json"
-    system_marketplace.install(source, state)
-    before = system_marketplace.read_bundle(system_source)
-    previous_state = state.read_bytes()
+    managed_files.replace_privileged_bundle(system_source, source)
     (source / "plugins/ug/skills/review/SKILL.md").write_text("Updated skill")
+    copy = shutil.copytree
+    failed = False
+
+    def fail_copy(src, dst, *args, **kwargs):
+        nonlocal failed
+        if not failed and Path(dst) == system_source:
+            failed = True
+            raise PermissionError("simulated copy failure")
+        return copy(src, dst, *args, **kwargs)
+
     if managed_files.current_os() is managed_files.OS.WINDOWS:
-        replace = os.replace
-
-        def fail_new(source, target):
-            if Path(source).name == "new":
-                raise PermissionError("simulated rename failure")
-            return replace(source, target)
-
-        monkeypatch.setattr(os, "replace", fail_new)
+        monkeypatch.setattr(shutil, "copytree", fail_copy)
     else:
         monkeypatch.setenv("UG_TEST_BUNDLE_FAIL", "rename")
     with pytest.raises((RuntimeError, PermissionError)):
-        system_marketplace.install(source, state)
-    assert system_marketplace.read_bundle(system_source) == before
-    assert state.read_bytes() == previous_state
+        managed_files.replace_privileged_bundle(system_source, source)
+    monkeypatch.delenv("UG_TEST_BUNDLE_FAIL", raising=False)
+    managed_files.replace_privileged_bundle(system_source, source)
+    assert cowork._marketplace_files(system_source) == cowork._marketplace_files(source)
     assert not list(system_source.parent.glob(".ug-install*"))
 
 
-def test_concurrent_edit_is_not_overwritten(system_source, tmp_path):
-    source = _source(tmp_path)
-    state = config_io.APP_DIR / "test-state.json"
-    system_marketplace.install(source, state)
-    previous = system_marketplace.read_bundle(system_source)
-    (system_source / "plugins/ug/skills/review/SKILL.md").write_text("Concurrent edit")
-    with pytest.raises(RuntimeError):
-        system_marketplace._update_bundle(system_source, None, previous)
-    assert (system_source / "plugins/ug/skills/review/SKILL.md").read_text() == "Concurrent edit"
+def test_root_copy_rejects_unexpected_target(system_source, tmp_path):
+    other = system_source.parent / "other-plugin"
+    other.mkdir(parents=True)
+    (other / "keep").write_text("Unrelated plugin")
+    with pytest.raises(RuntimeError, match="unexpected privileged bundle target"):
+        managed_files.replace_privileged_bundle(other, _source(tmp_path))
+    assert (other / "keep").read_text() == "Unrelated plugin"
 
 
 def test_failed_previous_account_cleanup_can_be_retried(system_source, tmp_path, monkeypatch):
@@ -384,9 +374,7 @@ def test_failed_previous_account_cleanup_can_be_retried(system_source, tmp_path,
     pending = config_io.read_json_safe(cowork._state_path())
     assert pending["previous_cowork_roots"] == [str(old)]
     assert pending["cowork_root"] == str(cowork.discover_cowork_root())
-    assert pending["system_digest"] == system_marketplace.bundle_digest(
-        system_marketplace.read_bundle(system_source)
-    )
+    assert pending["marketplace_root"] == str(system_source)
     monkeypatch.setattr(cowork, "_remove_plugin_registration", remove)
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
     assert "previous_cowork_roots" not in config_io.read_json_safe(cowork._state_path())
@@ -488,7 +476,7 @@ def test_failed_refresh_retains_generated_sources_for_retry(
     if switch_scope:
         managed_files.set_config_scope("user")
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    user_before = system_marketplace.read_bundle(cowork._marketplace_root())
+    user_before = cowork._marketplace_files(cowork._marketplace_root())
     managed_files.set_config_scope("global")
     run = cowork.subprocess_cross_os.run
     failed = False
@@ -505,14 +493,15 @@ def test_failed_refresh_retains_generated_sources_for_retry(
     monkeypatch.setattr(cowork.subprocess_cross_os, "run", fail_refresh)
     with pytest.raises(RuntimeError, match="refresh failed"):
         cowork.configure_cowork(WORKSPACE, [{**SERVERS[0], "name": "changed"}])
-    generated = system_marketplace.read_bundle(cowork._marketplace_root())
+    generated = cowork._marketplace_files(cowork._marketplace_root())
     assert generated != user_before
-    assert system_marketplace.read_bundle(system_source) == generated
+    assert cowork._marketplace_files(system_source) == generated
     state = config_io.read_json_safe(cowork._state_path())
     assert state["marketplace_root"] == str(system_source)
-    assert state["system_digest"] == system_marketplace.bundle_digest(generated)
+    assert "system_digest" not in state
+    assert "pending_system_digest" not in state
     assert cowork.configure_cowork(WORKSPACE, [{**SERVERS[0], "name": "changed"}])
-    assert system_marketplace.read_bundle(_installed_source()) == system_marketplace.read_bundle(
+    assert cowork._marketplace_files(_installed_source()) == cowork._marketplace_files(
         system_source / "plugins/ug"
     )
     assert cowork._registered_marketplace_source(cowork.discover_cowork_root()) == system_source
@@ -524,10 +513,10 @@ def test_changed_payload_updates_both_sources_and_installed_version(system_sourc
     assert cowork.configure_cowork(WORKSPACE, [{**SERVERS[0], "name": "changed"}])
     after = json.loads((_installed_source() / ".claude-plugin/plugin.json").read_text())["version"]
     assert after != before
-    assert system_marketplace.read_bundle(system_source) == system_marketplace.read_bundle(
+    assert cowork._marketplace_files(system_source) == cowork._marketplace_files(
         cowork._marketplace_root()
     )
-    assert system_marketplace.read_bundle(_installed_source()) == system_marketplace.read_bundle(
+    assert cowork._marketplace_files(_installed_source()) == cowork._marketplace_files(
         system_source / "plugins/ug"
     )
     assert set(json.loads((_installed_source() / ".mcp.json").read_text())["mcpServers"]) == {
@@ -562,7 +551,7 @@ def test_organization_loader_copy_blocks_duplicate_before_writes(
 
 def test_failed_refresh_retains_owned_sources_for_revert(system_source, monkeypatch):
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    before = system_marketplace.read_bundle(cowork._marketplace_root())
+    before = cowork._marketplace_files(cowork._marketplace_root())
     run = cowork.subprocess_cross_os.run
 
     def fail_updates(argv, **kwargs):
@@ -573,9 +562,9 @@ def test_failed_refresh_retains_owned_sources_for_revert(system_source, monkeypa
     monkeypatch.setattr(cowork.subprocess_cross_os, "run", fail_updates)
     with pytest.raises(RuntimeError, match="update unavailable"):
         cowork.configure_cowork(WORKSPACE, [{**SERVERS[0], "name": "changed"}])
-    generated = system_marketplace.read_bundle(system_source)
+    generated = cowork._marketplace_files(system_source)
     assert generated != before
-    assert generated == system_marketplace.read_bundle(cowork._marketplace_root())
+    assert generated == cowork._marketplace_files(cowork._marketplace_root())
     monkeypatch.setattr(cowork.subprocess_cross_os, "run", run)
     assert cowork.revert_cowork()
     assert not system_source.exists()
@@ -588,7 +577,7 @@ def test_concurrent_operation_does_not_change_sources_or_state(
     system_source, monkeypatch, operation
 ):
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    before = system_marketplace.read_bundle(system_source)
+    before = cowork._marketplace_files(system_source)
     state = cowork._state_path().read_bytes()
     monkeypatch.setattr(cowork, "COWORK_LOCK_TIMEOUT_SECONDS", 0)
     with cowork._locked():
@@ -597,6 +586,6 @@ def test_concurrent_operation_does_not_change_sources_or_state(
                 cowork.configure_cowork(WORKSPACE, [])
             else:
                 cowork.revert_cowork()
-    assert system_marketplace.read_bundle(system_source) == before
-    assert system_marketplace.read_bundle(cowork._marketplace_root()) == before
+    assert cowork._marketplace_files(system_source) == before
+    assert cowork._marketplace_files(cowork._marketplace_root()) == before
     assert cowork._state_path().read_bytes() == state

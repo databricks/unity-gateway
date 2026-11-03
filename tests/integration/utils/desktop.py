@@ -38,7 +38,7 @@ def installed_cowork_servers(session, root: Path) -> dict:
     known = json.loads((root / "cowork_plugins/known_marketplaces.json").read_text())
     assert Path(known["unity-gateway-cowork"]["source"]["path"]) == source
     if system_source is not None:
-        assert state["system_digest"]
+        assert source.is_dir()
         contents = {p.relative_to(source): p.read_bytes() for p in source.rglob("*") if p.is_file()}
         assert contents == {
             p.relative_to(user_source): p.read_bytes()

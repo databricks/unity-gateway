@@ -275,6 +275,10 @@ replace_bundle() (
             exit 1
         fi
     done
+    if [ "$source_path" = - ]; then
+        rm -rf "$target" || exit 1
+        exit 0
+    fi
     if [ ! -d "$source_path" ] || [ -L "$source_path" ]; then
         printf '%s\n' "Invalid Desktop plugin source: $source_path" >&2
         exit 1
@@ -285,74 +289,22 @@ replace_bundle() (
         exit 1
     fi
     mkdir -p "$parent" || exit 1
-    lock="$parent/.ug-install.lock"
-    if ! mkdir "$lock"; then
-        printf '%s\n' "Another Desktop plugin update holds $lock; retry after it finishes." >&2
-        exit 1
-    fi
-    staging=
-    moved_old=
-    installed=
-    committed=
-    cleanup_bundle() {
-        status=$?
-        trap - 0 1 2 3 15
-        if [ -z "$committed" ]; then
-            if [ -n "$installed" ]; then rm -rf "$target"; fi
-            if [ -n "$moved_old" ]; then
-                if ! mv "$staging/original" "$target"; then
-                    printf 'Desktop plugin backup retained at %s\n' "$staging/original" >&2
-                    rmdir "$lock"
-                    exit 1
-                fi
-            fi
-        fi
-        if [ -n "$staging" ]; then rm -rf "$staging"; fi
-        rmdir "$lock"
-        exit "$status"
-    }
-    trap cleanup_bundle 0
-    trap 'exit 129' 1
-    trap 'exit 130' 2
-    trap 'exit 131' 3
-    trap 'exit 143' 15
     staging=$(mktemp -d "$parent/.ug-install.XXXXXX") || exit 1
-    # Copy without following links, then validate the protected snapshot before using it.
-    cp -R -P "$source_path" "$staging/request" || exit 1
-    invalid=$(find "$staging/request" ! -type d ! -type f -print) || exit 1
+    trap 'rm -rf "$staging"' 0
+    cp -R -P "$source_path" "$staging/new" || exit 1
+    invalid=$(find "$staging/new" ! -type d ! -type f -print) || exit 1
     if [ -n "$invalid" ]; then
         printf '%s\n' "Desktop plugin contains non-regular files" >&2
         exit 1
     fi
-    request="$staging/request"
-    if [ -e "$target" ]; then
-        invalid=$(find "$target" ! -type d ! -type f -print) || exit 1
-        if [ -L "$target" ] || [ -n "$invalid" ] || [ ! -d "$request/previous" ] ||
-            ! diff -r "$request/previous" "$target" >/dev/null; then
-            printf '%s\n' "Desktop plugin changed before installation: $target" >&2
-            exit 1
-        fi
-    elif [ -e "$request/previous" ]; then
-        printf '%s\n' "Desktop plugin disappeared before installation: $target" >&2
-        exit 1
-    fi
-    if [ -e "$request/new" ]; then
-        [ -f "$request/new/.claude-plugin/marketplace.json" ] || exit 1
-        [ -f "$request/new/plugins/ug/.claude-plugin/plugin.json" ] || exit 1
-        chown -R 0:0 "$request/new" || exit 1
-        find "$request/new" -type d -exec chmod 0755 {} + || exit 1
-        find "$request/new" -type f ! -perm -0100 -exec chmod 0644 {} + || exit 1
-        find "$request/new" -type f -perm -0100 -exec chmod 0755 {} + || exit 1
-    fi
-    if [ -e "$target" ]; then
-        mv "$target" "$staging/original" || exit 1
-        moved_old=1
-    fi
-    if [ -e "$request/new" ]; then
-        mv "$request/new" "$target" || exit 1
-        installed=1
-    fi
-    committed=1
+    [ -f "$staging/new/.claude-plugin/marketplace.json" ] || exit 1
+    [ -f "$staging/new/plugins/ug/.claude-plugin/plugin.json" ] || exit 1
+    chown -R 0:0 "$staging/new" || exit 1
+    find "$staging/new" -type d -exec chmod 0755 {} + || exit 1
+    find "$staging/new" -type f ! -perm -0100 -exec chmod 0644 {} + || exit 1
+    find "$staging/new" -type f -perm -0100 -exec chmod 0755 {} + || exit 1
+    rm -rf "$target" || exit 1
+    mv "$staging/new" "$target" || exit 1
 )
 
 case "$mode" in

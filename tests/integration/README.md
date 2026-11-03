@@ -115,12 +115,15 @@ Both journeys verify reconfiguration preserves the profile/plugin and revert rem
 while retaining unrelated profiles and metadata. A separate local personal plugin is installed
 through the real Claude CLI before configuration; its registry entry and installed manifest must
 survive installation, reconfiguration, and revert unchanged. Revert also removes UG's marketplace
-registration and generated user source, plus the owned root source on Windows.
-Source switching, refresh failure/retry, source-replacement rollback, scoped revert,
-ownership, and duplicate prevention have isolated component coverage in
+registration and generated user source, plus the generated root source on Windows.
+Source switching, copy and refresh failure/retry, scoped revert, target validation,
+and duplicate prevention have isolated component coverage in
 `../test_desktop_marketplace.py`; those checks do not establish native Desktop sync or ACLs.
-Native refresh failures leave generated sources/state for retry or revert; the component
-checks no longer expect restoration of the prior plugin/cache across the whole configure.
+UG fully owns the generated root directory; root ownership hashes, edit preservation, and
+root-copy rollback are deferred. Component cases now require whole-directory replacement
+and successful retry, while unrelated plugins stay intact. Native refresh failures leave
+generated sources/state for retry or revert. The existing user-source writer keeps its
+staged replacement; the prior plugin/cache is not restored across the whole configure.
 `../test_integration_contract.py` covers the Windows marketplace evidence helper's
 fallback to `C:\Program Files` when the isolated environment omits or empties both
 Program Files variables, and its preference for `ProgramW6432` over `ProgramFiles`.

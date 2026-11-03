@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
+import stat
 import tempfile
 from collections import Counter
 from collections.abc import Iterator
@@ -13,7 +15,6 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from ucode import config_io, managed_files
-from ucode.agents.desktop import system_marketplace
 from ucode.agents.desktop.claude import claude_desktop_root_directory
 from ucode.databricks import build_mcp_proxy_argv
 from ucode.mcp_connection_login import connection_from_url
@@ -174,14 +175,11 @@ def _configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
         raise RuntimeError(
             f"UG marketplace refers to another source at {previous_source}; left unchanged."
         )
-    if system_install:
-        system_marketplace.owned_bundle(selected_source, previous_state)
-    system_marketplace.read_bundle(marketplace_root)
     hooks = _connector_hooks(mcp_config, workspace, profile, use_pat=bool(state.get("use_pat")))
     plugin_root = marketplace_root / "plugins" / PLUGIN_NAME
     _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config, hooks)
     if system_install:
-        system_marketplace.install(marketplace_root, _state_path())
+        managed_files.replace_privileged_bundle(selected_source, marketplace_root)
     installed_state = _record_plugin_installation(cowork_root, selected_source, previous_state)
     _install_plugin(cowork_root, selected_source)
     for old_root in installed_state["previous_cowork_roots"]:
@@ -196,6 +194,8 @@ def _record_plugin_installation(
     cowork_root: Path, selected_source: Path, previous_state: dict
 ) -> dict:
     installed_state = config_io.read_json_safe(_state_path())
+    installed_state.pop("system_digest", None)
+    installed_state.pop("pending_system_digest", None)
     pending_roots = list(previous_state.get("previous_cowork_roots", []))
     previous_root = previous_state.get("cowork_root")
     if previous_root and previous_root != str(cowork_root) and previous_root not in pending_roots:
@@ -222,20 +222,14 @@ def _revert_cowork() -> bool:
 
     state_path = _state_path()
     state = config_io.read_json_safe(state_path)
-    if not managed_files.managed_settings_skipped():
-        path = managed_files.claude_desktop_marketplace_path()
-        if path is not None and (state.get("system_digest") or state.get("pending_system_digest")):
-            system_marketplace.owned_bundle(path, state)
     changed = _remove_user_registrations(state)
     if not managed_files.managed_settings_skipped():
-        changed = system_marketplace.remove(state_path) or changed
+        path = managed_files.claude_desktop_marketplace_path()
+        if path is not None and (path.exists() or path.is_symlink()):
+            managed_files.replace_privileged_bundle(path, None)
+            changed = True
     changed = _remove_marketplace_source() or changed
-    state = config_io.read_json_safe(state_path)
-    if state.get("system_digest") or state.get("pending_system_digest"):
-        for key in ("cowork_root", "marketplace_root", "previous_cowork_roots"):
-            state.pop(key, None)
-        config_io.atomic_write_json(state_path, state)
-    elif state_path.exists():
+    if state_path.exists():
         state_path.unlink()
         changed = True
     return changed
@@ -475,6 +469,39 @@ def _cowork_mcp_aliases(urls: dict[str, str]) -> dict[str, str]:
     return aliases
 
 
+def _marketplace_files(root: Path) -> dict[str, tuple[bytes, int]] | None:
+    for path in (root, *root.parents):
+        if path.is_symlink() or path.is_junction():
+            raise RuntimeError(f"Refusing linked Desktop plugin path: {path}")
+    if not root.exists():
+        return None
+    if not root.is_dir():
+        raise RuntimeError(f"Desktop plugin path is not a directory: {root}")
+    files = {}
+    for path in sorted(root.rglob("*")):
+        mode = path.lstat().st_mode
+        if (
+            path.is_symlink()
+            or path.is_junction()
+            or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode))
+        ):
+            raise RuntimeError(f"Refusing non-regular Desktop plugin content: {path}")
+        if path.is_file():
+            files[path.relative_to(root).as_posix()] = (
+                path.read_bytes(),
+                0o755 if mode & 0o111 else 0o644,
+            )
+    return files
+
+
+def _marketplace_digest(files: dict[str, tuple[bytes, int]]) -> str:
+    digest = hashlib.sha256()
+    for name, (content, mode) in sorted(files.items()):
+        digest.update(json.dumps([name, mode, len(content)]).encode("utf-8"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
 def _write_marketplace(
     marketplace_root: Path,
     plugin_root: Path,
@@ -559,9 +586,9 @@ def _write_marketplace_contents(
     _write_json(plugin_root / ".claude-plugin" / "plugin.json", plugin)
     names = list(mcp_config["mcpServers"]) if connector_names is None else connector_names
     _write_plugin_skills(plugin_root / "skills", skill_records, names, code=code)
-    files = system_marketplace.read_bundle(plugin_root)
+    files = _marketplace_files(plugin_root)
     assert files is not None
-    plugin["version"] = "0.0.0-ug-" + system_marketplace.bundle_digest(files)
+    plugin["version"] = "0.0.0-ug-" + _marketplace_digest(files)
     _write_json(plugin_root / ".claude-plugin" / "plugin.json", plugin)
 
 
