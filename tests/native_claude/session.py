@@ -29,6 +29,8 @@ class Session:
         route_command=(),
         options=None,
         resume=None,
+        model="claude-sonnet-4-6",
+        hooks=None,
     ):
         self.root = root
         root.mkdir()
@@ -59,6 +61,8 @@ class Session:
             },
             "pluginConfigs": {CLAUDE_ROUTING_PLUGIN_NAME: {"options": options}},
         }
+        if hooks is not None:
+            settings["hooks"] = hooks
         process_env = {
             **{
                 key: os.environ[key]
@@ -90,7 +94,7 @@ class Session:
                 "--settings",
                 json.dumps(settings),
                 "--model",
-                "claude-sonnet-4-6",
+                model,
                 "--tools",
                 "Agent",
                 "--allowedTools",

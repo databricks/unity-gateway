@@ -73,6 +73,7 @@ from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_mo
 from ucode.smart_routing.config import apply_config, apply_enabled_version, resolve_environment
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_note, print_warning
+from ucode.workspace import state_workspace_key
 
 LEGACY_STATE_KEY = "smart_routing_enabled"
 
@@ -877,7 +878,7 @@ def launch_claude(
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
             # The savings pricer reads rates from this cache, since it runs after every turn and
             # can't wait on the network; the refresh below fills it.
-            price_cache = pricing.price_cache_path(APP_DIR, workspace)
+            price_cache = pricing.price_cache_path(APP_DIR, state_workspace_key(state) or workspace)
             mod_options = {
                 **_claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env}),
                 "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),

@@ -36,7 +36,7 @@ _PROVIDER_PREFIX_RE = re.compile(r"^(?:(?:us|eu|apac|au|jp|global)\.)?anthropic\
 _PROVIDER_SUFFIX_RE = re.compile(r"(?:-20\d{6})?(?:-v\d+(?::\d+)?)?$")
 # Other served models are reported by a deployment id that drifts from the model service name:
 # `glm-5.3-flash` for `system.ai.glm-5-3-flash`, `glm-5-3-colo-on-sp-v1` for `system.ai.glm-5-3`.
-_DEPLOYMENT_SUFFIX_RE = re.compile(r"-colo-on-[a-z0-9]+$")
+_DEPLOYMENT_SUFFIX_RE = re.compile(r"-colo-on-[a-z0-9]+(?:-v\d+(?::\d+)?)?$")
 
 
 def model_key(model: str) -> str:
@@ -54,8 +54,11 @@ def model_key(model: str) -> str:
         if name.startswith(prefix):
             name = name[len(prefix) :]
             break
-    name = _PROVIDER_PREFIX_RE.sub("", name).split("@", 1)[0]
-    name = _DEPLOYMENT_SUFFIX_RE.sub("", _PROVIDER_SUFFIX_RE.sub("", name))
+    name, provider = _PROVIDER_PREFIX_RE.subn("", name)
+    name = name.split("@", 1)[0]
+    if provider:
+        name = _PROVIDER_SUFFIX_RE.sub("", name)
+    name = _DEPLOYMENT_SUFFIX_RE.sub("", name)
     # Model service names spell versions with dashes.
     return name.replace(".", "-")
 
@@ -241,7 +244,7 @@ def prices_from_endpoint_rates(rates: Iterable[object]) -> dict[str, ModelPrice]
 
 
 def price_cache_path(app_dir: Path, workspace: str) -> Path:
-    """The workspace's price cache; dollar rates depend on its org's DBU conversion."""
+    """Cache for a full workspace key (including its id on a shared host)."""
     host = workspace.strip().lower().removeprefix("https://").rstrip("/")
     digest = hashlib.sha256(host.encode("utf-8")).hexdigest()[:16]
     return app_dir / f"model-prices-{digest}.json"

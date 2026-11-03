@@ -1,5 +1,5 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
-import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
+import { endStatusBandTurn, registerStatusBand, showStatusBand, startStatusBandTurn } from './smart-routing-status.ts';
 import { endSubagentRoutingTurn, registerSubagentRouting } from './subagent-routing.ts';
 import {
   CLI_AGENT,
@@ -20,7 +20,7 @@ async function readEnvironment($: EngineInterface): Promise<Environment> {
     ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),
     ENABLE_SMART_ROUTER_ORCHESTRATOR: await $.env.get('ENABLE_SMART_ROUTER_ORCHESTRATOR'),
-    ENABLE_SMART_ROUTING_SAVINGS: await $.env.get('ENABLE_SMART_ROUTING_SAVINGS'),
+    ENABLE_SMART_ROUTING_SAVINGS: await readSavingsFlag($),
     CLAUDE_CODE_EXTRA_BODY: await $.env.get('CLAUDE_CODE_EXTRA_BODY'),
   };
 }
@@ -129,6 +129,12 @@ export function register(on: On, options: PluginOptions): void {
     return next(e);
   });
 
+  on('prompt.submit', async ($, e, next) => {
+    startStatusBandTurn();
+    await savingsPromptSubmit($, e);
+    return next(e);
+  });
+
   // Claude permits one unmatched turn.step handler, so orchestration and savings share it.
   on('turn.step', async function* ($, e, next) {
     const active = await readOrchestratorState($, options);
@@ -140,14 +146,20 @@ export function register(on: On, options: PluginOptions): void {
     // Fires for every model request, including subagents. Forward the stream unchanged.
     const request = e as any;
     const agent = str(request.agentId);
-    const trackSavings = await ready($);
+    let trackSavings = false;
     let baseline: string | null = null;
-    if (trackSavings) {
-      if (agent === null) {
-        lastMainModel = str(request.model) ?? lastMainModel;
-        firstMainModel ??= lastMainModel;
-        userSwitched ||= lastMainModel !== firstMainModel;
-      } else baseline = lastMainModel ?? (await mainModel($));
+    try {
+      trackSavings = await ready($);
+      if (trackSavings) {
+        if (agent === null) {
+          lastMainModel = str(request.model) ?? lastMainModel;
+          firstMainModel ??= lastMainModel;
+          firstPromptSeen = true;
+          userSwitched ||= lastMainModel !== firstMainModel;
+        } else baseline = lastMainModel ?? (await mainModel($));
+      }
+    } catch {
+      trackSavings = false;
     }
     // Read before the request runs: a concurrent main request may switch it.
     const beforeUserSwitch = !userSwitched;
@@ -222,7 +234,8 @@ export function register(on: On, options: PluginOptions): void {
 // itself for main (routing never changes the main model mid-session). First-prompt
 // routing switches the main model once, before the first request, so a later
 // change is the user's; requests before it are flagged, and priced from
-// start_model under that routing.
+// start_model under that routing. The first prompt captures the user's model
+// before the router's /model command, including any manual choice made at launch.
 // Claude Code's side queries (title, compaction, helpers) are not turn steps, so
 // they never count. A hooks module has no Node APIs and the price table lives in
 // Python, so after each turn it writes the sums to the launch's savings_usage
@@ -264,10 +277,11 @@ let enabled = false;
 let version: string | null = null;
 
 const entries = new Map<string, Entry>();
-// The model the session started on, before any first-prompt routing. Set once.
+// The model selected before first-prompt routing. Seeded at launch, then captured
+// when the user submits the first prompt so a preceding /model choice is honored.
 let startModel: string | null = null;
-// The model the main loop last named, so a subagent's baseline is a real model
-// id ($.session.model() may return an alias).
+let firstPromptSeen = false;
+// The model the main loop last named, used as the subagent request's baseline.
 let lastMainModel: string | null = null;
 // The model the main loop's first request named (first-prompt routing's pick).
 let firstMainModel: string | null = null;
@@ -342,17 +356,42 @@ async function loadUsage($: any): Promise<void> {
     startModel ??= str(saved.start_model);
     lastMainModel ??= str(saved.main_model);
     firstMainModel ??= str(saved.first_main_model);
+    firstPromptSeen ||= saved.first_prompt_seen === true || firstMainModel !== null;
     userSwitched ||= saved.user_switched === true;
   } catch {}
+}
+
+async function readSavingsFlag($: EngineInterface): Promise<string | undefined> {
+  try {
+    return await $.env.get('ENABLE_SMART_ROUTING_SAVINGS');
+  } catch {
+    return undefined;
+  }
 }
 
 // State is seeded once per module instance, by whichever hook runs first;
 // concurrent hooks wait on the same load.
 async function ready($: any): Promise<boolean> {
-  if (!enabled || await $.env.get('ENABLE_SMART_ROUTING_SAVINGS') !== '1') return false;
-  seeding ??= loadUsage($);
-  await seeding;
-  return true;
+  try {
+    if (!enabled || await readSavingsFlag($) !== '1') return false;
+    seeding ??= loadUsage($);
+    await seeding;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function savingsPromptSubmit($: EngineInterface, e: any): Promise<void> {
+  try {
+    if (e.isMeta || e.command || !e.text.trim() || e.text.trimStart().startsWith('/')) return;
+    if (!await ready($) || firstPromptSeen) return;
+    // This runs before UserPromptSubmit blocks the prompt for the PTY router.
+    startModel = await mainModel($);
+    firstPromptSeen = true;
+    dirty = true;
+    void flush($);
+  } catch {}
 }
 
 function estimateOf(value: any): Estimate | null {
@@ -386,6 +425,7 @@ async function writeAndPrice($: any): Promise<void> {
         start_model: startModel,
         main_model: lastMainModel,
         first_main_model: firstMainModel,
+        first_prompt_seen: firstPromptSeen,
         user_switched: userSwitched,
         entries: Array.from(entries.values()),
       }),
@@ -466,7 +506,7 @@ function registerSavings(on: On, options: PluginOptions): void {
     // Decided before the inner handlers run, so the status band sees it whichever
     // handler Claude Code runs first.
     savingsShown =
-      enabled && estimate !== null && (await $.env.get('ENABLE_SMART_ROUTING_SAVINGS')) === '1';
+      enabled && estimate !== null && (await readSavingsFlag($)) === '1';
     const theirs = await next(e);
     if (!savingsShown) return theirs;
     const ui = $.ui.resolve(e);

@@ -77,6 +77,10 @@ class TestModelKey:
             "system.ai.claude-opus-4-8"
         )
 
+    @pytest.mark.parametrize("model", ["deepseek-v3", "deepseek-v4", "custom-20261001"])
+    def test_preserves_model_versions_outside_provider_ids(self, model):
+        assert pricing.model_key(f"system.ai.{model}") == model
+
 
 class TestTokenUsage:
     def test_splits_cache_writes_by_ttl(self):
@@ -151,6 +155,19 @@ class TestTokenCost:
 
 
 class TestPriceCache:
+    def test_round_trips_distinct_model_versions(self, tmp_path):
+        path = tmp_path / "model-prices.json"
+        prices = {
+            "deepseek-v3": ModelPrice(input=Decimal("1"), output=Decimal("2")),
+            "deepseek-v4": ModelPrice(input=Decimal("3"), output=Decimal("4")),
+        }
+        pricing.write_price_cache(path, prices)
+
+        cached = pricing.read_price_cache(path)
+
+        assert cached is not None
+        assert cached[0] == prices
+
     def test_round_trips_prices_under_model_keys(self, tmp_path):
         path = tmp_path / "cache" / "model-prices.json"
         pricing.write_price_cache(

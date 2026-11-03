@@ -16,7 +16,8 @@ from ucode import custom_oauth
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
-from ucode.smart_routing import claude_hooks, routing, v2
+from ucode.smart_routing import claude_hooks, pricing, routing, v2
+from ucode.workspace_key import workspace_key
 
 if sys.platform != "win32":
     from ucode.smart_routing import claude_pty
@@ -597,6 +598,60 @@ class TestV2Launch:
 
 
 class TestSavingsPriceRefresh:
+    def test_launch_scopes_price_cache_to_selected_workspace(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(v2.SMART_ROUTER_CONFIG_VERSION_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "0")
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, "0")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR, "1")
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(
+            v2,
+            "_model_picker_catalog",
+            lambda: AnthropicModelCatalog(
+                model_ids=["system.ai.claude-sonnet-4-6"], model_id_to_display_name={}
+            ),
+        )
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_kw: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_a, **_kw: ["ug"])
+        refreshes = []
+        monkeypatch.setattr(
+            v2, "_start_savings_price_refresh", lambda *args: refreshes.append(args)
+        )
+        pricers = []
+
+        class Process:
+            def __init__(self, argv, **_kwargs):
+                settings = json.loads(Path(argv[argv.index("--settings") + 1]).read_text())
+                pricers.append(
+                    settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"][
+                        "savings_pricer"
+                    ]
+                )
+
+            def wait(self):
+                return 0
+
+        monkeypatch.setattr(v2.subprocess, "Popen", Process)
+        host = "https://shared.cloud.databricks.com"
+        for workspace_id in (None, "123", "456"):
+            with pytest.raises(SystemExit, match="^0$"):
+                v2.launch_claude(
+                    {"workspace": host, "workspace_id": workspace_id},
+                    [],
+                    binary="claude",
+                    user_settings_path=tmp_path / "settings.json",
+                    launch_model=None,
+                    compose_settings=lambda args: ({}, args),
+                    launch_model_args=claude._launch_model_args,
+                    model_name=claude._maybe_add_1m_suffix,
+                )
+            expected = pricing.price_cache_path(tmp_path, workspace_key(host, workspace_id))
+            assert refreshes[-1][-1] == expected
+            pricer = pricers[-1]
+            assert pricer[pricer.index("--price-cache") + 1] == str(expected)
+        assert len({args[-1] for args in refreshes}) == 3
+
     def test_prices_routable_and_main_models_by_system_ai_name(self):
         services = v2._savings_model_services(
             [

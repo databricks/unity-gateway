@@ -13,6 +13,10 @@ export function showStatusBand(): void {
   band.isHideArmed = false
 }
 
+export function startStatusBandTurn(): void {
+  if (band.isVisible) band.isHideArmed = true
+}
+
 // Hides the band at the end of an armed turn; true when the band changed and needs a redraw.
 // The register module owns the one turn.complete handler, which the routing cards share.
 export function endStatusBandTurn(): boolean {
@@ -57,11 +61,6 @@ async function readRoutingState($: any): Promise<RoutingState> {
 export const registerStatusBand = (on: On, isReplaced: () => boolean = () => false): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
-  on('prompt.submit', ($, e, next) => {
-    if (band.isVisible) band.isHideArmed = true
-    return next(e)
-  })
-
   // The prompt hint row always carries the state as a plain tail, so it stays visible after
   // the band hides and flips as soon as a toggle succeeds.
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {

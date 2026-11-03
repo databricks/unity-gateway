@@ -1608,7 +1608,12 @@ Clear/reload, compaction, and denied-write rollback are not independently checke
 
 Savings gating and `subagent_orch_savings_v0` have component coverage in
 `test_smart_routing_config.py` and the pricer subprocess tests in `test_smart_routing_savings.py`.
-Native component tests check opt-in usage-file creation and opt-out preservation.
+Native component tests check opt-in usage-file creation, opt-out preservation, resolved
+model aliases, and continued requests after a denied savings-flag read. A controlled
+local Messages API exercises real Claude main/subagent requests and token accounting.
+Native model commands and a blocked-prompt replay verify baseline capture before routing
+and preserve prior usage after later model changes. Python launch tests check separate
+price caches for workspaces sharing a host, and pricing tests keep model versions distinct.
 Live savings accumulation, display, and session off/on are not covered by the
 integration suite.
 

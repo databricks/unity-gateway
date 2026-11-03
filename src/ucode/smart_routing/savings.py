@@ -10,7 +10,8 @@ per token class. The mod (``agents/claude_mods/register.ts``) sums each turn req
 line with the segment the mod draws. A main-agent request is its own baseline, and a subagent's is
 the main model in effect when it ran, so switching models with ``/model`` never reprices earlier
 work. Under first-prompt routing, where the router also picks the main model, requests from before
-the user changed the main model are priced against the model the session started on. A negative
+the user changed the main model are priced against the model selected before submitting the first
+prompt, so a manual selection before routing becomes the baseline. A negative
 result (routing chose pricier models) is shown as a cost increase.
 
 Stdlib-only besides ``pricing`` on purpose: the mod runs this in a fresh process after every turn,

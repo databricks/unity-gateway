@@ -172,17 +172,23 @@ picker while retaining the catalog's display label.
 
 Savings estimate coverage: `test_smart_routing_savings.py` prices the mod's token sums
 (per-entry and first-prompt baselines, unpriced or malformed entries, the pricer's single
-JSON line). `test_smart_routing_pricing.py` covers endpoint rates and the price cache.
+JSON line). `test_smart_routing_pricing.py` covers endpoint rates, distinct model versions,
+and the price cache. Launch tests keep shared-host workspace price caches separate.
 The pricer subprocess checks explicit opt-in; unset, empty, zero, and invalid values
 stay off. Preset coverage in
 `test_smart_routing_config.py` checks the savings flag, inherited-value precedence,
 restoration, and launch/session off controls. `test_smart_router.py` checks that the skill
 toggle writes all managed flags.
 `test_claude_mod.py` checks native literal setters against the flag registry. In the
-native suite, options reach the mod unchanged, enabled sessions record their start
-model, and disabled sessions create no usage file even with stale savings options.
-Endpoint-price refresh failures, orchestrator-version display, token accumulation in
-`turn.step`, and the above-prompt row are not covered automatically.
+native suite, options reach the mod unchanged, configured aliases resolve to model IDs,
+and disabled sessions create no usage file even with stale savings options. A controlled
+local Messages API drives real main and subagent requests and checks exact input, output,
+and cache-token totals. Native model commands and a blocked-prompt replay check the
+pre-routing baseline and preserve earlier usage after a later model change. Capability
+tests deny the savings flag read and verify that startup and requests still run.
+These are native component checks, not live gateway/model or TUI coverage.
+Endpoint-price refresh failures, orchestrator-version display, and the above-prompt
+savings row are not covered automatically.
 
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
