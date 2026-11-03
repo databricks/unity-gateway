@@ -1,0 +1,4 @@
+version: 1
+skills:
+  - path: skills/example
+    target: acme.skills.example

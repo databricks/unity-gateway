@@ -1,0 +1,19 @@
+name: Validate skill folders
+on:
+  pull_request:
+    paths: ['skills/**', '.github/workflows/validate-skills.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: databricks/unity-gateway/actions/publish-skills@main
+        with:
+          skills-directory: skills
+          target-schema: acme.team_skills
+          dry-run: 'true'
