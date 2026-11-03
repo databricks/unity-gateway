@@ -499,13 +499,13 @@ class TestFetchClient:
     def test_user_agent_names_a_configured_copilots_recorded_version(
         self, monkeypatch, state, expected
     ):
-        import ucode.state as state_mod
-        from ucode.agents import claude, codex
+        from ucode.agents import claude, codex, copilot
 
         monkeypatch.setattr(db_mod, "ug_version", lambda: "9.9.9")
+        monkeypatch.setattr(copilot, "ug_version", lambda: "9.9.9")
         monkeypatch.setattr(claude, "managed_user_agent", lambda: None)
         monkeypatch.setattr(codex, "managed_user_agent", lambda: None)
-        monkeypatch.setattr(state_mod, "load_state", lambda: state)
+        monkeypatch.setattr(copilot, "load_state", lambda: state)
 
         user_agent = db_mod._managed_config_user_agent()
 

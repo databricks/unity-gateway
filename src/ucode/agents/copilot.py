@@ -80,7 +80,7 @@ from ucode.os_compatibility.file_lock_cross_os import (
     release_file_lock,
 )
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
-from ucode.state import is_tool_managed, mark_tool_managed, save_state
+from ucode.state import is_tool_managed, load_state, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_warning
 from ucode.workspace import SELECTOR_HEADER_NAMES
@@ -945,6 +945,17 @@ def write_tool_config(state: dict, model: str | None) -> dict:
         state[VERSION_STATE_KEY] = version
     save_state(state)
     return state
+
+
+def managed_user_agent() -> str | None:
+    """The User-Agent for the Copilot CLI version configure recorded, when Copilot is configured.
+
+    Claude Code and Codex read theirs back from their OS-managed files; Copilot has none."""
+    state = load_state()
+    version = state.get(VERSION_STATE_KEY)
+    if "copilot" not in (state.get("available_tools") or []) or not isinstance(version, str):
+        return None
+    return ucode_user_agent(ug_version(), f"copilot/{version}")
 
 
 def _token_provider(state: dict) -> Callable[[bool], str]:

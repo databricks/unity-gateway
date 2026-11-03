@@ -2576,23 +2576,19 @@ def _managed_config_user_agent() -> str:
 
     The fetch serves every agent, so it reports what ug configured on this machine: Claude Code and
     Codex from the OS-managed files ug wrote, and Copilot, which has none, from the version
-    configure recorded. Neither probes an agent's ``--version`` on every fetch."""
+    configure recorded. None of them probes an agent's ``--version`` on every fetch."""
     from ucode.agents import claude, codex, copilot  # the agent modules import this one
     from ucode.managed_files import ug_agent_token
-    from ucode.state import load_state
 
     tokens: list[str] = []
     for agent, user_agent in (
         ("claude", claude.managed_user_agent()),
         ("codex", codex.managed_user_agent()),
+        ("copilot", copilot.managed_user_agent()),
     ):
         token = ug_agent_token(user_agent or "", agent)
         if token:
             tokens.append(token)
-    state = load_state()
-    copilot_version = state.get(copilot.VERSION_STATE_KEY)
-    if "copilot" in (state.get("available_tools") or []) and isinstance(copilot_version, str):
-        tokens.append(f"copilot/{copilot_version}")
     return ucode_user_agent(ug_version(), *tokens)
 
 
