@@ -228,7 +228,7 @@ class TestUsage:
         report.assert_called_once_with(show_all=show_all)
 
 
-class TestOpen:
+class TestWeb:
     def test_opens_gateway_page_for_configured_workspace(self, monkeypatch):
         opened = MagicMock(return_value=True)
         monkeypatch.setattr(
@@ -236,7 +236,7 @@ class TestOpen:
         )
         monkeypatch.setattr(cli_mod, "open_in_browser", opened)
 
-        result = runner.invoke(app, ["open"])
+        result = runner.invoke(app, ["web"])
 
         assert result.exit_code == 0, result.output
         opened.assert_called_once_with("https://example.cloud.databricks.com/ml/ai-gateway")
@@ -248,7 +248,7 @@ class TestOpen:
         )
         monkeypatch.setattr(cli_mod, "open_in_browser", lambda url: False)
 
-        result = runner.invoke(app, ["open"])
+        result = runner.invoke(app, ["web"])
 
         assert result.exit_code == 0, result.output
         assert "Open the URL above manually" in _strip_ansi(result.output)
@@ -258,7 +258,7 @@ class TestOpen:
         monkeypatch.setattr(cli_mod, "load_state", lambda: {})
         monkeypatch.setattr(cli_mod, "open_in_browser", opened)
 
-        result = runner.invoke(app, ["open"])
+        result = runner.invoke(app, ["web"])
 
         assert result.exit_code == 1
         assert "Run `ug configure` first" in _strip_ansi(result.output)

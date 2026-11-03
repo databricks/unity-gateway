@@ -5044,8 +5044,8 @@ def usage_cmd(
         raise typer.Exit(1) from None
 
 
-@app.command("open", rich_help_panel="Usage")
-def open_cmd() -> None:
+@app.command("web", rich_help_panel="Usage")
+def web_cmd() -> None:
     """Open the Unity Gateway page for the configured workspace in your browser."""
     workspace = load_state().get("workspace")
     if not workspace:
