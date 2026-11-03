@@ -34,6 +34,7 @@ from ucode.config_io import (
 )
 from ucode.constants import (
     AI_GATEWAY_REQUEST_TAGS_HEADER,
+    CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
     MCP_USER_SCOPE,
@@ -1645,6 +1646,10 @@ def write_tool_config(
         # Otherwise omit these paths from the overlay so the live managed values pass through.
         if should_preserve_managed_tracing:
             prune_key_paths(overlay_for_merge, [list(path) for path in CLAUDE_OTEL_TRACE_PATHS])
+        if managed_settings_snapshots is not None:
+            # The managed file outranks every launch scope, so a deny there could never be lifted
+            # by a launch that opts into server-side web search; only ucode-settings.json has it.
+            overlay_for_merge.pop("permissions", None)
         if enforce_model_default_hierarchy:
             settings_file_env = base_env if isinstance(base_env, dict) else {}
             target_env = overlay_for_merge["env"]
@@ -1790,6 +1795,14 @@ def write_tool_config(
     )
     previous_leaves = (managed_snapshots.settings_passthrough if managed_snapshots else None) or []
     _warn_if_settings_disable_smart_routing(passthrough, previous_leaves)
+    # Only an explicit configure removes a deny already in the managed file. A relayed session
+    # can't reach the gateway's server-side search, so the setting doesn't apply to it.
+    withdraws_web_search = (
+        state.get(CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY) is True
+        and not relayed
+        and explicit_managed_writes()
+        and "WebSearch" not in passthrough.items_at(CLAUDE_PERMISSIONS_DENY_PATH)
+    )
     _reconcile_managed_settings(
         state,
         lambda base: _allow_ug_mcp_servers(
@@ -1816,12 +1829,18 @@ def write_tool_config(
                 web_search=bool(web_search_model and not external_search),
             ),
         ),
-        [*managed_file_keys, *passthrough.paths],
+        [
+            *managed_file_keys,
+            *passthrough.paths,
+            # Owned while withdrawing, so a revert can restore the baseline's deny.
+            *([CLAUDE_PERMISSIONS_DENY_PATH] if withdraws_web_search else []),
+        ],
         relayed,
         [key for key in CLAUDE_MANAGED_PICKER_KEYS if key in overlay],
-        withdrawn_denies=withdrawn_list_items(
-            CLAUDE_PERMISSIONS_DENY_PATH, passthrough, previous_leaves
-        ),
+        withdrawn_denies=[
+            *withdrawn_list_items(CLAUDE_PERMISSIONS_DENY_PATH, passthrough, previous_leaves),
+            *(["WebSearch"] if withdraws_web_search else []),
+        ],
         passthrough_leaves=passthrough.record(),
     )
 
@@ -2347,7 +2366,10 @@ def _preserve_permission_denies(
     if not isinstance(existing_denies, list) or not isinstance(desired_denies, list):
         return
     kept = [rule for rule in existing_denies if rule not in withdrawn]
-    desired_permissions["deny"] = [*kept, *(rule for rule in desired_denies if rule not in kept)]
+    desired_permissions["deny"] = [
+        *kept,
+        *(rule for rule in desired_denies if rule not in kept and rule not in withdrawn),
+    ]
 
 
 def default_model(state: dict) -> str | None:
@@ -2443,8 +2465,14 @@ def _union_claude_hooks(base: dict, overlay: dict) -> dict:
 
 
 def server_side_web_search_enabled(state: dict) -> bool:
-    """Whether this launch asks for the gateway's server-side search (the env var turns it on)."""
-    return env_bool(UG_CLAUDE_SERVER_SIDE_WEB_SEARCH_ENV_VAR)
+    """Whether this launch asks for the gateway's server-side search.
+
+    The env var turns it on for one launch; ``ug configure`` saves the standing choice.
+    """
+    return (
+        env_bool(UG_CLAUDE_SERVER_SIDE_WEB_SEARCH_ENV_VAR)
+        or state.get(CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY) is True
+    )
 
 
 def _enable_server_side_web_search(settings: dict) -> None:

@@ -63,6 +63,7 @@ from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
     AGENT_COPILOT,
+    CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -570,6 +571,7 @@ def configure_shared_state(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     clear_custom_oauth: bool = False,
+    claude_server_side_web_search: bool | None = None,
 ) -> dict:
     """Log into Databricks, verify AI Gateway, fetch model lists, persist state.
 
@@ -633,7 +635,8 @@ def configure_shared_state(
         destination = load_full_state().get("workspaces", {}).get(key, {})
         # managed_mcp_servers records what the source workspace delivered to user scope.
         # Keep it until reconciliation removes registrations the destination no longer wants.
-        for field in ("mcp_servers", "mcp_clients"):
+        # The server-side web search choice is likewise per workspace.
+        for field in ("mcp_servers", "mcp_clients", CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY):
             if field in destination:
                 state[field] = destination[field]
             else:
@@ -667,6 +670,9 @@ def configure_shared_state(
     # Fable follows model discovery; discard the legacy opt-in.
     state.pop("fable_enabled", None)
     state["databricks_ai_tools_enabled"] = databricks_ai_tools_enabled
+    # Omitting the flag keeps the saved value (load_state carried it over).
+    if claude_server_side_web_search is not None:
+        state[CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY] = claude_server_side_web_search
     if clear_custom_oauth:
         state.pop("custom_oauth", None)
     elif custom_oauth is not None:
@@ -880,6 +886,7 @@ def _configure_shared_workspace_states(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     clear_custom_oauth: bool = False,
+    claude_server_side_web_search: bool | None = None,
 ) -> list[dict]:
     if len(workspaces) != 1:
         raise RuntimeError(f"Expected exactly one workspace, got {len(workspaces)}.")
@@ -888,6 +895,11 @@ def _configure_shared_workspace_states(
         custom_oauth_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
         if clear_custom_oauth:
             custom_oauth_kwargs["clear_custom_oauth"] = True
+        optional_kwargs = (
+            {"claude_server_side_web_search": claude_server_side_web_search}
+            if claude_server_side_web_search is not None
+            else {}
+        )
         states.append(
             configure_shared_state(
                 workspace,
@@ -897,6 +909,7 @@ def _configure_shared_workspace_states(
                 use_pat=use_pat,
                 databricks_ai_tools_enabled=databricks_ai_tools_enabled,
                 **custom_oauth_kwargs,
+                **optional_kwargs,
             )
         )
     return states
@@ -987,6 +1000,7 @@ def _setup_single_agent(
     use_pat: bool = False,
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    claude_server_side_web_search: bool | None = None,
 ) -> dict:
     """Log in, discover the agent's models, and write its config, then print the summary.
 
@@ -1004,6 +1018,7 @@ def _setup_single_agent(
         databricks_ai_tools_enabled=databricks_ai_tools_enabled,
         custom_oauth=custom_oauth,
         clear_custom_oauth=custom_oauth is None,
+        claude_server_side_web_search=claude_server_side_web_search,
     )
     state = states[0]
     parent_schema = None
@@ -1201,6 +1216,7 @@ def configure_workspace_command(
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
     copilot_source: tuple[str | None, str | None] | None = None,
+    claude_server_side_web_search: bool | None = None,
 ) -> int:
     """Configure a workspace while sharing one lazy privileged settings session.
 
@@ -1221,6 +1237,7 @@ def configure_workspace_command(
             custom_oauth=custom_oauth,
             offer_optional_setup=offer_optional_setup,
             copilot_source=copilot_source,
+            claude_server_side_web_search=claude_server_side_web_search,
         )
 
 
@@ -1234,6 +1251,7 @@ def _configure_workspace_command(
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
     copilot_source: tuple[str | None, str | None] | None = None,
+    claude_server_side_web_search: bool | None = None,
 ) -> int:
     if tool is not None and selected_tools is not None:
         raise RuntimeError("Use either --agent or --agents, not both.")
@@ -1255,6 +1273,7 @@ def _configure_workspace_command(
             use_pat=use_pat,
             databricks_ai_tools_enabled=databricks_ai_tools_enabled,
             custom_oauth=custom_oauth,
+            claude_server_side_web_search=claude_server_side_web_search,
         )
         return 0
 
@@ -1266,6 +1285,7 @@ def _configure_workspace_command(
         databricks_ai_tools_enabled=databricks_ai_tools_enabled,
         custom_oauth=custom_oauth,
         clear_custom_oauth=custom_oauth is None,
+        claude_server_side_web_search=claude_server_side_web_search,
     )
     state = states[0]
     save_state(state)
@@ -4794,6 +4814,15 @@ def configure(
             "workspace has an admin-managed config.",
         ),
     ] = None,
+    enable_server_side_web_search: Annotated[
+        bool | None,
+        typer.Option(
+            "--enable-server-side-web-search/--disable-server-side-web-search",
+            help="Claude Code: use the AI Gateway's server-side web search instead of ug's "
+            "`web_search` MCP, saved for later `ug claude` launches. Omit to keep the saved "
+            "choice (off by default).",
+        ),
+    ] = None,
     provider: Annotated[
         str | None,
         typer.Option(
@@ -4935,6 +4964,8 @@ def configure(
             skip_kwargs["custom_oauth"] = custom_oauth
         if provider is not None or model_location is not None:
             skip_kwargs["copilot_source"] = (provider, model_location)
+        if enable_server_side_web_search is not None:
+            skip_kwargs["claude_server_side_web_search"] = enable_server_side_web_search
         # Set True only in the fully-interactive branch below; gates the optional
         # MCP setup prompt so flag-driven / scripted runs are never interrupted.
         fully_interactive = False
@@ -4987,6 +5018,7 @@ def configure(
                     force_login=not use_pat,
                     use_pat=use_pat,
                     custom_oauth=custom_oauth,
+                    claude_server_side_web_search=enable_server_side_web_search,
                 )
             else:
                 # Neither model agents nor cursor -> empty/invalid --agents list.
@@ -5006,6 +5038,7 @@ def configure(
                 force_login=not use_pat,
                 use_pat=use_pat,
                 custom_oauth=custom_oauth,
+                claude_server_side_web_search=enable_server_side_web_search,
             )
             _restore_mcp_after_workspace_switch(previous_workspace, mcp_states[0])
         else:
