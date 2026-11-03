@@ -2596,24 +2596,10 @@ def mcp_proxy_cmd(
     ] = False,
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
-    """Bridge a coding agent's stdio MCP transport to a Databricks MCP endpoint.
+    """Bridge a coding agent's stdio MCP transport to a Databricks MCP endpoint."""
+    from ucode.mcp_proxy_runtime import run_proxy
 
-    Each configured client spawns this as a local stdio MCP server (see
-    `ug mcp add`); it forwards messages to ``--url`` and injects a
-    freshly-minted token on every upstream request, so it never expires
-    mid-session. Not meant for interactive use — the agent manages this
-    process's lifecycle."""
-    from ucode.mcp_proxy import serve
-
-    state = load_state()
-    workspace = host or state.get("workspace")
-    if not workspace:
-        print_err("No workspace configured. Run `ug configure` first.")
-        raise typer.Exit(1)
-    if workspace_id:
-        pin(workspace, workspace_id)
-    profile = profile or state.get("profile")
-    serve(url, workspace, profile, use_pat=use_pat or bool(state.get("use_pat")))
+    run_proxy(url, host, profile, use_pat, workspace_id)
 
 
 @app.command("cowork-hook", hidden=True)

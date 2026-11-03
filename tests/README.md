@@ -1108,3 +1108,15 @@ malformed upstream tool entries and slow metadata
 discovery while unrelated replies continue. Failed metadata discovery retries naturally
 on the next operation, without a cache or cooldown. These are component
 checks, not native Cowork invocation or live provider sign-in.
+
+Proxy startup has component coverage in `test_mcp_proxy_cli.py`: both console-script
+entry points bypass MCP and CLI imports, preserve saved workspace/profile/PAT
+settings, accept explicit overrides, and report a missing workspace on stderr.
+`test_mcp_proxy_shared.py` runs real relay and backend processes against a local
+HTTP MCP peer. It covers concurrent startup, colliding request IDs, independent
+sessions and headers, credential separation, one agent closing while another keeps
+working, backend crash/restart, EOF/reset reconnect diagnostics, local authentication,
+idle shutdown, and live login diagnostics with native line endings. Multi-workspace selectors use separate backends, and session headers
+reach authentication worker threads without changing another session's headers.
+Credential resolution is replaced only in the PAT provider component
+check. These tests do not establish live gateway or native Windows coverage.
