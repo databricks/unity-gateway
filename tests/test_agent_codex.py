@@ -1059,6 +1059,13 @@ class TestCodexLaunch:
         # These launch tests isolate the real-binary validation boundary; its
         # subprocess contract is covered in test_codex_catalog.py.
         monkeypatch.setattr(codex, "validate_codex_catalog", lambda binary, catalog: None)
+        monkeypatch.setattr(codex, "user_mcp_config_path", lambda: tmp_path / "user.config.toml")
+        monkeypatch.setattr(codex, "read_managed_mcp_urls", lambda: {})
+        monkeypatch.setattr(
+            codex,
+            "get_model_provider_service",
+            lambda name, workspace, token: ({"name": name, "provider_type": "openai"}, None),
+        )
         return launches
 
     @pytest.mark.parametrize(
@@ -1464,6 +1471,96 @@ class TestCodexLaunch:
             arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
         )
         assert 'Databricks-Model-Provider-Service = "main.default.openai"' in provider_arg
+
+    def _launch_with_provider_type(self, tmp_path, monkeypatch, provider_type, state=None):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "app-catalog.json")
+        monkeypatch.setattr(
+            codex, "_model_catalog_path", lambda workspace, scope: tmp_path / "m.json"
+        )
+        monkeypatch.setattr(
+            codex, "_fetch_codex_model_catalog", lambda *a, **k: {"models": [{"slug": "m"}]}
+        )
+        monkeypatch.setattr(
+            codex,
+            "get_model_provider_service",
+            lambda name, workspace, token: ({"name": name, "provider_type": provider_type}, None),
+        )
+        codex.launch(
+            {"workspace": WS, "_codex_launch_provider": "main.default.svc", **(state or {})},
+            [],
+            options=LaunchOptions(),
+        )
+        return launches[0]
+
+    def test_bedrock_runtime_swaps_builtin_web_search_for_mcp(self, tmp_path, monkeypatch):
+        args = self._launch_with_provider_type(tmp_path, monkeypatch, "amazon_bedrock")
+
+        assert 'web_search="disabled"' in args
+        entry = next(a for a in args if a.startswith("mcp_servers.system-ai-web_search="))
+        assert "/ai-gateway/mcp-services/system.ai.web_search" in entry
+        assert "mcp-proxy" in entry
+        assert not any(a == "mcp_servers={}" or a.startswith("mcp_servers=") for a in args)
+
+    @pytest.mark.parametrize(
+        "provider_type", ["bedrock_mantle", "openai", "azure_openai", "microsoft_foundry"]
+    )
+    def test_other_providers_keep_builtin_web_search(self, tmp_path, monkeypatch, provider_type):
+        args = self._launch_with_provider_type(tmp_path, monkeypatch, provider_type)
+
+        assert not any(a.startswith("web_search=") for a in args)
+        assert not any(a.startswith("mcp_servers") for a in args)
+
+    def test_bedrock_runtime_does_not_duplicate_user_mcp(self, tmp_path, monkeypatch):
+        (tmp_path / "user.config.toml").write_text(
+            '[mcp_servers.my-search]\ncommand = "ug"\n'
+            f'args = ["mcp-proxy", "--url", "{WS}/ai-gateway/mcp-services/system.ai.web_search"]\n',
+            encoding="utf-8",
+        )
+        args = self._launch_with_provider_type(tmp_path, monkeypatch, "amazon_bedrock")
+
+        assert 'web_search="disabled"' in args
+        assert not any(a.startswith("mcp_servers") for a in args)
+
+    def test_bedrock_runtime_does_not_duplicate_managed_mcp(self, tmp_path, monkeypatch):
+        args = self._launch_with_provider_type(
+            tmp_path,
+            monkeypatch,
+            "amazon_bedrock",
+            {
+                "managed_mcp_servers": [
+                    {
+                        "name": "system-ai-web_search",
+                        "url": f"{WS}/ai-gateway/mcp-services/system.ai.web_search",
+                        "clients": ["codex"],
+                    }
+                ]
+            },
+        )
+
+        assert 'web_search="disabled"' in args
+        assert not any(a.startswith("mcp_servers") for a in args)
+
+    def test_unknown_provider_type_leaves_launch_unchanged(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "app-catalog.json")
+        monkeypatch.setattr(
+            codex, "_model_catalog_path", lambda workspace, scope: tmp_path / "m.json"
+        )
+        monkeypatch.setattr(
+            codex, "_fetch_codex_model_catalog", lambda *a, **k: {"models": [{"slug": "m"}]}
+        )
+        monkeypatch.setattr(
+            codex, "get_model_provider_service", lambda name, workspace, token: (None, "HTTP 500")
+        )
+
+        codex.launch(
+            {"workspace": WS, "_codex_launch_provider": "main.default.svc"},
+            [],
+            options=LaunchOptions(),
+        )
+
+        assert not any(a.startswith(("web_search=", "mcp_servers")) for a in launches[0])
 
     def test_provider_keeps_other_discovery_failures_fatal(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)

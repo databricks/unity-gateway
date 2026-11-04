@@ -1,7 +1,7 @@
 """CUJs for using GitHub Copilot CLI from scripts through installed ug."""
 
 import pytest
-from utils.constants import CLAUDE_TEST_MODEL, CODEX_TEST_MODEL, COPILOT_HEADLESS_FLAGS
+from utils.constants import CLAUDE_TEST_MODEL, COPILOT_GPT_TEST_MODEL, COPILOT_HEADLESS_FLAGS
 from utils.evidence import (
     FileTask,
     assert_completed_task_model,
@@ -72,12 +72,12 @@ def test_ug_copilot_headless_gpt_responses_task(live_session, workspace):
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
-    session.record("copilot-model.json", {"model": CODEX_TEST_MODEL})
+    session.record("copilot-model.json", {"model": COPILOT_GPT_TEST_MODEL})
 
     result = session.run(
         "copilot",
         "--model",
-        CODEX_TEST_MODEL,
+        COPILOT_GPT_TEST_MODEL,
         "-p",
         task.prompt_with_path,
         *COPILOT_HEADLESS_FLAGS,
@@ -85,7 +85,7 @@ def test_ug_copilot_headless_gpt_responses_task(live_session, workspace):
     )
 
     task.assert_headless_answer("copilot", result)
-    assert_completed_task_model(session, "copilot", task.value, CODEX_TEST_MODEL)
-    assert copilot_selected_models(session)[0] == f"dbx-responses/{CODEX_TEST_MODEL}"
+    assert_completed_task_model(session, "copilot", task.value, COPILOT_GPT_TEST_MODEL)
+    assert copilot_selected_models(session)[0] == f"dbx-responses/{COPILOT_GPT_TEST_MODEL}"
     assert_no_bearer_on_disk(session)
     assert_no_session_registry_left(session)
