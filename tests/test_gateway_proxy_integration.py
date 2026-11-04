@@ -197,9 +197,8 @@ def _running_otel_proxy(gateway: _FakeGateway, token_provider=None):
 
 
 class TestRelayedProxyEndToEnd:
-    @pytest.mark.parametrize("keepalive", [True, False])
-    def test_upstream_connection_survives_inter_turn_pause(self, make_gateway, keepalive):
-        gateway = make_gateway(keepalive=keepalive)
+    def test_upstream_connection_survives_inter_turn_pause(self, make_gateway):
+        gateway = make_gateway(keepalive=True)
         with (
             _running_proxy(gateway) as proxy_url,
             httpx.Client(base_url=proxy_url, timeout=10) as client,
@@ -209,7 +208,7 @@ class TestRelayedProxyEndToEnd:
             time.sleep(6)
             assert client.get("/v1/models").content == b'{"ok":true}'
         assert len(gateway.requests) == 2
-        assert gateway.connections == (1 if keepalive else 2)
+        assert gateway.connections == 1
 
     def test_forwards_request_with_swap_header_and_passthrough(self, make_gateway):
         # The whole relayed data-plane over real sockets: the proxy injects a fresh
@@ -274,6 +273,7 @@ class TestRelayedProxyEndToEnd:
         # what forces a fresh mint before the single retry.
         assert token_fn.calls == [False, True]  # type: ignore[attr-defined]
         assert len(gw.requests) == 2  # original attempt + one retry
+        assert gw.connections == 2  # reconnect after this upstream closes each response
 
 
 class TestOtelProxyEndToEnd:
