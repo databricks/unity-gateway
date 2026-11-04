@@ -1,5 +1,9 @@
 # Integration tests
 
+`../test_claude_routing.py` covers the shared routing journal's streamed matching
+and early exit. Local files verify reconciliation semantics; live routing and
+concurrent cross-process journal updates are not exercised by these additions.
+
 `../test_configure_managed_writes.py` covers `ug revert` output after Claude/Codex managed-file
 deletion fails, its nonzero exit, and retention of the file, backup, and ug state. These component
 tests simulate privileged deletion failure; native OS permissions and live sudo are not exercised.

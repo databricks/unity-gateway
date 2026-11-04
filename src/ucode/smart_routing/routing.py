@@ -19,7 +19,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -464,33 +464,31 @@ def _pending_decision(
     decisions_path: Path, audit_path: Path, session_id: Any, actual_model: Any
 ) -> dict[str, Any] | None:
     used = {
-        record.get("decision_id") for record in _read_jsonl(audit_path) if record.get("decision_id")
+        record.get("decision_id") for record in _iter_jsonl(audit_path) if record.get("decision_id")
     }
-    pending = [
-        decision
-        for decision in _read_jsonl(decisions_path)
-        if decision.get("session_id") == session_id and decision.get("decision_id") not in used
-    ]
-    return next(
-        (decision for decision in pending if decision.get("requested_model") == actual_model),
-        pending[0] if pending else None,
-    )
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    records = []
-    for line in lines:
-        try:
-            record = json.loads(line)
-        except ValueError:
+    first_pending = None
+    for decision in _iter_jsonl(decisions_path):
+        if decision.get("session_id") != session_id or decision.get("decision_id") in used:
             continue
-        if isinstance(record, dict):
-            records.append(record)
-    return records
+        if first_pending is None:
+            first_pending = decision
+        if decision.get("requested_model") == actual_model:
+            return decision
+    return first_pending
+
+
+def _iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(record, dict):
+                    yield record
+    except OSError:
+        return
 
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:

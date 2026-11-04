@@ -78,3 +78,36 @@ def test_subagent_start_without_model_reports_unknown_not_mismatch(tmp_path, mon
 
     assert record["requested_model"] == "system.ai.claude-sonnet-5"
     assert record["matches_router_decision"] is None
+
+
+@pytest.mark.parametrize(("actual", "expected"), [("second", "d2"), ("absent", "d1"), (None, "d1")])
+def test_journal_matching_preserves_first_pending_and_skips_used_entries(
+    tmp_path, actual, expected
+):
+    decisions, audit = tmp_path / "decisions.jsonl", tmp_path / "audit.jsonl"
+    rows = [
+        {"session_id": "s", "decision_id": "used", "requested_model": actual},
+        {"session_id": "other", "decision_id": "foreign", "requested_model": actual},
+        {"session_id": "s", "decision_id": "d1", "requested_model": "first"},
+        {"session_id": "s", "decision_id": "d2", "requested_model": "second"},
+        {"session_id": "s", "decision_id": "d3", "requested_model": "second"},
+    ]
+    decisions.write_text("broken\nnull\n" + "\n".join(map(json.dumps, rows)), encoding="utf-8")
+    audit.write_text('[]\n{"decision_id":"used"}\nbroken', encoding="utf-8")
+    assert routing._pending_decision(decisions, audit, "s", actual)["decision_id"] == expected
+
+
+def test_matching_decision_does_not_decode_the_remaining_journal(tmp_path, monkeypatch):
+    decisions, audit = tmp_path / "decisions.jsonl", tmp_path / "missing-audit.jsonl"
+    target = {"session_id": "s", "decision_id": "match", "requested_model": "model"}
+    decisions.write_text(json.dumps(target) + "\n" + "{}\n" * 1000, encoding="utf-8")
+    loads = json.loads
+    decoded = []
+
+    def counted(line):
+        decoded.append(line)
+        return loads(line)
+
+    monkeypatch.setattr(routing.json, "loads", counted)
+    assert routing._pending_decision(decisions, audit, "s", "model") == target
+    assert len(decoded) == 1

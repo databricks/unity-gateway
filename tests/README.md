@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+`test_claude_routing.py` covers streamed routing-journal matching: used decisions,
+other sessions, malformed rows, FIFO fallback, and stopping JSON decoding after
+the first matching pending model. The shared reader also serves Codex. These are
+local-file component checks; no live router latency is established.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered
