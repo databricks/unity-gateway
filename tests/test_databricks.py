@@ -1045,6 +1045,41 @@ class TestMaybeAddGpt1mSuffix:
         assert db_mod.maybe_add_gpt_1m_suffix(model) == expected
 
 
+class TestGptAutoCompactModelSettings:
+    def test_caps_gpt_ids_under_their_canonical_key(self):
+        window = {"autoCompactWindow": db_mod.GPT_AUTO_COMPACT_WINDOW}
+        assert db_mod.gpt_auto_compact_model_settings(
+            [
+                "system.ai.gpt-6-luna[1m]",
+                "system.ai.gpt-6-luna",
+                "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol",
+                "system.ai.gpt-oss-120b",
+                "system.ai.claude-opus-4-8[1m]",
+                None,
+            ]
+        ) == {
+            "system.ai.gpt-6-luna": window,
+            "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol": window,
+        }
+
+    def test_window_is_within_claude_code_range_and_below_gateway_cap(self):
+        assert 100_000 <= db_mod.GPT_AUTO_COMPACT_WINDOW <= 900_000
+
+    @pytest.mark.parametrize(
+        "model",
+        ["system.ai.gpt-6-luna", "databricks-gpt-6-astra", "gpt-4.1"],
+    )
+    def test_matches_the_ids_that_get_the_1m_hint(self, model):
+        assert db_mod.is_gpt_auto_compact_model_key(model)
+        assert db_mod.maybe_add_gpt_1m_suffix(model) == f"{model}[1m]"
+
+    @pytest.mark.parametrize(
+        "model", ["system.ai.gpt-oss-120b", "system.ai.claude-opus-4-8", "system.ai.gpt-6-luna[1m]"]
+    )
+    def test_rejects_ids_without_the_hint(self, model):
+        assert not db_mod.is_gpt_auto_compact_model_key(model)
+
+
 class TestResolveProviderLaunchModel:
     def test_defaults_to_sonnet_when_offered(self):
         # No --model: pin sonnet (Claude Code's own default tier) when the service allows it.

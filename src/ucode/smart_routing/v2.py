@@ -24,6 +24,7 @@ from ucode.codex_config import (
 )
 from ucode.config_io import (
     APP_DIR,
+    deep_merge_dict,
     read_json_safe,
     write_json_file,
     write_text_file,
@@ -42,6 +43,7 @@ from ucode.custom_oauth import custom_oauth_cli_enabled, launch_token
 from ucode.databricks import (
     AnthropicModelCatalog,
     build_auth_token_argv,
+    gpt_auto_compact_model_settings,
     list_anthropic_model_catalog,
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
@@ -732,6 +734,19 @@ def launch_claude(
     if not isinstance(model_overrides, dict):
         raise RuntimeError("Claude settings 'modelOverrides' must be an object for smart routing.")
     model_overrides.update(_claude_model_overrides(model_ids))
+    # Routed agents and first-prompt switches can land on any catalog model, not only the ones the
+    # settings file names; cover both the agent definitions' ids and the unwrapped switch ids.
+    canonical_models = _canonical_claude_models(model_ids)
+    gpt_model_settings = gpt_auto_compact_model_settings(
+        [*canonical_models, *map(_unwrapped_claude_model_id, canonical_models)]
+    )
+    if gpt_model_settings:
+        model_settings = settings.setdefault("modelSettings", {})
+        if not isinstance(model_settings, dict):
+            raise RuntimeError(
+                "Claude settings 'modelSettings' must be an object for smart routing."
+            )
+        deep_merge_dict(model_settings, gpt_model_settings)
     routing_state = {
         **state,
         "claude_models": {str(index): model for index, model in enumerate(model_ids)},

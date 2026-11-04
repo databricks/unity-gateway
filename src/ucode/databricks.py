@@ -20,7 +20,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -3310,6 +3310,31 @@ _GPT_1M_MODEL_RE = re.compile(
 def maybe_add_gpt_1m_suffix(model: str) -> str:
     """Add Claude Code's `[1m]` hint to GPT ids except gpt-oss; return other ids unchanged."""
     return f"{model}[1m]" if _GPT_1M_MODEL_RE.match(model) else model
+
+
+# The `[1m]` hint makes Claude Code size GPT sessions at 1M, but the gateway rejects them near 920K
+# input tokens with an error Claude Code's reactive compaction doesn't recognize. Claude Code
+# compacts ~33K below this window and only between turns, so 800K leaves room for a large turn.
+GPT_AUTO_COMPACT_WINDOW = 800_000
+
+
+def is_gpt_auto_compact_model_key(key: str) -> bool:
+    """Whether ``key`` is a ``modelSettings`` id ug writes ``GPT_AUTO_COMPACT_WINDOW`` for."""
+    return bool(_GPT_1M_MODEL_RE.match(key))
+
+
+def gpt_auto_compact_model_settings(models: Iterable[object]) -> dict[str, dict[str, int]]:
+    """Claude Code ``modelSettings`` entries capping auto-compact for ids that get the `[1m]` hint.
+
+    Keys are the ids without `[1m]`; Claude Code applies such a key to the suffixed spelling too.
+    Non-string and non-GPT ids (including gpt-oss and Claude) are skipped.
+    """
+    return {
+        canonical: {"autoCompactWindow": GPT_AUTO_COMPACT_WINDOW}
+        for model in models
+        if isinstance(model, str)
+        and is_gpt_auto_compact_model_key(canonical := model.removesuffix("[1m]"))
+    }
 
 
 # A bare launch pins the first tier the service offers, so it never dead-ends on a model the
