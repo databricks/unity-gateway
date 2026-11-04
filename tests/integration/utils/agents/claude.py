@@ -45,6 +45,18 @@ def _is_subagent_handback(record: dict, part: dict) -> bool:
     )
 
 
+def _is_queued_to(result: object, agent_id: str) -> bool:
+    """True for a successful SendMessage result queued to the still-running `agent_id`."""
+    return (
+        isinstance(result, dict)
+        and result.get("success") is True
+        and "resumedAgentId" not in result
+        and "queued" in str(result.get("message", "")).lower()
+        and isinstance(result.get("pin"), dict)
+        and result["pin"].get("id") == agent_id
+    )
+
+
 def assert_agent_resumed(
     call: dict, records: list[dict], agent_id: str, *, allow_queued: bool = False
 ) -> bool:
@@ -64,16 +76,8 @@ def assert_agent_resumed(
             continue
         if any(part.get("tool_use_id") == call["id"] for part in content):
             result = record.get("toolUseResult")
-            if (
-                allow_queued
-                and isinstance(result, dict)
-                and result.get("success") is True
-                and "resumedAgentId" not in result
-                and "queued" in str(result.get("message", "")).lower()
-                and isinstance(result.get("pin"), dict)
-                and result["pin"].get("id") == agent_id
-            ):
-                return False
+            if allow_queued and _is_queued_to(result, agent_id):
+                return False  # accepted, but not a resume
             # The native result resolves both names and IDs to the resumed child's ID.
             assert isinstance(result, dict) and result.get("resumedAgentId") == agent_id, (
                 f"SendMessage to {recipient!r} did not resume {agent_id}: {result}"
