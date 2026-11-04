@@ -142,11 +142,14 @@ through the real Claude CLI before configuration; its registry entry and install
 survive installation, reconfiguration, and revert unchanged. Revert also removes UG's marketplace
 registration and generated user source. Root-file preservation is covered by component tests;
 the integration journeys do not inspect OS-managed directories.
-Desktop source placement, native-command simulation, MDM publication/recovery and unsafe-backup rejection, CLI
-scope and argument validation (including connector whitespace and multiple workspaces),
-malformed cache inspection, authentication isolation, and deferred cleanup have
+Desktop source placement, native-command simulation, root publication, CLI scope and
+argument validation (including connector whitespace and multiple workspaces), malformed
+cache inspection, authentication isolation, and machine-file removal have
 [component coverage](../README.md). These checks use temporary destinations and simulate
 external workspace, ownership, launchd, and Claude registration boundaries.
+MDM recovery ledgers, cross-file restoration, interrupted/account-switch cleanup, and
+deferred uninstall are outside this release. Their MDM-only component tests were removed
+with that behavior; ordinary user-plugin and bundle recovery coverage is unchanged.
 CLI-agent scope unit coverage isolates Desktop prerequisites; Desktop scope components
 exercise the macOS CLI preflight. Shared Claude PAT handling is tested against the global
 Desktop OAuth branch. Command-local scope checks isolate machine prerequisites on macOS;
@@ -169,11 +172,10 @@ journeys. Native launchd activation, first-user timing, managed-plist precedence
 GUI skill/tool invocation, and current flag routing on macOS remain unverified here.
 Follow the [MDM rollout checklist](../../docs/claude-desktop-mdm.md) before fleet rollout.
 
-MDM review regressions also cover the `claude-code` configure alias, refusal to remove
-an incomplete ownership record without changing the deployment, and missing-manifest
+MDM regressions also cover the `claude-code` configure alias and missing-manifest
 diagnostics that preserve the previous root bundle. MCP proxy and OTLP helper identity
 checks share the same lightweight saved-authentication predicate. These remain component
-checks; final launchd removal and native macOS execution require the documented checklist.
+checks; native launchd removal, manual user-plugin cleanup, and macOS execution require the documented checklist.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.web_search and allow

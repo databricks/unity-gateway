@@ -5436,7 +5436,7 @@ def revert_cmd(
         bool,
         typer.Option(
             "--mdm-desktop",
-            help="Remove Claude Desktop machine policy and schedule per-user plugin cleanup (macOS, root).",
+            help="Remove Claude Desktop machine files (macOS, root); user plugin cleanup is manual.",
         ),
     ] = False,
 ) -> None:
@@ -5451,7 +5451,7 @@ def revert_cmd(
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 raise RuntimeError(f"Desktop MDM removal failed: {exc}") from exc
             print_success(
-                "Desktop MDM policy and source removed. Per-user cleanup runs at login or the next refresh."
+                "Desktop MDM machine files removed. Remove the cached UG plugin from each user's Desktop separately."
             )
             return
         result = revert()

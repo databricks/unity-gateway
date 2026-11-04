@@ -206,10 +206,14 @@ The macOS Desktop MDM mode requires root and preinstalled, root-owned shared UG/
 Databricks CLI, and Claude CLI runtimes. It publishes the managed plist, root marketplace,
 shared helpers/state, and a per-user LaunchAgent. No administrator-local profile, skills,
 or credentials are copied. Workspace-managed skills and MCPs reuse the normal bundle writers;
-provisioning reuses one token. Background native refresh never authenticates and tracks
-pending installs for retry/removal; Desktop uses each user's OAuth profile.
-Removal disables the deployment for logged-out users' deferred cleanup. Foreign or edited
-policy/helper files are preserved; the root marketplace belongs to UG and is replaced.
+provisioning reuses one token. Background native refresh never authenticates; Desktop uses
+each user's OAuth profile. Native registration and content-derived plugin versions drive
+refresh, without per-user MDM state or account-cleanup queues. Publication reuses existing
+bundle and atomic file writers without cross-file recovery backups or ownership hashes;
+rerun configure after a partial publication failure. A foreign policy is recognized by its
+credential helper and preserved. Generated root files belong to UG and are replaced.
+Explicit removal deletes machine files; unloading active login jobs and removing cached
+user plugins is manual. See the deployment guide before uninstalling.
 Windows MDM and shared-runtime installation remain unsupported. See docs/claude-desktop-mdm.md.
 Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
 custom registration names and full proxy URLs are preserved. Its name and display name

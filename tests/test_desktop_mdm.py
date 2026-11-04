@@ -145,15 +145,16 @@ def test_provision_without_account_has_no_admin_credentials_or_user_writes(devic
     assert agent["ProgramArguments"] == [str(mdm.MDM_ROOT / "ug"), "desktop-mdm-sync"]
     assert agent["RunAtLoad"] is True and agent["StartInterval"] == 60
     if os.name != "nt":
-        assert (mdm.MDM_ROOT / "state.json").stat().st_mode & 0o777 == 0o600
+        assert (mdm.MDM_ROOT / "deployment.json").stat().st_mode & 0o777 == 0o644
         assert (mdm.MDM_ROOT / "ug").stat().st_mode & 0o777 == 0o755
+    assert not (mdm.MDM_ROOT / "state.json").exists()
     device.auth.assert_called_once_with(WORKSPACE, "ADMIN_PROFILE", browser_login=False)
     device.admin = False
     assert mdm.sync_user() is False  # An account appears only when the user opens Cowork.
     device.auth.assert_called_once()
 
 
-def test_sync_update_and_remove_keep_one_registration_without_authentication(device):
+def test_provision_refresh_and_remove_root_files_without_authentication(device):
     mdm.configure(WORKSPACE, "admin")
     device.auth.reset_mock()
     device.admin = False
@@ -185,12 +186,11 @@ def test_sync_update_and_remove_keep_one_registration_without_authentication(dev
     device.admin = True
     mdm.remove()
     assert not device.source.exists() and not mdm.POLICY_PATH.exists()
-    assert mdm.AGENT_PATH.exists() and (mdm.MDM_ROOT / "ug").exists()
-    assert json.loads((mdm.MDM_ROOT / "deployment.json").read_bytes())["enabled"] is False
-    device.admin = False
-    assert mdm.sync_user() is False
-    assert cowork._registered_marketplace_source(root) is None
-    assert not (device.home / ".ucode" / mdm.USER_STATE_FILENAME).exists()
+    assert not mdm.AGENT_PATH.exists() and not mdm.MDM_ROOT.exists()
+    assert cowork._registered_marketplace_source(root) == device.source
+    assert _installed(root).exists()
+    assert not (device.home / ".ucode/claude-desktop-mdm.json").exists()
+    mdm.remove()
     device.auth.assert_not_called()
 
 
@@ -273,10 +273,8 @@ def test_sync_migrates_user_source_and_preserves_unrelated_plugin(device):
     assert user_source.exists()
 
 
-@pytest.mark.parametrize(
-    "failure", ["fetch", "malformed_mcp", "missing_skill", "download", "file_write"]
-)
-def test_failed_update_preserves_previous_deployment(device, monkeypatch, failure):
+@pytest.mark.parametrize("failure", ["fetch", "malformed_mcp", "missing_skill", "download"])
+def test_failed_discovery_or_download_preserves_previous_deployment(device, monkeypatch, failure):
     mdm.configure(WORKSPACE, "admin")
     before = _snapshot(device)
     device.skill += b"New version.\n"
@@ -288,91 +286,35 @@ def test_failed_update_preserves_previous_deployment(device, monkeypatch, failur
         device.manifest["mcp_servers"]["names"].append("bad-name")
     elif failure == "missing_skill":
         monkeypatch.setattr(skills_download, "get_skill", lambda *a: None)
-    elif failure == "download":
-        monkeypatch.setattr(skills_download, "fetch_skill_bundle", lambda *a: (None, "unavailable"))
     else:
-        original = claude_config._write_or_remove
-
-        def fail_once(path, contents, *, mode):
-            if path == mdm.POLICY_PATH:
-                monkeypatch.setattr(claude_config, "_write_or_remove", original)
-                raise OSError("test publication failure")
-            return original(path, contents, mode=mode)
-
-        # Force a policy change as well as a bundle change.
-        device.manifest["enabled_agents"][0]["config"]["tracing"]["enabled"] = False
-        monkeypatch.setattr(claude_config, "_write_or_remove", fail_once)
+        monkeypatch.setattr(skills_download, "fetch_skill_bundle", lambda *a: (None, "unavailable"))
     with pytest.raises(RuntimeError):
         mdm.configure(WORKSPACE, "admin")
     assert _snapshot(device) == before
 
 
-@pytest.mark.parametrize("entry_type", ["symlink", "hardlink", "fifo", "private"])
-def test_unsafe_existing_marketplace_is_rejected_before_backup(
-    device, monkeypatch, tmp_path, entry_type
-):
+def test_failed_publication_is_reported_and_reconfigure_repairs_it(device, monkeypatch):
     mdm.configure(WORKSPACE, "admin")
     policy_before = mdm.POLICY_PATH.read_bytes()
-    state_before = (mdm.MDM_ROOT / "state.json").read_bytes()
-    nested = device.source / "plugins/ug/skills/review/nested"
-    nested.mkdir()
-    entry = nested / "fixture"
-    ordinary = tmp_path / "ordinary.txt"
-    ordinary.write_text("test fixture")
-    if entry_type == "symlink":
-        entry.symlink_to(ordinary)
-    elif entry_type == "hardlink":
-        os.link(ordinary, entry)
-    elif entry_type == "fifo":
-        os.mkfifo(entry)
-    else:
-        entry.write_text("test fixture")
-        entry.chmod(0o600)
-    copy = Mock(side_effect=AssertionError("Unsafe marketplace must not be backed up"))
-    monkeypatch.setattr(mdm.shutil, "copytree", copy)
-    with pytest.raises(RuntimeError, match="marketplace backup entry|Marketplace backup entry"):
-        mdm._publish(None, {}, {})
-    copy.assert_not_called()
-    assert mdm.POLICY_PATH.read_bytes() == policy_before
-    assert (mdm.MDM_ROOT / "state.json").read_bytes() == state_before
-
-
-def test_publication_and_rollback_failure_retains_recovery_files(device, monkeypatch):
-    mdm.configure(WORKSPACE, "admin")
-    before = _snapshot(device)
-    state_before = (mdm.MDM_ROOT / "state.json").read_bytes()
     device.skill += b"New version.\n"
     device.manifest["enabled_agents"][0]["config"]["tracing"]["enabled"] = False
     write = claude_config._write_or_remove
-    replace_bundle = mdm.managed_files.replace_privileged_bundle
-    replacements = 0
 
-    def fail_policy_once(path, contents, *, mode):
+    def fail_policy(path, contents, *, mode):
         if path == mdm.POLICY_PATH:
-            monkeypatch.setattr(claude_config, "_write_or_remove", write)
-            raise OSError("publication failed")
+            raise OSError("test publication failure")
         return write(path, contents, mode=mode)
 
-    def fail_bundle_restoration(target, source):
-        nonlocal replacements
-        replacements += 1
-        if replacements == 2:
-            raise OSError("bundle restoration failed")
-        return replace_bundle(target, source)
-
-    monkeypatch.setattr(claude_config, "_write_or_remove", fail_policy_once)
-    monkeypatch.setattr(mdm.managed_files, "replace_privileged_bundle", fail_bundle_restoration)
-    with pytest.raises(RuntimeError, match="rollback failed.*bundle restoration failed") as error:
+    monkeypatch.setattr(claude_config, "_write_or_remove", fail_policy)
+    with pytest.raises(RuntimeError, match="test publication failure"):
         mdm.configure(WORKSPACE, "admin")
-    backup = Path(str(error.value).split("Recovery source retained at ", 1)[1].removesuffix("."))
-    try:
-        assert cowork._marketplace_files(backup / "marketplace") == before["source"]
-        assert (backup / "state.json").read_bytes() == state_before
-        files = json.loads((backup / "files.json").read_bytes())
-        assert bytes.fromhex(files[str(mdm.POLICY_PATH)]["contents_hex"]) == before["policy"]
-        assert replacements == 2
-    finally:
-        shutil.rmtree(backup)
+    assert mdm.POLICY_PATH.read_bytes() == policy_before
+    assert (device.source / "plugins/ug/skills/review/SKILL.md").read_bytes() == device.skill
+
+    monkeypatch.setattr(claude_config, "_write_or_remove", write)
+    mdm.configure(WORKSPACE, "admin")
+    assert "otlpEndpoint" not in plistlib.loads(mdm.POLICY_PATH.read_bytes())
+    assert not (mdm.MDM_ROOT / "otel-headers.sh").exists()
 
 
 @pytest.mark.parametrize("target", ["policy", "source"])
@@ -380,11 +322,15 @@ def test_existing_policy_is_preserved_and_generated_source_is_replaced(device, t
     path = mdm.POLICY_PATH if target == "policy" else device.source / "foreign.txt"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.parent.chmod(0o755)
-    path.write_text("IT-owned")
+    path.write_bytes(
+        plistlib.dumps({"inferenceCredentialHelper": "/other/helper"})
+        if target == "policy"
+        else b"IT-owned"
+    )
     if target == "policy":
         with pytest.raises(RuntimeError, match="not this"):
             mdm.configure(WORKSPACE, "admin")
-        assert path.read_text() == "IT-owned"
+        assert plistlib.loads(path.read_bytes()) == {"inferenceCredentialHelper": "/other/helper"}
     else:
         path.chmod(0o644)
         mdm.configure(WORKSPACE, "admin")
@@ -401,51 +347,6 @@ def test_malformed_cached_plugin_registration_is_unmodified(tmp_path, plugins):
     before = registry.read_bytes()
     assert mdm._cached_version(tmp_path) is None
     assert registry.read_bytes() == before
-
-
-def test_partial_refresh_can_be_removed_after_account_switch(device, monkeypatch, tmp_path):
-    mdm.configure(WORKSPACE, "admin")
-    device.admin = False
-    old_root = cowork.discover_cowork_root()
-    mdm.sync_user()
-    new_root = tmp_path / "Desktop/local-agent-mode-sessions/new-account/new-org"
-    new_root.mkdir(parents=True)
-    monkeypatch.setattr(cowork, "discover_cowork_root", lambda: new_root)
-    native = cowork.subprocess_cross_os.run
-
-    def fail_old_cleanup(argv, **kwargs):
-        if kwargs["env"]["CLAUDE_CONFIG_DIR"] == str(old_root) and argv[2] == "uninstall":
-            raise OSError("test native cleanup failure")
-        return native(argv, **kwargs)
-
-    monkeypatch.setattr(cowork.subprocess_cross_os, "run", fail_old_cleanup)
-    with pytest.raises(OSError):
-        mdm.sync_user()
-    assert cowork._registered_marketplace_source(new_root) == device.source
-    monkeypatch.setattr(cowork.subprocess_cross_os, "run", native)
-    device.admin = True
-    mdm.remove()
-    device.admin = False
-    mdm.sync_user()
-    assert cowork._registered_marketplace_source(old_root) is None
-    assert cowork._registered_marketplace_source(new_root) is None
-
-
-def test_removal_preserves_later_independent_root_installation(device):
-    mdm.configure(WORKSPACE, "admin")
-    device.admin = False
-    mdm.sync_user()
-    root = cowork.discover_cowork_root()
-    manifest = _installed(root) / ".claude-plugin/plugin.json"
-    contents = json.loads(manifest.read_bytes())
-    contents["version"] = "0.0.0-independent-user-install"
-    manifest.write_text(json.dumps(contents))
-    device.admin = True
-    mdm.remove()
-    device.admin = False
-    mdm.sync_user()
-    assert cowork._registered_marketplace_source(root) == device.source
-    assert manifest.read_text() == json.dumps(contents)
 
 
 def test_location_discovery_reuses_provisioning_auth(device, monkeypatch):
@@ -494,14 +395,14 @@ def test_refresh_preserves_conflicting_installations(device, monkeypatch, tmp_pa
     assert other.exists()
 
 
-def test_edited_owned_policy_blocks_update_and_removal(device):
+def test_reconfigure_replaces_edited_generated_policy(device):
     mdm.configure(WORKSPACE, "admin")
-    mdm.POLICY_PATH.write_text("externally changed")
-    before = _snapshot(device)
-    for operation in (lambda: mdm.configure(WORKSPACE, "admin"), mdm.remove):
-        with pytest.raises(RuntimeError, match="edited externally"):
-            operation()
-        assert _snapshot(device) == before
+    original = mdm.POLICY_PATH.read_bytes()
+    edited = plistlib.loads(original)
+    edited["inferenceGatewayBaseUrl"] = "https://other.example"
+    mdm.POLICY_PATH.write_bytes(plistlib.dumps(edited))
+    mdm.configure(WORKSPACE, "admin")
+    assert mdm.POLICY_PATH.read_bytes() == original
 
 
 def test_dry_run_has_no_auth_discovery_or_writes(device):
@@ -867,13 +768,3 @@ def test_cli_dispatches_mdm_without_normal_agent_configuration(device, monkeypat
     monkeypatch.setattr(cli, "revert", Mock(side_effect=AssertionError("normal revert")))
     assert CliRunner().invoke(cli.app, ["revert", "--mdm-desktop"]).exit_code == 0
     remove.assert_called_once()
-
-
-@pytest.mark.parametrize("partial", [{}, {"configuration": None}, {"configuration": []}, []])
-def test_remove_with_incomplete_state_preserves_deployment(device, partial):
-    mdm.configure(WORKSPACE, "admin")
-    (mdm.MDM_ROOT / "state.json").write_text(json.dumps(partial))
-    before = _snapshot(device)
-    with pytest.raises(RuntimeError, match="state is incomplete.*Restore its provisioning backup"):
-        mdm.remove()
-    assert _snapshot(device) == before

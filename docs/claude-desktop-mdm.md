@@ -1,177 +1,95 @@
 # Claude Desktop deployment through MDM on macOS
 
-Run `ug configure --agents claude --global` as root from your MDM script.
-Provide a workspace URL or an administrator's Databricks CLI profile:
+Run as root from your MDM script:
 
 ```sh
-/opt/unitygateway/venv/bin/ug configure \
-  --agents claude --global --workspace https://workspace.databricks.com
-```
-
-For Desktop, this publishes a machine policy and a root marketplace
-without needing an initialized Desktop account. A LaunchAgent installs and refreshes
-the marketplace through each user's normal Cowork plugin registration. It does not use
-the organization plugin loader, which behaved differently for connector discovery in
-the earlier pilot. This command also configures Claude Code; other requested agents
-keep their own scope handling. Use `--mdm-desktop` instead of `--global` for the existing
-Desktop-only provisioning command. Windows and Linux skip Desktop under `--global`
-and reject `--mdm-desktop`.
-
-| Configure scope | Desktop files written |
-| --- | --- |
-| No flag | User 3P profile, user marketplace source and registration/cache; root files untouched |
-| `--user` | User 3P profile, user marketplace source and registration/cache; root files untouched |
-| `--global` | macOS managed plist, root marketplace, shared helpers/state and LaunchAgent; existing user profile/source untouched |
-
-Default and `--user` use only user-level Desktop files on every supported platform.
-`UG_SKIP_OS_SETTINGS` is incompatible with MDM.
-The explicit `--global` selection lasts for that configure run only. It is not inferred
-from the saved `global` scope, so subsequent no-flag configure writes only user files.
-MDM provisioning does not create a provisioning-user Desktop profile, source or registration.
-Afterward, the LaunchAgent runs as each logged-in user and maintains the native plugin
-registration/cache and user tracking required by Desktop.
-
-## Prerequisites
-
-Deploy Claude Desktop and a shared runtime before running configure. This command
-does not install Python, UG, the Databricks CLI, or the Claude CLI. All four must be
-root-owned, readable/executable by device users, and not writable by group or other
-users. Their parent directories must also be protected and traversable. Installs in
-`/Users`, `/var/root`, or an administrator's private virtual environment are rejected.
-Every intermediate executable symlink must also have a protected parent directory.
-Use a standalone Claude CLI binary that supports `plugin ... --cowork --json`.
-Keep shared runtime updates under MDM control.
-
-For example, an organization can package Python under `/opt/unitygateway/python`,
-the standalone Claude and Databricks CLIs under `/opt/unitygateway/bin`, and UG with
-its dependencies as wheels under `/opt/unitygateway/wheels`. From the MDM script,
-create the environment using that staged package:
-
-```sh
-umask 022
-/opt/unitygateway/python/bin/python3 -m venv /opt/unitygateway/venv
-/opt/unitygateway/venv/bin/python -m pip install --no-index \
-  --find-links /opt/unitygateway/wheels 'unity-gateway==<approved-version>'
-```
-
-Replace `<approved-version>` with the version in your wheel set. Obtain packages
-through your organization's approved distribution process; this example downloads
-nothing. The environment must contain the installed UG package, not a checkout
-reachable only through `PYTHONPATH`. Provision with `/opt/unitygateway/bin` on `PATH`
-so UG binds to those shared CLI binaries. Do not copy an administrator's OAuth cache
-or private home directory into this package.
-
-The workspace needs at least one accessible Claude model. Its coding-agent config
-supplies the Claude model source, headers, tracing, MCP services, and downloadable
-skills. Without a managed config, the deployment uses discovered Claude models and
-no managed skills/connectors. With `--mdm-desktop`,
-`--mcp system.ai.slack,system.ai.github` can additionally select named Desktop MCP services.
-With `--global`, `--mcp` selects services for CLI clients; the Desktop marketplace uses
-workspace-managed connectors only. The first version requires a dedicated workspace hostname;
-account URLs requiring a workspace-ID selector are rejected.
-
-If an earlier UG version or a pilot already owns the root marketplace,
-revert that installation through its original owner before deploying MDM. Likewise,
-remove a previous third-party mobileconfig through its MDM owner. UG refuses to
-overwrite foreign or externally edited policy/helper files. The generated root marketplace
-directory belongs entirely to UG and is replaced on provisioning, including manual edits.
-Remove any previous
-`/Library/Application Support/Claude/org-plugins/ug` pilot before refreshing plugins.
-
-## Provisioning and authentication
-
-```sh
-export PATH="/opt/unitygateway/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 /opt/unitygateway/venv/bin/ug configure --agents claude --global \
   --workspace https://workspace.databricks.com
 ```
 
-UG obtains one provisioning credential and reuses it to read the workspace policy,
-discover models/connectors, and download skill bundles. Unattended scripts can supply
-the existing `DATABRICKS_BEARER` or `DATABRICKS_BEARER_COMMAND` mechanism using their
-secret broker. To use cached Databricks OAuth credentials, supply `--profile <name>`.
-A headless MDM process needs a usable credential before this command. When Claude is
-selected explicitly (`--agents claude` or `--agent claude`), `--global` uses existing
-credentials without forcing browser login. `--mdm-desktop` follows the same rule.
-Both paths fail before publishing Desktop files if credentials are unavailable.
+This generates Claude Desktop's machine plist and a root marketplace containing
+workspace-managed connectors, skills/assets, and hooks. A LaunchAgent registers that
+source through each user's normal Cowork plugin loader and refreshes its installed cache.
+Provisioning does not need a Cowork account and does not write the administrator's
+Desktop profile, user marketplace, or plugin registration.
 
-An empty enabled-agent list leaves Claude unrestricted. With no managed config or a
-feature-disabled config API, provisioning uses model discovery without managed assets.
-An explicit agent list that excludes Claude still blocks provisioning.
+| Configure scope | Desktop destinations |
+| --- | --- |
+| Default or `--user` | User 3P JSON, user marketplace, and user registration/cache; root files untouched |
+| Explicit `--global` | macOS machine plist, root marketplace, shared helpers, and LaunchAgent |
 
-Provisioning also requires a root-owned PATH with no group/other-writable directories.
-With explicit Claude selection, `--global` validates Databricks CLI candidates and the
-selected Claude executable before installation, profile lookup or version discovery can
-execute them, including profile lookup during a dry run. `--mdm-desktop` performs the same
-validation. MCP-only `--mcp` requests without agent flags do not provision Desktop or require
-its shared runtimes.
-Without agent flags, configure retains its normal authentication and discovery flow
-before managed policy or the interactive picker chooses the agents; Desktop prerequisites
-apply only if Claude is selected. For unattended Desktop provisioning, pass
-`--agents claude` explicitly.
+`--global` also configures the requested CLI agents under their existing scope rules.
+Use `--mdm-desktop` instead for Desktop-only provisioning. Windows/Linux skip Desktop
+under `--global` and reject `--mdm-desktop`. Saved `global` scope does not change the
+Desktop behavior of a later default/user configure. Ordinary revert leaves MDM intact.
 
-No provisioning token or administrator profile is written into the machine policy
-or plugin. The runtime wrapper clears provisioning credential overrides and binds
-to the shared Python and CLIs. Each user's Desktop helper uses a separate
-`UG_DESKTOP_<workspace-hash>` OAuth profile in that user's own Databricks configuration.
-The existing helper permits browser sign-in only on an interactive Desktop auth request.
-The explicit Desktop OAuth profile does not inherit PAT mode from an unrelated saved
-UG profile. Background refresh never initiates authentication. Connector consent, subscription
-relay login when configured, and subsequent token refresh remain per-user operations.
+## Prerequisites and authentication
 
-`--user` cannot be combined with `--global` or `--mdm-desktop`. Desktop MDM does not
-support PAT/custom OAuth profiles or hosts with a selected workspace ID; use a dedicated
-workspace hostname. With explicit Claude selection or `--mdm-desktop`, PAT/custom OAuth
-and selected-workspace requests fail before authentication or agent configuration.
-The Desktop-only `--mdm-desktop` path also rejects
-model-source overrides and Databricks AI Tools installation flags; its `--mcp` selects
-additional services. `--global` uses workspace-managed skills and connectors.
-Desktop provisioning errors fail `--global`, rather than becoming best-effort warnings.
-`--mdm-desktop --dry-run` reports machine destinations without authentication,
-discovery or writes. With `--global --dry-run`, Desktop also only reports its destinations;
-other agents retain their normal dry-run behavior. Ordinary configure and revert leave
-the root deployment untouched; use `ug revert --mdm-desktop` to remove it.
+Install shared Python/UG, Databricks CLI, Claude CLI, and Desktop before provisioning.
+UG does not install these shared runtimes. Python must import the installed UG package
+without `PYTHONPATH`; the Claude CLI must support `plugin ... --cowork --json`.
+Executables, packages, and their parent directories must be root-owned, accessible to
+all device users, and not writable by group/other users. Administrator-home installs
+are rejected. Set PATH to shared, protected directories before running the command.
+Obtain packages through your organization's approved distribution process.
 
-## Files and startup
+Use a dedicated workspace hostname with at least one accessible Claude model. PAT/custom
+OAuth and hosts requiring a workspace-ID selector are unsupported for Desktop MDM.
+The workspace's managed configuration supplies models, headers/tracing, skills, and MCPs.
+Without a managed config, UG discovers Claude models without managed skills/connectors.
+An explicit enabled-agent list excluding Claude prevents provisioning.
+
+Supply an existing provisioning credential through `DATABRICKS_BEARER`,
+`DATABRICKS_BEARER_COMMAND`, or cached Databricks OAuth with `--profile <name>` instead
+of `--workspace`. With explicit Claude selection (`--agents claude` / `--agent claude`),
+`--global` validates shared CLI paths before profile lookup/version probes and does not
+force browser login. `--mdm-desktop` follows the same rule. Omitted-agent configure
+retains normal authentication/discovery before policy or the picker selects agents;
+Desktop prerequisites apply only if Claude is selected. Use explicit agents for MDM.
+
+Provisioning reuses one token for discovery/download and never stores it in machine
+files. Shared helpers discard provisioning credential overrides and use each user's
+separate `UG_DESKTOP_<workspace-hash>` OAuth profile. Browser sign-in happens only on
+an interactive Desktop credential request. Background plugin refresh never authenticates;
+connector consent and subscription relay sign-in remain per-user.
+
+`--global --mcp` adds services to CLI clients; Desktop receives workspace-managed MCPs.
+`--mdm-desktop --mcp system.ai.slack,system.ai.github` adds named Desktop services.
+`--user` and `UG_SKIP_OS_SETTINGS` are incompatible with MDM. Desktop-only mode rejects
+model-source overrides and AI Tools installer flags. Explicit Desktop provisioning
+errors fail configure. Desktop dry runs report destinations without publishing files;
+other agents retain their own dry-run behavior.
+
+## Machine files and user registration
 
 | Location | Contents |
 | --- | --- |
-| `/Library/Managed Preferences/com.anthropic.claudefordesktop.plist` | Machine third-party inference and optional tracing policy |
-| `/Library/Application Support/UnityGateway/claude-cowork-marketplace` | Marketplace manifest and `plugins/ug`: plugin manifest, `.mcp.json`, hooks, skills, and supporting assets |
-| `/Library/Application Support/UnityGateway/claude-desktop-mdm` | Shared command wrapper, optional tracing helper, readable deployment record, private ownership state and lock |
-| `/Library/LaunchAgents/com.databricks.unity-gateway.claude-desktop.plist` | Per-user registration/refresh job |
-| `~/.ucode/claude-desktop-mdm.json` | User's installed version/account tracking and pending cleanup |
-| `~/Library/Application Support/Claude-3p/local-agent-mode-sessions/<account>/<org>/cowork_plugins` | Native user registration and installed plugin cache |
+| `/Library/Managed Preferences/com.anthropic.claudefordesktop.plist` | Inference and optional tracing policy |
+| `/Library/Application Support/UnityGateway/claude-cowork-marketplace` | Marketplace manifest and `plugins/ug`: MCPs, hooks, skills/assets |
+| `/Library/Application Support/UnityGateway/claude-desktop-mdm` | Shared `ug` wrapper, optional tracing helper, runtime information in `deployment.json` |
+| `/Library/LaunchAgents/com.databricks.unity-gateway.claude-desktop.plist` | User login/refresh job |
 
-Existing root marketplace contents must remain root-owned, readable by device users,
-and free of links or special files. Update and removal reject unsafe entries before
-creating a marketplace backup.
+Only inference/tracing settings go in the plist. Values use Anthropic's documented
+string encoding, including JSON strings for arrays, objects, and booleans. UG writes
+the plist directly; it does not export a mobileconfig. See Anthropic's
+[MDM reference](https://claude.com/docs/third-party/claude-desktop/mdm).
 
-Only inference/tracing settings go in the managed plist. Values use Anthropic's
-documented string encoding, including JSON strings for arrays, objects, and booleans.
-This writes the documented machine plist directly; it does not export a `.mobileconfig`.
-Managed inference settings override the local third-party profile. A separate per-user
-managed plist can override machine keys, so check for competing policies when testing.
-See Anthropic's [MDM reference](https://claude.com/docs/third-party/claude-desktop/mdm).
+Remove competing mobileconfigs through their MDM owner and any old
+`/Library/Application Support/Claude/org-plugins/ug` pilot before provisioning.
+UG preserves an existing policy whose credential helper belongs to another deployment.
+Its own generated files and marketplace are replaced, including manual edits. Local
+administrator skills, project skills, and independent plugins are not distributed.
 
-The LaunchAgent runs at login and every 60 seconds. Configure also attempts to start
-it for the current console user. With no initialized Cowork account, refresh does
-nothing and retries later. Once Desktop creates an account/org directory, refresh
-uses the Claude CLI's native marketplace/install/update commands. Multiple ambiguous
-account directories produce an error instead of guessing. Other users' files are
-never written by root.
+The LaunchAgent runs at login and every 60 seconds; configure also tries to start it
+for the current console user. With no Cowork account, it waits for Desktop to create
+one. It then uses native Claude marketplace/install/update commands to maintain one
+`ug@unity-gateway-cowork` registration and matching cached version in that account's
+`cowork_plugins` directory. Unrelated plugins are preserved. There is no per-user MDM
+tracking file or cleanup queue. Refresh can switch UG's standard user registration to
+the root source; ambiguous or conflicting account/source selections fail without guessing.
 
-There is one `ug@unity-gateway-cowork` registration in the selected account. Refresh
-can migrate an existing registration from UG's standard user marketplace; that source
-copy can remain on disk without being registered twice. Unrelated plugins are preserved.
-All connector commands and hooks use the machine wrapper with per-user authentication.
-The generated connector guidance and hook behavior are shared with ordinary configure.
-Only workspace-managed downloadable skills are copied; administrator-local skills,
-project skills, and independent third-party plugins are not distributed.
-
-On a fresh laptop, open Cowork, complete its sign-in flow, allow the refresh to finish,
-then start a new task. The first task may precede plugin installation. To refresh
-immediately as the logged-in user, without sudo:
+After opening Cowork and completing user sign-in, wait for refresh and start a new task.
+To refresh immediately, run without sudo:
 
 ```sh
 "/Library/Application Support/UnityGateway/claude-desktop-mdm/ug" desktop-mdm-sync
@@ -179,82 +97,60 @@ immediately as the logged-in user, without sudo:
 
 ## Updates and removal
 
-Rerun the provisioning command to fetch current workspace configuration and publish
-new contents. The plugin version is derived from its contents. Each user's refresh
-updates the native installed cache; changing the root source alone is insufficient.
-Start a new task after a plugin update, and restart Desktop after policy changes.
-There is no automatic workspace-policy fetch from the login job: MDM controls publication.
-Run manual user refresh, ordinary configure, and revert one at a time; they have no shared lock.
-While MDM is enabled, its refresh restores the root-source plugin registration after
-ordinary configure selects a user source. Remove MDM before switching to user-managed setup.
+Rerun provisioning to publish workspace changes. Content-derived plugin versions
+trigger each user's cache update; root files alone do not update installed plugins.
+Start a new task after plugin changes and restart Desktop after policy changes.
+The login job does not fetch workspace policy. While enabled, it restores root-source
+registration after ordinary configure selects a user source.
 
-Publication validates policy/helper ownership, stages the source, and rolls back files and source
-on write failures. Incomplete skill discovery/download fails the deployment instead
-of publishing a partial set. A failed rollback reports retained recovery files.
-Do not treat these transactions as power-loss recovery guarantees.
+Publication reuses existing bundle replacement and atomic file writers. Discovery and
+skill downloads finish before publication. There is no cross-file transaction, recovery
+backup, or ownership ledger: after a partial publication failure, rerun configure.
+Run provisioning and manual user refresh serially.
 
-Remove the deployment as root:
+User plugin removal is manual. Quit Desktop and unload the refresh job in each active
+user session:
+
+```sh
+launchctl bootout gui/$(id -u)/com.databricks.unity-gateway.claude-desktop
+```
+
+Remove the UG plugin and marketplace through Desktop's plugin settings or native
+Claude commands for each Cowork account:
+
+```sh
+CLAUDE_CONFIG_DIR="<Cowork account/org directory>" /opt/unitygateway/bin/claude \
+  plugin uninstall ug@unity-gateway-cowork --cowork
+CLAUDE_CONFIG_DIR="<Cowork account/org directory>" /opt/unitygateway/bin/claude \
+  plugin marketplace remove unity-gateway-cowork --cowork
+```
+
+Then remove machine files as root:
 
 ```sh
 /opt/unitygateway/venv/bin/ug revert --mdm-desktop
 ```
 
-This removes the owned machine policy and marketplace and disables the deployment.
-It retains the wrapper, LaunchAgent, and deployment/ownership records so users who
-were logged out can clean their registrations at their next login. Per-user cleanup
-removes tracked MDM installations, including interrupted refreshes, while preserving
-registrations that switched to another source or version. It leaves user credentials
-and unrelated plugins intact. Keep the shared runtime until cleanup has run for every
-affected user. After every affected user has completed cleanup, stop the job in each
-loaded user session (replace `<uid>` with that user's numeric ID):
+This deletes the policy, root marketplace, shared helpers/runtime record, and LaunchAgent
+file. It does not visit user homes or remove cached plugins. Logged-out users must
+remove their cached UG plugin when they next sign in; no deferred cleanup job remains.
+User credentials and unrelated plugins are unchanged. Local 3P profiles can become active
+again after the machine policy is removed.
 
-```sh
-sudo launchctl bootout gui/<uid>/com.databricks.unity-gateway.claude-desktop
-```
+## Native validation
 
-Then remove the retained machine files as root:
+Component tests replace workspace APIs, ownership, launchd, and native Claude commands;
+they establish file placement, auth separation, cache refresh, and machine-file removal.
+Earlier macOS testing verified skills/connectors and a shared-runtime Gmail call, but
+the simplified lifecycle needs fresh native validation before fleet rollout:
 
-```sh
-sudo rm /Library/LaunchAgents/com.databricks.unity-gateway.claude-desktop.plist
-sudo rm -rf "/Library/Application Support/UnityGateway/claude-desktop-mdm"
-```
-
-This stops the periodic refresh. Removing these files before per-user cleanup finishes
-prevents logged-out users from cleaning their tracked registrations automatically.
-If removal reports incomplete ownership state, restore the provisioning backup before
-retrying; UG preserves the deployment rather than guessing which files it owns.
-
-Ordinary `ug revert` does not disable MDM: the refresh job can reinstall the managed
-plugin. Use `ug revert --mdm-desktop` for administrator removal. Local 3P profiles were
-not changed by MDM and can become active again after its policy is removed.
-
-## Native validation checklist
-
-The existing marketplace pilot verified skills and connector calls on macOS Claude
-Desktop 4.4212.0, including source updates and one registration without duplicates.
-Those results do not validate this new launchd/provisioning path. Component tests
-replace workspace APIs, root ownership, launchd, and native Claude commands; they
-verify files, auth separation, cache refresh, rollback, and cleanup only.
-
-Before rollout, test this build on a Mac:
-
-1. Use a test account without an existing UG/mobileconfig/org-plugin installation.
-   Stage the shared runtime, then provision as root while Desktop is closed.
-2. Check the managed plist with `plutil -lint` and confirm generated `.mcp.json` and
-   hooks reference the machine wrapper, with no administrator home or credentials.
-3. Log in as a fresh standard user, open Cowork, complete user authentication, and
-   wait for refresh (or run the wrapper's `desktop-mdm-sync` command as that user).
-4. Start a new task. Invoke an installed workspace skill, make a real connector call,
-   and verify exactly one UG plugin in settings. File checks alone do not prove this.
-5. Change a managed skill's verification text, rerun root provisioning, and verify
-   the new text through skill invocation in a new task after refresh. Also test removal
-   of a skill/connector from workspace policy.
-6. Repeat with a second standard user. Neither user should inherit administrator or
-   other-user authentication. Verify logout/login refresh and expired-auth recovery.
-7. Revert as root while one user is logged out. Confirm policy removal immediately,
-   plugin removal for the active user, and deferred cleanup when the other user logs in.
-8. Reboot and run an MDM check-in. Confirm the directly written managed plist persists
-   and Desktop still reads it; macOS can rebuild Managed Preferences from installed profiles.
-
-Native launchd startup, first-user timing, Desktop policy precedence, browser consent,
-managed-plist persistence, and live tool/skill execution remain required rollout checks.
+1. Provision with no existing UG/mobileconfig/org-plugin installation. Check the plist
+   with `plutil -lint` and confirm MCP/hook commands use the shared wrapper.
+2. Log in as a fresh standard user, open Cowork, authenticate, and refresh. Invoke a
+   workspace skill and connector in a new task; verify exactly one UG plugin.
+3. Publish a skill/connector change, refresh, and verify the new contents through actual
+   invocation. Repeat with another user and confirm their credentials stay separate.
+4. Unload jobs and remove user plugins, then revert as root. Verify machine-file removal
+   and manual cleanup for an account that was logged out.
+5. Reboot and run an MDM check-in. Confirm the directly written plist persists and Desktop
+   reads it; macOS can rebuild Managed Preferences from installed profiles.

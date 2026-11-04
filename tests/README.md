@@ -520,14 +520,16 @@ cover skipping non-macOS platforms and surfacing provisioning prerequisite failu
 
 `test_desktop_mdm.py` covers macOS-only/root CLI guards, provisioning without a Cowork
 account, string-encoded machine policy, shared command bindings without admin credentials,
-managed skill assets/connectors, one native registration, explicit update and deferred
-removal, interrupted-account cleanup, foreign-policy preservation, generated-source replacement,
-rollback (including retained recovery files after restoration fails), rejection of
-linked/special/private existing marketplace entries before any backup copy, dry run,
-and reuse of provisioning authentication. CLI cases normalize spaced connector lists
-and reject multiple workspace URLs; malformed cached-plugin records remain untouched
-and are treated as missing installations. It reuses the temporary directory-copy fixture;
-workspace APIs, machine ownership, launchd, and Claude's registry/cache commands are simulated.
+managed skill assets/connectors, one native registration, cache updates, and machine-file
+removal that leaves user caches untouched. It checks foreign-policy preservation,
+generated-file replacement, failed discovery/download before publication, and repair by
+reconfiguration after a partial publication failure. CLI cases normalize spaced connector
+lists and reject multiple workspace URLs; malformed cached-plugin records remain untouched.
+It reuses the temporary directory-copy fixture; workspace APIs, machine ownership, launchd,
+and Claude's registry/cache commands are simulated.
+Cross-file recovery backups, ownership ledgers, account-switch cleanup, and deferred user
+uninstall have been deferred. Their former MDM-only tests were removed with that behavior;
+existing bundle replacement and ordinary user-plugin recovery tests remain.
 A real isolated Python child verifies the runtime probe can read the installed package path;
 this catches binary stdout being passed to `Path` during provisioning. Runtime paths are compared in the host OS format.
 Provisioning rejects selected shared-workspace hosts before authentication and missing
@@ -563,11 +565,10 @@ account-cleanup journeys remain covered; concurrent manual refresh/configure is 
 This does not establish native macOS MDM, launchd, fresh-user GUI login, or tool/skill execution.
 The rollout checklist is in `docs/claude-desktop-mdm.md`.
 
-MDM review regressions also cover the `claude-code` configure alias, refusal to remove
-an incomplete ownership record without changing the deployment, and missing-manifest
+MDM regressions also cover the `claude-code` configure alias and missing-manifest
 diagnostics that preserve the previous root bundle. MCP proxy and OTLP helper identity
 checks share the same lightweight saved-authentication predicate. These remain component
-checks; final launchd removal and native macOS execution require the documented checklist.
+checks; native launchd removal, manual user-plugin cleanup, and macOS execution require the documented checklist.
 
 `test_desktop_scope.py` exercises the configure CLI with real Desktop writers in temporary
 directories: no flag and `--user` write only the user source, and explicit

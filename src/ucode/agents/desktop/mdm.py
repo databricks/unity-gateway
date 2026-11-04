@@ -33,7 +33,6 @@ MDM_ROOT = Path("/Library/Application Support/UnityGateway/claude-desktop-mdm")
 POLICY_PATH = Path("/Library/Managed Preferences/com.anthropic.claudefordesktop.plist")
 AGENT_LABEL = "com.databricks.unity-gateway.claude-desktop"
 AGENT_PATH = Path("/Library/LaunchAgents") / f"{AGENT_LABEL}.plist"
-USER_STATE_FILENAME = "claude-desktop-mdm.json"
 
 
 def _require_macos(*, administrator: bool) -> None:
@@ -172,24 +171,6 @@ def _policy_values(profile: dict) -> dict[str, str]:
     }
 
 
-def _read_machine_state() -> dict:
-    path = MDM_ROOT / "state.json"
-    _check_machine_path(path)
-    return json.loads(path.read_bytes()) if path.exists() else {}
-
-
-def _owned_file(path: Path, state: dict) -> bytes | None:
-    _check_machine_path(path)
-    before = claude_config.read_optional_bytes(path)
-    if before is not None and hashlib.sha256(before).hexdigest() != state.get("files", {}).get(
-        str(path)
-    ):
-        raise RuntimeError(
-            f"Existing file is not this MDM installation or was edited externally: {path}. Remove the previous policy through its owner first."
-        )
-    return before
-
-
 def _machine_directory(path: Path) -> None:
     _check_machine_path(path)
     if path.exists():
@@ -201,112 +182,28 @@ def _machine_directory(path: Path) -> None:
     path.chmod(0o755)  # MDM scripts may run with a restrictive umask.
 
 
-def _check_marketplace_backup(root: Path) -> None:
-    pending = [root]
-    while pending:
-        path = pending.pop()
-        _check_machine_path(path, required=True)
-        info = path.lstat()
-        directory = stat.S_ISDIR(info.st_mode)
-        if not directory and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
-            raise RuntimeError(f"Refusing linked or special marketplace backup entry: {path}")
-        if not info.st_mode & stat.S_IROTH or (directory and not info.st_mode & stat.S_IXOTH):
+def _publish(source: Path | None, files: dict[Path, tuple[bytes | None, int]]) -> None:
+    for path in files:
+        _check_machine_path(path)
+    if POLICY_PATH.exists():
+        policy = plistlib.loads(POLICY_PATH.read_bytes())
+        if policy.get("inferenceCredentialHelper") != str(MDM_ROOT / "ug"):
             raise RuntimeError(
-                f"Marketplace backup entry must be accessible to device users: {path}"
+                "Existing Desktop policy is not this UG deployment; remove it through its MDM owner first."
             )
-        if directory:
-            pending.extend(path.iterdir())
-
-
-def _publish(
-    source: Path | None, files: dict[Path, tuple[bytes | None, int]], configuration: dict
-) -> None:
-    state_path = MDM_ROOT / "state.json"
-    previous = _read_machine_state()
-    changes = [
-        (path, _owned_file(path, previous), data, mode) for path, (data, mode) in files.items()
-    ]
     for path in files:
         _machine_directory(path.parent)
     system_path = managed_files.claude_desktop_marketplace_path()
-    assert system_path is not None
+    if system_path is None:
+        raise RuntimeError("Desktop MDM publication requires macOS.")
     _check_machine_path(system_path)
-    if system_path.exists():
-        _check_marketplace_backup(system_path)
-    state_before = claude_config.read_optional_bytes(state_path)
-    backup = Path(tempfile.mkdtemp(prefix="ug-mdm-rollback-")).resolve()
-    (backup / "files.json").write_bytes(
-        _json_bytes(
-            {
-                str(path): {
-                    "contents_hex": data.hex() if data is not None else None,
-                    "mode": stat.S_IMODE(path.stat().st_mode) if data is not None else None,
-                }
-                for path, data, _, _ in changes
-            }
-        )
+    managed_files.replace_privileged_bundle(system_path, source)
+    claude_config.write_configuration(
+        [
+            (path, claude_config.read_optional_bytes(path), data, mode)
+            for path, (data, mode) in files.items()
+        ]
     )
-    if state_before is not None:
-        (backup / "state.json").write_bytes(state_before)
-    retain_backup = False
-    try:
-        if system_path.exists():
-            shutil.copytree(system_path, backup / "marketplace", symlinks=True)
-        try:
-            managed_files.replace_privileged_bundle(system_path, source)
-            state = _read_machine_state()
-            owned = dict(previous.get("files", {}))
-            for path, (data, _) in files.items():
-                if data is None:
-                    owned.pop(str(path), None)
-                else:
-                    owned[str(path)] = hashlib.sha256(data).hexdigest()
-            state.update(files=owned, configuration=configuration)
-            claude_config.write_configuration(
-                [
-                    *changes,
-                    (
-                        state_path,
-                        claude_config.read_optional_bytes(state_path),
-                        _json_bytes(state),
-                        0o600,
-                    ),
-                ]
-            )
-        except Exception as exc:
-            try:
-                retain_backup = any(
-                    claude_config.read_optional_bytes(path) != before
-                    for path, before, _, _ in changes
-                )
-            except OSError:
-                retain_backup = True
-            try:
-                if (backup / "marketplace").exists():
-                    managed_files.replace_privileged_bundle(system_path, backup / "marketplace")
-                else:
-                    managed_files.replace_privileged_bundle(system_path, None)
-                claude_config.write_configuration(
-                    [
-                        (
-                            state_path,
-                            claude_config.read_optional_bytes(state_path),
-                            state_before,
-                            0o600,
-                        )
-                    ]
-                )
-            except Exception as rollback_error:
-                retain_backup = True
-                raise RuntimeError(
-                    f"MDM publication failed ({exc}); rollback failed ({rollback_error}). Recovery source retained at {backup}."
-                ) from rollback_error
-            if retain_backup:
-                raise RuntimeError(f"{exc}. Recovery files retained at {backup}.") from exc
-            raise
-    finally:
-        if not retain_backup:
-            shutil.rmtree(backup)
 
 
 def _validate_selector(selector: dict) -> None:
@@ -383,109 +280,97 @@ def configure(workspace: str, profile: str | None, *, mcp_names: list[str] | Non
             f"Desktop MDM provisioning needs an existing Databricks credential; "
             f"authenticate before running the MDM command: {exc}"
         ) from exc
-    _machine_directory(MDM_ROOT)
-    _check_machine_path(MDM_ROOT / ".lock")
-    with claude_config.locked(MDM_ROOT / ".lock"):
-        fetched = get_managed_config(workspace, token)
-        if fetched.reason and "feature_disabled" not in fetched.reason.lower():
-            raise RuntimeError(f"Could not read workspace configuration: {fetched.reason}")
-        managed = (
-            normalize_managed_config(fetched.manifest) if fetched.manifest is not None else None
+    fetched = get_managed_config(workspace, token)
+    if fetched.reason and "feature_disabled" not in fetched.reason.lower():
+        raise RuntimeError(f"Could not read workspace configuration: {fetched.reason}")
+    managed = normalize_managed_config(fetched.manifest) if fetched.manifest is not None else None
+    enabled_tools = managed_enabled_tools(managed or {})
+    if enabled_tools and "claude" not in enabled_tools:
+        raise RuntimeError("The workspace configuration does not enable Claude.")
+    state = {"workspace": workspace, "profile": profile}
+    parent_schema = None
+    if managed is not None:
+        state = resolve_state(managed, state, "claude")
+        if not managed_provider_service(managed, "claude"):
+            parent_schema = managed_unity_catalog_location(managed, "claude")
+    settings = setup.resolve_gateway_profile(state, parent_schema=parent_schema, token=token)
+    selector = (managed or {}).get("mcp_servers") or {}
+    _validate_selector(selector)
+    servers = _resolve_managed_mcp_servers(selector, workspace, profile, ["claude"], token=token)
+    if mcp_names is not None:
+        mcp_names = [name.strip() for name in mcp_names]
+        _validate_selector({"names": mcp_names})
+        servers += _resolve_managed_mcp_servers(
+            {"names": mcp_names}, workspace, profile, ["claude"]
         )
-        enabled_tools = managed_enabled_tools(managed or {})
-        if enabled_tools and "claude" not in enabled_tools:
-            raise RuntimeError("The workspace configuration does not enable Claude.")
-        state = {"workspace": workspace, "profile": profile}
-        parent_schema = None
-        if managed is not None:
-            state = resolve_state(managed, state, "claude")
-            if not managed_provider_service(managed, "claude"):
-                parent_schema = managed_unity_catalog_location(managed, "claude")
-        settings = setup.resolve_gateway_profile(state, parent_schema=parent_schema, token=token)
-        selector = (managed or {}).get("mcp_servers") or {}
-        _validate_selector(selector)
-        servers = _resolve_managed_mcp_servers(
-            selector, workspace, profile, ["claude"], token=token
+    user_profile = "UG_DESKTOP_" + hashlib.sha256(workspace.encode()).hexdigest()[:12]
+    helper = MDM_ROOT / "ug"
+    helper_args = [
+        "claude-desktop-auth",
+        "--host",
+        workspace,
+        "--profile",
+        user_profile,
+        "--mdm-desktop",
+    ]
+    if state.get("claude_relayed"):
+        helper_args += ["--relay", "--claude-binary", runtime["claude"]]
+    rendered = claude_config.render_profile(
+        **settings,
+        helper_command=helper,
+        helper_args=helper_args,
+        otel_headers_helper=MDM_ROOT / "otel-headers.sh",
+    )
+    policy = plistlib.dumps(_policy_values(rendered))
+    otel = (
+        claude_config.render_otel_helper(
+            [
+                str(helper),
+                "otel-headers",
+                "--host",
+                workspace,
+                "--profile",
+                user_profile,
+            ],
+            windows=False,
+        ).encode()
+        if settings["otel_endpoint"]
+        else None
+    )
+    mcp_config = cowork._cowork_mcp_config(servers, workspace, user_profile, executable=helper)
+    hooks = cowork._connector_hooks(mcp_config, workspace, user_profile, use_pat=False)
+    with tempfile.TemporaryDirectory(prefix="ug-mdm-stage-") as directory:
+        staging = Path(directory).resolve()
+        records = _download_skills(
+            workspace, token, (managed or {}).get("skills") or {}, staging / "skills"
         )
-        if mcp_names is not None:
-            mcp_names = [name.strip() for name in mcp_names]
-            _validate_selector({"names": mcp_names})
-            servers += _resolve_managed_mcp_servers(
-                {"names": mcp_names}, workspace, profile, ["claude"]
-            )
-        user_profile = "UG_DESKTOP_" + hashlib.sha256(workspace.encode()).hexdigest()[:12]
-        helper = MDM_ROOT / "ug"
-        helper_args = [
-            "claude-desktop-auth",
-            "--host",
-            workspace,
-            "--profile",
-            user_profile,
-            "--mdm-desktop",
-        ]
-        if state.get("claude_relayed"):
-            helper_args += ["--relay", "--claude-binary", runtime["claude"]]
-        rendered = claude_config.render_profile(
-            **settings,
-            helper_command=helper,
-            helper_args=helper_args,
-            otel_headers_helper=MDM_ROOT / "otel-headers.sh",
-        )
-        policy = plistlib.dumps(_policy_values(rendered))
-        otel = (
-            claude_config.render_otel_helper(
-                [
-                    str(helper),
-                    "otel-headers",
-                    "--host",
-                    workspace,
-                    "--profile",
-                    user_profile,
-                ],
-                windows=False,
-            ).encode()
-            if settings["otel_endpoint"]
-            else None
-        )
-        mcp_config = cowork._cowork_mcp_config(servers, workspace, user_profile, executable=helper)
-        hooks = cowork._connector_hooks(mcp_config, workspace, user_profile, use_pat=False)
-        with tempfile.TemporaryDirectory(prefix="ug-mdm-stage-") as directory:
-            staging = Path(directory).resolve()
-            records = _download_skills(
-                workspace, token, (managed or {}).get("skills") or {}, staging / "skills"
-            )
-            source = staging / "marketplace"
-            cowork._write_marketplace(source, source / "plugins/ug", records, mcp_config, hooks)
-            configuration = {
-                "version": 1,
-                "enabled": True,
-                "workspace": workspace,
-                "profile": user_profile,
-                "runtime": runtime,
-                "source_digest": cowork._marketplace_digest(
-                    cowork._marketplace_files(source) or {}
-                ),
+        source = staging / "marketplace"
+        cowork._write_marketplace(source, source / "plugins/ug", records, mcp_config, hooks)
+        configuration = {
+            "version": 1,
+            "workspace": workspace,
+            "profile": user_profile,
+            "runtime": runtime,
+        }
+        agent = plistlib.dumps(
+            {
+                "Label": AGENT_LABEL,
+                "ProgramArguments": [str(helper), "desktop-mdm-sync"],
+                "RunAtLoad": True,
+                "StartInterval": 60,
+                "ProcessType": "Background",
             }
-            agent = plistlib.dumps(
-                {
-                    "Label": AGENT_LABEL,
-                    "ProgramArguments": [str(helper), "desktop-mdm-sync"],
-                    "RunAtLoad": True,
-                    "StartInterval": 60,
-                    "ProcessType": "Background",
-                }
-            )
-            _publish(
-                source,
-                {
-                    helper: (_runtime_script(runtime), 0o755),
-                    MDM_ROOT / "otel-headers.sh": (otel, 0o755),
-                    MDM_ROOT / "deployment.json": (_json_bytes(configuration), 0o644),
-                    AGENT_PATH: (agent, 0o644),
-                    POLICY_PATH: (policy, 0o644),
-                },
-                configuration,
-            )
+        )
+        _publish(
+            source,
+            {
+                helper: (_runtime_script(runtime), 0o755),
+                MDM_ROOT / "otel-headers.sh": (otel, 0o755),
+                MDM_ROOT / "deployment.json": (_json_bytes(configuration), 0o644),
+                AGENT_PATH: (agent, 0o644),
+                POLICY_PATH: (policy, 0o644),
+            },
+        )
     _activate_logged_in_user()
 
 
@@ -519,28 +404,20 @@ def _activate_logged_in_user() -> None:
 
 def remove() -> None:
     _require_macos(administrator=True)
-    _check_machine_path(MDM_ROOT)
-    if not (MDM_ROOT / "state.json").exists():
+    if not MDM_ROOT.exists() and not POLICY_PATH.exists():
         return
-    _check_machine_path(MDM_ROOT / ".lock")
-    with claude_config.locked(MDM_ROOT / ".lock"):
-        previous = _read_machine_state()
-        if not isinstance(previous, dict) or not isinstance(previous.get("configuration"), dict):
-            raise RuntimeError(
-                f"Desktop MDM state is incomplete at {MDM_ROOT / 'state.json'}. "
-                "Restore its provisioning backup before retrying removal."
-            )
-        configuration = {**previous["configuration"], "enabled": False}
-        _publish(
-            None,
-            {
-                POLICY_PATH: (None, 0o644),
-                MDM_ROOT / "otel-headers.sh": (None, 0o755),
-                MDM_ROOT / "deployment.json": (_json_bytes(configuration), 0o644),
-            },
-            configuration,
-        )
-    _activate_logged_in_user()
+    _publish(
+        None,
+        {
+            POLICY_PATH: (None, 0o644),
+            AGENT_PATH: (None, 0o644),
+            MDM_ROOT / "ug": (None, 0o755),
+            MDM_ROOT / "otel-headers.sh": (None, 0o755),
+            MDM_ROOT / "deployment.json": (None, 0o644),
+        },
+    )
+    if not any(MDM_ROOT.iterdir()):
+        MDM_ROOT.rmdir()
 
 
 def _cached_version(cowork_root: Path) -> str | None:
@@ -558,20 +435,6 @@ def _cached_version(cowork_root: Path) -> str | None:
     return config_io.read_json_safe(plugin / ".claude-plugin/plugin.json").get("version")
 
 
-def _cleanup_registrations(
-    registrations: dict, source: Path, claude: str, *, keep: Path | None = None
-) -> None:
-    for directory, versions in registrations.items():
-        root = Path(directory)
-        if root == keep:
-            continue
-        version = _cached_version(root)
-        if cowork._registered_marketplace_source(root) == source and (
-            version in versions or version is None
-        ):
-            cowork._remove_plugin_registration(root, claude=claude)
-
-
 def sync_user() -> bool:
     _require_macos(administrator=False)
     path = MDM_ROOT / "deployment.json"
@@ -579,22 +442,12 @@ def sync_user() -> bool:
     configuration = json.loads(path.read_bytes())
     if configuration.get("version") != 1:
         raise RuntimeError("Unsupported Desktop MDM deployment version; update UG.")
-    system_source = managed_files.claude_desktop_marketplace_path()
-    assert system_source is not None
-    claude = configuration["runtime"]["claude"]
-    user_state = Path.home() / ".ucode" / USER_STATE_FILENAME
-    previous = config_io.read_json_safe(user_state)
-    registrations = previous.get("registrations", {})
-    if not configuration["enabled"]:
-        _cleanup_registrations(registrations, system_source, claude)
-        user_state.unlink(missing_ok=True)
-        return False
     if not cowork._cowork_roots():
         return False
+    system_source = managed_files.claude_desktop_marketplace_path()
+    if system_source is None:
+        raise RuntimeError("Desktop MDM refresh requires macOS.")
     _check_machine_path(system_source, required=True)
-    bundle = cowork._marketplace_files(system_source)
-    if bundle is None or cowork._marketplace_digest(bundle) != configuration["source_digest"]:
-        return False  # Publication may be between the source swap and deployment record.
     root = cowork.discover_cowork_root()
     source = cowork._registered_marketplace_source(root)
     if source is not None and source not in (cowork._marketplace_root(), system_source):
@@ -605,27 +458,11 @@ def sync_user() -> bool:
     version = json.loads((system_source / "plugins/ug/.claude-plugin/plugin.json").read_bytes())[
         "version"
     ]
-    current = (
-        previous.get("cowork_root") == str(root)
-        and previous.get("source_digest") == configuration["source_digest"]
-        and source == system_source
-        and _cached_version(root) == version
-    )
-    if not current:
-        # Record the intended version before native commands so an interrupted refresh is removable.
-        registrations[str(root)] = sorted({*registrations.get(str(root), []), version})
-        config_io.atomic_write_json(user_state, {**previous, "registrations": registrations})
-        cowork._install_plugin(root, system_source, claude=claude)
-        if _cached_version(root) != version:
-            raise RuntimeError(
-                "Desktop plugin refresh did not install the published version; retry refresh."
-            )
-    _cleanup_registrations(registrations, system_source, claude, keep=root)
-    updated = {
-        "cowork_root": str(root),
-        "source_digest": configuration["source_digest"],
-        "registrations": {str(root): [version]},
-    }
-    if updated != previous:
-        config_io.atomic_write_json(user_state, updated)
-    return not current
+    if source == system_source and _cached_version(root) == version:
+        return False
+    cowork._install_plugin(root, system_source, claude=configuration["runtime"]["claude"])
+    if _cached_version(root) != version:
+        raise RuntimeError(
+            "Desktop plugin refresh did not install the published version; retry refresh."
+        )
+    return True

@@ -386,7 +386,7 @@ class CodingAgentConfig:
 
 
 class FetchedManagedConfig(NamedTuple):
-    """A managed-config read: the raw API ``manifest`` (None when the workspace has none) and,
+    """A managed-config read: the normalized ``manifest`` (None when the workspace has none) and,
     when the read did not settle the question, the ``reason`` it failed (None on a clean answer)."""
 
     manifest: dict | None
@@ -534,10 +534,10 @@ _STUB_UNSET = _StubUnset()
 
 
 def get_managed_config(workspace: str, token: str) -> FetchedManagedConfig:
-    """Fetch the workspace's managed config in its API wire format.
+    """Fetch and normalize the workspace's managed config.
 
     Returns a :class:`FetchedManagedConfig`:
-    - ``manifest`` set, ``reason`` None — the raw manifest for the workspace's single config;
+    - ``manifest`` set, ``reason`` None — the normalized manifest for the workspace's single config;
     - both None — the workspace definitively has no managed config (not an error);
     - ``manifest`` None, ``reason`` set — the read didn't settle the question; ``reason`` says why.
 
