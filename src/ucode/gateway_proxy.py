@@ -160,9 +160,11 @@ class TokenCache:
         token = self._token_provider(force)
         expiry = _jwt_exp(token) or (time.time() + _DEFAULT_TTL_S)
         with self._state_lock:
+            # A non-forced lookup may only return the same rejected cached token.
+            if force or token != self._token:
+                self._generation += 1
             self._token = token
             self._expiry = expiry
-            self._generation += 1
 
     def _fresh_enough(self) -> bool:
         with self._state_lock:

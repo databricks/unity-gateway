@@ -546,6 +546,33 @@ class TestRetryOn401:
         assert client.sent_tokens == ["Bearer tok1", "Bearer tok2"]
         assert bytes(output.data).endswith(b"ok")
 
+    @pytest.mark.parametrize("background_rotates", [False, True])
+    def test_nonforced_lookup_only_supersedes_a_rejection_if_token_changes(
+        self, background_rotates
+    ):
+        forces = []
+
+        def provider(force):
+            forces.append(force)
+            return "tok2" if force or (background_rotates and len(forces) > 1) else "tok1"
+
+        cache = gateway_proxy.TokenCache(provider)
+
+        class BackgroundRefreshClient(_FakeClient):
+            def stream(self, *args, **kwargs):
+                response = super().stream(*args, **kwargs)
+                if len(self.sent_tokens) == 1:
+                    cache._expiry = 0
+                    assert cache.token == ("tok2" if background_rotates else "tok1")
+                return response
+
+        client = BackgroundRefreshClient([_FakeResp(401), _FakeResp(200, b"ok")])
+        output = _Collect()
+        _handle_handler(client, cache, output)._handle()
+        assert forces == ([False, False] if background_rotates else [False, False, True])
+        assert client.sent_tokens == ["Bearer tok1", "Bearer tok2"]
+        assert bytes(output.data).endswith(b"ok")
+
     def test_401_forces_refresh_and_retries(self):
         # A stale swap token yields 401; the proxy force-refreshes and retries,
         # this time succeeding, so Claude Code never sees the 401.
