@@ -176,9 +176,10 @@ launch writes their per-user settings as usual.
 there and the agents apply their native precedence. Configure fails while a managed file for the agent exists, since managed settings take
 precedence; later launches use whatever files are present.
 The choice is saved for launches after a successful configure; `ug configure` without `--user`
-and `ug revert` return to `--global`.
+and `ug revert` return to the default, which writes both.
 `--user` also fails for a workspace that publishes a managed config, which must be installed
-machine-wide; use `--global` for it.
+machine-wide: run `ug configure` without `--user`, or ask your administrator to run
+`ug configure --global`.
 
 ### Hosts that serve several workspaces
 

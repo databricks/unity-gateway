@@ -53,8 +53,8 @@ fails to configure fails the run only after the other agents and the MCP and ski
 OS-managed files like `UG_SKIP_OS_SETTINGS`: no administrator permission, and managed MCP servers
 register in user scope. Because OS-managed settings take precedence over user settings,
 `ug configure --user` fails before configuring any agent while a selected agent's OS-managed file
-exists (including Windows `requirements.toml`), whoever wrote it; `ug revert`, removal, or
-`--global` resolves it. Launches don't check: a managed file added later simply takes precedence.
+exists (including Windows `requirements.toml`), whoever wrote it; `ug configure` without `--user`,
+`ug revert`, or removing the file resolves it. Launches don't check: a managed file added later simply takes precedence.
 `UG_SKIP_OS_SETTINGS` doesn't check either: ug trusts the OS-managed files present and leaves them
 untouched. `ug configure` without `--user` and `ug revert` reset the scope to `global`.
 `ug configure --user` also fails when the selected workspace publishes a managed config, since that

@@ -534,8 +534,8 @@ def refuse_user_scope_over_managed_files(tools: list[str]) -> None:
         if path is not None and path.exists():
             raise RuntimeError(
                 f"`ug configure --user` can't be used while {display} managed settings exist at "
-                f"{path}; they take precedence over user settings. Run `ug revert` if ug wrote "
-                "them, ask your administrator to remove them, or use `ug configure --global`."
+                f"{path}; they take precedence over user settings. Run `ug configure` without "
+                "--user, run `ug revert` if ug wrote them, or ask your administrator to remove them."
             )
 
 
@@ -549,7 +549,8 @@ def refuse_user_scope_over_managed_config(workspace: str | None, managed: dict |
         return
     raise RuntimeError(
         f"`ug configure --user` can't be used with {workspace}: it publishes a managed config, "
-        "which must be installed machine-wide. Use `ug configure --global` (the default)."
+        "which must be installed machine-wide. Run `ug configure` without --user, or ask your "
+        "administrator to run `ug configure --global`."
     )
 
 

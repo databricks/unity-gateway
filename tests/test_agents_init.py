@@ -1326,7 +1326,9 @@ class TestConfigureToolUserScope:
         managed_files.set_config_scope("user")
 
         if exists:
-            with pytest.raises(RuntimeError, match=r"--user.*managed settings exist.*--global"):
+            with pytest.raises(
+                RuntimeError, match=r"--user.*managed settings exist.*without --user"
+            ):
                 agents_mod.refuse_user_scope_over_managed_files([tool])
         else:
             agents_mod.refuse_user_scope_over_managed_files([tool])
@@ -1349,8 +1351,13 @@ class TestConfigureToolUserScope:
 
     def test_managed_config_blocks_user_scope(self):
         managed_files.set_config_scope("user")
-        with pytest.raises(RuntimeError, match=r"--user.*publishes a managed config.*--global"):
+        with pytest.raises(
+            RuntimeError,
+            match=r"--user.*publishes a managed config.*without --user.*administrator.*--global",
+        ) as excinfo:
             agents_mod.refuse_user_scope_over_managed_config("https://ws.example.com", {"x": 1})
+        # `--global` writes only machine-wide settings now, so it is no longer the default.
+        assert "the default" not in str(excinfo.value)
 
     @pytest.mark.parametrize("scope", ["user", "global"])
     def test_no_managed_config_does_not_block(self, scope):
