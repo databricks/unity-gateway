@@ -167,14 +167,17 @@ Temporary filesystem destinations are real; external Claude registry/cache opera
 and platform privilege boundaries are simulated. These checks do not establish native
 Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
 `test_desktop_configure_cli.py` also checks explicit-global selection versus default and
-`--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers.
+`--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers. MDM cases also
+cover skipping non-macOS platforms and surfacing provisioning prerequisite failures.
 
 macOS `--mdm-desktop` provisioning and its per-user LaunchAgent are outside these
 Linux/Windows journeys. `../test_desktop_mdm.py` has component coverage for publication,
 auth separation, cache refresh, machine-policy conflicts, generated-source replacement,
 rollback, and deferred cleanup using
 temporary paths and simulated external boundaries. Its runtime-probe regression uses a real
-isolated Python child to catch binary stdout being passed to `Path` during provisioning.
+isolated Python child to catch binary stdout being passed to `Path` during provisioning. Runtime paths are compared in the host OS format.
+Provisioning rejects selected shared-workspace hosts before authentication and missing
+credentials before publication; browser login is disabled.
 Component fixtures also exercise API-format agent lists through the fetch gate and
 normalization, including headers/tracing, absent configs, and Claude enablement checks.
 User refresh follows the same serial registration flow without a shared Cowork lock;

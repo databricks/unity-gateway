@@ -512,7 +512,8 @@ that behavior. A null directory path was rejected by native registry validation;
 ignoring it during UG inspection does not establish automatic registry repair.
 This check does not establish native install/update failure recovery or Desktop GUI behavior.
 `test_desktop_configure_cli.py` also checks explicit-global selection versus default and
-`--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers.
+`--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers. MDM cases also
+cover skipping non-macOS platforms and surfacing provisioning prerequisite failures.
 
 `test_desktop_mdm.py` covers macOS-only/root CLI guards, provisioning without a Cowork
 account, string-encoded machine policy, shared command bindings without admin credentials,
@@ -521,7 +522,9 @@ removal, interrupted-account cleanup, foreign-policy preservation, generated-sou
 rollback, dry run, and reuse of provisioning authentication. It reuses the temporary directory-copy fixture;
 workspace APIs, machine ownership, launchd, and Claude's registry/cache commands are simulated.
 A real isolated Python child verifies the runtime probe can read the installed package path;
-this catches binary stdout being passed to `Path` during provisioning.
+this catches binary stdout being passed to `Path` during provisioning. Runtime paths are compared in the host OS format.
+Provisioning rejects selected shared-workspace hosts before authentication and missing
+credentials before publication; browser login is disabled.
 Managed-config responses use the API's agent list and pass through the real fetch gate
 and normalization; checks cover enum/name spellings, headers/tracing, omitted configs,
 and rejection when Claude is absent.

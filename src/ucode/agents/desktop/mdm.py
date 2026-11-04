@@ -27,7 +27,7 @@ from ucode.mcp import _resolve_managed_mcp_servers
 from ucode.os_compatibility import subprocess_cross_os, system_cross_os
 from ucode.skills_download import _fetch_bundles, _resolve_managed_skills, _write_bundle
 from ucode.ui import print_note, print_warning
-from ucode.workspace import split_workspace_key
+from ucode.workspace import split_workspace_key, workspace_id_args
 
 MDM_ROOT = Path("/Library/Application Support/UnityGateway/claude-desktop-mdm")
 POLICY_PATH = Path("/Library/Managed Preferences/com.anthropic.claudefordesktop.plist")
@@ -325,7 +325,7 @@ def configure(workspace: str, profile: str | None, *, mcp_names: list[str] | Non
         raise RuntimeError(
             "Unset UG_SKIP_OS_SETTINGS and use global scope for Desktop MDM provisioning."
         )
-    if split_workspace_key(workspace)[1] is not None:
+    if split_workspace_key(workspace)[1] is not None or workspace_id_args(workspace):
         raise RuntimeError("Desktop MDM currently requires a dedicated workspace hostname.")
     if config_io.is_dry_run():
         print_note(
@@ -333,10 +333,16 @@ def configure(workspace: str, profile: str | None, *, mcp_names: list[str] | Non
         )
         return
     runtime = _runtime()
+    try:
+        token = databricks.get_databricks_token(workspace, profile, browser_login=False)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"Desktop MDM provisioning needs an existing Databricks credential; "
+            f"authenticate before running the MDM command: {exc}"
+        ) from exc
     _machine_directory(MDM_ROOT)
     _check_machine_path(MDM_ROOT / ".lock")
     with claude_config.locked(MDM_ROOT / ".lock"):
-        token = databricks.get_databricks_token(workspace, profile, browser_login=True)
         fetched = get_managed_config(workspace, token)
         if fetched.reason:
             raise RuntimeError(f"Could not read workspace configuration: {fetched.reason}")

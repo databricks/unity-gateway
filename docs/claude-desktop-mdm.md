@@ -88,7 +88,8 @@ discover models/connectors, and download skill bundles. Unattended scripts can s
 the existing `DATABRICKS_BEARER` or `DATABRICKS_BEARER_COMMAND` mechanism using their
 secret broker. An interactive administrator can instead supply `--profile <name>`;
 normal Databricks CLI authentication applies. A headless MDM process needs a usable
-credential before this command; it cannot complete a browser login by itself.
+credential before this command. Provisioning never starts browser login and fails before
+publishing files if credentials are unavailable.
 
 No provisioning token or administrator profile is written into the machine policy
 or plugin. The runtime wrapper clears provisioning credential overrides and binds
@@ -99,7 +100,8 @@ Background refresh never initiates authentication. Connector consent, subscripti
 relay login when configured, and subsequent token refresh remain per-user operations.
 
 `--user` cannot be combined with `--global` or `--mdm-desktop`. Desktop MDM does not
-support PAT/custom OAuth profiles. The Desktop-only `--mdm-desktop` path also rejects
+support PAT/custom OAuth profiles or hosts with a selected workspace ID; use a dedicated
+workspace hostname. The Desktop-only `--mdm-desktop` path also rejects
 model-source overrides and Databricks AI Tools installation flags; its `--mcp` selects
 additional services. `--global` uses workspace-managed skills and connectors.
 Desktop provisioning errors fail `--global`, rather than becoming best-effort warnings.

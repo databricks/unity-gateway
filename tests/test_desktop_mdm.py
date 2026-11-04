@@ -16,7 +16,7 @@ import pytest
 from typer.testing import CliRunner
 
 from tests.test_desktop_marketplace import system_source as system_source
-from ucode import cli, config_io, desktop_auth, managed_config, mcp, skills_download
+from ucode import cli, config_io, desktop_auth, managed_config, mcp, skills_download, workspace
 from ucode.agents.desktop import claude_config, cowork, mdm, setup
 from ucode.databricks import AnthropicModelCatalog
 from ucode.skills_api import SkillRef
@@ -146,7 +146,7 @@ def test_provision_without_account_has_no_admin_credentials_or_user_writes(devic
     if os.name != "nt":
         assert (mdm.MDM_ROOT / "state.json").stat().st_mode & 0o777 == 0o600
         assert (mdm.MDM_ROOT / "ug").stat().st_mode & 0o777 == 0o755
-    device.auth.assert_called_once_with(WORKSPACE, "ADMIN_PROFILE", browser_login=True)
+    device.auth.assert_called_once_with(WORKSPACE, "ADMIN_PROFILE", browser_login=False)
     device.admin = False
     assert mdm.sync_user() is False  # An account appears only when the user opens Cowork.
     device.auth.assert_called_once()
@@ -207,6 +207,30 @@ def test_provision_rejects_workspace_without_claude(device):
     with pytest.raises(RuntimeError, match="does not enable Claude"):
         mdm.configure(WORKSPACE, "admin")
     assert not mdm.POLICY_PATH.exists()
+    assert not device.source.exists()
+
+
+def test_missing_provisioning_auth_fails_before_machine_writes(device):
+    device.auth.side_effect = RuntimeError("OAuth session expired")
+    with pytest.raises(RuntimeError, match="authenticate before.*OAuth session expired"):
+        mdm.configure(WORKSPACE, "ADMIN_PROFILE")
+    device.auth.assert_called_once_with(WORKSPACE, "ADMIN_PROFILE", browser_login=False)
+    device.activate.assert_not_called()
+    assert not mdm.MDM_ROOT.exists()
+    assert not device.source.exists()
+    assert not mdm.POLICY_PATH.exists()
+
+
+@pytest.mark.parametrize("workspace_key", [WORKSPACE, WORKSPACE + "?w=111"])
+def test_provision_rejects_shared_host_selection_before_auth(device, workspace_key):
+    workspace.activate(WORKSPACE, "111")
+    try:
+        with pytest.raises(RuntimeError, match="dedicated workspace hostname"):
+            mdm.configure(workspace_key, "ADMIN_PROFILE")
+    finally:
+        workspace.activate(None, None)
+    device.auth.assert_not_called()
+    assert not mdm.MDM_ROOT.exists()
     assert not device.source.exists()
 
 
@@ -474,7 +498,8 @@ def test_runtime_probe_reads_installed_package_path(monkeypatch):
     monkeypatch.setattr(mdm, "shutil", SimpleNamespace(which=lambda name: RUNTIME[name]))
     monkeypatch.setattr(mdm.databricks, "databricks_cli_path", lambda: RUNTIME["databricks"])
 
-    assert mdm._runtime() == {**RUNTIME, "python": os.path.abspath(sys.executable)}
+    expected = {name: str(Path(value)) for name, value in RUNTIME.items()}
+    assert mdm._runtime() == {**expected, "python": os.path.abspath(sys.executable)}
 
 
 def test_isolated_runtime_must_import_the_provisioning_package(monkeypatch):

@@ -58,6 +58,38 @@ def test_global_skips_user_desktop_setup(monkeypatch):
     machine_configure.assert_called_once_with("https://workspace.example", None)
 
 
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_global_skips_desktop_mdm_on_other_platforms(monkeypatch, platform):
+    from ucode.agents.desktop import mdm
+
+    managed_files.set_machine_wide_only(True)
+    monkeypatch.setattr(desktop_setup.sys, "platform", platform)
+    machine_configure = Mock()
+    profile_write = Mock()
+    monkeypatch.setattr(mdm, "configure", machine_configure)
+    monkeypatch.setattr(desktop_setup, "write_claude_desktop_profile", profile_write)
+    desktop_setup.configure_claude_desktop({"workspace": "https://workspace.example"})
+    machine_configure.assert_not_called()
+    profile_write.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["Run Desktop MDM provisioning as root", "UG is installed in an administrator's home"],
+)
+def test_global_desktop_provisioning_failure_is_reported(monkeypatch, message):
+    from ucode.agents.desktop import mdm
+
+    managed_files.set_machine_wide_only(True)
+    monkeypatch.setattr(desktop_setup.sys, "platform", "darwin")
+    monkeypatch.setattr(mdm, "configure", Mock(side_effect=RuntimeError(message)))
+    profile_write = Mock()
+    monkeypatch.setattr(desktop_setup, "write_claude_desktop_profile", profile_write)
+    with pytest.raises(RuntimeError, match=message):
+        desktop_setup.configure_claude_desktop({"workspace": "https://workspace.example"})
+    profile_write.assert_not_called()
+
+
 @pytest.fixture
 def configuration(monkeypatch):
     state = {
