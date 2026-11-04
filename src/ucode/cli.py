@@ -5110,7 +5110,11 @@ def configure(
                 mdm.configure(
                     target_workspace,
                     target_profile,
-                    mcp_names=mcp.split(",") if mcp is not None else None,
+                    mcp_names=(
+                        [name.strip() for name in mcp.split(",") if name.strip()]
+                        if mcp is not None
+                        else None
+                    ),
                 )
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 raise RuntimeError(f"Desktop MDM provisioning failed: {exc}") from exc

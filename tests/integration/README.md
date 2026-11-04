@@ -143,7 +143,8 @@ survive installation, reconfiguration, and revert unchanged. Revert also removes
 registration and generated user source. Root-file preservation is covered by component tests;
 the integration journeys do not inspect OS-managed directories.
 Desktop source placement, native-command simulation, MDM publication/recovery, CLI
-scope and argument validation, authentication isolation, and deferred cleanup have
+scope and argument validation (including connector whitespace and multiple workspaces),
+malformed cache inspection, authentication isolation, and deferred cleanup have
 [component coverage](../README.md). These checks use temporary destinations and simulate
 external workspace, ownership, launchd, and Claude registration boundaries.
 

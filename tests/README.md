@@ -523,7 +523,9 @@ account, string-encoded machine policy, shared command bindings without admin cr
 managed skill assets/connectors, one native registration, explicit update and deferred
 removal, interrupted-account cleanup, foreign-policy preservation, generated-source replacement,
 rollback (including retained recovery files after restoration fails), dry run,
-and reuse of provisioning authentication. It reuses the temporary directory-copy fixture;
+and reuse of provisioning authentication. CLI cases normalize spaced connector lists
+and reject multiple workspace URLs; malformed cached-plugin records remain untouched
+and are treated as missing installations. It reuses the temporary directory-copy fixture;
 workspace APIs, machine ownership, launchd, and Claude's registry/cache commands are simulated.
 A real isolated Python child verifies the runtime probe can read the installed package path;
 this catches binary stdout being passed to `Path` during provisioning. Runtime paths are compared in the host OS format.

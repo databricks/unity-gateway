@@ -361,6 +361,17 @@ def test_existing_policy_is_preserved_and_generated_source_is_replaced(device, t
         assert (device.source / "plugins/ug/.mcp.json").is_file()
 
 
+@pytest.mark.parametrize(
+    "plugins", [None, [], {cowork.PLUGIN_ID: [None]}, {cowork.PLUGIN_ID: [{"installPath": 123}]}]
+)
+def test_malformed_cached_plugin_registration_is_unmodified(tmp_path, plugins):
+    registry = tmp_path / "cowork_plugins/installed_plugins.json"
+    config_io.atomic_write_json(registry, {"plugins": plugins})
+    before = registry.read_bytes()
+    assert mdm._cached_version(tmp_path) is None
+    assert registry.read_bytes() == before
+
+
 def test_partial_refresh_can_be_removed_after_account_switch(device, monkeypatch, tmp_path):
     mdm.configure(WORKSPACE, "admin")
     device.admin = False
@@ -684,6 +695,10 @@ def test_machine_path_validation(monkeypatch, problem):
     [
         (["--agents", "claude"], "requires --workspace or --profile"),
         (["--workspace", WORKSPACE], "Use --mdm-desktop with --agents claude"),
+        (
+            ["--agents", "claude", "--workspace", f"{WORKSPACE},https://another.example"],
+            "--workspace takes a single workspace URL",
+        ),
         (["--workspace", WORKSPACE, "--user", "--agents", "claude"], "uses workspace policy"),
         (["--workspace", WORKSPACE, "--agents", "codex"], "Use --mdm-desktop with --agents claude"),
         (
@@ -758,11 +773,13 @@ def test_cli_dispatches_mdm_without_normal_agent_configuration(device, monkeypat
             "--workspace",
             WORKSPACE,
             "--mcp",
-            "system.ai.slack",
+            "system.ai.slack, system.ai.gmail, ",
         ],
     )
     assert result.exit_code == 0, result.output
-    configure.assert_called_once_with(WORKSPACE, None, mcp_names=["system.ai.slack"])
+    configure.assert_called_once_with(
+        WORKSPACE, None, mcp_names=["system.ai.slack", "system.ai.gmail"]
+    )
     remove = Mock()
     monkeypatch.setattr(mdm, "remove", remove)
     monkeypatch.setattr(cli, "revert", Mock(side_effect=AssertionError("normal revert")))

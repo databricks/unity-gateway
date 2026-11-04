@@ -516,10 +516,16 @@ def remove() -> None:
 
 def _cached_version(cowork_root: Path) -> str | None:
     registry = config_io.read_json_safe(cowork_root / "cowork_plugins/installed_plugins.json")
-    entries = registry.get("plugins", {}).get(cowork.PLUGIN_ID, [])
-    if not isinstance(entries, list) or len(entries) != 1 or not entries[0].get("installPath"):
+    plugins = registry.get("plugins")
+    if not isinstance(plugins, dict):
         return None
-    plugin = Path(entries[0]["installPath"])
+    entries = plugins.get(cowork.PLUGIN_ID, [])
+    if not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict):
+        return None
+    install_path = entries[0].get("installPath")
+    if not isinstance(install_path, str) or not install_path:
+        return None
+    plugin = Path(install_path)
     return config_io.read_json_safe(plugin / ".claude-plugin/plugin.json").get("version")
 
 
