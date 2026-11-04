@@ -206,12 +206,47 @@ def _windows_claude_header_mod_root() -> Path:
     return windows_claude_managed_settings_path().parent / "ucode-plugins"
 
 
+def claude_desktop_marketplace_path() -> Path | None:
+    if current_os() is OS.MACOS:
+        return Path("/Library/Application Support/UnityGateway/claude-cowork-marketplace")
+    if current_os() is OS.WINDOWS:
+        return (
+            system_cross_os.windows_program_files_dir() / "UnityGateway/claude-cowork-marketplace"
+        )
+    return None
+
+
 def claude_desktop_org_plugin_path() -> Path | None:
     if current_os() is OS.MACOS:
         return Path("/Library/Application Support/Claude/org-plugins/ug")
     if current_os() is OS.WINDOWS:
         return system_cross_os.windows_program_files_dir() / "Claude" / "org-plugins" / "ug"
     return None
+
+
+def replace_privileged_bundle(path: Path, source: Path | None) -> None:
+    """Copy or remove UG's Desktop marketplace in its system directory."""
+    if path != claude_desktop_marketplace_path():
+        raise RuntimeError(f"Refusing unexpected privileged bundle target: {path}")
+    if is_dry_run():
+        return
+    for folder in (path, *path.parents):
+        if folder.is_symlink() or folder.is_junction():
+            raise RuntimeError(f"Refusing linked Desktop plugin path: {folder}")
+    if current_os() is not OS.MACOS:
+        raise RuntimeError("System Desktop marketplaces require macOS.")
+    if not system_cross_os.is_admin():
+        raise RuntimeError("Run Desktop MDM publication as root from your MDM script.")
+    try:
+        with managed_write_session():
+            _session_worker().replace(
+                path, str(source.resolve()) if source is not None else "-", operation="BUNDLE"
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = str(getattr(exc, "stderr", None) or exc).strip()
+        raise ManagedFileWriteUnavailable(
+            f"Could not update Desktop plugin at {path}: {detail}. Resolve the error and retry."
+        ) from exc
 
 
 def reconcile_privileged_files(files: dict[Path, str], *, display: str) -> None:
@@ -1460,11 +1495,11 @@ class _SudoReplaceWorker:
         """Whether this worker can still serve requests (authenticated and running)."""
         return not self._broken and self.process.poll() is None
 
-    def replace(self, path: Path, source_path: str) -> None:
+    def replace(self, path: Path, source_path: str, *, operation: str = "REPLACE") -> None:
         request_id = str(self._next_request_id)
         self._next_request_id += 1
         fields = (
-            "REPLACE",
+            operation,
             request_id,
             _encode_worker_arg(source_path),
             _encode_worker_arg(str(path)),

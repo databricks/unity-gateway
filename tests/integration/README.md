@@ -160,7 +160,10 @@ Unreferenced root-path sentinels and an ineffective temporary-directory alias te
 removed; content updates and empty-payload cache refresh now share one lifecycle test.
 Equivalent registered-directory aliases remain covered separately.
 Dry-run preservation covers both fresh and already-configured installations.
-Root bundle writer checks belong to the separate MDM follow-up.
+`test_desktop_bundle.py` covers macOS root-only publication, target/source validation,
+whole-bundle updates/removal, failed-replacement recovery, and linked/special-file rejection.
+It exercises the packaged POSIX shell with temporary path, ownership and OS adapters;
+Windows MDM is unsupported.
 The [component inventory](../README.md) records the isolated native CLI marketplace-add
 spot check; it does not establish Desktop GUI behavior or failure recovery.
 Temporary filesystem destinations are real; external Claude registry/cache operations

@@ -501,7 +501,10 @@ Unreferenced root-path sentinels and an ineffective temporary-directory alias te
 removed; content updates and empty-payload cache refresh now share one lifecycle test.
 Equivalent registered-directory aliases remain covered separately.
 Dry-run preservation covers both fresh and already-configured installations.
-Root bundle writer checks belong to the separate MDM follow-up.
+`test_desktop_bundle.py` covers macOS root-only publication, target/source validation,
+whole-bundle updates/removal, failed-replacement recovery, and linked/special-file rejection.
+It exercises the packaged POSIX shell with temporary path, ownership and OS adapters;
+Windows MDM is unsupported.
 Temporary filesystem destinations are real; external Claude registry/cache operations
 and platform privilege boundaries are simulated. These checks do not establish native
 Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.

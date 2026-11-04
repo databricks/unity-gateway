@@ -15,7 +15,7 @@ from unittest.mock import Mock
 import pytest
 from typer.testing import CliRunner
 
-from tests.test_desktop_marketplace import system_source as system_source
+from tests.test_desktop_bundle import system_source as system_source
 from ucode import cli, config_io, desktop_auth, managed_config, mcp, skills_download, workspace
 from ucode.agents.desktop import claude_config, cowork, mdm, setup
 from ucode.databricks import AnthropicModelCatalog

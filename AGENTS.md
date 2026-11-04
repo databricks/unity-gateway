@@ -198,9 +198,10 @@ and rollback. Native refresh failures retain the source/state for retry/revert. 
 restores the previous marketplace/plugin through native commands when possible, and
 reports a failed recovery with configure retry instructions. Ordinary
 revert removes user source/registration only. Explicit MCP/skill changes resync this source;
-launches do not. The shared privileged bundle writer remains for MDM publication; its
+launches do not. The privileged bundle writer is used only for MDM publication; its
 macOS worker accepts only root callers, validates root ownership, and rejects links/special
-files before copying. Unprivileged callers cannot elevate to publish a Desktop marketplace.
+files before copying. Staged replacement restores the previous bundle if publication fails.
+Unprivileged callers cannot elevate to publish a Desktop marketplace.
 The macOS Desktop MDM mode requires root and preinstalled, root-owned shared UG/Python,
 Databricks CLI, and Claude CLI runtimes. It publishes the managed plist, root marketplace,
 shared helpers/state, and a per-user LaunchAgent. No administrator-local profile, skills,

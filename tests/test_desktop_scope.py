@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import pytest
 from typer.testing import CliRunner
 
-from tests.test_desktop_marketplace import system_source as system_source
+from tests.test_desktop_bundle import system_source as system_source
 from tests.test_desktop_mdm import WORKSPACE
 from tests.test_desktop_mdm import device as device
 from ucode import cli, config_io, managed_files, workspace
