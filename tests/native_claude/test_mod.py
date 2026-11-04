@@ -161,6 +161,10 @@ def test_orchestrator_instructions_follow_native_toggles(native_binary, tmp_path
             for action in ("off", "on"):
                 result = session.send(f"/smart-router {action}")
                 assert f"Smart Router is {action}" in result["result"]
+                observed = session.observe()
+                assert observed["body"]["smart_router_recipe_name"] == (
+                    "DISABLED" if action == "off" else observed["options"]["recipe"]
+                )
                 assert agent_tool(session) == (routed_tool if action == "on" else native_tool)
                 saved = json.loads(controls.read_text())
                 if action == "on":
@@ -238,3 +242,31 @@ def test_native_process_inherits_settings_and_runs_python_cli(native_binary, tmp
         result = session.observe()["route"]
         assert result["exitCode"] == 0, result
         assert result["stdout"] == result["stderr"] == "", result
+
+
+def test_auto_concrete_command_tracks_recipe_and_preserves_body(native_binary, tmp_path):
+    """A real native concrete selection changes tracking, controls and orchestration together."""
+    env = {
+        "SMART_ROUTER_CONFIG_VERSION": config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY,
+        "PYTHONPATH": str(Path(__file__).parents[2] / "src"),
+        "SMART_ROUTER_NAME": "test-enabled-recipe",
+    }
+    controls = session_env.start_session(env)
+    try:
+        with Session(native_binary, tmp_path / "auto-recipe", env) as session:
+            assert session.observe()["body"] == {
+                "caller_field": "keep",
+                "smart_router_recipe_name": "test-enabled-recipe",
+            }
+            session.send("/model haiku")
+            observed = session.observe()
+            assert "haiku" in observed["model"].lower()
+            assert observed["body"] == {
+                "caller_field": "keep",
+                "smart_router_recipe_name": "DISABLED_AUTO",
+            }
+            assert set(observed["environment"].values()) == {"0"}
+            assert set(json.loads(controls.read_text()).values()) == {"0"}
+    finally:
+        controls.unlink(missing_ok=True)
+        controls.parent.rmdir()

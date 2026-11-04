@@ -33,7 +33,7 @@ export const register = (on, options) => {
     model: await $.session.model(),
     subagent: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),
     orchestrator: await $.env.get('ENABLE_SMART_ROUTER_ORCHESTRATOR'),
-    body: await $.env.get('CLAUDE_CODE_EXTRA_BODY'),
+    recipe: JSON.parse(await $.env.get('CLAUDE_CODE_EXTRA_BODY') || '{}').smart_router_recipe_name,
   })}));
 };
 """)
@@ -97,6 +97,7 @@ export const register = (on, options) => {
                 lambda text: '"subagent":"0","orchestrator":"0"' in text,
                 "fresh session activity is off",
             )
+            assert '"recipe":"DISABLED_AUTO"' in tui.visible
             tui.submit("/model haiku")
             tui.wait_for(
                 lambda _: (
@@ -107,6 +108,8 @@ export const register = (on, options) => {
                 timeout=15,
             )
             assert json.loads(controls.read_text())["ENABLE_SMART_ROUTER_ORCHESTRATOR"] == "0"
+            tui.submit("/auto-probe")
+            tui.wait_for(lambda text: '"recipe":"DISABLED_AUTO"' in text, "concrete recipe marker")
             off = controls.read_text()
             tui.submit("/model")
             tui.wait_for(lambda text: mode_prompt in text, "Auto popup")
@@ -133,6 +136,10 @@ export const register = (on, options) => {
                 timeout=15,
             )
             assert json.loads(controls.read_text())["ENABLE_SMART_ROUTER_ORCHESTRATOR"] == "1"
+            tui.submit("/auto-probe")
+            tui.wait_for(
+                lambda text: '"recipe":"stable"' in text, "Auto restores the enabled recipe"
+            )
             tui.wait_for(
                 lambda text: "unity gateway smart router" in text and "routing subagents" in text,
                 "Auto routing banner restored",
@@ -151,6 +158,8 @@ export const register = (on, options) => {
                 "native concrete choice disables Auto",
                 timeout=15,
             )
+            tui.submit("/auto-probe")
+            tui.wait_for(lambda text: '"recipe":"DISABLED_AUTO"' in text, "popup concrete recipe")
             if session_only:
                 tui.submit("/model haiku")
                 tui.wait_for(

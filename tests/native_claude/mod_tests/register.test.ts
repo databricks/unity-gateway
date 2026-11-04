@@ -301,3 +301,12 @@ test('Auto shows the existing ON routing-subagents banner and hides it in concre
   const concrete = await $.ui.mount(ABOVE_PROMPT);
   expect(hasBand(await concrete.drawn())).toBe(false);
 });
+
+test('concrete Auto-capable launch uses DISABLED_AUTO and preserves caller metadata', {
+  options: {...ROUTED, EXPOSE_AUTO_IN_MODEL_PICKER: '1'},
+}, async ($, on) => {
+  const {env} = setup(on, {launched: false});
+  on('session.start', () => ({cwd: '/work'}));
+  await $.session.start(start);
+  expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!)).toEqual({caller_field: 'keep', [RECIPE_FIELD]: 'DISABLED_AUTO'});
+});
