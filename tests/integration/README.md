@@ -1,21 +1,5 @@
 # Integration tests
 
-`../test_skills_download.py` covers shared-source refresh across project installs
-using temporary files and controlled fetches. It checks freshness, repair, collisions,
-attribution, and failure recovery; live skill API latency remains unmeasured.
-
-`test_ug_configure_managed_skills.py::test_ug_codex_repairs_shared_project_skill_downloads`
-uses the managed workspace's real `main.default.forkable-meals` skill. It adds the
-skill to three projects through public CLI commands, removes one agent copy in
-two projects, then completes a Codex TUI file task on the first normal launch.
-Both partial installations must be restored byte for byte, the current copy
-must retain its modification times, and source attribution must survive.
-Production debug logs must show exactly one successful metadata read and one
-successful bundle-root directory read for the shared source during launch. Its admin CodingAgentConfig input
-uses the existing `codex_skills_by_location` fixture; downloads and inference
-remain live. Select the case in the managed Codex lane with
-`-- -k test_ug_codex_repairs_shared_project_skill_downloads`.
-
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls
 still routing waiting for a later reply, distinct
@@ -1710,3 +1694,19 @@ coverage in `../test_mcp_proxy_shared.py`. The latter runs real relay/backend pr
 against a local HTTP MCP peer, checking concurrent session isolation, credentials,
 headers, EOF/reset disconnect diagnostics, crash recovery, local authentication, idle
 shutdown, and sign-in output with native line endings. These component checks do not establish live gateway or native Windows coverage.
+
+`../test_skills_download.py` covers shared-source refresh across project installs
+using temporary files and controlled fetches. It checks freshness, repair, collisions,
+attribution, and failure recovery; live skill API latency remains unmeasured.
+
+`test_ug_configure_managed_skills.py::test_ug_codex_repairs_shared_project_skill_downloads`
+uses the managed workspace's real `main.default.forkable-meals` skill. It adds the
+skill to three projects through public CLI commands, removes one agent copy in
+two projects, then completes a Codex TUI file task on the first normal launch.
+Both partial installations must be restored byte for byte, the current copy
+must retain its modification times, and source attribution must survive.
+Production debug logs must show exactly one successful metadata read and one
+successful bundle-root directory read for the shared source during launch. Its admin
+CodingAgentConfig input uses the existing `codex_skills_by_location` fixture;
+downloads and inference remain live. Select the case in the managed Codex lane
+with `-- -k test_ug_codex_repairs_shared_project_skill_downloads`.
