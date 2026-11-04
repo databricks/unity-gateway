@@ -621,6 +621,8 @@ def _registered_marketplace_source(cowork_root: Path) -> Path | None:
     if not isinstance(source, dict):
         return None
     raw_path = source.get("path")
+    if source.get("source") == "directory" and (not isinstance(raw_path, str) or not raw_path):
+        return None
     if (
         source.get("source") != "directory"
         or not isinstance(raw_path, str)

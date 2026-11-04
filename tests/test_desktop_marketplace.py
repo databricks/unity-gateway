@@ -46,9 +46,7 @@ def desktop_environment(tmp_path, monkeypatch, platform):
         if args[:2] == ["marketplace", "add"]:
             source = Path(args[2])
             manifest = json.loads((source / ".claude-plugin/marketplace.json").read_text())
-            known.setdefault(
-                manifest["name"], {"source": {"source": "directory", "path": str(source)}}
-            )
+            known[manifest["name"]] = {"source": {"source": "directory", "path": str(source)}}
         elif args[:2] == ["marketplace", "remove"]:
             known.pop(args[2], None)
         elif args[0] in ("install", "update"):
@@ -273,6 +271,17 @@ def test_downloaded_skills_follow_workspace_selection(system_source, tmp_path, m
         cowork._marketplace_root() / "plugins/ug/skills/selected/asset.bin"
     ).read_bytes() == b"\xff\x00"
     assert not (cowork._marketplace_root() / "plugins/ug/skills/foreign").exists()
+    version_before = json.loads((_installed_source() / ".claude-plugin/plugin.json").read_text())[
+        "version"
+    ]
+    (home / ".claude/skills/selected/asset.bin").write_bytes(b"asset-only update")
+    assert cowork.configure_cowork(WORKSPACE, [])
+    installed = _installed_source()
+    assert (installed / "skills/selected/asset.bin").read_bytes() == b"asset-only update"
+    assert (
+        json.loads((installed / ".claude-plugin/plugin.json").read_text())["version"]
+        != version_before
+    )
     assert cowork.configure_cowork({**WORKSPACE, "workspace": "https://other.example"}, [])
     assert (
         cowork._marketplace_root() / "plugins/ug/skills/foreign/SKILL.md"
@@ -380,6 +389,10 @@ def test_explicit_global_leaves_ordinary_cowork_files_untouched(system_source):
         "null",
         '{"unity-gateway-cowork": []}',
         '{"unity-gateway-cowork": {"source": null}}',
+        '{"unity-gateway-cowork": {"source": {"source": "directory"}}}',
+        '{"unity-gateway-cowork": {"source": {"source": "directory", "path": null}}}',
+        '{"unity-gateway-cowork": {"source": {"source": "directory", "path": 123}}}',
+        '{"unity-gateway-cowork": {"source": {"source": "directory", "path": ""}}}',
     ],
 )
 def test_malformed_marketplace_metadata_is_ignored(system_source, contents):

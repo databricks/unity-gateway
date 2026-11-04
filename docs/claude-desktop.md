@@ -133,6 +133,11 @@ alone. The existing user-source writer retains staged replacement and rollback.
 A native refresh failure leaves the user source and tracking state for retry or revert.
 If a source switch fails, UG attempts to restore the previous marketplace/plugin through
 native Claude commands. A failed restoration reports instructions to repair the installation.
+Malformed directory paths are ignored during UG's source inspection. The native
+Claude CLI still validates its registry. If it reports corruption, restore the
+account's `cowork_plugins/known_marketplaces.json` from a backup before retrying;
+UG does not rewrite a corrupted native registry automatically.
+
 Run configure and revert one at a time. Account changes use the existing cleanup flow
 before installing for the new account; no pending-cleanup queue or state migration is added.
 

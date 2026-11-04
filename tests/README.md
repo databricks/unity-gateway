@@ -435,8 +435,10 @@ Code authentication changes, with either the default scope or explicit `code=Fal
 `test_desktop_marketplace.py` covers ordinary default/`--user` configuration writing
 only the user source, no elevation, preservation of the registered legacy root source,
 one registration when switching an earlier root source to user scope, explicit cache
-refresh, content versions, downloaded workspace skills/assets, previous-account cleanup,
-malformed marketplace metadata, equivalent path aliases, source-switch failure recovery
+refresh, content versions (including asset-only skill updates), downloaded workspace
+skills/assets, previous-account cleanup,
+malformed marketplace metadata (including missing or nonstring directory paths),
+equivalent path aliases, source-switch failure recovery
 for both current and legacy-only plugin identities, preserved nonlocal registrations,
 and retained user source/state after refresh failures. Explicit global skips ordinary
 Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
@@ -450,6 +452,12 @@ Root bundle writer checks belong to the separate MDM follow-up.
 Temporary filesystem destinations are real; external Claude registry/cache operations
 and platform privilege boundaries are simulated. These checks do not establish native
 Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
+A native Linux spot check with Claude CLI 2.1.317 and an isolated home confirmed
+`marketplace add --cowork` preserves a repeated same-path registration and updates
+it for a different directory with the same marketplace name. The fixture follows
+that behavior. A null directory path was rejected by native registry validation;
+ignoring it during UG inspection does not establish automatic registry repair.
+This check does not establish native install/update failure recovery or Desktop GUI behavior.
 `test_desktop_configure_cli.py` also checks explicit-global selection versus default and
 `--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers.
 

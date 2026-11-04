@@ -120,8 +120,10 @@ the integration journeys do not inspect OS-managed directories.
 `test_desktop_marketplace.py` covers ordinary default/`--user` configuration writing
 only the user source, no elevation, preservation of the registered legacy root source,
 one registration when switching an earlier root source to user scope, explicit cache
-refresh, content versions, downloaded workspace skills/assets, previous-account cleanup,
-malformed marketplace metadata, equivalent path aliases, source-switch failure recovery
+refresh, content versions (including asset-only skill updates), downloaded workspace
+skills/assets, previous-account cleanup,
+malformed marketplace metadata (including missing or nonstring directory paths),
+equivalent path aliases, source-switch failure recovery
 for both current and legacy-only plugin identities, preserved nonlocal registrations,
 and retained user source/state after refresh failures. Explicit global skips ordinary
 Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
@@ -132,6 +134,8 @@ removed; content updates and empty-payload cache refresh now share one lifecycle
 Equivalent registered-directory aliases remain covered separately.
 Dry-run preservation covers both fresh and already-configured installations.
 Root bundle writer checks belong to the separate MDM follow-up.
+The [component inventory](../README.md) records the isolated native CLI marketplace-add
+spot check; it does not establish Desktop GUI behavior or failure recovery.
 Temporary filesystem destinations are real; external Claude registry/cache operations
 and platform privilege boundaries are simulated. These checks do not establish native
 Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
