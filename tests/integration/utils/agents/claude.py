@@ -1,5 +1,7 @@
 """Claude-specific integration evidence and model discovery helpers."""
 
+from typing import Literal
+
 from ..model_discovery import claude_discovery_model_id as discovery_model_id
 from ..model_discovery import claude_model_in_picker as model_in_picker
 from . import _evidence_id
@@ -7,7 +9,8 @@ from . import _evidence_id
 __all__ = [
     "EVIDENCE_KIND",
     "assistant_answers",
-    "assert_agent_resumed",
+    "assert_follow_ups_resumed",
+    "classify_send_message",
     "completed_task_models",
     "discovery_model_id",
     "model_in_picker",
@@ -45,6 +48,9 @@ def _is_subagent_handback(record: dict, part: dict) -> bool:
     )
 
 
+SendOutcome = Literal["resumed", "queued", "rejected"]
+
+
 def _is_queued_to(result: object, agent_id: str) -> bool:
     """True for a successful SendMessage result queued to the still-running `agent_id`."""
     return (
@@ -57,14 +63,28 @@ def _is_queued_to(result: object, agent_id: str) -> bool:
     )
 
 
-def assert_agent_resumed(
-    call: dict, records: list[dict], agent_id: str, *, allow_queued: bool = False
-) -> bool:
-    """Check a SendMessage targeted `agent_id`; return True if it resumed the child.
+def _is_rejected_for(call: dict, result: object, agent_id: str) -> bool:
+    """True for a failed (undelivered) SendMessage addressed to `agent_id`.
 
-    With `allow_queued`, a successful delivery queued to the same still-running child
-    (`pin.id == agent_id`) is accepted and returns False; callers must separately
-    require that at least one send resumed the child.
+    Claude's rejection (for example an unsupported `notify_when_idle`) carries only
+    `success: False` and a message, so the child is identified by the call's `to` or,
+    when present, the result's `pin.id`.
+    """
+    if not isinstance(result, dict) or result.get("success") is not False:
+        return False
+    if "resumedAgentId" in result:
+        return False
+    pin = result.get("pin")
+    return call["input"]["to"] == agent_id or (isinstance(pin, dict) and pin.get("id") == agent_id)
+
+
+def classify_send_message(call: dict, records: list[dict], agent_id: str) -> SendOutcome:
+    """Classify one parent SendMessage for the original child `agent_id`.
+
+    Returns "resumed" (the native result resolved to the child), "queued" (accepted for
+    the still-running child) or "rejected" (addressed to the child but not delivered).
+    Raises AssertionError for a missing recipient or result, a result for another agent,
+    or any other shape.
     """
     recipient = call.get("input", {}).get("to")
     assert isinstance(recipient, str) and recipient.strip(), (
@@ -76,14 +96,29 @@ def assert_agent_resumed(
             continue
         if any(part.get("tool_use_id") == call["id"] for part in content):
             result = record.get("toolUseResult")
-            if allow_queued and _is_queued_to(result, agent_id):
-                return False  # accepted, but not a resume
             # The native result resolves both names and IDs to the resumed child's ID.
-            assert isinstance(result, dict) and result.get("resumedAgentId") == agent_id, (
-                f"SendMessage to {recipient!r} did not resume {agent_id}: {result}"
+            if isinstance(result, dict) and result.get("resumedAgentId") == agent_id:
+                return "resumed"
+            if _is_queued_to(result, agent_id):
+                return "queued"
+            if _is_rejected_for(call, result, agent_id):
+                return "rejected"
+            raise AssertionError(
+                f"SendMessage to {recipient!r} neither resumed nor was queued or rejected "
+                f"for {agent_id}: {result}"
             )
-            return True
     raise AssertionError(f"No native tool result for SendMessage {call['id']}: {call}")
+
+
+def assert_follow_ups_resumed(calls: list[dict], records: list[dict], agent_id: str) -> None:
+    """Require every SendMessage to target the child and at least one to resume it.
+
+    A redundant follow-up the model sends while the child runs may be queued or rejected;
+    that is tolerated only alongside a real resume.
+    """
+    assert calls, "Expected at least one SendMessage"
+    outcomes = [classify_send_message(call, records, agent_id) for call in calls]
+    assert "resumed" in outcomes, f"No SendMessage resumed {agent_id}: {outcomes}"
 
 
 def completed_task_models(records: list[dict], answer_value: str) -> set[str]:

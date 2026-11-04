@@ -70,98 +70,100 @@ class _Session:
         pass
 
 
-@pytest.mark.parametrize("recipient", ["child-id", "child-name"])
-def test_claude_resume_accepts_id_or_name_resolved_to_original_child(recipient):
-    call = {"id": "send-1", "input": {"to": recipient}}
-    records = [
-        {"type": "user", "message": {"content": "An ordinary user prompt"}},
-        {
-            "type": "user",
-            "message": {"content": [{"type": "tool_result", "tool_use_id": "send-1"}]},
-            "toolUseResult": {"resumedAgentId": "child-id"},
-        },
-    ]
-    claude.assert_agent_resumed(call, records, "child-id")
-
-
-@pytest.mark.parametrize("recipient", [None, "", "  "])
-def test_claude_resume_missing_recipient_has_readable_assertion(recipient):
-    call = {"id": "send-1", "input": {} if recipient is None else {"to": recipient}}
-    with pytest.raises(AssertionError, match="requires a nonempty 'to' recipient"):
-        claude.assert_agent_resumed(call, [], "child-id")
-
-
-@pytest.mark.parametrize("result", [{"resumedAgentId": "other-child"}, {"success": False}])
-def test_claude_resume_rejects_wrong_child_or_failed_send(result):
-    records = [
-        {
-            "type": "user",
-            "message": {"content": [{"type": "tool_result", "tool_use_id": "send-1"}]},
-            "toolUseResult": result,
-        },
-    ]
-    with pytest.raises(AssertionError, match="did not resume child-id"):
-        claude.assert_agent_resumed(
-            {"id": "send-1", "input": {"to": "child-name"}}, records, "child-id"
-        )
-
-
-def _send_result(result):
+def _records(*results):
+    """One native tool result per call id send-1, send-2, ..."""
     return [
         {
             "type": "user",
-            "message": {"content": [{"type": "tool_result", "tool_use_id": "send-1"}]},
+            "message": {"content": [{"type": "tool_result", "tool_use_id": f"send-{i}"}]},
             "toolUseResult": result,
-        },
+        }
+        for i, result in enumerate(results, 1)
     ]
 
 
+def _call(index=1, to="child-id"):
+    return {"id": f"send-{index}", "input": {} if to is None else {"to": to}}
+
+
+_RESUMED = {"success": True, "resumedAgentId": "child-id"}
 _QUEUED = {
     "success": True,
     "message": "Message queued for delivery to child-id at its next tool round.",
     "pin": {"id": "child-id"},
 }
-_CALL = {"id": "send-1", "input": {"to": "child-id"}}
+# Real result from run 41768149986: no pin, no resumedAgentId.
+_REJECTED = {
+    "success": False,
+    "message": "notify_when_idle is only supported for Claude sessions on this machine in "
+    "this release (not teammates, subagents, Remote Control or cloud sessions). Your "
+    "message was NOT delivered; send it again without notify_when_idle if it should still go.",
+}
 
 
-def test_claude_resume_returns_true_when_resumed():
-    result = {"resumedAgentId": "child-id"}
-    assert claude.assert_agent_resumed(_CALL, _send_result(result), "child-id", allow_queued=True)
+@pytest.mark.parametrize("recipient", ["child-id", "child-name"])
+def test_claude_send_resumed_accepts_id_or_name_resolved_to_original_child(recipient):
+    records = [{"type": "user", "message": {"content": "An ordinary user prompt"}}]
+    records += _records(_RESUMED)
+    assert claude.classify_send_message(_call(to=recipient), records, "child-id") == "resumed"
 
 
-def test_claude_resume_accepts_queued_delivery_to_same_child_only_when_allowed():
-    records = _send_result(_QUEUED)
-    assert claude.assert_agent_resumed(_CALL, records, "child-id", allow_queued=True) is False
-    with pytest.raises(AssertionError, match="did not resume child-id"):
-        claude.assert_agent_resumed(_CALL, records, "child-id")
+def test_claude_send_queued_to_the_child():
+    assert claude.classify_send_message(_call(), _records(_QUEUED), "child-id") == "queued"
+
+
+def test_claude_send_rejected_for_the_child_by_to_or_pin():
+    records = _records(_REJECTED)
+    assert claude.classify_send_message(_call(), records, "child-id") == "rejected"
+    pinned = _records({**_REJECTED, "pin": {"id": "child-id"}})
+    assert claude.classify_send_message(_call(to="child-name"), pinned, "child-id") == "rejected"
 
 
 @pytest.mark.parametrize(
-    "result",
+    ("call", "result"),
     [
-        {**_QUEUED, "pin": {"id": "other-child"}},
-        {**_QUEUED, "success": False},
-        {**_QUEUED, "message": "Delivered"},
-        {"success": True, "message": "queued"},
+        (_call(to="other-child"), _REJECTED),
+        (_call(), {"success": True, "resumedAgentId": "other-child"}),
+        (_call(), {**_QUEUED, "pin": {"id": "other-child"}}),
+        (_call(), {**_QUEUED, "message": "Delivered"}),
+        (_call(), {"success": True, "message": "queued"}),
+        (_call(), {"success": False, "resumedAgentId": "other-child"}),
+        (_call(), "not a dict"),
+        (_call(), None),
     ],
 )
-def test_claude_resume_queued_rejects_other_child_or_unqueued(result):
-    with pytest.raises(AssertionError, match="did not resume child-id"):
-        claude.assert_agent_resumed(_CALL, _send_result(result), "child-id", allow_queued=True)
+def test_claude_send_rejects_other_agents_and_unknown_shapes(call, result):
+    with pytest.raises(AssertionError, match="neither resumed nor was queued or rejected"):
+        claude.classify_send_message(call, _records(result), "child-id")
 
 
-def test_claude_resume_requires_matching_native_result():
-    records = [
-        {
-            "type": "user",
-            "message": {"content": [{"type": "tool_result", "tool_use_id": "other-send"}]},
-            "toolUseResult": {"resumedAgentId": "child-id"},
-        },
-    ]
-    with pytest.raises(AssertionError, match="No native tool result for SendMessage send-1"):
-        claude.assert_agent_resumed(
-            {"id": "send-1", "input": {"to": "child-name"}}, records, "child-id"
-        )
+@pytest.mark.parametrize("recipient", [None, "", "  "])
+def test_claude_send_missing_recipient_has_readable_assertion(recipient):
+    with pytest.raises(AssertionError, match="requires a nonempty 'to' recipient"):
+        claude.classify_send_message(_call(to=recipient), _records(_RESUMED), "child-id")
+
+
+def test_claude_send_requires_matching_native_result():
+    with pytest.raises(AssertionError, match="No native tool result for SendMessage send-2"):
+        claude.classify_send_message(_call(2), _records(_RESUMED), "child-id")
+
+
+def test_claude_follow_ups_tolerate_queued_and_rejected_alongside_a_resume():
+    calls = [_call(1), _call(2), _call(3)]
+    claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _QUEUED, _REJECTED), "child-id")
+
+
+@pytest.mark.parametrize("results", [(_QUEUED,), (_REJECTED,), (_QUEUED, _REJECTED)])
+def test_claude_follow_ups_require_a_real_resume(results):
+    calls = [_call(i) for i in range(1, len(results) + 1)]
+    with pytest.raises(AssertionError, match="No SendMessage resumed child-id"):
+        claude.assert_follow_ups_resumed(calls, _records(*results), "child-id")
+
+
+def test_claude_follow_ups_fail_when_any_send_targets_another_agent():
+    calls = [_call(1), _call(2, to="other-child")]
+    with pytest.raises(AssertionError, match="neither resumed nor was queued or rejected"):
+        claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _REJECTED), "child-id")
 
 
 def _transcript_session(home, agent, transcripts):
