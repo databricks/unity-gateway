@@ -79,7 +79,22 @@ def test_client_user_agent_comes_from_initialize_client_info(client_info, expect
         params={"clientInfo": client_info},
     )
 
-    assert mcp_proxy._client_user_agent(request) == expected
+    assert mcp_proxy._client_user_agent(request) == mcp_proxy.ucode_user_agent(
+        mcp_proxy.ug_version(), expected
+    )
+
+
+def test_client_user_agent_bounds_long_client_metadata():
+    request = mcp_proxy.JSONRPCRequest(
+        jsonrpc="2.0",
+        id=1,
+        method="initialize",
+        params={"clientInfo": {"name": "n" * 10000, "version": "v" * 10000}},
+    )
+
+    assert mcp_proxy._client_user_agent(request) == mcp_proxy.ucode_user_agent(
+        mcp_proxy.ug_version(), f"{'n' * 64}/{'v' * 64}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -100,6 +115,22 @@ def test_client_user_agent_ignores_non_initialize_or_invalid_client_info(message
 
 def test_bridge_sets_client_user_agent_before_forwarding_initialize():
     client_user_agents = []
+    expected = mcp_proxy.ucode_user_agent(mcp_proxy.ug_version(), "cursor-vscode/1.7.0")
+
+    class CheckingSend:
+        def __init__(self, stream):
+            self.stream = stream
+
+        async def __aenter__(self):
+            await self.stream.__aenter__()
+            return self
+
+        async def __aexit__(self, *args):
+            return await self.stream.__aexit__(*args)
+
+        async def send(self, message):
+            assert client_user_agents == [expected]
+            await self.stream.send(message)
 
     async def scenario():
         source_send, source_read = anyio.create_memory_object_stream(1)
@@ -116,14 +147,12 @@ def test_bridge_sets_client_user_agent_before_forwarding_initialize():
             )
         )
         async with anyio.create_task_group() as tg:
-            tg.start_soon(bridge.pump_client, source_read, dest_send)
+            tg.start_soon(bridge.pump_client, source_read, CheckingSend(dest_send))
             await source_send.send(initialize)
             assert await dest_read.receive() is initialize
             tg.cancel_scope.cancel()
 
     anyio.run(scenario)
-
-    assert client_user_agents == ["cursor-vscode/1.7.0"]
 
 
 class TestDatabricksTokenAuth:

@@ -56,6 +56,7 @@ from ucode.databricks import (
     workspace_origin,
 )
 from ucode.mcp_connection_login import connection_from_url, run_connection_login
+from ucode.telemetry import ucode_user_agent, ug_version
 from ucode.ug_headers import ug_headers
 from ucode.workspace import workspace_headers
 
@@ -68,6 +69,7 @@ AUTHENTICATE_TOOL_NAME = "authenticate"
 TOOLS_REFRESH_TIMEOUT_SECONDS = 5.0
 MCP_CLIENT_USER_AGENT_HEADER = "User-Agent"
 _HTTP_PRODUCT_CHARACTER = re.compile(r"[^!#$%&'*+.^_`|~0-9A-Za-z-]")
+_MAX_CLIENT_PRODUCT_LENGTH = 64
 
 
 def _client_user_agent(payload: JSONRPCRequest) -> str | None:
@@ -80,11 +82,13 @@ def _client_user_agent(payload: JSONRPCRequest) -> str | None:
     name = client_info.get("name")
     if not isinstance(name, str) or not name.strip():
         return None
-    product = _HTTP_PRODUCT_CHARACTER.sub("_", name.strip())
+    product = _HTTP_PRODUCT_CHARACTER.sub("_", name.strip()[:_MAX_CLIENT_PRODUCT_LENGTH])
     version = client_info.get("version")
-    if not isinstance(version, str) or not version.strip():
-        return product
-    return f"{product}/{_HTTP_PRODUCT_CHARACTER.sub('_', version.strip())}"
+    if isinstance(version, str) and version.strip():
+        product += "/" + _HTTP_PRODUCT_CHARACTER.sub(
+            "_", version.strip()[:_MAX_CLIENT_PRODUCT_LENGTH]
+        )
+    return ucode_user_agent(ug_version(), product)
 
 
 def _httpx() -> ModuleType:
@@ -700,9 +704,11 @@ async def _run(
     # 2.x-native shape: hand the transport a pre-built AsyncClient carrying our
     # per-request auth. Works on mcp 1.28+ and 2.x; `streamable_http_client`
     # yields a (read, write) pair in both.
+    extra_headers = ug_headers()
+    explicit_user_agent = any(key.casefold() == "user-agent" for key in extra_headers)
     async with httpx.AsyncClient(
         auth=auth,
-        headers={**ug_headers(), **workspace_headers(url)},
+        headers={**extra_headers, **workspace_headers(url)},
         timeout=httpx.Timeout(
             connect=30.0,
             read=300.0,
@@ -719,7 +725,9 @@ async def _run(
                 # Bidirectional bridge: client stdin -> Databricks, Databricks -> client stdout.
                 bridge = _McpBridge(
                     connection_login,
-                    lambda value: http_client.headers.__setitem__(
+                    None
+                    if explicit_user_agent
+                    else lambda value: http_client.headers.__setitem__(
                         MCP_CLIENT_USER_AGENT_HEADER, value
                     ),
                 )
