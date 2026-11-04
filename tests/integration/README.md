@@ -668,8 +668,8 @@ unacquired handles. Paths use temporary homes across simulated macOS, Windows, a
 including relocated/default Windows Local AppData, missing apps, invalid paths, creation
 failures, and parent-metadata preservation.
 
-Rendering tests cover the exact profile fields without `_comment`, complete model IDs,
-order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
+Rendering tests cover the exact profile fields (manual import enabled, no `_comment`),
+complete model IDs, order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
 are removed on replacement. Shared managed-header parsing retains its pre-Desktop behavior;
 the extra header-validation tests were removed with that out-of-scope parser change.
 The default-model warning assertion was removed because that limitation is documented
@@ -679,8 +679,8 @@ canonicalization tests are replaced by reserved-file replacement/deletion covera
 Reconfigure tests remove the legacy `_comment` field while preserving unrelated profiles,
 metadata, and previous-selection state, and verify subsequent configure is a no-op.
 Existing CLI URL normalization is unchanged. Native Desktop activation,
-GUI/helper/browser behavior, and inference remain untested by these component checks;
-they do not establish native Windows or Linux support.
+GUI/helper/browser behavior, project and chat import, and inference remain untested
+by these component checks; they do not establish native Windows or Linux support.
 
 `../test_file_lock_cross_os.py` tests the shared timeout mechanism used by Desktop:
 real contention, preserving the holder on timeout, and successful acquisition after
