@@ -93,6 +93,15 @@ class TestNormalize:
         assert cfg["default_agent"] == "claude"
         assert set(cfg["enabled_agents"]) == {"claude", "codex"}
 
+    def test_github_copilot_maps_to_copilot(self):
+        raw = {
+            "default_agent": "CODING_AGENT_GITHUB_COPILOT",
+            "enabled_agents": [{"agent": "CODING_AGENT_GITHUB_COPILOT", "config": {}}],
+        }
+        cfg = normalize_managed_config(raw)
+        assert cfg["default_agent"] == "copilot"
+        assert set(cfg["enabled_agents"]) == {"copilot"}
+
     def test_claude_alias_models_map_to_family_slots(self):
         claude = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["claude"]
         assert claude["model_config"]["default_models_by_model_family"] == {
@@ -487,6 +496,31 @@ class TestFetchClient:
         configs, reason = db_mod.fetch_managed_coding_agent_configs("https://ws", "tok")
         assert configs == []
         assert reason == "HTTP 403 Forbidden"
+
+    @pytest.mark.parametrize(
+        ("state", "expected"),
+        [
+            ({"available_tools": ["copilot"], "copilot_cli_version": "1.0.98"}, "copilot/1.0.98"),
+            ({"available_tools": ["copilot"]}, None),
+            ({"available_tools": ["claude"], "copilot_cli_version": "1.0.98"}, None),
+        ],
+    )
+    def test_user_agent_names_a_configured_copilots_recorded_version(
+        self, monkeypatch, state, expected
+    ):
+        from ucode.agents import claude, codex, copilot
+
+        monkeypatch.setattr(db_mod, "ug_version", lambda: "9.9.9")
+        monkeypatch.setattr(copilot, "ug_version", lambda: "9.9.9")
+        monkeypatch.setattr(claude, "managed_user_agent", lambda: None)
+        monkeypatch.setattr(codex, "managed_user_agent", lambda: None)
+        monkeypatch.setattr(copilot, "load_state", lambda: state)
+
+        user_agent = db_mod._managed_config_user_agent()
+
+        assert user_agent == " ".join(t for t in ("ucode/9.9.9", expected) if t) + (
+            f" {client_platform()}"
+        )
 
     @pytest.mark.parametrize(
         ("claude_ua", "codex_ua", "expected"),

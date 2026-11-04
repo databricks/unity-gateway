@@ -744,6 +744,16 @@ def test_revert_failure_retains_workspace_state_and_allows_retry(desktop, monkey
     monkeypatch.setattr(cli, "revert_legacy_shared_config", lambda: False)
     monkeypatch.setattr(cli.claude_agent, "revert_managed_settings", lambda: "unchanged")
     monkeypatch.setattr(cli.codex_agent, "revert_managed_config", lambda: "unchanged")
+    monkeypatch.setattr(
+        cli.claude_agent,
+        "managed_settings_path",
+        lambda: claude_desktop.APP_DIR / "claude-managed.json",
+    )
+    monkeypatch.setattr(
+        cli.codex_agent,
+        "codex_managed_config_path",
+        lambda: claude_desktop.APP_DIR / "codex-managed.toml",
+    )
 
     def lock_timeout(handle, *, timeout):
         raise TimeoutError("Lock is held by another operation")

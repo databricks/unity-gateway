@@ -195,6 +195,10 @@ If ucode cannot complete a write or revert, the backup remains available for a l
 
 - If the current file exactly matches ucode's last-applied snapshot, restore the exact baseline.
 - If ucode created the file, delete it.
+- If an agent has no backup record but its managed settings file exists, `ug revert` names the
+  file, explains why it was left unchanged, and advises manual removal if it is no longer needed.
+  Revert keeps its existing exit status and state cleanup. This includes existing authentication
+  settings that block Claude subscription relay setup before ug creates a backup.
 - If an administrator or MDM changed the file later, perform a three-way revert.
 - Restore original values only where the current value still matches ucode's last-applied value.
 - Remove only list entries added by ucode while preserving externally added entries.
