@@ -75,7 +75,7 @@ and capability-hook activation are not covered here; interactive selection is un
 `../test_code_plugin.py` covers the Code-scoped UG connector plugin with real
 files and controlled native CLI boundaries: original registration names, Claude-only
 filtering, Code-only discovery/authentication instructions, no duplicate MCP servers or
-downloaded skills, no Cowork hooks,
+downloaded skills, no Cowork hooks or version metadata,
 refresh after workspace changes and last-connector removal, scoped cleanup,
 repeat cleanup, saved-root cleanup even after source deletion, config-root changes that
 retain the old registration and saved root on installation failure, successful retry,
@@ -109,7 +109,9 @@ helper. Non-relay MPS Desktop configuration is asserted in CUJ2's existing MPS c
 journey; no dedicated Desktop MPS integration test is needed.
 
 Each of these two journeys supplies pre-existing Desktop account directories as inputs and
-requires real Claude CLI installation of the Cowork plugin. It registers system.ai.web_search through
+requires real Claude CLI installation of the Cowork plugin on both Linux and Windows.
+Both platforms require the user marketplace source and registration,
+one installed UG entry, and a matching cached version. It registers system.ai.web_search through
 `ug mcp add --names system.ai.web_search`, then runs the command from the installed plugin with the
 MCP SDK. The check initializes the protocol, discovers web_search, and searches for Databricks'
 official website. A successful result must contain a URL on databricks.com or www.databricks.com;
@@ -118,7 +120,32 @@ Both journeys verify reconfiguration preserves the profile/plugin and revert rem
 while retaining unrelated profiles and metadata. A separate local personal plugin is installed
 through the real Claude CLI before configuration; its registry entry and installed manifest must
 survive installation, reconfiguration, and revert unchanged. Revert also removes UG's marketplace
-registration and generated source directory.
+registration and generated user source. Root-file preservation is covered by component tests;
+the integration journeys do not inspect OS-managed directories.
+`test_desktop_marketplace.py` covers ordinary default/`--user` configuration writing
+only the user source, no elevation, preservation of the registered legacy root source,
+one registration when switching an earlier root source to user scope, explicit cache
+refresh, content versions (including asset-only skill updates), downloaded workspace
+skills/assets, previous-account cleanup,
+malformed marketplace metadata (including missing or nonstring directory paths),
+equivalent path aliases, source-switch failure recovery
+for both current and legacy-only plugin identities, preserved nonlocal registrations,
+and retained user source/state after refresh failures. Explicit global skips ordinary
+Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
+Overlapping installer/state checks and duplicate simulated-OS cases are consolidated;
+user installation, persisted account state and registered-source preservation remain covered.
+Unreferenced root-path sentinels and an ineffective temporary-directory alias test were
+removed; content updates and empty-payload cache refresh now share one lifecycle test.
+Equivalent registered-directory aliases remain covered separately.
+Dry-run preservation covers both fresh and already-configured installations.
+Root bundle writer checks belong to the separate MDM follow-up.
+The [component inventory](../README.md) records the isolated native CLI marketplace-add
+spot check; it does not establish Desktop GUI behavior or failure recovery.
+Temporary filesystem destinations are real; external Claude registry/cache operations
+and platform privilege boundaries are simulated. These checks do not establish native
+Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
+`test_desktop_configure_cli.py` also checks explicit-global selection versus default and
+`--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.web_search and allow
@@ -203,10 +230,13 @@ Claude's decoy catalog includes both decoys while the scoped picker excludes bot
 CI collects it through the shared `dedicated-cuj` job. Its request checks accept the known
 Claude thinking-display 400 only with a successful, otherwise identical native retry.
 
-The two Claude Bedrock journeys use `us.anthropic.claude-sonnet-4-6`. The configure
-journey selects it from the restricted `main.ucode.ci_bedrock_mason_filtered_models`
-service, while the headless journey pins it through
-`main.ucode.ci_bedrock_mason_all_models`.
+The Claude Bedrock journeys use Unity Catalog service-credential auth
+(`eng-ml-inference-bedrock-inference`) and frontier models. The configure journey selects
+`us.anthropic.claude-sonnet-5-5` from the restricted
+`main.ucode.ci_bedrock_runtime_svc_cred_filtered_models` service (Sonnet 5.5 + Opus 5.5, us-west-2).
+The headless journeys pin Sonnet 5.5 through the allow-all
+`main.ucode.ci_bedrock_runtime_svc_cred_all_models`, Opus 5.5 through the filtered service. The Codex journeys pin `us.openai.gpt-5.6-terra` through the allow-all runtime service and
+`openai.gpt-5.6-terra` through `main.ucode.ci_bedrock_mantle_svc_cred_gpt` (us-west-2).
 
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,

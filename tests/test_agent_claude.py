@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, Mock
+from unittest.mock import ANY, MagicMock, Mock
 
 import pytest
 
@@ -3681,10 +3681,13 @@ class TestClaudeLaunch:
             binary="claude",
             user_settings_path=claude.CLAUDE_USER_SETTINGS_PATH,
             launch_model=None,
-            compose_settings=claude._compose_v2_settings,
+            compose_settings=ANY,
             launch_model_args=claude._launch_model_args,
             model_name=claude._maybe_add_1m_suffix,
         )
+        compose = launch_v2.call_args.kwargs["compose_settings"]
+        assert compose.func is claude._compose_v2_settings
+        assert compose.keywords == {"server_side_web_search": False}
 
     def test_gateway_discovery_uses_direct_gateway(self, monkeypatch):
         calls: list[list[str]] = []
@@ -4054,6 +4057,206 @@ class TestBuildClaudeArgv:
         monkeypatch.setattr(claude, "read_json_safe", lambda p: {"apiKeyHelper": "u"})
         with pytest.raises(RuntimeError, match="not valid JSON"):
             claude._build_claude_argv("claude", ["--settings", str(bad_file)])
+
+
+class TestServerSideWebSearchOptIn:
+    ENV = "UG_CLAUDE_SERVER_SIDE_WEB_SEARCH"
+    CALLER = {"deniedMcpServers": [{"serverName": "web-search"}], "env": {"A": "1"}}
+
+    @pytest.fixture
+    def settings_path(self, tmp_path, monkeypatch):
+        path = tmp_path / "ucode-settings.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "apiKeyHelper": "gateway-helper",
+                    "permissions": {"deny": ["WebSearch", "WebSearch(domain:evil.test)"]},
+                }
+            )
+        )
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", tmp_path / "user-settings.json")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "managed.json")
+        monkeypatch.delenv(self.ENV, raising=False)
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.chdir(project)
+        # Windows resolves the launch binary on PATH, where Claude Code isn't installed.
+        monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
+        monkeypatch.setattr(claude, "ensure_hooks_modules_gate", lambda: None)
+        return path
+
+    @staticmethod
+    def _normal(monkeypatch, state=None, args=None):
+        """The settings the normal launch path hands to Claude Code, and the warnings it printed."""
+        argvs: list[list[str]] = []
+        warnings: list[str] = []
+        monkeypatch.setattr(claude, "exec_or_spawn", argvs.append)
+        monkeypatch.setattr(claude, "print_warning", warnings.append)
+        args = (
+            ["--settings", json.dumps(TestServerSideWebSearchOptIn.CALLER)]
+            if args is None
+            else args
+        )
+        claude.launch(state or {}, args, options=LaunchOptions())
+        argv = argvs[0]
+        value = argv[argv.index("--settings") + 1]
+        settings = (
+            json.loads(value) if value.startswith("{") else json.loads(Path(value).read_text())
+        )
+        return settings, warnings
+
+    @staticmethod
+    def _routing(monkeypatch, state=None, args=None):
+        """The settings the smart-routing launch path composes, and the warnings it printed."""
+        launched = Mock()
+        warnings: list[str] = []
+        monkeypatch.setattr(v2, "launch_claude", launched)
+        monkeypatch.setattr(claude, "print_warning", warnings.append)
+        args = (
+            ["--settings", json.dumps(TestServerSideWebSearchOptIn.CALLER)]
+            if args is None
+            else args
+        )
+        claude.launch(state or {}, args, options=LaunchOptions(launch_smart_routing=True))
+        settings, _ = launched.call_args.kwargs["compose_settings"](args)
+        return settings, warnings
+
+    @pytest.fixture(params=["_normal", "_routing"])
+    def launch_settings(self, request, monkeypatch):
+        return lambda **kwargs: getattr(self, request.param)(monkeypatch, **kwargs)
+
+    @pytest.mark.parametrize("env", [None, "0", "false", "NO", "off"])
+    def test_off_unless_forced_on(self, settings_path, monkeypatch, launch_settings, env):
+        if env is not None:
+            monkeypatch.setenv(self.ENV, env)
+        settings, warnings = launch_settings()
+        assert "WebSearch" in settings["permissions"]["deny"]
+        assert settings["deniedMcpServers"] == [{"serverName": "web-search"}]
+        assert warnings == []
+
+    @pytest.mark.parametrize("env", ["1", "true", "YES", "on"])
+    @pytest.mark.parametrize("caller_denied", [["web-search"], ["web-search", "web_search"]])
+    def test_forced_on_drops_bare_deny_and_hides_gpt_search(
+        self, settings_path, monkeypatch, launch_settings, env, caller_denied
+    ):
+        monkeypatch.setenv(self.ENV, env)
+        before = settings_path.read_bytes()
+        caller = {"deniedMcpServers": [{"serverName": name} for name in caller_denied]}
+
+        settings, warnings = launch_settings(args=["--settings", json.dumps(caller)])
+
+        assert settings["permissions"]["deny"] == ["WebSearch(domain:evil.test)"]
+        assert settings["deniedMcpServers"] == [
+            {"serverName": "web-search"},
+            {"serverName": claude.WEB_SEARCH_MCP_NAME},
+        ]
+        assert settings["apiKeyHelper"] == "gateway-helper"
+        assert warnings == []
+        assert settings_path.read_bytes() == before
+
+    def test_forced_on_without_caller_settings_goes_inline(self, settings_path, monkeypatch):
+        monkeypatch.setenv(self.ENV, "1")
+        settings, _ = self._normal(monkeypatch, args=["-p", "hi"])
+        assert "WebSearch" not in settings["permissions"]["deny"]
+
+    @pytest.fixture
+    def blocker(self, tmp_path, monkeypatch):
+        """Writers of settings a launch cannot override, keyed by where the deny lives."""
+        user = tmp_path / "custom"
+        user.mkdir()
+        deny = json.dumps({"permissions": {"deny": ["WebSearch"]}})
+
+        def place(where):
+            if where in ("managed", "managed_bom", "invalid"):
+                path = tmp_path / "managed.json"
+            elif where in ("drop_in", "utf16"):
+                path = tmp_path / "managed-settings.d" / "10-policy.json"
+                path.parent.mkdir()
+            else:
+                monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(user))
+                path = user / "settings.json"
+            if where == "utf16":
+                path.write_bytes(deny.encode("utf-16"))
+            elif where == "managed_bom":
+                path.write_bytes(b"\xef\xbb\xbf" + deny.encode())
+            elif where == "invalid":
+                path.write_text("{not json")
+            else:
+                path.write_text(deny)
+            return path
+
+        return place
+
+    @pytest.mark.parametrize(
+        "where", ["managed", "drop_in", "user", "managed_bom", "invalid", "utf16"]
+    )
+    def test_unchangeable_deny_keeps_gpt_search_and_warns(
+        self, settings_path, monkeypatch, launch_settings, blocker, where
+    ):
+        monkeypatch.setenv(self.ENV, "1")
+        denying = blocker(where)
+
+        settings, warnings = launch_settings()
+
+        assert "WebSearch" in settings["permissions"]["deny"]
+        assert settings["deniedMcpServers"] == [{"serverName": "web-search"}]
+        assert len(warnings) == 1
+        assert str(denying) in warnings[0]
+        assert "keeps ug's web_search MCP" in warnings[0]
+
+    @pytest.mark.parametrize("name", ["settings.json", "settings.local.json"])
+    def test_project_settings_deny_keeps_gpt_search_and_warns(
+        self, settings_path, tmp_path, monkeypatch, launch_settings, name
+    ):
+        monkeypatch.setenv(self.ENV, "1")
+        denying = tmp_path / "project" / ".claude" / name
+        denying.parent.mkdir()
+        denying.write_text(json.dumps({"permissions": {"deny": ["WebSearch"]}}))
+
+        settings, warnings = launch_settings()
+
+        assert settings["deniedMcpServers"] == [{"serverName": "web-search"}]
+        assert len(warnings) == 1
+        assert str(denying) in warnings[0]
+
+    def test_drop_ins_claude_code_ignores_do_not_block(
+        self, settings_path, tmp_path, monkeypatch, launch_settings
+    ):
+        monkeypatch.setenv(self.ENV, "1")
+        drop_ins = tmp_path / "managed-settings.d"
+        drop_ins.mkdir()
+        (drop_ins / ".hidden.json").write_text(json.dumps({"permissions": {"deny": ["WebSearch"]}}))
+        (drop_ins / "x.json").mkdir()
+        (drop_ins / "x.json" / "inner.json").write_text("{not json")
+
+        settings, warnings = launch_settings()
+
+        assert "WebSearch" not in settings["permissions"]["deny"]
+        assert warnings == []
+
+    @pytest.mark.parametrize("scope", ["scoped_managed", "default_user_when_config_dir_set"])
+    def test_other_denies_do_not_block(
+        self, settings_path, tmp_path, monkeypatch, launch_settings, scope
+    ):
+        if scope == "scoped_managed":
+            (tmp_path / "managed.json").write_text(
+                json.dumps({"permissions": {"deny": ["WebSearch(domain:evil.test)"]}})
+            )
+        else:
+            (tmp_path / "user-settings.json").write_text(
+                json.dumps({"permissions": {"deny": ["WebSearch"]}})
+            )
+            elsewhere = tmp_path / "elsewhere"
+            elsewhere.mkdir()
+            monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(elsewhere))
+        monkeypatch.setenv(self.ENV, "1")
+
+        settings, warnings = launch_settings()
+
+        assert "WebSearch" not in settings["permissions"]["deny"]
+        assert warnings == []
 
 
 class TestClaudeSmartRouting:

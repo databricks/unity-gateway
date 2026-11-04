@@ -186,6 +186,14 @@ and `ug revert` return to the default, which writes both.
 machine-wide: run `ug configure` without `--user`, or ask your administrator to run
 `ug configure --global`.
 
+For Claude Desktop, default `ug configure` and `--user` both write only the user's
+3P JSON profile, generated marketplace, and native Cowork registration/cache. They leave
+root files untouched. Explicit `--global` skips those user-level Desktop writers; machine
+policy and plugin provisioning are separate macOS MDM work. CLI-agent scope handling is
+unchanged. If Desktop has not initialized a Cowork account directory, ordinary configure
+skips plugin setup until that directory exists. See
+[Desktop plugin installation](docs/claude-desktop.md#cowork-workspace-skills-and-mcp-servers).
+
 ### Hosts that serve several workspaces
 
 An account custom URL (such as `https://acme.cloud.databricks.com`) serves every workspace of the
@@ -206,6 +214,13 @@ profile for the host yet, the first login names one `ug-<name>`.
 Not supported yet on these hosts: disaster-recovery stable connection ids, signing in to an MCP
 service connection that needs your own login, and the MDM bootstrap script. MCP servers are
 registered through `ug mcp-proxy`, never as the agent's own OAuth connection.
+
+### Server-side web search for Claude Code
+
+ug denies Claude Code's native `WebSearch` and registers its own `web_search` MCP. For one launch,
+`UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1 ug claude` instead uses the AI Gateway's server-side search,
+writing no file. If the OS-managed settings, their `managed-settings.d`
+drop-ins, or the user settings deny `WebSearch`, ug warns and keeps its MCP for that launch.
 
 ### Extra headers for one session
 

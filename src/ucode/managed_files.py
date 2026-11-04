@@ -206,6 +206,14 @@ def _windows_claude_header_mod_root() -> Path:
     return windows_claude_managed_settings_path().parent / "ucode-plugins"
 
 
+def claude_desktop_org_plugin_path() -> Path | None:
+    if current_os() is OS.MACOS:
+        return Path("/Library/Application Support/Claude/org-plugins/ug")
+    if current_os() is OS.WINDOWS:
+        return system_cross_os.windows_program_files_dir() / "Claude" / "org-plugins" / "ug"
+    return None
+
+
 def reconcile_privileged_files(files: dict[Path, str], *, display: str) -> None:
     """Write each allowlisted root-owned file whose contents differ, through the sudo worker.
 
