@@ -64,8 +64,10 @@ or private home directory into this package.
 The workspace needs at least one accessible Claude model. Its coding-agent config
 supplies the Claude model source, headers, tracing, MCP services, and downloadable
 skills. Without a managed config, the deployment uses discovered Claude models and
-no managed skills/connectors. `--mcp system.ai.slack,system.ai.github` can additionally
-select named MCP services. The first version requires a dedicated workspace hostname;
+no managed skills/connectors. With `--mdm-desktop`,
+`--mcp system.ai.slack,system.ai.github` can additionally select named Desktop MCP services.
+With `--global`, `--mcp` selects services for CLI clients; the Desktop marketplace uses
+workspace-managed connectors only. The first version requires a dedicated workspace hostname;
 account URLs requiring a workspace-ID selector are rejected.
 
 If an earlier UG version or a pilot already owns the root marketplace,
@@ -101,6 +103,9 @@ Both provisioning entry points validate Databricks CLI candidates and the select
 executable before installation, profile lookup or version discovery can execute them,
 including profile lookup during a dry run. MCP-only `--mcp` requests without agent flags
 do not provision Desktop or require its shared runtimes.
+Without agent flags, managed policy or the interactive picker chooses the agents first;
+Desktop prerequisites apply only if Claude is selected. Other agents keep their normal
+authentication flow. For unattended Desktop provisioning, pass `--agents claude` explicitly.
 
 No provisioning token or administrator profile is written into the machine policy
 or plugin. The runtime wrapper clears provisioning credential overrides and binds

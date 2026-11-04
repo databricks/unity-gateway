@@ -735,7 +735,7 @@ def configure_shared_state(
         # token to avoid re-reading ~/.databrickscfg.
         ensure_pat_bearer(profile, pat)
         ensure_databricks_auth(workspace, profile, **login_kwargs)
-    elif machine_wide_only() and sys.platform == "darwin" and (tools is None or "claude" in tools):
+    elif machine_wide_only() and sys.platform == "darwin" and "claude" in (tools or []):
         get_databricks_token(workspace, profile, browser_login=False)
     elif force_login and not external_bearer_configured():
         run_databricks_login(workspace, profile, **login_kwargs)
@@ -1344,6 +1344,9 @@ def _configure_workspace_command(
         if not managed_tools:
             # The workspace enables only agents with per-user settings: nothing to write.
             return 0
+        from ucode.agents.desktop.setup import validate_global_desktop
+
+        validate_global_desktop(state, managed_tools)
         configured_tools: list[str] = []
         failed_tools: list[str] = []
         for tool_name in managed_tools:
@@ -1437,6 +1440,9 @@ def _configure_workspace_command(
         print_note("No coding agents selected — nothing to configure.")
         return 0
     refuse_user_scope_over_managed_files(picked)
+    from ucode.agents.desktop.setup import validate_global_desktop
+
+    validate_global_desktop(state, picked)
 
     for tool_name in picked:
         install_tool_binary(
@@ -5032,11 +5038,7 @@ def configure(
                 for name in (agent or agents or "").split(",")
                 if name.strip() and name.strip().lower() not in ("cursor", "vscode")
             ]
-            provisions_desktop = (
-                provisions_desktop
-                or (not (agent or agents) and mcp is None)
-                or "claude" in requested
-            )
+            provisions_desktop = provisions_desktop or "claude" in requested
         if provisions_desktop:
             if use_pat or custom_oauth:
                 raise RuntimeError(

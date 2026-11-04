@@ -546,6 +546,8 @@ protected virtualenv invocation paths are retained. These filesystem tests simul
 ownership and do not execute the test executables.
 The public-command checks keep profile parsing real and replace subprocess execution at its boundary. An untrusted CLI candidate
 is rejected by real path validation before any version discovery or subprocess call.
+The selected Claude executable is supplied explicitly in this fixture so candidate
+discovery does not depend on the host's Windows executable-suffix rules.
 A public `configure --global --agents claude --profile` regression checks that privileged
 CLI discovery is validated before installer probes and cached OAuth is used without
 forced login or browser recovery. It stops at the credential/discovery boundary;
@@ -567,6 +569,10 @@ and skipping Desktop on platforms without MDM support. The existing CLI-agent sc
 Public Desktop CLI scope cases include macOS preflight, and argument rejection asserts each intended diagnostic after valid device setup.
 CLI-agent setup and external services
 are isolated; this is component coverage, not native macOS or live connector coverage.
+Omitted-agent cases cover managed and interactive selection: Codex-only configuration
+works without Desktop privileges, while selecting Claude validates MDM before binary
+installation or agent writes. An explicit `--global --mcp` case keeps the additional
+services in CLI clients and the root Desktop marketplace limited to managed connectors.
 `test_cli.py::TestConfigureMcpFlag` checks that MCP-only default/global requests without
 agent flags bypass Desktop MDM prerequisites while still configuring their workspace
 and registering their requested MCP services.

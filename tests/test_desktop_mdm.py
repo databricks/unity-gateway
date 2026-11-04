@@ -678,6 +678,8 @@ def test_profile_lookup_rejects_untrusted_cli_before_execution(
     monkeypatch.setattr(cli.sys, "platform", "darwin")
     monkeypatch.setattr(mdm.system_cross_os, "is_admin", lambda: True)
     monkeypatch.setattr(mdm, "_shared_path", validate)
+    if cli_name == "Claude CLI":
+        monkeypatch.setattr(mdm.shutil, "which", lambda name: str(candidate))
     forbidden = Mock(side_effect=AssertionError("Untrusted CLI must not be executed"))
     monkeypatch.setattr(mdm.databricks, "run", forbidden)
     monkeypatch.setattr(mdm.subprocess_cross_os, "run", forbidden)

@@ -27,6 +27,18 @@ from ucode.workspace import workspace_headers, workspace_id_args
 _CLAUDE_MODEL_PATTERN = re.compile(r"\bclaude-", re.IGNORECASE)
 
 
+def validate_global_desktop(state: dict, tools: list[str]) -> None:
+    if not machine_wide_only() or sys.platform != "darwin" or "claude" not in tools:
+        return
+    from ucode.agents.desktop import mdm
+
+    if state.get("use_pat") or state.get("custom_oauth"):
+        raise RuntimeError("Desktop MDM provisioning does not support PAT/custom OAuth profiles.")
+    mdm._require_macos(administrator=True)
+    mdm.require_dedicated_workspace(state["workspace"])
+    mdm.validate_cli_discovery()
+
+
 def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -> None:
     if sys.platform not in ("darwin", "win32", "linux"):
         return

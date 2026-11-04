@@ -143,12 +143,62 @@ def test_global_provisions_without_a_desktop_account(
     assert not (tmp_path / "Desktop").exists()
 
 
+def test_global_extra_mcp_selection_applies_only_to_cli_clients(
+    desktop_configuration, device, monkeypatch
+):
+    configure_mcp = Mock()
+    monkeypatch.setattr(cli, "configure_mcp_command", configure_mcp)
+
+    result = _configure("--global", "--mcp", "system.ai.gmail")
+
+    assert result.exit_code == 0, result.output
+    configure_mcp.assert_called_once_with(services={"system.ai.gmail"})
+    plugin = device.source / "plugins/ug"
+    servers = json.loads((plugin / ".mcp.json").read_bytes())["mcpServers"]
+    assert set(servers) == {"slack"}
+    assert servers["slack"]["command"] == str(mdm.MDM_ROOT / "ug")
+    assert not cowork._marketplace_root().exists()
+
+
 def test_global_provisioning_failure_fails_configure(desktop_configuration, device):
     device.admin = False
     result = _configure("--global")
     assert result.exit_code == 1
     assert "root from your MDM script" in " ".join(result.output.split())
     assert not mdm.POLICY_PATH.exists()
+    assert not claude.claude_desktop_directory().exists()
+    assert not cowork._marketplace_root().exists()
+    assert not managed_files.machine_wide_only()
+
+
+@pytest.mark.parametrize("selection", ["managed", "picker"])
+@pytest.mark.parametrize("tool", ["codex", "claude"])
+def test_omitted_agents_validate_desktop_only_after_selection(
+    desktop_configuration, device, monkeypatch, selection, tool
+):
+    device.admin = False
+    desktop_configuration.update(available_tools=[tool], last_configured_tools=[tool])
+    managed = {"enabled_agents": {tool: {}}} if selection == "managed" else None
+    monkeypatch.setattr(cli, "refresh_managed_config", lambda *a, **kw: (managed, False))
+    monkeypatch.setattr(cli, "prompt_for_tools", lambda *a: [tool])
+    monkeypatch.setattr(cli, "_maybe_select_provider_service", lambda tool, state: state)
+    configure = Mock(return_value=desktop_configuration)
+    install = Mock(return_value=True)
+    monkeypatch.setattr(cli, "configure_selected_tools", configure)
+    monkeypatch.setattr(cli, "install_tool_binary", install)
+
+    result = CliRunner().invoke(cli.app, ["configure", "--global", "--workspace", WORKSPACE])
+
+    assert result.exit_code == (1 if tool == "claude" else 0), result.output
+    if tool == "claude":
+        assert "root from your MDM script" in " ".join(result.output.split())
+        install.assert_not_called()
+        configure.assert_not_called()
+    else:
+        install.assert_called_once_with("codex", strict=False)
+        assert configure.call_args.args[1] == ["codex"]
+    assert not mdm.MDM_ROOT.exists()
+    assert not device.source.exists()
     assert not claude.claude_desktop_directory().exists()
     assert not cowork._marketplace_root().exists()
     assert not managed_files.machine_wide_only()
