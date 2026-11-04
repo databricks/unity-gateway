@@ -715,8 +715,6 @@ def configure_shared_state(
     #    auth + the AI Gateway, then discover the available models. ──
     if cli_custom_oauth:
         pass  # The dedicated profile was authenticated above.
-    elif machine_wide_only() and sys.platform == "darwin" and (tools is None or "claude" in tools):
-        get_databricks_token(workspace, profile, browser_login=False)
     elif use_pat:
         if not profile:
             raise RuntimeError(
@@ -736,6 +734,8 @@ def configure_shared_state(
         # token to avoid re-reading ~/.databrickscfg.
         ensure_pat_bearer(profile, pat)
         ensure_databricks_auth(workspace, profile, **login_kwargs)
+    elif machine_wide_only() and sys.platform == "darwin" and (tools is None or "claude" in tools):
+        get_databricks_token(workspace, profile, browser_login=False)
     elif force_login and not external_bearer_configured():
         run_databricks_login(workspace, profile, **login_kwargs)
     else:
@@ -3009,8 +3009,10 @@ def otel_headers_cmd(
     import sys
 
     state = load_state()
-    saved_auth_matches = (host is None or host == state.get("workspace")) and (
-        profile is None or profile == state.get("profile")
+    saved_auth_matches = (
+        (host is None or host == state.get("workspace"))
+        and (profile is None or profile == state.get("profile"))
+        and (workspace_id is None or workspace_id == state.get("workspace_id"))
     )
     workspace = host or state.get("workspace")
     if not workspace:
@@ -5023,19 +5025,27 @@ def configure(
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
-        if not mdm_desktop:
-            if global_scope and sys.platform == "darwin":
-                requested = [
-                    normalize_tool(name)
-                    for name in (agent or agents or "").split(",")
-                    if name.strip() and name.strip().lower() not in ("cursor", "vscode")
-                ]
-                if not (agent or agents) or "claude" in requested:
-                    from ucode.agents.desktop import mdm
+        provisions_desktop = mdm_desktop
+        if global_scope and sys.platform == "darwin":
+            requested = [
+                normalize_tool(name)
+                for name in (agent or agents or "").split(",")
+                if name.strip() and name.strip().lower() not in ("cursor", "vscode")
+            ]
+            provisions_desktop = (
+                provisions_desktop or not (agent or agents) or "claude" in requested
+            )
+        if provisions_desktop:
+            if use_pat or custom_oauth:
+                raise RuntimeError(
+                    "Desktop MDM provisioning does not support PAT/custom OAuth profiles."
+                )
+            from ucode.agents.desktop import mdm
 
-                    mdm._require_macos(administrator=True)
-                    if not dry_run:
-                        mdm.validate_cli_discovery()
+            mdm._require_macos(administrator=True)
+            if not dry_run or profile or profiles:
+                mdm.validate_cli_discovery()
+        if not mdm_desktop:
             install_databricks_cli()
         if agent is not None and agents is not None:
             raise RuntimeError("Use either --agent or --agents, not both.")
@@ -5073,6 +5083,9 @@ def configure(
         workspace_entries = _parse_workspace_option(workspace) if workspace is not None else None
         if profile is not None:
             workspace_entries = _parse_profile_option(profile)
+        if provisions_desktop:
+            for target_workspace, _ in workspace_entries or []:
+                mdm.require_dedicated_workspace(target_workspace)
         if mdm_desktop:
             from ucode.agents.desktop import mdm
 

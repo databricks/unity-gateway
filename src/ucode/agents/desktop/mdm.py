@@ -329,14 +329,18 @@ def _download_skills(workspace: str, token: str, selector: dict, destination: Pa
     return records
 
 
+def require_dedicated_workspace(workspace: str) -> None:
+    if split_workspace_key(workspace)[1] is not None or workspace_id_args(workspace):
+        raise RuntimeError("Desktop MDM currently requires a dedicated workspace hostname.")
+
+
 def configure(workspace: str, profile: str | None, *, mcp_names: list[str] | None = None) -> None:
     _require_macos(administrator=True)
     if managed_files.managed_settings_skipped():
         raise RuntimeError(
             "Unset UG_SKIP_OS_SETTINGS and use global scope for Desktop MDM provisioning."
         )
-    if split_workspace_key(workspace)[1] is not None or workspace_id_args(workspace):
-        raise RuntimeError("Desktop MDM currently requires a dedicated workspace hostname.")
+    require_dedicated_workspace(workspace)
     if config_io.is_dry_run():
         print_note(
             f"Would publish Desktop policy to {POLICY_PATH}, a root marketplace, and {AGENT_PATH}."

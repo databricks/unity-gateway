@@ -2846,6 +2846,40 @@ class TestAuthTokenCommand:
 
 
 class TestOtelHeadersCommand:
+    @pytest.mark.parametrize("workspace_id,expected_pat", [("111", True), ("222", False)])
+    def test_saved_pat_requires_matching_workspace_selection(self, workspace_id, expected_pat):
+        with (
+            patch(
+                "ucode.cli.load_state",
+                return_value={
+                    "workspace": "https://shared.example",
+                    "workspace_id": "111",
+                    "profile": "saved-pat",
+                    "use_pat": True,
+                },
+            ),
+            patch("ucode.cli.ensure_pat_bearer", return_value=True) as pat,
+            patch("ucode.cli.get_databricks_token", return_value="user-token"),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "otel-headers",
+                    "--host",
+                    "https://shared.example",
+                    "--profile",
+                    "saved-pat",
+                    "--workspace-id",
+                    workspace_id,
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert pat.call_count == int(expected_pat)
+        assert json.loads(result.stdout) == {
+            "Authorization": "Bearer user-token",
+            **cli_mod.selector_headers(workspace_id),
+        }
+
     def test_explicit_profile_refreshes_headers_and_keeps_diagnostics_off_stdout(self):
         def token(workspace, profile, *, force_refresh):
             assert (workspace, profile, force_refresh) == (
@@ -7015,10 +7049,14 @@ class TestConfigureSharedStateUsePat:
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {})
         return cli_mod, logins, ensures, saved
 
-    def test_use_pat_exports_bearer_and_skips_login(self, monkeypatch):
+    @pytest.mark.parametrize("global_desktop", [False, True])
+    def test_use_pat_exports_bearer_and_skips_login(self, monkeypatch, global_desktop):
         import os as os_mod
 
         cli_mod, logins, ensures, saved = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        monkeypatch.setattr(cli_mod, "machine_wide_only", lambda: global_desktop)
+        if global_desktop:
+            monkeypatch.setattr(cli_mod.sys, "platform", "darwin")
 
         state = cli_mod.configure_shared_state(
             self.WS, profile="DEFAULT", force_login=True, use_pat=True
@@ -9057,18 +9095,22 @@ class TestMcpProxyCmdForwardsUsePat:
     """`ucode mcp-proxy` forwards the PAT choice to `serve`, which owns the
     actual PAT resolution. Behavior of that resolution lives in test_mcp_proxy."""
 
-    def _invoke(self, monkeypatch, *, flag, state, profile=None):
+    def _invoke(
+        self, monkeypatch, *, flag, state, profile=None, host="https://x", workspace_id=None
+    ):
         captured: dict = {}
         monkeypatch.setattr("ucode.mcp_proxy_runtime.load_proxy_state", lambda **_: state)
         monkeypatch.setattr(
             "ucode.mcp_proxy_runtime.serve",
             lambda *a, **kw: captured.update(args=a, kwargs=kw),
         )
-        args = ["mcp-proxy", "--url", "https://x/mcp", "--host", "https://x"]
+        args = ["mcp-proxy", "--url", "https://x/mcp", "--host", host]
         if flag:
             args.append("--use-pat")
         if profile:
             args += ["--profile", profile]
+        if workspace_id:
+            args += ["--workspace-id", workspace_id]
         result = runner.invoke(app, args)
         return result, captured
 
@@ -9106,6 +9148,38 @@ class TestMcpProxyCmdForwardsUsePat:
         assert result.exit_code == 0, result.output
         assert captured["args"][2] == profile
         assert captured["kwargs"]["use_pat"] is expected
+
+    @pytest.mark.parametrize(
+        "host,workspace_id,expected",
+        [
+            ("https://x", None, True),
+            ("https://x", "111", True),
+            ("https://x", "222", False),
+            ("https://other", None, False),
+        ],
+    )
+    def test_explicit_workspace_inherits_only_its_own_saved_auth(
+        self, monkeypatch, host, workspace_id, expected
+    ):
+        result, captured = self._invoke(
+            monkeypatch,
+            flag=False,
+            state={
+                "workspace": "https://x",
+                "workspace_id": "111",
+                "profile": "saved-pat",
+                "use_pat": True,
+            },
+            profile="saved-pat",
+            host=host,
+            workspace_id=workspace_id,
+        )
+        assert result.exit_code == 0, result.output
+        assert captured["args"][1:] == (host, "saved-pat")
+        assert captured["kwargs"]["use_pat"] is expected
+        assert captured["kwargs"].get("workspace_id") == (
+            workspace_id or ("111" if host == "https://x" else None)
+        )
 
 
 class TestForcedLoginWithExternalBearer:

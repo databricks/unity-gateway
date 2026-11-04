@@ -529,7 +529,12 @@ The generated ordinary Desktop auth argv is also parsed by the real CLI and pins
 workspace ID before requesting credentials; external authentication is replaced.
 MDM compatibility cases cover unrestricted empty agent lists and feature-disabled config
 discovery. MCP/tracing helper checks keep explicit OAuth profiles independent of unrelated
-saved PAT mode while retaining saved PAT mode for the matching MCP profile. An untrusted CLI candidate
+saved PAT mode while retaining saved PAT mode for matching host, profile, and workspace ID.
+Global Desktop rejects explicit PAT/custom OAuth and selected-workspace requests before
+authentication or agent writes; shared CLI-agent PAT validation/export remains covered.
+Both provisioning entry points, including dry-run profile lookup, reject unsafe CLI
+candidates before executing profile discovery. The public-command checks keep profile
+parsing real and replace subprocess execution at its boundary. An untrusted CLI candidate
 is rejected by real path validation before any version discovery or subprocess call.
 A public `configure --global --agents claude --profile` regression checks that privileged
 CLI discovery is validated before installer probes and cached OAuth is used without

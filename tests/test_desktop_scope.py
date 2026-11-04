@@ -4,6 +4,7 @@ import json
 import shutil
 import sys
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from typer.testing import CliRunner
@@ -11,7 +12,7 @@ from typer.testing import CliRunner
 from tests.test_desktop_marketplace import system_source as system_source
 from tests.test_desktop_mdm import WORKSPACE
 from tests.test_desktop_mdm import device as device
-from ucode import cli, config_io, managed_files
+from ucode import cli, config_io, managed_files, workspace
 from ucode.agents.desktop import claude, cowork, mdm, setup
 
 
@@ -162,6 +163,48 @@ def test_global_rejects_unsupported_desktop_auth(desktop_configuration, device, 
     assert not mdm.MDM_ROOT.exists()
     assert not claude.claude_desktop_directory().exists()
     assert not cowork._marketplace_root().exists()
+
+
+@pytest.mark.parametrize(
+    "options,diagnostic",
+    [
+        (["--profile", "PAT", "--use-pat"], "PAT/custom OAuth"),
+        (
+            [
+                "--workspace",
+                WORKSPACE,
+                "--client-id",
+                "custom-client",
+                "--scopes",
+                "all-apis,offline_access",
+            ],
+            "PAT/custom OAuth",
+        ),
+        (["--workspace", f"{WORKSPACE}?w=111"], "dedicated workspace hostname"),
+    ],
+)
+def test_global_rejects_incompatible_requests_before_auth_or_agent_writes(
+    device, monkeypatch, options, diagnostic
+):
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
+    monkeypatch.setattr(workspace, "host_type", lambda host: "unified")
+    forbidden = Mock(
+        side_effect=AssertionError("Invalid MDM requests must not authenticate or write")
+    )
+    monkeypatch.setattr(cli, "get_databricks_token", forbidden)
+    monkeypatch.setattr(cli, "ensure_databricks_auth", forbidden)
+    monkeypatch.setattr(cli, "run_databricks_login", forbidden)
+    monkeypatch.setattr(cli, "configure_workspace_command", forbidden)
+    monkeypatch.setattr(cli, "save_state", forbidden)
+    monkeypatch.setattr(cli, "install_databricks_cli", lambda: None)
+    result = CliRunner().invoke(cli.app, ["configure", "--global", "--agents", "claude", *options])
+    assert result.exit_code == 1, result.output
+    assert diagnostic in " ".join(result.output.split())
+    forbidden.assert_not_called()
+    device.auth.assert_not_called()
+    assert not list(device.home.iterdir())
+    assert not device.source.exists()
+    assert not mdm.MDM_ROOT.exists()
 
 
 def test_global_dry_run_writes_no_desktop_files(desktop_configuration, device):

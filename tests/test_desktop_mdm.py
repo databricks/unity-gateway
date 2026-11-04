@@ -537,6 +537,34 @@ def test_runtime_rejects_untrusted_cli_before_version_discovery(monkeypatch, tmp
     subprocess_run.assert_not_called()
 
 
+@pytest.mark.parametrize("flags", [["--mdm-desktop"], ["--global", "--dry-run"]])
+def test_profile_lookup_rejects_untrusted_cli_before_execution(monkeypatch, tmp_path, flags):
+    candidate = tmp_path / ("databricks.exe" if os.name == "nt" else "databricks")
+    candidate.write_text("untrusted test file")
+    candidate.chmod(0o777)
+    shared_path = mdm._shared_path
+
+    def validate(value, name, **kwargs):
+        if name == "Databricks CLI":
+            return shared_path(value, name, **kwargs)
+        return Path(value)
+
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
+    monkeypatch.setattr(mdm.system_cross_os, "is_admin", lambda: True)
+    monkeypatch.setattr(mdm, "_shared_path", validate)
+    forbidden = Mock(side_effect=AssertionError("Untrusted CLI must not be executed"))
+    monkeypatch.setattr(mdm.databricks, "run", forbidden)
+    monkeypatch.setattr(mdm.subprocess_cross_os, "run", forbidden)
+    monkeypatch.setattr(cli, "install_databricks_cli", forbidden)
+    result = CliRunner().invoke(
+        cli.app, ["configure", "--agents", "claude", "--profile", "CACHED", *flags]
+    )
+    assert result.exit_code == 1, result.output
+    assert "root-owned" in " ".join(result.output.split())
+    forbidden.assert_not_called()
+
+
 def test_isolated_runtime_must_import_the_provisioning_package(monkeypatch):
     monkeypatch.setattr(mdm, "_shared_path", lambda value, *a, **kw: Path(value))
     probe = Mock(
@@ -659,7 +687,7 @@ def test_global_with_cached_oauth_does_not_force_browser_login(device, monkeypat
     login.assert_not_called()
 
 
-def test_cli_dispatches_mdm_without_normal_agent_configuration(monkeypatch):
+def test_cli_dispatches_mdm_without_normal_agent_configuration(device, monkeypatch):
     configure = Mock()
     monkeypatch.setattr(mdm, "configure", configure)
     for name in ("install_databricks_cli", "_configure_workspace_command", "save_state"):

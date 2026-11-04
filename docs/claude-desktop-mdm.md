@@ -96,7 +96,8 @@ feature-disabled config API, provisioning uses model discovery without managed a
 An explicit agent list that excludes Claude still blocks provisioning.
 
 Provisioning also requires a root-owned PATH with no group/other-writable directories.
-Databricks CLI candidates are validated before version discovery can execute them.
+Both provisioning entry points validate Databricks CLI candidates before profile lookup
+or version discovery can execute them, including profile lookup during a dry run.
 
 No provisioning token or administrator profile is written into the machine policy
 or plugin. The runtime wrapper clears provisioning credential overrides and binds
@@ -109,7 +110,8 @@ relay login when configured, and subsequent token refresh remain per-user operat
 
 `--user` cannot be combined with `--global` or `--mdm-desktop`. Desktop MDM does not
 support PAT/custom OAuth profiles or hosts with a selected workspace ID; use a dedicated
-workspace hostname. The Desktop-only `--mdm-desktop` path also rejects
+workspace hostname. Explicit PAT/custom OAuth and selected-workspace requests fail before
+authentication or agent configuration. The Desktop-only `--mdm-desktop` path also rejects
 model-source overrides and Databricks AI Tools installation flags; its `--mcp` selects
 additional services. `--global` uses workspace-managed skills and connectors.
 Desktop provisioning errors fail `--global`, rather than becoming best-effort warnings.

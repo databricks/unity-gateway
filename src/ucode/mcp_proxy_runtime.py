@@ -285,8 +285,10 @@ def run_proxy(
     workspace_id: str | None = None,
 ) -> None:
     state = load_proxy_state()
-    saved_auth_matches = (host is None or host == state.get("workspace")) and (
-        profile is None or profile == state.get("profile")
+    saved_auth_matches = (
+        (host is None or host == state.get("workspace"))
+        and (profile is None or profile == state.get("profile"))
+        and (workspace_id is None or workspace_id == state.get("workspace_id"))
     )
     workspace = host or state.get("workspace")
     if not workspace:
