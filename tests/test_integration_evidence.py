@@ -106,6 +106,50 @@ def test_claude_resume_rejects_wrong_child_or_failed_send(result):
         )
 
 
+def _send_result(result):
+    return [
+        {
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "send-1"}]},
+            "toolUseResult": result,
+        },
+    ]
+
+
+_QUEUED = {
+    "success": True,
+    "message": "Message queued for delivery to child-id at its next tool round.",
+    "pin": {"id": "child-id"},
+}
+_CALL = {"id": "send-1", "input": {"to": "child-id"}}
+
+
+def test_claude_resume_returns_true_when_resumed():
+    result = {"resumedAgentId": "child-id"}
+    assert claude.assert_agent_resumed(_CALL, _send_result(result), "child-id", allow_queued=True)
+
+
+def test_claude_resume_accepts_queued_delivery_to_same_child_only_when_allowed():
+    records = _send_result(_QUEUED)
+    assert claude.assert_agent_resumed(_CALL, records, "child-id", allow_queued=True) is False
+    with pytest.raises(AssertionError, match="did not resume child-id"):
+        claude.assert_agent_resumed(_CALL, records, "child-id")
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {**_QUEUED, "pin": {"id": "other-child"}},
+        {**_QUEUED, "success": False},
+        {**_QUEUED, "message": "Delivered"},
+        {"success": True, "message": "queued"},
+    ],
+)
+def test_claude_resume_queued_rejects_other_child_or_unqueued(result):
+    with pytest.raises(AssertionError, match="did not resume child-id"):
+        claude.assert_agent_resumed(_CALL, _send_result(result), "child-id", allow_queued=True)
+
+
 def test_claude_resume_requires_matching_native_result():
     records = [
         {
