@@ -179,7 +179,10 @@ Its Claude/Codex evidence helpers keep scenario-specific assertions separate fro
 Workspace config/catalog reads use its base class's Databricks SDK client. Configuration
 is read-only and checked for changes at teardown; concurrent readers need no reservation.
 CUJ2 adds three separately collected cases for exact published MPS/MCP configuration, Codex
-inference, and Claude inference. Both inference cases ask for a short greeting and require a
+inference, and Claude inference. Its catalog checks require each agent's native API among the
+target's supported APIs, while retaining the exact model, provider type and target restrictions.
+Offline checks reject missing Responses support and accept Responses alongside Chat Completions
+in either order. Both inference cases ask for a short greeting and require a
 completed parent turn matching the submitted prompt with a nonempty answer, plus the expected
 provider/model and paired HTTP 200. Random IDs correlate requests; answers need not repeat them.
 File, skill, MCP and subagent tasks retain their expected-value checks.

@@ -98,7 +98,7 @@ def _assert_mps_catalog(workspace) -> None:
             for target in targets
             for api in (target.native_api_types or [])
         ]
-        assert native_apis == [expected_api], targets
+        assert expected_api in native_apis, targets
 
         matching = listed_by_name.get(mps_name)
         assert matching is not None, [item.name for item in listed]
