@@ -331,3 +331,10 @@ def test_describe_routing_reports_each_version_over_shell_flags(version, harness
 )
 def test_describe_routing_without_a_known_version_reports_shell_flags(source, harnesses):
     assert v2.describe_routing(source) == v2.RoutingDescription(harnesses=harnesses)
+
+
+def test_enabled_version_routes_ignores_uncovered_agent():
+    env = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_V0_CLAUDE_ONLY}
+
+    assert config.enabled_version_routes(env, agent="opencode") is False
+    assert config.enabled_version_routes({}, agent="opencode") is False

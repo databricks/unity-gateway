@@ -181,16 +181,22 @@ def _run_calculation(
     return task
 
 
-def _toggle_with_skill(
-    tui, session, agent: str, enabled: bool, orchestration_enabled: bool
-) -> None:
+def _installed_skills(session, agent: str) -> list[str]:
     skill_root = session.home / SKILL_ROOTS[agent]
+    if not skill_root.is_dir():
+        return []
     ignored_skills = {".system"} if agent == "codex" else set()
-    installed_skills = sorted(
+    return sorted(
         path.name
         for path in skill_root.iterdir()
         if path.is_dir() and path.name not in ignored_skills
     )
+
+
+def _toggle_with_skill(
+    tui, session, agent: str, enabled: bool, orchestration_enabled: bool
+) -> None:
+    installed_skills = _installed_skills(session, agent)
     expected_skills = (
         ["smart-router", "smart-router-orchestrator"] if orchestration_enabled else ["smart-router"]
     )
@@ -1031,16 +1037,7 @@ def test_smart_router_managed_default_leaves_codex_unrouted_at_launch(
         session, "codex", [str(session.binary), "codex"], "smart-router-managed-default"
     ) as tui:
         tui.boot()
-        skill_root = session.home / SKILL_ROOTS["codex"]
-        installed_skills = (
-            sorted(
-                path.name
-                for path in skill_root.iterdir()
-                if path.is_dir() and path.name != ".system"
-            )
-            if skill_root.is_dir()
-            else []
-        )
+        installed_skills = _installed_skills(session, "codex")
         assert "smart-router" not in installed_skills, installed_skills
         assert "smart-router-orchestrator" not in installed_skills, installed_skills
         _run_calculation(tui, session, "codex", "1+1", "2", False, routed=False)

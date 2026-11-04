@@ -3659,13 +3659,12 @@ def _launch_tool(
             managed_smart_routing_applies
             and not smart_routing_config.enabled_version_routes(agent=tool)
         )
-        smart_routing_enabled = not (routing_unsupported or managed_routing_unsupported) and (
+        routing_skipped = routing_unsupported or managed_routing_unsupported
+        smart_routing_enabled = not routing_skipped and (
             managed_smart_routing_applies
             or smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
         )
-        if (routing_unsupported or managed_routing_unsupported) and _smart_routing_launch_shape(
-            tool, ctx.args, explicit_prompt
-        ):
+        if routing_skipped and _smart_routing_launch_shape(tool, ctx.args, explicit_prompt):
             display = TOOL_SPECS[tool]["display"]
             print_warning(
                 f"Smart routing is enabled for {display} in this workspace, but it is currently "

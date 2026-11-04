@@ -161,11 +161,14 @@ def known_version(env: Mapping[str, str] | None = None) -> bool:
 def enabled_version_routes(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
     """Whether the version ``apply_enabled_version`` would select routes this agent at all.
 
-    Orchestration alone does not route, so only the V2 and subagent-only flags count.
+    Orchestration alone does not route, so only the V2 and subagent-only flags count. An agent
+    the versions do not cover is never routed.
     """
     source = os.environ if env is None else env
     version = source.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
-    preset = _VERSIONS.get(version, _VERSIONS[DEFAULT_ENABLED_VERSION])[agent]
+    preset = _VERSIONS.get(version, _VERSIONS[DEFAULT_ENABLED_VERSION]).get(agent)
+    if preset is None:
+        return False
     return "1" in (preset[ENABLE_SMART_ROUTING_ENV_VAR], preset[ENABLE_SUBAGENT_ROUTING_ENV_VAR])
 
 
