@@ -232,20 +232,6 @@ jobs:
     # The condition runs integration tests only if lint passes and the overall workflow is not cancelled.
     if: ${{ github.event_name != 'merge_group' && needs.lint.result == 'success' && !cancelled() }}
     uses: ./.github/workflows/integration.yml
-    with:
-      lanes: required
-    secrets: inherit  # zizmor: ignore[secrets-inherit] same-repo workflow that needs nearly every secret
-
-  # The non-blocking integration lanes (soft-fail, OpenCode, Copilot, managed OpenCode) run in
-  # their own call so required-e2e never waits for them. They start after the required call to
-  # keep soft-fail behind Full and Managed config without adding concurrent inference load.
-  integration-advisory:
-    name: Integration (non-blocking)
-    needs: [lint, integration]
-    if: ${{ github.event_name != 'merge_group' && needs.lint.result == 'success' && !cancelled() }}
-    uses: ./.github/workflows/integration.yml
-    with:
-      lanes: advisory
     secrets: inherit  # zizmor: ignore[secrets-inherit] same-repo workflow that needs nearly every secret
 
   # Preserve the exact contexts required by the repository's branch rules.
