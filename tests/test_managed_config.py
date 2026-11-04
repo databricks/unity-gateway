@@ -93,6 +93,15 @@ class TestNormalize:
         assert cfg["default_agent"] == "claude"
         assert set(cfg["enabled_agents"]) == {"claude", "codex"}
 
+    def test_github_copilot_maps_to_copilot(self):
+        raw = {
+            "default_agent": "CODING_AGENT_GITHUB_COPILOT",
+            "enabled_agents": [{"agent": "CODING_AGENT_GITHUB_COPILOT", "config": {}}],
+        }
+        cfg = normalize_managed_config(raw)
+        assert cfg["default_agent"] == "copilot"
+        assert set(cfg["enabled_agents"]) == {"copilot"}
+
     def test_claude_alias_models_map_to_family_slots(self):
         claude = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["claude"]
         assert claude["model_config"]["default_models_by_model_family"] == {
