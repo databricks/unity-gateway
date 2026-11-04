@@ -25,7 +25,12 @@ REAL_FIND_COMMAND = vscode._find_command
 REAL_RUN_CODE = vscode._run_code
 
 WS = "https://ws.cloud.databricks.com"
-STATE = {"workspace": WS, "profile": "dev"}
+# What `ug configure` saved for the Copilot CLI, which VS Code reuses.
+DISCOVERED = [
+    copilot.CopilotModel("system.ai.claude-sonnet-5-5", "anthropic"),
+    copilot.CopilotModel("system.ai.gpt-6-luna", "responses", (922_000, 128_000)),
+]
+STATE = {"workspace": WS, "profile": "dev", "copilot_catalog": copilot.catalog_state(DISCOVERED)}
 VERSION = json.loads((vscode.EXTENSION_DIR / "package.json").read_text())["version"]
 
 
@@ -68,19 +73,7 @@ def code(monkeypatch):
     monkeypatch.setattr(vscode, "find_code", lambda: Path("/fake/bin/code"))
     monkeypatch.setattr(vscode, "_find_command", lambda command: Path(f"/fake/bin/{command}"))
     monkeypatch.setattr(vscode, "_run_code", fake)
-    monkeypatch.setattr(vscode, "launch_token", lambda state, workspace: "token")
     monkeypatch.setattr(copilot, "launch_token", lambda state, workspace: "token")
-    monkeypatch.setattr(
-        vscode,
-        "discover_model_services",
-        lambda workspace, token: (
-            {"sonnet": "system.ai.claude-sonnet-5-5"},
-            ["system.ai.gpt-6-luna", "system.ai.gpt-oss-120b"],
-            ["system.ai.gemini-4-argon"],
-            ["system.ai.gpt-oss-120b", "system.ai.deepseek-v4-1-flash"],
-            None,
-        ),
-    )
     return fake
 
 
@@ -89,9 +82,7 @@ def _printed(capsys) -> str:
 
 
 class TestConfigure:
-    def test_installs_the_extension_with_the_workspace_and_its_claude_and_gpt_models(
-        self, code, capsys
-    ):
+    def test_installs_the_extension_with_the_copilot_clis_models_and_limits(self, code, capsys):
         assert vscode.configure(STATE)
 
         assert code.calls[-1][0] == "--install-extension"
@@ -121,6 +112,8 @@ class TestConfigure:
                     "name": "GPT 6 Luna",
                     "family": "gpt-6-luna",
                     "api": "responses",
+                    "maxInputTokens": 794_000,
+                    "maxOutputTokens": 128_000,
                 },
             ],
         }
@@ -138,20 +131,13 @@ class TestConfigure:
             "X-Databricks-Workspace-Id": "6051921418418893",
         }
 
-    def test_models_with_the_same_label_show_their_ids(self, code, monkeypatch):
-        monkeypatch.setattr(
-            vscode,
-            "discover_model_services",
-            lambda workspace, token: (
-                {},
-                ["system.ai.gpt-6-luna", "main.models.gpt-6-luna", "system.ai.gpt-5-5"],
-                [],
-                [],
-                None,
-            ),
+    def test_models_with_the_same_label_show_their_ids(self, code):
+        discovered = copilot.build_copilot_catalog(
+            ["system.ai.gpt-6-luna", "main.models.gpt-6-luna", "system.ai.gpt-5-5"]
         )
+        state = {**STATE, "copilot_catalog": copilot.catalog_state(discovered)}
 
-        models = vscode.model_entries(STATE)
+        models = vscode.model_entries(state)
 
         assert [model["name"] for model in models] == [
             "main.models.gpt-6-luna",
@@ -159,7 +145,7 @@ class TestConfigure:
             "GPT 5.5",
         ]
 
-    def test_a_provider_services_claude_targets_keep_their_ids_and_get_a_200k_cap(
+    def test_a_provider_services_claude_targets_keep_their_ids_and_their_limits(
         self, code, monkeypatch, capsys
     ):
         service = {
@@ -184,8 +170,8 @@ class TestConfigure:
                 "name": "global.anthropic.claude-opus-4-8",
                 "family": "claude-opus-4-8",
                 "api": "anthropic",
-                "maxInputTokens": 168_000,
-                "maxOutputTokens": 32_000,
+                "maxInputTokens": 872_000,
+                "maxOutputTokens": 128_000,
             },
             {
                 "id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -254,7 +240,7 @@ class TestConfigure:
         assert error in printed
         assert "VS Code was left unchanged." in printed
 
-    def test_a_model_locations_services_with_a_200k_cap(self, code, monkeypatch):
+    def test_a_model_locations_services_with_their_listed_limits(self, code, monkeypatch):
         listed: list[str | None] = []
 
         def listing(workspace, token, *, parent_schema=None):
@@ -262,6 +248,7 @@ class TestConfigure:
             return AnthropicModelCatalog(
                 model_ids=["main.models.claude-opus-5-5", "main.models.team-assistant"],
                 model_id_to_display_name={},
+                model_id_to_limits={"main.models.claude-opus-5-5": (200_000, 64_000)},
             )
 
         monkeypatch.setattr(copilot, "list_anthropic_model_catalog", listing)
@@ -276,8 +263,8 @@ class TestConfigure:
                 "name": "Claude Opus 5.5",
                 "family": "claude-opus-5-5",
                 "api": "anthropic",
-                "maxInputTokens": 168_000,
-                "maxOutputTokens": 32_000,
+                "maxInputTokens": 136_000,
+                "maxOutputTokens": 64_000,
             },
             {
                 "id": "main.models.team-assistant",
@@ -308,11 +295,13 @@ class TestConfigure:
         vscode.configure(STATE)
         installed = code.config
         code.calls.clear()
-        monkeypatch.setattr(
-            vscode, "discover_model_services", lambda workspace, token: ({}, [], [], [], reason)
-        )
+        state = {
+            "workspace": "https://other.cloud.databricks.com",
+            "copilot_catalog": copilot.catalog_state([]),
+            "_discovery_reasons": {"copilot": reason} if reason else {},
+        }
 
-        assert not vscode.configure({**STATE, "workspace": "https://other.cloud.databricks.com"})
+        assert not vscode.configure(state)
 
         assert code.calls == []
         assert code.config == installed
