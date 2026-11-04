@@ -16,10 +16,10 @@ WORKSPACE = {"workspace": "https://workspace.example", "profile": "chosen"}
 SERVERS = [{"name": "slack", "url": "https://workspace.example/mcp/slack", "clients": ["claude"]}]
 
 
-@pytest.fixture(params=["windows", "macos"])
-def system_source(tmp_path, monkeypatch, request):
+@pytest.fixture
+def system_source(tmp_path, monkeypatch):
     """Use temporary sources and simulate only native registration/cache commands."""
-    return desktop_environment(tmp_path, monkeypatch, request.param)
+    return desktop_environment(tmp_path, monkeypatch, managed_files.current_os().value)
 
 
 def desktop_environment(tmp_path, monkeypatch, platform):
@@ -219,25 +219,24 @@ def test_ordinary_configure_and_revert_keep_root_source_untouched(
     assert not cowork._state_path().exists()
 
 
-def test_dry_run_leaves_no_state_or_bundle(system_source):
+@pytest.mark.parametrize("configured", [False, True])
+def test_dry_run_leaves_state_and_bundle_unchanged(system_source, configured):
+    if configured:
+        assert cowork.configure_cowork(WORKSPACE, SERVERS)
+    source_before = cowork._marketplace_files(cowork._marketplace_root())
+    registration_before = cowork._marketplace_files(cowork.discover_cowork_root())
+    state_before = cowork._state_path().read_bytes() if cowork._state_path().exists() else None
     config_io.set_dry_run(True)
     try:
         setup.configure_claude_cowork(WORKSPACE, SERVERS)
         assert not cowork.revert_cowork()
         assert not system_source.exists()
-        assert not cowork._state_path().exists()
+        assert cowork._marketplace_files(cowork._marketplace_root()) == source_before
+        assert cowork._marketplace_files(cowork.discover_cowork_root()) == registration_before
+        state_after = cowork._state_path().read_bytes() if cowork._state_path().exists() else None
+        assert state_after == state_before
     finally:
         config_io.set_dry_run(False)
-
-
-def test_configure_records_account_for_revert(system_source):
-    assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    assert config_io.read_json_safe(cowork._state_path()) == {
-        "version": 1,
-        "cowork_root": str(cowork.discover_cowork_root()),
-    }
-    assert cowork.revert_cowork()
-    assert not system_source.exists()
 
 
 def test_failed_previous_account_cleanup_can_be_retried(system_source, tmp_path, monkeypatch):
@@ -266,27 +265,6 @@ def test_failed_previous_account_cleanup_can_be_retried(system_source, tmp_path,
         "cowork_root": str(cowork.discover_cowork_root()),
     }
     assert config_io.read_json_safe(old / "cowork_plugins/installed_plugins.json")["plugins"] == {}
-
-
-@pytest.mark.parametrize("opt_out", ["user", "environment"])
-def test_opt_out_uses_existing_user_installer(system_source, tmp_path, monkeypatch, opt_out):
-    if opt_out == "user":
-        managed_files.set_config_scope("user")
-    else:
-        monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
-    root = tmp_path / "Desktop/local-agent-mode-sessions/account/org"
-    root.mkdir(parents=True, exist_ok=True)
-    calls = []
-
-    def run(argv, **kwargs):
-        calls.append(argv)
-        return SimpleNamespace(returncode=0, stdout='{"outcome":"ok"}', stderr="")
-
-    monkeypatch.setattr(cowork.subprocess_cross_os, "run", run)
-    assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    assert any(argv[1:4] == ["plugin", "install", cowork.PLUGIN_ID] for argv in calls)
-    assert config_io.read_json_safe(cowork._state_path())["cowork_root"] == str(root)
-    assert not system_source.exists()
 
 
 def test_removing_all_contents_updates_existing_user_source(system_source):

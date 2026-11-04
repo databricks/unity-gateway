@@ -346,10 +346,6 @@ credential-helper execution, live Messages inference, installed Cowork MCP calls
 and revert. Inference requires HTTP 200 and nonempty assistant text; MCP calls use web_search
 to find Databricks' official website without SQL compute. See
 [integration coverage](integration/README.md) for prerequisites and evidence.
-`test_integration_contract.py` checks the Desktop test helper's Windows marketplace
-path with missing or empty Program Files variables in the isolated environment,
-and prefers `ProgramW6432` over `ProgramFiles`. These are component checks, not
-native Windows integration runs.
 CUJ1/CUJ2 compare complete Desktop profile/metadata JSON for system.ai models and non-relay
 Anthropic MPS. CUJ3's existing picker journey checks its incompatible scoped aliases preserve
 all Desktop profile/metadata bytes after its existing configure call.
@@ -443,6 +439,9 @@ refresh, content versions, downloaded workspace skills/assets, previous-account 
 malformed marketplace metadata, equivalent path aliases, source-switch failure recovery,
 and retained user source/state after refresh failures. Explicit global skips ordinary
 Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
+Overlapping installer/state checks and duplicate simulated-OS cases are consolidated;
+user installation, persisted account state and root-file preservation remain covered.
+Dry-run preservation covers both fresh and already-configured installations.
 Root bundle writer checks belong to the separate MDM follow-up.
 Temporary filesystem destinations are real; external Claude registry/cache operations
 and platform privilege boundaries are simulated. These checks do not establish native

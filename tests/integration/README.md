@@ -124,6 +124,9 @@ refresh, content versions, downloaded workspace skills/assets, previous-account 
 malformed marketplace metadata, equivalent path aliases, source-switch failure recovery,
 and retained user source/state after refresh failures. Explicit global skips ordinary
 Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
+Overlapping installer/state checks and duplicate simulated-OS cases are consolidated;
+user installation, persisted account state and root-file preservation remain covered.
+Dry-run preservation covers both fresh and already-configured installations.
 Root bundle writer checks belong to the separate MDM follow-up.
 Temporary filesystem destinations are real; external Claude registry/cache operations
 and platform privilege boundaries are simulated. These checks do not establish native

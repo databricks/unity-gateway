@@ -4757,7 +4757,8 @@ def configure(
         typer.Option(
             "--global",
             help="Write machine-wide Claude Code/Codex settings (requires administrator rights). "
-            "Skip user-level Claude Desktop configuration for this invocation. "
+            "Skip user-level Claude Desktop configuration and the Claude Code connector plugin "
+            "for this invocation. "
             "The CLI-agent scope is saved for later commands.",
         ),
     ] = False,

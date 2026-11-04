@@ -126,18 +126,19 @@ The 3P connection profile, telemetry helper, runtime authentication, and UG stat
 user-local. A pre-existing `Claude/org-plugins/ug` installation must be removed by its owner
 before configuration, so the organization loader cannot expose a duplicate UG plugin.
 
-UG records the selected source and account/org in `~/.ucode/claude-cowork.json`.
+UG records the account/org in `~/.ucode/claude-cowork.json`.
 UG owns the generated user marketplace: configure replaces its contents, including manual
 edits, and ordinary `ug revert` removes it and UG's user registration. Root files are left
 alone. The existing user-source writer retains staged replacement and rollback.
-A native refresh failure leaves the user source and tracking state for retry or revert;
-the previous plugin version or registration is not restored automatically.
+A native refresh failure leaves the user source and tracking state for retry or revert.
+If a source switch fails, UG attempts to restore the previous marketplace/plugin through
+native Claude commands. A failed restoration reports instructions to repair the installation.
 Run configure and revert one at a time. Account changes use the existing cleanup flow
 before installing for the new account; no pending-cleanup queue or state migration is added.
 
-The shared privileged directory writer remains available for MDM publication. On macOS it
-rejects source entries owned by another user, symbolic links, hard-linked files, and special
-files before copying. Ordinary Desktop configuration never invokes this writer.
+Root bundle publication and its privileged writer belong to the
+[MDM follow-up](https://github.com/databricks/unity-gateway/pull/1374).
+Ordinary Desktop configuration writes only the user source.
 
 Manual testing on macOS with Claude Desktop 4.4212.0 previously verified configure and
 reconfigure, skill invocation, connector calls, matching source/cache contents, and one UG
