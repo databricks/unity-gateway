@@ -838,9 +838,8 @@ def revert_managed_file(
             else:
                 _privileged_replace(path, desired_text)
         except (OSError, subprocess.CalledProcessError) as exc:
-            action = "delete" if desired_text is None else "restore"
             raise RuntimeError(
-                f"Could not {action} {display} managed settings at {path}. The backup was retained "
+                f"Could not restore {display} managed settings at {path}. The backup was retained "
                 f"under {MANAGED_BACKUP_DIR}. Resolve the permission issue and run `ug revert` "
                 "again."
             ) from exc

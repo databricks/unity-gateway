@@ -195,8 +195,6 @@ If ucode cannot complete a write or revert, the backup remains available for a l
 
 - If the current file exactly matches ucode's last-applied snapshot, restore the exact baseline.
 - If ucode created the file, delete it.
-- A deletion failure identifies the managed settings file in `ug revert` output. The command
-  fails and retains the file and backup for retry; it does not replace the file with an empty config.
 - If an agent has no backup record but its managed settings file exists, `ug revert` names the
   file, explains why it was left unchanged, and advises manual removal if it is no longer needed.
   Revert keeps its existing exit status and state cleanup. This includes existing authentication

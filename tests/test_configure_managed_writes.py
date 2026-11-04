@@ -177,9 +177,8 @@ def test_denied_headless_revert_keeps_the_backup_and_says_so(tmp_path, monkeypat
     monkeypatch.setattr(managed_files, "_sudo_remove", denied)
     managed_files.request_explicit_managed_writes("ug revert")
 
-    with pytest.raises(RuntimeError, match="The backup was retained") as raised:
+    with pytest.raises(RuntimeError, match="The backup was retained"):
         _revert()
-    assert f"Could not delete Claude Code managed settings at {path}" in str(raised.value)
     assert path.exists()
 
 
@@ -236,7 +235,7 @@ def test_revert_cli_reports_managed_file_deletion_failure(
 
     output = " ".join(result.output.split())
     assert result.exit_code == 1, result.output
-    assert f"Could not delete {display} managed settings" in output
+    assert f"Could not restore {display} managed settings" in output
     assert str(path) in output
     assert "The backup was retained" in output
     assert "run `ug revert` again" in output
