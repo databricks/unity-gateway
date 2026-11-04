@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+`test_skills_api.py` verifies that a discovered descendant is listed before a slow
+sibling finishes, using synchronization events rather than latency thresholds.
+Existing tree, pagination, concurrency-cap, cancellation, and all-or-nothing
+failure checks remain. These controlled client tests do not measure live UC latency.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered

@@ -1,5 +1,9 @@
 # Integration tests
 
+`../test_skills_api.py` verifies pipelined skill-directory traversal through
+controlled read boundaries. It retains pagination, bounded concurrency, and
+all-or-nothing failure checks; live Files API timing is not established.
+
 `../test_configure_managed_writes.py` covers `ug revert` output after Claude/Codex managed-file
 deletion fails, its nonzero exit, and retention of the file, backup, and ug state. These component
 tests simulate privileged deletion failure; native OS permissions and live sudo are not exercised.
