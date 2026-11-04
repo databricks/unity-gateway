@@ -169,10 +169,28 @@ rollback shared with the profile. Disabled tracing omits these fields on replace
 Claude setup also installs a generated Cowork plugin containing only the current
 workspace's managed and user-downloaded home-level skills and Claude-targeted MCP servers.
 Downloaded skill additions and removals resync the plugin; project-local,
-user-authored, and other-workspace skills are excluded. The source lives at
-`~/.ucode/claude-cowork-marketplace`, and `~/.ucode/claude-cowork.json` records the selected
-account/org root for cleanup. Cowork must have started once. Setup and cleanup use scoped
-`claude plugin ... --cowork --json` commands with `CLAUDE_CONFIG_DIR`; failures stay best-effort.
+user-authored, and other-workspace skills are excluded. The user-scope source lives at
+`~/.ucode/claude-cowork-marketplace`. Default configure and `--user` both write only
+this user source, the user 3P profile, and native Cowork registration/cache, even when saved
+scope is `global`. They never publish or remove root Desktop files. Explicit `--global`
+is detected by the command-local `machine_wide_only` switch and skips ordinary Desktop
+profile/plugin setup; macOS MDM provisioning is a separate follow-up. CLI-agent behavior
+is unchanged by these Desktop guards.
+Ordinary plugin setup requires Desktop's local account/org directory and uses scoped
+`claude plugin ... --cowork --json` with `CLAUDE_CONFIG_DIR`. First configure skips if no
+Cowork sessions directory exists. An earlier root-source registration switches to the
+user source without deleting root files or creating a duplicate plugin. Content-derived
+manifest versions and an explicit native update refresh changed skills/MCPs in the user
+cache. A pre-existing org-plugins/ug copy blocks duplicate loading.
+`~/.ucode/claude-cowork.json` records the account/org in version-1
+state. Account changes clean up the prior account before generation; no configure/revert
+lock, pending-cleanup queue, or migration bookkeeping is added. UG replaces the whole
+generated user marketplace, including manual edits. Its writer retains staged replacement
+and rollback. Native refresh failures retain the source/state for retry/revert. A failed source switch
+restores the previous marketplace/plugin through native commands when possible, and
+reports a failed recovery with configure retry instructions. Ordinary
+revert removes user source/registration only. Explicit MCP/skill changes resync this source;
+launches do not. Root bundle publication is implemented in the separate MDM follow-up.
 Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
 custom registration names and full proxy URLs are preserved. Its name and display name
 are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old
@@ -186,7 +204,8 @@ marketplace's `extraKnownMarketplaces` entry and its `enabledPlugins` entry.
 This plugin contains only the generated `unity-gateway-connectors` skill with Code-specific
 authentication guidance and native MCP registration names. Existing MCP registrations and
 downloaded skill files stay in their native locations; Cowork hooks are not installed in Code.
-Code setup is independent of Cowork account discovery and best-effort. Model-configured Claude and
+Code setup is independent of Cowork account discovery and best-effort; explicit `--global`
+skips this user-scope plugin too. Model-configured Claude and
 explicit Claude MCP clients are eligible. Managed configure refreshes Code after successful
 MCP reconciliation even if skill downloads fail; Cowork keeps its existing model and skill
 requirements. MCP updates refresh eligible plugins, and revert removes both while preserving

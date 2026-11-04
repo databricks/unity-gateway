@@ -63,6 +63,7 @@ def test_code_plugin_uses_native_names_without_duplicate_servers_or_hooks(code_p
     root = _plugin_root()
     plugin = json.loads((root / ".claude-plugin" / "plugin.json").read_text())
     assert plugin["name"] == "ug"
+    assert "version" not in plugin
     assert "mcpServers" not in plugin
     assert not (root / ".mcp.json").exists()
     assert not (root / "hooks").exists()

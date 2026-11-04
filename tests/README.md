@@ -386,6 +386,7 @@ regression invokes the Typer CLI and checks exit code 1, one warning, and a fail
 Desktop summary while profile and previous-selection files survive. Retry returns
 exit code 0, deletes the UG profile, and restores the previous selection without
 workspace state; a repeated revert also returns 0.
+This Desktop failure scenario uses isolated OS-managed paths for unrelated agent warnings.
 
 `test_cowork_hooks.py` covers SessionStart guidance naming every connector without reporting
 unanswered or timed-out probes, a timestamped sign-in line for connectors whose probe returns a
@@ -401,7 +402,7 @@ execution remains unverified.
 `test_code_plugin.py` covers the Code-scoped UG connector plugin with real
 files and controlled native CLI boundaries: original registration names, Claude-only
 filtering, Code-only discovery/authentication instructions, no duplicate MCP servers or
-downloaded skills, no Cowork hooks,
+downloaded skills, no Cowork hooks or version metadata,
 refresh after workspace changes and last-connector removal, scoped cleanup,
 repeat cleanup, saved-root cleanup even after source deletion, config-root changes that
 retain the old registration and saved root on installation failure, successful retry,
@@ -441,6 +442,35 @@ mock the Claude plugin CLI and do not establish native Desktop policy, account-f
 late MCP connection, tool discovery, or inference behavior. A frozen fixture verifies that
 Cowork's skill text, including its description, stays identical to the version before the
 Code authentication changes, with either the default scope or explicit `code=False`.
+
+`test_desktop_marketplace.py` covers ordinary default/`--user` configuration writing
+only the user source, no elevation, preservation of the registered legacy root source,
+one registration when switching an earlier root source to user scope, explicit cache
+refresh, content versions (including asset-only skill updates), downloaded workspace
+skills/assets, previous-account cleanup,
+malformed marketplace metadata (including missing or nonstring directory paths),
+equivalent path aliases, source-switch failure recovery
+for both current and legacy-only plugin identities, preserved nonlocal registrations,
+and retained user source/state after refresh failures. Explicit global skips ordinary
+Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
+Overlapping installer/state checks and duplicate simulated-OS cases are consolidated;
+user installation, persisted account state and registered-source preservation remain covered.
+Unreferenced root-path sentinels and an ineffective temporary-directory alias test were
+removed; content updates and empty-payload cache refresh now share one lifecycle test.
+Equivalent registered-directory aliases remain covered separately.
+Dry-run preservation covers both fresh and already-configured installations.
+Root bundle writer checks belong to the separate MDM follow-up.
+Temporary filesystem destinations are real; external Claude registry/cache operations
+and platform privilege boundaries are simulated. These checks do not establish native
+Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
+A native Linux spot check with Claude CLI 2.1.317 and an isolated home confirmed
+`marketplace add --cowork` preserves a repeated same-path registration and updates
+it for a different directory with the same marketplace name. The fixture follows
+that behavior. A null directory path was rejected by native registry validation;
+ignoring it during UG inspection does not establish automatic registry repair.
+This check does not establish native install/update failure recovery or Desktop GUI behavior.
+`test_desktop_configure_cli.py` also checks explicit-global selection versus default and
+`--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers.
 
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
 It checks that Claude uses an available Slack tool despite a stale disconnect notice, actually

@@ -173,6 +173,14 @@ and `ug revert` return to `--global`.
 `--user` also fails for a workspace that publishes a managed config, which must be installed
 machine-wide; use `--global` for it.
 
+For Claude Desktop, default `ug configure` and `--user` both write only the user's
+3P JSON profile, generated marketplace, and native Cowork registration/cache. They leave
+root files untouched. Explicit `--global` skips those user-level Desktop writers; machine
+policy and plugin provisioning are separate macOS MDM work. CLI-agent scope handling is
+unchanged. If Desktop has not initialized a Cowork account directory, ordinary configure
+skips plugin setup until that directory exists. See
+[Desktop plugin installation](docs/claude-desktop.md#cowork-workspace-skills-and-mcp-servers).
+
 ### Hosts that serve several workspaces
 
 An account custom URL (such as `https://acme.cloud.databricks.com`) serves every workspace of the
