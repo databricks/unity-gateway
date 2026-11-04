@@ -122,6 +122,11 @@ ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching
 `-c` headers (plain and smart-routed) without writing its profile. No automated test checks the
 header at the gateway.
 
+`test_claude_routing.py` and `test_claude_smart_routing_v2.py` cover recording the
+original model selector, agent type and tool-call ID alongside the routed target.
+Omitted selectors stay null. These local audit checks do not establish a resolved
+inherited model, an executed-model match, or a remote metrics export.
+
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
 making no privileged write after another writer drops them, skip mode, revert, and admin passthrough

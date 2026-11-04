@@ -33,6 +33,11 @@ The one-second refresh updates a mounted row without another prompt and avoids r
 when the count is unchanged.
 The running count has no live TUI coverage.
 
+`../test_claude_routing.py` and `../test_claude_smart_routing_v2.py` cover preserving
+the original model selector, agent type and tool-call ID in local routing records,
+including null omitted selectors. They do not verify inherited model resolution,
+actual execution or a remote metrics export.
+
 `test_ug_smart_routing_hooks.py::test_smart_router_claude_resumes_same_subagent_with_send_message`
 checks live continuation with orchestration enabled on Claude 2.1.314+: one initial
 Agent/Task call, a `SendMessage` addressed by ID or name whose native result
