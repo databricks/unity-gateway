@@ -539,10 +539,12 @@ MDM compatibility cases cover unrestricted empty agent lists and feature-disable
 discovery. MCP/tracing helper checks keep explicit OAuth profiles independent of unrelated
 saved PAT mode while retaining saved PAT mode for matching host, profile, and workspace ID.
 Global Desktop rejects explicit PAT/custom OAuth and selected-workspace requests before
-authentication or agent writes; shared CLI-agent PAT validation/export remains covered.
+authentication or agent writes; shared CLI-agent PAT validation/export remains covered
+with Claude selected, including precedence over the global Desktop OAuth branch.
 Both provisioning entry points reject unsafe Databricks and Claude CLI candidates before
-installer, agent setup or profile discovery, including dry-run requests with a named,
-empty, or omitted profile. Intermediate runtime symlink parents are validated while
+installer, agent setup or profile discovery. Six representative cases cover both CLIs,
+Desktop/global provisioning, global dry run, and named/empty/omitted profiles; the rejected
+CLI cannot reach profile parsing. Intermediate runtime symlink parents are validated while
 protected virtualenv invocation paths are retained. These filesystem tests simulate root
 ownership and do not execute the test executables.
 The public-command checks keep profile parsing real and replace subprocess execution at its boundary. An untrusted CLI candidate
@@ -574,6 +576,9 @@ checks an existing MDM deployment stays byte-for-byte unchanged under default/us
 provisioning before account creation, failure exit status, dry run, command-local scope,
 and skipping Desktop on platforms without MDM support. The existing CLI-agent scope unit test isolates Desktop preflight.
 Public Desktop CLI scope cases include macOS preflight, and argument rejection asserts each intended diagnostic after valid device setup.
+Command-local scope checks simulate macOS and isolate preflight so they also run as a
+standard user. Failure checks cover root rejection and publication failure after valid
+preflight/authentication, without creating a user profile, source, or registration.
 CLI-agent setup and external services
 are isolated; this is component coverage, not native macOS or live connector coverage.
 Omitted-agent cases cover managed and interactive selection: Codex-only configuration

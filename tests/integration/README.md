@@ -148,9 +148,14 @@ malformed cache inspection, authentication isolation, and deferred cleanup have
 [component coverage](../README.md). These checks use temporary destinations and simulate
 external workspace, ownership, launchd, and Claude registration boundaries.
 CLI-agent scope unit coverage isolates Desktop prerequisites; Desktop scope components
-exercise the macOS CLI preflight. Component regressions also check MCP-only requests
-bypass Desktop provisioning, intermediate runtime symlink trust, and early Claude CLI
-validation before installer or version probes. Omitted-agent selection and the
+exercise the macOS CLI preflight. Shared Claude PAT handling is tested against the global
+Desktop OAuth branch. Command-local scope checks isolate machine prerequisites on macOS;
+failure checks cover preflight and publication without writing user Desktop files.
+These checks replace external authentication and do not exercise native macOS failures.
+Other component regressions cover MCP-only requests bypassing Desktop provisioning,
+intermediate runtime symlink trust, and early Databricks/Claude CLI validation before
+installer or version probes. Six representative unsafe-CLI cases retain both provisioning
+entry points, global dry run, and named/empty/omitted profiles. Omitted-agent selection and the
 managed-only Desktop connector policy under `--global --mcp` also have component
 coverage; these are not native macOS integration checks.
 

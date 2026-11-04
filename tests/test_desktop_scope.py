@@ -160,14 +160,29 @@ def test_global_extra_mcp_selection_applies_only_to_cli_clients(
     assert not cowork._marketplace_root().exists()
 
 
-def test_global_provisioning_failure_fails_configure(desktop_configuration, device):
-    device.admin = False
+@pytest.mark.parametrize("stage", ["preflight", "publication"])
+def test_global_provisioning_failure_fails_configure(
+    desktop_configuration, device, monkeypatch, stage
+):
+    if stage == "preflight":
+        device.admin = False
+        message = "root from your MDM script"
+    else:
+        message = "MDM publication failed"
+
+        def publish(*args, **kwargs):
+            assert device.auth.called
+            raise RuntimeError(message)
+
+        monkeypatch.setattr(mdm, "_publish", publish)
+
     result = _configure("--global")
     assert result.exit_code == 1
-    assert "root from your MDM script" in " ".join(result.output.split())
+    assert message in " ".join(result.output.split())
     assert not mdm.POLICY_PATH.exists()
     assert not claude.claude_desktop_directory().exists()
     assert not cowork._marketplace_root().exists()
+    assert not (cowork.discover_cowork_root() / "cowork_plugins/installed_plugins.json").exists()
     assert not managed_files.machine_wide_only()
 
 

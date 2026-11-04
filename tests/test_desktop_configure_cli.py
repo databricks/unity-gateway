@@ -19,7 +19,12 @@ from ucode.mcp import McpServiceListingRateLimited
 @pytest.mark.parametrize("flags", [[], ["--user"], ["--global"]])
 @pytest.mark.parametrize("failed", [False, True])
 def test_explicit_global_desktop_scope_is_command_local(monkeypatch, flags, failed):
+    from ucode.agents.desktop import mdm
+
     selections = []
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
+    monkeypatch.setattr(mdm, "_require_macos", lambda **kwargs: None)
+    monkeypatch.setattr(mdm, "validate_cli_discovery", lambda: None)
     monkeypatch.setattr(cli, "install_databricks_cli", lambda: None)
 
     def configure_workspace(*args, **kwargs):

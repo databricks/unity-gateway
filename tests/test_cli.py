@@ -7069,7 +7069,7 @@ class TestConfigureSharedStateUsePat:
             monkeypatch.setattr(cli_mod.sys, "platform", "darwin")
 
         state = cli_mod.configure_shared_state(
-            self.WS, profile="DEFAULT", force_login=True, use_pat=True
+            self.WS, profile="DEFAULT", tools=["claude"], force_login=True, use_pat=True
         )
 
         assert logins == []

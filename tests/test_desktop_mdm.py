@@ -657,8 +657,14 @@ def test_runtime_rejects_untrusted_cli_before_version_discovery(monkeypatch, tmp
     subprocess_run.assert_not_called()
 
 
-@pytest.mark.parametrize("flags", [["--mdm-desktop"], ["--global"], ["--global", "--dry-run"]])
-@pytest.mark.parametrize("profile", ["CACHED", "", None])
+@pytest.mark.parametrize(
+    ("flags", "profile"),
+    [
+        (["--mdm-desktop"], "CACHED"),
+        (["--global"], ""),
+        (["--global", "--dry-run"], None),
+    ],
+)
 @pytest.mark.parametrize("cli_name", ["Databricks CLI", "Claude CLI"])
 def test_profile_lookup_rejects_untrusted_cli_before_execution(
     monkeypatch, tmp_path, flags, profile, cli_name
