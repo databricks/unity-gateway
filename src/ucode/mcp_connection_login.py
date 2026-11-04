@@ -7,7 +7,6 @@ session stays unchanged. Poll that user's credential before retrying the MCP req
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 import time
 from typing import TextIO
@@ -21,7 +20,7 @@ from ucode.databricks import (
     workspace_org_id,
     workspace_origin,
 )
-from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility.browser_cross_os import open_in_browser
 from ucode.workspace import workspace_headers
 
 _LOGIN_TIMEOUT_SECONDS = 300
@@ -120,25 +119,7 @@ def run_connection_login(
         flush=True,
     )
     deadline = time.monotonic() + _LOGIN_TIMEOUT_SECONDS
-    try:
-        # Isolate webbrowser's subprocess output from the MCP stdout wire, including text browsers.
-        result = subprocess_cross_os.run(
-            [
-                sys.executable,
-                "-I",
-                "-c",
-                "import sys, webbrowser; sys.exit(0 if webbrowser.open(sys.argv[1]) else 1)",
-                login_url,
-            ],
-            check=False,
-            timeout=10,
-            stdin=subprocess.DEVNULL,
-            stdout=output,
-            stderr=output,
-        )
-        browser_opened = result.returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        browser_opened = False
+    browser_opened = open_in_browser(login_url)
     if not browser_opened:
         print("Could not open a browser. Open the sign-in URL above manually.", file=output)
 

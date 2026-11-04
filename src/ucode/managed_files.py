@@ -1,8 +1,8 @@
 """Safely manage root-owned, highest-precedence agent settings files.
 
 Interactive updates preserve unrelated policy, retain a private baseline for ``ucode revert``, and
-verify the privileged atomic replacement. Existing-file repairs may run without a terminal;
-the shared writer uses sudo's non-prompting mode without consuming the caller's standard input.
+verify the privileged atomic replacement. Without a terminal, writes use sudo's non-prompting mode
+without consuming the caller's standard input; managed settings are only repaired in place then.
 Windows has no sudo: only an elevated process writes there, with or without a terminal.
 """
 
@@ -15,6 +15,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -39,6 +40,7 @@ SKIP_OS_SETTINGS_ENV = "UG_SKIP_OS_SETTINGS"
 CONFIG_SCOPES = ("global", "user")
 DEFAULT_CONFIG_SCOPE = "global"
 _config_scope = DEFAULT_CONFIG_SCOPE
+_machine_wide_only = False
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
@@ -126,6 +128,21 @@ def config_scope() -> str:
     return _config_scope
 
 
+def set_machine_wide_only(enabled: bool) -> None:
+    """Mark this run as an explicit ``ug configure --global``, which skips Desktop user configuration."""
+    global _machine_wide_only
+    _machine_wide_only = enabled
+
+
+def machine_wide_only() -> bool:
+    """Whether this explicit global run skips Desktop user configuration.
+
+    True only during an explicit ``ug configure --global``. ug's own state under ``~/.ucode`` and the
+    Databricks login are still written, since the machine-wide settings rely on them.
+    """
+    return _machine_wide_only
+
+
 def managed_settings_skipped() -> bool:
     """Whether OS-managed settings are opted out via ``UG_SKIP_OS_SETTINGS`` or the ``user`` scope.
 
@@ -157,23 +174,53 @@ def managed_files_supported() -> bool:
 
 def claude_header_mod_root() -> Path | None:
     """Where ug installs its Claude header mod, or ``None`` where it installs none."""
-    # shortcut: no Windows install (no allowlisted admin folder), add one when Windows needs it.
-    return None if managed_settings_skipped() else CLAUDE_HEADER_MOD_ROOTS.get(current_os())
+    if managed_settings_skipped():
+        return None
+    if current_os() is OS.WINDOWS:
+        return _windows_claude_header_mod_root()
+    return CLAUDE_HEADER_MOD_ROOTS.get(current_os())
+
+
+def _windows_claude_header_mod_root() -> Path:
+    # Beside the managed file, so it inherits Program Files' administrator-only write access.
+    return windows_claude_managed_settings_path().parent / "ucode-plugins"
+
+
+def claude_desktop_org_plugin_path() -> Path | None:
+    if current_os() is OS.MACOS:
+        return Path("/Library/Application Support/Claude/org-plugins/ug")
+    if current_os() is OS.WINDOWS:
+        return system_cross_os.windows_program_files_dir() / "Claude" / "org-plugins" / "ug"
+    return None
 
 
 def reconcile_privileged_files(files: dict[Path, str], *, display: str) -> None:
-    """Write each allowlisted root-owned file whose contents differ, through the sudo worker."""
+    """Write each allowlisted root-owned file whose contents differ, through the sudo worker.
+
+    Without a terminal it runs ``sudo -n``, so a headless ``ug configure`` installs them where sudo
+    needs no password, as it does the workspace policy."""
     changed = [(path, text) for path, text in files.items() if read_managed_file(path) != text]
     if changed and _sudo_may_prompt():
         _print_managed_write_permission(display)
     for path, text in changed:
-        _privileged_replace(path, text)
+        if current_os() is OS.WINDOWS:
+            _windows_replace(path, text)
+        else:
+            _sudo_replace(path, text)
 
 
 def remove_privileged_tree(root: Path) -> None:
     """Remove a root-owned folder ug owns entirely, such as its header mod's, through sudo."""
     if root.is_symlink():
         raise RuntimeError(f"Refusing to remove {root} through a symlink.")
+    if current_os() is OS.WINDOWS:
+        if root != _windows_claude_header_mod_root() or root.is_junction():
+            raise RuntimeError(f"Refusing to remove unexpected folder {root}.")
+        if root.exists():
+            if not system_cross_os.is_admin():
+                raise PermissionError("administrator rights are required")
+            shutil.rmtree(root)
+        return
     if root.exists():
         subprocess_cross_os.run(
             _sudo_command("rm", "-rf", "--", str(root)), capture_output=True, text=True, check=True
@@ -1505,7 +1552,11 @@ def _privileged_remove(path: Path) -> None:
 
 
 def _validate_windows_target(path: Path) -> None:
-    if path not in (windows_claude_managed_settings_path(), windows_codex_managed_settings_path()):
+    header_mod_files = {
+        _windows_claude_header_mod_root() / name for name in CLAUDE_HEADER_MOD_FILES
+    }
+    targets = {windows_claude_managed_settings_path(), windows_codex_managed_settings_path()}
+    if path not in targets | header_mod_files:
         raise RuntimeError(f"Refusing unexpected managed-settings target: {path}")
     if path.is_symlink():
         raise RuntimeError(f"Refusing to replace symlinked managed settings: {path}")
@@ -1590,10 +1641,10 @@ def _sudo_remove(path: Path) -> None:
 
 
 def _sudo_replace(path: Path, desired_text: str) -> None:
-    """Atomically replace ``path`` while preserving metadata and file flags."""
+    """Atomically replace ``path`` while preserving metadata and file flags.
+
+    Callers decide whether a write is allowed; without a terminal this runs ``sudo -n``."""
     _validate_sudo_replace_target(path)
-    if not managed_writes_allowed(repair_existing=path.is_file()):
-        raise RuntimeError("Refusing to create managed settings non-interactively.")
     non_interactive = not _sudo_may_prompt()
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=path.suffix or ".tmp", delete=False, encoding="utf-8"

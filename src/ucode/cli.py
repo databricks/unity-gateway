@@ -15,6 +15,7 @@ from contextlib import contextmanager, redirect_stdout
 from dataclasses import asdict
 from enum import StrEnum
 from importlib import metadata
+from pathlib import Path
 from typing import Annotated, Any
 
 import typer
@@ -42,6 +43,7 @@ from ucode.agents import (
     normalize_tool,
     refuse_user_scope_over_managed_config,
     refuse_user_scope_over_managed_files,
+    request_vscode_with_copilot,
     resolve_gemini_provider_model,
     resolve_launch_model,
     resolve_provider_models,
@@ -126,6 +128,7 @@ from ucode.managed_files import (
     managed_write_session,
     request_explicit_managed_writes,
     set_config_scope,
+    set_machine_wide_only,
 )
 from ucode.managed_resolve import (
     managed_claude_family_models,
@@ -164,6 +167,7 @@ from ucode.mcp import (
 )
 from ucode.mcp import managed_mcp_servers as load_managed_mcp_servers
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility.browser_cross_os import open_in_browser
 from ucode.skills_download import (
     configure_location_skills_download_command,
     configure_selected_skills_download_command,
@@ -815,6 +819,7 @@ def configure_shared_state(
                 copilot_models = copilot_agent.catalog_from_listings(
                     cached_model_service_entries(workspace),
                     [*claude_models.values(), *codex_models],
+                    list_anthropic_model_catalog(workspace, token),
                 )
                 copilot_reason = ms_reason or claude_reason or codex_reason
         if claude_models:
@@ -970,6 +975,10 @@ def _launch_workspace_state(workspace: str | None) -> dict:
     return state
 
 
+# The agents whose `ug configure --agent` reads and installs the policy and applies its MCP and skills.
+_FRESH_POLICY_AGENTS = ("claude", "codex", "copilot")
+
+
 def _setup_single_agent(
     workspace_entries: list[tuple[str, str | None]],
     tool: str,
@@ -999,7 +1008,7 @@ def _setup_single_agent(
     state = states[0]
     parent_schema = None
     managed = None
-    if apply_managed and tool in ("claude", "codex"):
+    if apply_managed and tool in _FRESH_POLICY_AGENTS:
         # Explicit configure always reads the workspace policy fresh, so it can install it.
         managed, _ = _refresh_configured_policy(state)
     elif apply_managed:
@@ -1013,30 +1022,30 @@ def _setup_single_agent(
             state = resolve_state(managed, state, tool)
             if not managed_provider_service(managed, tool):
                 parent_schema = managed_unity_catalog_location(managed, tool)
-    state = configure_single_tool(tool, state, parent_schema=parent_schema)
+    state = configure_single_tool(tool, state, parent_schema=parent_schema, with_vscode=True)
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])
     if apply_managed and tool == "claude":
         from ucode.agents.desktop.setup import configure_claude_desktop
 
         configure_claude_desktop(state, parent_schema=parent_schema)
-    if apply_managed and tool in ("claude", "codex") and not is_dry_run():
+    if apply_managed and tool in _FRESH_POLICY_AGENTS and not is_dry_run():
         resolved_mcps = _configure_managed_mcp_servers(managed)
         skills_configured = _configure_managed_skills(managed)
         _restore_mcp_after_workspace_switch(previous_workspace, state)
-        if tool == "claude" and resolved_mcps is not None and skills_configured:
-            _sync_claude_cowork_plugin(state, managed_mcp_servers=resolved_mcps)
+        if tool == "claude" and resolved_mcps is not None:
+            _sync_claude_cowork_plugin(
+                state, managed_mcp_servers=resolved_mcps, sync_cowork=skills_configured
+            )
     else:
         _restore_mcp_after_workspace_switch(previous_workspace, state)
-    # Only the Claude and Codex branch above reads the managed config fresh.
-    managed_refreshed = apply_managed and tool in ("claude", "codex")
+    managed_refreshed = apply_managed and tool in _FRESH_POLICY_AGENTS
     install_databricks_ai_tools_for_agents([tool], state, force_refresh=not managed_refreshed)
-    spec = TOOL_SPECS[tool]
     provider_summary = "Databricks" if parent_schema else _provider_summary(tool, state)
     console.print(
         Panel(
             f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]\n"
-            f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
+            f"[bold]{_summary_label(tool)}:[/bold] [green]configured[/green] "
             f"[dim](Provider: {provider_summary})[/dim]",
             title="Configuration Complete",
             style="green",
@@ -1191,12 +1200,16 @@ def configure_workspace_command(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
+    copilot_source: tuple[str | None, str | None] | None = None,
 ) -> int:
     """Configure a workspace while sharing one lazy privileged settings session.
 
     Agent setup and managed MCP reconciliation can update the same machine-wide Claude/Codex
     files at different points in the flow. Keeping one command-scoped worker means every changed
     file is handled under the same sudo authentication; a no-op configure never starts it.
+
+    ``copilot_source`` is the ``(provider service, model location)`` pair Copilot gets its models
+    from instead of the Databricks-hosted ones.
     """
     with managed_write_session():
         return _configure_workspace_command(
@@ -1207,6 +1220,7 @@ def configure_workspace_command(
             databricks_ai_tools_enabled=databricks_ai_tools_enabled,
             custom_oauth=custom_oauth,
             offer_optional_setup=offer_optional_setup,
+            copilot_source=copilot_source,
         )
 
 
@@ -1219,6 +1233,7 @@ def _configure_workspace_command(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
+    copilot_source: tuple[str | None, str | None] | None = None,
 ) -> int:
     if tool is not None and selected_tools is not None:
         raise RuntimeError("Use either --agent or --agents, not both.")
@@ -1262,6 +1277,11 @@ def _configure_workspace_command(
     refuse_user_scope_over_managed_config(state.get("workspace"), managed)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     if managed is not None and managed_tools:
+        if copilot_source is not None:
+            raise RuntimeError(
+                "--provider and --model-location can't be used on a workspace with a managed "
+                "configuration; its admin chooses the models."
+            )
         refuse_user_scope_over_managed_files(managed_tools)
         configured_tools: list[str] = []
         for tool_name in managed_tools:
@@ -1314,8 +1334,10 @@ def _configure_workspace_command(
             registered_mcps = [
                 str(server["name"]) for server in (resolved_mcps or []) if server.get("name")
             ]
-            if "claude" in configured_tools and resolved_mcps is not None and skills_configured:
-                _sync_claude_cowork_plugin(state, managed_mcp_servers=resolved_mcps)
+            if "claude" in configured_tools and resolved_mcps is not None:
+                _sync_claude_cowork_plugin(
+                    state, managed_mcp_servers=resolved_mcps, sync_cowork=skills_configured
+                )
         _summarize_managed_config(managed, configured_tools, registered_mcps)
         return 0
 
@@ -1331,7 +1353,7 @@ def _configure_workspace_command(
         raise RuntimeError("No coding agents are available on this workspace.")
 
     if selected_tools is None:
-        picked = prompt_for_tools([(t, TOOL_SPECS[t]["display"]) for t in available_on_workspace])
+        picked = prompt_for_tools([(t, _agent_label(t)) for t in available_on_workspace])
     else:
         unavailable_tools = [
             tool_name for tool_name in selected_tools if tool_name not in available_on_workspace
@@ -1360,6 +1382,17 @@ def _configure_workspace_command(
     if offer_provider:
         for tool_name in picked:
             state = _maybe_select_provider_service(tool_name, state)
+    if copilot_source is not None:
+        provider_service, model_location = copilot_source
+        # Resolve the source the way `ug copilot` will, so a bad one fails here instead of being
+        # saved over a working one.
+        if provider_service:
+            copilot_agent.provider_service_catalog(state, provider_service, None)
+        else:
+            copilot_agent.location_catalog(state, str(model_location))
+        # Saved, so `ug copilot` launches on the same models VS Code gets.
+        state = set_provider_service(state, AGENT_COPILOT, provider_service)
+        state = set_model_location(state, AGENT_COPILOT, model_location)
 
     if offer_optional_setup:
         state = configure_selected_tools(state, picked, install_ai_tools=False)
@@ -1392,16 +1425,15 @@ def _configure_workspace_command(
             _sync_claude_cowork_plugin(state)
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
-        spec = TOOL_SPECS[tool_name]
+        label = _summary_label(tool_name)
         if tool_name in configured_set:
             summary_lines.append(
-                f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
+                f"[bold]{label}:[/bold] [green]configured[/green] "
                 f"[dim](Provider: {_provider_summary(tool_name, state)})[/dim]"
             )
         else:
             summary_lines.append(
-                f"[bold]{spec['display']}:[/bold] [yellow]not configured "
-                "(see warnings above)[/yellow]"
+                f"[bold]{label}:[/bold] [yellow]not configured (see warnings above)[/yellow]"
             )
     console.print(
         Panel(
@@ -1414,6 +1446,22 @@ def _configure_workspace_command(
     if offer_optional_setup and not is_dry_run():
         _configure_optional_setup(state, picked)
     return 0
+
+
+def _agent_label(tool: str) -> str:
+    """An agent's name where developers choose and review agents: the picker, status, list."""
+    if tool == AGENT_COPILOT:
+        # Configuring copilot also sets up Copilot Chat in VS Code.
+        return "GitHub Copilot (CLI and VS Code)"
+    return str(TOOL_SPECS[tool]["display"])
+
+
+def _summary_label(tool: str) -> str:
+    """An agent's name in ``ug configure``'s Configuration Complete box, which also covers VS Code
+    for copilot."""
+    if tool == AGENT_COPILOT:
+        return "GitHub Copilot"
+    return str(TOOL_SPECS[tool]["display"])
 
 
 def _print_status_panel(title: str, rows: list[tuple[str, str]]) -> None:
@@ -1508,6 +1556,9 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
                 codex_models, reasons["codex"] = discover_codex_models(workspace, token)
             if not gemini_models:
                 gemini_models, reasons["gemini"] = discover_gemini_models(workspace, token)
+            gateway_listing = (
+                list_anthropic_model_catalog(workspace, token) if "copilot" in tools else None
+            )
     except RuntimeError as exc:
         print_warning(f"Live model discovery failed ({exc}); showing cached models.")
         return state, "cached"
@@ -1529,6 +1580,7 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
         copilot_models = copilot_agent.catalog_from_listings(
             cached_model_service_entries(workspace),
             [*claude_models.values(), *codex_models],
+            gateway_listing,
         )
         if copilot_models is not None:
             live[copilot_agent.CATALOG_STATE_KEY] = copilot_agent.catalog_state(copilot_models)
@@ -1606,7 +1658,7 @@ def status() -> int:
     model_state, model_freshness = _live_status_model_state(state, configured_tools)
     print_heading("Coding Agents")
     skill_counts_by_agent = configured_skill_counts_by_agent(state, TOOL_SPECS)
-    for tool, spec in TOOL_SPECS.items():
+    for tool in TOOL_SPECS:
         if tool not in configured_tools:
             continue
         effective_state = resolve_state(managed, model_state, tool) if managed else model_state
@@ -1661,11 +1713,30 @@ def status() -> int:
         if isinstance(base_url, dict):
             base_url = ", ".join(str(url) for url in base_url.values())
         rows.append(("Endpoint", str(base_url or "not configured")))
-        _print_status_panel(str(spec["display"]), rows)
+        _print_status_panel(_agent_label(tool), rows)
 
     if not configured_tools:
         print_note("No coding agents are configured.")
     return 0
+
+
+def _print_managed_revert_result(display: str, result: str, path: Path | None) -> None:
+    print_kv(f"{display} OS-managed settings", result)
+    if result != "unchanged" or path is None:
+        return
+    try:
+        if not path.exists():
+            return
+    except OSError as exc:
+        print_warning(
+            f"Could not inspect {display} managed settings at {path}: {exc}. "
+            "Check this file manually or ask your administrator."
+        )
+        return
+    print_warning(
+        f"{display} managed settings at {path} were left unchanged because no UG backup record "
+        "was found. If no longer needed, remove the file manually or ask your administrator."
+    )
 
 
 def revert() -> int:
@@ -1713,9 +1784,13 @@ def revert() -> int:
         print_kv(f"{spec['display']} config", "restored" if results[tool] else "unchanged")
     if legacy_codex_stripped:
         print_kv("Codex shared config", "ucode entries removed")
-    print_kv("Claude Code OS-managed settings", claude_managed_result)
+    _print_managed_revert_result(
+        "Claude Code", claude_managed_result, claude_agent.managed_settings_path()
+    )
     print_kv("Claude Desktop profile", desktop_result)
-    print_kv("Codex OS-managed settings", codex_managed_result)
+    _print_managed_revert_result(
+        "Codex", codex_managed_result, codex_agent.codex_managed_config_path()
+    )
     print_kv("Unity Gateway workspace policy", workspace_policy_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     print_kv("VS Code extension", vscode_result)
@@ -1969,7 +2044,7 @@ def agents_list_cmd() -> None:
             if management is AgentManagement.UNMANAGED:
                 continue
             tone = "ok" if management is AgentManagement.ADMIN else "info"
-            table.add_row(TOOL_SPECS[tool]["display"], status_badge(management.value, tone))
+            table.add_row(_agent_label(tool), status_badge(management.value, tone))
         if table.row_count:
             console.print(table)
         else:
@@ -2047,25 +2122,28 @@ def _not_installed_message(agents: list[str]) -> str:
 
 
 def _sync_claude_cowork_plugin(
-    state: dict | None = None, *, managed_mcp_servers: list[dict] | None = None
+    state: dict | None = None,
+    *,
+    managed_mcp_servers: list[dict] | None = None,
+    sync_cowork: bool = True,
 ) -> None:
-    """Keep Claude Cowork's generated plugin aligned with workspace MCPs and skills."""
+    """Keep Claude Code and Cowork plugins aligned with workspace MCPs and skills."""
     current_state = state if state is not None else load_state()
     configured_tools = set(current_state.get("available_tools") or []) | set(
         current_state.get("last_configured_tools") or []
     )
-    if "claude" not in configured_tools:
+    if "claude" not in configured_tools | set(current_state.get("mcp_clients") or []):
         return
 
     user_mcp_servers = list(current_state.get("mcp_servers") or [])
     if managed_mcp_servers is None:
         managed_mcp_servers = load_managed_mcp_servers(current_state, {"claude"})
-    from ucode.agents.desktop.setup import configure_claude_cowork
+    from ucode.agents.desktop.setup import configure_claude_code_plugin, configure_claude_cowork
 
-    configure_claude_cowork(
-        current_state,
-        [*user_mcp_servers, *managed_mcp_servers],
-    )
+    mcp_servers = [*user_mcp_servers, *managed_mcp_servers]
+    configure_claude_code_plugin(mcp_servers)
+    if sync_cowork and "claude" in configured_tools:
+        configure_claude_cowork(current_state, mcp_servers)
 
 
 def _configure_optional_setup(state: dict, tools: list[str]) -> None:
@@ -3512,6 +3590,7 @@ def _launch_tool(
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     routing_already_chosen: bool = False,
+    routing_unsupported: bool = False,
 ) -> None:
     previous = {}
     try:
@@ -3644,9 +3723,27 @@ def _launch_tool(
         managed_smart_routing_applies = (
             _managed_smart_routing_enabled(managed, tool) and not routing_chosen
         )
-        smart_routing_enabled = managed_smart_routing_applies or (
-            smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
+        # Checked before the managed version is applied, which consumes the selector. A version
+        # that leaves this agent unrouted makes the launch a plain one: no skills, hooks, or note.
+        # The flag sets routing_chosen, so at most one of these holds.
+        managed_routing_unsupported = (
+            managed_smart_routing_applies
+            and not smart_routing_config.enabled_version_routes(agent=tool)
         )
+        routing_skipped = routing_unsupported or managed_routing_unsupported
+        smart_routing_enabled = not routing_skipped and (
+            managed_smart_routing_applies
+            or smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
+        )
+        if routing_skipped and _smart_routing_launch_shape(tool, ctx.args, explicit_prompt):
+            display = TOOL_SPECS[tool]["display"]
+            print_warning(
+                f"Smart routing is enabled for {display} in this workspace, but it is currently "
+                "only supported for Claude Code. Running without smart routing."
+                if managed_routing_unsupported
+                else f"Smart routing on {display} is currently not supported. "
+                "Running without smart routing."
+            )
         # Re-fetch model lists on every launch so newly-added Databricks
         # endpoints show up without a manual `ug configure` (and so that
         # tools like pi which read multiple model bundles never run on
@@ -4234,20 +4331,28 @@ def codex_cmd(
         str | None,
         typer.Option("--scopes", hidden=True, help="Comma-separated custom OAuth scopes."),
     ] = None,
-    enable_smart_routing_flag: Annotated[
-        bool | None,
-        typer.Option(
-            "--enable-smart-routing/--disable-smart-routing",
-            help="Enable or disable AI Gateway subagent model routing and Smart Router "
-            "Orchestrator for this Codex launch or session.",
-        ),
-    ] = None,
+    # Hidden while Codex is unrouted by default; the Smart Router skill still toggles with them.
+    enable_smart_routing: Annotated[
+        bool,
+        typer.Option("--enable-smart-routing", hidden=True),
+    ] = False,
+    disable_smart_routing: Annotated[
+        bool,
+        typer.Option("--disable-smart-routing", hidden=True),
+    ] = False,
     smart_router_feedback: Annotated[
         str | None,
         typer.Option("--smart-router-feedback", hidden=True),
     ] = None,
 ) -> None:
-    """Launch Codex via Databricks."""
+    """Launch Codex via Databricks.
+
+    Smart Routing is currently only supported for the Claude Code harness.
+    """
+    # Both flags cancel out: the launch behaves as if neither was passed.
+    enable_smart_routing_flag = (
+        None if enable_smart_routing == disable_smart_routing else enable_smart_routing
+    )
     if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
         return
     try:
@@ -4255,6 +4360,11 @@ def codex_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from exc
+    # Read before the flag applies the version, which consumes the selector.
+    routing_unsupported = (
+        enable_smart_routing_flag is True
+        and not smart_routing_config.enabled_version_routes(agent=AGENT_CODEX)
+    )
     with _smart_routing_v2_flag(
         enable_smart_routing_flag, agent=AGENT_CODEX
     ) as routing_already_chosen:
@@ -4263,6 +4373,7 @@ def codex_cmd(
                 "codex",
                 ctx,
                 routing_already_chosen=routing_already_chosen,
+                routing_unsupported=routing_unsupported,
                 provider=provider,
                 refresh=refresh,
                 skip_preflight=skip_preflight,
@@ -4586,7 +4697,7 @@ def configure(
         str | None,
         typer.Option(
             "--agents",
-            help="Configure a comma-separated list of agents without prompting (e.g. claude,codex,vscode).",
+            help="Configure a comma-separated list of agents without prompting (e.g. claude,codex,copilot).",
         ),
     ] = None,
     workspace: Annotated[
@@ -4687,18 +4798,26 @@ def configure(
         str | None,
         typer.Option(
             "--provider",
-            help="With --agents vscode: give VS Code the models of this Model Provider Service "
-            "(`<catalog>.<schema>.<name>`) instead of the Databricks-hosted ones.",
+            help="With --agents copilot: give the Copilot CLI and VS Code the models of this Model "
+            "Provider Service (`<catalog>.<schema>.<name>`) instead of the Databricks-hosted ones.",
         ),
     ] = None,
     model_location: Annotated[
         str | None,
         typer.Option(
             "--model-location",
-            help="With --agents vscode: give VS Code the model services in this Unity Catalog "
-            "schema (`<catalog>.<schema>`) instead of the Databricks-hosted ones.",
+            help="With --agents copilot: give the Copilot CLI and VS Code the model services in this "
+            "Unity Catalog schema (`<catalog>.<schema>`) instead of the Databricks-hosted ones.",
         ),
     ] = None,
+    no_vscode: Annotated[
+        bool,
+        typer.Option(
+            "--no-vscode",
+            help="Set up only the Copilot CLI. By default, configuring copilot also sets up "
+            "Copilot Chat in VS Code.",
+        ),
+    ] = False,
     mcp: Annotated[
         str | None,
         typer.Option(
@@ -4723,15 +4842,17 @@ def configure(
         bool,
         typer.Option(
             "--global",
-            help="Write machine-wide Claude Code and Codex managed settings with sudo (default). "
-            "The choice is saved for later commands.",
+            help="Write machine-wide Claude Code/Codex settings (requires administrator rights). "
+            "Skip user-level Claude Desktop configuration and the Claude Code connector plugin "
+            "for this invocation. "
+            "The CLI-agent scope is saved for later commands.",
         ),
     ] = False,
     user_scope: Annotated[
         bool,
         typer.Option(
             "--user",
-            help="Skip the machine-wide Claude Code and Codex managed settings, without sudo. "
+            help="Use user settings and Claude Desktop marketplace sources, without machine-wide writes. "
             "The choice is saved for later commands.",
         ),
     ] = False,
@@ -4757,9 +4878,11 @@ def configure(
             raise RuntimeError("Use either --global or --user, not both.")
         scope = "user" if user_scope else "global"
         set_config_scope(scope)
+        set_machine_wide_only(global_scope)
         claude_agent.request_explicit_configure()
         request_explicit_managed_writes()
         codex_agent.request_explicit_configure()
+        request_vscode_with_copilot(not no_vscode)
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
@@ -4768,13 +4891,13 @@ def configure(
             raise RuntimeError("Use either --agent or --agents, not both.")
         if provider is not None or model_location is not None:
             requested_agents = [a.strip().lower() for a in (agents or "").split(",") if a.strip()]
-            # Both flags choose VS Code's models alone, so another model agent in the same run
+            # Both flags choose Copilot's models alone, so another model agent in the same run
             # would silently keep the workspace's own. Cursor has no models to choose.
-            if "vscode" not in requested_agents or [
-                a for a in requested_agents if a not in ("vscode", "cursor")
+            if AGENT_COPILOT not in requested_agents or [
+                a for a in requested_agents if a not in (AGENT_COPILOT, "cursor")
             ]:
                 raise RuntimeError(
-                    "--provider and --model-location work only with `--agents vscode`. "
+                    "--provider and --model-location work only with `--agents copilot`. "
                     "Configure the other agents in a separate run."
                 )
             if provider is not None and model_location is not None:
@@ -4810,6 +4933,8 @@ def configure(
             skip_kwargs["databricks_ai_tools_enabled"] = enable_databricks_ai_tools
         if custom_oauth is not None:
             skip_kwargs["custom_oauth"] = custom_oauth
+        if provider is not None or model_location is not None:
+            skip_kwargs["copilot_source"] = (provider, model_location)
         # Set True only in the fully-interactive branch below; gates the optional
         # MCP setup prompt so flag-driven / scripted runs are never interrupted.
         fully_interactive = False
@@ -4837,11 +4962,9 @@ def configure(
             # (which picks cursor up through MCP_ONLY_CLIENTS). If cursor is the
             # only agent, do a workspace-only configure so that a later `ug mcp
             # add` run has a current workspace to target.
-            # VS Code is configure-only too: it needs the workspace, then its own setup below.
             requested = [a.strip().lower() for a in agents.split(",") if a.strip()]
             wants_cursor = "cursor" in requested
-            wants_vscode = "vscode" in requested
-            model_agent_names = ",".join(a for a in requested if a not in ("cursor", "vscode"))
+            model_agent_names = ",".join(a for a in requested if a != "cursor")
             mcp_states = None
             if model_agent_names:
                 selected_tools = _parse_agents_option(model_agent_names)
@@ -4856,8 +4979,8 @@ def configure(
                         workspaces=workspace_entries,
                         **skip_kwargs,
                     )
-            elif wants_cursor or wants_vscode:
-                # Cursor/VS Code only: establish workspace state without the model picker.
+            elif wants_cursor:
+                # Cursor only: establish workspace state without the model picker.
                 mcp_states = _configure_shared_workspace_states(
                     workspace_entries or [_prompt_for_configuration(None)],
                     tools=[],
@@ -4868,17 +4991,6 @@ def configure(
             else:
                 # Neither model agents nor cursor -> empty/invalid --agents list.
                 _parse_agents_option(agents)
-            if wants_vscode and is_dry_run():
-                # A dry run saves no workspace, so the state on disk isn't the one being configured.
-                print_note("Dry run: VS Code isn't changed.")
-            elif wants_vscode:
-                from ucode.agents import vscode
-
-                # VS Code sends model traffic, so it gets the managed-workspace check other agents get.
-                state = load_state()
-                managed, _ = _read_policy_for_other_agent(state)
-                refuse_user_scope_over_managed_config(state.get("workspace"), managed)
-                vscode.configure(state, provider=provider, location=model_location)
             if mcp_states is not None:
                 _restore_mcp_after_workspace_switch(previous_workspace, mcp_states[0])
         elif mcp is not None:
@@ -4957,6 +5069,8 @@ def configure(
     except KeyboardInterrupt:
         print_err("Interrupted.")
         raise typer.Exit(130) from None
+    finally:
+        set_machine_wide_only(False)
 
 
 @app.command("export", rich_help_panel="Manage")
@@ -5034,6 +5148,19 @@ def usage_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
+
+
+@app.command("web", rich_help_panel="Usage")
+def web_cmd() -> None:
+    """Open the Unity Gateway page for the configured workspace in your browser."""
+    workspace = load_state().get("workspace")
+    if not workspace:
+        print_err("Workspace is not configured. Run `ug configure` first.")
+        raise typer.Exit(1)
+    url = f"{normalize_workspace_url(workspace)}/ml/ai-gateway"
+    print_kv("Unity Gateway", url)
+    if not open_in_browser(url):
+        print_note("Could not open a browser. Open the URL above manually.")
 
 
 @app.command("upgrade", rich_help_panel="Manage")
