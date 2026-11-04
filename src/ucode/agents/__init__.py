@@ -17,7 +17,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from ucode.config_io import ToolSpec
+from ucode.config_io import ToolSpec, is_dry_run
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT
 from ucode.databricks import (
     AnthropicModelCatalog,
@@ -686,10 +686,38 @@ def _availability_failure_detail(tool: str, state: dict) -> str:
     return " (" + "; ".join(parts) + ")"
 
 
+_vscode_with_copilot = True
+
+
+def request_vscode_with_copilot(requested: bool = True) -> None:
+    """Whether configuring Copilot in this run also sets up VS Code (``ug configure --no-vscode``
+    passes ``False``)."""
+    global _vscode_with_copilot
+    _vscode_with_copilot = requested
+
+
+def configure_vscode(state: dict, *, provider: str | None, parent_schema: str | None) -> None:
+    """Set up Copilot Chat in VS Code with the models the Copilot CLI was configured with."""
+    if not _vscode_with_copilot:
+        return
+    if is_dry_run():
+        print_note("Dry run: VS Code isn't changed.")
+        return
+    from . import vscode
+
+    vscode.configure(state, provider=provider, location=parent_schema)
+
+
 def configure_single_tool(
-    tool: str, state: dict, *, parent_schema: str | None = None, provider: str | None = None
+    tool: str,
+    state: dict,
+    *,
+    parent_schema: str | None = None,
+    provider: str | None = None,
+    with_vscode: bool = False,
 ) -> dict:
-    """Check availability, configure, and persist state for one tool only."""
+    """Check availability, configure, and persist state for one tool only. ``with_vscode`` also
+    sets up VS Code after Copilot."""
     parent_schema = parent_schema or _persisted_model_location(tool, state, provider)
     provider = None if parent_schema else provider or get_provider_service(state, tool)
     # A Model Provider Service or parent schema routes through the same gateway and pins no
@@ -704,6 +732,8 @@ def configure_single_tool(
             )
     with managed_write_batch(_managed_settings_displays([tool])):
         state = _configure_one(tool, state, provider, parent_schema=parent_schema)
+    if with_vscode and tool == AGENT_COPILOT:
+        configure_vscode(state, provider=provider, parent_schema=parent_schema)
     available_tools = list(set((state.get("available_tools") or []) + [tool]))
     state["available_tools"] = available_tools
     save_state(state)
@@ -788,6 +818,9 @@ def configure_selected_tools(
                 )
                 continue
             configured.append(tool)
+            # `ug configure` sets up Copilot Chat in VS Code along with the Copilot CLI.
+            if tool == AGENT_COPILOT:
+                configure_vscode(state, provider=provider, parent_schema=parent_schema)
 
     existing = state.get("available_tools") or []
     state["available_tools"] = sorted(set(existing) | set(configured))

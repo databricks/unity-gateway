@@ -41,6 +41,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     it can never touch the developer's real ~/.ucode/state.json or invoke the
     privileged writer for an OS-managed agent config.
     """
+    import ucode.agents as agents_mod
     import ucode.config_io as config_io_mod
     import ucode.databricks as databricks_mod
     import ucode.managed_config as managed_config_mod
@@ -51,6 +52,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     from ucode.agents import antigravity as antigravity_mod
     from ucode.agents import claude as claude_mod
     from ucode.agents import codex as codex_mod
+    from ucode.agents import copilot as copilot_mod
     from ucode.agents import vscode as vscode_mod
     from ucode.agents.desktop import claude as desktop_mod
     from ucode.agents.desktop import cowork as cowork_mod
@@ -62,6 +64,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
     monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(cowork_mod, "_code_config_root", lambda: tmp_path / ".claude")
+    monkeypatch.setattr(agents_mod, "_vscode_with_copilot", True)
     # No test may run the developer's `code` or look at their installed VS Code extensions.
     monkeypatch.setattr(vscode_mod, "find_code", lambda: None)
     monkeypatch.setattr(vscode_mod, "_find_command", lambda command: None)
@@ -115,6 +118,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         managed_files_mod, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
     )
     monkeypatch.setattr(managed_files_mod, "_config_scope", "global")
+    monkeypatch.setattr(managed_files_mod, "_machine_wide_only", False)
     # `ug configure` and `ug revert` set this for the rest of the process; start each test as a
     # launch-like run.
     monkeypatch.setattr(managed_files_mod, "_explicit_managed_command", None)
@@ -124,10 +128,22 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     # The header mod installs beside the real managed file; tests opt in with a tmp root.
     monkeypatch.setattr(claude_mod, "claude_header_mod_root", lambda: None)
+    monkeypatch.setattr(managed_files_mod, "claude_desktop_org_plugin_path", lambda: None)
     monkeypatch.setattr(
         codex_mod, "CODEX_MODEL_CATALOG_PATH", state_dir / "codex-model-catalog.json"
     )
     monkeypatch.setattr(codex_mod, "CODEX_CONFIG_PATH", tmp_path / ".codex" / "ucode.config.toml")
+    # MCP writes and revert edit Copilot's user config and delete the legacy side file.
+    monkeypatch.setattr(
+        copilot_mod, "COPILOT_MCP_CONFIG_PATH", tmp_path / ".copilot" / "mcp-config.json"
+    )
+    monkeypatch.setattr(
+        copilot_mod, "LEGACY_MCP_CONFIG_PATH", tmp_path / ".copilot" / "ucode-mcp-config.json"
+    )
+    monkeypatch.setattr(
+        copilot_mod, "LEGACY_MCP_BACKUP_PATH", state_dir / "copilot-ucode-mcp-config.backup.json"
+    )
+    monkeypatch.delenv("COPILOT_HOME", raising=False)
 
     def reject_privileged_write(path, _desired_text):
         pytest.fail(

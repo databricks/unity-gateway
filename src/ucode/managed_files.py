@@ -40,6 +40,7 @@ SKIP_OS_SETTINGS_ENV = "UG_SKIP_OS_SETTINGS"
 CONFIG_SCOPES = ("global", "user")
 DEFAULT_CONFIG_SCOPE = "global"
 _config_scope = DEFAULT_CONFIG_SCOPE
+_machine_wide_only = False
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
@@ -127,6 +128,21 @@ def config_scope() -> str:
     return _config_scope
 
 
+def set_machine_wide_only(enabled: bool) -> None:
+    """Mark this run as an explicit ``ug configure --global``, which skips Desktop user configuration."""
+    global _machine_wide_only
+    _machine_wide_only = enabled
+
+
+def machine_wide_only() -> bool:
+    """Whether this explicit global run skips Desktop user configuration.
+
+    True only during an explicit ``ug configure --global``. ug's own state under ``~/.ucode`` and the
+    Databricks login are still written, since the machine-wide settings rely on them.
+    """
+    return _machine_wide_only
+
+
 def managed_settings_skipped() -> bool:
     """Whether OS-managed settings are opted out via ``UG_SKIP_OS_SETTINGS`` or the ``user`` scope.
 
@@ -168,6 +184,14 @@ def claude_header_mod_root() -> Path | None:
 def _windows_claude_header_mod_root() -> Path:
     # Beside the managed file, so it inherits Program Files' administrator-only write access.
     return windows_claude_managed_settings_path().parent / "ucode-plugins"
+
+
+def claude_desktop_org_plugin_path() -> Path | None:
+    if current_os() is OS.MACOS:
+        return Path("/Library/Application Support/Claude/org-plugins/ug")
+    if current_os() is OS.WINDOWS:
+        return system_cross_os.windows_program_files_dir() / "Claude" / "org-plugins" / "ug"
+    return None
 
 
 def reconcile_privileged_files(files: dict[Path, str], *, display: str) -> None:
