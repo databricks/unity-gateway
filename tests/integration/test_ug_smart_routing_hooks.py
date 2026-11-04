@@ -620,7 +620,9 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
         tui.submit(
             "Continue the same subagent using SendMessage and ask it to do this follow-up: "
             f"{second.prompt} Do not spawn another agent or read the file yourself. "
-            "Wait for that agent's answer and reply with only the value it returned."
+            "Send that one SendMessage only once: do not send reminders or status "
+            "requests, and do not pass options such as notify_when_idle. Wait for that "
+            "agent's answer and reply with only the value it returned."
         )
         tui.wait_for_task(second)
         tui.wait_for(

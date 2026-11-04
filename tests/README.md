@@ -176,6 +176,9 @@ in the same child transcript, and exactly one Agent/Task call. Only parent SendM
 calls are checked for continuation; child replies to the parent are allowed. Offline checks reject
 missing recipients, wrong children, failed sends, and missing/crossed tool results. Run it with
 Claude 2.1.314+; description-only component checks do not prove continuation.
+The follow-up prompt asks for a single `SendMessage` with no reminders or extra options,
+because a model-invented repeat poke while the child is running can be rejected by Claude
+(for example `notify_when_idle`, run 41768149986) and fails the all-sends check.
 
 CUJ3 expects GPT Luna in both agents' catalogs and pickers, including Claude's gateway alias,
 and covers an explicit Claude headless task on that model.
