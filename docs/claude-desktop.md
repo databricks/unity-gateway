@@ -424,7 +424,7 @@ otherwise it clears the selection. A later selection of another profile is prese
 Only this previous-selection ID is saved in `~/.ucode/claude-desktop.json`.
 Repeated configure retains it while UG remains selected.
 
-Revert removes UG's recorded, unchanged system bundle when present. It also uninstalls
+Ordinary revert leaves root Desktop files untouched. It uninstalls
 `ug@unity-gateway-cowork` and any legacy
 `unity-gateway@unity-gateway-cowork` registration, removes their marketplace
 registration, and deletes UG's generated marketplace. This removes the MCP connectors and
