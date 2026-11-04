@@ -1025,8 +1025,8 @@ class TestSubcommandRouting:
         assert _routing_env() == env_before
 
     @pytest.mark.parametrize("installed_version", ["0.145.0", "0.163.0"])
-    @pytest.mark.parametrize("recovery", ["decline", "upgrade", "disable"])
-    def test_managed_codex_routing_requires_upgrade_or_explicit_disable(
+    @pytest.mark.parametrize("recovery", ["decline", "upgrade", "disable", "managed-default"])
+    def test_codex_routing_version_requires_upgrade_or_explicit_disable(
         self, tmp_path, monkeypatch, installed_version, recovery
     ):
         codex = cli_mod.codex_agent
@@ -1059,8 +1059,12 @@ class TestSubcommandRouting:
         monkeypatch.setattr(agents.subprocess_cross_os, "run", update)
         monkeypatch.setattr(cli_mod.smart_routing_v2, "launch_codex", launch_native)
         launch = cli_mod.launch_agent
-        # The managed default preset is Claude-only; an explicit version keeps Codex routed.
-        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_orch_v0")
+        # An explicit version keeps Codex routed (managed config is then ignored). The
+        # managed-default case leaves the selector unset: the Claude-only preset applies.
+        if recovery == "managed-default":
+            monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        else:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_orch_v0")
         managed = {"enabled_agents": {"codex": {"smart_routing_enabled": True}}}
         env_before = _routing_env()
         with (
@@ -1075,9 +1079,12 @@ class TestSubcommandRouting:
 
         assert result.exit_code == (1 if recovery == "decline" else 0), result.output
         assert routed == (["0.164.0"] if recovery == "upgrade" else [])
-        assert bool(plain) == (recovery == "disable")
+        assert bool(plain) == (recovery in {"disable", "managed-default"})
         assert updates == ([["codex", "update"]] if recovery == "upgrade" else [])
-        assert prompt.call_count == (0 if recovery == "disable" else 1)
+        assert prompt.call_count == (0 if recovery in {"disable", "managed-default"} else 1)
+        if recovery == "managed-default":
+            output = " ".join(_strip_ansi(result.output).split())
+            assert "only supported for Claude Code" in output
         if recovery == "decline":
             output = " ".join(_strip_ansi(result.output).split())
             assert f"found {installed_version}" in output
