@@ -791,8 +791,8 @@ def gpt_model_settings(
 def _managed_settings_named_model_ids() -> list[object]:
     """Model ids the OS-managed settings file names (picker, allow-list, env), read-only.
 
-    Claude Code merges that file's ``modelPicker`` with ours and reads it even under
-    ``UG_SKIP_OS_SETTINGS``, so a model only it offers (a launcher's or admin's picker, or ug's
+    Claude Code reads that file even under ``UG_SKIP_OS_SETTINGS``, and a managed ``modelPicker``
+    replaces ours outright, so a model only it offers (a launcher's or admin's picker, or ug's
     own from an earlier run) still needs a cap in the settings file ug writes. Best effort:
     an absent or unreadable file names nothing.
     """
