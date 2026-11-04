@@ -70,7 +70,7 @@ and capability-hook activation are not covered here; interactive selection is un
 `../test_code_plugin.py` covers the Code-scoped UG connector plugin with real
 files and controlled native CLI boundaries: original registration names, Claude-only
 filtering, Code-only discovery/authentication instructions, no duplicate MCP servers or
-downloaded skills, no Cowork hooks,
+downloaded skills, no Cowork hooks or version metadata,
 refresh after workspace changes and last-connector removal, scoped cleanup,
 repeat cleanup, saved-root cleanup even after source deletion, config-root changes that
 retain the old registration and saved root on installation failure, successful retry,

@@ -504,6 +504,8 @@ def _write_marketplace_contents(
     _write_json(plugin_root / ".claude-plugin" / "plugin.json", plugin)
     names = list(mcp_config["mcpServers"]) if connector_names is None else connector_names
     _write_plugin_skills(plugin_root / "skills", skill_records, names, code=code)
+    if code:
+        return
     files = _marketplace_files(plugin_root)
     assert files is not None
     plugin["version"] = "0.0.0-ug-" + _marketplace_digest(files)

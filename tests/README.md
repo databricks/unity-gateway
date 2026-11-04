@@ -379,6 +379,7 @@ regression invokes the Typer CLI and checks exit code 1, one warning, and a fail
 Desktop summary while profile and previous-selection files survive. Retry returns
 exit code 0, deletes the UG profile, and restores the previous selection without
 workspace state; a repeated revert also returns 0.
+This Desktop failure scenario uses isolated OS-managed paths for unrelated agent warnings.
 
 `test_cowork_hooks.py` covers SessionStart guidance naming every connector without reporting
 unanswered or timed-out probes, a timestamped sign-in line for connectors whose probe returns a
@@ -394,7 +395,7 @@ execution remains unverified.
 `test_code_plugin.py` covers the Code-scoped UG connector plugin with real
 files and controlled native CLI boundaries: original registration names, Claude-only
 filtering, Code-only discovery/authentication instructions, no duplicate MCP servers or
-downloaded skills, no Cowork hooks,
+downloaded skills, no Cowork hooks or version metadata,
 refresh after workspace changes and last-connector removal, scoped cleanup,
 repeat cleanup, saved-root cleanup even after source deletion, config-root changes that
 retain the old registration and saved root on installation failure, successful retry,
