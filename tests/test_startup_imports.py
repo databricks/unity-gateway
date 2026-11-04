@@ -113,19 +113,23 @@ def test_cli_import_defers_subcommand_specific_modules() -> None:
 
 
 @pytest.mark.parametrize(
-    "arguments",
+    ("arguments", "routing_enabled"),
     [
-        ["--help"],
-        ["claude", "--help"],
-        ["auth-token", "--help"],
-        ["claude-router-hook", "route-first-prompt"],
-        ["codex-router-hook", "session-start"],
+        (["--help"], False),
+        (["claude", "--help"], False),
+        (["auth-token", "--help"], False),
+        (["claude-router-hook", "route-first-prompt"], False),
+        (["codex-router-hook", "session-start"], False),
+        (["claude-router-hook", "session-start"], True),
+        (["codex-router-hook", "session-start"], True),
     ],
 )
-def test_noninteractive_commands_skip_picker_imports(tmp_path, monkeypatch, arguments) -> None:
+def test_noninteractive_commands_skip_picker_imports(
+    tmp_path, monkeypatch, arguments, routing_enabled
+) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "0")
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1" if routing_enabled else "0")
     monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
     monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
     monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
@@ -145,6 +149,15 @@ def test_noninteractive_commands_skip_picker_imports(tmp_path, monkeypatch, argu
         assert "Usage:" in output
     else:
         assert output == ""
+
+
+def test_public_picker_exports_preserve_identity():
+    from ucode import ui
+    from ucode.ui import interactive_picker
+
+    assert ui._BACK is interactive_picker._BACK
+    assert ui._Back is interactive_picker._Back
+    assert ui.StreamingInquirerControl is interactive_picker.StreamingInquirerControl
 
 
 def test_auth_token_helper_skips_picker_imports(tmp_path, monkeypatch) -> None:

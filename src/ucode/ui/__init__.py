@@ -66,15 +66,15 @@ def scrolling_checkbox(
     from ucode.ui.interactive_picker import scrolling_checkbox as make_checkbox
 
     return make_checkbox(
-        message,
-        choices,
-        instruction,
-        style,
-        allow_back,
-        background_loader,
-        loading_noun,
-        show_description,
-        table,
+        message=message,
+        choices=choices,
+        instruction=instruction,
+        style=style,
+        allow_back=allow_back,
+        background_loader=background_loader,
+        loading_noun=loading_noun,
+        show_description=show_description,
+        table=table,
     )
 
 
