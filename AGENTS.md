@@ -170,31 +170,26 @@ Claude setup also installs a generated Cowork plugin containing only the current
 workspace's managed and user-downloaded home-level skills and Claude-targeted MCP servers.
 Downloaded skill additions and removals resync the plugin; project-local,
 user-authored, and other-workspace skills are excluded. The user-scope source lives at
-`~/.ucode/claude-cowork-marketplace`. All scopes require an initialized Cowork account/org
-and use scoped `claude plugin ... --cowork --json` with `CLAUDE_CONFIG_DIR`.
-Default/global scope on macOS and Windows additionally publishes the identical marketplace
-under the root-owned UnityGateway directory and registers that source. User scope, Linux,
-and `UG_SKIP_OS_SETTINGS` register the user source and leave root files untouched. There is
-one active UG marketplace registration per selected account/org, even when both sources
-exist. Scope changes replace that registration. Content-derived manifest versions and an
-explicit native plugin update deliver changed skills/MCPs to the user cache. No org-plugin
-metadata or MDM policy is generated; an existing org-plugins/ug copy blocks duplicate loading.
-The 3P profile, executable/authentication bindings, and bookkeeping stay user-local.
-`~/.ucode/claude-cowork.json` records only the selected source and account/org, using the
-existing version-1 state. Account changes clean up the prior account before generation;
-there is no pending-cleanup queue, migration bookkeeping, or configure/revert lock.
-UG owns both generated marketplace directories; configure replaces their whole contents,
-including manual edits. Root publication uses the shared macOS sudo worker or Windows
-elevation, without ownership hashes or automatic rollback. Rerun configure after a failed
-root copy. Native refresh failures leave generated sources and tracking state for retry/revert.
-The existing user-source writer retains its staged replacement and rollback. User-scope
-revert leaves the root bundle; global revert removes both sources. Explicit MCP/skill changes
-resync the selected path; launches do not.
-Shared-runtime installation, fresh-user setup, and automatic login refresh remain MDM work.
-First-time configure skips the plugin in either scope when the Cowork sessions directory
-does not exist. The shared root bundle retains the configuring user's runtime/profile
-bindings; another user's global configure/revert replaces/removes that source. Before
-copying as root, the macOS worker rejects foreign-owned entries, links, and special files.
+`~/.ucode/claude-cowork-marketplace`. Default configure and `--user` both write only
+this user source, the user 3P profile, and native Cowork registration/cache, even when saved
+scope is `global`. They never publish or remove root Desktop files. Explicit `--global`
+is detected by the command-local `machine_wide_only` switch and skips ordinary Desktop
+profile/plugin setup; macOS MDM provisioning is a separate follow-up. CLI-agent behavior
+is unchanged by these Desktop guards.
+Ordinary plugin setup requires Desktop's local account/org directory and uses scoped
+`claude plugin ... --cowork --json` with `CLAUDE_CONFIG_DIR`. First configure skips if no
+Cowork sessions directory exists. An earlier root-source registration switches to the
+user source without deleting root files or creating a duplicate plugin. Content-derived
+manifest versions and an explicit native update refresh changed skills/MCPs in the user
+cache. A pre-existing org-plugins/ug copy blocks duplicate loading.
+`~/.ucode/claude-cowork.json` records the selected user source and account/org in version-1
+state. Account changes clean up the prior account before generation; no configure/revert
+lock, pending-cleanup queue, or migration bookkeeping is added. UG replaces the whole
+generated user marketplace, including manual edits. Its writer retains staged replacement
+and rollback. Native refresh failures retain the source/state for retry/revert. Ordinary
+revert removes user source/registration only. Explicit MCP/skill changes resync this source;
+launches do not. The shared privileged bundle writer remains for MDM publication; its
+macOS worker validates caller ownership and rejects links/special files before copying.
 Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
 custom registration names and full proxy URLs are preserved. Its name and display name
 are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old

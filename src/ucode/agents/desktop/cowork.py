@@ -121,7 +121,7 @@ def _code_config_root() -> Path:
 
 def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
     """Generate and install UG's Cowork plugin for the active workspace."""
-    if config_io.is_dry_run():
+    if config_io.is_dry_run() or managed_files.machine_wide_only():
         return False
     workspace = state.get("workspace")
     if not isinstance(workspace, str) or not workspace:
@@ -131,8 +131,6 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
     skill_records = _workspace_skill_records(workspace)
     if not previous_state and not skill_records and not mcp_servers:
         return False
-    system_path = managed_files.claude_desktop_marketplace_path()
-    system_install = system_path is not None and not managed_files.managed_settings_skipped()
     org_plugin = managed_files.claude_desktop_org_plugin_path()
     if org_plugin is not None and (org_plugin.exists() or org_plugin.is_symlink()):
         raise RuntimeError(
@@ -161,18 +159,14 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
     if isinstance(previous_root, str) and previous_root and Path(previous_root) != cowork_root:
         _remove_plugin_registration(Path(previous_root))
     marketplace_root = _marketplace_root()
-    selected_source = system_path if system_install else marketplace_root
-    assert selected_source is not None
     hooks = _connector_hooks(mcp_config, workspace, profile, use_pat=bool(state.get("use_pat")))
     plugin_root = marketplace_root / "plugins" / PLUGIN_NAME
     _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config, hooks)
-    if system_install:
-        managed_files.replace_privileged_bundle(selected_source, marketplace_root)
     config_io.atomic_write_json(
         _state_path(),
-        {"version": 1, "cowork_root": str(cowork_root), "marketplace_root": str(selected_source)},
+        {"version": 1, "cowork_root": str(cowork_root), "marketplace_root": str(marketplace_root)},
     )
-    _install_plugin(cowork_root, selected_source)
+    _install_plugin(cowork_root, marketplace_root)
     return True
 
 
@@ -193,11 +187,6 @@ def revert_cowork() -> bool:
     changed = False
     for root in roots:
         changed = _remove_plugin_registration(root) or changed
-    if not managed_files.managed_settings_skipped():
-        path = managed_files.claude_desktop_marketplace_path()
-        if path is not None and (path.exists() or path.is_symlink()):
-            managed_files.replace_privileged_bundle(path, None)
-            changed = True
     marketplace_root = _marketplace_root()
     if marketplace_root.exists() or marketplace_root.is_symlink():
         if marketplace_root.is_symlink():

@@ -105,8 +105,8 @@ journey; no dedicated Desktop MPS integration test is needed.
 
 Each of these two journeys supplies pre-existing Desktop account directories as inputs and
 requires real Claude CLI installation of the Cowork plugin on both Linux and Windows.
-Windows additionally requires identical user/root marketplace sources and registration
-pointing to the root source, with one installed UG entry and a matching cached version. It registers system.ai.web_search through
+Both platforms require the user marketplace source and registration, no generated root
+marketplace, one installed UG entry, and a matching cached version. It registers system.ai.web_search through
 `ug mcp add --names system.ai.web_search`, then runs the command from the installed plugin with the
 MCP SDK. The check initializes the protocol, discovers web_search, and searches for Databricks'
 official website. A successful result must contain a URL on databricks.com or www.databricks.com;
@@ -115,24 +115,20 @@ Both journeys verify reconfiguration preserves the profile/plugin and revert rem
 while retaining unrelated profiles and metadata. A separate local personal plugin is installed
 through the real Claude CLI before configuration; its registry entry and installed manifest must
 survive installation, reconfiguration, and revert unchanged. Revert also removes UG's marketplace
-registration and generated user source, plus the generated root source on Windows.
-Source switching, copy and refresh failure/retry, scoped revert, target validation,
-and duplicate prevention have isolated component coverage in
-`../test_desktop_marketplace.py`; those checks do not establish native Desktop sync or ACLs.
-Component coverage also checks first-run skipping in both scopes and the macOS worker's
-rejection of symbolic links, hard-linked files, and special files before copying.
-UG fully owns the generated root directory; root ownership hashes, edit preservation, and
-root-copy rollback are deferred. Component cases now require whole-directory replacement
-and successful retry, while unrelated plugins stay intact. Native refresh failures leave
-generated sources/state for retry or revert. The existing user-source writer keeps its
-staged replacement; the prior plugin/cache is not restored across the whole configure.
-The configure/revert lock and its exclusion cases are removed. Account changes retain the
-original cleanup-before-generation flow; component tests cover failure/retry with unchanged
-state. Pending-cleanup queues and migration bookkeeping are deferred. Run commands serially.
-`../test_integration_contract.py` covers the Windows marketplace evidence helper's
-fallback to `C:\Program Files` when the isolated environment omits or empties both
-Program Files variables, and its preference for `ProgramW6432` over `ProgramFiles`.
-These component checks do not establish a native Windows integration pass.
+registration and generated user source; ordinary configuration never creates a root source.
+`test_desktop_marketplace.py` covers ordinary default/`--user` configuration writing
+only the user source, no elevation, unchanged root files across configure/revert,
+one registration when switching an earlier root source to user scope, explicit cache
+refresh, content versions, downloaded workspace skills/assets, previous-account cleanup,
+and retained user source/state after refresh failures. Explicit global skips ordinary
+Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
+The shared privileged directory writer has separate copy/retry, whole-directory
+replacement, target validation, and macOS linked/special-entry rejection checks for MDM.
+Temporary filesystem destinations are real; external Claude registry/cache operations
+and platform privilege boundaries are simulated. These checks do not establish native
+Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
+`test_desktop_configure_cli.py` also checks explicit-global selection versus default and
+`--user`, reset after the command, and skipping user Desktop profile/plugin writers.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.web_search and allow

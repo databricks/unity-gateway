@@ -168,12 +168,12 @@ and `ug revert` return to `--global`.
 `--user` also fails for a workspace that publishes a managed config, which must be installed
 machine-wide; use `--global` for it.
 
-On macOS and Windows, global configure also publishes Claude Desktop's generated marketplace
-into a root-owned UnityGateway directory, retaining the user source copy. It registers only
-the root source through the normal user-level Cowork loader and explicitly refreshes the
-installed plugin. `--user` registers the user source and leaves root files untouched. The
-Desktop connection profile and authentication remain user-local; this is not MDM policy.
-Both paths require an initialized Cowork account. See
+For Claude Desktop, default `ug configure` and `--user` both write only the user's
+3P JSON profile, generated marketplace, and native Cowork registration/cache. They leave
+root files untouched. Explicit `--global` skips those user-level Desktop writers; machine
+policy and plugin provisioning are separate macOS MDM work. CLI-agent scope handling is
+unchanged. If Desktop has not initialized a Cowork account directory, ordinary configure
+skips plugin setup until that directory exists. See
 [Desktop plugin installation](docs/claude-desktop.md#cowork-workspace-skills-and-mcp-servers).
 
 ### Hosts that serve several workspaces

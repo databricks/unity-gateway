@@ -436,26 +436,19 @@ late MCP connection, tool discovery, or inference behavior. A frozen fixture ver
 Cowork's skill text, including its description, stays identical to the version before the
 Code authentication changes, with either the default scope or explicit `code=False`.
 
-`test_desktop_marketplace.py` covers identical user/root source publication, one active
-registration across repeated configure and scope switches, explicit cached-plugin refresh,
-stable content versions, binary/executable assets, initialized-account requirements,
-permission and registration failures, copy failure/retry, scoped revert, previous-account
-cleanup, and legacy org-loader conflicts. First-time configure skips uninitialized Cowork
-in both scopes without writing a source or state. The macOS worker rejects symbolic links,
-hard-linked files, and special files in source bundles while preserving the installed source.
-Filesystem copies run in temporary directories: the macOS shell worker uses host OS
-command adapters without sudo; Windows filesystem logic runs with simulated elevation.
-Only the external Claude CLI registry/cache is simulated. These component checks do not
-establish native Desktop sync, Windows ACLs, fresh-user provisioning, or connector runtime.
-UG now fully owns the generated root directory: ownership-hash, concurrent-edit preservation,
-and root-copy rollback cases are replaced with whole-directory replacement, retry, and target
-validation checks. Refresh failures verify retained sources, configure retry, and revert.
-The existing user-source writer keeps its staged replacement; automatic restoration across
-root publication and native registration is not supported.
-Lock-exclusion cases are removed with the configure/revert lock. State checks now require
-only the selected source/account in the existing version-1 record. Account-cleanup failures
-leave that record unchanged for retry, matching the original cleanup-before-generation flow.
-Concurrent configure/revert and queued old-account cleanup are not supported.
+`test_desktop_marketplace.py` covers ordinary default/`--user` configuration writing
+only the user source, no elevation, unchanged root files across configure/revert,
+one registration when switching an earlier root source to user scope, explicit cache
+refresh, content versions, downloaded workspace skills/assets, previous-account cleanup,
+and retained user source/state after refresh failures. Explicit global skips ordinary
+Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
+The shared privileged directory writer has separate copy/retry, whole-directory
+replacement, target validation, and macOS linked/special-entry rejection checks for MDM.
+Temporary filesystem destinations are real; external Claude registry/cache operations
+and platform privilege boundaries are simulated. These checks do not establish native
+Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
+`test_desktop_configure_cli.py` also checks explicit-global selection versus default and
+`--user`, reset after the command, and skipping user Desktop profile/plugin writers.
 
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
 It checks that Claude uses an available Slack tool despite a stale disconnect notice, actually

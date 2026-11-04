@@ -3,9 +3,44 @@
 from unittest.mock import Mock
 
 import pytest
+from typer.testing import CliRunner
 
-from ucode import cli
+from ucode import cli, managed_files
 from ucode.agents.desktop import setup as desktop_setup
+
+
+@pytest.mark.parametrize("flags", [[], ["--user"], ["--global"]])
+@pytest.mark.parametrize("failed", [False, True])
+def test_explicit_global_desktop_scope_is_command_local(monkeypatch, flags, failed):
+    selections = []
+    monkeypatch.setattr(cli, "install_databricks_cli", lambda: None)
+
+    def configure_workspace(*args, **kwargs):
+        selections.append(managed_files.machine_wide_only())
+        if failed:
+            raise RuntimeError("workspace unavailable")
+        return 0
+
+    monkeypatch.setattr(cli, "_configure_workspace_command", configure_workspace)
+    result = CliRunner().invoke(
+        cli.app,
+        ["configure", "--agents", "claude", "--workspace", "https://workspace.example", *flags],
+    )
+    assert result.exit_code == (1 if failed else 0), result.output
+    assert selections == [flags == ["--global"]]
+    assert not managed_files.machine_wide_only()
+
+
+def test_global_skips_user_desktop_setup(monkeypatch):
+    managed_files.set_machine_wide_only(True)
+
+    def unexpected_write(*args, **kwargs):
+        pytest.fail("--global attempted user-level Desktop setup")
+
+    monkeypatch.setattr(desktop_setup, "write_claude_desktop_profile", unexpected_write)
+    monkeypatch.setattr(desktop_setup, "configure_cowork", unexpected_write)
+    desktop_setup.configure_claude_desktop({})
+    desktop_setup.configure_claude_cowork({}, [])
 
 
 @pytest.fixture

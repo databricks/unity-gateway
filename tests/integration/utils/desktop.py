@@ -32,19 +32,13 @@ def installed_cowork_servers(session, root: Path) -> dict:
     state = json.loads((session.home / ".ucode/claude-cowork.json").read_text())
     user_source = session.home / ".ucode/claude-cowork-marketplace"
     system_source = system_desktop_marketplace()
-    source = system_source or user_source
+    source = user_source
     assert Path(state["cowork_root"]) == root
     assert Path(state["marketplace_root"]) == source
     known = json.loads((root / "cowork_plugins/known_marketplaces.json").read_text())
     assert Path(known["unity-gateway-cowork"]["source"]["path"]) == source
     if system_source is not None:
-        assert source.is_dir()
-        contents = {p.relative_to(source): p.read_bytes() for p in source.rglob("*") if p.is_file()}
-        assert contents == {
-            p.relative_to(user_source): p.read_bytes()
-            for p in user_source.rglob("*")
-            if p.is_file()
-        }
+        assert not system_source.exists()
     installed = json.loads((root / "cowork_plugins/installed_plugins.json").read_text())
     entries = installed["plugins"]["ug@unity-gateway-cowork"]
     assert len(entries) == 1, entries

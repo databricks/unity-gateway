@@ -127,6 +127,7 @@ from ucode.managed_files import (
     managed_write_session,
     request_explicit_managed_writes,
     set_config_scope,
+    set_machine_wide_only,
 )
 from ucode.managed_resolve import (
     managed_claude_family_models,
@@ -4755,9 +4756,8 @@ def configure(
         bool,
         typer.Option(
             "--global",
-            help="Write machine-wide Claude Code/Codex settings and Claude Desktop marketplace sources "
-            "(default; requires administrator rights). "
-            "The choice is saved for later commands.",
+            help="Write machine-wide Claude Code/Codex settings (requires administrator rights). "
+            "Skip user-level Claude Desktop configuration. The choice is saved for later commands.",
         ),
     ] = False,
     user_scope: Annotated[
@@ -4790,6 +4790,7 @@ def configure(
             raise RuntimeError("Use either --global or --user, not both.")
         scope = "user" if user_scope else "global"
         set_config_scope(scope)
+        set_machine_wide_only(global_scope)
         claude_agent.request_explicit_configure()
         request_explicit_managed_writes()
         codex_agent.request_explicit_configure()
@@ -4990,6 +4991,8 @@ def configure(
     except KeyboardInterrupt:
         print_err("Interrupted.")
         raise typer.Exit(130) from None
+    finally:
+        set_machine_wide_only(False)
 
 
 @app.command("export", rich_help_panel="Manage")
