@@ -12,8 +12,8 @@ import { LanguageModelChatToolMode, LanguageModelTextPart } from "./vscode";
 const sse = (...data: string[]) => data.map((item) => `data: ${item}\n\n`).join("");
 
 /** Replaces fetch with one that answers each request with the next status and SSE body. */
-const stubFetch = (...answers: [number, string][]) => {
-  const requests: { url: string; authorization: string; userAgent: string; provider: string | null; body: Record<string, unknown> }[] = [];
+const stubFetch = (...answers: [number, string, string?][]) => {
+  const requests: { url: string; authorization: string; userAgent: string; provider: string | null; orgId: string | null; body: Record<string, unknown> }[] = [];
   globalThis.fetch = (async (url: string, init: RequestInit) => {
     const headers = new Headers(init.headers);
     requests.push({
@@ -21,13 +21,17 @@ const stubFetch = (...answers: [number, string][]) => {
       authorization: headers.get("authorization") ?? "",
       userAgent: headers.get("user-agent") ?? "",
       provider: headers.get(PROVIDER_HEADER),
+      orgId: headers.get("x-databricks-org-id"),
       body: JSON.parse(String(init.body)),
     });
-    const [status, body] = answers[Math.min(requests.length - 1, answers.length - 1)] ?? [500, ""];
+    const [status, body, contentType] = answers[Math.min(requests.length - 1, answers.length - 1)] ?? [500, ""];
     // Split the body mid-line so the reader has to join chunks.
     const bytes = new TextEncoder().encode(body);
     const middle = Math.floor(bytes.length / 2);
-    return new Response(new Blob([bytes.slice(0, middle), bytes.slice(middle)]).stream(), { status });
+    return new Response(new Blob([bytes.slice(0, middle), bytes.slice(middle)]).stream(), {
+      status,
+      ...(contentType ? { headers: { "content-type": contentType } } : {}),
+    });
   }) as typeof fetch;
   return requests;
 };
@@ -59,7 +63,7 @@ describe("streamEvents", () => {
     requests = stubFetch([401, ""]);
     await rejectsWith(
       collect(streamEvents("https://ws", "/r", {}, new Tokens(tokenCommand(["a", "b"]).command), {}, new AbortController().signal)),
-      "Run `ug configure --agents vscode` to sign in again",
+      "Run `ug configure --agents copilot` to sign in again",
     );
     assert.equal(requests.length, 2);
   });
@@ -82,6 +86,14 @@ describe("streamEvents", () => {
       "AI Gateway returned 400: {\"message\":\"max_tokens: 32000 > 8192",
     );
     assert.equal(requests.length, 2);
+  });
+
+  it("reports a web page, such as a sign-in page, instead of reading it as a cut-off reply", async () => {
+    stubFetch([200, "<!doctype html><title>Databricks - Sign In</title>", "text/html; charset=utf-8"]);
+    await rejectsWith(
+      collect(streamEvents("https://ws", "/r", {}, new Tokens(tokenCommand(["t"]).command), {}, new AbortController().signal)),
+      "AI Gateway answered with a web page instead of the model's reply. Run `ug configure --agents copilot` again, then retry.",
+    );
   });
 
   it("reports other gateway errors with their body", async () => {
@@ -108,11 +120,12 @@ describe("userAgent", () => {
 });
 
 describe("readConfig", () => {
-  it("keeps well-formed models, names, families and token limits, the provider, and trims the workspace URL", () => {
+  it("keeps well-formed models, names, families and token limits, the provider, string headers, and trims the workspace URL", () => {
     const config = {
       workspace: "https://ws/",
       authCommand: "ug auth-token",
       provider: "main.default.mps",
+      headers: { "X-Databricks-Org-Id": "123", "X-Bad": 7 },
       models: [
         { id: "a", api: "responses" },
         { id: "gpt-5.5", family: "gpt-5.5", api: "responses" },
@@ -128,6 +141,7 @@ describe("readConfig", () => {
       workspace: "https://ws",
       authCommand: "ug auth-token",
       provider: "main.default.mps",
+      headers: { "X-Databricks-Org-Id": "123" },
       models: [
         { id: "a", api: "responses" },
         { id: "gpt-5.5", family: "gpt-5.5", api: "responses" },
@@ -139,7 +153,7 @@ describe("readConfig", () => {
   });
 
   it("gives no models for a missing or malformed file", () => {
-    const none = { workspace: "", authCommand: "", models: [], provider: "" };
+    const none = { workspace: "", authCommand: "", models: [], provider: "", headers: {} };
     for (const text of [undefined, "", "{", "[]", "null", '"text"']) {
       assert.deepEqual(readConfig(text), none, String(text));
     }
@@ -147,10 +161,11 @@ describe("readConfig", () => {
 });
 
 describe("DatabricksModels", () => {
-  const settings = (command: string, provider = ""): Settings => ({
+  const settings = (command: string, provider = "", headers: Record<string, string> = {}): Settings => ({
     workspace: "https://ws",
     authCommand: command,
     provider,
+    headers,
     models: [
       { id: "system.ai.claude-sonnet-5-5", name: "Claude Sonnet 5.5", api: "anthropic", maxInputTokens: 872_000, maxOutputTokens: 128_000 },
       { id: "system.ai.gpt-6-luna", api: "responses" },
@@ -170,7 +185,7 @@ describe("DatabricksModels", () => {
       ],
     );
     assert.deepEqual(await new DatabricksModels(() => ({ ...settings(""), models: [] }), (line) => logs.push(line)).provideLanguageModelChatInformation(), []);
-    assert.deepEqual(logs, ["No Databricks models: run `ug configure --agents vscode` to set them up."]);
+    assert.deepEqual(logs, ["No Databricks models: run `ug configure --agents copilot` to set them up."]);
   });
 
   const answers: [number, string][] = [
@@ -219,6 +234,15 @@ describe("DatabricksModels", () => {
         ["https://ws/ai-gateway/openai/v1/responses", "main.default.mps"],
         ["https://ws/ai-gateway/openai/v1/chat/completions", "main.default.mps"],
       ],
+    );
+  });
+
+  it("selects the workspace with the configured headers on every API", async () => {
+    const requests = stubFetch(...answers);
+    await askEach(new DatabricksModels(() => settings(tokenCommand(["t"]).command, "", { "X-Databricks-Org-Id": "123" }), () => {}));
+    assert.deepEqual(
+      requests.map((request) => request.orgId),
+      ["123", "123", "123"],
     );
   });
 });

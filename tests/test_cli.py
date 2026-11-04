@@ -3050,7 +3050,7 @@ class TestStatus:
         output = re.sub(r"\s+", " ", _strip_ansi(result.output))
         assert result.exit_code == 0, result.output
         assert "MCP servers: 1" in output
-        assert "GitHub Copilot CLI" in output
+        assert "GitHub Copilot (CLI and VS Code)" in output
         assert "Claude Code" not in output
         assert "Gemini CLI" not in output
         assert "databricks-sql" not in result.output
@@ -5698,7 +5698,9 @@ class TestConfigureAgentsSelection:
             cli_mod.configure_workspace_command(tool="claude", workspaces=[("https://w.com", None)])
             == 0
         )
-        configure.assert_called_once_with("claude", state, parent_schema="main.models")
+        configure.assert_called_once_with(
+            "claude", state, parent_schema="main.models", with_vscode=True
+        )
 
     def test_managed_codex_parent_is_passed_to_generic_configure(self, monkeypatch):
         state = {
@@ -5756,7 +5758,9 @@ class TestConfigureAgentsSelection:
         assert result.exit_code == 0, result.output
         assert "(Provider: Databricks)" in _strip_ansi(result.output)
         refresh.assert_called_once_with(state, force_refresh=True)
-        configure.assert_called_once_with("codex", state, parent_schema="main.models")
+        configure.assert_called_once_with(
+            "codex", state, parent_schema="main.models", with_vscode=True
+        )
         install_ai_tools.assert_called_once_with(["codex"], state, force_refresh=False)
 
     def test_managed_copilot_parent_is_passed_to_generic_configure(self, monkeypatch):
@@ -5819,7 +5823,9 @@ class TestConfigureAgentsSelection:
         assert result.exit_code == 0, result.output
         assert "(Provider: Databricks)" in _strip_ansi(result.output)
         refresh.assert_called_once_with(state, force_refresh=False)
-        configure.assert_called_once_with("copilot", state, parent_schema="main.models")
+        configure.assert_called_once_with(
+            "copilot", state, parent_schema="main.models", with_vscode=True
+        )
         install_ai_tools.assert_called_once_with(["copilot"], state, force_refresh=True)
 
     @pytest.mark.parametrize("apply_managed", [True, False])
