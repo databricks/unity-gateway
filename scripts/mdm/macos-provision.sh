@@ -9,7 +9,7 @@
 #   UG_SKIP_OS_SETTINGS=1 ug claude    (or: ug codex)
 #
 # Jamf parameters ($1-$3 are reserved by Jamf):
-#   $4  Databricks workspace URL, e.g. https://myws.cloud.databricks.com
+#   $4  Databricks workspace URL, starting with https://
 #   $5  Service principal OAuth client id
 #   $6  Service principal OAuth client secret
 #
@@ -59,6 +59,10 @@ if [ ! -x /usr/local/bin/databricks ]; then
   curl -fsSL "$CLI_URL" | sh
 fi
 
+# Download into a private temporary directory, not fixed /tmp paths
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
 # Install Claude Code
 if [ ! -x /usr/local/bin/claude ]; then
   case "$(uname -m)" in
@@ -69,10 +73,9 @@ if [ ! -x /usr/local/bin/claude ]; then
   base="$CLAUDE_RELEASES/$version"
   checksum="$(curl -fsSL "$base/manifest.json" \
     | plutil -extract "platforms.$platform.checksum" raw -o - -)"
-  curl -fsSL -o /tmp/claude "$base/$platform/claude"
-  echo "$checksum  /tmp/claude" | shasum -a 256 -c -
-  install -m 755 /tmp/claude /usr/local/bin/claude
-  rm -f /tmp/claude
+  curl -fsSL -o "$tmp/claude" "$base/$platform/claude"
+  echo "$checksum  $tmp/claude" | shasum -a 256 -c -
+  install -m 755 "$tmp/claude" /usr/local/bin/claude
 fi
 
 # Install Codex
@@ -82,9 +85,8 @@ if [ ! -x /usr/local/bin/codex ]; then
     *) target=x86_64-apple-darwin ;;
   esac
   curl -fsSL "$CODEX_RELEASES/codex-$target.tar.gz" \
-    | tar -xzf - -C /tmp "codex-$target"
-  install -m 755 "/tmp/codex-$target" /usr/local/bin/codex
-  rm -f "/tmp/codex-$target"
+    | tar -xzf - -C "$tmp" "codex-$target"
+  install -m 755 "$tmp/codex-$target" /usr/local/bin/codex
 fi
 
 # Get short lived credential; curl reads the client id and secret from

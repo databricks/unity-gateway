@@ -85,7 +85,7 @@ Go to **Computers → Policies → New**:
 
 | Parameter | Value |
 | --- | --- |
-| 4 | Workspace URL, e.g. `https://myws.cloud.databricks.com` |
+| 4 | Workspace URL, starting with `https://` |
 | 5 | The service principal's client id |
 | 6 | The service principal's secret |
 
