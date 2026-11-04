@@ -32,6 +32,12 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
+from ucode.auto_compact_window import (  # noqa: F401  (re-exported for callers and tests)
+    CLAUDE_AUTO_COMPACT_WINDOW_MAX,
+    CLAUDE_AUTO_COMPACT_WINDOW_MIN,
+    GPT_AUTO_COMPACT_WINDOW,
+    valid_auto_compact_window,
+)
 from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
@@ -3312,29 +3318,9 @@ def maybe_add_gpt_1m_suffix(model: str) -> str:
     return f"{model}[1m]" if _GPT_1M_MODEL_RE.match(model) else model
 
 
-# The `[1m]` hint makes Claude Code size GPT sessions at 1M, but the gateway rejects them near 920K
-# input tokens with an error Claude Code's reactive compaction doesn't recognize. Claude Code
-# compacts ~33K below this window and only between turns, so 800K leaves room for a large turn.
-GPT_AUTO_COMPACT_WINDOW = 800_000
-
-
 def is_gpt_auto_compact_model_key(key: str) -> bool:
     """Whether ``key`` is a ``modelSettings`` id ug writes ``GPT_AUTO_COMPACT_WINDOW`` for."""
     return bool(_GPT_1M_MODEL_RE.match(key))
-
-
-# Claude Code's accepted `autoCompactWindow` range; values outside it are not a usable choice.
-CLAUDE_AUTO_COMPACT_WINDOW_MIN = 100_000
-CLAUDE_AUTO_COMPACT_WINDOW_MAX = 1_000_000
-
-
-def valid_auto_compact_window(value: object) -> int | None:
-    """``value`` as an ``autoCompactWindow`` Claude Code accepts, or None."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return (
-        value if CLAUDE_AUTO_COMPACT_WINDOW_MIN <= value <= CLAUDE_AUTO_COMPACT_WINDOW_MAX else None
-    )
 
 
 def gpt_auto_compact_model_settings(

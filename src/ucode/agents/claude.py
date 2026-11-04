@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -19,6 +20,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from ucode.claude_auto_compact_notice import (
+    HOOK_COMMAND_MARKER as AUTO_COMPACT_NOTICE_HOOK_MARKER,
+)
+from ucode.claude_auto_compact_notice import (
+    SESSION_WINDOWS_ENV_VAR,
+    user_auto_compact_windows,
+)
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -59,7 +67,6 @@ from ucode.databricks import (
     is_gpt_auto_compact_model_key,
     maybe_add_gpt_1m_suffix,
     ug_binary,
-    valid_auto_compact_window,
 )
 from ucode.launcher import exec_or_spawn
 from ucode.managed_config import refresh_managed_config
@@ -119,6 +126,7 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
+from ucode.smart_routing.hooks import sync_managed_hooks
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
@@ -753,18 +761,7 @@ def _user_auto_compact_windows(user_settings_path: Path) -> dict[str, int]:
     Read-only: `/autocompact` writes this file, and ug never does. If both spellings of an id carry
     a value, the lower wins.
     """
-    model_settings = read_json_safe(user_settings_path).get(CLAUDE_MODEL_SETTINGS_KEY)
-    if not isinstance(model_settings, dict):
-        return {}
-    windows: dict[str, int] = {}
-    for model, entry in model_settings.items():
-        if not isinstance(model, str) or not isinstance(entry, dict):
-            continue
-        window = valid_auto_compact_window(entry.get(CLAUDE_AUTO_COMPACT_WINDOW_KEY))
-        if window is not None:
-            canonical = model.removesuffix("[1m]")
-            windows[canonical] = min(windows.get(canonical, window), window)
-    return windows
+    return user_auto_compact_windows(read_json_safe(user_settings_path))
 
 
 def gpt_model_settings(
@@ -820,6 +817,44 @@ def _sync_gpt_model_settings(settings: dict) -> list[list[str]]:
     if removed and not model_settings:
         del settings[CLAUDE_MODEL_SETTINGS_KEY]
     return [[CLAUDE_MODEL_SETTINGS_KEY, model, CLAUDE_AUTO_COMPACT_WINDOW_KEY] for model in entries]
+
+
+def sync_auto_compact_notice_hook(doc: dict) -> None:
+    """Install ug's `/autocompact` restart-notice hook, replacing any earlier copy."""
+    command = shlex.join([sys.executable, "-m", AUTO_COMPACT_NOTICE_HOOK_MARKER])
+    groups = {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": command}]}]}
+    sync_managed_hooks(doc, AUTO_COMPACT_NOTICE_HOOK_MARKER, groups)
+
+
+def record_session_gpt_auto_compact(*overlays: dict) -> None:
+    """Record the GPT ``autoCompactWindow`` this launch applies, for the restart-notice hook.
+
+    Sets ``SESSION_WINDOWS_ENV_VAR`` on this process so the Claude it starts, and that Claude's
+    hooks, inherit it. Claude Code's precedence is the OS-managed file over ``--settings``, so the
+    sources are ug's settings file, then ``overlays`` (the launch's own settings), then the
+    managed file. A launch with no GPT window clears an inherited value.
+    """
+    managed_path = managed_settings_path()
+    sources = [
+        read_json_safe(CLAUDE_SETTINGS_PATH),
+        *overlays,
+        read_json_safe(managed_path) if managed_path else {},
+    ]
+    effective: dict[str, int] = {}
+    for source in sources:
+        for model, window in user_auto_compact_windows(source).items():
+            if is_gpt_auto_compact_model_key(model):
+                effective[model] = window
+    user_windows = _user_auto_compact_windows(CLAUDE_USER_SETTINGS_PATH)
+    if not effective:
+        os.environ.pop(SESSION_WINDOWS_ENV_VAR, None)
+        return
+    os.environ[SESSION_WINDOWS_ENV_VAR] = json.dumps(
+        {
+            model: {"effective": window, "user": user_windows.get(model)}
+            for model, window in effective.items()
+        }
+    )
 
 
 _CLAUDE_PICKER_LABEL_RE = re.compile(
@@ -1863,14 +1898,14 @@ def write_tool_config(
         return merged
 
     managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
-    write_json_file(
-        CLAUDE_SETTINGS_PATH,
-        _compose(
-            read_json_safe(CLAUDE_SETTINGS_PATH),
-            enforce_model_default_hierarchy=source_scoped_defaults,
-            managed_settings_snapshots=None,
-        ),
+    private_settings = _compose(
+        read_json_safe(CLAUDE_SETTINGS_PATH),
+        enforce_model_default_hierarchy=source_scoped_defaults,
+        managed_settings_snapshots=None,
     )
+    # Only the --settings file carries the hook: Claude Code merges hooks across sources.
+    sync_auto_compact_notice_hook(private_settings)
+    write_json_file(CLAUDE_SETTINGS_PATH, private_settings)
 
     # The admin's settings may not displace anything ug writes, except the hooks and deny lists ug
     # only merges its own entries into.
@@ -2862,6 +2897,7 @@ def launch(
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
+    record_session_gpt_auto_compact()
     if state.get("claude_relayed"):
         _launch_relayed(state, binary, tool_args)
         return
@@ -2950,6 +2986,7 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
+    record_session_gpt_auto_compact(settings_override or {})
     with _claude_launch_argv(binary, launch_args, settings_override=settings_override) as argv:
         exec_or_spawn(argv)
 
