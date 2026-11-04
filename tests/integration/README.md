@@ -148,7 +148,9 @@ malformed cache inspection, authentication isolation, and deferred cleanup have
 [component coverage](../README.md). These checks use temporary destinations and simulate
 external workspace, ownership, launchd, and Claude registration boundaries.
 CLI-agent scope unit coverage isolates Desktop prerequisites; Desktop scope components
-exercise the macOS CLI preflight.
+exercise the macOS CLI preflight. Component regressions also check MCP-only requests
+bypass Desktop provisioning, intermediate runtime symlink trust, and early Claude CLI
+validation before installer or version probes.
 
 macOS MDM provisioning and its per-user LaunchAgent are outside these Linux/Windows
 journeys. Native launchd activation, first-user timing, managed-plist precedence,

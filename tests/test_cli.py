@@ -5352,10 +5352,16 @@ class TestConfigureMcpFlag:
         mock_mcp.assert_called_once_with(services={"system.ai.slack", "system.ai.github"})
         mock_sync.assert_called_once_with()
 
-    def test_mcp_only_configures_workspace_without_agent_picker(self):
+    @pytest.mark.parametrize("flags", [[], ["--global"]])
+    def test_mcp_only_configures_workspace_without_agent_picker(self, monkeypatch, flags):
         # `--mcp` with no --agents (e.g. Cursor): configure the workspace directly,
         # never the interactive agent picker, then register the MCP service.
+        monkeypatch.setattr(cli_mod.sys, "platform", "darwin")
         with (
+            patch(
+                "ucode.agents.desktop.mdm._require_macos",
+                side_effect=AssertionError("MCP-only configure must not require Desktop MDM"),
+            ) as desktop_preflight,
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
             patch("ucode.cli._configure_shared_workspace_states") as mock_shared,
@@ -5370,9 +5376,11 @@ class TestConfigureMcpFlag:
                     "https://ws.databricks.com",
                     "--mcp",
                     "system.ai.slack",
+                    *flags,
                 ],
             )
         assert result.exit_code == 0, result.output
+        desktop_preflight.assert_not_called()
         # Never the model-agent picker path.
         mock_cfg.assert_not_called()
         mock_shared.assert_called_once()

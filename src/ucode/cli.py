@@ -5033,7 +5033,9 @@ def configure(
                 if name.strip() and name.strip().lower() not in ("cursor", "vscode")
             ]
             provisions_desktop = (
-                provisions_desktop or not (agent or agents) or "claude" in requested
+                provisions_desktop
+                or (not (agent or agents) and mcp is None)
+                or "claude" in requested
             )
         if provisions_desktop:
             if use_pat or custom_oauth:

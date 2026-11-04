@@ -38,6 +38,7 @@ does not install Python, UG, the Databricks CLI, or the Claude CLI. All four mus
 root-owned, readable/executable by device users, and not writable by group or other
 users. Their parent directories must also be protected and traversable. Installs in
 `/Users`, `/var/root`, or an administrator's private virtual environment are rejected.
+Every intermediate executable symlink must also have a protected parent directory.
 Use a standalone Claude CLI binary that supports `plugin ... --cowork --json`.
 Keep shared runtime updates under MDM control.
 
@@ -96,8 +97,10 @@ feature-disabled config API, provisioning uses model discovery without managed a
 An explicit agent list that excludes Claude still blocks provisioning.
 
 Provisioning also requires a root-owned PATH with no group/other-writable directories.
-Both provisioning entry points validate Databricks CLI candidates before profile lookup
-or version discovery can execute them, including profile lookup during a dry run.
+Both provisioning entry points validate Databricks CLI candidates and the selected Claude
+executable before installation, profile lookup or version discovery can execute them,
+including profile lookup during a dry run. MCP-only `--mcp` requests without agent flags
+do not provision Desktop or require its shared runtimes.
 
 No provisioning token or administrator profile is written into the machine policy
 or plugin. The runtime wrapper clears provisioning credential overrides and binds

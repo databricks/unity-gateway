@@ -565,6 +565,7 @@ def test_shared_runtime_checks_access_but_retains_virtualenv_path(monkeypatch, t
     monkeypatch.setattr(Path, "exists", lambda p: True)
     monkeypatch.setattr(Path, "is_file", lambda p: True)
     monkeypatch.setattr(Path, "is_dir", lambda p: False)
+    monkeypatch.setattr(Path, "is_symlink", lambda p: False)
     monkeypatch.setattr(Path, "resolve", lambda p: resolved if p == executable else p)
     checked = Mock()
     monkeypatch.setattr(mdm, "_check_machine_path", checked)
@@ -582,6 +583,45 @@ def test_shared_runtime_checks_access_but_retains_virtualenv_path(monkeypatch, t
         assert mdm._shared_path(str(executable), "Python", executable=True) == executable
         checked.assert_any_call(resolved, required=True)
         checked.assert_any_call(executable.parent, required=True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="macOS runtime validation uses POSIX symlinks")
+@pytest.mark.parametrize("problem", [None, "owner", "writable", "private"])
+def test_shared_runtime_checks_intermediate_link_parents(monkeypatch, tmp_path, problem):
+    executable = tmp_path / "venv/bin/python"
+    alias = tmp_path / "alias/python"
+    target = tmp_path / "runtime/python"
+    for entry in (executable, alias, target):
+        entry.parent.mkdir(parents=True)
+    target.write_text("runtime sentinel; never executed")
+    target.chmod(0o755)
+    executable.symlink_to(alias)
+    alias.symlink_to(target)
+    original_stat = Path.stat
+
+    def machine_stat(path, *args, **kwargs):
+        info = list(original_stat(path, *args, **kwargs))
+        info[0] &= ~0o022
+        if stat.S_ISDIR(info[0]):
+            info[0] |= 0o005
+        info[4] = 0
+        if path == alias.parent:
+            if problem == "owner":
+                info[4] = 501
+            elif problem == "writable":
+                info[0] |= 0o020
+            elif problem == "private":
+                info[0] &= ~0o007
+        return os.stat_result(info)
+
+    monkeypatch.setattr(Path, "stat", machine_stat)
+    if problem is None:
+        assert mdm._shared_path(str(executable), "Python", executable=True) == executable
+    else:
+        with pytest.raises(
+            RuntimeError, match="accessible" if problem == "private" else "root-owned"
+        ):
+            mdm._shared_path(str(executable), "Python", executable=True)
 
 
 def test_runtime_probe_reads_installed_package_path(monkeypatch):
@@ -617,18 +657,20 @@ def test_runtime_rejects_untrusted_cli_before_version_discovery(monkeypatch, tmp
     subprocess_run.assert_not_called()
 
 
-@pytest.mark.parametrize("flags", [["--mdm-desktop"], ["--global", "--dry-run"]])
+@pytest.mark.parametrize("flags", [["--mdm-desktop"], ["--global"], ["--global", "--dry-run"]])
 @pytest.mark.parametrize("profile", ["CACHED", "", None])
+@pytest.mark.parametrize("cli_name", ["Databricks CLI", "Claude CLI"])
 def test_profile_lookup_rejects_untrusted_cli_before_execution(
-    monkeypatch, tmp_path, flags, profile
+    monkeypatch, tmp_path, flags, profile, cli_name
 ):
-    candidate = tmp_path / ("databricks.exe" if os.name == "nt" else "databricks")
+    command = "databricks" if cli_name == "Databricks CLI" else "claude"
+    candidate = tmp_path / (f"{command}.exe" if os.name == "nt" else command)
     candidate.write_text("untrusted test file")
     candidate.chmod(0o777)
     shared_path = mdm._shared_path
 
     def validate(value, name, **kwargs):
-        if name == "Databricks CLI":
+        if name == cli_name:
             return shared_path(value, name, **kwargs)
         return Path(value)
 
@@ -640,6 +682,7 @@ def test_profile_lookup_rejects_untrusted_cli_before_execution(
     monkeypatch.setattr(mdm.databricks, "run", forbidden)
     monkeypatch.setattr(mdm.subprocess_cross_os, "run", forbidden)
     monkeypatch.setattr(cli, "install_databricks_cli", forbidden)
+    monkeypatch.setattr(cli, "install_tool_binary", forbidden)
     target = (
         ["--workspace", "https://workspace.example.com"]
         if profile is None

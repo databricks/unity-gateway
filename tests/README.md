@@ -539,8 +539,11 @@ discovery. MCP/tracing helper checks keep explicit OAuth profiles independent of
 saved PAT mode while retaining saved PAT mode for matching host, profile, and workspace ID.
 Global Desktop rejects explicit PAT/custom OAuth and selected-workspace requests before
 authentication or agent writes; shared CLI-agent PAT validation/export remains covered.
-Both provisioning entry points reject unsafe CLI candidates before installer or
-profile discovery, including dry-run requests with a named, empty, or omitted profile.
+Both provisioning entry points reject unsafe Databricks and Claude CLI candidates before
+installer, agent setup or profile discovery, including dry-run requests with a named,
+empty, or omitted profile. Intermediate runtime symlink parents are validated while
+protected virtualenv invocation paths are retained. These filesystem tests simulate root
+ownership and do not execute the test executables.
 The public-command checks keep profile parsing real and replace subprocess execution at its boundary. An untrusted CLI candidate
 is rejected by real path validation before any version discovery or subprocess call.
 A public `configure --global --agents claude --profile` regression checks that privileged
@@ -564,6 +567,9 @@ and skipping Desktop on platforms without MDM support. The existing CLI-agent sc
 Public Desktop CLI scope cases include macOS preflight, and argument rejection asserts each intended diagnostic after valid device setup.
 CLI-agent setup and external services
 are isolated; this is component coverage, not native macOS or live connector coverage.
+`test_cli.py::TestConfigureMcpFlag` checks that MCP-only default/global requests without
+agent flags bypass Desktop MDM prerequisites while still configuring their workspace
+and registering their requested MCP services.
 
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
 It checks that Claude uses an available Slack tool despite a stale disconnect notice, discovers

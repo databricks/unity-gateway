@@ -77,10 +77,19 @@ def _shared_path(value: str, name: str, *, executable: bool = False) -> Path:
                 f"{name} is installed in an administrator's home. Install it in a shared machine location first: {candidate}"
             )
     _check_machine_path(resolved, required=True)
-    _check_machine_path(path.parent, required=True)
-    for parent in (path.parent, *path.parent.parents, *resolved.parents):
-        if not parent.stat().st_mode & stat.S_IXOTH:
-            raise RuntimeError(f"{name} must be accessible to device users: {parent}")
+    link = path
+    for _ in range(40):
+        _check_machine_path(link.parent, required=True)
+        for parent in link.parents:
+            if not parent.stat().st_mode & stat.S_IXOTH:
+                raise RuntimeError(f"{name} must be accessible to device users: {parent}")
+        if not link.is_symlink():
+            _check_machine_path(link, required=True)
+            break
+        target = link.readlink()
+        link = target if target.is_absolute() else link.parent / target
+    else:
+        raise RuntimeError(f"Too many runtime symlinks for {name}: {path}")
     if not resolved.stat().st_mode & stat.S_IROTH:
         raise RuntimeError(f"{name} must be readable by device users: {resolved}")
     if (executable or resolved.is_dir()) and not resolved.stat().st_mode & stat.S_IXOTH:
@@ -91,11 +100,12 @@ def _shared_path(value: str, name: str, *, executable: bool = False) -> Path:
 
 
 def validate_cli_discovery() -> None:
-    """Validate root command lookup before Databricks version probes."""
+    """Validate root command lookup before CLI installation or version probes."""
     for directory in os.get_exec_path():
         _shared_path(directory, "MDM command PATH")
     for candidate in databricks._iter_databricks_executables():
         _shared_path(candidate, "Databricks CLI", executable=True)
+    _shared_path(shutil.which("claude") or "", "Claude CLI", executable=True)
     databricks.clear_databricks_cli_cache()
 
 
