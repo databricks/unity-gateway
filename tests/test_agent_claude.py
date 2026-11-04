@@ -1245,6 +1245,80 @@ class TestWriteToolConfigManagedSettings:
         else:
             assert managed_writes
 
+    @pytest.mark.parametrize(
+        "managed_model_settings, expected_luna_siblings",
+        [
+            pytest.param(None, {}, id="no-modelSettings"),
+            pytest.param(
+                {"system.ai.claude-opus-4-8": {"effortLevel": "high"}},
+                {},
+                id="other-models-only",
+            ),
+            pytest.param(
+                {"system.ai.gpt-6-luna": {"effortLevel": "high"}},
+                {"effortLevel": "high"},
+                id="luna-without-window",
+            ),
+            pytest.param(
+                {"system.ai.gpt-6-luna": {"effortLevel": "high", "autoCompactWindow": 600_000}},
+                {"effortLevel": "high"},
+                id="luna-with-window",
+            ),
+        ],
+    )
+    def test_managed_picker_luna_cap_across_managed_model_settings_shapes(
+        self, monkeypatch, managed_model_settings, expected_luna_siblings
+    ):
+        luna = "system.ai.gpt-6-luna"
+        managed_doc: dict = {
+            "modelPicker": {"options": [{"model": f"{luna}[1m]"}]},
+            "env": {"MANAGED_KEEP": "1"},
+        }
+        if managed_model_settings is not None:
+            managed_doc["modelSettings"] = managed_model_settings
+        window = {"autoCompactWindow": db_mod.GPT_AUTO_COMPACT_WINDOW}
+        assert window["autoCompactWindow"] == 800_000
+        private_path = str(claude.CLAUDE_SETTINGS_PATH)
+
+        # The OS-managed file is read-only here: UG writes only the private file, and caps luna at
+        # min(user, 800K) regardless of any managed value (Claude Code's precedence picks between them).
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(FAKE_MANAGED_PATH): managed_doc,
+            private_path: {"env": {"PRIVATE_KEEP": "1"}},
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        monkeypatch.setattr(
+            claude, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+        )
+        claude.write_tool_config(
+            {"workspace": WS, "claude_static_models": ["system.ai.claude-opus-4-8"]},
+            "databricks-claude-sonnet-4",
+        )
+        assert managed_writes == []
+        assert str(FAKE_MANAGED_PATH) not in {path for path, _ in private_writes}
+        private = [p for path, p in private_writes if path == private_path][-1]
+        assert private["modelSettings"][luna] == window
+        assert private["env"]["PRIVATE_KEEP"] == "1"
+
+        # When UG composes the managed file itself, luna gets the cap and keeps sibling fields.
+        private_writes, managed_writes = [], []
+        existing = {str(FAKE_MANAGED_PATH): managed_doc}
+        monkeypatch.delenv(managed_files.SKIP_OS_SETTINGS_ENV)
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        claude.write_tool_config(
+            {"workspace": WS, "claude_static_models": ["system.ai.claude-opus-4-8", luna]},
+            "databricks-claude-sonnet-4",
+        )
+        managed = json.loads(managed_writes[0][1])
+        assert managed["modelSettings"][luna] == {**expected_luna_siblings, **window}
+        for model, settings in (managed_model_settings or {}).items():
+            if model != luna:
+                assert managed["modelSettings"][model] == settings
+        assert managed["env"]["MANAGED_KEEP"] == "1"
+
     def test_absent_managed_file_adds_no_gpt_entry(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []
