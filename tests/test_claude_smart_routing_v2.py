@@ -641,12 +641,20 @@ class TestV2Launch:
             }
         }
 
+        user_settings = tmp_path / "settings.json"
+        user_settings.write_text(
+            json.dumps(
+                {"modelSettings": {"system.ai.gpt-5-6-sol[1m]": {"autoCompactWindow": 300_000}}}
+            )
+        )
+        original_user_settings = user_settings.read_bytes()
+
         with pytest.raises(SystemExit):
             v2.launch_claude(
                 {"workspace": "https://example.com"},
                 [],
                 binary="claude",
-                user_settings_path=tmp_path / "settings.json",
+                user_settings_path=user_settings,
                 launch_model=None,
                 compose_settings=lambda args: (composed, list(args)),
                 launch_model_args=claude._launch_model_args,
@@ -659,9 +667,11 @@ class TestV2Launch:
             "system.ai.claude-opus-4-8": {"userField": 1},
             "system.ai.gpt-6-luna": {"userField": 2, **window},
             "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol": window,
-            "system.ai.gpt-5-6-sol": window,
+            # The user's lower `/autocompact` window, keyed with `[1m]`, applies to the routed id.
+            "system.ai.gpt-5-6-sol": {"autoCompactWindow": 300_000},
         }
         assert "system.ai.gpt-6-luna[1m]" in captured["plugin_models"]
+        assert user_settings.read_bytes() == original_user_settings
 
 
 class TestV2ModelPickerDiscovery:

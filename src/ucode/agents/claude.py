@@ -47,6 +47,7 @@ from ucode.custom_oauth import (
     custom_oauth_cli_enabled,
 )
 from ucode.databricks import (
+    GPT_AUTO_COMPACT_WINDOW,
     AnthropicModelCatalog,
     _debug,
     build_auth_shell_command,
@@ -58,6 +59,7 @@ from ucode.databricks import (
     is_gpt_auto_compact_model_key,
     maybe_add_gpt_1m_suffix,
     ug_binary,
+    valid_auto_compact_window,
 )
 from ucode.launcher import exec_or_spawn
 from ucode.managed_config import refresh_managed_config
@@ -261,8 +263,6 @@ CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
 CLAUDE_BLANKED_CREDENTIAL_PATHS = [["env", key] for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS]
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
-# Per-model Claude Code settings. ug owns only the `autoCompactWindow` leaf of GPT entries (see
-# `gpt_auto_compact_model_settings`); every other entry and field belongs to the user or admin.
 CLAUDE_MODEL_SETTINGS_KEY = "modelSettings"
 CLAUDE_AUTO_COMPACT_WINDOW_KEY = "autoCompactWindow"
 CLAUDE_PERMISSIONS_DENY_PATH = ["permissions", "deny"]
@@ -743,14 +743,63 @@ def _settings_model_ids(settings: dict) -> list[object]:
     return model_ids
 
 
+# (model, user window) caps already warned about, so a launch that writes several files warns once.
+_warned_auto_compact_caps: set[tuple[str, int]] = set()
+
+
+def _user_auto_compact_windows(user_settings_path: Path) -> dict[str, int]:
+    """Valid ``autoCompactWindow`` values from the user's own settings, keyed by id without `[1m]`.
+
+    Read-only: `/autocompact` writes this file, and ug never does. If both spellings of an id carry
+    a value, the lower wins.
+    """
+    model_settings = read_json_safe(user_settings_path).get(CLAUDE_MODEL_SETTINGS_KEY)
+    if not isinstance(model_settings, dict):
+        return {}
+    windows: dict[str, int] = {}
+    for model, entry in model_settings.items():
+        if not isinstance(model, str) or not isinstance(entry, dict):
+            continue
+        window = valid_auto_compact_window(entry.get(CLAUDE_AUTO_COMPACT_WINDOW_KEY))
+        if window is not None:
+            canonical = model.removesuffix("[1m]")
+            windows[canonical] = min(windows.get(canonical, window), window)
+    return windows
+
+
+def gpt_model_settings(
+    models: Iterable[object], user_settings_path: Path | None = None
+) -> dict[str, dict[str, int]]:
+    """GPT ``modelSettings`` entries for every file ug writes, honoring the user's lower window.
+
+    A Claude Code settings source above the user's (``--settings``, the OS-managed file) would
+    otherwise replace their `/autocompact` choice, so ug writes min(user value,
+    ``GPT_AUTO_COMPACT_WINDOW``) and warns once when it lowers the user's value.
+    """
+    user_windows = _user_auto_compact_windows(user_settings_path or CLAUDE_USER_SETTINGS_PATH)
+    entries = gpt_auto_compact_model_settings(models, user_windows)
+    for model in entries:
+        window = user_windows.get(model)
+        if window is None or window <= GPT_AUTO_COMPACT_WINDOW:
+            continue
+        if (model, window) not in _warned_auto_compact_caps:
+            _warned_auto_compact_caps.add((model, window))
+            print_warning(
+                f"autoCompactWindow {window} for {model} is capped at {GPT_AUTO_COMPACT_WINDOW}: "
+                "the gateway rejects requests above ~920K tokens."
+            )
+    return entries
+
+
 def _sync_gpt_model_settings(settings: dict) -> list[list[str]]:
     """Write ug's GPT ``modelSettings`` leaves for the models ``settings`` names; return their paths.
 
     Like the managed model env keys, the ``autoCompactWindow`` leaf of a GPT id is ug's: it is set
-    for every GPT model the document names and dropped for GPT ids it no longer names. Sibling
-    fields and non-GPT entries are left alone, and only entries emptied by a removal are dropped.
+    for every GPT model the document names (see ``gpt_model_settings`` for the value) and dropped
+    for GPT ids it no longer names. Sibling fields and non-GPT entries are left alone, and only
+    entries emptied by a removal are dropped.
     """
-    entries = gpt_auto_compact_model_settings(_settings_model_ids(settings))
+    entries = gpt_model_settings(_settings_model_ids(settings))
     model_settings = settings.get(CLAUDE_MODEL_SETTINGS_KEY)
     if not isinstance(model_settings, dict):
         if entries:
@@ -2524,7 +2573,7 @@ def _compose_v2_settings(
 
 def _start_model_settings(start_model: str | None) -> dict:
     """Launch-only settings for a start model the settings file may not name (e.g. ``--model``)."""
-    model_settings = gpt_auto_compact_model_settings([start_model])
+    model_settings = gpt_model_settings([start_model])
     return {CLAUDE_MODEL_SETTINGS_KEY: model_settings} if model_settings else {}
 
 

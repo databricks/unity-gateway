@@ -43,7 +43,6 @@ from ucode.custom_oauth import custom_oauth_cli_enabled, launch_token
 from ucode.databricks import (
     AnthropicModelCatalog,
     build_auth_token_argv,
-    gpt_auto_compact_model_settings,
     list_anthropic_model_catalog,
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
@@ -668,6 +667,7 @@ def launch_claude(
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.args import has_explicit_model_arg
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
+    from ucode.agents.claude import gpt_model_settings as claude_gpt_model_settings
 
     if os.name != "nt":
         from ucode.smart_routing import claude_pty
@@ -734,11 +734,12 @@ def launch_claude(
     if not isinstance(model_overrides, dict):
         raise RuntimeError("Claude settings 'modelOverrides' must be an object for smart routing.")
     model_overrides.update(_claude_model_overrides(model_ids))
-    # Routed agents and first-prompt switches can land on any catalog model, not only the ones the
-    # settings file names; cover both the agent definitions' ids and the unwrapped switch ids.
+    # Without a picker the catalog comes from gateway discovery, which the settings file never
+    # names, so cap here. Routed agents use the canonical ids, first-prompt switches unwrapped ones.
     canonical_models = _canonical_claude_models(model_ids)
-    gpt_model_settings = gpt_auto_compact_model_settings(
-        [*canonical_models, *map(_unwrapped_claude_model_id, canonical_models)]
+    gpt_model_settings = claude_gpt_model_settings(
+        [*canonical_models, *map(_unwrapped_claude_model_id, canonical_models)],
+        user_settings_path,
     )
     if gpt_model_settings:
         model_settings = settings.setdefault("modelSettings", {})

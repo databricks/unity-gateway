@@ -20,7 +20,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -3323,14 +3323,37 @@ def is_gpt_auto_compact_model_key(key: str) -> bool:
     return bool(_GPT_1M_MODEL_RE.match(key))
 
 
-def gpt_auto_compact_model_settings(models: Iterable[object]) -> dict[str, dict[str, int]]:
+# Claude Code's accepted `autoCompactWindow` range; values outside it are not a usable choice.
+CLAUDE_AUTO_COMPACT_WINDOW_MIN = 100_000
+CLAUDE_AUTO_COMPACT_WINDOW_MAX = 1_000_000
+
+
+def valid_auto_compact_window(value: object) -> int | None:
+    """``value`` as an ``autoCompactWindow`` Claude Code accepts, or None."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return (
+        value if CLAUDE_AUTO_COMPACT_WINDOW_MIN <= value <= CLAUDE_AUTO_COMPACT_WINDOW_MAX else None
+    )
+
+
+def gpt_auto_compact_model_settings(
+    models: Iterable[object], user_windows: Mapping[str, int] | None = None
+) -> dict[str, dict[str, int]]:
     """Claude Code ``modelSettings`` entries capping auto-compact for ids that get the `[1m]` hint.
 
     Keys are the ids without `[1m]`; Claude Code applies such a key to the suffixed spelling too.
-    Non-string and non-GPT ids (including gpt-oss and Claude) are skipped.
+    Non-string and non-GPT ids (including gpt-oss and Claude) are skipped. Each window is the
+    user's own choice from ``user_windows`` (keyed by the same ids), capped at
+    ``GPT_AUTO_COMPACT_WINDOW``.
     """
+    user_windows = user_windows or {}
     return {
-        canonical: {"autoCompactWindow": GPT_AUTO_COMPACT_WINDOW}
+        canonical: {
+            "autoCompactWindow": min(
+                user_windows.get(canonical, GPT_AUTO_COMPACT_WINDOW), GPT_AUTO_COMPACT_WINDOW
+            )
+        }
         for model in models
         if isinstance(model, str)
         and is_gpt_auto_compact_model_key(canonical := model.removesuffix("[1m]"))
