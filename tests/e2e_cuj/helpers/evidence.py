@@ -17,7 +17,7 @@ from tests.integration.utils.request_recorder import (
     served_inference_request as served_inference_request,
 )
 
-from .constants import CLAUDE, CODEX, INFERENCE_PATHS, NATIVE_MODEL_ALIASES
+from .constants import CLAUDE, CODEX, INFERENCE_PATHS
 
 
 def canonical_model(value):
@@ -35,7 +35,7 @@ def canonical_model(value):
 
 def assert_models(models, expected):
     """Every canonical model equals `expected`; not for UC models, which canonical_model mangles."""
-    actual = {NATIVE_MODEL_ALIASES.get(model, model) for model in map(canonical_model, models)}
+    actual = set(map(canonical_model, models))
     assert actual == {canonical_model(expected)}, (models, expected)
 
 
