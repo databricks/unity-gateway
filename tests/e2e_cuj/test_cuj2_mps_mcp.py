@@ -92,13 +92,18 @@ def _assert_mps_catalog(workspace) -> None:
         )
         provider_type = getattr(config.provider_type, "value", config.provider_type)
         assert provider_type == expected_type, config
-        expected_api = "anthropic/v1/messages" if agent == CLAUDE else "openai/v1/responses"
+        expected_apis = (
+            ["anthropic/v1/messages"]
+            if agent == CLAUDE
+            else ["openai/v1/chat/completions", "openai/v1/responses"]
+        )
         native_apis = [
             getattr(api, "value", api)
             for target in targets
             for api in (target.native_api_types or [])
         ]
-        assert expected_api in native_apis, targets
+        # The backend's ordering isn't a contract.
+        assert sorted(native_apis) == sorted(expected_apis), targets
 
         matching = listed_by_name.get(mps_name)
         assert matching is not None, [item.name for item in listed]

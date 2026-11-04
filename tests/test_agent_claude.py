@@ -2377,7 +2377,83 @@ class TestWriteToolConfigManagedSettings:
         state = {"workspace": WS, "codex_models": ["databricks-gpt-5"]}
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
         _, text = managed_writes[0]
-        assert json.loads(text)["permissions"]["deny"] == ["Bash(rm:*)", "WebSearch"]
+        assert json.loads(text)["permissions"]["deny"] == ["Bash(rm:*)"]
+
+    def _configure_saved(
+        self, monkeypatch, *, saved, explicit=False, managed_deny=None, **state_extra
+    ):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {}
+        if managed_deny is not None:
+            existing[str(FAKE_MANAGED_PATH)] = {"permissions": {"deny": list(managed_deny)}}
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setattr(claude, "explicit_managed_writes", lambda: explicit)
+        state = {"workspace": WS, "codex_models": ["databricks-gpt-5"], **state_extra}
+        if saved is not None:
+            state[claude.CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY] = saved
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        managed = json.loads(managed_writes[0][1]) if managed_writes else {}
+        return private_writes[0][1], managed
+
+    def test_fresh_configure_keeps_deny_in_private_file_only(self, monkeypatch):
+        private, managed = self._configure_saved(monkeypatch, saved=None)
+        assert private["permissions"]["deny"] == ["WebSearch"]
+        assert "permissions" not in managed
+
+    @pytest.mark.parametrize(
+        ("saved", "explicit", "passthrough", "expected"),
+        [
+            (True, True, None, ["Bash(rm:*)"]),
+            (True, True, ["WebSearch"], ["WebSearch", "Bash(rm:*)"]),
+            (True, False, None, ["WebSearch", "Bash(rm:*)"]),
+            (False, True, None, ["WebSearch", "Bash(rm:*)"]),
+            (None, True, None, ["WebSearch", "Bash(rm:*)"]),
+        ],
+    )
+    def test_only_explicit_configure_saved_on_withdraws_managed_deny(
+        self, monkeypatch, saved, explicit, passthrough, expected
+    ):
+        extra = (
+            {claude.SETTINGS_PASSTHROUGH_STATE_KEY: {"permissions": {"deny": passthrough}}}
+            if passthrough
+            else {}
+        )
+        private, managed = self._configure_saved(
+            monkeypatch,
+            saved=saved,
+            explicit=explicit,
+            managed_deny=["WebSearch", "Bash(rm:*)"],
+            **extra,
+        )
+        assert managed["permissions"]["deny"] == expected
+        assert private["permissions"]["deny"] == ["WebSearch"]
+
+    def test_explicit_configure_withdrawal_reverts_and_keeps_admin_edit(
+        self, tmp_path, monkeypatch
+    ):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(managed_files, "_explicit_managed_command", "ug configure")
+        monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: True)
+        baseline = {"permissions": {"deny": ["WebSearch", "Bash(rm:*)"]}}
+        managed_path.write_text(json.dumps(baseline), encoding="utf-8")
+        state = {
+            "workspace": WS,
+            "codex_models": ["databricks-gpt-5"],
+            claude.CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY: True,
+        }
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert json.loads(managed_path.read_text())["permissions"]["deny"] == ["Bash(rm:*)"]
+
+        edited = json.loads(managed_path.read_text())
+        edited["cleanupPeriodDays"] = 5
+        managed_path.write_text(json.dumps(edited), encoding="utf-8")
+        claude.revert_managed_settings()
+
+        reverted = json.loads(managed_path.read_text())
+        assert "WebSearch" in reverted["permissions"]["deny"]
+        assert reverted["cleanupPeriodDays"] == 5
 
     def test_relayed_skips_managed_write(self, monkeypatch):
         private_writes: list = []
@@ -4123,6 +4199,28 @@ class TestServerSideWebSearchOptIn:
         settings, _ = self._normal(monkeypatch, args=["-p", "hi"])
         assert "WebSearch" not in settings["permissions"]["deny"]
 
+    @pytest.mark.parametrize(
+        ("saved", "env", "on"),
+        [
+            (True, None, True),
+            (False, "1", True),
+            (False, None, False),
+            (None, None, False),
+        ],
+    )
+    def test_saved_setting_and_env_decide_the_launch(
+        self, settings_path, monkeypatch, launch_settings, saved, env, on
+    ):
+        if env is not None:
+            monkeypatch.setenv(self.ENV, env)
+        state = {} if saved is None else {"claude_server_side_web_search": saved}
+
+        settings, _ = launch_settings(state=state)
+
+        assert ("WebSearch" not in settings["permissions"]["deny"]) is on
+        hidden = {"serverName": claude.WEB_SEARCH_MCP_NAME} in settings["deniedMcpServers"]
+        assert hidden is on
+
     @pytest.fixture
     def blocker(self, tmp_path, monkeypatch):
         """Writers of settings a launch cannot override, keyed by where the deny lives."""
@@ -4154,13 +4252,18 @@ class TestServerSideWebSearchOptIn:
     @pytest.mark.parametrize(
         "where", ["managed", "drop_in", "user", "managed_bom", "invalid", "utf16"]
     )
+    @pytest.mark.parametrize("saved", [False, True])
     def test_unchangeable_deny_keeps_gpt_search_and_warns(
-        self, settings_path, monkeypatch, launch_settings, blocker, where
+        self, settings_path, monkeypatch, launch_settings, blocker, where, saved
     ):
-        monkeypatch.setenv(self.ENV, "1")
+        # Opted in by the env var, or by the saved setting alone.
+        if not saved:
+            monkeypatch.setenv(self.ENV, "1")
         denying = blocker(where)
 
-        settings, warnings = launch_settings()
+        settings, warnings = launch_settings(
+            state={"claude_server_side_web_search": True} if saved else {}
+        )
 
         assert "WebSearch" in settings["permissions"]["deny"]
         assert settings["deniedMcpServers"] == [{"serverName": "web-search"}]

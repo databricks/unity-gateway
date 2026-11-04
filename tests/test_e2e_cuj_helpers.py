@@ -797,15 +797,16 @@ def test_mcp_completion_accepts_a_fenced_reply(monkeypatch):
 @pytest.mark.parametrize(
     "native_apis, accepted",
     [
-        (["openai/v1/responses"], True),
+        (["openai/v1/responses"], False),
         (["openai/v1/chat/completions", "openai/v1/responses"], True),
         (["openai/v1/responses", "openai/v1/chat/completions"], True),
         (["openai/v1/chat/completions"], False),
+        (["openai/v1/chat/completions", "openai/v1/responses", "openai/v1/embeddings"], False),
         ([], False),
         (None, False),
     ],
 )
-def test_cuj2_mps_catalog_requires_responses_support(native_apis, accepted):
+def test_cuj2_mps_catalog_requires_fixture_apis(native_apis, accepted):
     services = {}
     for agent, (name, model) in constants.MODEL_PROVIDER_SERVICE_FIXTURES.items():
         name = f"model-provider-services/{name}"
