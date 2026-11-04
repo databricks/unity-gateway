@@ -266,7 +266,9 @@ The Claude Bedrock journeys use Unity Catalog service-credential auth
 `us.anthropic.claude-sonnet-5-5` from the restricted
 `main.ucode.ci_bedrock_runtime_svc_cred_filtered_models` service (Sonnet 5.5 + Opus 5.5, us-west-2).
 The headless journeys pin Sonnet 5.5 through the allow-all
-`main.ucode.ci_bedrock_runtime_svc_cred_all_models`, Opus 5.5 through the filtered service. The Codex journeys pin `us.openai.gpt-5.6-terra` through the allow-all runtime service and
+`main.ucode.ci_bedrock_runtime_svc_cred_all_models`, Opus 5.5 through the filtered service, and
+`anthropic.claude-opus-5-5` through `main.ucode.ci_bedrock_mantle_svc_cred_claude`. Mantle serves
+Claude only in us-east-1, so that service is the one us-east-1 exception. The Codex journeys pin `us.openai.gpt-5.6-terra` through the allow-all runtime service and
 `openai.gpt-5.6-terra` through `main.ucode.ci_bedrock_mantle_svc_cred_gpt` (us-west-2).
 
 This suite runs the **installed product** through subprocesses, against the same

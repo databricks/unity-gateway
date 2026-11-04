@@ -8,8 +8,8 @@ from utils.evidence import FileTask, assert_completed_task_model
 
 pytestmark = [pytest.mark.live, pytest.mark.claude]
 
-# The filtered Bedrock runtime MPS declares this inference profile; Bedrock reports the
-# bare Anthropic id as the response model.
+# The filtered Bedrock runtime MPS declares this inference profile; Bedrock and Mantle both report
+# the bare Anthropic id as the response model.
 BEDROCK_RUNTIME_OPUS_MODEL = "us.anthropic.claude-opus-5-5"
 BEDROCK_OPUS_RESPONSE_MODEL = "claude-opus-5-5"
 
@@ -419,5 +419,19 @@ def test_ug_claude_headless_bedrock_runtime_opus(live_session, workspace, claude
     """
     task = _run_bedrock_provider_headless(
         live_session, workspace, claude_bedrock_provider, BEDROCK_RUNTIME_OPUS_MODEL
+    )
+    assert_completed_task_model(live_session, "claude", task.value, BEDROCK_OPUS_RESPONSE_MODEL)
+
+
+def test_ug_claude_headless_bedrock_mantle(
+    live_session, workspace, claude_bedrock_mantle_provider, claude_bedrock_mantle_model
+):
+    """Scenario: launch Claude through a Bedrock Mantle MPS (UC service-credential auth), which
+    serves Claude on the Anthropic Messages API, pinning its Mantle Opus 5.5 model id.
+
+    Expected: the real file task completes through Mantle and the served model is Opus 5.5.
+    """
+    task = _run_bedrock_provider_headless(
+        live_session, workspace, claude_bedrock_mantle_provider, claude_bedrock_mantle_model
     )
     assert_completed_task_model(live_session, "claude", task.value, BEDROCK_OPUS_RESPONSE_MODEL)
