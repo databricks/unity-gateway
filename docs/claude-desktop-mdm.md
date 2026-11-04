@@ -159,6 +159,8 @@ updates the native installed cache; changing the root source alone is insufficie
 Start a new task after a plugin update, and restart Desktop after policy changes.
 There is no automatic workspace-policy fetch from the login job: MDM controls publication.
 Run manual user refresh, ordinary configure, and revert one at a time; they have no shared lock.
+While MDM is enabled, its refresh restores the root-source plugin registration after
+ordinary configure selects a user source. Remove MDM before switching to user-managed setup.
 
 Publication validates policy/helper ownership, stages the source, and rolls back files and source
 on write failures. Incomplete skill discovery/download fails the deployment instead
@@ -208,6 +210,8 @@ Before rollout, test this build on a Mac:
    other-user authentication. Verify logout/login refresh and expired-auth recovery.
 7. Revert as root while one user is logged out. Confirm policy removal immediately,
    plugin removal for the active user, and deferred cleanup when the other user logs in.
+8. Reboot and run an MDM check-in. Confirm the directly written managed plist persists
+   and Desktop still reads it; macOS can rebuild Managed Preferences from installed profiles.
 
 Native launchd startup, first-user timing, Desktop policy precedence, browser consent,
-and live tool/skill execution remain required rollout checks.
+managed-plist persistence, and live tool/skill execution remain required rollout checks.
