@@ -411,6 +411,7 @@ ug skills remove --location main.default --via mcp
 | `ug export` | Print or write portable managed config JSON |
 | `ug doctor` | Diagnose local setup and offer fixes |
 | `ug usage` | Show Unity Gateway spend and budget |
+| `ug web` | Open the Unity Gateway page for your workspace in a browser |
 | `ug revert` | Clear saved state and restore backed-up config files |
 | `ug upgrade` | Upgrade Unity Gateway |
 
@@ -461,8 +462,14 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 
 `--enable-smart-routing` and a workspace config with `smart_routing.enabled` turn routing on
 through `SMART_ROUTER_CONFIG_VERSION`: they keep a known version and otherwise select
-`subagent_orch_v0`, which routes subagents and turns on Smart Router Orchestrator while the
-main session stays on its default model.
+`subagent_orch_v0_claude_only`. For Claude, that routes subagents and turns on Smart Router
+Orchestrator while the main session stays on its default model. Codex stays unrouted and
+without orchestration under this default, and a Codex launch that turns routing on this way
+warns and runs without smart routing: `--enable-smart-routing` says smart routing on Codex is
+currently not supported, and workspace smart routing says it is enabled for Codex in this
+workspace but currently only supported for Claude Code. `ug codex --help` hides
+`--enable-smart-routing` and `--disable-smart-routing` (the Smart Router skill still uses them)
+and notes that Smart Routing is currently only supported for the Claude Code harness.
 Like any version, it overrides individually set routing env vars. `--disable-smart-routing`
 turns routing off for the launch, including over a workspace config.
 
@@ -520,14 +527,15 @@ orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=
 `subagent_orch_v0_claude_only` keeps Claude's `subagent_orch_v0` flags (`0`, `1`, `1`)
 and sets all three flags to `"0"` for Codex. Codex uses its ordinary launch and
 managed default model, without routing or orchestration. `--enable-smart-routing` and
-workspace smart routing keep this version, so Codex stays unrouted.
+workspace smart routing keep this version, so Codex stays unrouted: ug warns and launches it
+like a plain `ug codex`, without the Smart Router skills or routing hooks.
 
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 
 Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
-and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill,
-as do `--enable-smart-routing` and workspace smart routing when they select `subagent_orch_v0`.
-For example:
+and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill.
+`--enable-smart-routing` and workspace smart routing select `subagent_orch_v0_claude_only`, which
+installs both skills for Claude only; Codex gets neither. For example:
 
 ```bash
 SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude
@@ -543,7 +551,7 @@ no preset is applied, the inherited environment is unchanged, and commands conti
 `--disable-smart-routing` and session on/off controls apply after expansion;
 `--enable-smart-routing` and workspace smart routing keep a known version.
 Orchestration is off by default unless `--enable-smart-routing` or workspace smart routing
-selects `subagent_orch_v0`.
+selects `subagent_orch_v0_claude_only`, which enables it for Claude only.
 
 Version names require an explicit suffix. Future revisions use new `_v1`, `_v2`,
 etc. names without changing existing versions.
@@ -595,7 +603,7 @@ preferences are ignored and their files are left untouched. See the bundled
 | Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS), `C:\Program Files\ClaudeCode\managed-settings.json` (Windows, written only from an elevated terminal) |
 | Gemini CLI | `~/.gemini/ucode.env`, `~/.ucode/.gemini-home/.gemini/settings.json` |
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |
-| GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/ucode-mcp-config.json` |
+| GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/mcp-config.json` (or `$COPILOT_HOME/mcp-config.json`) |
 | Pi | `~/.ucode/pi-home/.pi/agent/models.json`, `~/.ucode/pi-home/.pi/agent/settings.json` |
 | Antigravity CLI | `~/.gemini/config/skills.json` (adds `~/.agents/skills`), `~/.gemini/config/mcp_config.json` (ug's MCP servers only); the gateway is set per launch through `AGY_LLM_GATEWAY_*` variables |
 | Cursor Agent | `~/.cursor/mcp.json` |

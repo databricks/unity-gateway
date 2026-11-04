@@ -278,7 +278,7 @@ def test_managed_fixture_codex_smart_routing_banner(live_session, workspace):
     Expected: `ug configure` applies the config without the personal agent selector, and the
     selector routes the first real prompt: the TUI shows the Unity Gateway Smart Router banner
     naming the selected model, the routed answer completes the file task, and the session exits
-    normally. The managed default alone routes only subagents; the skill toggle journeys cover it.
+    normally. The managed default alone leaves Codex unrouted; its launch-only test covers it.
     """
     session = live_session
     task = FileTask(session)
