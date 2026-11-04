@@ -433,14 +433,17 @@ Cowork's skill text, including its description, stays identical to the version b
 Code authentication changes, with either the default scope or explicit `code=False`.
 
 `test_desktop_marketplace.py` covers ordinary default/`--user` configuration writing
-only the user source, no elevation, unchanged root files across configure/revert,
+only the user source, no elevation, preservation of the registered legacy root source,
 one registration when switching an earlier root source to user scope, explicit cache
 refresh, content versions, downloaded workspace skills/assets, previous-account cleanup,
 malformed marketplace metadata, equivalent path aliases, source-switch failure recovery,
 and retained user source/state after refresh failures. Explicit global skips ordinary
 Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
 Overlapping installer/state checks and duplicate simulated-OS cases are consolidated;
-user installation, persisted account state and root-file preservation remain covered.
+user installation, persisted account state and registered-source preservation remain covered.
+Unreferenced root-path sentinels and an ineffective temporary-directory alias test were
+removed; content updates and empty-payload cache refresh now share one lifecycle test.
+Equivalent registered-directory aliases remain covered separately.
 Dry-run preservation covers both fresh and already-configured installations.
 Root bundle writer checks belong to the separate MDM follow-up.
 Temporary filesystem destinations are real; external Claude registry/cache operations

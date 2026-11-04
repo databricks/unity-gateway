@@ -107,7 +107,6 @@ def _installed_source(*, other_plugins=()):
 def test_ordinary_configure_writes_only_user_source_and_one_install(system_source, scope):
     managed_files.set_config_scope(scope)
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    assert not system_source.exists()
     plugin = cowork._marketplace_root() / "plugins/ug"
     mcp = json.loads((plugin / ".mcp.json").read_text())
     assert mcp == cowork._cowork_mcp_config(SERVERS, **WORKSPACE)
@@ -144,7 +143,6 @@ def test_first_configure_skips_uninitialized_cowork(
         organization.mkdir(parents=True)
         monkeypatch.setattr(managed_files, "claude_desktop_org_plugin_path", lambda: organization)
     assert not cowork.configure_cowork(WORKSPACE, SERVERS)
-    assert not system_source.exists()
     assert not cowork._marketplace_root().exists()
     assert not cowork._state_path().exists()
 
@@ -192,31 +190,7 @@ def test_ordinary_configure_needs_no_root_write_permission(system_source, monkey
         cowork._registered_marketplace_source(cowork.discover_cowork_root())
         == cowork._marketplace_root()
     )
-    assert not system_source.exists()
     assert cowork.revert_cowork()
-
-
-@pytest.mark.parametrize("opt_out", ["default", "user", "environment"])
-def test_ordinary_configure_and_revert_keep_root_source_untouched(
-    system_source, tmp_path, monkeypatch, opt_out
-):
-    shutil.copytree(_source(tmp_path), system_source)
-    before = cowork._marketplace_files(system_source)
-    if opt_out == "user":
-        managed_files.set_config_scope("user")
-    elif opt_out == "environment":
-        monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
-    assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    assert cowork.configure_cowork(WORKSPACE, [])
-    assert cowork._marketplace_files(system_source) == before
-    assert (
-        cowork._registered_marketplace_source(cowork.discover_cowork_root())
-        == cowork._marketplace_root()
-    )
-    assert not (_installed_source() / ".mcp.json").exists()
-    assert cowork.revert_cowork()
-    assert cowork._marketplace_files(system_source) == before
-    assert not cowork._state_path().exists()
 
 
 @pytest.mark.parametrize("configured", [False, True])
@@ -230,7 +204,6 @@ def test_dry_run_leaves_state_and_bundle_unchanged(system_source, configured):
     try:
         setup.configure_claude_cowork(WORKSPACE, SERVERS)
         assert not cowork.revert_cowork()
-        assert not system_source.exists()
         assert cowork._marketplace_files(cowork._marketplace_root()) == source_before
         assert cowork._marketplace_files(cowork.discover_cowork_root()) == registration_before
         state_after = cowork._state_path().read_bytes() if cowork._state_path().exists() else None
@@ -256,7 +229,6 @@ def test_failed_previous_account_cleanup_can_be_retried(system_source, tmp_path,
         "version": 1,
         "cowork_root": str(old),
     }
-    assert not system_source.exists()
     assert not cowork._marketplace_root().exists()
     monkeypatch.setattr(cowork, "_remove_plugin_registration", remove)
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
@@ -265,15 +237,6 @@ def test_failed_previous_account_cleanup_can_be_retried(system_source, tmp_path,
         "cowork_root": str(cowork.discover_cowork_root()),
     }
     assert config_io.read_json_safe(old / "cowork_plugins/installed_plugins.json")["plugins"] == {}
-
-
-def test_removing_all_contents_updates_existing_user_source(system_source):
-    assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    assert cowork.configure_cowork(WORKSPACE, [])
-    assert (cowork._marketplace_root() / "plugins/ug/.claude-plugin/plugin.json").is_file()
-    assert not (cowork._marketplace_root() / "plugins/ug/.mcp.json").exists()
-    assert not (cowork._marketplace_root() / "plugins/ug/hooks").exists()
-    assert not (cowork._marketplace_root() / "plugins/ug/skills").exists()
 
 
 def test_downloaded_skills_follow_workspace_selection(system_source, tmp_path, monkeypatch):
@@ -315,17 +278,6 @@ def test_downloaded_skills_follow_workspace_selection(system_source, tmp_path, m
     assert not (cowork._marketplace_root() / "plugins/ug/skills/selected").exists()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX temporary-directory symlink")
-def test_user_configure_accepts_os_temporary_directory_alias(system_source, tmp_path, monkeypatch):
-    physical = tmp_path / "physical-temp"
-    physical.mkdir()
-    alias = tmp_path / "temp-alias"
-    alias.symlink_to(physical, target_is_directory=True)
-    monkeypatch.setattr(cowork.tempfile, "tempdir", str(alias))
-    assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    assert (cowork._marketplace_root() / "plugins/ug/.mcp.json").is_file()
-
-
 @pytest.mark.parametrize("recovery", ["retry", "revert"])
 def test_failed_refresh_retains_generated_sources_for_recovery(
     system_source, monkeypatch, recovery
@@ -350,7 +302,6 @@ def test_failed_refresh_retains_generated_sources_for_recovery(
         cowork.configure_cowork(WORKSPACE, [{**SERVERS[0], "name": "changed"}])
     generated = cowork._marketplace_files(cowork._marketplace_root())
     assert generated != user_before
-    assert not system_source.exists()
     state = config_io.read_json_safe(cowork._state_path())
     assert state["cowork_root"] == str(cowork.discover_cowork_root())
     assert "system_digest" not in state
@@ -376,22 +327,20 @@ def test_changed_payload_updates_user_source_and_installed_version(system_source
     assert cowork.configure_cowork(WORKSPACE, [{**SERVERS[0], "name": "changed"}])
     after = json.loads((_installed_source() / ".claude-plugin/plugin.json").read_text())["version"]
     assert after != before
-    assert not system_source.exists()
     assert cowork._marketplace_files(_installed_source()) == cowork._marketplace_files(
         cowork._marketplace_root() / "plugins/ug"
     )
     assert set(json.loads((_installed_source() / ".mcp.json").read_text())["mcpServers"]) == {
         "changed"
     }
-
-
-def test_user_scope_preserves_foreign_root_source(system_source):
-    system_source.mkdir(parents=True)
-    (system_source / "keep").write_text("IT owned")
-    managed_files.set_config_scope("user")
-    assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    assert cowork.revert_cowork()
-    assert (system_source / "keep").read_text() == "IT owned"
+    assert cowork.configure_cowork(WORKSPACE, [])
+    installed = _installed_source()
+    assert not (installed / ".mcp.json").exists()
+    assert not (installed / "hooks").exists()
+    assert not (installed / "skills").exists()
+    assert cowork._marketplace_files(installed) == cowork._marketplace_files(
+        cowork._marketplace_root() / "plugins/ug"
+    )
 
 
 @pytest.mark.parametrize("scope", ["user", "global"])
@@ -405,7 +354,6 @@ def test_organization_loader_copy_blocks_duplicate_before_writes(
     managed_files.set_config_scope(scope)
     with pytest.raises(RuntimeError, match="organization plugin already exists"):
         cowork.configure_cowork(WORKSPACE, SERVERS)
-    assert not system_source.exists()
     assert not cowork._marketplace_root().exists()
     assert (organization / "keep").read_text() == "older pilot"
 
@@ -420,7 +368,6 @@ def test_explicit_global_leaves_ordinary_cowork_files_untouched(system_source):
     assert cowork._marketplace_files(cowork._marketplace_root()) == source
     assert cowork._marketplace_files(cowork.discover_cowork_root()) == registry
     assert cowork._state_path().read_bytes() == state
-    assert not system_source.exists()
 
 
 @pytest.mark.parametrize(
