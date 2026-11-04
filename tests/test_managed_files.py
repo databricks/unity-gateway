@@ -2123,6 +2123,15 @@ class TestPerUserPaths:
 
         assert managed_files.per_user_paths([str(link)]) == [str(link)]
 
+    def test_ignores_a_home_of_the_filesystem_root(self, monkeypatch, tmp_path):
+        # Some MDM and system jobs run with HOME=/, which would otherwise contain every path.
+        _, shared = self._roots(monkeypatch, tmp_path)
+        root = Path(tmp_path.anchor)
+        monkeypatch.setattr(managed_files.Path, "home", classmethod(lambda cls: root))
+        theirs = str(tmp_path / "profiles" / "other" / "ug")
+
+        assert managed_files.per_user_paths([str(shared / "ug"), theirs]) == [theirs]
+
     def test_without_a_profiles_folder_checks_only_home(self, monkeypatch, tmp_path):
         home, _ = self._roots(monkeypatch, tmp_path)
         monkeypatch.setattr(managed_files.system_cross_os, "user_profiles_dir", lambda: None)

@@ -42,7 +42,10 @@ whose `ug` or Python, as given or with symlinks resolved, is in the current user
 folder holding every user's home (`/home`, `/Users`, `%SystemDrive%\Users`): the managed settings run
 that installation for every user. Each user's later launch
 writes their per-user settings. The limit applies to that run only and is not saved; the saved scope stays
-`global`.
+`global`. A workspace switch under `--global` leaves the per-user MCP entries of the previous
+workspace in place and records `pending_user_mcp_reconcile` in `~/.ucode/state.json`; the next
+configure without `--global` purges and restores them even though it sees no switch. An agent that
+fails to configure fails the run only after the other agents and the MCP and skills setup have run.
 
 ## Per-user Scope
 

@@ -79,10 +79,12 @@ Enterprise MPS; see `integration/README.md`).
 `TestConfigureScopeFlags` in `test_cli.py` (the flag lasts one run, per-user-only agents are
 skipped as a no-op, `--mcp`/AI Tools/`UG_SKIP_OS_SETTINGS` are rejected, the picker offers only
 Claude/Codex, skills, MCP restore, Desktop and Cowork are skipped, and an installation in a
-user's home folder is rejected; `TestPerUserPaths` in `test_managed_files.py` and
+user's home folder is rejected, an agent failure fails the run only after the other agents and MCP setup; `TestPerUserPaths` in `test_managed_files.py` and
 `test_user_profiles_dir` in `test_system_cross_os.py` cover the location check), the `global_flag` tests in `test_agent_claude.py` and `test_agent_codex.py` (only the
 managed file is written; relay, legacy Codex and platforms without one fail), and
-`test_mcp.py` (no user-scope MCP fallback). No live or integration journey covers `--global`; the
+`test_mcp.py` (no user-scope MCP fallback).
+`TestConfigureSharedStateMcpCleanup::test_explicit_configure_switch_restores_saved_mcp_entries` covers
+a `--global` workspace switch followed by a normal configure of the same workspace. No live or integration journey covers `--global`; the
 sudo write is mocked.
 
 `test_mcp.py` and `test_cli.py` cover Claude/Codex MCP setup without their CLIs:

@@ -28,6 +28,9 @@ from ucode.workspace import (
 STATE_PATH = APP_DIR / "state.json"
 STATE_VERSION = 3
 CONFIG_SCOPE_KEY = "config_scope"
+# Set when `ug configure --global` switches workspace without updating per-user MCP entries, so the
+# next configure without --global runs that workspace-switch reconcile even though it sees no switch.
+PENDING_USER_MCP_RECONCILE_KEY = "pending_user_mcp_reconcile"
 # Transient key holding the developer's own values for whatever a managed config layered over them.
 # Present only in memory: the layered values render the agent settings files, while `save_state`
 # restores what's under it so `state.json` keeps recording the developer's own configuration.
@@ -100,6 +103,25 @@ def save_config_scope(scope: str) -> None:
         return
     full = load_full_state()
     full[CONFIG_SCOPE_KEY] = scope
+    try:
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
+
+
+def user_mcp_reconcile_pending() -> bool:
+    return load_full_state().get(PENDING_USER_MCP_RECONCILE_KEY) is True
+
+
+def set_user_mcp_reconcile_pending(pending: bool) -> None:
+    if is_dry_run() or user_mcp_reconcile_pending() == pending:
+        return
+    full = load_full_state()
+    if pending:
+        full[PENDING_USER_MCP_RECONCILE_KEY] = True
+    else:
+        full.pop(PENDING_USER_MCP_RECONCILE_KEY, None)
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")

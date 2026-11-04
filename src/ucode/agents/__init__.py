@@ -780,7 +780,6 @@ def configure_selected_tools(
     Only tools that configured cleanly are recorded as available.
     """
     configured: list[str] = []
-    failed: list[str] = []
     with managed_write_batch(_managed_settings_displays(tools)):
         for tool in tools:
             parent_schema = (parent_schemas or {}).get(tool) or _persisted_model_location(
@@ -793,7 +792,6 @@ def configure_selected_tools(
                 print_warning(
                     f"Could not configure {TOOL_SPECS[tool]['display']}: {exc}. Continuing."
                 )
-                failed.append(TOOL_SPECS[tool]["display"])
                 continue
             configured.append(tool)
 
@@ -801,12 +799,6 @@ def configure_selected_tools(
     state["available_tools"] = sorted(set(existing) | set(configured))
     save_state(state)
     state["last_configured_tools"] = configured
-    if failed and machine_wide_only():
-        # Machine provisioning runs `--global` from scripts, which need a failing exit status.
-        raise RuntimeError(
-            f"`ug configure --global` could not configure {', '.join(failed)}; see the warnings "
-            "above."
-        )
     if install_ai_tools:
         install_databricks_ai_tools_for_agents(configured, state)
     return state

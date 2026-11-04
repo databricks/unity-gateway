@@ -149,7 +149,9 @@ def per_user_paths(paths: list[str]) -> list[str]:
 
     Checks each path both as given and with symlinks resolved, since a shared ``/usr/local/bin/ug``
     can still point into one user's home."""
-    roots = [Path.home()]
+    home = Path.home()
+    # A home of the filesystem root (HOME=/, as some MDM and system jobs run) holds every path.
+    roots = [home] if home.parent != home else []
     if (profiles := system_cross_os.user_profiles_dir()) is not None:
         roots.append(profiles)
     found = []
