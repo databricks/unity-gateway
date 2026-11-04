@@ -65,8 +65,8 @@ def test_auto_picker_preset_is_claude_only_and_restorable(agent, inherited):
     )
     assert source == {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
-        ENABLE_SUBAGENT_ROUTING_ENV_VAR: enabled,
-        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: enabled,
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
         "EXPOSE_AUTO_IN_MODEL_PICKER": enabled,
     }
     v2.restore_smart_routing_env(previous, source)
@@ -311,7 +311,11 @@ def test_enabled_version_keeps_a_known_version(agent, version):
 
     previous = config.apply_enabled_version(applied, agent=agent)
 
-    assert applied == config.resolve_environment(inherited, agent=agent)
+    expected = config.resolve_environment(inherited, agent=agent)
+    if agent == AGENT_CLAUDE and version == config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY:
+        expected[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
+        expected[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = "1"
+    assert applied == expected
     v2.restore_smart_routing_env(previous, applied)
     assert applied == inherited
 

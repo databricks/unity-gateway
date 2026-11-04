@@ -13,6 +13,15 @@ from ucode.smart_routing import config, session_env, v2
 AUTO = config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY
 
 
+def test_fresh_picker_session_starts_off_with_auto_assets_available():
+    env = config.resolve_environment({"SMART_ROUTER_CONFIG_VERSION": AUTO}, agent="claude")
+    assert all(env[key] == "0" for key in SMART_ROUTING_ENV_KEYS)
+    assert not v2.smart_routing_enabled(env, default=False, agent="claude")
+    options = v2._claude_mod_launch_options(env)
+    assert options["EXPOSE_AUTO_IN_MODEL_PICKER"] == "1"
+    assert options["orchestratorInstructions"]
+
+
 def test_capability_survives_resolution_and_off_but_raw_exposure_does_not_enable():
     env = {"SMART_ROUTER_CONFIG_VERSION": AUTO}
     previous = v2.override_smart_routing(False, env, agent="claude")
