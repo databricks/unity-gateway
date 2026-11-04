@@ -60,13 +60,22 @@ These deliberately unauthenticated requests do not establish
 successful inference or delegation quality.
 See [the mod guide](../docs/claude-mod.md).
 
-Native mod component tests cover a lone call's decision under its Agent row, parallel calls
+Native mod component tests cover stable random animal labels, 100 distinct names before
+numbered reuse, unchanged execution inputs and row controls, and pending-to-completed
+name stability. They cover a lone call's decision under its Agent row and parallel calls
 drawn as cards above the parent's next reply in call order (replies drawn before routing
 never used, calls still routing waiting for a later reply, cards kept across a turn that
 ends while a background agent runs and dropped on abort), distinct IDs for identical tasks,
 nothing above the prompt, pending row and turn-spinner routing timers, and disabled/failed
 routing. They do not establish live
 parallel-agent TUI or gateway coverage.
+
+The bottom-bar regression in the native mod suite checks the spawn's returned child ID
+against its transcript animal name, reverse completion order, unchanged spawn parameters,
+denied/unrouted spawns, and nonblocking mapping-write failures. `test_claude_mod.py` exercises
+the generated `subagentStatusLine` command, including paths with spaces, child-ID lookup,
+session isolation, missing/partial records, progress/token updates, and terminal-control
+filtering. These component checks do not establish interactive native-panel rendering.
 
 `test_agent_antigravity.py` covers the Antigravity CLI agent: Databricks-to-Antigravity model
 names (dotted versions, `-preview` names and their tiers, image models dropped), the `agy models`
@@ -936,7 +945,10 @@ model-list requests; they do not rely solely on ug's generated catalog.
 The dedicated-workspace CUJ suite adds three independently runnable CUJ2 MPS+MCP cases:
 one configuration case and separate Codex and Claude TUI task cases. The workspace is
 preconfigured for CUJ2 and is read-only; every case validates it, and the fixture compares
-it again during teardown. The TUI cases forward agent requests through the shared per-test
+it again during teardown. Each MPS target must advertise the fixture's exact native APIs,
+ignoring order. Offline checks accept Responses with Chat Completions in either order and
+reject missing or additional APIs.
+The TUI cases forward agent requests through the shared per-test
 loopback recorder to the real workspace and assert the provider-service header, model,
 paired HTTP 200 response, and a nonempty final answer in the completed parent turn matching
 the submitted greeting prompt. Request IDs correlate recorded traffic without constraining

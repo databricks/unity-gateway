@@ -1,5 +1,9 @@
 # Integration tests
 
+Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
+before numbered reuse, stable names during routing and in parallel cards, and unchanged
+execution inputs and row controls. They cover a lone call's decision under its Agent row,
+parallel calls as cards above the parent's next reply in call order, calls
 `../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
 behavior with controlled authentication and transport boundaries. The local-socket
 proxy suite also covers refresh/retry wiring; these checks do not establish live
@@ -18,6 +22,9 @@ its Agent row, parallel calls as cards above the parent's next reply in call ord
 still routing waiting for a later reply, distinct
 IDs for identical tasks, pending row and turn-spinner routing timers, and disabled/failed routing. These are not live
 parallel-agent TUI or gateway checks.
+The native component suite also covers child-ID-to-animal-name recording without changing
+spawn inputs. `../test_claude_mod.py` checks the generated bottom-bar command and its
+fallback to native rows. Neither is a live interactive bottom-bar check.
 
 Native hint-row component tests also cover ` · N subagents running` from Claude's agent
 list, excluding inactive statuses, singular wording, preservation of other hint text,
@@ -172,7 +179,10 @@ Its Claude/Codex evidence helpers keep scenario-specific assertions separate fro
 Workspace config/catalog reads use its base class's Databricks SDK client. Configuration
 is read-only and checked for changes at teardown; concurrent readers need no reservation.
 CUJ2 adds three separately collected cases for exact published MPS/MCP configuration, Codex
-inference, and Claude inference. Both inference cases ask for a short greeting and require a
+inference, and Claude inference. Its catalog checks require the fixture's exact native APIs,
+model, provider type and target restrictions. Offline checks accept Responses alongside Chat
+Completions in either order and reject missing or additional APIs. Both inference cases ask
+for a short greeting and require a
 completed parent turn matching the submitted prompt with a nonempty answer, plus the expected
 provider/model and paired HTTP 200. Random IDs correlate requests; answers need not repeat them.
 File, skill, MCP and subagent tasks retain their expected-value checks.
