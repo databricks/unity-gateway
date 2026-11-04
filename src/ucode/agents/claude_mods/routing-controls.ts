@@ -1,5 +1,5 @@
 import type { EngineInterface, PluginOptions } from 'claude-code';
-import { CLI_AGENT, CLI_MODULE, DISABLE_ROUTING_FLAG, DISABLED_RECIPE, ENABLE_ROUTING_FLAG, RECIPE_FIELD } from './constants.ts';
+import { CLI_AGENT, CLI_MODULE, DISABLE_ROUTING_FLAG, DISABLED_RECIPE, DISABLED_AUTO_RECIPE, ENABLE_ROUTING_FLAG, RECIPE_FIELD } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
 import { isRoutingEnabled } from './routing-state.ts';
 type Environment = Record<string, string | undefined>;
@@ -76,11 +76,11 @@ export async function setRouting(
   const original = (key: string): string | undefined =>
     (options.unset as readonly string[]).includes(key) ? undefined : options[key] as string;
   const previous = await readEnvironment($);
-  const recipe = enabled ? options.recipe : DISABLED_RECIPE;
+  const auto = options.EXPOSE_AUTO_IN_MODEL_PICKER === '1';
+  const recipe = enabled ? options.recipe : auto ? DISABLED_AUTO_RECIPE : DISABLED_RECIPE;
   if (typeof recipe !== 'string' || /[\r\n]/.test(recipe)) {
     throw new Error('Smart Router recipe must be a single-line string.');
   }
-  const auto = options.EXPOSE_AUTO_IN_MODEL_PICKER === '1';
   const environment = {
     ENABLE_SMART_ROUTING_V2: enabled && !auto ? original('ENABLE_SMART_ROUTING_V2') : '0',
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: enabled ? auto ? '1' : original('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') : '0',

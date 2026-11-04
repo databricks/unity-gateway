@@ -1,3 +1,8 @@
+Recipe tracking coverage: native Claude component tests check `DISABLED_AUTO` on an
+inactive Auto launch and a concrete `/model M` selection, preserving caller body fields.
+The saved-choice TUI journey checks restoring the enabled recipe on `/model auto`;
+legacy command tests retain `DISABLED`. Session-only choice remains a failing regression.
+
 Auto picker development coverage: `test_claude_auto_picker.py` checks resolved capability,
 inactive provisioning, command-skill cleanup and the internal session writer.
 `native_claude/test_auto_picker.py` drives the actual Claude 2.1.317 TUI without inference:
