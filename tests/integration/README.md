@@ -3,6 +3,10 @@
 `../test_configure_managed_writes.py` covers `ug revert` output after Claude/Codex managed-file
 deletion fails, its nonzero exit, and retention of the file, backup, and ug state. These component
 tests simulate privileged deletion failure; native OS permissions and live sudo are not exercised.
+The same component suite covers an existing file without a UG backup record, including one that
+blocks Claude relay setup: revert names the retained file and advises manual cleanup, with existing
+exit status and state cleanup preserved. Absent/unsupported paths, inspection failures, and tracked
+baseline restoration are covered separately. These checks do not exercise a live relay MPS.
 
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls

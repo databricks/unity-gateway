@@ -995,6 +995,9 @@ and real-shell copy/rename failure handling in temporary directories.
 `test_configure_managed_writes.py` checks that `ug revert` names the Claude/Codex managed
 settings file when deletion fails, exits with an error, and preserves the file, backup,
 and ug state without attempting a replacement write.
+It also covers manual-cleanup guidance for existing Claude/Codex files without backup records,
+including after a Claude relay conflict, unchanged file contents and normal state cleanup,
+missing/unsupported paths, inaccessible paths, and restored baseline files that need no warning.
 `test_cli.py` covers the workspace configure session boundary.
 These are unit/component checks; they do not establish live sudo password-prompt behavior.
 
