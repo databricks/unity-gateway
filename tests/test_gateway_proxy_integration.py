@@ -53,6 +53,7 @@ class _FakeGateway:
         chunks: list[bytes] | None = None,
         sse_delay: float = 0.0,
         statuses: list[int] | None = None,
+        keepalive: bool = False,
     ):
         self.requests: list[_CapturedRequest] = []
         self._status = status
@@ -60,6 +61,8 @@ class _FakeGateway:
         self._statuses = list(statuses or [])
         self._chunks = chunks if chunks is not None else [b'{"ok":true}']
         self._sse_delay = sse_delay
+        self._keepalive = keepalive
+        self.connections = 0
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -72,8 +75,15 @@ class _FakeGateway:
         captured = self.requests
         status, chunks, sse_delay = self._status, self._chunks, self._sse_delay
         statuses = self._statuses
+        gateway = self
 
         class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1" if gateway._keepalive else "HTTP/1.0"
+
+            def setup(self):
+                super().setup()
+                gateway.connections += 1
+
             def _serve(self) -> None:
                 length = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(length) if length else b""
@@ -87,6 +97,8 @@ class _FakeGateway:
                 )
                 self.send_response(statuses.pop(0) if statuses else status)
                 self.send_header("Content-Type", "text/event-stream")
+                if gateway._keepalive:
+                    self.send_header("Content-Length", str(sum(map(len, chunks))))
                 self.end_headers()
                 for chunk in chunks:
                     self.wfile.write(chunk)
@@ -185,6 +197,20 @@ def _running_otel_proxy(gateway: _FakeGateway, token_provider=None):
 
 
 class TestRelayedProxyEndToEnd:
+    @pytest.mark.parametrize("keepalive", [True, False])
+    def test_upstream_connection_survives_inter_turn_pause(self, make_gateway, keepalive):
+        gateway = make_gateway(keepalive=keepalive)
+        with (
+            _running_proxy(gateway) as proxy_url,
+            httpx.Client(base_url=proxy_url, timeout=10) as client,
+        ):
+            assert client.get("/v1/models").content == b'{"ok":true}'
+            # HTTPX's default expires idle connections after five seconds.
+            time.sleep(6)
+            assert client.get("/v1/models").content == b'{"ok":true}'
+        assert len(gateway.requests) == 2
+        assert gateway.connections == (1 if keepalive else 2)
+
     def test_forwards_request_with_swap_header_and_passthrough(self, make_gateway):
         # The whole relayed data-plane over real sockets: the proxy injects a fresh
         # swap token, passes the caller's Anthropic OAuth + the MPS routing header

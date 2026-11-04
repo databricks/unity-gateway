@@ -72,6 +72,8 @@ HOP_BY_HOP_HEADERS = frozenset(
 # over a single response and Anthropic emits SSE pings, so inter-chunk gaps stay
 # small; `connect`/`pool` fail fast when the gateway is unreachable.
 UPSTREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0)
+# Keep the bounded pool warm across short pauses between turns and tool calls.
+UPSTREAM_LIMITS = httpx.Limits(keepalive_expiry=60.0)
 # Refresh once the token has less than this many seconds of life left. Databricks
 # access tokens live ~1h; a 10-min buffer leaves ample headroom for a retry.
 _REFRESH_BUFFER_S = 600
@@ -632,7 +634,12 @@ def _start_proxy(
     # One pooled, keep-alive client shared across handler threads: reuses TCP+TLS
     # to the gateway instead of a fresh handshake per request. Don't follow
     # redirects — a proxy relays 3xx verbatim.
-    client = httpx.Client(base_url=upstream_base, timeout=UPSTREAM_TIMEOUT, follow_redirects=False)
+    client = httpx.Client(
+        base_url=upstream_base,
+        timeout=UPSTREAM_TIMEOUT,
+        limits=UPSTREAM_LIMITS,
+        follow_redirects=False,
+    )
 
     handler = cast(
         type[_ProxyHandler],

@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+`test_gateway_proxy_integration.py` checks upstream connection reuse after a real
+six-second pause and reconnection when the upstream closes its connection. These
+local socket tests assert request and connection counts, without elapsed-time
+thresholds. They do not measure a production gateway's handshake latency.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered

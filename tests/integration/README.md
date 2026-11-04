@@ -1,5 +1,9 @@
 # Integration tests
 
+`../test_gateway_proxy_integration.py` verifies upstream connection reuse across
+a six-second pause over local HTTP and reconnection to an upstream that closes
+connections. Live gateway latency and production idle timeouts remain unmeasured.
+
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls
 still routing waiting for a later reply, distinct
