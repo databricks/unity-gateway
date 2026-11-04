@@ -194,9 +194,12 @@ toggle writes all managed flags.
 native suite, options reach the mod unchanged, configured aliases resolve to model IDs,
 and disabled sessions create no usage file even with stale savings options. A controlled
 local Messages API drives real main and subagent requests and checks exact input, output,
-and cache-token totals. Native model commands and a blocked-prompt replay check the
-pre-routing baseline and preserve earlier usage after a later model change. CLI off/on
-controls exclude disabled turns from the totals; pricer subprocesses honor the saved
+and cache-token totals. These sessions explicitly allow Agent in the default permission
+mode, keeping auto-mode classifier requests out of the prepared model responses.
+Alias checks accept the context selector retained by Claude 2.1.290. Native model commands
+and a blocked-prompt replay check the pre-routing baseline and preserve earlier usage after
+a later model change. CLI off/on controls exclude disabled turns from the totals; pricer
+subprocesses honor the saved
 controls and fall back to inherited settings when the file is malformed. Native UI
 component tests check that off/on hides/restores a mounted row and failed usage writes
 hide stale estimates until a successful write. Capability tests deny the savings flag

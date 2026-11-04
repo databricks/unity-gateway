@@ -171,7 +171,9 @@ def test_savings_mod_resolves_the_starting_alias(native_binary, tmp_path, alias,
         session.observe()
         recorded = _recorded_usage(Path(options["savings_usage"]), 0)
 
-    assert recorded["start_model"] == model
+    # Claude 2.1.290 retains the context selector; newer builds omit it.
+    expected_models = (model, model + "[1m]") if alias.endswith("[1m]") else (model,)
+    assert recorded["start_model"] in expected_models
 
 
 def test_savings_mod_tracks_native_main_and_subagent_usage(native_binary, tmp_path):
@@ -238,10 +240,10 @@ def test_savings_mod_tracks_native_main_and_subagent_usage(native_binary, tmp_pa
     ):
         result = session.send("Delegate the child assignment, then say parent done.")
         assert result["result"] == "parent done"
+        assert [request["model"] for request in requests] == [main, child, main]
+        assert "child done" in json.dumps(requests[2]["messages"])
         recorded = _recorded_usage(Path(options["savings_usage"]), 2, output_tokens=85)
 
-    assert [request["model"] for request in requests] == [main, child, main]
-    assert "child done" in json.dumps(requests[2]["messages"])
     entries = recorded["entries"]
     parent_entry = next(entry for entry in entries if entry["agent"] == "main")
     child_entry = next(entry for entry in entries if entry["agent"] != "main")

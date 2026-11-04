@@ -1653,6 +1653,9 @@ Savings gating and `subagent_orch_savings_v0` have component coverage in
 Native component tests check opt-in usage-file creation, opt-out preservation, resolved
 model aliases, and continued requests after a denied savings-flag read. A controlled
 local Messages API exercises real Claude main/subagent requests and token accounting.
+Those component sessions explicitly allow Agent in the default permission mode; they
+do not exercise the auto-mode safety classifier. Alias checks also accept the context
+selector retained by Claude 2.1.290.
 Native model commands and a blocked-prompt replay verify baseline capture before routing
 and preserve prior usage after later model changes. CLI off/on excludes disabled turns
 from native usage totals. Native UI component tests cover mounted-row updates after

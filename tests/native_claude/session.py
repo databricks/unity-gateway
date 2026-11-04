@@ -97,6 +97,9 @@ class Session:
                 model,
                 "--tools",
                 "Agent",
+                # The fixture allows Agent explicitly; auto mode adds classifier requests.
+                "--permission-mode",
+                "default",
                 "--allowedTools",
                 "Agent",
                 "--plugin-dir",
