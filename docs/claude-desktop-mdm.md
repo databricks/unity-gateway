@@ -19,14 +19,14 @@ and reject `--mdm-desktop`.
 
 | Configure scope | Desktop files written |
 | --- | --- |
-| No flag | User 3P profile, user and root marketplace sources, one user registration/cache |
+| No flag | User 3P profile, user marketplace source and registration/cache; root files untouched |
 | `--user` | User 3P profile, user marketplace source and registration/cache; root files untouched |
 | `--global` | macOS managed plist, root marketplace, shared helpers/state and LaunchAgent; existing user profile/source untouched |
 
-The no-flag root marketplace applies on macOS and Windows. Linux and
-`UG_SKIP_OS_SETTINGS` use the user source; the latter is incompatible with MDM.
+Default and `--user` use only user-level Desktop files on every supported platform.
+`UG_SKIP_OS_SETTINGS` is incompatible with MDM.
 The explicit `--global` selection lasts for that configure run only. It is not inferred
-from the saved `global` scope, so subsequent no-flag configure still writes both sources.
+from the saved `global` scope, so subsequent no-flag configure writes only user files.
 MDM provisioning does not create a provisioning-user Desktop profile, source or registration.
 Afterward, the LaunchAgent runs as each logged-in user and maintains the native plugin
 registration/cache and user tracking required by Desktop.
@@ -67,7 +67,7 @@ no managed skills/connectors. `--mcp system.ai.slack,system.ai.github` can addit
 select named MCP services. The first version requires a dedicated workspace hostname;
 account URLs requiring a workspace-ID selector are rejected.
 
-If ordinary no-flag `ug configure` or a pilot already owns the root marketplace,
+If an earlier UG version or a pilot already owns the root marketplace,
 revert that installation through its original owner before deploying MDM. Likewise,
 remove a previous third-party mobileconfig through its MDM owner. UG refuses to
 overwrite foreign or externally edited policy/helper files. The generated root marketplace
@@ -105,8 +105,8 @@ additional services. `--global` uses workspace-managed skills and connectors.
 Desktop provisioning errors fail `--global`, rather than becoming best-effort warnings.
 `--mdm-desktop --dry-run` reports machine destinations without authentication,
 discovery or writes. With `--global --dry-run`, Desktop also only reports its destinations;
-other agents retain their normal dry-run behavior. No-flag configure, `--user`,
-and ordinary revert retain their existing behavior.
+other agents retain their normal dry-run behavior. Ordinary configure and revert leave
+the root deployment untouched; use `ug revert --mdm-desktop` to remove it.
 
 ## Files and startup
 

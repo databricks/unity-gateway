@@ -39,7 +39,11 @@ def test_explicit_global_desktop_scope_is_command_local(monkeypatch, flags, fail
 
 
 def test_global_skips_user_desktop_setup(monkeypatch):
+    from ucode.agents.desktop import mdm
+
     managed_files.set_machine_wide_only(True)
+    machine_configure = Mock()
+    monkeypatch.setattr(mdm, "configure", machine_configure)
 
     def unexpected_write(*args, **kwargs):
         pytest.fail("--global attempted user-level Desktop setup")
@@ -47,9 +51,11 @@ def test_global_skips_user_desktop_setup(monkeypatch):
     monkeypatch.setattr(desktop_setup, "write_claude_desktop_profile", unexpected_write)
     monkeypatch.setattr(desktop_setup, "configure_cowork", unexpected_write)
     monkeypatch.setattr(desktop_setup, "configure_code", unexpected_write)
-    desktop_setup.configure_claude_desktop({})
+    monkeypatch.setattr(desktop_setup.sys, "platform", "darwin")
+    desktop_setup.configure_claude_desktop({"workspace": "https://workspace.example"})
     desktop_setup.configure_claude_cowork({}, [])
     desktop_setup.configure_claude_code_plugin([])
+    machine_configure.assert_called_once_with("https://workspace.example", None)
 
 
 @pytest.fixture

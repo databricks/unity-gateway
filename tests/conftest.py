@@ -122,7 +122,6 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # `ug configure` and `ug revert` set this for the rest of the process; start each test as a
     # launch-like run.
     monkeypatch.setattr(managed_files_mod, "_explicit_managed_command", None)
-    monkeypatch.setattr(managed_files_mod, "_machine_wide_only", False)
     # The test interpreter lives in a developer's checkout; tests of the check itself override this.
     monkeypatch.setattr("ucode.cli._require_shared_installation", lambda: None)
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)

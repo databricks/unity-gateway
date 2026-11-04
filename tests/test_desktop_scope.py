@@ -50,7 +50,7 @@ def _configure(*flags):
     )
 
 
-@pytest.mark.parametrize("flags", [[], ["--user"], ["--global"]], ids=["both", "user", "mdm"])
+@pytest.mark.parametrize("flags", [[], ["--user"], ["--global"]], ids=["default", "user", "mdm"])
 def test_desktop_scope_selects_profile_sources_and_registration(
     desktop_configuration, device, flags
 ):
@@ -65,7 +65,7 @@ def test_desktop_scope_selects_profile_sources_and_registration(
     assert claude.claude_desktop_directory().exists() is not mdm_only
     assert cowork._marketplace_root().exists() is not mdm_only
     assert cowork._state_path().exists() is not mdm_only
-    assert device.source.exists() is (flags != ["--user"])
+    assert device.source.exists() is mdm_only
     root = cowork.discover_cowork_root()
     registry = root / "cowork_plugins/installed_plugins.json"
     if mdm_only:
@@ -81,12 +81,31 @@ def test_desktop_scope_selects_profile_sources_and_registration(
     assert list(plugins) == [cowork.PLUGIN_ID]
     assert len(plugins[cowork.PLUGIN_ID]) == 1
     registration = config_io.read_json_safe(root / "cowork_plugins/known_marketplaces.json")
-    source = cowork._marketplace_root() if flags else device.source
+    source = cowork._marketplace_root()
     assert registration[cowork.MARKETPLACE_NAME]["source"]["path"] == str(source)
-    if not flags:
-        assert cowork._marketplace_files(source) == cowork._marketplace_files(
-            cowork._marketplace_root()
-        )
+
+
+@pytest.mark.parametrize("flags", [[], ["--user"]], ids=["default", "user"])
+def test_ordinary_configure_preserves_existing_mdm_deployment(desktop_configuration, device, flags):
+    result = _configure("--global")
+    assert result.exit_code == 0, result.output
+    policy = mdm.POLICY_PATH.read_bytes()
+    source = cowork._marketplace_files(device.source)
+    helpers = cowork._marketplace_files(mdm.MDM_ROOT)
+    agent = mdm.AGENT_PATH.read_bytes()
+
+    result = _configure(*flags)
+
+    assert result.exit_code == 0, result.output
+    assert mdm.POLICY_PATH.read_bytes() == policy
+    assert cowork._marketplace_files(device.source) == source
+    assert cowork._marketplace_files(mdm.MDM_ROOT) == helpers
+    assert mdm.AGENT_PATH.read_bytes() == agent
+    assert claude.claude_desktop_directory().exists()
+    assert (
+        cowork._registered_marketplace_source(cowork.discover_cowork_root())
+        == cowork._marketplace_root()
+    )
 
 
 def test_global_preserves_existing_desktop_user_files(desktop_configuration, device):
