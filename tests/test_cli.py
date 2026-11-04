@@ -186,6 +186,57 @@ class TestHelp:
             assert "--model-location" in output
             assert "--parent" not in output
 
+    def test_codex_help_hides_smart_routing_flags(self):
+        result = runner.invoke(app, ["codex", "--help"])
+        assert result.exit_code == 0, result.output
+        flat = re.sub(r"[│╭╮╯╰─\s]+", " ", _strip_ansi(result.output))
+        assert "--enable-smart-routing" not in flat
+        assert "--disable-smart-routing" not in flat
+        assert "Smart Routing is currently only supported for the Claude Code harness." in flat
+
+    def test_codex_command_list_entry_keeps_short_help(self):
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0, result.output
+        output = _strip_ansi(result.output)
+        assert "Launch Codex via Databricks." in output
+        assert "Claude Code harness" not in output
+
+    @pytest.mark.parametrize(
+        ("launch_args", "expected"),
+        [
+            (["--enable-smart-routing"], True),
+            (["--disable-smart-routing"], False),
+            ([], None),
+            (["--enable-smart-routing", "--disable-smart-routing"], None),
+        ],
+        ids=["enable", "disable", "neither", "both"],
+    )
+    def test_codex_smart_routing_flags_combine_into_one_choice(self, launch_args, expected):
+        with (
+            patch("ucode.cli._toggle_current_smart_routing_session", return_value=False) as toggle,
+            patch("ucode.cli._smart_routing_v2_flag", wraps=cli_mod._smart_routing_v2_flag) as flag,
+            patch("ucode.cli._launch_tool") as launch,
+        ):
+            result = runner.invoke(app, ["codex", *launch_args])
+
+        assert result.exit_code == 0, result.output
+        assert toggle.call_args.args == (expected, None)
+        assert flag.call_args.args == (expected,)
+        assert launch.call_args.kwargs["routing_already_chosen"] is (
+            expected is not None or smart_routing_config.known_version()
+        )
+
+    def test_codex_enable_smart_routing_still_toggles_the_session(self):
+        with (
+            patch("ucode.cli._toggle_current_smart_routing_session", return_value=True) as toggle,
+            patch("ucode.cli._launch_tool") as launch,
+        ):
+            result = runner.invoke(app, ["codex", "--enable-smart-routing"])
+
+        assert result.exit_code == 0, result.output
+        toggle.assert_called_once_with(True, None)
+        launch.assert_not_called()
+
     def test_configure_help_lists_agents_flag(self):
         result = runner.invoke(app, ["configure", "--help"])
         assert result.exit_code == 0
@@ -226,6 +277,43 @@ class TestUsage:
 
         assert result.exit_code == 0, result.output
         report.assert_called_once_with(show_all=show_all)
+
+
+class TestWeb:
+    def test_opens_gateway_page_for_configured_workspace(self, monkeypatch):
+        opened = MagicMock(return_value=True)
+        monkeypatch.setattr(
+            cli_mod, "load_state", lambda: {"workspace": "example.cloud.databricks.com/"}
+        )
+        monkeypatch.setattr(cli_mod, "open_in_browser", opened)
+
+        result = runner.invoke(app, ["web"])
+
+        assert result.exit_code == 0, result.output
+        opened.assert_called_once_with("https://example.cloud.databricks.com/ml/ai-gateway")
+        assert "https://example.cloud.databricks.com/ml/ai-gateway" in _strip_ansi(result.output)
+
+    def test_prints_url_when_no_browser_opens(self, monkeypatch):
+        monkeypatch.setattr(
+            cli_mod, "load_state", lambda: {"workspace": "https://example.cloud.databricks.com"}
+        )
+        monkeypatch.setattr(cli_mod, "open_in_browser", lambda url: False)
+
+        result = runner.invoke(app, ["web"])
+
+        assert result.exit_code == 0, result.output
+        assert "Open the URL above manually" in _strip_ansi(result.output)
+
+    def test_requires_configured_workspace(self, monkeypatch):
+        opened = MagicMock()
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {})
+        monkeypatch.setattr(cli_mod, "open_in_browser", opened)
+
+        result = runner.invoke(app, ["web"])
+
+        assert result.exit_code == 1
+        assert "Run `ug configure` first" in _strip_ansi(result.output)
+        opened.assert_not_called()
 
 
 class TestProjectScripts:
@@ -639,13 +727,16 @@ class TestSubcommandRouting:
     @pytest.mark.parametrize(
         ("launch_env", "expected_version"),
         [
-            ({}, smart_routing_config.SUBAGENT_ORCH_V0),
-            ({"ENABLE_SMART_ROUTING_V2": "1"}, smart_routing_config.SUBAGENT_ORCH_V0),
-            ({"ENABLE_SMART_ROUTING_V2": "0"}, smart_routing_config.SUBAGENT_ORCH_V0),
-            ({"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"}, smart_routing_config.SUBAGENT_ORCH_V0),
+            ({}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY),
+            ({"ENABLE_SMART_ROUTING_V2": "1"}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY),
+            ({"ENABLE_SMART_ROUTING_V2": "0"}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY),
+            (
+                {"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"},
+                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+            ),
             (
                 {"SMART_ROUTER_CONFIG_VERSION": "unknown_version"},
-                smart_routing_config.SUBAGENT_ORCH_V0,
+                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
             ),
             *(
                 ({"SMART_ROUTER_CONFIG_VERSION": version}, version)
@@ -667,7 +758,7 @@ class TestSubcommandRouting:
             "claude-only-version",
         ],
     )
-    def test_enable_smart_routing_keeps_a_known_version_or_selects_subagent_orch_v0(
+    def test_enable_smart_routing_keeps_a_known_version_or_selects_claude_only(
         self, monkeypatch, tool, launch_env, expected_version
     ):
         for name, value in launch_env.items():
@@ -868,30 +959,30 @@ class TestSubcommandRouting:
     @pytest.mark.parametrize(
         ("launch_args", "launch_env", "expected_version", "routed_tools"),
         [
-            ([], {}, smart_routing_config.SUBAGENT_ORCH_V0, {"claude", "codex"}),
+            ([], {}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, {"claude"}),
             (
                 [],
                 {"ENABLE_SMART_ROUTING_V2": "1"},
-                smart_routing_config.SUBAGENT_ORCH_V0,
-                {"claude", "codex"},
+                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+                {"claude"},
             ),
             (
                 [],
                 {"ENABLE_SMART_ROUTING_V2": "0"},
-                smart_routing_config.SUBAGENT_ORCH_V0,
-                {"claude", "codex"},
+                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+                {"claude"},
             ),
             (
                 [],
                 {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0"},
-                smart_routing_config.SUBAGENT_ORCH_V0,
-                {"claude", "codex"},
+                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+                {"claude"},
             ),
             (
                 [],
                 {"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"},
-                smart_routing_config.SUBAGENT_ORCH_V0,
-                {"claude", "codex"},
+                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+                {"claude"},
             ),
             (
                 [],
@@ -918,8 +1009,8 @@ class TestSubcommandRouting:
             (
                 ["--enable-smart-routing"],
                 {"ENABLE_SMART_ROUTING_V2": "1"},
-                smart_routing_config.SUBAGENT_ORCH_V0,
-                {"claude", "codex"},
+                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+                {"claude"},
             ),
             (["--disable-smart-routing"], {}, None, set()),
         ],
@@ -961,8 +1052,8 @@ class TestSubcommandRouting:
         assert _routing_env() == env_before
 
     @pytest.mark.parametrize("installed_version", ["0.145.0", "0.163.0"])
-    @pytest.mark.parametrize("recovery", ["decline", "upgrade", "disable"])
-    def test_managed_codex_routing_requires_upgrade_or_explicit_disable(
+    @pytest.mark.parametrize("recovery", ["decline", "upgrade", "disable", "managed-default"])
+    def test_codex_routing_version_requires_upgrade_or_explicit_disable(
         self, tmp_path, monkeypatch, installed_version, recovery
     ):
         codex = cli_mod.codex_agent
@@ -995,6 +1086,12 @@ class TestSubcommandRouting:
         monkeypatch.setattr(agents.subprocess_cross_os, "run", update)
         monkeypatch.setattr(cli_mod.smart_routing_v2, "launch_codex", launch_native)
         launch = cli_mod.launch_agent
+        # An explicit version keeps Codex routed (managed config is then ignored). The
+        # managed-default case leaves the selector unset: the Claude-only preset applies.
+        if recovery == "managed-default":
+            monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        else:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_orch_v0")
         managed = {"enabled_agents": {"codex": {"smart_routing_enabled": True}}}
         env_before = _routing_env()
         with (
@@ -1009,14 +1106,99 @@ class TestSubcommandRouting:
 
         assert result.exit_code == (1 if recovery == "decline" else 0), result.output
         assert routed == (["0.164.0"] if recovery == "upgrade" else [])
-        assert bool(plain) == (recovery == "disable")
+        assert bool(plain) == (recovery in {"disable", "managed-default"})
         assert updates == ([["codex", "update"]] if recovery == "upgrade" else [])
-        assert prompt.call_count == (0 if recovery == "disable" else 1)
+        assert prompt.call_count == (0 if recovery in {"disable", "managed-default"} else 1)
+        if recovery == "managed-default":
+            output = " ".join(_strip_ansi(result.output).split())
+            assert "only supported for Claude Code" in output
         if recovery == "decline":
             output = " ".join(_strip_ansi(result.output).split())
             assert f"found {installed_version}" in output
             assert "--disable-smart-routing" in output
         assert _routing_env() == env_before
+
+    @pytest.mark.parametrize(
+        ("tool", "launch_args", "launch_env", "managed_routing", "warned", "routed"),
+        [
+            ("codex", ["--enable-smart-routing"], {}, False, True, False),
+            ("codex", [], {}, True, True, False),
+            (
+                "codex",
+                ["--enable-smart-routing"],
+                {"SMART_ROUTER_CONFIG_VERSION": smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY},
+                False,
+                True,
+                False,
+            ),
+            (
+                "codex",
+                ["--enable-smart-routing"],
+                {"SMART_ROUTER_CONFIG_VERSION": smart_routing_config.SUBAGENT_ORCH_V0},
+                False,
+                False,
+                True,
+            ),
+            (
+                "codex",
+                [],
+                {"SMART_ROUTER_CONFIG_VERSION": smart_routing_config.SUBAGENT_ORCH_V0},
+                True,
+                False,
+                True,
+            ),
+            ("codex", [], {}, False, False, False),
+            ("codex", ["--disable-smart-routing"], {}, False, False, False),
+            ("codex", ["--disable-smart-routing"], {}, True, False, False),
+            ("codex", ["--enable-smart-routing", "app"], {}, False, False, False),
+            ("claude", ["--enable-smart-routing"], {}, False, False, True),
+            ("claude", [], {}, True, False, True),
+        ],
+        ids=[
+            "codex-enable-flag-default",
+            "codex-managed-default",
+            "codex-enable-flag-claude-only-version",
+            "codex-enable-flag-routing-version",
+            "codex-managed-routing-version",
+            "codex-no-routing",
+            "codex-disable-flag",
+            "codex-disable-flag-over-managed",
+            "codex-native-subcommand",
+            "claude-enable-flag",
+            "claude-managed-default",
+        ],
+    )
+    def test_warns_once_and_launches_unrouted_when_version_leaves_codex_unrouted(
+        self, monkeypatch, tool, launch_args, launch_env, managed_routing, warned, routed
+    ):
+        for name, value in launch_env.items():
+            monkeypatch.setenv(name, value)
+        managed = (
+            {"enabled_agents": {tool: {"smart_routing_enabled": True}}} if managed_routing else None
+        )
+        warnings: list[str] = []
+        notes: list[str] = []
+        monkeypatch.setattr(cli_mod, "print_warning", warnings.append)
+        monkeypatch.setattr(cli_mod, "print_note", notes.append)
+        observed = []
+
+        with _launch_policy_patches(managed) as calls:
+            calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
+                options.launch_smart_routing
+            )
+            result = runner.invoke(app, [tool, *launch_args])
+
+        assert result.exit_code == 0, result.output
+        unsupported = (
+            "Smart routing is enabled for Codex in this workspace, but it is currently only "
+            "supported for Claude Code. Running without smart routing."
+            if managed_routing and not launch_args
+            else "Smart routing on Codex is currently not supported. Running without smart routing."
+        )
+        assert [w for w in warnings if "Smart routing" in w] == ([unsupported] if warned else [])
+        # An unrouted launch never reaches the routed path that installs skills and hooks.
+        assert observed == [routed]
+        assert any("one-time hook review" in note for note in notes) is routed
 
     @pytest.mark.parametrize(
         ("version", "launch_args", "routed"),
