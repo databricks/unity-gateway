@@ -1,5 +1,12 @@
 # Test suites and user journeys
 
+`native_claude/test_mod.py::test_model_command_hook_intercepts_rewrites_and_observes_same_model`
+characterizes the installed Claude command API: a mod consumes a `/model` action
+without inference, rewrites another action to native Haiku selection, and observes
+a repeated selection of the same model. This is a native component test, not the
+Auto product UI or live gateway coverage.
+
+
 Auto picker config coverage in `tests/test_smart_routing_config.py` and
 `tests/test_claude_mod.py` checks `subagent_orch_auto_picker_v0_claude_only`:
 Claude-only exposure, complete binary preset validation, conflicting inherited
