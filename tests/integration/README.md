@@ -105,8 +105,8 @@ journey; no dedicated Desktop MPS integration test is needed.
 
 Each of these two journeys supplies pre-existing Desktop account directories as inputs and
 requires real Claude CLI installation of the Cowork plugin on both Linux and Windows.
-Both platforms require the user marketplace source and registration, no generated root
-marketplace, one installed UG entry, and a matching cached version. It registers system.ai.web_search through
+Both platforms require the user marketplace source and registration,
+one installed UG entry, and a matching cached version. It registers system.ai.web_search through
 `ug mcp add --names system.ai.web_search`, then runs the command from the installed plugin with the
 MCP SDK. The check initializes the protocol, discovers web_search, and searches for Databricks'
 official website. A successful result must contain a URL on databricks.com or www.databricks.com;
@@ -115,15 +115,16 @@ Both journeys verify reconfiguration preserves the profile/plugin and revert rem
 while retaining unrelated profiles and metadata. A separate local personal plugin is installed
 through the real Claude CLI before configuration; its registry entry and installed manifest must
 survive installation, reconfiguration, and revert unchanged. Revert also removes UG's marketplace
-registration and generated user source; ordinary configuration never creates a root source.
+registration and generated user source. Root-file preservation is covered by component tests;
+the integration journeys do not inspect OS-managed directories.
 `test_desktop_marketplace.py` covers ordinary default/`--user` configuration writing
 only the user source, no elevation, unchanged root files across configure/revert,
 one registration when switching an earlier root source to user scope, explicit cache
 refresh, content versions, downloaded workspace skills/assets, previous-account cleanup,
+malformed marketplace metadata, equivalent path aliases, source-switch failure recovery,
 and retained user source/state after refresh failures. Explicit global skips ordinary
 Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
-The shared privileged directory writer has separate copy/retry, whole-directory
-replacement, target validation, and macOS root-caller enforcement and linked/special-entry rejection checks for MDM.
+Root bundle writer checks belong to the separate MDM follow-up.
 Temporary filesystem destinations are real; external Claude registry/cache operations
 and platform privilege boundaries are simulated. These checks do not establish native
 Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.

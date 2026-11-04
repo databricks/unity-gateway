@@ -182,15 +182,15 @@ Cowork sessions directory exists. An earlier root-source registration switches t
 user source without deleting root files or creating a duplicate plugin. Content-derived
 manifest versions and an explicit native update refresh changed skills/MCPs in the user
 cache. A pre-existing org-plugins/ug copy blocks duplicate loading.
-`~/.ucode/claude-cowork.json` records the selected user source and account/org in version-1
+`~/.ucode/claude-cowork.json` records the account/org in version-1
 state. Account changes clean up the prior account before generation; no configure/revert
 lock, pending-cleanup queue, or migration bookkeeping is added. UG replaces the whole
 generated user marketplace, including manual edits. Its writer retains staged replacement
-and rollback. Native refresh failures retain the source/state for retry/revert. Ordinary
+and rollback. Native refresh failures retain the source/state for retry/revert. A failed source switch
+restores the previous marketplace/plugin through native commands when possible, and
+reports a failed recovery with configure retry instructions. Ordinary
 revert removes user source/registration only. Explicit MCP/skill changes resync this source;
-launches do not. The shared privileged bundle writer remains for MDM publication; its
-macOS worker accepts only root callers, validates root ownership, and rejects links/special
-files before copying. Unprivileged callers cannot elevate to publish a Desktop marketplace.
+launches do not. Root bundle publication is implemented in the separate MDM follow-up.
 Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
 custom registration names and full proxy URLs are preserved. Its name and display name
 are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old

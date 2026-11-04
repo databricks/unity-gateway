@@ -71,7 +71,9 @@ def configure_claude_cowork(state: dict, mcp_servers: list[dict]) -> None:
     try:
         configured = configure_cowork(state, mcp_servers)
     except Exception as exc:  # noqa: BLE001 -- Cowork must not block Claude Code setup
-        print_warning(f"Could not configure Claude Cowork: {exc}. Claude Code setup is unchanged.")
+        print_warning(
+            f"Could not configure Claude Desktop workspace plugin: {exc}. Claude Code setup is unchanged."
+        )
         return
     if configured:
         print_success("Claude Desktop workspace plugin configured. Quit and reopen Claude Desktop.")

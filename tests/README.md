@@ -440,10 +440,10 @@ Code authentication changes, with either the default scope or explicit `code=Fal
 only the user source, no elevation, unchanged root files across configure/revert,
 one registration when switching an earlier root source to user scope, explicit cache
 refresh, content versions, downloaded workspace skills/assets, previous-account cleanup,
+malformed marketplace metadata, equivalent path aliases, source-switch failure recovery,
 and retained user source/state after refresh failures. Explicit global skips ordinary
 Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
-The shared privileged directory writer has separate copy/retry, whole-directory
-replacement, target validation, and macOS root-caller enforcement and linked/special-entry rejection checks for MDM.
+Root bundle writer checks belong to the separate MDM follow-up.
 Temporary filesystem destinations are real; external Claude registry/cache operations
 and platform privilege boundaries are simulated. These checks do not establish native
 Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.

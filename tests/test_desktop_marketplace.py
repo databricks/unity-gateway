@@ -1,77 +1,34 @@
-"""User-only Desktop configuration and shared MDM bundle publication without native Desktop."""
+"""User-only Desktop configuration with native registration/cache boundaries simulated."""
 
 import json
 import os
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
 
 import pytest
 
 from ucode import config_io, managed_files
-from ucode.agents.desktop import cowork
+from ucode.agents.desktop import cowork, setup
 from ucode.skills_state import SkillInstall, record_downloads, records_for_scope
 
 WORKSPACE = {"workspace": "https://workspace.example", "profile": "chosen"}
 SERVERS = [{"name": "slack", "url": "https://workspace.example/mcp/slack", "clients": ["claude"]}]
 
 
-@pytest.fixture(
-    params=[
-        "windows",
-        pytest.param(
-            "macos", marks=pytest.mark.skipif(os.name == "nt", reason="POSIX shell worker")
-        ),
-    ]
-)
+@pytest.fixture(params=["windows", "macos"])
 def system_source(tmp_path, monkeypatch, request):
-    """Use temporary destinations; exercise the real directory copy for each backend."""
+    """Use temporary sources and simulate only native registration/cache commands."""
+    return desktop_environment(tmp_path, monkeypatch, request.param)
+
+
+def desktop_environment(tmp_path, monkeypatch, platform):
     path = tmp_path.resolve() / "system" / "claude-cowork-marketplace"
-    monkeypatch.setattr(managed_files, "claude_desktop_marketplace_path", lambda: path)
-    monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS(request.param))
+    monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS(platform))
     monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
     monkeypatch.setattr(cowork, "claude_desktop_root_directory", lambda: tmp_path / "Desktop")
     monkeypatch.setattr(cowork, "records_for_scope", lambda *args: [])
     monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
-    if request.param == "macos":
-        # Run the packaged shell on Linux/macOS without sudo, with only target/OS adapters changed.
-        platform = "macos" if os.uname().sysname == "Darwin" else "linux"
-        script = managed_files._SUDO_REPLACE_SCRIPT.replace(
-            "macos:/Library/Application Support/UnityGateway/claude-cowork-marketplace",
-            f"{platform}:{path}",
-        )
-        if platform == "linux":
-            script = script.replace("/usr/bin/stat -f %u", "stat -c %u")
-        script = script.replace("root_uid=0", f"root_uid={os.getuid()}")
-        script = script.replace('\ncase "$mode" in', '\nchown() { :; }\ncase "$mode" in')
-        script = script.replace(
-            '\ncase "$mode" in',
-            """
-mv() {
-    case "$1" in
-        */new)
-            if [ "${UG_TEST_BUNDLE_FAIL:-}" = rename ]; then return 73; fi ;;
-    esac
-    command mv "$@"
-}
-case "$mode" in""",
-        )
-
-        monkeypatch.setattr(
-            managed_files,
-            "_sudo_replace_command",
-            lambda mode: [
-                "/usr/bin/env",
-                f"SUDO_UID={os.getuid()}",
-                "/bin/sh",
-                "-c",
-                script,
-                "bundle-test",
-                mode,
-                platform,
-            ],
-        )
     root = tmp_path / "Desktop/local-agent-mode-sessions/account/org"
     root.mkdir(parents=True)
 
@@ -137,60 +94,13 @@ def _source(tmp_path):
     return source
 
 
-def _installed_source():
+def _installed_source(*, other_plugins=()):
     root = cowork.discover_cowork_root()
     installed = config_io.read_json_safe(root / "cowork_plugins/installed_plugins.json")
-    assert list(installed["plugins"]) == [cowork.PLUGIN_ID]
+    assert set(installed["plugins"]) == {cowork.PLUGIN_ID, *other_plugins}
     entries = installed["plugins"][cowork.PLUGIN_ID]
     assert len(entries) == 1
     return Path(entries[0]["installPath"])
-
-
-def test_install_update_and_revert_preserve_other_plugins(system_source, tmp_path):
-    source = _source(tmp_path)
-    unrelated = system_source.parent / "personal"
-    unrelated.mkdir(parents=True)
-    (unrelated / "keep").write_text("personal plugin")
-
-    managed_files.replace_privileged_bundle(system_source, source)
-    first = cowork._marketplace_files(system_source)
-    manifest = json.loads((system_source / "plugins/ug/.claude-plugin/plugin.json").read_text())
-    assert manifest == {"name": "ug", "version": "1.0.0"}
-    assert not (system_source / "version.json").exists()
-    assert cowork._marketplace_files(source) == first
-    assert (system_source / "plugins/ug/skills/review/image.bin").read_bytes() == b"\x00\xff\x80"
-    if os.name != "nt":
-        assert (system_source / "plugins/ug/skills/review/run.sh").stat().st_mode & 0o777 == 0o755
-    managed_files.replace_privileged_bundle(system_source, source)
-    assert cowork._marketplace_files(system_source) == first
-
-    (source / "plugins/ug/skills/review/image.bin").unlink()
-    (source / "plugins/ug/skills/review/SKILL.md").write_text("Updated skill")
-    managed_files.replace_privileged_bundle(system_source, source)
-    assert not (system_source / "plugins/ug/skills/review/image.bin").exists()
-    assert (system_source / "plugins/ug/skills/review/SKILL.md").read_text() == "Updated skill"
-    assert cowork._marketplace_files(source) == cowork._marketplace_files(system_source)
-    managed_files.replace_privileged_bundle(system_source, None)
-    assert not system_source.exists()
-    managed_files.replace_privileged_bundle(system_source, None)
-    assert not system_source.exists()
-    assert (unrelated / "keep").read_text() == "personal plugin"
-
-
-def test_ug_directory_is_replaced_without_ownership_hashes(system_source, tmp_path):
-    source = _source(tmp_path)
-    system_source.mkdir(parents=True)
-    custom = system_source / "manual.txt"
-    custom.write_text("Manual content in UG's directory")
-    managed_files.replace_privileged_bundle(system_source, source)
-    assert not custom.exists()
-    skill = system_source / "plugins/ug/skills/review/SKILL.md"
-    skill.write_text("External edit")
-    managed_files.replace_privileged_bundle(system_source, source)
-    assert skill.read_text() == "Review carefully"
-    skill.write_text("Another edit")
-    managed_files.replace_privileged_bundle(system_source, None)
-    assert not system_source.exists()
 
 
 @pytest.mark.parametrize("scope", ["global", "user"], ids=["default", "user"])
@@ -223,42 +133,24 @@ def test_ordinary_configure_writes_only_user_source_and_one_install(system_sourc
 
 
 @pytest.mark.parametrize("scope", ["global", "user"])
-def test_first_configure_skips_uninitialized_cowork(system_source, tmp_path, scope):
+@pytest.mark.parametrize("organization_plugin", [False, True])
+def test_first_configure_skips_uninitialized_cowork(
+    system_source, tmp_path, monkeypatch, scope, organization_plugin
+):
     managed_files.set_config_scope(scope)
     shutil.rmtree(tmp_path / "Desktop")
+    if organization_plugin:
+        organization = tmp_path / "org-plugins/ug"
+        organization.mkdir(parents=True)
+        monkeypatch.setattr(managed_files, "claude_desktop_org_plugin_path", lambda: organization)
     assert not cowork.configure_cowork(WORKSPACE, SERVERS)
     assert not system_source.exists()
     assert not cowork._marketplace_root().exists()
     assert not cowork._state_path().exists()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX shell worker")
-@pytest.mark.parametrize("system_source", ["macos"], indirect=True)
-@pytest.mark.parametrize("entry_type", ["symlink", "hardlink", "fifo"])
-def test_macos_root_copy_rejects_linked_and_special_source_files(
-    system_source, tmp_path, entry_type
-):
-    source = _source(tmp_path)
-    managed_files.replace_privileged_bundle(system_source, source)
-    original = cowork._marketplace_files(system_source)
-    skill = source / "plugins/ug/skills/review/SKILL.md"
-    extra = skill.with_name("extra")
-    if entry_type == "symlink":
-        extra.symlink_to(skill)
-    elif entry_type == "hardlink":
-        extra.hardlink_to(skill)
-    else:
-        os.mkfifo(extra)
-
-    with pytest.raises(RuntimeError, match="Desktop plugin source must contain only caller-owned"):
-        managed_files.replace_privileged_bundle(system_source, source)
-
-    assert cowork._marketplace_files(system_source) == original
-    assert not list(system_source.parent.glob(".ug-install*"))
-
-
 def test_existing_root_registration_switches_to_user_without_duplicates(system_source, tmp_path):
-    managed_files.replace_privileged_bundle(system_source, _source(tmp_path))
+    shutil.copytree(_source(tmp_path), system_source)
     root = cowork.discover_cowork_root()
     cowork._install_plugin(root, system_source)
     config_io.atomic_write_json(
@@ -293,7 +185,7 @@ def test_ordinary_configure_needs_no_root_write_permission(system_source, monkey
     def denied(*args, **kwargs):
         pytest.fail("ordinary Desktop configure attempted a privileged write")
 
-    monkeypatch.setattr(managed_files, "replace_privileged_bundle", denied)
+    monkeypatch.setattr(managed_files, "_session_worker", denied)
     monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
     assert (
@@ -304,38 +196,11 @@ def test_ordinary_configure_needs_no_root_write_permission(system_source, monkey
     assert cowork.revert_cowork()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX shell worker")
-@pytest.mark.parametrize("system_source", ["macos"], indirect=True)
-def test_macos_publication_requires_root_without_starting_sudo(system_source, monkeypatch):
-    monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
-    worker = Mock(side_effect=AssertionError("MDM publication must not start sudo"))
-    monkeypatch.setattr(managed_files, "_session_worker", worker)
-    with pytest.raises(RuntimeError, match="as root"):
-        managed_files.replace_privileged_bundle(system_source, None)
-    worker.assert_not_called()
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX shell worker")
-@pytest.mark.parametrize("system_source", ["macos"], indirect=True)
-def test_macos_worker_rejects_non_root_bundle_requests(system_source, monkeypatch):
-    command = managed_files._sudo_replace_command
-
-    def non_root_command(mode):
-        argv = command(mode)
-        argv[1] = f"SUDO_UID={os.getuid() + 1}"
-        return argv
-
-    monkeypatch.setattr(managed_files, "_sudo_replace_command", non_root_command)
-    with pytest.raises(RuntimeError, match="requires a root caller"):
-        managed_files.replace_privileged_bundle(system_source, None)
-    assert not system_source.exists()
-
-
 @pytest.mark.parametrize("opt_out", ["default", "user", "environment"])
 def test_ordinary_configure_and_revert_keep_root_source_untouched(
     system_source, tmp_path, monkeypatch, opt_out
 ):
-    managed_files.replace_privileged_bundle(system_source, _source(tmp_path))
+    shutil.copytree(_source(tmp_path), system_source)
     before = cowork._marketplace_files(system_source)
     if opt_out == "user":
         managed_files.set_config_scope("user")
@@ -357,7 +222,7 @@ def test_ordinary_configure_and_revert_keep_root_source_untouched(
 def test_dry_run_leaves_no_state_or_bundle(system_source):
     config_io.set_dry_run(True)
     try:
-        assert not cowork.configure_cowork(WORKSPACE, SERVERS)
+        setup.configure_claude_cowork(WORKSPACE, SERVERS)
         assert not cowork.revert_cowork()
         assert not system_source.exists()
         assert not cowork._state_path().exists()
@@ -365,50 +230,14 @@ def test_dry_run_leaves_no_state_or_bundle(system_source):
         config_io.set_dry_run(False)
 
 
-def test_configure_records_selected_source_for_revert(system_source):
+def test_configure_records_account_for_revert(system_source):
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
     assert config_io.read_json_safe(cowork._state_path()) == {
         "version": 1,
         "cowork_root": str(cowork.discover_cowork_root()),
-        "marketplace_root": str(cowork._marketplace_root()),
     }
     assert cowork.revert_cowork()
     assert not system_source.exists()
-
-
-def test_failed_root_copy_can_be_retried(system_source, tmp_path, monkeypatch):
-    source = _source(tmp_path)
-    managed_files.replace_privileged_bundle(system_source, source)
-    (source / "plugins/ug/skills/review/SKILL.md").write_text("Updated skill")
-    copy = shutil.copytree
-    failed = False
-
-    def fail_copy(src, dst, *args, **kwargs):
-        nonlocal failed
-        if not failed and Path(dst) == system_source:
-            failed = True
-            raise PermissionError("simulated copy failure")
-        return copy(src, dst, *args, **kwargs)
-
-    if managed_files.current_os() is managed_files.OS.WINDOWS:
-        monkeypatch.setattr(shutil, "copytree", fail_copy)
-    else:
-        monkeypatch.setenv("UG_TEST_BUNDLE_FAIL", "rename")
-    with pytest.raises((RuntimeError, PermissionError)):
-        managed_files.replace_privileged_bundle(system_source, source)
-    monkeypatch.delenv("UG_TEST_BUNDLE_FAIL", raising=False)
-    managed_files.replace_privileged_bundle(system_source, source)
-    assert cowork._marketplace_files(system_source) == cowork._marketplace_files(source)
-    assert not list(system_source.parent.glob(".ug-install*"))
-
-
-def test_root_copy_rejects_unexpected_target(system_source, tmp_path):
-    other = system_source.parent / "other-plugin"
-    other.mkdir(parents=True)
-    (other / "keep").write_text("Unrelated plugin")
-    with pytest.raises(RuntimeError, match="unexpected privileged bundle target"):
-        managed_files.replace_privileged_bundle(other, _source(tmp_path))
-    assert (other / "keep").read_text() == "Unrelated plugin"
 
 
 def test_failed_previous_account_cleanup_can_be_retried(system_source, tmp_path, monkeypatch):
@@ -435,7 +264,6 @@ def test_failed_previous_account_cleanup_can_be_retried(system_source, tmp_path,
     assert config_io.read_json_safe(cowork._state_path()) == {
         "version": 1,
         "cowork_root": str(cowork.discover_cowork_root()),
-        "marketplace_root": str(cowork._marketplace_root()),
     }
     assert config_io.read_json_safe(old / "cowork_plugins/installed_plugins.json")["plugins"] == {}
 
@@ -520,25 +348,10 @@ def test_user_configure_accepts_os_temporary_directory_alias(system_source, tmp_
     assert (cowork._marketplace_root() / "plugins/ug/.mcp.json").is_file()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink input")
-def test_root_copy_preserves_linked_system_destination(system_source, tmp_path):
-    foreign = tmp_path / "foreign"
-    foreign.mkdir()
-    (foreign / "keep").write_text("untouched")
-    system_source.parent.mkdir(parents=True, exist_ok=True)
-    system_source.symlink_to(foreign, target_is_directory=True)
-    with pytest.raises(RuntimeError, match="linked Desktop plugin path"):
-        managed_files.replace_privileged_bundle(system_source, _source(tmp_path))
-    assert system_source.is_symlink()
-    assert (foreign / "keep").read_text() == "untouched"
-
-
-@pytest.mark.parametrize("switch_scope", [False, True])
-def test_failed_refresh_retains_generated_sources_for_retry(
-    system_source, monkeypatch, switch_scope
+@pytest.mark.parametrize("recovery", ["retry", "revert"])
+def test_failed_refresh_retains_generated_sources_for_recovery(
+    system_source, monkeypatch, recovery
 ):
-    if switch_scope:
-        managed_files.set_config_scope("user")
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
     user_before = cowork._marketplace_files(cowork._marketplace_root())
     managed_files.set_config_scope("global")
@@ -561,9 +374,14 @@ def test_failed_refresh_retains_generated_sources_for_retry(
     assert generated != user_before
     assert not system_source.exists()
     state = config_io.read_json_safe(cowork._state_path())
-    assert state["marketplace_root"] == str(cowork._marketplace_root())
+    assert state["cowork_root"] == str(cowork.discover_cowork_root())
     assert "system_digest" not in state
     assert "pending_system_digest" not in state
+    if recovery == "revert":
+        assert cowork.revert_cowork()
+        assert not cowork._marketplace_root().exists()
+        assert not cowork._state_path().exists()
+        return
     assert cowork.configure_cowork(WORKSPACE, [{**SERVERS[0], "name": "changed"}])
     assert cowork._marketplace_files(_installed_source()) == cowork._marketplace_files(
         cowork._marketplace_root() / "plugins/ug"
@@ -614,37 +432,115 @@ def test_organization_loader_copy_blocks_duplicate_before_writes(
     assert (organization / "keep").read_text() == "older pilot"
 
 
-def test_failed_refresh_retains_owned_sources_for_revert(system_source, monkeypatch):
-    assert cowork.configure_cowork(WORKSPACE, SERVERS)
-    before = cowork._marketplace_files(cowork._marketplace_root())
-    run = cowork.subprocess_cross_os.run
-
-    def fail_updates(argv, **kwargs):
-        if argv[1:3] in (["plugin", "install"], ["plugin", "update"]):
-            return SimpleNamespace(returncode=1, stdout="", stderr="update unavailable")
-        return run(argv, **kwargs)
-
-    monkeypatch.setattr(cowork.subprocess_cross_os, "run", fail_updates)
-    with pytest.raises(RuntimeError, match="update unavailable"):
-        cowork.configure_cowork(WORKSPACE, [{**SERVERS[0], "name": "changed"}])
-    generated = cowork._marketplace_files(cowork._marketplace_root())
-    assert generated != before
-    assert not system_source.exists()
-    monkeypatch.setattr(cowork.subprocess_cross_os, "run", run)
-    assert cowork.revert_cowork()
-    assert not system_source.exists()
-    assert not cowork._marketplace_root().exists()
-    assert not cowork._state_path().exists()
-
-
 def test_explicit_global_leaves_ordinary_cowork_files_untouched(system_source):
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
     source = cowork._marketplace_files(cowork._marketplace_root())
     registry = cowork._marketplace_files(cowork.discover_cowork_root())
     state = cowork._state_path().read_bytes()
     managed_files.set_machine_wide_only(True)
-    assert not cowork.configure_cowork(WORKSPACE, [{**SERVERS[0], "name": "changed"}])
+    setup.configure_claude_cowork(WORKSPACE, [{**SERVERS[0], "name": "changed"}])
     assert cowork._marketplace_files(cowork._marketplace_root()) == source
     assert cowork._marketplace_files(cowork.discover_cowork_root()) == registry
     assert cowork._state_path().read_bytes() == state
     assert not system_source.exists()
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "{",
+        "[]",
+        "null",
+        '{"unity-gateway-cowork": []}',
+        '{"unity-gateway-cowork": {"source": null}}',
+    ],
+)
+def test_malformed_marketplace_metadata_is_ignored(system_source, contents):
+    root = cowork.discover_cowork_root()
+    registry = root / "cowork_plugins/known_marketplaces.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(contents)
+    assert cowork._registered_marketplace_source(root) is None
+    assert registry.read_text() == contents
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory aliases")
+@pytest.mark.parametrize("aliased_path", ["source", "account"])
+def test_equivalent_paths_do_not_remove_existing_registration(
+    system_source, tmp_path, monkeypatch, aliased_path
+):
+    assert cowork.configure_cowork(WORKSPACE, SERVERS)
+    root = cowork.discover_cowork_root()
+    original = cowork._marketplace_root() if aliased_path == "source" else root
+    alias = tmp_path / "directory-alias"
+    alias.symlink_to(original, target_is_directory=True)
+    if aliased_path == "source":
+        registry = root / "cowork_plugins/known_marketplaces.json"
+        known = config_io.read_json_safe(registry)
+        known[cowork.MARKETPLACE_NAME]["source"]["path"] = str(alias)
+        config_io.atomic_write_json(registry, known)
+    else:
+        config_io.atomic_write_json(cowork._state_path(), {"version": 1, "cowork_root": str(alias)})
+
+    def unexpected_removal(*args, **kwargs):
+        pytest.fail("equivalent directory paths caused plugin removal")
+
+    monkeypatch.setattr(cowork, "_remove_plugin_registration", unexpected_removal)
+    assert cowork.configure_cowork(WORKSPACE, SERVERS)
+    _installed_source()
+
+
+@pytest.mark.parametrize("failure", ["add", "install", "restore"])
+def test_failed_source_switch_restores_previous_plugin(
+    system_source, tmp_path, monkeypatch, failure
+):
+    shutil.copytree(_source(tmp_path), system_source)
+    root = cowork.discover_cowork_root()
+    cowork._install_plugin(root, system_source)
+    old_payload = cowork._marketplace_files(_installed_source())
+    registry = root / "cowork_plugins/installed_plugins.json"
+    installed = config_io.read_json_safe(registry)
+    installed["plugins"]["personal@other"] = [{"installPath": "untouched"}]
+    config_io.atomic_write_json(registry, installed)
+    native = cowork.subprocess_cross_os.run
+    failed = False
+
+    def fail_new_install(argv, **kwargs):
+        nonlocal failed
+        if failure == "restore" and failed and argv[1:4] == ["plugin", "marketplace", "add"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="restoration failed")
+        command = (
+            ["plugin", "marketplace", "add"]
+            if failure == "add"
+            else ["plugin", "install", cowork.PLUGIN_ID]
+        )
+        if not failed and argv[1:4] == command:
+            failed = True
+            native(argv, **kwargs)
+            return SimpleNamespace(returncode=1, stdout="", stderr="replacement failed")
+        return native(argv, **kwargs)
+
+    monkeypatch.setattr(cowork.subprocess_cross_os, "run", fail_new_install)
+    message = (
+        "Could not restore.*restoration failed.*Run `ug configure`"
+        if failure == "restore"
+        else "replacement failed"
+    )
+    with pytest.raises(RuntimeError, match=message):
+        cowork.configure_cowork(WORKSPACE, SERVERS)
+    installed = config_io.read_json_safe(registry)["plugins"]
+    assert installed["personal@other"] == [{"installPath": "untouched"}]
+    if failure != "restore":
+        assert set(installed) == {cowork.PLUGIN_ID, "personal@other"}
+        assert cowork._registered_marketplace_source(root) == system_source
+        assert (
+            cowork._marketplace_files(_installed_source(other_plugins=("personal@other",)))
+            == old_payload
+        )
+    assert cowork._state_path().exists()
+    monkeypatch.setattr(cowork.subprocess_cross_os, "run", native)
+    assert cowork.configure_cowork(WORKSPACE, SERVERS)
+    assert cowork._registered_marketplace_source(root) == cowork._marketplace_root()
+    assert cowork._marketplace_files(
+        _installed_source(other_plugins=("personal@other",))
+    ) == cowork._marketplace_files(cowork._marketplace_root() / "plugins/ug")

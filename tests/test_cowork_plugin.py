@@ -470,7 +470,6 @@ def test_configure_records_root_before_plugin_command_failure(tmp_path, monkeypa
     assert json.loads((app_dir / cowork.STATE_FILENAME).read_text()) == {
         "version": 1,
         "cowork_root": str(cowork_root),
-        "marketplace_root": str(cowork._marketplace_root()),
     }
 
 
