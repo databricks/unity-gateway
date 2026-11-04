@@ -532,8 +532,9 @@ A real isolated Python child verifies the runtime probe can read the installed p
 this catches binary stdout being passed to `Path` during provisioning. Runtime paths are compared in the host OS format.
 Provisioning rejects selected shared-workspace hosts before authentication and missing
 credentials before publication; browser login is disabled.
-The generated ordinary Desktop auth argv is also parsed by the real CLI and pins its
-workspace ID before requesting credentials; external authentication is replaced.
+`test_workspace_selection.py::TestHelperArgv` checks generated ordinary Desktop auth
+argv from real temporary profiles on all three platforms. The real CLI parses the argv
+and pins its workspace ID before requesting credentials; external authentication is replaced.
 MDM compatibility cases cover unrestricted empty agent lists and feature-disabled config
 discovery. MCP/tracing helper checks keep explicit OAuth profiles independent of unrelated
 saved PAT mode while retaining saved PAT mode for matching host, profile, and workspace ID.
@@ -559,6 +560,12 @@ User sync no longer depends on a Cowork configure/revert lock. Serial update/rem
 account-cleanup journeys remain covered; concurrent manual refresh/configure is deferred.
 This does not establish native macOS MDM, launchd, fresh-user GUI login, or tool/skill execution.
 The rollout checklist is in `docs/claude-desktop-mdm.md`.
+
+MDM review regressions also cover the `claude-code` configure alias, refusal to remove
+an incomplete ownership record without changing the deployment, and missing-manifest
+diagnostics that preserve the previous root bundle. MCP proxy and OTLP helper identity
+checks share the same lightweight saved-authentication predicate. These remain component
+checks; final launchd removal and native macOS execution require the documented checklist.
 
 `test_desktop_scope.py` exercises the configure CLI with real Desktop writers in temporary
 directories: no flag and `--user` write only the user source, and explicit
@@ -1347,9 +1354,3 @@ installed plugin to contain no duplicate servers. Reconfigure comparisons includ
 added through `ug mcp add`, while retaining the original model/authentication-field assertions.
 These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
-
-MDM review regressions also cover the `claude-code` configure alias, refusal to remove
-an incomplete ownership record without changing the deployment, and missing-manifest
-diagnostics that preserve the previous root bundle. MCP proxy and OTLP helper identity
-checks share the same lightweight saved-authentication predicate. These remain component
-checks; final launchd removal and native macOS execution require the documented checklist.

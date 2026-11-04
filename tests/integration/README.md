@@ -154,10 +154,21 @@ validation before installer or version probes. Omitted-agent selection and the
 managed-only Desktop connector policy under `--global --mcp` also have component
 coverage; these are not native macOS integration checks.
 
+`../test_workspace_selection.py::TestHelperArgv` also generates ordinary Desktop auth
+argv in temporary macOS/Windows/Linux profiles and parses it through the real CLI,
+checking the selected workspace reaches credential lookup. External authentication is
+replaced; this does not exercise native Desktop authentication.
+
 macOS MDM provisioning and its per-user LaunchAgent are outside these Linux/Windows
 journeys. Native launchd activation, first-user timing, managed-plist precedence,
 GUI skill/tool invocation, and current flag routing on macOS remain unverified here.
 Follow the [MDM rollout checklist](../../docs/claude-desktop-mdm.md) before fleet rollout.
+
+MDM review regressions also cover the `claude-code` configure alias, refusal to remove
+an incomplete ownership record without changing the deployment, and missing-manifest
+diagnostics that preserve the previous root bundle. MCP proxy and OTLP helper identity
+checks share the same lightweight saved-authentication predicate. These remain component
+checks; final launchd removal and native macOS execution require the documented checklist.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.web_search and allow
@@ -1790,9 +1801,3 @@ Missing, malformed, and other-workspace profiles leave plugin setup untouched.
 Installed-CLI Desktop journeys read MCP commands from `managedMcpServers` and require the
 installed plugin to contain no duplicate servers. These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
-
-MDM review regressions also cover the `claude-code` configure alias, refusal to remove
-an incomplete ownership record without changing the deployment, and missing-manifest
-diagnostics that preserve the previous root bundle. MCP proxy and OTLP helper identity
-checks share the same lightweight saved-authentication predicate. These remain component
-checks; final launchd removal and native macOS execution require the documented checklist.

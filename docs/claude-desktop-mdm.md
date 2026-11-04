@@ -90,22 +90,25 @@ UG obtains one provisioning credential and reuses it to read the workspace polic
 discover models/connectors, and download skill bundles. Unattended scripts can supply
 the existing `DATABRICKS_BEARER` or `DATABRICKS_BEARER_COMMAND` mechanism using their
 secret broker. To use cached Databricks OAuth credentials, supply `--profile <name>`.
-A headless MDM process needs a usable credential before this command. Both `--global`
-and `--mdm-desktop` use existing credentials without forcing browser login and fail
-before publishing Desktop files if credentials are unavailable.
+A headless MDM process needs a usable credential before this command. When Claude is
+selected explicitly (`--agents claude` or `--agent claude`), `--global` uses existing
+credentials without forcing browser login. `--mdm-desktop` follows the same rule.
+Both paths fail before publishing Desktop files if credentials are unavailable.
 
 An empty enabled-agent list leaves Claude unrestricted. With no managed config or a
 feature-disabled config API, provisioning uses model discovery without managed assets.
 An explicit agent list that excludes Claude still blocks provisioning.
 
 Provisioning also requires a root-owned PATH with no group/other-writable directories.
-Both provisioning entry points validate Databricks CLI candidates and the selected Claude
-executable before installation, profile lookup or version discovery can execute them,
-including profile lookup during a dry run. MCP-only `--mcp` requests without agent flags
-do not provision Desktop or require its shared runtimes.
-Without agent flags, managed policy or the interactive picker chooses the agents first;
-Desktop prerequisites apply only if Claude is selected. Other agents keep their normal
-authentication flow. For unattended Desktop provisioning, pass `--agents claude` explicitly.
+With explicit Claude selection, `--global` validates Databricks CLI candidates and the
+selected Claude executable before installation, profile lookup or version discovery can
+execute them, including profile lookup during a dry run. `--mdm-desktop` performs the same
+validation. MCP-only `--mcp` requests without agent flags do not provision Desktop or require
+its shared runtimes.
+Without agent flags, configure retains its normal authentication and discovery flow
+before managed policy or the interactive picker chooses the agents; Desktop prerequisites
+apply only if Claude is selected. For unattended Desktop provisioning, pass
+`--agents claude` explicitly.
 
 No provisioning token or administrator profile is written into the machine policy
 or plugin. The runtime wrapper clears provisioning credential overrides and binds
@@ -118,8 +121,9 @@ relay login when configured, and subsequent token refresh remain per-user operat
 
 `--user` cannot be combined with `--global` or `--mdm-desktop`. Desktop MDM does not
 support PAT/custom OAuth profiles or hosts with a selected workspace ID; use a dedicated
-workspace hostname. Explicit PAT/custom OAuth and selected-workspace requests fail before
-authentication or agent configuration. The Desktop-only `--mdm-desktop` path also rejects
+workspace hostname. With explicit Claude selection or `--mdm-desktop`, PAT/custom OAuth
+and selected-workspace requests fail before authentication or agent configuration.
+The Desktop-only `--mdm-desktop` path also rejects
 model-source overrides and Databricks AI Tools installation flags; its `--mcp` selects
 additional services. `--global` uses workspace-managed skills and connectors.
 Desktop provisioning errors fail `--global`, rather than becoming best-effort warnings.

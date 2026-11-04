@@ -95,33 +95,6 @@ def test_configure_uses_claude_catalog_and_absolute_helper(desktop, tmp_path, ca
     assert "default-model" not in output
 
 
-def test_generated_desktop_auth_command_preserves_workspace_selection(desktop, monkeypatch):
-    from ucode import desktop_auth, workspace
-
-    host = "https://workspace.example"
-    workspace.activate(host, "111")
-    try:
-        desktop_setup.configure_claude_desktop({"workspace": host, "profile": "chosen-profile"})
-        args = configured_profile(desktop)["inferenceCredentialHelperArgs"]
-        assert args[args.index("--workspace-id") + 1] == "111"
-    finally:
-        workspace.activate(None, None)
-
-    def credential(selected_host, profile):
-        assert selected_host == host
-        assert profile == "chosen-profile"
-        assert workspace.workspace_headers(host) == {
-            "X-Databricks-Org-Id": "111",
-            "X-Databricks-Workspace-Id": "111",
-        }
-        return "user-token"
-
-    monkeypatch.setattr(desktop_auth, "get_claude_desktop_databricks_token", credential)
-    result = CliRunner().invoke(cli.app, args[2:])
-    assert result.exit_code == 0, result.output
-    assert result.stdout == "user-token\n"
-
-
 @pytest.mark.parametrize("source", ["discovery", "static"])
 @pytest.mark.parametrize("tracing", [None, False, True])
 def test_configure_otel_follows_claude_tracing_setting(desktop, source, tracing):
