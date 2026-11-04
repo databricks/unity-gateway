@@ -6,6 +6,7 @@ terminal or a file to repair. Codex's side is in `test_agent_codex.py`.
 """
 
 import json
+import tomllib
 from subprocess import CalledProcessError
 
 import pytest
@@ -15,6 +16,7 @@ from tests.test_claude_header_mod import WS, _managed_env
 from ucode import cli as cli_mod
 from ucode import managed_files
 from ucode.agents import claude
+from ucode.agents.desktop import setup as desktop_setup
 
 MODEL = "databricks-claude-sonnet-4"
 
@@ -174,9 +176,55 @@ def test_denied_headless_revert_keeps_the_backup_and_says_so(tmp_path, monkeypat
     monkeypatch.setattr(managed_files, "_sudo_remove", denied)
     managed_files.request_explicit_managed_writes("ug revert")
 
-    with pytest.raises(RuntimeError, match="The backup was retained"):
+    with pytest.raises(RuntimeError, match="The backup was retained") as raised:
         _revert()
+    assert f"Could not delete Claude Code managed settings at {path}" in str(raised.value)
     assert path.exists()
+
+
+@pytest.mark.parametrize("tool, display", [("claude", "Claude Code"), ("codex", "Codex")])
+def test_revert_cli_reports_managed_file_deletion_failure(tmp_path, monkeypatch, tool, display):
+    path = _write_policy_env(tmp_path, monkeypatch).with_suffix(
+        ".json" if tool == "claude" else ".toml"
+    )
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: path)
+    monkeypatch.setattr(desktop_setup, "revert_desktop", lambda: "unchanged")
+    monkeypatch.setattr(cli_mod, "revert_mcp_configs", lambda state: {})
+    managed_files.request_explicit_managed_writes()
+    contents = '{"a": 1}' if tool == "claude" else "a = 1\n"
+    managed_files.reconcile_managed_file(
+        path,
+        contents,
+        tool=tool,
+        display=display,
+        owned_paths=[],
+        parser=json.loads if tool == "claude" else tomllib.loads,
+    )
+    backup_dir = managed_files.MANAGED_BACKUP_DIR
+    backup = {file.name: file.read_bytes() for file in backup_dir.iterdir()}
+    cli_mod.save_state({"workspace": "https://workspace.example"})
+    state_before = cli_mod.load_state()
+
+    def denied(_target):
+        raise CalledProcessError(1, ["sudo", "-n", "rm"], stderr="sudo: a password is required")
+
+    def reject_write(_target, _text):
+        pytest.fail("A failed deletion must not rewrite the managed settings")
+
+    monkeypatch.setattr(managed_files, "_sudo_remove", denied)
+    monkeypatch.setattr(managed_files, "_sudo_replace", reject_write)
+
+    result = CliRunner().invoke(cli_mod.app, ["revert"], env={"COLUMNS": "240"})
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 1, result.output
+    assert f"Could not delete {display} managed settings" in output
+    assert str(path) in output
+    assert "The backup was retained" in output
+    assert "run `ug revert` again" in output
+    assert path.read_text(encoding="utf-8") == contents
+    assert {file.name: file.read_bytes() for file in backup_dir.iterdir()} == backup
+    assert cli_mod.load_state() == state_before
 
 
 def test_missing_sudo_is_reported_like_a_denied_write(tmp_path, monkeypatch):

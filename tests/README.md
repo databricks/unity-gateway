@@ -992,10 +992,9 @@ not establish native Windows socket behavior.
 `test_managed_files.py` covers a lazy sudo worker shared across multiple managed-file writes,
 no elevation for unchanged files, target/symlink rejection, bounded shutdown and cancellation,
 and real-shell copy/rename failure handling in temporary directories.
-Revert coverage checks deletion, empty JSON/TOML fallback after permission or sudo failures,
-backup retention and retry after failed writes or verification, repeated revert, already-missing
-files, exact baseline restoration, and preservation of external edits. Header-mod cleanup also
-runs when deleting Claude's settings fails.
+`test_configure_managed_writes.py` checks that `ug revert` names the Claude/Codex managed
+settings file when deletion fails, exits with an error, and preserves the file, backup,
+and ug state without attempting a replacement write.
 `test_cli.py` covers the workspace configure session boundary.
 These are unit/component checks; they do not establish live sudo password-prompt behavior.
 

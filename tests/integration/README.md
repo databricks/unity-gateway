@@ -1,9 +1,8 @@
 # Integration tests
 
-Revert's empty-config fallback after failed deletion is covered by component tests in
-`../test_managed_files.py` and `../test_claude_header_mod.py`: JSON/TOML contents, backup retention
-and retry, and header-mod cleanup. These use temporary paths and do not establish native
-macOS/Windows or live privileged-write coverage.
+`../test_configure_managed_writes.py` covers `ug revert` output after Claude/Codex managed-file
+deletion fails, its nonzero exit, and retention of the file, backup, and ug state. These component
+tests simulate privileged deletion failure; native OS permissions and live sudo are not exercised.
 
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls

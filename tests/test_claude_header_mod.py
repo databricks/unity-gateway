@@ -5,8 +5,6 @@ import json
 import shutil
 from types import SimpleNamespace
 
-import pytest
-
 from ucode import managed_files
 from ucode.agents import claude
 from ucode.managed_files import CLAUDE_HEADER_MOD_FILES, CLAUDE_HEADER_MOD_ROOTS, OS
@@ -187,26 +185,14 @@ def test_failed_install_never_enables_a_missing_plugin(tmp_path, monkeypatch):
     assert not claude.header_mod_active()
 
 
-@pytest.mark.parametrize("delete_fails", [False, True])
-def test_revert_removes_the_mod_files_and_folders(tmp_path, monkeypatch, delete_fails):
-    managed_path, root, _writes = _managed_env(tmp_path, monkeypatch)
+def test_revert_removes_the_mod_files_and_folders(tmp_path, monkeypatch):
+    _managed_path, root, _writes = _managed_env(tmp_path, monkeypatch)
     claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
     assert (root / "ug-headers/hooks/register.ts").is_file()
-
-    if delete_fails:
-
-        def remove(_path):
-            raise PermissionError("deletion denied")
-
-        monkeypatch.setattr(managed_files, "_sudo_remove", remove)
 
     claude.revert_managed_settings()
 
     assert not root.exists()
-    if delete_fails:
-        assert managed_path.read_text(encoding="utf-8") == "{}\n"
-    else:
-        assert not managed_path.exists()
 
 
 def test_revert_keeps_the_guard_when_an_admin_extended_the_list(tmp_path, monkeypatch):

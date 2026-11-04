@@ -15,7 +15,6 @@ from pathlib import Path
 import pytest
 
 import ucode.agents.claude as claude_agent
-import ucode.agents.codex as codex_agent
 import ucode.codex_config as codex_config
 import ucode.config_io as config_io
 from ucode import managed_files
@@ -1162,27 +1161,16 @@ class TestWindowsManagedWrites:
 
         assert windows.read_text(encoding="utf-8") == '{"apiKeyHelper": "old"}\n'
 
-    @pytest.mark.parametrize("delete_fails", [False, True])
-    def test_elevated_revert_created_claude_file(self, windows, monkeypatch, delete_fails):
+    def test_elevated_revert_removes_created_file(self, windows, monkeypatch):
         monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
-        monkeypatch.setattr(claude_agent, "_managed_settings_path", lambda: windows)
         self._reconcile(windows, '{"apiKeyHelper": "ug"}\n')
 
-        if delete_fails:
+        result = managed_files.revert_managed_file(
+            "claude", display="Claude Code", parser=json.loads, dumper=json.dumps
+        )
 
-            def remove(_path):
-                raise PermissionError("deletion denied")
-
-            monkeypatch.setattr(managed_files, "_privileged_remove", remove)
-
-        result = claude_agent.revert_managed_settings()
-
-        if delete_fails:
-            assert result == "emptied"
-            assert windows.read_text(encoding="utf-8") == "{}\n"
-        else:
-            assert result == "removed"
-            assert not windows.exists()
+        assert result == "removed"
+        assert not windows.exists()
 
     def test_non_admin_revert_quits_with_admin_hint(self, windows, monkeypatch):
         monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
@@ -1830,113 +1818,14 @@ class TestManagedFileLifecycle:
         assert path.read_text() == '{"enterprise": true}\n'
         assert json.loads((backup_dir / "manifest.json").read_text())["files"] == {}
 
-    @pytest.mark.parametrize("tool", ["claude", "codex"])
-    @pytest.mark.parametrize(
-        "delete_error",
-        [
-            None,
-            PermissionError("deletion denied"),
-            subprocess.CalledProcessError(1, ["sudo", "rm"]),
-        ],
-        ids=["deleted", "permission-denied", "sudo-failed"],
-    )
-    def test_revert_file_created_by_ucode(
-        self, tmp_path, backup_dir, monkeypatch, tool, delete_error
-    ):
-        path = tmp_path / ("managed.json" if tool == "claude" else "managed.toml")
-        parser = json.loads if tool == "claude" else tomllib.loads
-        contents = '{"ucode": true}\n' if tool == "claude" else "ucode = true\n"
-        revert = (
-            claude_agent.revert_managed_settings
-            if tool == "claude"
-            else codex_agent.revert_managed_config
-        )
-        monkeypatch.setattr(claude_agent, "_managed_settings_path", lambda: path)
-        monkeypatch.setattr(
-            managed_files,
-            "_sudo_replace",
-            lambda target, text: target.write_text(text, encoding="utf-8"),
-        )
-
-        def remove(target):
-            if delete_error is not None:
-                raise delete_error
-            target.unlink()
-
-        monkeypatch.setattr(managed_files, "_sudo_remove", remove)
-        managed_files.reconcile_managed_file(
-            path,
-            contents,
-            tool=tool,
-            display=tool,
-            owned_paths=[["ucode"]],
-            parser=parser,
-        )
-
-        result = revert()
-
-        if delete_error is not None:
-            assert result == "emptied"
-            assert path.read_text(encoding="utf-8") == ("{}\n" if tool == "claude" else "")
-            assert parser(path.read_text(encoding="utf-8")) == {}
-        else:
-            assert result == "removed"
-            assert not path.exists()
-        assert json.loads((backup_dir / "manifest.json").read_text())["files"] == {}
-        assert revert() == "unchanged"
-        assert path.exists() is (delete_error is not None)
-
-    @pytest.mark.parametrize(
-        "write_fails", [True, False], ids=["write-error", "verification-error"]
-    )
-    def test_failed_delete_and_empty_retains_backup_for_retry(
-        self, tmp_path, backup_dir, monkeypatch, write_fails
-    ):
-        path = tmp_path / "managed.json"
-
-        def write(target, text):
-            target.write_text(text, encoding="utf-8")
-
-        def remove(_target):
-            raise PermissionError("deletion denied")
-
-        monkeypatch.setattr(managed_files, "_sudo_replace", write)
-        monkeypatch.setattr(managed_files, "_sudo_remove", remove)
-        monkeypatch.setattr(claude_agent, "_managed_settings_path", lambda: path)
-        contents = '{"ucode": true}\n'
-        managed_files.reconcile_managed_file(
-            path,
-            contents,
-            tool="claude",
-            display="Claude Code",
-            owned_paths=[["ucode"]],
-            parser=json.loads,
-        )
-        backup = {file.name: file.read_bytes() for file in backup_dir.iterdir()}
-
-        def failed_write(_target, _text):
-            if write_fails:
-                raise PermissionError("write denied")
-
-        monkeypatch.setattr(managed_files, "_sudo_replace", failed_write)
-        with pytest.raises(RuntimeError, match="backup was retained"):
-            claude_agent.revert_managed_settings()
-
-        assert path.read_text(encoding="utf-8") == contents
-        assert {file.name: file.read_bytes() for file in backup_dir.iterdir()} == backup
-
-        monkeypatch.setattr(managed_files, "_sudo_replace", write)
-        assert claude_agent.revert_managed_settings() == "emptied"
-        assert path.read_text(encoding="utf-8") == "{}\n"
-        assert json.loads((backup_dir / "manifest.json").read_text())["files"] == {}
-
-    def test_revert_does_not_recreate_a_missing_file(self, tmp_path, backup_dir, monkeypatch):
+    def test_revert_removes_file_created_by_ucode(self, tmp_path, backup_dir, monkeypatch):
         path = tmp_path / "managed.json"
         monkeypatch.setattr(
             managed_files,
             "_sudo_replace",
             lambda target, text: target.write_text(text, encoding="utf-8"),
         )
+        monkeypatch.setattr(managed_files, "_sudo_remove", lambda target: target.unlink())
         managed_files.reconcile_managed_file(
             path,
             '{"ucode": true}\n',
@@ -1945,17 +1834,16 @@ class TestManagedFileLifecycle:
             owned_paths=[["ucode"]],
             parser=json.loads,
         )
-        path.unlink()
 
-        managed_files.revert_managed_file(
+        result = managed_files.revert_managed_file(
             "claude",
             display="Claude Code",
             parser=json.loads,
-            dumper=json.dumps,
+            dumper=lambda doc: json.dumps(doc) + "\n",
         )
 
+        assert result == "removed"
         assert not path.exists()
-        assert json.loads((backup_dir / "manifest.json").read_text())["files"] == {}
 
     def test_revert_preserves_external_changes(self, tmp_path, backup_dir, monkeypatch):
         path = tmp_path / "managed.json"

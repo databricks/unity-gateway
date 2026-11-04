@@ -824,7 +824,6 @@ def revert_managed_file(
             current_text if is_semantically_equal(reverted, current_doc) else dumper(reverted)
         )
 
-    emptied = False
     if desired_text != current_text:
         if not managed_writes_allowed():
             if current_os() is not OS.WINDOWS:
@@ -835,17 +834,13 @@ def revert_managed_file(
             raise RuntimeError(_windows_admin_required_message(display, path, "ug revert"))
         try:
             if desired_text is None:
-                try:
-                    _privileged_remove(path)
-                except (OSError, subprocess.CalledProcessError):
-                    desired_text = dumper({})
-                    _privileged_replace(path, desired_text)
-                    emptied = True
+                _privileged_remove(path)
             else:
                 _privileged_replace(path, desired_text)
         except (OSError, subprocess.CalledProcessError) as exc:
+            action = "delete" if desired_text is None else "restore"
             raise RuntimeError(
-                f"Could not restore {display} managed settings at {path}. The backup was retained "
+                f"Could not {action} {display} managed settings at {path}. The backup was retained "
                 f"under {MANAGED_BACKUP_DIR}. Resolve the permission issue and run `ug revert` "
                 "again."
             ) from exc
@@ -856,8 +851,6 @@ def revert_managed_file(
             )
 
     _delete_backup(tool, manifest, entry)
-    if emptied:
-        return "emptied"
     if original_text is None and desired_text is None:
         return "removed"
     if current_text != last_text:
