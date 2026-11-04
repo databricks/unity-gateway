@@ -3544,6 +3544,7 @@ def _launch_tool(
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     routing_already_chosen: bool = False,
+    routing_unsupported: bool = False,
 ) -> None:
     previous = {}
     try:
@@ -3676,9 +3677,27 @@ def _launch_tool(
         managed_smart_routing_applies = (
             _managed_smart_routing_enabled(managed, tool) and not routing_chosen
         )
-        smart_routing_enabled = managed_smart_routing_applies or (
-            smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
+        # Checked before the managed version is applied, which consumes the selector. A version
+        # that leaves this agent unrouted makes the launch a plain one: no skills, hooks, or note.
+        # The flag sets routing_chosen, so at most one of these holds.
+        managed_routing_unsupported = (
+            managed_smart_routing_applies
+            and not smart_routing_config.enabled_version_routes(agent=tool)
         )
+        routing_skipped = routing_unsupported or managed_routing_unsupported
+        smart_routing_enabled = not routing_skipped and (
+            managed_smart_routing_applies
+            or smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
+        )
+        if routing_skipped and _smart_routing_launch_shape(tool, ctx.args, explicit_prompt):
+            display = TOOL_SPECS[tool]["display"]
+            print_warning(
+                f"Smart routing is enabled for {display} in this workspace, but it is currently "
+                "only supported for Claude Code. Running without smart routing."
+                if managed_routing_unsupported
+                else f"Smart routing on {display} is currently not supported. "
+                "Running without smart routing."
+            )
         # Re-fetch model lists on every launch so newly-added Databricks
         # endpoints show up without a manual `ug configure` (and so that
         # tools like pi which read multiple model bundles never run on
@@ -4266,20 +4285,28 @@ def codex_cmd(
         str | None,
         typer.Option("--scopes", hidden=True, help="Comma-separated custom OAuth scopes."),
     ] = None,
-    enable_smart_routing_flag: Annotated[
-        bool | None,
-        typer.Option(
-            "--enable-smart-routing/--disable-smart-routing",
-            help="Enable or disable AI Gateway subagent model routing and Smart Router "
-            "Orchestrator for this Codex launch or session.",
-        ),
-    ] = None,
+    # Hidden while Codex is unrouted by default; the Smart Router skill still toggles with them.
+    enable_smart_routing: Annotated[
+        bool,
+        typer.Option("--enable-smart-routing", hidden=True),
+    ] = False,
+    disable_smart_routing: Annotated[
+        bool,
+        typer.Option("--disable-smart-routing", hidden=True),
+    ] = False,
     smart_router_feedback: Annotated[
         str | None,
         typer.Option("--smart-router-feedback", hidden=True),
     ] = None,
 ) -> None:
-    """Launch Codex via Databricks."""
+    """Launch Codex via Databricks.
+
+    Smart Routing is currently only supported for the Claude Code harness.
+    """
+    # Both flags cancel out: the launch behaves as if neither was passed.
+    enable_smart_routing_flag = (
+        None if enable_smart_routing == disable_smart_routing else enable_smart_routing
+    )
     if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
         return
     try:
@@ -4287,6 +4314,11 @@ def codex_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from exc
+    # Read before the flag applies the version, which consumes the selector.
+    routing_unsupported = (
+        enable_smart_routing_flag is True
+        and not smart_routing_config.enabled_version_routes(agent=AGENT_CODEX)
+    )
     with _smart_routing_v2_flag(
         enable_smart_routing_flag, agent=AGENT_CODEX
     ) as routing_already_chosen:
@@ -4295,6 +4327,7 @@ def codex_cmd(
                 "codex",
                 ctx,
                 routing_already_chosen=routing_already_chosen,
+                routing_unsupported=routing_unsupported,
                 provider=provider,
                 refresh=refresh,
                 skip_preflight=skip_preflight,
