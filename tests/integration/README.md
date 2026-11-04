@@ -1,5 +1,10 @@
 # Integration tests
 
+`../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
+behavior with controlled authentication and transport boundaries. The local-socket
+proxy suite also covers refresh/retry wiring; these checks do not establish live
+provider latency or token renewal behavior.
+
 `../test_configure_managed_writes.py` covers `ug revert` output after Claude/Codex managed-file
 deletion fails, its nonzero exit, and retention of the file, backup, and ug state. These component
 tests simulate privileged deletion failure; native OS permissions and live sudo are not exercised.

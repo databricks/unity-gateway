@@ -1,5 +1,11 @@
 # Test suites and user journeys
 
+Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
+401/403 responses and verify one refresh per rejected token generation, including
+unchanged token values, delayed rejections, and recovery after refresh failure.
+Non-forced lookups only supersede a rejected request when the token changes.
+These component checks retain the one-retry limit; live provider latency is unmeasured.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered
