@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import json
 import multiprocessing
 import os
@@ -1186,7 +1185,7 @@ class TestWriteToolConfigManagedSettings:
         assert written["env"]["ANTHROPIC_BASE_URL"]
         assert written["apiKeyHelper"]
 
-    def test_managed_file_caps_gpt_models_and_keeps_admin_model_settings(self, monkeypatch):
+    def test_managed_file_gets_no_gpt_cap_and_keeps_admin_model_settings(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []
         admin_model_settings = {"system.ai.claude-opus-4-8": {"autoCompactWindow": 400_000}}
@@ -1199,10 +1198,7 @@ class TestWriteToolConfigManagedSettings:
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
         window = {"autoCompactWindow": db_mod.GPT_AUTO_COMPACT_WINDOW}
         _, text = managed_writes[0]
-        assert json.loads(text)["modelSettings"] == {
-            **admin_model_settings,
-            "system.ai.gpt-6-luna": window,
-        }
+        assert json.loads(text)["modelSettings"] == admin_model_settings
         _, private = private_writes[0]
         assert private["modelSettings"] == {"system.ai.gpt-6-luna": window}
 
@@ -1246,28 +1242,23 @@ class TestWriteToolConfigManagedSettings:
             assert managed_writes
 
     @pytest.mark.parametrize(
-        "managed_model_settings, expected_luna_siblings",
+        "managed_model_settings",
         [
-            pytest.param(None, {}, id="no-modelSettings"),
+            pytest.param(None, id="no-modelSettings"),
             pytest.param(
-                {"system.ai.claude-opus-4-8": {"effortLevel": "high"}},
-                {},
-                id="other-models-only",
+                {"system.ai.claude-opus-4-8": {"effortLevel": "high"}}, id="other-models-only"
             ),
             pytest.param(
-                {"system.ai.gpt-6-luna": {"effortLevel": "high"}},
-                {"effortLevel": "high"},
-                id="luna-without-window",
+                {"system.ai.gpt-6-luna": {"effortLevel": "high"}}, id="luna-without-window"
             ),
             pytest.param(
                 {"system.ai.gpt-6-luna": {"effortLevel": "high", "autoCompactWindow": 600_000}},
-                {"effortLevel": "high"},
                 id="luna-with-window",
             ),
         ],
     )
     def test_managed_picker_luna_cap_across_managed_model_settings_shapes(
-        self, monkeypatch, managed_model_settings, expected_luna_siblings
+        self, monkeypatch, managed_model_settings
     ):
         luna = "system.ai.gpt-6-luna"
         managed_doc: dict = {
@@ -1303,7 +1294,7 @@ class TestWriteToolConfigManagedSettings:
         assert private["modelSettings"][luna] == window
         assert private["env"]["PRIVATE_KEEP"] == "1"
 
-        # When UG composes the managed file itself, luna gets the cap and keeps sibling fields.
+        # When UG composes the managed file itself, an administrator's modelSettings stay verbatim.
         private_writes, managed_writes = [], []
         existing = {str(FAKE_MANAGED_PATH): managed_doc}
         monkeypatch.delenv(managed_files.SKIP_OS_SETTINGS_ENV)
@@ -1313,10 +1304,7 @@ class TestWriteToolConfigManagedSettings:
             "databricks-claude-sonnet-4",
         )
         managed = json.loads(managed_writes[0][1])
-        assert managed["modelSettings"][luna] == {**expected_luna_siblings, **window}
-        for model, settings in (managed_model_settings or {}).items():
-            if model != luna:
-                assert managed["modelSettings"][model] == settings
+        assert managed.get("modelSettings") == managed_model_settings
         assert managed["env"]["MANAGED_KEEP"] == "1"
 
     def test_absent_managed_file_adds_no_gpt_entry(self, monkeypatch):
@@ -1367,7 +1355,7 @@ class TestWriteToolConfigManagedSettings:
         private = [p for path, p in private_writes if path == str(claude.CLAUDE_SETTINGS_PATH)][-1]
         assert private["modelSettings"] == {"system.ai.gpt-6-luna": {"autoCompactWindow": 500_000}}
 
-    def test_both_files_honor_the_users_lower_window(self, monkeypatch):
+    def test_only_the_private_file_honors_the_users_lower_window(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []
         user_path = str(claude.CLAUDE_USER_SETTINGS_PATH)
@@ -1379,7 +1367,7 @@ class TestWriteToolConfigManagedSettings:
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
         window = {"system.ai.gpt-6-luna": {"autoCompactWindow": 500_000}}
         _, text = managed_writes[0]
-        assert json.loads(text)["modelSettings"] == window
+        assert "modelSettings" not in json.loads(text)
         assert [payload["modelSettings"] for _, payload in private_writes] == [window]
         # The user's own file is read for the value but never written.
         assert user_path not in {path for path, _ in [*private_writes, *managed_writes]}
@@ -3970,36 +3958,45 @@ GPT_WINDOW = {"autoCompactWindow": db_mod.GPT_AUTO_COMPACT_WINDOW}
 class TestGptAutoCompactModelSettings:
     """GPT ids get the `[1m]` hint, so ug caps their auto-compact below the gateway's real limit."""
 
-    def test_static_picker_caps_only_gpt_models(self):
+    def test_static_picker_caps_only_gpt_models(self, monkeypatch):
         static = ["system.ai.claude-opus-4-8", "system.ai.gpt-6-luna", "system.ai.gpt-oss-120b"]
-        overlay, keys = claude.render_overlay(WS, "s4", static_models=static)
+        written = self._patch(monkeypatch, {})
+        claude.write_tool_config({"workspace": WS, "claude_static_models": static}, "s4")
         # The picker row is `system.ai.gpt-6-luna[1m]`; the key stays canonical.
-        assert overlay["modelSettings"] == {"system.ai.gpt-6-luna": GPT_WINDOW}
-        assert ["modelSettings", "system.ai.gpt-6-luna", "autoCompactWindow"] in keys
+        assert written["payload"]["modelSettings"] == {"system.ai.gpt-6-luna": GPT_WINDOW}
 
-    def test_discovered_picker_and_routed_root_model_are_capped(self):
+    def test_overlay_carries_no_model_settings(self):
+        overlay, keys = claude.render_overlay(
+            WS,
+            "s4",
+            static_models=["system.ai.gpt-6-luna"],
+            route_root_model="system.ai.gpt-6-luna",
+        )
+        assert "modelSettings" not in overlay
+        assert not [key for key in keys if key[0] == "modelSettings"]
+
+    def test_discovered_picker_and_routed_root_model_are_capped(self, monkeypatch):
         catalog = db_mod.AnthropicModelCatalog(
             model_ids=["system.ai.claude-sonnet-5", "system.ai.gpt-5-6-sol"],
             model_id_to_display_name={},
         )
-        overlay, _ = claude.render_overlay(
-            WS, "s4", picker_catalog=catalog, route_root_model="system.ai.gpt-6-luna"
+        written = self._patch(monkeypatch, {})
+        claude.write_tool_config(
+            {"workspace": WS}, "s4", picker_catalog=catalog, route_root_model="system.ai.gpt-6-luna"
         )
-        assert overlay["env"]["ANTHROPIC_MODEL"] == "system.ai.gpt-6-luna[1m]"
-        assert overlay["modelSettings"] == {
+        assert written["payload"]["modelSettings"] == {
             "system.ai.gpt-6-luna": GPT_WINDOW,
             "system.ai.gpt-5-6-sol": GPT_WINDOW,
         }
 
-    def test_claude_and_gpt_oss_models_get_no_entry(self):
-        overlay, keys = claude.render_overlay(
-            WS,
+    def test_claude_and_gpt_oss_models_get_no_entry(self, monkeypatch):
+        written = self._patch(monkeypatch, {})
+        claude.write_tool_config(
+            {"workspace": WS, "claude_models": {"opus": "system.ai.claude-opus-4-8"}},
             "s4",
-            claude_models={"opus": "system.ai.claude-opus-4-8"},
             route_root_model="system.ai.gpt-oss-120b",
         )
-        assert "modelSettings" not in overlay
-        assert not [key for key in keys if key[0] == "modelSettings"]
+        assert "modelSettings" not in written["payload"]
 
     def _patch(self, monkeypatch, existing_settings):
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
@@ -4120,10 +4117,19 @@ class TestGptAutoCompactModelSettings:
     @pytest.mark.parametrize(
         "user_key", ["system.ai.gpt-6-luna", "system.ai.gpt-6-luna[1m]"], ids=["canonical", "1m"]
     )
-    def test_lower_user_window_is_honored(self, user_key):
+    def test_lower_user_window_is_honored(self, user_key, monkeypatch):
         original = self._write_user_settings({user_key: {"autoCompactWindow": 500_000}})
-        overlay, _ = claude.render_overlay(WS, "s4", route_root_model="system.ai.gpt-6-luna")
-        assert overlay["modelSettings"] == {"system.ai.gpt-6-luna": {"autoCompactWindow": 500_000}}
+        written = self._patch(monkeypatch, {})
+        user_doc = json.loads(original)
+        monkeypatch.setattr(
+            claude,
+            "read_json_safe",
+            lambda path: user_doc if path == claude.CLAUDE_USER_SETTINGS_PATH else {},
+        )
+        claude.write_tool_config({"workspace": WS}, "s4", route_root_model="system.ai.gpt-6-luna")
+        assert written["payload"]["modelSettings"] == {
+            "system.ai.gpt-6-luna": {"autoCompactWindow": 500_000}
+        }
         assert claude.CLAUDE_USER_SETTINGS_PATH.read_bytes() == original
 
     def test_lower_of_both_user_spellings_wins(self):
@@ -4178,15 +4184,14 @@ class TestGptAutoCompactModelSettings:
         settings_path.write_text("{}")
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
 
-        # Several writers in one launch: overlay rendering, both files, and the launch override.
-        overlay, _ = claude.render_overlay(WS, "s4", route_root_model="system.ai.gpt-6-luna")
-        merged = copy.deepcopy(overlay)
+        # Several writers in one launch: the settings file and the launch override.
+        merged = {"env": {"ANTHROPIC_MODEL": "system.ai.gpt-6-luna[1m]"}}
         claude._sync_gpt_model_settings(merged)
         claude.launch(
             {"workspace": WS}, [], options=LaunchOptions(user_pinned_model="system.ai.gpt-6-luna")
         )
 
-        assert overlay["modelSettings"] == {"system.ai.gpt-6-luna": GPT_WINDOW}
+        assert merged["modelSettings"] == {"system.ai.gpt-6-luna": GPT_WINDOW}
         assert json.loads(calls[0][2])["modelSettings"] == {"system.ai.gpt-6-luna": GPT_WINDOW}
         assert warnings == [
             "autoCompactWindow 1000000 for system.ai.gpt-6-luna is capped at 800000: "

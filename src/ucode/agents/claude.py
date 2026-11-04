@@ -729,7 +729,6 @@ def render_overlay(
         )
         keys += [["env", key] for key in otel_env] + [["otelHeadersHelper"]]
 
-    keys += _sync_gpt_model_settings(overlay)
     return overlay, keys
 
 
@@ -767,11 +766,11 @@ def _user_auto_compact_windows(user_settings_path: Path) -> dict[str, int]:
 def gpt_model_settings(
     models: Iterable[object], user_settings_path: Path | None = None
 ) -> dict[str, dict[str, int]]:
-    """GPT ``modelSettings`` entries for every file ug writes, honoring the user's lower window.
+    """GPT ``modelSettings`` entries for ug's ``--settings`` files, honoring a lower user window.
 
-    A Claude Code settings source above the user's (``--settings``, the OS-managed file) would
-    otherwise replace their `/autocompact` choice, so ug writes min(user value,
-    ``GPT_AUTO_COMPACT_WINDOW``) and warns once when it lowers the user's value.
+    ``--settings`` outranks the user's file and would otherwise replace their `/autocompact`
+    choice, so ug writes min(user value, ``GPT_AUTO_COMPACT_WINDOW``) and warns once when it
+    lowers the user's value.
     """
     user_windows = _user_auto_compact_windows(user_settings_path or CLAUDE_USER_SETTINGS_PATH)
     entries = gpt_auto_compact_model_settings(models, user_windows)
@@ -806,15 +805,13 @@ def _managed_settings_named_model_ids() -> list[object]:
         return []
 
 
-def _sync_gpt_model_settings(
-    settings: dict, also_named_model_ids: Iterable[object] = ()
-) -> list[list[str]]:
-    """Write ug's GPT ``modelSettings`` leaves for the models ``settings`` names; return their paths.
+def _sync_gpt_model_settings(settings: dict, also_named_model_ids: Iterable[object] = ()) -> None:
+    """Write ug's GPT ``modelSettings`` leaves for the models ``settings`` names.
 
     ``also_named_model_ids`` are ids another settings source offers that this document must cap
     too; they count as named, so stale-entry cleanup keeps them.
 
-    Like the managed model env keys, the ``autoCompactWindow`` leaf of a GPT id is ug's: it is set
+    The ``autoCompactWindow`` leaf of a GPT id is ug's in the file this edits: it is set
     for every GPT model the document names (see ``gpt_model_settings`` for the value) and dropped
     for GPT ids it no longer names. Sibling fields and non-GPT entries are left alone, and only
     entries emptied by a removal are dropped.
@@ -824,9 +821,7 @@ def _sync_gpt_model_settings(
     if not isinstance(model_settings, dict):
         if entries:
             settings[CLAUDE_MODEL_SETTINGS_KEY] = entries
-        return [
-            [CLAUDE_MODEL_SETTINGS_KEY, model, CLAUDE_AUTO_COMPACT_WINDOW_KEY] for model in entries
-        ]
+        return
     removed = False
     for model, entry in list(model_settings.items()):
         if model in entries or not is_gpt_auto_compact_model_key(model):
@@ -839,7 +834,6 @@ def _sync_gpt_model_settings(
     deep_merge_dict(model_settings, entries)
     if removed and not model_settings:
         del settings[CLAUDE_MODEL_SETTINGS_KEY]
-    return [[CLAUDE_MODEL_SETTINGS_KEY, model, CLAUDE_AUTO_COMPACT_WINDOW_KEY] for model in entries]
 
 
 def sync_auto_compact_notice_hook(doc: dict) -> None:
@@ -855,7 +849,8 @@ def record_session_gpt_auto_compact(*overlays: dict) -> None:
     Sets ``SESSION_WINDOWS_ENV_VAR`` on this process so the Claude it starts, and that Claude's
     hooks, inherit it. Claude Code's precedence is the OS-managed file over ``--settings``, so the
     sources are ug's settings file, then ``overlays`` (the launch's own settings), then the
-    managed file. A launch with no GPT window clears an inherited value.
+    managed file, which only an administrator writes a window into. A launch with no GPT window
+    clears an inherited value.
     """
     managed_path = managed_settings_path()
     sources = [
@@ -1788,7 +1783,6 @@ def write_tool_config(
         *,
         enforce_model_default_hierarchy: bool,
         managed_settings_snapshots: ManagedFileSnapshots | None,
-        cap_managed_picker_models: bool = False,
     ) -> dict:
         base_env = base.get("env")
         existing_custom_headers = (
@@ -1916,10 +1910,11 @@ def write_tool_config(
                             merged.pop(key, None)
                 elif not ug_picker:
                     _warn_unrecorded_allow_list(merged, managed_settings_snapshots)
-        # Derived from the final file, so family defaults and pickers ug preserved are covered too.
-        _sync_gpt_model_settings(
-            merged, _managed_settings_named_model_ids() if cap_managed_picker_models else ()
-        )
+        if managed_settings_snapshots is None:
+            # Only the --settings file carries the cap: an admin's managed `modelSettings` is
+            # theirs, and the --settings layer outranks the user's file, which the cap must beat.
+            # Derived from the final file, so family defaults and pickers ug preserved are covered.
+            _sync_gpt_model_settings(merged, _managed_settings_named_model_ids())
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
@@ -1928,7 +1923,6 @@ def write_tool_config(
         read_json_safe(CLAUDE_SETTINGS_PATH),
         enforce_model_default_hierarchy=source_scoped_defaults,
         managed_settings_snapshots=None,
-        cap_managed_picker_models=True,
     )
     # Only the --settings file carries the hook: Claude Code merges hooks across sources.
     sync_auto_compact_notice_hook(private_settings)
