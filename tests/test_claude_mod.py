@@ -14,6 +14,9 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     v2._write_routed_claude_plugin(tmp_path, [])
 
     assert json.loads((tmp_path / "hooks/hooks.json").read_text()) == {"modules": ["./register.ts"]}
+    options = json.loads((tmp_path / ".claude-plugin/plugin.json").read_text())["userConfig"]
+    assert options["EXPOSE_AUTO_IN_MODEL_PICKER"]["default"] == "0"
+    assert set(SMART_ROUTING_ENV_KEYS) <= options.keys()
     mods = Path(v2.__file__).parents[1] / "agents" / "claude_mods"
     # The entry point imports these, so they ship beside it unmodified.
     for name in (
@@ -54,6 +57,7 @@ def test_launch_options_resolve_versions_without_mutating_input(version):
     isaac = shutil.which("isaac")
     assert v2._claude_mod_launch_options(env) == {
         **expected,
+        "EXPOSE_AUTO_IN_MODEL_PICKER": expected.get("EXPOSE_AUTO_IN_MODEL_PICKER", "0"),
         "unset": [],
         "recipe": "custom_recipe",
         "routeCommand": [],
@@ -72,6 +76,7 @@ def test_launch_options_preserve_empty_and_absent_values():
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "",
         "unset": ["ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "ENABLE_SMART_ROUTER_ORCHESTRATOR"],
+        "EXPOSE_AUTO_IN_MODEL_PICKER": "0",
         "recipe": "stable",
         "routeCommand": [],
         "orchestratorInstructions": "",

@@ -1,5 +1,14 @@
 # Claude mod entry point
 
+`subagent_orch_auto_picker_v0_claude_only` passes `EXPOSE_AUTO_IN_MODEL_PICKER=1`
+through the native plugin options; other presets pass `0`. Exposure is a launch
+capability and is excluded from activity toggles. The picker behavior is pending.
+Claude 2.1.317's validator reports `on ui.render{component=ModelPicker}: no component
+is named ModelPicker, so it never runs`; its `$.session.model()` reads the current
+model. Completing Auto needs a native extension that exposes resolved picker rows,
+selection/cancellation, and concrete model application. A settings overlay cannot
+establish that contract when managed settings replace the rows.
+
 UG's Claude launcher loads `hooks/register.ts` through the existing launch-scoped
 `ug-smart-router` plugin in sessions launched with smart routing. Claude Code 2.1.290 or
 newer is required.

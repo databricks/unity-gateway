@@ -34,6 +34,7 @@ from ucode.constants import (
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+    EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR,
     LOOPBACK_HOST,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
@@ -357,6 +358,7 @@ def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
         **{key: source.get(key, "") for key in SMART_ROUTING_ENV_KEYS},
         # Native plugin options cannot represent null; preserve absent versus empty values.
         "unset": [key for key in SMART_ROUTING_ENV_KEYS if key not in source],
+        EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR: source.get(EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR, "0"),
         "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
         "routeCommand": [],
         "orchestratorInstructions": (
@@ -412,6 +414,12 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
                 **{
                     key: {"type": "string", "title": key, "description": "Original routing flag"}
                     for key in SMART_ROUTING_ENV_KEYS
+                },
+                EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR: {
+                    "type": "string",
+                    "default": "0",
+                    "title": "Auto model picker",
+                    "description": "Resolved launch capability for the Claude Auto picker",
                 },
                 "unset": {
                     "type": "string",

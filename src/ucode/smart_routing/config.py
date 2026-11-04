@@ -11,6 +11,7 @@ from ucode.constants import (
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+    EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
 )
@@ -33,33 +34,41 @@ SUBAGENT_ORCH_V1 = "subagent_orch_v1"
 # Preserve subagent_orch_v0 for Claude, with all Codex routing flags disabled.
 SUBAGENT_ORCH_V0_CLAUDE_ONLY = "subagent_orch_v0_claude_only"
 
+SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY = "subagent_orch_auto_picker_v0_claude_only"
+
 # Selected by --enable-smart-routing and managed smart routing when no known version is set.
 DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0_CLAUDE_ONLY
 
-_RESTORE_KEYS = (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
+_CONFIG_ENV_KEYS = (*SMART_ROUTING_ENV_KEYS, EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR)
+_RESTORE_KEYS = (*_CONFIG_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
 
 _BASE_VERSIONS = {
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
+        EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR: "0",
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     },
     SUBAGENT_ONLY_V0: {
+        EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR: "0",
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     },
     SUBAGENT_ONLY_V1: {
+        EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR: "0",
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     },
     SUBAGENT_ORCH_V0: {
+        EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR: "0",
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
     },
     SUBAGENT_ORCH_V1: {
+        EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR: "0",
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
@@ -92,9 +101,24 @@ _VERSIONS = {
     SUBAGENT_ORCH_V0_CLAUDE_ONLY: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
         AGENT_CODEX: {
+            EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR: "0",
             ENABLE_SMART_ROUTING_ENV_VAR: "0",
             ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
             ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        },
+    },
+    SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY: {
+        AGENT_CLAUDE: {
+            ENABLE_SMART_ROUTING_ENV_VAR: "0",
+            ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+            ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+            EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR: "1",
+        },
+        AGENT_CODEX: {
+            ENABLE_SMART_ROUTING_ENV_VAR: "0",
+            ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+            ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+            EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR: "0",
         },
     },
 }
@@ -103,7 +127,7 @@ _VERSIONS = {
 def _validate_versions(versions: Mapping[str, Mapping[str, Mapping[str, str]]]) -> None:
     """Require both agents and a complete, explicit flag set for each."""
     expected_agents = {AGENT_CLAUDE, AGENT_CODEX}
-    expected = set(SMART_ROUTING_ENV_KEYS)
+    expected = set(_CONFIG_ENV_KEYS)
     for version, agents in versions.items():
         if agents.keys() != expected_agents:
             raise ValueError(
