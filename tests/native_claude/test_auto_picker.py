@@ -97,6 +97,7 @@ export const register = (on, options) => {
                 lambda text: '"subagent":"0","orchestrator":"0"' in text,
                 "fresh session activity is off",
             )
+            assert '"recipe":"DISABLED_AUTO"' in tui.visible
             tui.submit("/model haiku")
             tui.wait_for(
                 lambda _: (

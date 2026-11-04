@@ -7,6 +7,13 @@ Auto/concrete mode popup, then Claude's native main-model picker. `/model auto`
 opens the second picker directly. Confirm with Enter. The popup is the accepted
 UX for this implementation; it does not inject a row into the native picker.
 
+Fresh sessions start with routing and orchestration off, the OFF footer, and
+`DISABLED_AUTO`. Exposure provisions the picker and assets without activating them.
+Confirming Auto turns both activities on and shows the original routing banner.
+An explicit launch `--enable-smart-routing` still opts in immediately. Existing
+presets keep their launch defaults. The startup regression failed before this change;
+1,123 focused Python tests and the native startup/popup journey then passed.
+
 The native saved-choice journey verifies concrete selection, cancellation,
 same-model Auto entry, subagent/orchestrator controls, the existing ON/routing-subagents
 banner, popup cancellation and both popup choices, `DISABLED_AUTO`, and restoration
