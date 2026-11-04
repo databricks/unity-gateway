@@ -142,71 +142,15 @@ through the real Claude CLI before configuration; its registry entry and install
 survive installation, reconfiguration, and revert unchanged. Revert also removes UG's marketplace
 registration and generated user source. Root-file preservation is covered by component tests;
 the integration journeys do not inspect OS-managed directories.
-`test_desktop_marketplace.py` covers ordinary default/`--user` configuration writing
-only the user source, no elevation, preservation of the registered legacy root source,
-one registration when switching an earlier root source to user scope, explicit cache
-refresh, content versions (including asset-only skill updates), downloaded workspace
-skills/assets, previous-account cleanup,
-malformed marketplace metadata (including missing or nonstring directory paths),
-equivalent path aliases, source-switch failure recovery
-for both current and legacy-only plugin identities, preserved nonlocal registrations,
-and retained user source/state after refresh failures. Legacy uninstall errors and timeouts
-warn while preserving the updated plugin and native connectors; retry removes the legacy
-registration and preserves unrelated plugins. Explicit global skips ordinary
-Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
-Overlapping installer/state checks and duplicate simulated-OS cases are consolidated;
-user installation, persisted account state and registered-source preservation remain covered.
-Unreferenced root-path sentinels and an ineffective temporary-directory alias test were
-removed; content updates and empty-payload cache refresh now share one lifecycle test.
-Equivalent registered-directory aliases remain covered separately.
-Dry-run preservation covers both fresh and already-configured installations.
-`test_desktop_bundle.py` covers macOS root-only publication, target/source validation,
-whole-bundle updates/removal, failed-replacement recovery, and linked/special-file rejection.
-It exercises the packaged POSIX shell with temporary path, ownership and OS adapters;
-Windows MDM is unsupported.
-The [component inventory](../README.md) records the isolated native CLI marketplace-add
-spot check; it does not establish Desktop GUI behavior or failure recovery.
-Temporary filesystem destinations are real; external Claude registry/cache operations
-and platform privilege boundaries are simulated. These checks do not establish native
-Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
-`test_desktop_configure_cli.py` also checks explicit-global selection versus default and
-`--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers. MDM cases also
-cover skipping non-macOS platforms and surfacing provisioning prerequisite failures.
+Desktop source placement, native-command simulation, MDM publication/recovery, CLI
+scope and argument validation, authentication isolation, and deferred cleanup have
+[component coverage](../README.md). These checks use temporary destinations and simulate
+external workspace, ownership, launchd, and Claude registration boundaries.
 
-macOS `--mdm-desktop` provisioning and its per-user LaunchAgent are outside these
-Linux/Windows journeys. `../test_desktop_mdm.py` has component coverage for publication,
-auth separation, cache refresh, machine-policy conflicts, generated-source replacement,
-rollback, and deferred cleanup using
-temporary paths and simulated external boundaries. Its runtime-probe regression uses a real
-isolated Python child to catch binary stdout being passed to `Path` during provisioning. Runtime paths are compared in the host OS format.
-Provisioning rejects selected shared-workspace hosts before authentication and missing
-credentials before publication; browser login is disabled.
-The generated ordinary Desktop auth argv is also parsed by the real CLI and pins its
-workspace ID before requesting credentials; external authentication is replaced.
-MDM compatibility cases cover unrestricted empty agent lists and feature-disabled config
-discovery. MCP/tracing helper checks keep explicit OAuth profiles independent of unrelated
-saved PAT mode while retaining saved PAT mode for matching host, profile, and workspace ID.
-Global Desktop rejects explicit PAT/custom OAuth and selected-workspace requests before
-authentication or agent writes; shared CLI-agent PAT validation/export remains covered.
-Both provisioning entry points reject unsafe CLI candidates before installer or
-profile discovery, including dry-run requests with a named, empty, or omitted profile.
-The public-command checks keep profile parsing real and replace subprocess execution at its boundary. An untrusted CLI candidate
-is rejected by real path validation before any version discovery or subprocess call.
-A public `configure --global --agents claude --profile` regression checks that privileged
-CLI discovery is validated before installer probes and cached OAuth is used without
-forced login or browser recovery. It stops at the credential/discovery boundary;
-it does not establish a complete native MDM configuration.
-Component fixtures also exercise API-format agent lists through the fetch gate and
-normalization, including headers/tracing, absent configs, and Claude enablement checks.
-User refresh follows the same serial registration flow without a shared Cowork lock;
-concurrent manual refresh/configure is deferred. Native launchd activation, first-user timing, managed-plist precedence, and tool/skill
-invocation remain untested here; follow
-[`docs/claude-desktop-mdm.md`](../../docs/claude-desktop-mdm.md) before fleet rollout.
-`../test_desktop_scope.py` additionally covers explicit `--global` routing into MDM,
-user-only no-flag/`--user` source placement, preservation of both existing user files and
-machine deployments, fresh-account provisioning,
-failure status and dry run through the CLI with external boundaries isolated. The new flag
-routing has not been tested through native macOS Desktop or a live MDM deployment.
+macOS MDM provisioning and its per-user LaunchAgent are outside these Linux/Windows
+journeys. Native launchd activation, first-user timing, managed-plist precedence,
+GUI skill/tool invocation, and current flag routing on macOS remain unverified here.
+Follow the [MDM rollout checklist](../../docs/claude-desktop-mdm.md) before fleet rollout.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.web_search and allow

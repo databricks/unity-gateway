@@ -307,6 +307,44 @@ def test_failed_update_preserves_previous_deployment(device, monkeypatch, failur
     assert _snapshot(device) == before
 
 
+def test_publication_and_rollback_failure_retains_recovery_files(device, monkeypatch):
+    mdm.configure(WORKSPACE, "admin")
+    before = _snapshot(device)
+    state_before = (mdm.MDM_ROOT / "state.json").read_bytes()
+    device.skill += b"New version.\n"
+    device.manifest["enabled_agents"][0]["config"]["tracing"]["enabled"] = False
+    write = claude_config._write_or_remove
+    replace_bundle = mdm.managed_files.replace_privileged_bundle
+    replacements = 0
+
+    def fail_policy_once(path, contents, *, mode):
+        if path == mdm.POLICY_PATH:
+            monkeypatch.setattr(claude_config, "_write_or_remove", write)
+            raise OSError("publication failed")
+        return write(path, contents, mode=mode)
+
+    def fail_bundle_restoration(target, source):
+        nonlocal replacements
+        replacements += 1
+        if replacements == 2:
+            raise OSError("bundle restoration failed")
+        return replace_bundle(target, source)
+
+    monkeypatch.setattr(claude_config, "_write_or_remove", fail_policy_once)
+    monkeypatch.setattr(mdm.managed_files, "replace_privileged_bundle", fail_bundle_restoration)
+    with pytest.raises(RuntimeError, match="rollback failed.*bundle restoration failed") as error:
+        mdm.configure(WORKSPACE, "admin")
+    backup = Path(str(error.value).split("Recovery source retained at ", 1)[1].removesuffix("."))
+    try:
+        assert cowork._marketplace_files(backup / "marketplace") == before["source"]
+        assert (backup / "state.json").read_bytes() == state_before
+        files = json.loads((backup / "files.json").read_bytes())
+        assert bytes.fromhex(files[str(mdm.POLICY_PATH)]["contents_hex"]) == before["policy"]
+        assert replacements == 2
+    finally:
+        shutil.rmtree(backup)
+
+
 @pytest.mark.parametrize("target", ["policy", "source"])
 def test_existing_policy_is_preserved_and_generated_source_is_replaced(device, target):
     path = mdm.POLICY_PATH if target == "policy" else device.source / "foreign.txt"
@@ -642,17 +680,28 @@ def test_machine_path_validation(monkeypatch, problem):
 
 
 @pytest.mark.parametrize(
-    "args", [[], ["--user"], ["--agents", "codex"], ["--use-pat"], ["--enable-databricks-ai-tools"]]
+    ("args", "diagnostic"),
+    [
+        (["--agents", "claude"], "requires --workspace or --profile"),
+        (["--workspace", WORKSPACE], "Use --mdm-desktop with --agents claude"),
+        (["--workspace", WORKSPACE, "--user", "--agents", "claude"], "uses workspace policy"),
+        (["--workspace", WORKSPACE, "--agents", "codex"], "Use --mdm-desktop with --agents claude"),
+        (
+            ["--workspace", WORKSPACE, "--agents", "claude", "--enable-databricks-ai-tools"],
+            "uses workspace policy",
+        ),
+    ],
 )
-def test_cli_rejects_incompatible_mdm_arguments(monkeypatch, args):
+def test_cli_rejects_incompatible_mdm_arguments(device, monkeypatch, args, diagnostic):
+    monkeypatch.delenv("UG_WORKSPACE", raising=False)
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
     configure = Mock()
     monkeypatch.setattr(mdm, "configure", configure)
-    argv = ["configure", "--mdm-desktop", "--workspace", WORKSPACE, *args]
-    if args and "--agents" not in args:
-        argv += ["--agents", "claude"]
-    result = CliRunner().invoke(cli.app, argv)
-    assert result.exit_code == 1
+    result = CliRunner().invoke(cli.app, ["configure", "--mdm-desktop", *args])
+    assert result.exit_code == 1, result.output
+    assert diagnostic in " ".join(result.output.split())
     configure.assert_not_called()
+    device.auth.assert_not_called()
 
 
 def test_cli_rejects_pat_profile_with_mdm_specific_error(monkeypatch):

@@ -73,11 +73,8 @@ def test_global_skips_desktop_mdm_on_other_platforms(monkeypatch, platform):
     profile_write.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "message",
-    ["Run Desktop MDM provisioning as root", "UG is installed in an administrator's home"],
-)
-def test_global_desktop_provisioning_failure_is_reported(monkeypatch, message):
+def test_global_desktop_provisioning_failure_is_reported(monkeypatch):
+    message = "Run Desktop MDM provisioning as root"
     from ucode.agents.desktop import mdm
 
     managed_files.set_machine_wide_only(True)

@@ -19,6 +19,7 @@ from ucode.agents.desktop import claude, cowork, mdm, setup
 @pytest.fixture
 def desktop_configuration(device, monkeypatch):
     # Exercise Desktop's writers; CLI-agent setup and workspace discovery are separate boundaries.
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
     state = {
         "workspace": WORKSPACE,
         "profile": "ADMIN_PROFILE",
@@ -223,6 +224,7 @@ def test_global_leaves_unsupported_desktop_platforms_unchanged(
     desktop_configuration, device, monkeypatch, platform
 ):
     monkeypatch.setattr(setup, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(cli.sys, "platform", platform)
     result = _configure("--global")
     assert result.exit_code == 0, result.output
     assert "supports macOS only" in " ".join(result.output.split())

@@ -522,7 +522,8 @@ cover skipping non-macOS platforms and surfacing provisioning prerequisite failu
 account, string-encoded machine policy, shared command bindings without admin credentials,
 managed skill assets/connectors, one native registration, explicit update and deferred
 removal, interrupted-account cleanup, foreign-policy preservation, generated-source replacement,
-rollback, dry run, and reuse of provisioning authentication. It reuses the temporary directory-copy fixture;
+rollback (including retained recovery files after restoration fails), dry run,
+and reuse of provisioning authentication. It reuses the temporary directory-copy fixture;
 workspace APIs, machine ownership, launchd, and Claude's registry/cache commands are simulated.
 A real isolated Python child verifies the runtime probe can read the installed package path;
 this catches binary stdout being passed to `Path` during provisioning. Runtime paths are compared in the host OS format.
@@ -556,7 +557,9 @@ directories: no flag and `--user` write only the user source, and explicit
 `--global` publishes MDM without changing the user's profile, source or registration. It also
 checks an existing MDM deployment stays byte-for-byte unchanged under default/user configure,
 provisioning before account creation, failure exit status, dry run, command-local scope,
-and skipping Desktop on platforms without MDM support. CLI-agent setup and external services
+and skipping Desktop on platforms without MDM support. Public CLI scope cases include macOS
+preflight, and argument rejection asserts each intended diagnostic after valid device setup.
+CLI-agent setup and external services
 are isolated; this is component coverage, not native macOS or live connector coverage.
 
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
