@@ -62,7 +62,8 @@ def test_managed_integration_ci_is_blocking():
     assert "managed" in {job.strip() for job in needs.group(1).split(",")}
     assert (
         "if: ${{ always() && (github.event_name != 'pull_request' || "
-        "github.event.pull_request.head.repo.full_name == github.repository) }}"
+        "github.event.pull_request.head.repo.full_name == github.repository) "
+        "&& inputs.lanes != 'advisory' }}"
     ) in gate
     baseline = _collect_integration_cases(_ci_marker_expression(managed, "codex"))
     routing = _collect_integration_cases(
@@ -131,6 +132,37 @@ def test_soft_fail_ci_is_non_blocking_on_both_platforms():
     for name in ("smoke", "full", "managed"):
         assert "continue-on-error:" not in jobs[name]
         assert "and not soft_fail" in jobs[name]
+
+
+NON_BLOCKING_JOBS = {"soft-fail", "opencode", "copilot", "managed-opencode"}
+
+
+def test_required_e2e_does_not_wait_for_non_blocking_integration_lanes():
+    jobs = _integration_jobs()
+    assert "default: all" in WORKFLOW.read_text().split("\n  workflow_dispatch:\n", 1)[0]
+    for name, job in jobs.items():
+        condition = re.search(r"(?m)^    if: (.*)$", job)
+        if name == "workspace":
+            assert condition is not None and "inputs.lanes" not in condition.group(1)
+        elif name in NON_BLOCKING_JOBS:
+            assert "continue-on-error: true" in job
+            assert condition is not None and "inputs.lanes != 'required'" in condition.group(1)
+        elif name != "dedicated-cuj":  # skipped with dedicated-cuj-plan
+            assert condition is not None and "inputs.lanes != 'advisory'" in condition.group(1)
+    assert "needs: dedicated-cuj-plan" in jobs["dedicated-cuj"]
+
+    ci = _workflow("ci.yml")
+    blocking = ci.split("\n  integration:\n", 1)[1].split("\n  integration-advisory:\n", 1)[0]
+    advisory = ci.split("\n  integration-advisory:\n", 1)[1].split("\n\n  #", 1)[0]
+    gate = ci.split("\n  required-e2e:\n", 1)[1]
+    for call, lanes in ((blocking, "required"), (advisory, "advisory")):
+        assert "uses: ./.github/workflows/integration.yml" in call
+        assert f"lanes: {lanes}" in call
+    assert "needs: [lint, integration]" in advisory
+    assert "!cancelled()" in advisory
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", gate)
+    assert needs is not None
+    assert {job.strip() for job in needs.group(1).split(",")} == {"e2e", "integration"}
 
 
 def test_soft_fail_marks_only_the_affected_claude_journey():

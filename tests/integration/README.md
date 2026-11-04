@@ -1254,8 +1254,10 @@ journey is included in its agent's Full lane. The managed lanes do not use `cont
 a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke, TUI,
 and installation subsets do not select managed tests and do not require them.
 The advisory Windows installation and headless lanes are not yet included in that aggregate check.
-The existing required `e2e` context also waits for the complete integration workflow, so integration
-cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
+The existing required `e2e` context also waits for CI's required integration call (`lanes: required`),
+so those jobs cannot still be running when that gate passes. CI runs the non-blocking lanes (soft-fail,
+OpenCode, Copilot, and managed OpenCode) in a separate **Integration (non-blocking)** call
+(`lanes: advisory`) after it, which `e2e` does not wait for. Full coverage on PRs needs no label or opt-in.
 
 ### Soft-fail tests
 
@@ -1275,7 +1277,7 @@ Only the three Claude Smart Router toggle tests (`test_smart_router_routes_claud
 `soft_fail`. The **Soft-fail journeys · claude · Linux/Windows (non-blocking)** jobs run those cases
 unchanged, with the pinned Claude version and existing e2e workspace/bearer. They run after
 Full and Managed config finish, one OS at a time, to avoid adding concurrent inference load.
-They use `continue-on-error`, stay outside `All integration tests`, and upload separate
+They use `continue-on-error`, stay outside `All integration tests` and the required `e2e` check, and upload separate
 `integration-soft-fail-claude-<os>` artifacts even when tests fail.
 No skip, xfail, task retry, weaker assertion, or production routing change is involved.
 The separate advisory harness-latest workflow still selects these cases too.
