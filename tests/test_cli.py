@@ -6736,6 +6736,8 @@ class TestConfigureScopeFlags:
         with (
             self._single_agent_env({"enabled_agents": {}}),
             patch("ucode.agents.desktop.mdm.configure"),
+            patch("ucode.agents.desktop.mdm._require_macos"),
+            patch("ucode.agents.desktop.mdm.validate_cli_discovery"),
             patch(
                 "ucode.cli.configure_single_tool", side_effect=lambda _tool, state, **_kw: state
             ) as mock_single,

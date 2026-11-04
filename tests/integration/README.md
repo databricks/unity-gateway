@@ -142,11 +142,13 @@ through the real Claude CLI before configuration; its registry entry and install
 survive installation, reconfiguration, and revert unchanged. Revert also removes UG's marketplace
 registration and generated user source. Root-file preservation is covered by component tests;
 the integration journeys do not inspect OS-managed directories.
-Desktop source placement, native-command simulation, MDM publication/recovery, CLI
+Desktop source placement, native-command simulation, MDM publication/recovery and unsafe-backup rejection, CLI
 scope and argument validation (including connector whitespace and multiple workspaces),
 malformed cache inspection, authentication isolation, and deferred cleanup have
 [component coverage](../README.md). These checks use temporary destinations and simulate
 external workspace, ownership, launchd, and Claude registration boundaries.
+CLI-agent scope unit coverage isolates Desktop prerequisites; Desktop scope components
+exercise the macOS CLI preflight.
 
 macOS MDM provisioning and its per-user LaunchAgent are outside these Linux/Windows
 journeys. Native launchd activation, first-user timing, managed-plist precedence,

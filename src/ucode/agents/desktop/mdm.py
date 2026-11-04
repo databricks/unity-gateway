@@ -191,6 +191,23 @@ def _machine_directory(path: Path) -> None:
     path.chmod(0o755)  # MDM scripts may run with a restrictive umask.
 
 
+def _check_marketplace_backup(root: Path) -> None:
+    pending = [root]
+    while pending:
+        path = pending.pop()
+        _check_machine_path(path, required=True)
+        info = path.lstat()
+        directory = stat.S_ISDIR(info.st_mode)
+        if not directory and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
+            raise RuntimeError(f"Refusing linked or special marketplace backup entry: {path}")
+        if not info.st_mode & stat.S_IROTH or (directory and not info.st_mode & stat.S_IXOTH):
+            raise RuntimeError(
+                f"Marketplace backup entry must be accessible to device users: {path}"
+            )
+        if directory:
+            pending.extend(path.iterdir())
+
+
 def _publish(
     source: Path | None, files: dict[Path, tuple[bytes | None, int]], configuration: dict
 ) -> None:
@@ -204,6 +221,8 @@ def _publish(
     system_path = managed_files.claude_desktop_marketplace_path()
     assert system_path is not None
     _check_machine_path(system_path)
+    if system_path.exists():
+        _check_marketplace_backup(system_path)
     state_before = claude_config.read_optional_bytes(state_path)
     backup = Path(tempfile.mkdtemp(prefix="ug-mdm-rollback-")).resolve()
     (backup / "files.json").write_bytes(
@@ -222,7 +241,7 @@ def _publish(
     retain_backup = False
     try:
         if system_path.exists():
-            shutil.copytree(system_path, backup / "marketplace")
+            shutil.copytree(system_path, backup / "marketplace", symlinks=True)
         try:
             managed_files.replace_privileged_bundle(system_path, source)
             state = _read_machine_state()

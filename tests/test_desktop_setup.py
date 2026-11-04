@@ -100,10 +100,12 @@ def test_generated_desktop_auth_command_preserves_workspace_selection(desktop, m
 
     host = "https://workspace.example"
     workspace.activate(host, "111")
-    desktop_setup.configure_claude_desktop({"workspace": host, "profile": "chosen-profile"})
-    args = configured_profile(desktop)["inferenceCredentialHelperArgs"]
-    assert args[args.index("--workspace-id") + 1] == "111"
-    workspace.activate(None, None)
+    try:
+        desktop_setup.configure_claude_desktop({"workspace": host, "profile": "chosen-profile"})
+        args = configured_profile(desktop)["inferenceCredentialHelperArgs"]
+        assert args[args.index("--workspace-id") + 1] == "111"
+    finally:
+        workspace.activate(None, None)
 
     def credential(selected_host, profile):
         assert selected_host == host

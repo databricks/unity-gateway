@@ -131,6 +131,10 @@ the root deployment untouched; use `ug revert --mdm-desktop` to remove it.
 | `~/.ucode/claude-desktop-mdm.json` | User's installed version/account tracking and pending cleanup |
 | `~/Library/Application Support/Claude-3p/local-agent-mode-sessions/<account>/<org>/cowork_plugins` | Native user registration and installed plugin cache |
 
+Existing root marketplace contents must remain root-owned, readable by device users,
+and free of links or special files. Update and removal reject unsafe entries before
+creating a marketplace backup.
+
 Only inference/tracing settings go in the managed plist. Values use Anthropic's
 documented string encoding, including JSON strings for arrays, objects, and booleans.
 This writes the documented machine plist directly; it does not export a `.mobileconfig`.

@@ -307,6 +307,36 @@ def test_failed_update_preserves_previous_deployment(device, monkeypatch, failur
     assert _snapshot(device) == before
 
 
+@pytest.mark.parametrize("entry_type", ["symlink", "hardlink", "fifo", "private"])
+def test_unsafe_existing_marketplace_is_rejected_before_backup(
+    device, monkeypatch, tmp_path, entry_type
+):
+    mdm.configure(WORKSPACE, "admin")
+    policy_before = mdm.POLICY_PATH.read_bytes()
+    state_before = (mdm.MDM_ROOT / "state.json").read_bytes()
+    nested = device.source / "plugins/ug/skills/review/nested"
+    nested.mkdir()
+    entry = nested / "fixture"
+    ordinary = tmp_path / "ordinary.txt"
+    ordinary.write_text("test fixture")
+    if entry_type == "symlink":
+        entry.symlink_to(ordinary)
+    elif entry_type == "hardlink":
+        os.link(ordinary, entry)
+    elif entry_type == "fifo":
+        os.mkfifo(entry)
+    else:
+        entry.write_text("test fixture")
+        entry.chmod(0o600)
+    copy = Mock(side_effect=AssertionError("Unsafe marketplace must not be backed up"))
+    monkeypatch.setattr(mdm.shutil, "copytree", copy)
+    with pytest.raises(RuntimeError, match="marketplace backup entry|Marketplace backup entry"):
+        mdm._publish(None, {}, {})
+    copy.assert_not_called()
+    assert mdm.POLICY_PATH.read_bytes() == policy_before
+    assert (mdm.MDM_ROOT / "state.json").read_bytes() == state_before
+
+
 def test_publication_and_rollback_failure_retains_recovery_files(device, monkeypatch):
     mdm.configure(WORKSPACE, "admin")
     before = _snapshot(device)
@@ -356,6 +386,7 @@ def test_existing_policy_is_preserved_and_generated_source_is_replaced(device, t
             mdm.configure(WORKSPACE, "admin")
         assert path.read_text() == "IT-owned"
     else:
+        path.chmod(0o644)
         mdm.configure(WORKSPACE, "admin")
         assert not path.exists()
         assert (device.source / "plugins/ug/.mcp.json").is_file()

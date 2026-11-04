@@ -522,7 +522,8 @@ cover skipping non-macOS platforms and surfacing provisioning prerequisite failu
 account, string-encoded machine policy, shared command bindings without admin credentials,
 managed skill assets/connectors, one native registration, explicit update and deferred
 removal, interrupted-account cleanup, foreign-policy preservation, generated-source replacement,
-rollback (including retained recovery files after restoration fails), dry run,
+rollback (including retained recovery files after restoration fails), rejection of
+linked/special/private existing marketplace entries before any backup copy, dry run,
 and reuse of provisioning authentication. CLI cases normalize spaced connector lists
 and reject multiple workspace URLs; malformed cached-plugin records remain untouched
 and are treated as missing installations. It reuses the temporary directory-copy fixture;
@@ -559,8 +560,8 @@ directories: no flag and `--user` write only the user source, and explicit
 `--global` publishes MDM without changing the user's profile, source or registration. It also
 checks an existing MDM deployment stays byte-for-byte unchanged under default/user configure,
 provisioning before account creation, failure exit status, dry run, command-local scope,
-and skipping Desktop on platforms without MDM support. Public CLI scope cases include macOS
-preflight, and argument rejection asserts each intended diagnostic after valid device setup.
+and skipping Desktop on platforms without MDM support. The existing CLI-agent scope unit test isolates Desktop preflight.
+Public Desktop CLI scope cases include macOS preflight, and argument rejection asserts each intended diagnostic after valid device setup.
 CLI-agent setup and external services
 are isolated; this is component coverage, not native macOS or live connector coverage.
 
