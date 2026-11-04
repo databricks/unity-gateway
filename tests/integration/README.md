@@ -1,5 +1,9 @@
 # Integration tests
 
+`../test_skills_state.py` covers indexed attribution batches using temporary
+manifests/directories, including normalized-work bounds, ownership changes,
+metastore identities, and orphan cleanup. Live skill downloads are not covered.
+
 `../test_configure_managed_writes.py` covers `ug revert` output after Claude/Codex managed-file
 deletion fails, its nonzero exit, and retention of the file, backup, and ug state. These component
 tests simulate privileged deletion failure; native OS permissions and live sudo are not exercised.

@@ -160,6 +160,67 @@ class TestQueries:
 
 
 class TestReconciliation:
+    def test_batch_does_not_rescan_paths_for_each_install(self, tmp_path, monkeypatch):
+        installs = [_install(tmp_path, f"main.default.skill_{i}", f"skill-{i}") for i in range(200)]
+        skills_state.record_downloads(installs)
+        calls = 0
+        normalize = skills_state._norm
+
+        def counted(path):
+            nonlocal calls
+            calls += 1
+            return normalize(path)
+
+        monkeypatch.setattr(skills_state, "_norm", counted)
+        skills_state.record_downloads(installs)
+        assert len(skills_state.list_downloaded()) == len(installs)
+        assert calls < 20 * (len(installs) + len(installs))
+
+    def test_batch_collision_then_rename_preserves_new_owner(self, tmp_path):
+        first = _install(tmp_path, "main.default.first", "shared")
+        owner = _install(tmp_path, "main.default.owner", "shared", metastore_id="other")
+        renamed = _install(tmp_path, "main.default.first", "renamed")
+        _write_dirs(owner)
+        _write_dirs(renamed)
+        skills_state.record_downloads([first, owner, renamed])
+        assert [record["fqn"] for record in skills_state.list_downloaded()] == [
+            owner.fqn,
+            renamed.fqn,
+        ]
+        assert all(Path(path).exists() for install in (owner, renamed) for path in install.dirs)
+
+    def test_duplicate_owners_and_metastore_identity_are_preserved(self, tmp_path):
+        old = _install(tmp_path, "main.default.first", "old")
+        duplicate = _install(tmp_path, "main.default.first", "also-old")
+        foreign = _install(tmp_path, "main.default.first", "foreign", metastore_id="other")
+        replaced = _install(tmp_path, "main.default.replaced", "new")
+        new = _install(tmp_path, "main.default.first", "new")
+        for install in (old, duplicate, foreign, replaced):
+            _write_dirs(install)
+        skills_state._save(
+            [skills_state._to_record(i) for i in (old, duplicate, foreign, replaced)]
+        )
+        skills_state.record_downloads([new])
+        assert [record["bundle_name"] for record in skills_state.list_downloaded()] == [
+            "foreign",
+            "new",
+        ]
+        assert all(not Path(path).exists() for i in (old, duplicate) for path in i.dirs)
+        assert all(Path(path).exists() for i in (foreign, new) for path in i.dirs)
+
+    def test_unhashable_identity_keeps_directory_collision_behavior(self, tmp_path):
+        current = _install(tmp_path, "main.default.current", "shared")
+        malformed = {**skills_state._to_record(current), "metastore_id": ["invalid"]}
+        unrelated = {**malformed, "dirs": [str(tmp_path / "unrelated")]}
+        skills_state._save([malformed, unrelated])
+        _write_dirs(current)
+        skills_state.record_downloads([current])
+        records = skills_state.list_downloaded()
+        assert records[0] == unrelated
+        assert records[1]["metastore_id"] == "metastore-1"
+        assert len(records) == 2
+        assert all(Path(path).exists() for path in current.dirs)
+
     def test_re_download_same_name_keeps_single_record(self, tmp_path):
         base = tmp_path / "proj"
         first = _install(base, "main.default.triage", "triage")

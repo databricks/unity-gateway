@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+`test_skills_state.py` covers batch attribution reconciliation with indexed
+directories and install identities. It guards linear path-normalization work,
+intra-batch ownership changes, duplicate historical owners, metastore separation,
+and orphan cleanup using real temporary files. These are local component checks.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered

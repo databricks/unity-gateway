@@ -116,14 +116,6 @@ def _record_key(record: dict) -> tuple[str | None, str | None, str]:
     return (record.get("metastore_id"), record.get("fqn"), _norm(record.get("base", "")))
 
 
-def _same_install(record: dict, install: SkillInstall) -> bool:
-    return _record_key(record) == (install.metastore_id, install.fqn, _norm(install.base))
-
-
-def _claims_any(record: dict, dirs: set[str]) -> bool:
-    return any(_norm(d) in dirs for d in record.get("dirs") or [])
-
-
 def _delete_dirs(dirs: list[str]) -> list[str]:
     undeletable: list[str] = []
     for directory in dirs:
@@ -156,35 +148,49 @@ def _to_record(install: SkillInstall) -> dict:
     return {key: value for key, value in record.items() if value is not None}
 
 
-def _reconcile(skills: list[dict], install: SkillInstall) -> list[dict]:
-    """Drop records superseded by ``install`` before it is appended.
-
-    The install's directories were just written, so a record still claiming one of
-    them is stale attribution for content we overwrote: drop it, keep the files. A
-    prior install of the same skill at the same base whose directories differ (the
-    bundle name changed) leaves an orphaned copy on disk, so delete those.
-    """
-    target = {_norm(d) for d in install.dirs}
-    kept: list[dict] = []
-    for record in skills:
-        if _claims_any(record, target):
-            continue
-        if _same_install(record, install):
-            _delete_dirs(record.get("dirs") or [])
-            continue
-        kept.append(record)
-    return kept
-
-
 def record_downloads(installs: list[SkillInstall]) -> None:
     """Record each freshly downloaded install, reconciling superseded records."""
     if not installs:
         return
-    skills = _load()
-    for install in installs:
-        skills = _reconcile(skills, install)
-        skills.append(_to_record(install))
-    _save(skills)
+    records = dict(enumerate(_load()))
+    by_key: dict[tuple[str | None, str | None, str], set[int]] = {}
+    by_dir: dict[str, set[int]] = {}
+
+    def indexed_key(record: dict) -> tuple[str | None, str | None, str] | None:
+        key = _record_key(record)
+        # Malformed identities cannot match a typed install, but may still claim a directory.
+        return key if all(part is None or isinstance(part, str) for part in key) else None
+
+    def index(record_id: int, record: dict) -> None:
+        if (key := indexed_key(record)) is not None:
+            by_key.setdefault(key, set()).add(record_id)
+        for directory in record.get("dirs") or []:
+            by_dir.setdefault(_norm(directory), set()).add(record_id)
+
+    def remove(record_id: int) -> dict:
+        record = records.pop(record_id)
+        if (key := indexed_key(record)) is not None:
+            by_key[key].discard(record_id)
+        for directory in record.get("dirs") or []:
+            by_dir[_norm(directory)].discard(record_id)
+        return record
+
+    for record_id, record in records.items():
+        index(record_id, record)
+    for record_id, install in enumerate(installs, start=len(records)):
+        record = _to_record(install)
+        overwritten: set[int] = set()
+        for directory in install.dirs:
+            overwritten.update(by_dir.get(_norm(directory), ()))
+        superseded = overwritten | by_key.get(_record_key(record), set())
+        for old_id in sorted(superseded):
+            old = remove(old_id)
+            # Overwritten directories belong to the new install; only renames leave orphans.
+            if old_id not in overwritten:
+                _delete_dirs(old.get("dirs") or [])
+        records[record_id] = record
+        index(record_id, record)
+    _save(list(records.values()))
 
 
 def list_downloaded() -> list[dict]:
