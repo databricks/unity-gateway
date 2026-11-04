@@ -1839,3 +1839,9 @@ Missing, malformed, and other-workspace profiles leave plugin setup untouched.
 Installed-CLI Desktop journeys read MCP commands from `managedMcpServers` and require the
 installed plugin to contain no duplicate servers. These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
+
+MDM review regressions also cover the `claude-code` configure alias, refusal to remove
+an incomplete ownership record without changing the deployment, and missing-manifest
+diagnostics that preserve the previous root bundle. MCP proxy and OTLP helper identity
+checks share the same lightweight saved-authentication predicate. These remain component
+checks; final launchd removal and native macOS execution require the documented checklist.

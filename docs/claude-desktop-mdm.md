@@ -189,7 +189,24 @@ were logged out can clean their registrations at their next login. Per-user clea
 removes tracked MDM installations, including interrupted refreshes, while preserving
 registrations that switched to another source or version. It leaves user credentials
 and unrelated plugins intact. Keep the shared runtime until cleanup has run for every
-affected user; your MDM uninstaller can then remove the retained agent and MDM directory.
+affected user. After every affected user has completed cleanup, stop the job in each
+loaded user session (replace `<uid>` with that user's numeric ID):
+
+```sh
+sudo launchctl bootout gui/<uid>/com.databricks.unity-gateway.claude-desktop
+```
+
+Then remove the retained machine files as root:
+
+```sh
+sudo rm /Library/LaunchAgents/com.databricks.unity-gateway.claude-desktop.plist
+sudo rm -rf "/Library/Application Support/UnityGateway/claude-desktop-mdm"
+```
+
+This stops the periodic refresh. Removing these files before per-user cleanup finishes
+prevents logged-out users from cleaning their tracked registrations automatically.
+If removal reports incomplete ownership state, restore the provisioning backup before
+retrying; UG preserves the deployment rather than guessing which files it owns.
 
 Ordinary `ug revert` does not disable MDM: the refresh job can reinstall the managed
 plugin. Use `ug revert --mdm-desktop` for administrator removal. Local 3P profiles were

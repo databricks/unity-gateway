@@ -222,6 +222,7 @@ from ucode.state import (
     user_mcp_reconcile_pending,
     workspace_self_managed_agents,
 )
+from ucode.state_file import matches_saved_authentication
 from ucode.string_utils import is_valid_catalog_schema
 from ucode.ug_headers import parse_header_line
 from ucode.ui import (
@@ -3009,10 +3010,8 @@ def otel_headers_cmd(
     import sys
 
     state = load_state()
-    saved_auth_matches = (
-        (host is None or host == state.get("workspace"))
-        and (profile is None or profile == state.get("profile"))
-        and (workspace_id is None or workspace_id == state.get("workspace_id"))
+    saved_auth_matches = matches_saved_authentication(
+        state, host=host, profile=profile, workspace_id=workspace_id
     )
     workspace = host or state.get("workspace")
     if not workspace:
@@ -4967,7 +4966,8 @@ def configure(
         typer.Option(
             "--global",
             help="Write machine-wide Claude Code/Codex settings and provision Claude Desktop through "
-            "macOS MDM (requires root and a shared runtime). Desktop user settings are left alone. "
+            "macOS MDM (requires root and a shared runtime). Desktop user settings and the Claude Code "
+            "user connector plugin are left alone. "
             "Without --global, Desktop writes only user-level files.",
         ),
     ] = False,
@@ -5100,7 +5100,7 @@ def configure(
                 raise RuntimeError(
                     "--mdm-desktop uses workspace policy and cannot combine with --user, PAT/custom OAuth, model overrides, or AI Tools installation flags."
                 )
-            if (agent or agents or "").strip().lower() != "claude":
+            if not (agent or agents) or _parse_agents_option(agent or agents or "") != ["claude"]:
                 raise RuntimeError("Use --mdm-desktop with --agents claude.")
             if workspace_entries is None:
                 raise RuntimeError(

@@ -207,13 +207,9 @@ def _windows_claude_header_mod_root() -> Path:
 
 
 def claude_desktop_marketplace_path() -> Path | None:
-    if current_os() is OS.MACOS:
-        return Path("/Library/Application Support/UnityGateway/claude-cowork-marketplace")
-    if current_os() is OS.WINDOWS:
-        return (
-            system_cross_os.windows_program_files_dir() / "UnityGateway/claude-cowork-marketplace"
-        )
-    return None
+    if current_os() is not OS.MACOS:
+        return None
+    return Path("/Library/Application Support/UnityGateway/claude-cowork-marketplace")
 
 
 def claude_desktop_org_plugin_path() -> Path | None:

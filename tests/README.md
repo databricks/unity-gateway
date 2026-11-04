@@ -1329,3 +1329,9 @@ installed plugin to contain no duplicate servers. Reconfigure comparisons includ
 added through `ug mcp add`, while retaining the original model/authentication-field assertions.
 These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
+
+MDM review regressions also cover the `claude-code` configure alias, refusal to remove
+an incomplete ownership record without changing the deployment, and missing-manifest
+diagnostics that preserve the previous root bundle. MCP proxy and OTLP helper identity
+checks share the same lightweight saved-authentication predicate. These remain component
+checks; final launchd removal and native macOS execution require the documented checklist.

@@ -10,6 +10,16 @@ from ucode.workspace_key import split_workspace_key
 STATE_VERSION = 3
 
 
+def matches_saved_authentication(
+    state: dict, *, host: str | None, profile: str | None, workspace_id: str | None
+) -> bool:
+    return (
+        (host is None or host == state.get("workspace"))
+        and (profile is None or profile == state.get("profile"))
+        and (workspace_id is None or workspace_id == state.get("workspace_id"))
+    )
+
+
 def read_state_file(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))

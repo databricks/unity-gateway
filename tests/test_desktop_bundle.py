@@ -183,3 +183,18 @@ def test_root_copy_preserves_linked_system_destination(system_source, tmp_path):
         managed_files.replace_privileged_bundle(system_source, _source(tmp_path))
     assert system_source.is_symlink()
     assert (foreign / "keep").read_text() == "untouched"
+
+
+@pytest.mark.parametrize(
+    "manifest", [".claude-plugin/marketplace.json", "plugins/ug/.claude-plugin/plugin.json"]
+)
+def test_missing_manifest_reports_path_and_preserves_published_bundle(
+    system_source, tmp_path, manifest
+):
+    source = _source(tmp_path)
+    managed_files.replace_privileged_bundle(system_source, source)
+    before = cowork._marketplace_files(system_source)
+    (source / manifest).unlink()
+    with pytest.raises(RuntimeError, match="missing manifest: " + manifest):
+        managed_files.replace_privileged_bundle(system_source, source)
+    assert cowork._marketplace_files(system_source) == before

@@ -307,8 +307,12 @@ replace_bundle() (
         printf '%s\n' "Desktop plugin contains non-regular files" >&2
         exit 1
     fi
-    [ -f "$staging/new/.claude-plugin/marketplace.json" ] || exit 1
-    [ -f "$staging/new/plugins/ug/.claude-plugin/plugin.json" ] || exit 1
+    for manifest in .claude-plugin/marketplace.json plugins/ug/.claude-plugin/plugin.json; do
+        if [ ! -f "$staging/new/$manifest" ]; then
+            printf 'Desktop plugin source is missing manifest: %s\n' "$manifest" >&2
+            exit 1
+        fi
+    done
     chown -R 0:0 "$staging/new" || exit 1
     find "$staging/new" -type d -exec chmod 0755 {} + || exit 1
     find "$staging/new" -type f ! -perm -0100 -exec chmod 0644 {} + || exit 1

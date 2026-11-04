@@ -690,7 +690,8 @@ def test_global_with_cached_oauth_does_not_force_browser_login(device, monkeypat
     login.assert_not_called()
 
 
-def test_cli_dispatches_mdm_without_normal_agent_configuration(device, monkeypatch):
+@pytest.mark.parametrize("agents", ["claude", "claude-code"])
+def test_cli_dispatches_mdm_without_normal_agent_configuration(device, monkeypatch, agents):
     configure = Mock()
     monkeypatch.setattr(mdm, "configure", configure)
     for name in ("install_databricks_cli", "_configure_workspace_command", "save_state"):
@@ -700,7 +701,7 @@ def test_cli_dispatches_mdm_without_normal_agent_configuration(device, monkeypat
         [
             "configure",
             "--agents",
-            "claude",
+            agents,
             "--mdm-desktop",
             "--workspace",
             WORKSPACE,
@@ -715,3 +716,13 @@ def test_cli_dispatches_mdm_without_normal_agent_configuration(device, monkeypat
     monkeypatch.setattr(cli, "revert", Mock(side_effect=AssertionError("normal revert")))
     assert CliRunner().invoke(cli.app, ["revert", "--mdm-desktop"]).exit_code == 0
     remove.assert_called_once()
+
+
+@pytest.mark.parametrize("partial", [{}, {"configuration": None}, {"configuration": []}, []])
+def test_remove_with_incomplete_state_preserves_deployment(device, partial):
+    mdm.configure(WORKSPACE, "admin")
+    (mdm.MDM_ROOT / "state.json").write_text(json.dumps(partial))
+    before = _snapshot(device)
+    with pytest.raises(RuntimeError, match="state is incomplete.*Restore its provisioning backup"):
+        mdm.remove()
+    assert _snapshot(device) == before

@@ -496,6 +496,11 @@ def remove() -> None:
     _check_machine_path(MDM_ROOT / ".lock")
     with claude_config.locked(MDM_ROOT / ".lock"):
         previous = _read_machine_state()
+        if not isinstance(previous, dict) or not isinstance(previous.get("configuration"), dict):
+            raise RuntimeError(
+                f"Desktop MDM state is incomplete at {MDM_ROOT / 'state.json'}. "
+                "Restore its provisioning backup before retrying removal."
+            )
         configuration = {**previous["configuration"], "enabled": False}
         _publish(
             None,
