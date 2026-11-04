@@ -130,6 +130,59 @@ def _fake_ug(tmp_path, body):
     return UserSession(tmp_path, script, tmp_path / "artifacts", "token")
 
 
+@requires_pty
+@pytest.mark.parametrize(
+    ("version", "review_hooks"),
+    [("0.154.0", False), ("0.165.0", False), ("0.165.0", True)],
+)
+def test_codex_boot_waits_for_session_after_startup_draft(tmp_path, version, review_hooks):
+    """Replay startup screens offline; the draft can precede native hook review."""
+    cwd = tmp_path / "project with spaces"
+    header = f"  >_ OpenAI Codex (v{version})\n     {cwd}"
+    draft = header + "\n\n\n› Ask Codex to do anything\n\n  ? for shortcuts"
+    if version == "0.154.0":
+        draft = draft.replace(str(cwd), "loading")
+    status = f"  GPT-6-Sol default · {cwd}"
+    ready = header + f"\n\n› Ask Codex to do anything\n\n{status}\n  ? for shortcuts"
+    review = (
+        "  Hooks need review\n  2 hooks are new or changed.\n"
+        "  Hooks can run outside the sandbox after you trust them.\n\n"
+        "› 1. Review hooks\n  2. Trust all and continue\n"
+        "  3. Continue without trusting (hooks won't run)\n\n"
+        "  enter confirm · esc skip"
+    )
+    selected = review.replace("› 1.", "  1.").replace("  2.", "› 2.")
+    session = _fake_ug(
+        tmp_path,
+        f"""import sys, time, tty
+tty.setraw(sys.stdin.fileno())
+def show(text):
+    print("\\x1b[2J\\x1b[H" + text.replace("\\n", "\\r\\n"), end="", flush=True)
+show({draft!r})
+time.sleep(1.5)
+if {review_hooks!r}:
+    show({review!r})
+    assert sys.stdin.read(3) == "\\x1b[B"
+    show({selected!r})
+    assert sys.stdin.read(1) == "\\r"
+show({ready!r})
+typed = ""
+while True:
+    key = sys.stdin.read(1)
+    if key == "\\r":
+        break
+    typed += key
+    show({ready!r}.replace("Ask Codex to do anything", typed))
+assert typed == "ready check", repr(typed)
+""",
+    )
+    with Terminal(session, "codex-startup", [], agent=CODEX) as tui:
+        tui.boot(timeout=10)
+        assert status in tui.visible
+        tui.submit("ready check")
+        tui.finish(timeout=5)
+
+
 @pytest.mark.parametrize(
     ("args", "agent"),
     [([], None), ([], "gemini"), (["status"], None), ([CLAUDE], CODEX)],
@@ -231,9 +284,12 @@ time.sleep(30)
         "empty",
         "completed",
         "detail",
+        "routed_detail",
         "resumed",
         "running",
         "detail_running",
+        "routed_detail_running",
+        "detail_transcript",
         "mixed",
         "scheduled",
         "partial",
@@ -283,8 +339,13 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
         ),
         "transcript": ("Background\n\n  Completed (1)\n✔ ug_subagent_one   done · Sonnet 5\n\n❯"),
     }
+    for name in ("detail", "detail_running"):
+        views[f"routed_{name}"] = views[name].replace(
+            "agent ›", "ug-smart-router:ucode-route-claude-haiku-4-5-83f7d1b2 ›"
+        )
+    views["detail_transcript"] = views["routed_detail"].split("← to go back")[0]
     views["resumed"] = views["mixed"]
-    complete = view in ("empty", "completed", "detail", "resumed")
+    complete = view in ("empty", "completed", "detail", "routed_detail", "resumed")
     script = tmp_path / "ug"
     script.write_text(
         f"""#!{sys.executable}
