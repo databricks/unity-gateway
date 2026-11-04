@@ -517,14 +517,15 @@ Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configurat
 Each version defines separate Claude Code and Codex flag mappings; the existing versions
 use identical mappings for both agents. The Claude-only version disables routing for Codex:
 
-| Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator |
-| --- | --- | --- | --- | --- |
-| `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off |
-| `subagent_only_v0` | Claude, Codex | On | Off | Off |
-| `subagent_only_v1` | Claude, Codex | On | Off | Off |
-| `subagent_orch_v0` | Claude, Codex | On | Off | On |
-| `subagent_orch_v1` | Claude, Codex | On | Off | On |
-| `subagent_orch_v0_claude_only` | Claude | On | Off | On |
+| Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator | Auto picker capability |
+| --- | --- | --- | --- | --- | --- |
+| `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off | Off |
+| `subagent_only_v0` | Claude, Codex | On | Off | Off | Off |
+| `subagent_only_v1` | Claude, Codex | On | Off | Off | Off |
+| `subagent_orch_v0` | Claude, Codex | On | Off | On | Off |
+| `subagent_orch_v1` | Claude, Codex | On | Off | On | Off |
+| `subagent_orch_v0_claude_only` | Claude | On | Off | On | Off |
+| `subagent_orch_auto_picker_v0_claude_only` | Claude | On | Off | On | On |
 
 `first_prompt_and_subagent_no_orch_v0` routes the first prompt and subagents without
 orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and
@@ -536,6 +537,21 @@ and sets all three flags to `"0"` for Codex. Codex uses its ordinary launch and
 managed default model, without routing or orchestration. `--enable-smart-routing` and
 workspace smart routing keep this version, so Codex stays unrouted: ug warns and launches it
 like a plain `ug codex`, without the Smart Router skills or routing hooks.
+
+`subagent_orch_auto_picker_v0_claude_only` has the same routing activity as the existing
+Claude-only version and resolves `EXPOSE_AUTO_IN_MODEL_PICKER=1` for Claude. All other
+presets and Codex resolve it to `0`. This change only passes the capability into the
+native plugin options; the Auto picker interaction is not implemented yet. Keep
+production assignments on existing versions until the picker integration is ready.
+The default enabled version remains `subagent_orch_v0_claude_only`.
+
+```bash
+SMART_ROUTER_CONFIG_VERSION=subagent_orch_auto_picker_v0_claude_only uv run ug claude
+```
+
+Exposure is separate from routing activity: launch/session off controls leave it
+available, while config expansion and restoration include it. Exposure alone does
+not enable routing or orchestration.
 
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 

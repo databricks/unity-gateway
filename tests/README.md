@@ -1,5 +1,14 @@
 # Test suites and user journeys
 
+Auto picker config coverage in `tests/test_smart_routing_config.py` and
+`tests/test_claude_mod.py` checks `subagent_orch_auto_picker_v0_claude_only`:
+Claude-only exposure, complete binary preset validation, conflicting inherited
+flags, launch-off preserving exposure, environment restoration, unchanged existing
+presets/default version, and native plugin option plumbing. These are component
+checks. The picker UI, model transitions, `DISABLED_AUTO`, and live gateway behavior
+are not implemented or covered by this config change.
+
+
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.

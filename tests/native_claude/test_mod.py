@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from session import Session
 
 from ucode.agents.claude import _header_mod_files
@@ -58,9 +59,13 @@ def test_header_mod_validation_and_merge(native_binary, tmp_path):
             assert "env writes: ANTHROPIC_CUSTOM_HEADERS" in result.stdout
 
 
-def test_native_options_are_launch_local(native_binary, tmp_path):
+@pytest.mark.parametrize(
+    "version",
+    [config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY],
+)
+def test_native_options_are_launch_local(native_binary, tmp_path, version):
     env = {
-        "SMART_ROUTER_CONFIG_VERSION": config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+        "SMART_ROUTER_CONFIG_VERSION": version,
         "SMART_ROUTER_NAME": 'custom "quoted" λ',
     }
     with (
