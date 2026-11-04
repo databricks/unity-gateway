@@ -505,7 +505,7 @@ use identical mappings for both agents. The Claude-only version disables routing
 | `subagent_orch_v0` | Claude, Codex | On | Off | On | Off |
 | `subagent_orch_v1` | Claude, Codex | On | Off | On | Off |
 | `subagent_orch_v0_claude_only` | Claude | On | Off | On | Off |
-| `subagent_orch_auto_picker_v0_claude_only` | Claude | On | Off | On | On |
+| `subagent_orch_auto_picker_v0_claude_only` | Claude after choosing Auto | Off initially | Off | Off initially | On |
 
 `first_prompt_and_subagent_no_orch_v0` routes the first prompt and subagents without
 orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and
@@ -518,8 +518,9 @@ managed default model, without routing or orchestration. `--enable-smart-routing
 workspace smart routing keep this version, so Codex stays unrouted: ug warns and launches it
 like a plain `ug codex`, without the Smart Router skills or routing hooks.
 
-`subagent_orch_auto_picker_v0_claude_only` has the same routing activity as the existing
-Claude-only version and resolves `EXPOSE_AUTO_IN_MODEL_PICKER=1` for Claude. All other
+`subagent_orch_auto_picker_v0_claude_only` starts with routing and orchestration off
+and resolves `EXPOSE_AUTO_IN_MODEL_PICKER=1` for Claude. Confirming Auto enables both;
+explicit launch `--enable-smart-routing` also opts in. All other
 presets and Codex resolve it to `0`. The development `/model` popup offers Auto or concrete mode, then opens Claude's native
 main-model picker. `/model auto` goes directly to that second picker. Confirm with Enter;
 Escape leaves routing unchanged. Auto uses the existing ON/routing-subagents indicator

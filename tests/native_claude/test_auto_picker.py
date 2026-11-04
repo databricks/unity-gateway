@@ -13,7 +13,7 @@ from ucode.smart_routing import config, session_env, v2
 
 @pytest.mark.parametrize("session_only", [False, True])
 def test_auto_picker_tui(native_binary, tmp_path, session_only):
-    """Scenario: leave Auto, cancel entry, then re-enter on the current model.
+    """Scenario: start off, cancel entry, enter Auto, then return to concrete mode.
 
     Expected: actual native picks change live and saved activity; Escape does not.
     This uses the packaged mod with dummy auth and deliberately sends no inference.
@@ -90,6 +90,13 @@ export const register = (on, options) => {
                 tui.send("\x1b[A", "select fixture API key")
                 tui.send("\r", "confirm fixture API key")
             tui.boot(timeout=30)
+            tui.wait_for(lambda text: "smart router OFF" in text, "fresh session starts off")
+            assert "routing subagents" not in tui.visible
+            tui.submit("/auto-probe")
+            tui.wait_for(
+                lambda text: '"subagent":"0","orchestrator":"0"' in text,
+                "fresh session activity is off",
+            )
             tui.submit("/model haiku")
             tui.wait_for(
                 lambda _: (

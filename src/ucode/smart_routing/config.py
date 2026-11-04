@@ -111,8 +111,8 @@ _VERSIONS = {
     SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY: {
         AGENT_CLAUDE: {
             ENABLE_SMART_ROUTING_ENV_VAR: "0",
-            ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
-            ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+            ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+            ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
             EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR: "1",
         },
         AGENT_CODEX: {
@@ -195,15 +195,19 @@ def known_version(env: Mapping[str, str] | None = None) -> bool:
 def enabled_version_routes(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
     """Whether the version ``apply_enabled_version`` would select routes this agent at all.
 
-    Orchestration alone does not route, so only the V2 and subagent-only flags count. An agent
-    the versions do not cover is never routed.
+    The Auto preset starts off but supports explicit enablement. Orchestration alone does
+    not route. An agent the versions do not cover is never routed.
     """
     source = os.environ if env is None else env
     version = source.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
     preset = _VERSIONS.get(version, _VERSIONS[DEFAULT_ENABLED_VERSION]).get(agent)
     if preset is None:
         return False
-    return "1" in (preset[ENABLE_SMART_ROUTING_ENV_VAR], preset[ENABLE_SUBAGENT_ROUTING_ENV_VAR])
+    return "1" in (
+        preset[ENABLE_SMART_ROUTING_ENV_VAR],
+        preset[ENABLE_SUBAGENT_ROUTING_ENV_VAR],
+        preset[EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR],
+    )
 
 
 def apply_enabled_version(
@@ -219,6 +223,10 @@ def apply_enabled_version(
     if not known_version(target):
         target[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = DEFAULT_ENABLED_VERSION
     applied = apply_config(target, agent=agent)
+    if auto_picker_enabled(target, agent=agent):
+        # Explicit launch enablement opts in; exposing the picker alone starts off.
+        target[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
+        target[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = "1"
     if AUTO_PICKER_CONFIG_ENV_VAR in applied:
         previous[AUTO_PICKER_CONFIG_ENV_VAR] = applied[AUTO_PICKER_CONFIG_ENV_VAR]
     return previous
