@@ -5165,6 +5165,22 @@ class TestConfigureAgentFlag:
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(databricks_ai_tools_enabled=False)
 
+    @pytest.mark.parametrize(
+        ("flag", "expected"),
+        [("--enable-server-side-web-search", True), ("--disable-server-side-web-search", False)],
+    )
+    def test_server_side_web_search_flag_forwards_choice(self, flag, expected):
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.install_tool_binary"),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(app, ["configure", flag, "--agents", "claude"])
+        assert result.exit_code == 0, result.output
+        mock_cfg.assert_called_once_with(
+            selected_tools=["claude"], claude_server_side_web_search=expected
+        )
+
     def test_enable_databricks_ai_tools_with_agents_forwards_true(self):
         with (
             patch("ucode.cli.install_databricks_cli"),
@@ -5323,6 +5339,24 @@ class TestConfigureMcpFlag:
         )
         mock_mcp.assert_called_once_with(services={"system.ai.slack"})
         mock_sync.assert_called_once_with()
+
+    @pytest.mark.parametrize("flag", [True, False])
+    @pytest.mark.parametrize("extra", [["--mcp", "system.ai.slack"], ["--agents", "cursor"]])
+    def test_mcp_only_and_cursor_paths_forward_server_side_web_search(self, flag, extra):
+        option = "--enable-server-side-web-search" if flag else "--disable-server-side-web-search"
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.configure_workspace_command"),
+            patch("ucode.cli._configure_shared_workspace_states") as mock_shared,
+            patch("ucode.cli.configure_mcp_command"),
+            patch("ucode.cli._sync_claude_cowork_plugin"),
+            patch("ucode.cli._restore_mcp_after_workspace_switch"),
+        ):
+            result = runner.invoke(
+                app, ["configure", "--workspace", "https://ws.databricks.com", option, *extra]
+            )
+        assert result.exit_code == 0, result.output
+        assert mock_shared.call_args.kwargs["claude_server_side_web_search"] is flag
 
     def test_mcp_rejects_bare_short_name(self):
         with (
@@ -7065,6 +7099,60 @@ class TestConfigureSharedStateUsePat:
             self.WS, profile="DEFAULT", databricks_ai_tools_enabled=True
         )
         assert state["databricks_ai_tools_enabled"] is True
+
+    WS_B = "https://other.databricks.com"
+
+    @pytest.mark.parametrize(
+        ("source", "destination", "flag", "expected"),
+        [
+            (True, False, None, False),
+            (False, True, None, True),
+            (True, None, None, None),
+            (True, False, True, True),
+            (False, True, False, False),
+        ],
+    )
+    def test_server_side_web_search_is_per_workspace_when_switching(
+        self, monkeypatch, source, destination, flag, expected
+    ):
+        key = "claude_server_side_web_search"
+        cli_mod, *_ = self._stub_deps(
+            monkeypatch,
+            pat_token="dapi-pat",
+            existing_state={"workspace": self.WS, "profile": "DEFAULT", key: source},
+        )
+        block = {} if destination is None else {key: destination}
+        monkeypatch.setattr(cli_mod, "load_full_state", lambda: {"workspaces": {self.WS_B: block}})
+        monkeypatch.setattr(cli_mod, "activate", lambda *a, **k: None)
+
+        state = cli_mod.configure_shared_state(
+            self.WS_B, profile="DEFAULT", claude_server_side_web_search=flag
+        )
+
+        assert state.get(key) is expected
+
+    def test_server_side_web_search_saved_and_kept_when_flag_omitted(self, monkeypatch):
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        state = cli_mod.configure_shared_state(
+            self.WS, profile="DEFAULT", claude_server_side_web_search=True
+        )
+        assert state["claude_server_side_web_search"] is True
+
+        cli_mod, *_ = self._stub_deps(
+            monkeypatch,
+            pat_token="dapi-pat",
+            existing_state={
+                "workspace": self.WS,
+                "profile": "DEFAULT",
+                "claude_server_side_web_search": True,
+            },
+        )
+        kept = cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
+        assert kept["claude_server_side_web_search"] is True
+        off = cli_mod.configure_shared_state(
+            self.WS, profile="DEFAULT", claude_server_side_web_search=False
+        )
+        assert off["claude_server_side_web_search"] is False
 
     def test_ai_tools_off_by_default_no_flag(self, monkeypatch):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")

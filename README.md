@@ -208,6 +208,11 @@ ug denies Claude Code's native `WebSearch` and registers its own `web_search` MC
 `UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1 ug claude` instead uses the AI Gateway's server-side search,
 writing no file. If the OS-managed settings, their `managed-settings.d`
 drop-ins, or the user settings deny `WebSearch`, ug warns and keeps its MCP for that launch.
+To make it the default, run `ug configure --enable-server-side-web-search` (`--disable-...` undoes it;
+omitting the flag keeps the saved choice). An explicit `ug configure` then also removes a bare
+`WebSearch` deny from the OS-managed settings unless your admin settings request it, and `ug revert`
+restores it only if that deny list wasn't edited since. ug never writes the deny to the managed file.
+Relayed launches are unaffected.
 
 ### Extra headers for one session
 
