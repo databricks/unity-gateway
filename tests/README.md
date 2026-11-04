@@ -4,6 +4,8 @@
 six-second pause and reconnection when the upstream closes its connection. These
 local socket tests assert request and connection counts, without elapsed-time
 thresholds. They do not measure a production gateway's handshake latency.
+`test_gateway_proxy.py` also checks that the upstream client retains its 100 total /
+20 idle connection bounds, 30-second idle expiry, request timeouts, and redirect behavior.
 
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
@@ -178,7 +180,9 @@ The live `test_smart_router_claude_resumes_same_subagent_with_send_message` jour
 spawns one child and follows up through `SendMessage` by ID or name, requiring
 the native result to resolve to the original child's ID, both hidden file answers
 in the same child transcript, and exactly one Agent/Task call. Only parent SendMessage
-calls are checked for continuation; child replies to the parent are allowed. Offline checks reject
+calls are checked for continuation; child replies to the parent are allowed. The follow-up
+prompt omits the session-only `notify_when_idle` option and waits for automatic child completion.
+Offline checks reject
 missing recipients, wrong children, failed sends, and missing/crossed tool results. Run it with
 Claude 2.1.314+; description-only component checks do not prove continuation.
 

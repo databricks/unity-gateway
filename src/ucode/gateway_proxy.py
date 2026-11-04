@@ -73,7 +73,9 @@ HOP_BY_HOP_HEADERS = frozenset(
 # small; `connect`/`pool` fail fast when the gateway is unreachable.
 UPSTREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0)
 # Stay below common 60-second upstream idle timeouts while covering short turn pauses.
-UPSTREAM_LIMITS = httpx.Limits(keepalive_expiry=30.0)
+UPSTREAM_LIMITS = httpx.Limits(
+    max_connections=100, max_keepalive_connections=20, keepalive_expiry=30.0
+)
 # Refresh once the token has less than this many seconds of life left. Databricks
 # access tokens live ~1h; a 10-min buffer leaves ample headroom for a retry.
 _REFRESH_BUFFER_S = 600

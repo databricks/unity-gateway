@@ -512,6 +512,32 @@ class TestRetryOn401:
         assert b"401" in bytes(out.data)  # the response is still relayed
 
 
+class TestStartProxyClientConfiguration:
+    def test_retains_pool_bounds_with_longer_keepalive(self, monkeypatch):
+        cache = Mock(token="token")
+        monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: cache)
+        client_factory = Mock(return_value=Mock())
+        monkeypatch.setattr(gateway_proxy.httpx, "Client", client_factory)
+
+        server, _cache, client = gateway_proxy.start_relay_proxy(
+            "https://workspace.example", lambda _force: "token", 0
+        )
+        try:
+            options = client_factory.call_args.kwargs
+            limits = options["limits"]
+            assert limits.max_connections == 100
+            assert limits.max_keepalive_connections == 20
+            assert limits.keepalive_expiry == 30.0
+            assert options["timeout"] == httpx.Timeout(
+                connect=10.0, read=600.0, write=600.0, pool=10.0
+            )
+            assert options["follow_redirects"] is False
+        finally:
+            server.server_close()
+            cache.stop()
+            client.close()
+
+
 class TestStartProxyPortFallback:
     def test_loopback_server_keeps_reuse_only_on_posix(self):
         assert gateway_proxy._LoopbackHTTPServer.allow_reuse_address is (
