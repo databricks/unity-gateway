@@ -234,6 +234,8 @@ default without routing requests, new router decisions, recipe headers, or orche
 Codex startup checks in `test_e2e_cuj_helpers.py` replay the 0.154/0.165 prompt layouts
 and delayed hook review. The driver waits for the model/directory footer before typing;
 the early startup draft is insufficient. These offline PTY checks do not run native agents.
+Terminal screen checks preserve column positions after wide Unicode characters are
+overwritten, deleted, or partially erased, including the blank continuation cells.
 
 Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,
 complete per-agent validation, session precedence, and preserving the preset selector

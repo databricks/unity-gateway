@@ -17,6 +17,7 @@ import threading
 import time
 
 import pyte
+from wcwidth import wcwidth
 
 from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
 
@@ -83,6 +84,23 @@ class TerminalScreen(pyte.Screen):
     def __init__(self, columns, lines, send):
         super().__init__(columns, lines)
         self.send = send
+
+    @property
+    def display(self):
+        rendered = []
+        for y in range(self.lines):
+            row = self.buffer[y]
+            cells = []
+            x = 0
+            while x < self.columns:
+                # Partial wide-character edits can leave an empty stub in pyte 0.8.2.
+                # It occupies a blank column even when its leading character is gone.
+                char = row[x].data or " "
+                assert sum(wcwidth(c) for c in char[1:]) == 0
+                cells.append(char)
+                x += 2 if wcwidth(char[0]) == 2 else 1
+            rendered.append("".join(cells))
+        return rendered
 
     def write_process_input(self, data):
         # Real TUIs query cursor position/device attributes during startup.
