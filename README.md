@@ -520,11 +520,11 @@ like a plain `ug codex`, without the Smart Router skills or routing hooks.
 
 `subagent_orch_auto_picker_v0_claude_only` has the same routing activity as the existing
 Claude-only version and resolves `EXPOSE_AUTO_IN_MODEL_PICKER=1` for Claude. All other
-presets and Codex resolve it to `0`. This change only passes the capability into the
-native plugin options. The development command path supports `/model auto` followed by
-a confirmed native main-model choice; `/model` opens the native menu directly. An Auto row
-in that menu and session-only selections remain unfinished. Keep
-production assignments on existing versions until the picker integration is ready.
+presets and Codex resolve it to `0`. The development `/model` popup offers Auto or concrete mode, then opens Claude's native
+main-model picker. `/model auto` goes directly to that second picker. Confirm with Enter;
+Escape leaves routing unchanged. Auto uses the existing ON/routing-subagents indicator
+and smart-router footer. Native session-only (`s`) selections and durable resume remain
+unfinished; keep production assignments on existing versions.
 The default enabled version remains `subagent_orch_v0_claude_only`.
 
 ```bash

@@ -2,16 +2,19 @@
 
 `subagent_orch_auto_picker_v0_claude_only` passes `EXPOSE_AUTO_IN_MODEL_PICKER=1`
 through the native plugin options; other presets pass `0`. Exposure is a launch
-capability and is excluded from activity toggles. The picker behavior is pending.
+capability and is excluded from activity toggles. `/model` opens a mod popup offering Auto or concrete mode, followed by the native
+main-model picker; `/model auto` opens the second picker directly. Confirm with Enter.
 Claude 2.1.317 supports intercepting `/model` with `command.run`: forwarding changed
 `args` invokes native model selection, and forwarding empty args opens the native
 terminal picker. A `config.set` hook for `model` observes confirmed, saved terminal
 choices. These paths were exercised in isolated native processes without inference.
 `$.session.model()` reads the current model; it is not the only route to changing it.
-There is no `ModelPicker` render site. Injecting an Auto row into that native menu
-remains unverified; the Model row from `$.config.list()` lists aliases, not the full
-resolved picker rows. A settings overlay cannot establish native row injection when
-managed settings replace the rows.
+The installed build has no `ModelPicker` render site. An isolated Claude 2.1.318
+probe with an organization-managed mod confirmed that `settings.read` accepts an
+in-memory `modelPicker` change, but the native picker reads its rows directly from
+the settings sources and ignores that overlay, including an existing row label
+change. The popup avoids depending on native row injection; no managed model list
+is changed. Session-only (`s`) selection remains an open integration gap.
 
 UG's Claude launcher loads `hooks/register.ts` through the existing launch-scoped
 `ug-smart-router` plugin in sessions launched with smart routing. Claude Code 2.1.290 or
