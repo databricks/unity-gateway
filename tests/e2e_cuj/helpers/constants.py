@@ -21,6 +21,10 @@ INFERENCE_PATHS = {
 CLAUDE_OPUS_MODEL = "system.ai.claude-opus-4-8"
 CLAUDE_SONNET_MODEL = "system.ai.claude-sonnet-4-6"
 CLAUDE_HAIKU_MODEL = "system.ai.claude-haiku-4-5"
+# Claude reports Bedrock-routed Haiku under this native id.
+NATIVE_MODEL_ALIASES = {
+    "system.ai.anthropic.claude-haiku-4-5-20251001-v1:0": CLAUDE_HAIKU_MODEL,
+}
 CLAUDE_GPT_LUNA_MODEL = "system.ai.gpt-6-luna"
 CLAUDE_GPT_SOL_MODEL = "system.ai.gpt-6-1-sol"
 CODEX_SOL_MODEL = "system.ai.gpt-5-6-sol"
