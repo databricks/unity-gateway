@@ -1183,6 +1183,10 @@ no-mocking boundary and the Scenario/Expected docstring format.
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
+Routed-call display cases verify a bounded prompt preview for single and grouped
+calls, preserve Unicode, and forward the full original task. Explicit user-model
+preferences remain instruction guidance; these checks do not prove model selection
+or an interactive diff view.
 
 The real session-control process call is covered by the live skill-toggle journeys;
 native component tests stub the subagent routing process protocol. No component

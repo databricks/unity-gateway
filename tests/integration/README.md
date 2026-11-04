@@ -26,6 +26,10 @@ The native component suite also covers child-ID-to-animal-name recording without
 spawn inputs. `../test_claude_mod.py` checks the generated bottom-bar command and its
 fallback to native rows. Neither is a live interactive bottom-bar check.
 
+The routed-call display also has native component coverage for a 240-character prompt
+preview, including Unicode and forwarding the original prompt unchanged. This does
+not establish live model-preference enforcement or a complete interactive diff view.
+
 Native hint-row component tests also cover ` · N subagents running` from Claude's agent
 list, excluding inactive statuses, singular wording, preservation of other hint text,
 background work after the parent turn ends, routing toggles, and hiding the count at zero.

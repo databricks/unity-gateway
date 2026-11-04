@@ -1,6 +1,6 @@
 import type { On, PluginOptions } from 'claude-code'
 
-type RoutingRecord = { name: string; task: string; model: string; rationale: string; seconds?: number }
+type RoutingRecord = { name: string; task: string; promptPreview: string; model: string; rationale: string; seconds?: number }
 
 const ANIMALS = [
   'Otter', 'Panda', 'Lynx', 'Fox', 'Badger', 'Beaver', 'Bison', 'Bobcat', 'Camel', 'Caribou',
@@ -16,6 +16,12 @@ const ANIMALS = [
 ]
 
 const shortModel = (model: string): string => model.replace(/^system\.ai\./, '').replace(/^databricks-/, '')
+const promptPreview = (prompt: unknown): string => {
+  if (typeof prompt !== 'string') return ''
+  const text = prompt.replace(/\s+/g, ' ').trim()
+  const characters = Array.from(text)
+  return characters.length > 240 ? characters.slice(0, 237).join('') + '...' : text
+}
 // Claude's own spinner glyphs, played forwards then back as Claude does.
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
 const SPINNER = [...SPINNER_GLYPHS, ...SPINNER_GLYPHS.slice(1, -1).reverse()]
@@ -48,6 +54,12 @@ const selection = ($: any, e: any, record: RoutingRecord, arrow: string, reasonP
       ]),
     ],
   })]
+  if (record.promptPreview) {
+    lines.push(Box({
+      paddingLeft: reasonPadding,
+      children: [Text({ children: [Text({ dimColor: true, children: ['Prompt preview: '] }), record.promptPreview] })],
+    }))
+  }
   if (record.rationale) {
     lines.push(Box({
       paddingLeft: reasonPadding,
@@ -153,6 +165,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
         records.set(tool_use_id, {
           name: names.get(tool_use_id)!,
           task: input.description || input.subagent_type || tool,
+          promptPreview: promptPreview(input.prompt),
           model: route.model,
           rationale: route.rationale,
           seconds,

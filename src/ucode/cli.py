@@ -3303,7 +3303,8 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
     ):
         print_err(
             "Turning Smart Router off requires a reason of at least 16 characters, excluding "
-            "surrounding whitespace. Ask the user why, then pass their reason with "
+            "surrounding whitespace. Reuse the user's explanation if already supplied; "
+            "otherwise ask why. Pass their exact reason with "
             "--smart-router-feedback and submit it through /isaac-feedback --category smart-routing."
         )
         raise typer.Exit(2)
