@@ -1045,6 +1045,67 @@ class TestMaybeAddGpt1mSuffix:
         assert db_mod.maybe_add_gpt_1m_suffix(model) == expected
 
 
+class TestGptAutoCompactModelSettings:
+    def test_caps_gpt_ids_under_their_canonical_key(self):
+        window = {"autoCompactWindow": db_mod.GPT_AUTO_COMPACT_WINDOW}
+        assert db_mod.gpt_auto_compact_model_settings(
+            [
+                "system.ai.gpt-6-luna[1m]",
+                "system.ai.gpt-6-luna",
+                "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol",
+                "system.ai.gpt-oss-120b",
+                "system.ai.claude-opus-4-8[1m]",
+                None,
+            ]
+        ) == {
+            "system.ai.gpt-6-luna": window,
+            "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol": window,
+        }
+
+    def test_user_windows_are_capped(self):
+        assert db_mod.gpt_auto_compact_model_settings(
+            ["system.ai.gpt-6-luna", "system.ai.gpt-5-5[1m]", "system.ai.gpt-5-4"],
+            {"system.ai.gpt-6-luna": 500_000, "system.ai.gpt-5-5": 1_000_000},
+        ) == {
+            "system.ai.gpt-6-luna": {"autoCompactWindow": 500_000},
+            "system.ai.gpt-5-5": {"autoCompactWindow": db_mod.GPT_AUTO_COMPACT_WINDOW},
+            "system.ai.gpt-5-4": {"autoCompactWindow": db_mod.GPT_AUTO_COMPACT_WINDOW},
+        }
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (100_000, 100_000),
+            (1_000_000, 1_000_000),
+            (99_999, None),
+            (1_000_001, None),
+            (True, None),
+            (500_000.0, None),
+            ("500000", None),
+            (None, None),
+        ],
+    )
+    def test_valid_auto_compact_window(self, value, expected):
+        assert db_mod.valid_auto_compact_window(value) == expected
+
+    def test_window_is_within_claude_code_range_and_below_gateway_cap(self):
+        assert 100_000 <= db_mod.GPT_AUTO_COMPACT_WINDOW <= 900_000
+
+    @pytest.mark.parametrize(
+        "model",
+        ["system.ai.gpt-6-luna", "databricks-gpt-6-astra", "gpt-4.1"],
+    )
+    def test_matches_the_ids_that_get_the_1m_hint(self, model):
+        assert db_mod.is_gpt_auto_compact_model_key(model)
+        assert db_mod.maybe_add_gpt_1m_suffix(model) == f"{model}[1m]"
+
+    @pytest.mark.parametrize(
+        "model", ["system.ai.gpt-oss-120b", "system.ai.claude-opus-4-8", "system.ai.gpt-6-luna[1m]"]
+    )
+    def test_rejects_ids_without_the_hint(self, model):
+        assert not db_mod.is_gpt_auto_compact_model_key(model)
+
+
 class TestResolveProviderLaunchModel:
     def test_defaults_to_sonnet_when_offered(self):
         # No --model: pin sonnet (Claude Code's own default tier) when the service allows it.

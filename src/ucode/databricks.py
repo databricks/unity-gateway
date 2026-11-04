@@ -20,7 +20,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -32,6 +32,12 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
+from ucode.auto_compact_window import (  # noqa: F401  (re-exported for callers and tests)
+    CLAUDE_AUTO_COMPACT_WINDOW_MAX,
+    CLAUDE_AUTO_COMPACT_WINDOW_MIN,
+    GPT_AUTO_COMPACT_WINDOW,
+    valid_auto_compact_window,
+)
 from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
@@ -3310,6 +3316,34 @@ _GPT_1M_MODEL_RE = re.compile(
 def maybe_add_gpt_1m_suffix(model: str) -> str:
     """Add Claude Code's `[1m]` hint to GPT ids except gpt-oss; return other ids unchanged."""
     return f"{model}[1m]" if _GPT_1M_MODEL_RE.match(model) else model
+
+
+def is_gpt_auto_compact_model_key(key: str) -> bool:
+    """Whether ``key`` is a ``modelSettings`` id ug writes ``GPT_AUTO_COMPACT_WINDOW`` for."""
+    return bool(_GPT_1M_MODEL_RE.match(key))
+
+
+def gpt_auto_compact_model_settings(
+    models: Iterable[object], user_windows: Mapping[str, int] | None = None
+) -> dict[str, dict[str, int]]:
+    """Claude Code ``modelSettings`` entries capping auto-compact for ids that get the `[1m]` hint.
+
+    Keys are the ids without `[1m]`; Claude Code applies such a key to the suffixed spelling too.
+    Non-string and non-GPT ids (including gpt-oss and Claude) are skipped. Each window is the
+    user's own choice from ``user_windows`` (keyed by the same ids), capped at
+    ``GPT_AUTO_COMPACT_WINDOW``.
+    """
+    user_windows = user_windows or {}
+    return {
+        canonical: {
+            "autoCompactWindow": min(
+                user_windows.get(canonical, GPT_AUTO_COMPACT_WINDOW), GPT_AUTO_COMPACT_WINDOW
+            )
+        }
+        for model in models
+        if isinstance(model, str)
+        and is_gpt_auto_compact_model_key(canonical := model.removesuffix("[1m]"))
+    }
 
 
 # A bare launch pins the first tier the service offers, so it never dead-ends on a model the

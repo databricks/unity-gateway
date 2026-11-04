@@ -15,7 +15,7 @@ import pytest
 from ucode import custom_oauth
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
-from ucode.databricks import AnthropicModelCatalog
+from ucode.databricks import GPT_AUTO_COMPACT_WINDOW, AnthropicModelCatalog
 from ucode.smart_routing import claude_hooks, routing, v2
 
 if sys.platform != "win32":
@@ -593,6 +593,85 @@ class TestV2Launch:
         assert argv[argv.index("--model") + 1] == model
         assert captured["settings"]["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         assert claude_hooks.FIRST_PROMPT_SOCKET_ENV not in captured["settings"]["env"]
+
+    def test_launch_caps_auto_compact_for_routable_gpt_models(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(
+            v2,
+            "_model_picker_catalog",
+            lambda: AnthropicModelCatalog(
+                model_ids=[
+                    "system.ai.claude-opus-4-8",
+                    "system.ai.gpt-6-luna",
+                    "system.ai.gpt-oss-120b",
+                    "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol",
+                ],
+                model_id_to_display_name={},
+            ),
+        )
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+        if sys.platform != "win32":
+            monkeypatch.setattr(
+                claude_pty,
+                "run_claude_pty",
+                lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not use the PTY"),
+            )
+        captured: dict = {}
+
+        class FakeProcess:
+            def __init__(self, argv, **_kwargs):
+                captured["settings"] = json.loads(
+                    Path(argv[argv.index("--settings") + 1]).read_text()
+                )
+                captured["plugin_models"] = _plugin_agent_models(
+                    Path(argv[argv.index("--plugin-dir") + 1])
+                )
+
+            def wait(self):
+                return 0
+
+        monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
+        composed = {
+            "modelSettings": {
+                "system.ai.claude-opus-4-8": {"userField": 1},
+                "system.ai.gpt-6-luna": {"userField": 2},
+            }
+        }
+
+        user_settings = tmp_path / "settings.json"
+        user_settings.write_text(
+            json.dumps(
+                {"modelSettings": {"system.ai.gpt-5-6-sol[1m]": {"autoCompactWindow": 300_000}}}
+            )
+        )
+        original_user_settings = user_settings.read_bytes()
+
+        with pytest.raises(SystemExit):
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                [],
+                binary="claude",
+                user_settings_path=user_settings,
+                launch_model=None,
+                compose_settings=lambda args: (composed, list(args)),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+
+        window = {"autoCompactWindow": GPT_AUTO_COMPACT_WINDOW}
+        # Keys are the ids routed agents and first-prompt switches use, without the `[1m]` hint.
+        assert captured["settings"]["modelSettings"] == {
+            "system.ai.claude-opus-4-8": {"userField": 1},
+            "system.ai.gpt-6-luna": {"userField": 2, **window},
+            "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol": window,
+            # The user's lower `/autocompact` window, keyed with `[1m]`, applies to the routed id.
+            "system.ai.gpt-5-6-sol": {"autoCompactWindow": 300_000},
+        }
+        assert "system.ai.gpt-6-luna[1m]" in captured["plugin_models"]
+        assert user_settings.read_bytes() == original_user_settings
 
 
 class TestV2ModelPickerDiscovery:

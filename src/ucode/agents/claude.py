@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -19,6 +20,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from ucode.claude_auto_compact_notice import (
+    HOOK_COMMAND_MARKER as AUTO_COMPACT_NOTICE_HOOK_MARKER,
+)
+from ucode.claude_auto_compact_notice import (
+    SESSION_WINDOWS_ENV_VAR,
+    user_auto_compact_windows,
+)
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -47,6 +55,7 @@ from ucode.custom_oauth import (
     custom_oauth_cli_enabled,
 )
 from ucode.databricks import (
+    GPT_AUTO_COMPACT_WINDOW,
     AnthropicModelCatalog,
     _debug,
     build_auth_shell_command,
@@ -54,6 +63,8 @@ from ucode.databricks import (
     build_otel_traces_endpoint,
     build_tool_base_url,
     get_databricks_token,
+    gpt_auto_compact_model_settings,
+    is_gpt_auto_compact_model_key,
     maybe_add_gpt_1m_suffix,
     ug_binary,
 )
@@ -115,6 +126,7 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
+from ucode.smart_routing.hooks import sync_managed_hooks
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
@@ -259,6 +271,8 @@ CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
 CLAUDE_BLANKED_CREDENTIAL_PATHS = [["env", key] for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS]
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
+CLAUDE_MODEL_SETTINGS_KEY = "modelSettings"
+CLAUDE_AUTO_COMPACT_WINDOW_KEY = "autoCompactWindow"
 CLAUDE_PERMISSIONS_DENY_PATH = ["permissions", "deny"]
 CLAUDE_ALLOWED_MCP_SERVERS_KEY = "allowedMcpServers"
 # The managed config's harness-native settings (resolved from the manifest), and the leaves last
@@ -715,7 +729,132 @@ def render_overlay(
         )
         keys += [["env", key] for key in otel_env] + [["otelHeadersHelper"]]
 
+    keys += _sync_gpt_model_settings(overlay)
     return overlay, keys
+
+
+def _settings_model_ids(settings: dict) -> list[object]:
+    """Every model id a Claude settings document can start a session on or offer in /model."""
+    env = settings.get("env")
+    env = env if isinstance(env, dict) else {}
+    model_ids: list[object] = [
+        env.get("ANTHROPIC_MODEL"),
+        *(env.get(key) for key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.values()),
+    ]
+    available_models = settings.get("availableModels")
+    if isinstance(available_models, list):
+        model_ids += available_models
+    picker = settings.get("modelPicker")
+    options = picker.get("options") if isinstance(picker, dict) else None
+    if isinstance(options, list):
+        model_ids += [option.get("model") for option in options if isinstance(option, dict)]
+    return model_ids
+
+
+# (model, user window) caps already warned about, so a launch that writes several files warns once.
+_warned_auto_compact_caps: set[tuple[str, int]] = set()
+
+
+def _user_auto_compact_windows(user_settings_path: Path) -> dict[str, int]:
+    """Valid ``autoCompactWindow`` values from the user's own settings, keyed by id without `[1m]`.
+
+    Read-only: `/autocompact` writes this file, and ug never does. If both spellings of an id carry
+    a value, the lower wins.
+    """
+    return user_auto_compact_windows(read_json_safe(user_settings_path))
+
+
+def gpt_model_settings(
+    models: Iterable[object], user_settings_path: Path | None = None
+) -> dict[str, dict[str, int]]:
+    """GPT ``modelSettings`` entries for every file ug writes, honoring the user's lower window.
+
+    A Claude Code settings source above the user's (``--settings``, the OS-managed file) would
+    otherwise replace their `/autocompact` choice, so ug writes min(user value,
+    ``GPT_AUTO_COMPACT_WINDOW``) and warns once when it lowers the user's value.
+    """
+    user_windows = _user_auto_compact_windows(user_settings_path or CLAUDE_USER_SETTINGS_PATH)
+    entries = gpt_auto_compact_model_settings(models, user_windows)
+    for model in entries:
+        window = user_windows.get(model)
+        if window is None or window <= GPT_AUTO_COMPACT_WINDOW:
+            continue
+        if (model, window) not in _warned_auto_compact_caps:
+            _warned_auto_compact_caps.add((model, window))
+            print_warning(
+                f"autoCompactWindow {window} for {model} is capped at {GPT_AUTO_COMPACT_WINDOW}: "
+                "the gateway rejects requests above ~920K tokens."
+            )
+    return entries
+
+
+def _sync_gpt_model_settings(settings: dict) -> list[list[str]]:
+    """Write ug's GPT ``modelSettings`` leaves for the models ``settings`` names; return their paths.
+
+    Like the managed model env keys, the ``autoCompactWindow`` leaf of a GPT id is ug's: it is set
+    for every GPT model the document names (see ``gpt_model_settings`` for the value) and dropped
+    for GPT ids it no longer names. Sibling fields and non-GPT entries are left alone, and only
+    entries emptied by a removal are dropped.
+    """
+    entries = gpt_model_settings(_settings_model_ids(settings))
+    model_settings = settings.get(CLAUDE_MODEL_SETTINGS_KEY)
+    if not isinstance(model_settings, dict):
+        if entries:
+            settings[CLAUDE_MODEL_SETTINGS_KEY] = entries
+        return [
+            [CLAUDE_MODEL_SETTINGS_KEY, model, CLAUDE_AUTO_COMPACT_WINDOW_KEY] for model in entries
+        ]
+    removed = False
+    for model, entry in list(model_settings.items()):
+        if model in entries or not is_gpt_auto_compact_model_key(model):
+            continue
+        if isinstance(entry, dict) and CLAUDE_AUTO_COMPACT_WINDOW_KEY in entry:
+            del entry[CLAUDE_AUTO_COMPACT_WINDOW_KEY]
+            removed = True
+            if not entry:
+                del model_settings[model]
+    deep_merge_dict(model_settings, entries)
+    if removed and not model_settings:
+        del settings[CLAUDE_MODEL_SETTINGS_KEY]
+    return [[CLAUDE_MODEL_SETTINGS_KEY, model, CLAUDE_AUTO_COMPACT_WINDOW_KEY] for model in entries]
+
+
+def sync_auto_compact_notice_hook(doc: dict) -> None:
+    """Install ug's `/autocompact` restart-notice hook, replacing any earlier copy."""
+    command = shlex.join([sys.executable, "-m", AUTO_COMPACT_NOTICE_HOOK_MARKER])
+    groups = {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": command}]}]}
+    sync_managed_hooks(doc, AUTO_COMPACT_NOTICE_HOOK_MARKER, groups)
+
+
+def record_session_gpt_auto_compact(*overlays: dict) -> None:
+    """Record the GPT ``autoCompactWindow`` this launch applies, for the restart-notice hook.
+
+    Sets ``SESSION_WINDOWS_ENV_VAR`` on this process so the Claude it starts, and that Claude's
+    hooks, inherit it. Claude Code's precedence is the OS-managed file over ``--settings``, so the
+    sources are ug's settings file, then ``overlays`` (the launch's own settings), then the
+    managed file. A launch with no GPT window clears an inherited value.
+    """
+    managed_path = managed_settings_path()
+    sources = [
+        read_json_safe(CLAUDE_SETTINGS_PATH),
+        *overlays,
+        read_json_safe(managed_path) if managed_path else {},
+    ]
+    effective: dict[str, int] = {}
+    for source in sources:
+        for model, window in user_auto_compact_windows(source).items():
+            if is_gpt_auto_compact_model_key(model):
+                effective[model] = window
+    user_windows = _user_auto_compact_windows(CLAUDE_USER_SETTINGS_PATH)
+    if not effective:
+        os.environ.pop(SESSION_WINDOWS_ENV_VAR, None)
+        return
+    os.environ[SESSION_WINDOWS_ENV_VAR] = json.dumps(
+        {
+            model: {"effective": window, "user": user_windows.get(model)}
+            for model, window in effective.items()
+        }
+    )
 
 
 _CLAUDE_PICKER_LABEL_RE = re.compile(
@@ -1753,18 +1892,20 @@ def write_tool_config(
                             merged.pop(key, None)
                 elif not ug_picker:
                     _warn_unrecorded_allow_list(merged, managed_settings_snapshots)
+        # Derived from the final file, so family defaults and pickers ug preserved are covered too.
+        _sync_gpt_model_settings(merged)
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
     managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
-    write_json_file(
-        CLAUDE_SETTINGS_PATH,
-        _compose(
-            read_json_safe(CLAUDE_SETTINGS_PATH),
-            enforce_model_default_hierarchy=source_scoped_defaults,
-            managed_settings_snapshots=None,
-        ),
+    private_settings = _compose(
+        read_json_safe(CLAUDE_SETTINGS_PATH),
+        enforce_model_default_hierarchy=source_scoped_defaults,
+        managed_settings_snapshots=None,
     )
+    # Only the --settings file carries the hook: Claude Code merges hooks across sources.
+    sync_auto_compact_notice_hook(private_settings)
+    write_json_file(CLAUDE_SETTINGS_PATH, private_settings)
 
     # The admin's settings may not displace anything ug writes, except the hooks and deny lists ug
     # only merges its own entries into.
@@ -2453,13 +2594,22 @@ def _merge_claude_settings(base: dict, overlay: dict) -> dict:
     return merged
 
 
-def _compose_v2_settings(tool_args: list[str]) -> tuple[dict, list[str]]:
+def _compose_v2_settings(
+    tool_args: list[str], start_model: str | None = None
+) -> tuple[dict, list[str]]:
     """Compose caller settings with ucode's Claude settings for a v2 launch."""
     caller_values, remaining = _extract_caller_settings(tool_args)
     settings: dict = {}
     for value in caller_values:
         settings = _merge_claude_settings(settings, _load_caller_settings(value))
-    return _merge_claude_settings(settings, read_json_safe(CLAUDE_SETTINGS_PATH)), remaining
+    settings = _merge_claude_settings(settings, read_json_safe(CLAUDE_SETTINGS_PATH))
+    return _merge_claude_settings(settings, _start_model_settings(start_model)), remaining
+
+
+def _start_model_settings(start_model: str | None) -> dict:
+    """Launch-only settings for a start model the settings file may not name (e.g. ``--model``)."""
+    model_settings = gpt_model_settings([start_model])
+    return {CLAUDE_MODEL_SETTINGS_KEY: model_settings} if model_settings else {}
 
 
 def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[str]:
@@ -2747,6 +2897,7 @@ def launch(
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
+    record_session_gpt_auto_compact()
     if state.get("claude_relayed"):
         _launch_relayed(state, binary, tool_args)
         return
@@ -2776,7 +2927,11 @@ def launch(
                 user_settings_path=CLAUDE_USER_SETTINGS_PATH,
                 # With no user pin, let Claude resolve its starting model from its own settings.
                 launch_model=pinned_model,
-                compose_settings=_compose_v2_settings,
+                compose_settings=(
+                    _compose_v2_settings
+                    if not (pinned_model or session_model)
+                    else lambda args: _compose_v2_settings(args, pinned_model or session_model)
+                ),
                 launch_model_args=(
                     _launch_model_args
                     if not session_model
@@ -2796,7 +2951,10 @@ def launch(
     if start_model := pinned_model or session_model:
         # Pass the exact ID: managed family defaults can override temporary aliases.
         os.environ["ANTHROPIC_MODEL"] = start_model
-        settings_override = {"env": {"ANTHROPIC_MODEL": start_model}}
+        settings_override = {
+            "env": {"ANTHROPIC_MODEL": start_model},
+            **_start_model_settings(start_model),
+        }
         launch_args = [
             *_launch_model_args(tool_args, start_model),
             *tool_args,
@@ -2828,6 +2986,7 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
+    record_session_gpt_auto_compact(settings_override or {})
     with _claude_launch_argv(binary, launch_args, settings_override=settings_override) as argv:
         exec_or_spawn(argv)
 

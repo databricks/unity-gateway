@@ -24,6 +24,7 @@ from ucode.codex_config import (
 )
 from ucode.config_io import (
     APP_DIR,
+    deep_merge_dict,
     read_json_safe,
     write_json_file,
     write_text_file,
@@ -665,7 +666,8 @@ def launch_claude(
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.args import has_explicit_model_arg
-    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
+    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR, record_session_gpt_auto_compact
+    from ucode.agents.claude import gpt_model_settings as claude_gpt_model_settings
 
     if os.name != "nt":
         from ucode.smart_routing import claude_pty
@@ -732,6 +734,21 @@ def launch_claude(
     if not isinstance(model_overrides, dict):
         raise RuntimeError("Claude settings 'modelOverrides' must be an object for smart routing.")
     model_overrides.update(_claude_model_overrides(model_ids))
+    # Without a picker the catalog comes from gateway discovery, which the settings file never
+    # names, so cap here. Routed agents use the canonical ids, first-prompt switches unwrapped ones.
+    canonical_models = _canonical_claude_models(model_ids)
+    gpt_model_settings = claude_gpt_model_settings(
+        [*canonical_models, *map(_unwrapped_claude_model_id, canonical_models)],
+        user_settings_path,
+    )
+    if gpt_model_settings:
+        model_settings = settings.setdefault("modelSettings", {})
+        if not isinstance(model_settings, dict):
+            raise RuntimeError(
+                "Claude settings 'modelSettings' must be an object for smart routing."
+            )
+        deep_merge_dict(model_settings, gpt_model_settings)
+    record_session_gpt_auto_compact(settings)
     routing_state = {
         **state,
         "claude_models": {str(index): model for index, model in enumerate(model_ids)},
