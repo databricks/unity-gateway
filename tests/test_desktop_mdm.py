@@ -513,6 +513,29 @@ def test_runtime_probe_reads_installed_package_path(monkeypatch):
     assert mdm._runtime() == {**expected, "python": os.path.abspath(sys.executable)}
 
 
+def test_runtime_rejects_untrusted_cli_before_version_discovery(monkeypatch, tmp_path):
+    candidate = tmp_path / "databricks"
+    candidate.write_text("untrusted test file")
+    candidate.chmod(0o777)
+    shared_path = mdm._shared_path
+
+    def validate(value, name, **kwargs):
+        if value == str(candidate):
+            return shared_path(value, name, **kwargs)
+        return Path(value)
+
+    monkeypatch.setattr(mdm, "_shared_path", validate)
+    monkeypatch.setattr(mdm.databricks, "_iter_databricks_executables", lambda: [str(candidate)])
+    discover = Mock(side_effect=AssertionError("Untrusted CLI must not be probed"))
+    subprocess_run = Mock(side_effect=AssertionError("Untrusted CLI must not be executed"))
+    monkeypatch.setattr(mdm.databricks, "databricks_cli_path", discover)
+    monkeypatch.setattr(mdm.subprocess_cross_os, "run", subprocess_run)
+    with pytest.raises(RuntimeError, match="root-owned"):
+        mdm._runtime()
+    discover.assert_not_called()
+    subprocess_run.assert_not_called()
+
+
 def test_isolated_runtime_must_import_the_provisioning_package(monkeypatch):
     monkeypatch.setattr(mdm, "_shared_path", lambda value, *a, **kw: Path(value))
     probe = Mock(

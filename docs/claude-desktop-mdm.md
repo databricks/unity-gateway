@@ -95,6 +95,9 @@ An empty enabled-agent list leaves Claude unrestricted. With no managed config o
 feature-disabled config API, provisioning uses model discovery without managed assets.
 An explicit agent list that excludes Claude still blocks provisioning.
 
+Provisioning also requires a root-owned PATH with no group/other-writable directories.
+Databricks CLI candidates are validated before version discovery can execute them.
+
 No provisioning token or administrator profile is written into the machine policy
 or plugin. The runtime wrapper clears provisioning credential overrides and binds
 to the shared Python and CLIs. Each user's Desktop helper uses a separate

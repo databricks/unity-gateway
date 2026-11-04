@@ -529,7 +529,8 @@ The generated ordinary Desktop auth argv is also parsed by the real CLI and pins
 workspace ID before requesting credentials; external authentication is replaced.
 MDM compatibility cases cover unrestricted empty agent lists and feature-disabled config
 discovery. MCP/tracing helper checks keep explicit OAuth profiles independent of unrelated
-saved PAT mode while retaining saved PAT mode for the matching MCP profile.
+saved PAT mode while retaining saved PAT mode for the matching MCP profile. An untrusted CLI candidate
+is rejected by real path validation before any version discovery or subprocess call.
 Managed-config responses use the API's agent list and pass through the real fetch gate
 and normalization; checks cover enum/name spellings, headers/tracing, omitted configs,
 and rejection when Claude is absent.

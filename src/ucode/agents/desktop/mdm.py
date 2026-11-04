@@ -91,6 +91,11 @@ def _shared_path(value: str, name: str, *, executable: bool = False) -> Path:
 
 
 def _runtime() -> dict[str, str]:
+    for directory in os.get_exec_path():
+        _shared_path(directory, "MDM command PATH")
+    for candidate in databricks._iter_databricks_executables():
+        _shared_path(candidate, "Databricks CLI", executable=True)
+    databricks.clear_databricks_cli_cache()
     python = _shared_path(os.path.abspath(sys.executable), "UG's Python runtime", executable=True)
     _shared_path(sys.prefix, "UG's Python environment")
     _shared_path(str(Path(__file__).resolve()), "UG package")
