@@ -11,7 +11,7 @@ import sys
 import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
-from contextlib import contextmanager, redirect_stdout
+from contextlib import ExitStack, contextmanager, redirect_stdout
 from dataclasses import asdict
 from enum import StrEnum
 from importlib import metadata
@@ -122,9 +122,11 @@ from ucode.managed_config import (
     revert_machine_policy,
 )
 from ucode.managed_files import (
+    SKIP_OS_SETTINGS_ENV,
     ManagedFileWriteUnavailable,
     config_scope,
     explicit_managed_writes,
+    launch_scope,
     managed_write_session,
     request_explicit_managed_writes,
     set_config_scope,
@@ -3593,8 +3595,13 @@ def _launch_tool(
     routing_unsupported: bool = False,
 ) -> None:
     previous = {}
+    launch_marks = ExitStack()
     try:
         tool = normalize_tool(tool_name)
+        if tool in (AGENT_CLAUDE, AGENT_CODEX):
+            # A launch trusts the OS-managed files and never writes them, unless it opts in with
+            # UG_LAUNCH_WRITE_OS_SETTINGS. This also covers first-run auto-setup below.
+            launch_marks.enter_context(launch_scope())
         routing_chosen = routing_already_chosen or smart_routing_config.known_version()
         previous = smart_routing_v2.apply_config(agent=tool)
         if not custom_oauth_cli_enabled(custom_oauth):
@@ -4105,6 +4112,7 @@ def _launch_tool(
         print_err("Interrupted.")
         raise typer.Exit(130) from None
     finally:
+        launch_marks.close()
         smart_routing_v2.restore_smart_routing_env(previous)
 
 
@@ -4232,6 +4240,20 @@ def _launch_managed_default(
     workspace: str | None,
 ) -> None:
     """Route bare ``ucode`` by whether the workspace publishes a managed config."""
+    # Bare `ug` is a launch: it reads the OS-managed files and workspace policy but never writes them.
+    with launch_scope():
+        _launch_managed_default_body(
+            ctx, dry_run=dry_run, skip_preflight=skip_preflight, workspace=workspace
+        )
+
+
+def _launch_managed_default_body(
+    ctx: typer.Context,
+    *,
+    dry_run: bool,
+    skip_preflight: bool,
+    workspace: str | None,
+) -> None:
     state = _launch_workspace_state(workspace)
     current = state.get("workspace")
     if not current:
@@ -4878,6 +4900,12 @@ def configure(
             raise RuntimeError("Use either --global or --user, not both.")
         scope = "user" if user_scope else "global"
         set_config_scope(scope)
+        if scope == "global" and env_bool(SKIP_OS_SETTINGS_ENV):
+            print_note(
+                f"{SKIP_OS_SETTINGS_ENV} is set. Use `ug configure --user` to keep settings "
+                "per-user instead; unlike the variable, --user refuses a workspace that "
+                "publishes a managed config."
+            )
         set_machine_wide_only(global_scope)
         claude_agent.request_explicit_configure()
         request_explicit_managed_writes()

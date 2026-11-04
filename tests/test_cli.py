@@ -9152,3 +9152,124 @@ class TestLaunchWithManagedFilePicker:
         assert result.exit_code == 0, result.output
         # The launch's own source supplies the models, so the picker neither seeds nor skips.
         assert calls["configure"].call_args.args[1]["claude_models"] == discovered
+
+
+class TestLaunchSkipsOsManagedSettings:
+    """Agent launches skip the OS-managed files by default; configure never does."""
+
+    @staticmethod
+    def _skipped_during(args, *, tool="claude", recorded=None):
+        recorded = [] if recorded is None else recorded
+        with _launch_policy_patches(None) as calls:
+            calls["configure"].side_effect = lambda *a, **k: (
+                recorded.append(managed_files.managed_settings_skipped()) or calls["state"]
+            )
+            calls["launch"].side_effect = lambda *a, **k: recorded.append(
+                managed_files.managed_settings_skipped()
+            )
+            result = runner.invoke(app, args)
+        assert result.exit_code == 0, result.output
+        return recorded
+
+    @pytest.mark.parametrize("agent", ["claude", "codex"])
+    def test_agent_launch_skips_by_default_and_restores(self, agent):
+        assert self._skipped_during([agent]) == [True, True]
+        assert managed_files.managed_settings_skipped() is False
+
+    @pytest.mark.parametrize("agent", ["claude", "codex"])
+    def test_opt_in_restores_launch_writes(self, monkeypatch, agent):
+        monkeypatch.setenv(managed_files.LAUNCH_WRITE_OS_SETTINGS_ENV, "1")
+        assert self._skipped_during([agent]) == [False, False]
+
+    def test_explicit_skip_wins_over_opt_in(self, monkeypatch):
+        monkeypatch.setenv(managed_files.LAUNCH_WRITE_OS_SETTINGS_ENV, "1")
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        assert self._skipped_during(["claude"]) == [True, True]
+
+    def test_other_agents_are_not_marked(self):
+        seen = []
+        with _launch_policy_patches(None) as calls:
+            calls["launch"].side_effect = lambda *a, **k: seen.append(
+                managed_files.managed_settings_skipped()
+            )
+            result = runner.invoke(app, ["opencode"])
+        assert result.exit_code == 0, result.output
+        assert seen == [False]
+
+    def test_launch_scope_is_restored_when_the_launch_fails(self):
+        with _launch_policy_patches(None) as calls:
+            calls["launch"].side_effect = RuntimeError("boom")
+            result = runner.invoke(app, ["claude"])
+        assert result.exit_code == 1
+        assert managed_files.managed_settings_skipped() is False
+
+    def test_bare_launch_is_marked_through_policy_read_and_launch(self, monkeypatch):
+        observed = []
+        managed = {"enabled_agents": {"claude": {}}}
+        state = {"workspace": "https://w.cloud.databricks.com"}
+        monkeypatch.setattr(cli_mod, "_launch_workspace_state", lambda ws: state)
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda **kwargs: None)
+        monkeypatch.setattr(cli_mod, "apply_pat_environment", lambda *args: None)
+        monkeypatch.setattr(
+            cli_mod,
+            "refresh_managed_config",
+            lambda s: observed.append(managed_files.managed_settings_skipped()) or (managed, False),
+        )
+        monkeypatch.setattr(cli_mod, "_fetch_budget_recommendation", lambda *args: None)
+        monkeypatch.setattr(
+            cli_mod,
+            "_launch_tool",
+            lambda *a, **k: observed.append(managed_files.managed_settings_skipped()),
+        )
+        result = runner.invoke(app, [])
+        assert result.exit_code == 0, result.output
+        assert observed == [True, True]
+        assert managed_files.managed_settings_skipped() is False
+
+    def test_configure_is_not_marked_as_a_launch(self):
+        seen = []
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.install_tool_binary"),
+            patch(
+                "ucode.cli.configure_workspace_command",
+                side_effect=lambda *a, **k: seen.append(managed_files.managed_settings_skipped()),
+            ),
+        ):
+            result = runner.invoke(
+                app, ["configure", "--agents", "claude", "--workspace", "https://w.databricks.com"]
+            )
+        assert result.exit_code == 0, result.output
+        assert seen == [False]
+
+
+class TestConfigureSkipNudge:
+    ARGS = ["configure", "--agents", "claude", "--workspace", "https://first.databricks.com"]
+
+    def _configure(self, extra=()):
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.install_tool_binary"),
+            patch("ucode.cli.configure_workspace_command"),
+        ):
+            result = runner.invoke(app, [*self.ARGS, *extra])
+        assert result.exit_code == 0, result.output
+        return " ".join(_strip_ansi(result.output).split())
+
+    def test_nudge_shown_once_with_the_skip_variable(self, monkeypatch):
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        output = self._configure()
+        assert output.count("UG_SKIP_OS_SETTINGS is set") == 1
+        assert "ug configure --user" in output
+        assert "refuses a workspace that publishes a managed config" in output
+
+    def test_no_nudge_without_the_variable(self):
+        assert "UG_SKIP_OS_SETTINGS" not in self._configure()
+
+    def test_no_nudge_with_user_flag(self, monkeypatch):
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        assert "UG_SKIP_OS_SETTINGS is set" not in self._configure(["--user"])
+
+    def test_launch_opt_in_alone_does_not_nudge(self, monkeypatch):
+        monkeypatch.setenv(managed_files.LAUNCH_WRITE_OS_SETTINGS_ENV, "1")
+        assert "UG_SKIP_OS_SETTINGS" not in self._configure()

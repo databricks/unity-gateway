@@ -194,6 +194,8 @@ def launch_env(base_url: str) -> dict[str, str]:
         "SMART_ROUTER_CONFIG_VERSION": "subagent_orch_v0_claude_only",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "1",
         "UG_AUTO_UPGRADE_AGENT": "1",
+        # Launches skip OS-managed files by default; this CUJ covers the launch-time repair path.
+        "UG_LAUNCH_WRITE_OS_SETTINGS": "1",
     }
 
 

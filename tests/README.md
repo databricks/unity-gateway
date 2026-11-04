@@ -101,6 +101,14 @@ ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching
 `-c` headers (plain and smart-routed) without writing its profile. No automated test checks the
 header at the gateway.
 
+Launch-time OS-managed skipping: `test_managed_files.py` `TestLaunchScope` (default skip, `UG_LAUNCH_WRITE_OS_SETTINGS`
+opt-in, explicit skip winning, restoration, no privileged or policy write), `test_agent_claude.py` /
+`test_agent_codex.py` (a marked launch writes no managed file and installs no header mod; the opt-in does),
+`test_managed_config.py` (an installed policy still governs a launch without a write or a
+`UG_SKIP_OS_SETTINGS` blame), and `test_cli.py` `TestLaunchSkipsOsManagedSettings` (claude, codex, and
+bare `ug` marked, other agents and `ug configure` not) and `TestConfigureSkipNudge`. Component
+checks only; no live sudo or agent is exercised.
+
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
 making no privileged write after another writer drops them, skip mode, revert, and admin passthrough

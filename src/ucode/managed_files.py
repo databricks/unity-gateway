@@ -37,6 +37,9 @@ from ucode.ui import console, print_note, print_success, print_warning
 _SUDO = "/usr/bin/sudo"
 # Opt out of all OS-managed settings work (read, conflict check, and the privileged sudo write).
 SKIP_OS_SETTINGS_ENV = "UG_SKIP_OS_SETTINGS"
+# Opt a `ug claude` / `ug codex` / bare `ug` launch back in to reconciling the OS-managed files.
+# Launches skip them by default; an explicit ``UG_SKIP_OS_SETTINGS`` still wins over this.
+LAUNCH_WRITE_OS_SETTINGS_ENV = "UG_LAUNCH_WRITE_OS_SETTINGS"
 CONFIG_SCOPES = ("global", "user")
 DEFAULT_CONFIG_SCOPE = "global"
 _config_scope = DEFAULT_CONFIG_SCOPE
@@ -51,6 +54,7 @@ _managed_write_notice_shown = False
 _managed_write_session_depth = 0
 _managed_write_worker: _SudoReplaceWorker | None = None
 _explicit_managed_command: str | None = None
+_launch_depth = 0
 
 ManagedParser = Callable[[str], dict]
 ManagedDumper = Callable[[dict], str]
@@ -143,21 +147,46 @@ def machine_wide_only() -> bool:
     return _machine_wide_only
 
 
-def managed_settings_skipped() -> bool:
-    """Whether OS-managed settings are opted out via ``UG_SKIP_OS_SETTINGS`` or the ``user`` scope.
+@contextmanager
+def launch_scope() -> Iterator[None]:
+    """Mark the enclosed work as an agent launch (``ug claude``, ``ug codex``, or bare ``ug``).
 
-    Set the variable to ``1``/``true``/``yes``/``on`` to make ucode neither read nor update the
-    root-owned managed files (Claude Code ``managed-settings.json``, Codex ``managed_config.toml``
-    or, on Windows, ``requirements.toml``).
+    A marked launch skips the OS-managed files exactly like ``UG_SKIP_OS_SETTINGS`` (see
+    :func:`managed_settings_skipped`) unless ``UG_LAUNCH_WRITE_OS_SETTINGS`` is truthy. Nestable;
+    the previous state is restored on every exit."""
+    global _launch_depth
+    _launch_depth += 1
+    try:
+        yield
+    finally:
+        _launch_depth -= 1
+
+
+def explicit_skip_requested() -> bool:
+    """Whether the user opted out of OS-managed settings: ``UG_SKIP_OS_SETTINGS`` or ``--user``."""
+    return env_bool(SKIP_OS_SETTINGS_ENV) or _config_scope == "user"
+
+
+def managed_settings_skipped() -> bool:
+    """Whether OS-managed settings are skipped: by ``UG_SKIP_OS_SETTINGS``, the ``user`` scope, or
+    a launch (see :func:`launch_scope`) that has not opted in with ``UG_LAUNCH_WRITE_OS_SETTINGS``.
+
+    Set ``UG_SKIP_OS_SETTINGS`` to ``1``/``true``/``yes``/``on`` to make ucode neither read nor
+    update the root-owned managed files (Claude Code ``managed-settings.json``, Codex
+    ``managed_config.toml`` or, on Windows, ``requirements.toml``).
     ucode then relies solely on its per-user settings, which is enough for a single-user setup that
     always launches through ``ug`` and never needs a bare ``claude``/``codex`` to reach the gateway.
     Skips the privileged ``sudo`` step entirely, so an interactive run is never prompted for a
     password and never hits the "OS-managed settings could not be updated" failure on hosts where
     that write is blocked. ug also trusts whatever OS-managed files exist and doesn't check them
     against its own settings; the agents apply their native precedence. ``ug configure --user`` has
-    the same effect.
+    the same effect. Launches behave this way by default; ``UG_LAUNCH_WRITE_OS_SETTINGS`` restores
+    launch-time reconciliation, and an explicit skip wins when both are set. ``ug configure`` and
+    ``ug revert`` are never affected by the launch default.
     """
-    return env_bool(SKIP_OS_SETTINGS_ENV) or _config_scope == "user"
+    if explicit_skip_requested():
+        return True
+    return _launch_depth > 0 and not env_bool(LAUNCH_WRITE_OS_SETTINGS_ENV)
 
 
 def managed_files_supported() -> bool:

@@ -20,6 +20,19 @@ settings when the managed file is compatible, and repairs conflicting managed se
 `sudo -n`, which requires existing authorization and never prompts for a password. If that repair is
 denied, the agent does not launch.
 
+## Launches Skip OS-Managed Files by Default
+
+`ug claude`, `ug codex`, and bare `ug` (including first-run setup inside a launch) run in a launch
+scope (`managed_files.launch_scope`) that makes `managed_settings_skipped()` true, exactly as
+`UG_SKIP_OS_SETTINGS=1` does: no managed-file write, conflict check, `sudo`, header-mod install, or
+managed MCP registration. Launches rely on per-user settings, and the agents apply native
+precedence over any OS-managed file an administrator wrote. An installed workspace policy is still
+read and enforced (reading needs no privilege, and MDM must keep governing developers); a launch
+only skips writing it. `UG_LAUNCH_WRITE_OS_SETTINGS=1` restores launch-time reconciliation as
+described below. If `UG_SKIP_OS_SETTINGS=1` (or the `user` scope) is also set, the skip wins.
+`ug configure` and `ug revert` never enter the launch scope, so their behavior is unchanged. The
+launch rows of the matrix below therefore apply only with `UG_LAUNCH_WRITE_OS_SETTINGS=1`.
+
 ## Configuration Files
 
 | Agent | Local ucode configuration | OS-managed configuration |

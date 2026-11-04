@@ -71,6 +71,7 @@ from ucode.managed_files import (
     claude_header_mod_root,
     current_os,
     explicit_managed_writes,
+    explicit_skip_requested,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -366,7 +367,8 @@ def get_family_defaults(
     if managed_config or state.get("claude_static_models") or provider or parent_schema:
         return None
     path = _managed_settings_path()
-    if path is None or managed_settings_skipped():
+    # A launch only reads the file here, so only an explicit opt-out hides another writer's picker.
+    if path is None or explicit_skip_requested():
         return None
     try:
         text = read_managed_file(path)
@@ -2834,8 +2836,9 @@ def launch(
     if os.environ.get(UG_HEADERS_ENV_VAR, "").strip() and not header_mod_active():
         print_warning(
             "Claude Code won't send your `ug --header` / UG_HEADERS headers: no header mod is enabled "
-            "or ug's is out of date, and a launch never changes machine-wide files. Run `ug configure` "
-            "without UG_SKIP_OS_SETTINGS or `--user`."
+            "or ug's is out of date, and a launch does not change machine-wide files by default. "
+            "Run `ug configure` without UG_SKIP_OS_SETTINGS or `--user`, or launch with "
+            "UG_LAUNCH_WRITE_OS_SETTINGS=1."
         )
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
         # Discovery is launch-scoped. Pass it in the process environment rather

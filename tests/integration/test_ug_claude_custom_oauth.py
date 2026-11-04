@@ -2,7 +2,6 @@
 
 import configparser
 import json
-import os
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -13,7 +12,6 @@ from utils.terminal import AgentTerminal
 pytestmark = [pytest.mark.live, pytest.mark.tui, pytest.mark.claude]
 
 CLIENT_ID = "databricks-cli"
-MANAGED_SETTINGS_PATH = "/etc/claude-code/managed-settings.json"
 
 
 @pytest.mark.smoke
@@ -22,7 +20,7 @@ def test_ug_claude_custom_oauth_cli_boots(live_session, workspace):
 
     Expected: Databricks CLI 1.17.0 is installed; the real Claude TUI reaches a
     usable prompt, accepts keyboard input, and exits normally; its generated CLI
-    profile records client_id=databricks-cli; and the OS-managed apiKeyHelper uses
+    profile records client_id=databricks-cli; and the user-scope apiKeyHelper uses
     only the installed ug path, workspace, and generated profile. This boot-only
     smoke check does not claim model inference.
     """
@@ -51,13 +49,8 @@ def test_ug_claude_custom_oauth_cli_boots(live_session, workspace):
     assert profile == f"ug-oauth-{hostname}-{CLIENT_ID}"
     assert profiles[profile]["client_id"] == CLIENT_ID
 
-    if os.name == "nt":
-        # ug has no Windows managed-settings writer, so the helper lands in user settings.
-        settings_text = (session.home / ".claude/ucode-settings.json").read_text()
-    else:
-        settings_text = session.run(
-            MANAGED_SETTINGS_PATH, binary=session.which("cat"), timeout=30
-        ).stdout
+    # A launch skips the OS-managed file by default, so the helper lands in user settings.
+    settings_text = (session.home / ".claude/ucode-settings.json").read_text()
     helper = split_command(json.loads(settings_text)["apiKeyHelper"])
     assert Path(helper[0]).with_suffix("") == session.binary.with_name("ug")
     assert helper[1:] == [

@@ -106,14 +106,14 @@ Warning/fallback prioritizes availability over strict enforcement of the newest 
 Privileged writes are supported on Linux/macOS only. Real sudo/password and ownership integration
 checks require a disposable clean machine, not an existing developer-managed workstation.
 
-Where the machine cannot hold the policy (Windows, `UG_SKIP_OS_SETTINGS=1`, or `ug configure
---user`) and none is installed for the workspace, ug keeps its earlier behavior unchanged: the
+Where the machine cannot hold the policy (Windows, `UG_SKIP_OS_SETTINGS=1`, `ug configure
+--user`, or an agent launch, which skips OS-managed writes by default) and none is installed for the workspace, ug keeps its earlier behavior unchanged: the
 fetched policy is cached per user in `~/.ucode/managed-config.json`, a launch replays it, and a
 failed `ug configure` fetch falls back to it. Windows support for the installed policy is a
-follow-up. A Linux or macOS launch (root or not) with nothing installed applies the fetched policy to
-that run without installing or caching it, so a first launch before any `ug configure` is still
-managed. An installed policy still wins: with `UG_SKIP_OS_SETTINGS=1`
-a developer's launch reads it read-only, never writes OS-managed files, and builds only user-owned
+follow-up. A launch with nothing installed never installs one: by default it caches the fetched policy per
+user as above, and with `UG_LAUNCH_WRITE_OS_SETTINGS=1` on Linux or macOS it applies the fetched
+policy to that run without caching it, so a first launch before any `ug configure` is still managed. An installed policy still wins: with `UG_SKIP_OS_SETTINGS=1`
+(or by default for any agent launch) a developer's launch reads it read-only, never writes OS-managed files, and builds only user-owned
 settings. That is the supported developer mode on an MDM machine whose administrator ran `ug configure`.
 
 There is no refresh-interval setting in the currently supported `CodingAgentConfig` shape, and

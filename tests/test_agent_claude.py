@@ -1122,6 +1122,46 @@ class TestWriteToolConfigManagedSettings:
         assert str(claude.CLAUDE_SETTINGS_PATH) in [p for p, _ in private_writes]
         assert managed_writes == []
 
+    def test_launch_skips_managed_file_by_default(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        monkeypatch.setattr(
+            claude, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+        )
+        monkeypatch.setattr(
+            claude, "_install_header_mod", lambda *a, **kw: pytest.fail("must not install the mod")
+        )
+        with managed_files.launch_scope():
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+            )
+        assert str(claude.CLAUDE_SETTINGS_PATH) in [p for p, _ in private_writes]
+        assert managed_writes == []
+
+    def test_launch_opt_in_writes_managed_file(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        monkeypatch.setenv(managed_files.LAUNCH_WRITE_OS_SETTINGS_ENV, "1")
+        with managed_files.launch_scope():
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+            )
+        assert [p for p, _ in managed_writes] == [str(FAKE_MANAGED_PATH)]
+
+    def test_explicit_skip_beats_launch_opt_in(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        monkeypatch.setenv(managed_files.LAUNCH_WRITE_OS_SETTINGS_ENV, "1")
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        with managed_files.launch_scope():
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+            )
+        assert managed_writes == []
+
     def test_skip_env_trusts_a_stale_managed_file(self, monkeypatch):
         """The opt-out trusts whatever OS-managed file exists: no check, no write, no error."""
         private_writes: list = []

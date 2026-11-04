@@ -122,6 +122,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # `ug configure` and `ug revert` set this for the rest of the process; start each test as a
     # launch-like run.
     monkeypatch.setattr(managed_files_mod, "_explicit_managed_command", None)
+    monkeypatch.setattr(managed_files_mod, "_launch_depth", 0)
+    monkeypatch.delenv(managed_files_mod.LAUNCH_WRITE_OS_SETTINGS_ENV, raising=False)
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
     # Launch seeds Claude's feature cache in `.claude.json`; never touch the developer's copy.
     monkeypatch.setattr(claude_mod, "CLAUDE_CODE_CONFIG_PATH", tmp_path / ".claude.json")
