@@ -91,12 +91,17 @@ normal Databricks CLI authentication applies. A headless MDM process needs a usa
 credential before this command. Provisioning never starts browser login and fails before
 publishing files if credentials are unavailable.
 
+An empty enabled-agent list leaves Claude unrestricted. With no managed config or a
+feature-disabled config API, provisioning uses model discovery without managed assets.
+An explicit agent list that excludes Claude still blocks provisioning.
+
 No provisioning token or administrator profile is written into the machine policy
 or plugin. The runtime wrapper clears provisioning credential overrides and binds
 to the shared Python and CLIs. Each user's Desktop helper uses a separate
 `UG_DESKTOP_<workspace-hash>` OAuth profile in that user's own Databricks configuration.
 The existing helper permits browser sign-in only on an interactive Desktop auth request.
-Background refresh never initiates authentication. Connector consent, subscription
+The explicit Desktop OAuth profile does not inherit PAT mode from an unrelated saved
+UG profile. Background refresh never initiates authentication. Connector consent, subscription
 relay login when configured, and subsequent token refresh remain per-user operations.
 
 `--user` cannot be combined with `--global` or `--mdm-desktop`. Desktop MDM does not

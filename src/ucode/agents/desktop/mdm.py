@@ -344,12 +344,13 @@ def configure(workspace: str, profile: str | None, *, mcp_names: list[str] | Non
     _check_machine_path(MDM_ROOT / ".lock")
     with claude_config.locked(MDM_ROOT / ".lock"):
         fetched = get_managed_config(workspace, token)
-        if fetched.reason:
+        if fetched.reason and "feature_disabled" not in fetched.reason.lower():
             raise RuntimeError(f"Could not read workspace configuration: {fetched.reason}")
         managed = (
             normalize_managed_config(fetched.manifest) if fetched.manifest is not None else None
         )
-        if managed is not None and "claude" not in managed_enabled_tools(managed):
+        enabled_tools = managed_enabled_tools(managed or {})
+        if enabled_tools and "claude" not in enabled_tools:
             raise RuntimeError("The workspace configuration does not enable Claude.")
         state = {"workspace": workspace, "profile": profile}
         parent_schema = None

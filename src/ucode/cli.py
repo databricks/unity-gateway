@@ -3007,12 +3007,15 @@ def otel_headers_cmd(
     import sys
 
     state = load_state()
+    saved_auth_matches = (host is None or host == state.get("workspace")) and (
+        profile is None or profile == state.get("profile")
+    )
     workspace = host or state.get("workspace")
     if not workspace:
         print_err("No workspace configured. Run `ug configure` first.")
         raise typer.Exit(1)
     profile = profile or state.get("profile")
-    if use_pat or state.get("use_pat"):
+    if use_pat or (saved_auth_matches and state.get("use_pat")):
         if not ensure_pat_bearer(profile):
             print_err(
                 f"--use-pat: no personal access token available for profile "

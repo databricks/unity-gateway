@@ -234,12 +234,23 @@ def test_provision_rejects_shared_host_selection_before_auth(device, workspace_k
     assert not device.source.exists()
 
 
-def test_provision_without_managed_config(device, monkeypatch):
-    monkeypatch.setattr(managed_config, "fetch_managed_coding_agent_configs", lambda *a: ([], None))
+@pytest.mark.parametrize("reason", [None, "FEATURE_DISABLED: coding agent configs unavailable"])
+def test_provision_without_managed_config(device, monkeypatch, reason):
+    monkeypatch.setattr(
+        managed_config, "fetch_managed_coding_agent_configs", lambda *a: ([], reason)
+    )
     mdm.configure(WORKSPACE, "admin")
     policy = plistlib.loads(mdm.POLICY_PATH.read_bytes())
     assert json.loads(policy["inferenceModels"]) == [{"name": "system.ai.claude-sonnet-4-6"}]
     assert not (device.source / "plugins/ug/.mcp.json").exists()
+
+
+def test_provision_with_unrestricted_agents_keeps_managed_connectors_and_skills(device):
+    device.manifest["enabled_agents"] = []
+    mdm.configure(WORKSPACE, "ADMIN_PROFILE")
+    plugin = device.source / "plugins/ug"
+    assert (plugin / "skills/review/SKILL.md").read_bytes() == device.skill
+    assert list(json.loads((plugin / ".mcp.json").read_bytes())["mcpServers"]) == ["slack"]
 
 
 def test_sync_migrates_user_source_and_preserves_unrelated_plugin(device):
@@ -583,6 +594,19 @@ def test_cli_rejects_incompatible_mdm_arguments(monkeypatch, args):
         argv += ["--agents", "claude"]
     result = CliRunner().invoke(cli.app, argv)
     assert result.exit_code == 1
+    configure.assert_not_called()
+
+
+def test_cli_rejects_pat_profile_with_mdm_specific_error(monkeypatch):
+    configure = Mock()
+    monkeypatch.setattr(mdm, "configure", configure)
+    monkeypatch.setattr(cli, "_parse_profile_option", lambda value: [(WORKSPACE, value)])
+    result = CliRunner().invoke(
+        cli.app,
+        ["configure", "--mdm-desktop", "--agents", "claude", "--profile", "PAT", "--use-pat"],
+    )
+    assert result.exit_code == 1
+    assert "PAT/custom OAuth" in result.output
     configure.assert_not_called()
 
 

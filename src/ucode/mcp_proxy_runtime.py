@@ -285,6 +285,9 @@ def run_proxy(
     workspace_id: str | None = None,
 ) -> None:
     state = load_proxy_state()
+    saved_auth_matches = (host is None or host == state.get("workspace")) and (
+        profile is None or profile == state.get("profile")
+    )
     workspace = host or state.get("workspace")
     if not workspace:
         print("No workspace configured. Run `ug configure` first.", file=sys.stderr)
@@ -296,7 +299,7 @@ def run_proxy(
         url,
         workspace,
         profile or state.get("profile"),
-        use_pat=use_pat or bool(state.get("use_pat")),
+        use_pat=use_pat or (saved_auth_matches and bool(state.get("use_pat"))),
         **options,
     )
 

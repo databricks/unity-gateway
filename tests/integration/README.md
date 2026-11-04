@@ -180,6 +180,9 @@ Provisioning rejects selected shared-workspace hosts before authentication and m
 credentials before publication; browser login is disabled.
 The generated ordinary Desktop auth argv is also parsed by the real CLI and pins its
 workspace ID before requesting credentials; external authentication is replaced.
+MDM compatibility cases cover unrestricted empty agent lists and feature-disabled config
+discovery. MCP/tracing helper checks keep explicit OAuth profiles independent of unrelated
+saved PAT mode while retaining saved PAT mode for the matching MCP profile.
 Component fixtures also exercise API-format agent lists through the fetch gate and
 normalization, including headers/tracing, absent configs, and Claude enablement checks.
 User refresh follows the same serial registration flow without a shared Cowork lock;

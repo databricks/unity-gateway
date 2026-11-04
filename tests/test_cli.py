@@ -2860,7 +2860,11 @@ class TestOtelHeadersCommand:
         with (
             patch(
                 "ucode.cli.load_state",
-                return_value={"workspace": "https://other.example", "profile": "other"},
+                return_value={
+                    "workspace": "https://other.example",
+                    "profile": "other",
+                    "use_pat": True,
+                },
             ),
             patch("ucode.cli.get_databricks_token", side_effect=token),
         ):
@@ -9053,7 +9057,7 @@ class TestMcpProxyCmdForwardsUsePat:
     """`ucode mcp-proxy` forwards the PAT choice to `serve`, which owns the
     actual PAT resolution. Behavior of that resolution lives in test_mcp_proxy."""
 
-    def _invoke(self, monkeypatch, *, flag, state):
+    def _invoke(self, monkeypatch, *, flag, state, profile=None):
         captured: dict = {}
         monkeypatch.setattr("ucode.mcp_proxy_runtime.load_proxy_state", lambda **_: state)
         monkeypatch.setattr(
@@ -9063,6 +9067,8 @@ class TestMcpProxyCmdForwardsUsePat:
         args = ["mcp-proxy", "--url", "https://x/mcp", "--host", "https://x"]
         if flag:
             args.append("--use-pat")
+        if profile:
+            args += ["--profile", profile]
         result = runner.invoke(app, args)
         return result, captured
 
@@ -9086,6 +9092,20 @@ class TestMcpProxyCmdForwardsUsePat:
         result, captured = self._invoke(monkeypatch, flag=False, state={"workspace": "https://x"})
         assert result.exit_code == 0, result.output
         assert captured["kwargs"]["use_pat"] is False
+
+    @pytest.mark.parametrize("profile,expected", [("saved-pat", True), ("desktop-oauth", False)])
+    def test_explicit_profile_inherits_only_its_own_saved_auth(
+        self, monkeypatch, profile, expected
+    ):
+        result, captured = self._invoke(
+            monkeypatch,
+            flag=False,
+            state={"workspace": "https://x", "profile": "saved-pat", "use_pat": True},
+            profile=profile,
+        )
+        assert result.exit_code == 0, result.output
+        assert captured["args"][2] == profile
+        assert captured["kwargs"]["use_pat"] is expected
 
 
 class TestForcedLoginWithExternalBearer:
