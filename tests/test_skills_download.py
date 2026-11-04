@@ -1416,9 +1416,6 @@ class TestUpdateStaleSkills:
         if failed:
             assert skills_state.list_downloaded() == []
             assert all(not (base / ".claude/skills/renamed").exists() for base in bases[1:])
-            failed = False
-            assert sd._update_stale_skills(WS, "token", pairs, time.monotonic() + 30) == 2
-            assert len(calls) == 2
         else:
             assert {record["base"] for record in skills_state.list_downloaded()} == {
                 str(base) for base in bases[1:]
@@ -1426,6 +1423,28 @@ class TestUpdateStaleSkills:
             for base in bases[1:]:
                 for root in skill_dir_roots(str(base)):
                     assert (root / "renamed/SKILL.md").read_bytes() == b"updated"
+
+    def test_shared_bundle_failure_is_retried_by_the_next_sweep(self, tmp_path, monkeypatch):
+        bases = [tmp_path / "first", tmp_path / "second"]
+        for base in bases:
+            base.mkdir()
+        responses = iter([(None, "unavailable"), ({"SKILL.md": b"recovered"}, None)])
+        calls = []
+
+        def fetch(*args):
+            calls.append(args)
+            return next(responses)
+
+        monkeypatch.setattr(sd, "fetch_skill_bundle", fetch)
+        pairs = [({"base": str(base)}, ref("triage")) for base in bases]
+        assert sd._update_stale_skills(WS, "token", pairs, time.monotonic() + 30) == 0
+        assert len(calls) == 1
+        assert skills_state.list_downloaded() == []
+        assert sd._update_stale_skills(WS, "token", pairs, time.monotonic() + 30) == 2
+        assert len(calls) == 2
+        for base in bases:
+            for root in skill_dir_roots(str(base)):
+                assert (root / "triage/SKILL.md").read_bytes() == b"recovered"
 
     def test_overwrites_both_roots_and_refreshes_record(self, tmp_path, monkeypatch):
         home = tmp_path / "home"

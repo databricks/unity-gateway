@@ -69,14 +69,19 @@ def main():
                 patch.object(sd.console, "print"),
             ):
                 started = time.perf_counter()
+                budget = 30 + installs * 4 * args_delay
+                deadline = time.monotonic() + budget
                 pairs = sd._refs_needing_refresh(
-                    "https://benchmark.invalid", "dummy", records, time.monotonic() + 30
+                    "https://benchmark.invalid", "dummy", records, deadline
                 )
                 updated = sd._update_stale_skills(
-                    "https://benchmark.invalid", "dummy", pairs, time.monotonic() + 30
+                    "https://benchmark.invalid", "dummy", pairs, deadline
                 )
                 elapsed = (time.perf_counter() - started) * 1000
-                assert updated == installs
+                if updated != installs:
+                    raise RuntimeError(
+                        f"Only {updated}/{installs} installs refreshed within the {budget:g}s budget"
+                    )
                 assert len(skills_state.list_downloaded()) == installs
                 for record in records:
                     assert (Path(record["dirs"][0]) / "SKILL.md").read_bytes() == b"updated"
