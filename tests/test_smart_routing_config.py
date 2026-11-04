@@ -58,6 +58,11 @@ def test_auto_picker_preset_is_claude_only_and_restorable(agent, inherited):
     original = source.copy()
     previous = config.apply_config(source, agent=agent)
     enabled = "1" if agent == AGENT_CLAUDE else "0"
+    assert config.auto_picker_enabled(source, agent=agent) is (agent == AGENT_CLAUDE)
+    resolved_marker = source.pop("UCODE_AUTO_PICKER_CONFIG", None)
+    assert resolved_marker == (
+        config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY if agent == AGENT_CLAUDE else None
+    )
     assert source == {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: enabled,

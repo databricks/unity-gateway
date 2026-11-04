@@ -1,3 +1,4 @@
+import type { AutoPolicy } from './auto-picker.ts'
 import type { On, PluginOptions } from 'claude-code'
 
 type RoutingRecord = { task: string; model: string; rationale: string; seconds?: number }
@@ -65,7 +66,7 @@ export function endSubagentRoutingTurn(aborted: boolean): void {
   if (aborted) cards.unplaced = []
 }
 
-export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
+export const registerSubagentRouting = (on: On, options: PluginOptions, policy?: AutoPolicy): void => {
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
   const pending = new Map<string, number | undefined>()
   // Claude folds parallel Agent rows into its own block, which no hook reaches, so a call
@@ -79,6 +80,11 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   const seen = new Set<string>()
 
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
+    const revision = policy?.revision
+    if (policy) {
+      if (policy.blocked) return {deny: 'Auto policy is unavailable; retry /model.'}
+      if (e.resume || await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') !== '1') return next(e)
+    }
     const command = options.routeCommand as readonly string[]
     if (!command.length) return next(e)
     const { tool, tool_use_id, agentId, ...input } = e
@@ -138,6 +144,10 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
         })
       }
       $.ui.invalidate('ui.render')
+    }
+    if (policy && (policy.blocked || policy.revision !== revision)) {
+      if (tool_use_id) records.delete(tool_use_id)
+      return {deny: 'Auto changed while this subagent was being routed; the pending spawn was cancelled.'}
     }
     if (!route) return next(e)
     // Preserve Claude's permission checks and every other mod's tool handlers.

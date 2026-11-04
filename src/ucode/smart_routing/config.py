@@ -8,6 +8,7 @@ from collections.abc import Mapping, MutableMapping
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    AUTO_PICKER_CONFIG_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
@@ -158,6 +159,10 @@ def resolve_environment(env: Mapping[str, str] | None = None, *, agent: str) -> 
     resolved = dict(os.environ if env is None else env)
     version = resolved.pop(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
     resolved.update(_VERSIONS.get(version, {}).get(agent, {}))
+    if version in _VERSIONS:
+        resolved.pop(AUTO_PICKER_CONFIG_ENV_VAR, None)
+        if version == SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY and agent == AGENT_CLAUDE:
+            resolved[AUTO_PICKER_CONFIG_ENV_VAR] = version
     return resolved
 
 
@@ -171,6 +176,11 @@ def apply_config(
     if preset is None:
         return {}
     previous = {key: target.get(key) for key in _RESTORE_KEYS}
+    if version == SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY or AUTO_PICKER_CONFIG_ENV_VAR in target:
+        previous[AUTO_PICKER_CONFIG_ENV_VAR] = target.get(AUTO_PICKER_CONFIG_ENV_VAR)
+    target.pop(AUTO_PICKER_CONFIG_ENV_VAR, None)
+    if version == SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY and agent == AGENT_CLAUDE:
+        target[AUTO_PICKER_CONFIG_ENV_VAR] = version
     target.update(preset)
     target.pop(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, None)
     return previous
@@ -208,5 +218,17 @@ def apply_enabled_version(
     previous = {key: target.get(key) for key in _RESTORE_KEYS}
     if not known_version(target):
         target[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = DEFAULT_ENABLED_VERSION
-    apply_config(target, agent=agent)
+    applied = apply_config(target, agent=agent)
+    if AUTO_PICKER_CONFIG_ENV_VAR in applied:
+        previous[AUTO_PICKER_CONFIG_ENV_VAR] = applied[AUTO_PICKER_CONFIG_ENV_VAR]
     return previous
+
+
+def auto_picker_enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
+    """Use the resolved preset capability, independently of mutable activity flags."""
+    source = resolve_environment(env, agent=agent)
+    return (
+        agent == AGENT_CLAUDE
+        and source.get(AUTO_PICKER_CONFIG_ENV_VAR) == SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY
+        and source.get(EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR) == "1"
+    )

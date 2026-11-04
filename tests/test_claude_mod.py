@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from ucode.constants import AGENT_CLAUDE, SMART_ROUTING_ENV_KEYS
-from ucode.smart_routing import config, v2
+from ucode.smart_routing import config, orchestrator, v2
 
 
 def test_plugin_contains_mod_entry_point(tmp_path):
@@ -21,20 +21,24 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     # The entry point imports these, so they ship beside it unmodified.
     for name in (
         "register.ts",
+        "auto-picker.ts",
         "constants.ts",
         "extra-body.ts",
         "isaac-feedback.ts",
+        "routing-controls.ts",
         "routing-state.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
     ):
         assert (tmp_path / "hooks" / name).read_bytes() == (mods / name).read_bytes()
     assert sorted(path.name for path in (tmp_path / "hooks").iterdir()) == [
+        "auto-picker.ts",
         "constants.ts",
         "extra-body.ts",
         "hooks.json",
         "isaac-feedback.ts",
         "register.ts",
+        "routing-controls.ts",
         "routing-state.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
@@ -61,7 +65,11 @@ def test_launch_options_resolve_versions_without_mutating_input(version):
         "unset": [],
         "recipe": "custom_recipe",
         "routeCommand": [],
-        "orchestratorInstructions": "",
+        "orchestratorInstructions": (
+            orchestrator.CLAUDE_AGENT_DESCRIPTION
+            if config.auto_picker_enabled(env, agent=AGENT_CLAUDE)
+            else ""
+        ),
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
     }

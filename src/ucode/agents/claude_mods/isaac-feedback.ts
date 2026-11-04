@@ -23,8 +23,9 @@ function showResult($: EngineInterface, feedbackId: string, sent: boolean): void
   }
 }
 
-type FeedbackState = {
+export type FeedbackState = {
   submitted: boolean;
+  autoPicker?: boolean;
   reason: string;
   lastPromptId?: string | null;
   category?: FeedbackCategory;
@@ -142,7 +143,7 @@ async function submitFeedback(
       if (!disableRouting) throw new Error('Smart Router controls are unavailable.');
       await disableRouting(['--smart-router-feedback', message]);
     } catch {
-      $.ui.log('Could not turn Smart Router off. Feedback is still being sent; retry /smart-router off or restart through UG.');
+      $.ui.log(state.autoPicker ? 'Could not leave Auto. Retry /model; feedback is still being sent.' : 'Could not turn Smart Router off. Feedback is still being sent; retry /smart-router off or restart through UG.');
     }
   }
   state.submitted = false;
@@ -155,7 +156,7 @@ async function openFeedbackForm(
   if (state.category !== 'other') await prepareFeedbackTarget($, state, isaacExecutable);
   $.ui.invalidate('ui.render');
   const pane = await $.ui.open({
-    id: FEEDBACK_PANE, title: state.turnOff ? 'Turn Smart Router off' : 'Isaac feedback',
+    id: FEEDBACK_PANE, title: state.turnOff ? state.autoPicker ? 'Leave Auto' : 'Turn Smart Router off' : 'Isaac feedback',
     focus: true, closeOnEscape: true, rows: 6, columns: 56,
   });
   if (pane.isPlaced) return true;
@@ -223,6 +224,7 @@ export function registerIsaacFeedback(
   });
 
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
+    if (state.autoPicker) return next(e);
     if (e.args.trim() !== 'off') return next(e);
     const feedbackRequired = envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'));
     if (!feedbackRequired) return next(e);
@@ -265,7 +267,7 @@ export function registerIsaacFeedback(
     return Box({
       flexDirection: 'column',
       children: [
-        Text({ children: [state.turnOff ? 'Why are you turning Smart Router off?' : 'What would you like to share?'] }),
+        Text({ children: [state.turnOff ? state.autoPicker ? 'Why are you leaving Auto?' : 'Why are you turning Smart Router off?' : 'What would you like to share?'] }),
         Text({ children: [state.turnOff
           ? 'Enter at least 16 characters. Your reason is sent to the Isaac team with this session\'s details.'
           : state.category === 'smart-routing'
@@ -276,7 +278,7 @@ export function registerIsaacFeedback(
           label: state.turnOff ? 'Reason' : 'Feedback',
           value: state.reason,
           autoFocus: true,
-          submitLabel: state.turnOff ? 'Send feedback and turn off' : 'Send feedback',
+          submitLabel: state.turnOff ? state.autoPicker ? 'Send feedback and choose model' : 'Send feedback and turn off' : 'Send feedback',
           onInput: (value) => { state.reason = value; },
           onSubmit: async (value) => {
             const error = await submitFeedback($, state, isaacExecutable, isaacFeedbackDirectory, value);
@@ -287,4 +289,20 @@ export function registerIsaacFeedback(
       ],
     });
   });
+}
+
+export async function requestAutoFeedback(
+  $: EngineInterface, state: FeedbackState, executable: string, directory: string,
+  proceed: (args: readonly string[]) => Promise<void>,
+): Promise<boolean> {
+  if (!envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'))) return false;
+  if (state.submitted) throw new Error('Feedback is being prepared.');
+  state.turnOff = true;
+  state.category = 'smart-routing';
+  state.reason = '';
+  state.disableRouting = proceed;
+  if (!await openFeedbackForm($, state, executable, directory)) {
+    throw new Error('Could not open Leave Auto feedback. Retry /model in the Claude terminal.');
+  }
+  return true;
 }

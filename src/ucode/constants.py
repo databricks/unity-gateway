@@ -51,3 +51,6 @@ UG_HEADERS_ENV_VAR = "UG_HEADERS"
 # `ucode.mcp` and `ucode.agents.claude` can import them without an import cycle.
 MCP_USER_SCOPE = "user"
 MCP_CLEANUP_SCOPES = ("local", "project", MCP_USER_SCOPE)
+
+# Resolved launch capability; session activity toggles never change it.
+AUTO_PICKER_CONFIG_ENV_VAR = "UCODE_AUTO_PICKER_CONFIG"

@@ -1,3 +1,4 @@
+import type { AutoPolicy } from './auto-picker.ts'
 import type { On } from 'claude-code'
 import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
@@ -53,10 +54,11 @@ async function readRoutingState($: any): Promise<RoutingState> {
   }
 }
 
-export const registerStatusBand = (on: On): void => {
+export const registerStatusBand = (on: On, auto = false, policy?: AutoPolicy): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
   on('prompt.submit', ($, e, next) => {
+    if (policy?.blocked && !e.text.startsWith('/')) return {drop: 'Auto policy could not be applied. Retry /model or restart through UG.'}
     if (band.isVisible) band.isHideArmed = true
     return next(e)
   })
@@ -72,14 +74,17 @@ export const registerStatusBand = (on: On): void => {
       if (count !== running) $.ui.invalidate('ui.render')
     })
     const agents = running ? ` · ${running} subagent${running === 1 ? '' : 's'} running` : ''
-    const state = `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
+    const active = auto && enabled && await $.env.get('ENABLE_SMART_ROUTER_ORCHESTRATOR') === '1'
+    const state = auto
+      ? `${active ? 'Auto · Main: ' : ''}${await $.session.model()}${agents}`
+      : `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
     const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
     return next({ ...e, props: { ...e.props, tail } })
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const theirs = await next(e)
-    if (!band.isVisible) return theirs
+    if (auto || !band.isVisible) return theirs
     const { Box, Text } = $.ui.resolve(e)
     const { enabled, firstPrompt } = await readRoutingState($)
 
