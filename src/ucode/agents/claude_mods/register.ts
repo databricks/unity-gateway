@@ -19,7 +19,7 @@ function continuationNote(host: string): string {
 
 export function register(on: On, options: PluginOptions): void {
   const auto = options.EXPOSE_AUTO_IN_MODEL_PICKER === '1';
-  const policy = {revision: 0, blocked: false};
+  const policy = {revision: 0, blocked: false, picking: false};
   const feedback = createIsaacFeedbackState();
   feedback.autoPicker = auto;
   const launchedEnabled = isRoutingEnabled(options);

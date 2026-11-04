@@ -5,11 +5,14 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from tests.integration.utils.terminal import AgentTerminal
 from ucode.smart_routing import config, session_env, v2
 
 
-def test_auto_picker_tui(native_binary, tmp_path):
+@pytest.mark.parametrize("session_only", [False, True])
+def test_auto_picker_tui(native_binary, tmp_path, session_only):
     """Scenario: leave Auto, cancel entry, then re-enter on the current model.
 
     Expected: actual native picks change live and saved activity; Escape does not.
@@ -114,40 +117,43 @@ export const register = (on, options) => {
                 timeout=15,
             )
             assert json.loads(controls.read_text())["ENABLE_SMART_ROUTER_ORCHESTRATOR"] == "1"
-            tui.submit("/model haiku")
             tui.wait_for(
-                lambda _: (
-                    json.loads(controls.read_text()).get("ENABLE_SMART_ROUTING_SUBAGENT_ONLY")
-                    == "0"
-                ),
-                "same concrete model disables Auto",
-            )
-            tui.submit("/model auto")
-            tui.wait_for(lambda text: "Select model" in text, "session-only native picker")
-            tui.send("\x1b[B", "focus model list")
-            tui.send("s", "confirm session-only model")
-            tui.wait_for(
-                lambda _: (
-                    json.loads(controls.read_text()).get("ENABLE_SMART_ROUTING_SUBAGENT_ONLY")
-                    == "1"
-                ),
-                "session-only pick enables Auto",
-                timeout=15,
+                lambda text: "unity gateway smart router" in text and "routing subagents" in text,
+                "Auto routing banner restored",
             )
             tui.submit("/model")
-            tui.wait_for(lambda text: "automatically route subagents" in text, "Auto mode menu")
-            tui.send("\t", "focus concrete mode")
-            tui.send("\r", "choose concrete mode")
-            tui.wait_for(lambda text: "Select model" in text, "menu opens native picker")
+            tui.wait_for(lambda text: "Select model" in text, "native /model menu")
+            assert "Choose model mode" not in tui.visible
             tui.send("\r", "confirm concrete main model")
             tui.wait_for(
                 lambda _: (
                     json.loads(controls.read_text()).get("ENABLE_SMART_ROUTING_SUBAGENT_ONLY")
                     == "0"
                 ),
-                "menu concrete choice disables Auto",
+                "native concrete choice disables Auto",
                 timeout=15,
             )
+            if session_only:
+                tui.submit("/model haiku")
+                tui.wait_for(
+                    lambda _: (
+                        json.loads(controls.read_text()).get("ENABLE_SMART_ROUTING_SUBAGENT_ONLY")
+                        == "0"
+                    ),
+                    "same concrete model disables Auto",
+                )
+                tui.submit("/model auto")
+                tui.wait_for(lambda text: "Select model" in text, "session-only native picker")
+                tui.send("\x1b[B", "focus model list")
+                tui.send("s", "confirm session-only model")
+                tui.wait_for(
+                    lambda _: (
+                        json.loads(controls.read_text()).get("ENABLE_SMART_ROUTING_SUBAGENT_ONLY")
+                        == "1"
+                    ),
+                    "session-only pick enables Auto",
+                    timeout=15,
+                )
             tui.submit("/exit")
             tui.finish(timeout=10)
     finally:

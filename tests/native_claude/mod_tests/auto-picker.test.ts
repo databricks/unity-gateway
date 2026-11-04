@@ -23,3 +23,12 @@ test('Auto command forwards an empty argument to the native concrete picker', {o
   await $.command.run({command: 'model', args: 'auto'});
   expect(args).toBe('');
 });
+
+test('/model opens the native menu without an intermediary', {options: AUTO}, async ($, on) => {
+  let forwarded = false;
+  on('command.run', {command: 'model'}, ($, e) => {
+    expect(e.args).toBe(''); forwarded = true; return {};
+  });
+  await $.command.run({command: 'model', args: ''});
+  expect(forwarded).toBe(true);
+});

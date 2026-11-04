@@ -82,7 +82,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions, policy?:
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const revision = policy?.revision
     if (policy) {
-      if (policy.blocked) return {deny: 'Auto policy is unavailable; retry /model.'}
+      if (policy.blocked || policy.picking) return {deny: 'Auto policy is unavailable; retry /model.'}
       if (e.resume || await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') !== '1') return next(e)
     }
     const command = options.routeCommand as readonly string[]
@@ -145,7 +145,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions, policy?:
       }
       $.ui.invalidate('ui.render')
     }
-    if (policy && (policy.blocked || policy.revision !== revision)) {
+    if (policy && (policy.blocked || policy.picking || policy.revision !== revision)) {
       if (tool_use_id) records.delete(tool_use_id)
       return {deny: 'Auto changed while this subagent was being routed; the pending spawn was cancelled.'}
     }
