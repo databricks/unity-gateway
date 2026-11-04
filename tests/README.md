@@ -177,10 +177,15 @@ continuation note, with the `fork` exception only when the host offers fork suba
 
 The live `test_smart_router_claude_resumes_same_subagent_with_send_message` journey
 spawns one child and follows up through `SendMessage` by ID or name, requiring
-the native result to resolve to the original child's ID, both hidden file answers
-in the same child transcript, and exactly one Agent/Task call. Only parent SendMessage
-calls are checked for continuation; child replies to the parent are allowed. Offline checks reject
-missing recipients, wrong children, failed sends, and missing/crossed tool results. Run it with
+both hidden file answers in the same child transcript and exactly one Agent/Task call.
+Each parent SendMessage is classified for the original child: `resumed` (the native result
+resolves to the child's ID), `queued` (accepted for the still-running child, `pin.id` equals
+its ID), or `rejected` (a failed, undelivered send addressed to the child, as for an invented
+`notify_when_idle` option). The journey requires at least one `resumed` send and tolerates
+`queued`/`rejected` only alongside it (runs 41759864769 and 41768149986). Only parent
+SendMessage calls are checked; child replies to the parent are allowed. Offline checks reject
+missing recipients, other agents (resumed, queued, or addressed), unknown result shapes,
+missing tool results, and a follow-up set with no real resume. Run it with
 Claude 2.1.314+; description-only component checks do not prove continuation.
 
 CUJ3 expects GPT Luna in both agents' catalogs and pickers, including Claude's gateway alias,
