@@ -5043,7 +5043,7 @@ def configure(
             from ucode.agents.desktop import mdm
 
             mdm._require_macos(administrator=True)
-            if not dry_run or profile or profiles:
+            if not dry_run or profile is not None or profiles is not None:
                 mdm.validate_cli_discovery()
         if not mdm_desktop:
             install_databricks_cli()

@@ -538,7 +538,10 @@ def test_runtime_rejects_untrusted_cli_before_version_discovery(monkeypatch, tmp
 
 
 @pytest.mark.parametrize("flags", [["--mdm-desktop"], ["--global", "--dry-run"]])
-def test_profile_lookup_rejects_untrusted_cli_before_execution(monkeypatch, tmp_path, flags):
+@pytest.mark.parametrize("profile", ["CACHED", ""])
+def test_profile_lookup_rejects_untrusted_cli_before_execution(
+    monkeypatch, tmp_path, flags, profile
+):
     candidate = tmp_path / ("databricks.exe" if os.name == "nt" else "databricks")
     candidate.write_text("untrusted test file")
     candidate.chmod(0o777)
@@ -558,7 +561,7 @@ def test_profile_lookup_rejects_untrusted_cli_before_execution(monkeypatch, tmp_
     monkeypatch.setattr(mdm.subprocess_cross_os, "run", forbidden)
     monkeypatch.setattr(cli, "install_databricks_cli", forbidden)
     result = CliRunner().invoke(
-        cli.app, ["configure", "--agents", "claude", "--profile", "CACHED", *flags]
+        cli.app, ["configure", "--agents", "claude", "--profile", profile, *flags]
     )
     assert result.exit_code == 1, result.output
     assert "root-owned" in " ".join(result.output.split())
