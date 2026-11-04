@@ -136,6 +136,10 @@ MINIMUM_CODEX_VERSION = (0, 145, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.145.0"
 MINIMUM_SMART_ROUTING_CODEX_VERSION = (0, 164, 0)
 MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT = "0.164.0"
+# Older Codex ignores the requirements.toml provider lock an MDM run writes on macOS/Linux.
+MINIMUM_REQUIREMENTS_LOCK_CODEX_VERSION = (0, 156, 0)
+MINIMUM_REQUIREMENTS_LOCK_CODEX_VERSION_TEXT = "0.156.0"
+CODEX_SYSTEM_REQUIREMENTS_PATH = Path("/etc/codex") / CODEX_REQUIREMENTS_FILE
 # Codex 0.134.0 introduced per-profile config files; older releases use the legacy layout.
 LEGACY_LAYOUT_CODEX_VERSION = (0, 134, 0)
 LEGACY_LAYOUT_CODEX_VERSION_TEXT = "0.134.0"
@@ -200,9 +204,28 @@ def minimum_version_error(*, smart_routing_enabled: bool = False) -> str | None:
             f"or newer for readable delegated assignments; found {version}. "
             "Upgrade Codex or launch with --disable-smart-routing."
         )
-    if parsed is None or parsed >= MINIMUM_CODEX_VERSION:
+    if parsed is not None and parsed < MINIMUM_CODEX_VERSION:
+        return f"ug requires Codex {MINIMUM_CODEX_VERSION_TEXT} or newer; found {version}."
+    # `ug configure` only warns (in write_tool_config), so an MDM run still writes the lock.
+    return None if _explicit_configure else _requirements_lock_version_error()
+
+
+def _requirements_lock_version_error() -> str | None:
+    """Return why the installed Codex would ignore ug's provider lock in requirements.toml."""
+    if current_os() not in (OS.LINUX, OS.MACOS):
         return None
-    return f"ug requires Codex {MINIMUM_CODEX_VERSION_TEXT} or newer; found {version}."
+    requirements = read_toml_safe(CODEX_SYSTEM_REQUIREMENTS_PATH)
+    if requirements.get("model_provider") != CODEX_MODEL_PROVIDER_NAME:
+        return None
+    version = agent_version(SPEC["binary"])
+    parsed = _parse_version(version)
+    if parsed is None or parsed >= MINIMUM_REQUIREMENTS_LOCK_CODEX_VERSION:
+        return None
+    return (
+        f"{CODEX_SYSTEM_REQUIREMENTS_PATH} locks Codex to the Databricks AI Gateway, which needs "
+        f"Codex {MINIMUM_REQUIREMENTS_LOCK_CODEX_VERSION_TEXT} or newer; found {version}. "
+        f"Upgrade Codex with `npm install -g {SPEC['package']}@latest`."
+    )
 
 
 def _use_legacy_layout() -> bool:
@@ -604,6 +627,8 @@ def write_tool_config(
     _reconcile_managed_config(
         state, lambda base: compose(base, include_catalog=False), relayed=relayed
     )
+    if _explicit_configure and (lock_error := _requirements_lock_version_error()):
+        print_warning_err(lock_error)
     # Persisted so launch() wires the relay proxy and ChatGPT login; cleared on a non-relayed run.
     if relayed:
         state["codex_relayed"] = True

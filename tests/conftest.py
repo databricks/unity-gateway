@@ -123,6 +123,11 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # launch-like run.
     monkeypatch.setattr(managed_files_mod, "_explicit_managed_command", None)
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
+    monkeypatch.setattr(
+        codex_mod,
+        "CODEX_SYSTEM_REQUIREMENTS_PATH",
+        tmp_path / "etc" / "codex" / "requirements.toml",
+    )
     # Launch seeds Claude's feature cache in `.claude.json`; never touch the developer's copy.
     monkeypatch.setattr(claude_mod, "CLAUDE_CODE_CONFIG_PATH", tmp_path / ".claude.json")
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)

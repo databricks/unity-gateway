@@ -67,6 +67,63 @@ class TestMinimumVersion:
             codex.minimum_version_error(smart_routing_enabled=True)
 
     @pytest.mark.parametrize(
+        ("requirements", "version", "allowed"),
+        [
+            ('model_provider = "Databricks"\n', "0.155.9", False),
+            ('model_provider = "Databricks"\n', "0.156.0", True),
+            ('model_provider = "Databricks"\n', "0.157.1", True),
+            ('model_provider = "Databricks"\n', "unknown", True),
+            # No ug provider lock: only the 0.145.0 floor applies.
+            (None, "0.155.9", True),
+            ("[features]\nfast_mode = false\n", "0.155.9", True),
+            ('model_provider = "other"\n', "0.155.9", True),
+        ],
+    )
+    def test_requirements_provider_lock_requires_0_156(
+        self, monkeypatch, requirements, version, allowed
+    ):
+        if requirements is not None:
+            codex.CODEX_SYSTEM_REQUIREMENTS_PATH.parent.mkdir(parents=True)
+            codex.CODEX_SYSTEM_REQUIREMENTS_PATH.write_text(requirements)
+        monkeypatch.setattr(codex, "current_os", lambda: codex.OS.MACOS)
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: version)
+
+        error = codex.minimum_version_error()
+
+        assert (error is None) == allowed
+        if not allowed:
+            assert "Codex 0.156.0 or newer" in error
+            assert str(codex.CODEX_SYSTEM_REQUIREMENTS_PATH) in error
+            assert "npm install -g @openai/codex@latest" in error
+
+    @pytest.mark.parametrize(("version", "warned"), [("0.155.9", True), ("0.156.0", False)])
+    def test_configure_warns_instead_of_failing_under_provider_lock(
+        self, monkeypatch, capsys, version, warned
+    ):
+        codex.CODEX_SYSTEM_REQUIREMENTS_PATH.parent.mkdir(parents=True)
+        codex.CODEX_SYSTEM_REQUIREMENTS_PATH.write_text('model_provider = "Databricks"\n')
+        monkeypatch.setattr(codex, "current_os", lambda: codex.OS.LINUX)
+        monkeypatch.setattr(codex, "agent_version", lambda _binary, **_kwargs: version)
+        monkeypatch.setattr(codex, "_explicit_configure", True)
+
+        assert codex.minimum_version_error() is None
+        codex.write_tool_config({"workspace": WS})
+
+        assert codex.CODEX_CONFIG_PATH.exists()
+        err = " ".join(capsys.readouterr().err.split())  # undo Rich's line wrapping
+        assert ("Codex 0.156.0 or newer" in err) == warned
+        if warned:
+            assert "npm install -g @openai/codex@latest" in err
+
+    def test_requirements_provider_lock_ignored_on_windows(self, monkeypatch):
+        codex.CODEX_SYSTEM_REQUIREMENTS_PATH.parent.mkdir(parents=True)
+        codex.CODEX_SYSTEM_REQUIREMENTS_PATH.write_text('model_provider = "Databricks"\n')
+        monkeypatch.setattr(codex, "current_os", lambda: codex.OS.WINDOWS)
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.150.0")
+
+        assert codex.minimum_version_error() is None
+
+    @pytest.mark.parametrize(
         ("version", "allowed"),
         [("0.165.0", True), ("0.163.0", False), ("unknown", False), (None, False)],
     )
