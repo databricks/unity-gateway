@@ -538,7 +538,7 @@ def test_runtime_rejects_untrusted_cli_before_version_discovery(monkeypatch, tmp
 
 
 @pytest.mark.parametrize("flags", [["--mdm-desktop"], ["--global", "--dry-run"]])
-@pytest.mark.parametrize("profile", ["CACHED", ""])
+@pytest.mark.parametrize("profile", ["CACHED", "", None])
 def test_profile_lookup_rejects_untrusted_cli_before_execution(
     monkeypatch, tmp_path, flags, profile
 ):
@@ -560,9 +560,12 @@ def test_profile_lookup_rejects_untrusted_cli_before_execution(
     monkeypatch.setattr(mdm.databricks, "run", forbidden)
     monkeypatch.setattr(mdm.subprocess_cross_os, "run", forbidden)
     monkeypatch.setattr(cli, "install_databricks_cli", forbidden)
-    result = CliRunner().invoke(
-        cli.app, ["configure", "--agents", "claude", "--profile", profile, *flags]
+    target = (
+        ["--workspace", "https://workspace.example.com"]
+        if profile is None
+        else ["--profile", profile]
     )
+    result = CliRunner().invoke(cli.app, ["configure", "--agents", "claude", *target, *flags])
     assert result.exit_code == 1, result.output
     assert "root-owned" in " ".join(result.output.split())
     forbidden.assert_not_called()

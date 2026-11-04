@@ -535,9 +535,9 @@ discovery. MCP/tracing helper checks keep explicit OAuth profiles independent of
 saved PAT mode while retaining saved PAT mode for matching host, profile, and workspace ID.
 Global Desktop rejects explicit PAT/custom OAuth and selected-workspace requests before
 authentication or agent writes; shared CLI-agent PAT validation/export remains covered.
-Both provisioning entry points, including dry-run profile lookup, reject unsafe CLI
-candidates before executing profile discovery. The public-command checks keep profile
-parsing real and replace subprocess execution at its boundary. An untrusted CLI candidate
+Both provisioning entry points reject unsafe CLI candidates before installer or
+profile discovery, including dry-run requests with a named, empty, or omitted profile.
+The public-command checks keep profile parsing real and replace subprocess execution at its boundary. An untrusted CLI candidate
 is rejected by real path validation before any version discovery or subprocess call.
 A public `configure --global --agents claude --profile` regression checks that privileged
 CLI discovery is validated before installer probes and cached OAuth is used without
