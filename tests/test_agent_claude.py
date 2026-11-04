@@ -1206,6 +1206,93 @@ class TestWriteToolConfigManagedSettings:
         _, private = private_writes[0]
         assert private["modelSettings"] == {"system.ai.gpt-6-luna": window}
 
+    @pytest.mark.parametrize("skip_os_settings", [False, True])
+    def test_private_file_caps_gpt_models_offered_only_by_the_managed_picker(
+        self, monkeypatch, skip_os_settings
+    ):
+        private_writes: list = []
+        managed_writes: list = []
+        managed_doc = {
+            "modelPicker": {"options": [{"model": "system.ai.gpt-6-luna[1m]"}]},
+            "availableModels": ["system.ai.gpt-5-6-sol"],
+            "env": {"ANTHROPIC_DEFAULT_SONNET_MODEL": "system.ai.gpt-5-5[1m]"},
+        }
+        existing = {
+            str(FAKE_MANAGED_PATH): managed_doc,
+            # Stale cap for a GPT id nothing names any more.
+            str(claude.CLAUDE_SETTINGS_PATH): {
+                "modelSettings": {"system.ai.gpt-4-1": {"autoCompactWindow": 800_000}}
+            },
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        if skip_os_settings:
+            monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        state = {"workspace": WS, "claude_static_models": ["system.ai.claude-opus-4-8"]}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        window = {"autoCompactWindow": db_mod.GPT_AUTO_COMPACT_WINDOW}
+        private = [p for path, p in private_writes if path == str(claude.CLAUDE_SETTINGS_PATH)][-1]
+        assert private["modelSettings"] == {
+            "system.ai.gpt-6-luna": window,
+            "system.ai.gpt-5-6-sol": window,
+            "system.ai.gpt-5-5": window,
+        }
+        assert all(
+            option["model"].startswith("system.ai.claude")
+            for option in private["modelPicker"]["options"]
+        )
+        if skip_os_settings:
+            assert managed_writes == []
+        else:
+            assert managed_writes
+
+    def test_absent_managed_file_adds_no_gpt_entry(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        claude.write_tool_config(
+            {"workspace": WS, "claude_static_models": ["system.ai.claude-opus-4-8"]},
+            "databricks-claude-sonnet-4",
+        )
+        assert "modelSettings" not in private_writes[0][1]
+
+    def test_managed_picker_models_never_write_the_managed_file(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(FAKE_MANAGED_PATH): {
+                "modelPicker": {"options": [{"model": "system.ai.gpt-6-luna"}]}
+            }
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        monkeypatch.setattr(
+            claude, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+        )
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+        assert managed_writes == []
+        assert str(FAKE_MANAGED_PATH) not in {path for path, _ in private_writes}
+
+    def test_users_lower_window_is_honored_for_managed_picker_models(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(FAKE_MANAGED_PATH): {
+                "modelPicker": {"options": [{"model": "system.ai.gpt-6-luna[1m]"}]}
+            },
+            str(claude.CLAUDE_USER_SETTINGS_PATH): {
+                "modelSettings": {"system.ai.gpt-6-luna": {"autoCompactWindow": 500_000}}
+            },
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+        private = [p for path, p in private_writes if path == str(claude.CLAUDE_SETTINGS_PATH)][-1]
+        assert private["modelSettings"] == {"system.ai.gpt-6-luna": {"autoCompactWindow": 500_000}}
+
     def test_both_files_honor_the_users_lower_window(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []

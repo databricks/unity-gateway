@@ -132,7 +132,9 @@ def managed_settings_skipped() -> bool:
 
     Set the variable to ``1``/``true``/``yes``/``on`` to make ucode neither read nor update the
     root-owned managed files (Claude Code ``managed-settings.json``, Codex ``managed_config.toml``
-    or, on Windows, ``requirements.toml``).
+    or, on Windows, ``requirements.toml``). The one exception is a read-only look at Claude's file
+    for the model ids its picker offers, which ucode's own settings must cap (see
+    ``_managed_settings_named_model_ids``).
     ucode then relies solely on its per-user settings, which is enough for a single-user setup that
     always launches through ``ug`` and never needs a bare ``claude``/``codex`` to reach the gateway.
     Skips the privileged ``sudo`` step entirely, so an interactive run is never prompted for a

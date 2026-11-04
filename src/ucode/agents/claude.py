@@ -788,15 +788,38 @@ def gpt_model_settings(
     return entries
 
 
-def _sync_gpt_model_settings(settings: dict) -> list[list[str]]:
+def _managed_settings_named_model_ids() -> list[object]:
+    """Model ids the OS-managed settings file names (picker, allow-list, env), read-only.
+
+    Claude Code merges that file's ``modelPicker`` with ours and reads it even under
+    ``UG_SKIP_OS_SETTINGS``, so a model only it offers (a launcher's or admin's picker, or ug's
+    own from an earlier run) still needs a cap in the settings file ug writes. Best effort:
+    an absent or unreadable file names nothing.
+    """
+    path = _managed_settings_path()
+    if path is None:
+        return []
+    try:
+        text = read_managed_file(path)
+        return _settings_model_ids(_parse_managed_settings(text)) if text is not None else []
+    except RuntimeError:
+        return []
+
+
+def _sync_gpt_model_settings(
+    settings: dict, also_named_model_ids: Iterable[object] = ()
+) -> list[list[str]]:
     """Write ug's GPT ``modelSettings`` leaves for the models ``settings`` names; return their paths.
+
+    ``also_named_model_ids`` are ids another settings source offers that this document must cap
+    too; they count as named, so stale-entry cleanup keeps them.
 
     Like the managed model env keys, the ``autoCompactWindow`` leaf of a GPT id is ug's: it is set
     for every GPT model the document names (see ``gpt_model_settings`` for the value) and dropped
     for GPT ids it no longer names. Sibling fields and non-GPT entries are left alone, and only
     entries emptied by a removal are dropped.
     """
-    entries = gpt_model_settings(_settings_model_ids(settings))
+    entries = gpt_model_settings([*_settings_model_ids(settings), *also_named_model_ids])
     model_settings = settings.get(CLAUDE_MODEL_SETTINGS_KEY)
     if not isinstance(model_settings, dict):
         if entries:
@@ -1765,6 +1788,7 @@ def write_tool_config(
         *,
         enforce_model_default_hierarchy: bool,
         managed_settings_snapshots: ManagedFileSnapshots | None,
+        cap_managed_picker_models: bool = False,
     ) -> dict:
         base_env = base.get("env")
         existing_custom_headers = (
@@ -1893,7 +1917,9 @@ def write_tool_config(
                 elif not ug_picker:
                     _warn_unrecorded_allow_list(merged, managed_settings_snapshots)
         # Derived from the final file, so family defaults and pickers ug preserved are covered too.
-        _sync_gpt_model_settings(merged)
+        _sync_gpt_model_settings(
+            merged, _managed_settings_named_model_ids() if cap_managed_picker_models else ()
+        )
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
@@ -1902,6 +1928,7 @@ def write_tool_config(
         read_json_safe(CLAUDE_SETTINGS_PATH),
         enforce_model_default_hierarchy=source_scoped_defaults,
         managed_settings_snapshots=None,
+        cap_managed_picker_models=True,
     )
     # Only the --settings file carries the hook: Claude Code merges hooks across sources.
     sync_auto_compact_notice_hook(private_settings)
