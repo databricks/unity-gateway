@@ -1858,7 +1858,8 @@ def launch(
     _export_launch_routing_headers(profile_doc)
     _add_launch_headers(profile_doc)
     updating = tool_args[:1] == ["update"]
-    if workspace and token and provider and not updating and not relayed:
+    launches_session_on_mps = bool(workspace and token and provider) and not (updating or relayed)
+    if launches_session_on_mps:
         profile_doc.update(_bedrock_runtime_web_search_overlay(state, workspace, token, provider))
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")
