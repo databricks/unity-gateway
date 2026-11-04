@@ -4279,12 +4279,9 @@ def codex_cmd(
 
     Smart Routing is currently only supported for the Claude Code harness.
     """
-    if enable_smart_routing and disable_smart_routing:
-        raise typer.BadParameter(
-            "Pass only one of --enable-smart-routing and --disable-smart-routing."
-        )
+    # Both flags cancel out: the launch behaves as if neither was passed.
     enable_smart_routing_flag = (
-        True if enable_smart_routing else False if disable_smart_routing else None
+        None if enable_smart_routing == disable_smart_routing else enable_smart_routing
     )
     if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
         return

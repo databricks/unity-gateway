@@ -207,8 +207,9 @@ class TestHelp:
             (["--enable-smart-routing"], True),
             (["--disable-smart-routing"], False),
             ([], None),
+            (["--enable-smart-routing", "--disable-smart-routing"], None),
         ],
-        ids=["enable", "disable", "neither"],
+        ids=["enable", "disable", "neither", "both"],
     )
     def test_codex_smart_routing_flags_combine_into_one_choice(self, launch_args, expected):
         with (
@@ -234,17 +235,6 @@ class TestHelp:
 
         assert result.exit_code == 0, result.output
         toggle.assert_called_once_with(True, None)
-        launch.assert_not_called()
-
-    def test_codex_rejects_both_smart_routing_flags(self):
-        with patch("ucode.cli._launch_tool") as launch:
-            result = runner.invoke(
-                app, ["codex", "--enable-smart-routing", "--disable-smart-routing"]
-            )
-
-        assert result.exit_code == 2
-        flat = " ".join(re.sub(r"[│╭╮╯╰─]+", " ", _strip_ansi(result.output)).split())
-        assert "Pass only one of --enable-smart-routing and --disable-smart-routing." in flat
         launch.assert_not_called()
 
     def test_configure_help_lists_agents_flag(self):
