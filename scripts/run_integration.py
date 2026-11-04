@@ -439,7 +439,8 @@ def arguments(
     )
     parser.add_argument(
         "--antigravity-provider-models",
-        default="gemini-4-argon,gemini-3.8-flash",
+        # gemini-4-argon is left out: it keeps timing out before response headers in CI.
+        default="gemini-3.8-flash",
         help="Comma-separated targets of --antigravity-provider, newest first, each run as a "
         "task with --model; the first is the one `ug configure` pins.",
     )

@@ -118,7 +118,9 @@ skips on a machine with Claude managed settings, which would replace the fixture
 `test_claude_header_mod.py` covers installing the Claude header mod's files and managed entries
 (no rewrite when unchanged), keeping an admin's `prependPlugins`, a failed install never enabling
 the plugin, revert removing the files and keeping the guard, the sudo allowlist, `header_mod_active`
-needing every file, and an unreadable mod folder. `native_claude/test_mod.py` validates the mod and runs its merge tests
+needing every file, an unreadable mod folder, and non-UTF-8 managed settings. It also covers
+headless configure (installing beside an existing managed file, skipping without one, and a
+terminal hint when sudo needs a password), and the Windows install and removal under Program Files. `native_claude/test_mod.py` validates the mod and runs its merge tests
 (`native_claude/header_mod_tests`). Claude re-reading `ANTHROPIC_CUSTOM_HEADERS` per request was
 checked by hand on Claude 2.1.304; no automated test sends a request through the installed mod.
 
@@ -175,6 +177,17 @@ only native `running` statuses count, one uses singular wording, background work
 parent-turn completion and routing toggles, existing tails are preserved, and zero hides
 the count. A mounted row updates on the one-second timer without another prompt or a
 redraw when the count is unchanged. This count has no live TUI coverage.
+They also check the Agent `tool.describe` hook: a host `Usage notes` section is kept, and
+a host description with a missing or empty section still gets the fixed SendMessage
+continuation note, with the `fork` exception only when the host offers fork subagents.
+
+The live `test_smart_router_claude_resumes_same_subagent_with_send_message` journey
+spawns one child and follows up through `SendMessage` by ID or name, requiring
+the native result to resolve to the original child's ID, both hidden file answers
+in the same child transcript, and exactly one Agent/Task call. Only parent SendMessage
+calls are checked for continuation; child replies to the parent are allowed. Offline checks reject
+missing recipients, wrong children, failed sends, and missing/crossed tool results. Run it with
+Claude 2.1.314+; description-only component checks do not prove continuation.
 
 CUJ3 expects GPT Luna in both agents' catalogs and pickers, including Claude's gateway alias,
 and covers an explicit Claude headless task on that model.
@@ -191,9 +204,11 @@ The live fixture compares configuration before and after the journey, even on fa
 CUJs never republish configuration or create a remote reservation.
 CUJ helper tests also verify that unsupported agent names fail rather than defaulting to Codex.
 Offline PTY checks verify that the Claude background-task wait observes "No tasks currently
-running" or a native task menu containing only completed rows before sending `/exit`, without
-stopping tasks or confirming an exit dialog. Running/scheduled sections, incomplete row counts,
-and completed-task text outside the native menu cannot satisfy the wait.
+running", a native task menu containing only completed rows, or a completed task detail panel
+before sending `/exit`, without stopping tasks or confirming an exit dialog. Detail panels
+accept native and routed agent-type titles and require the native footer and completed status.
+Running/scheduled sections, incomplete row counts, and completed-task text outside the native
+task view cannot satisfy the wait.
 The live Claude subagent skill-toggle journeys use this wait after their final calculation.
 CUJ4's Claude delegation sessions also use it after verifying delegated file tasks: a completed
 answer does not prove that a resumed child has stopped running.
@@ -384,9 +399,34 @@ nothing without a readable transcript or previous reply. Other events are ignore
 stdout holds only the hook JSON. Probes and token minting are faked; native Cowork hook
 execution remains unverified.
 
+`test_code_plugin.py` covers the Code-scoped UG connector plugin with real
+files and controlled native CLI boundaries: original registration names, Claude-only
+filtering, Code-only discovery/authentication instructions, no duplicate MCP servers or
+downloaded skills, no Cowork hooks,
+refresh after workspace changes and last-connector removal, scoped cleanup,
+repeat cleanup, saved-root cleanup even after source deletion, config-root changes that
+retain the old registration and saved root on installation failure, successful retry,
+retained source after a failed removal, dry-run behavior, and
+Code setup succeeding when Cowork setup fails. Native Desktop GUI discovery and
+live connector calls remain unverified.
+The packaged Code/Cowork Markdown templates remain covered through generated-plugin
+tests and Cowork's frozen prompt fixture.
+
+`test_cli.py` and `test_desktop_configure_cli.py` cover Code eligibility for MCP-only
+Claude setup, merged server inputs for both plugins, and Code refresh after successful MCP
+reconciliation despite skill-download failures in both single-agent and managed configure.
+MCP failures preserve both plugins; Cowork retains its model and skill-success gates.
+These component tests mock both plugin setup boundaries to avoid invoking an installed
+Claude CLI; they do not establish native Desktop or live connector behavior.
+
+CUJ6 compares parsed Claude user settings across repeated configure calls. Its
+preservation check requires the exact UG Code plugin and marketplace entries
+alongside every seeded user setting; unexpected additions or changes still fail.
+
 `test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
 generated marketplace/plugin/MCP manifests, the generated connector skill naming Claude-only
-MCP servers with its two 5-second retries and one sign-in recovery attempt for access/IP
+MCP servers with its two 5-second retries, bounded descriptions and full connector lists for
+both Code and Cowork, and one sign-in recovery attempt for access/IP
 denials with a stop on persistent denial, the generated `SessionStart` hook command,
 current-workspace managed-skill selection,
 Claude-only MCP filtering, absolute proxy executables, saved PAT mode, custom-OAuth refusal,
@@ -399,7 +439,9 @@ cleanup, and unrelated-plugin preservation. CLI component tests
 cover managed setup after successful skill/MCP reconciliation, preservation after transient
 reconciliation failures, and cleanup for unmanaged or non-Claude configurations. These tests
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
-late MCP connection, tool discovery, or inference behavior.
+late MCP connection, tool discovery, or inference behavior. A frozen fixture verifies that
+Cowork's skill text, including its description, stays identical to the version before the
+Code authentication changes, with either the default scope or explicit `code=False`.
 
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
 It checks that Claude uses an available Slack tool despite a stale disconnect notice, actually
@@ -409,9 +451,13 @@ before the break. Assertions require actual tool calls and an answer containing 
 returned only by the synthetic Slack tool. The missing-tools scenario requires both real
 five-second waits and rejects invented reconnect/sign-in instructions. An idle-resume case
 shows only the skill description plus the `UserPromptSubmit` hook note and requires Claude to
-wait and use Slack instead of trusting the disconnect notice. Model requests are not
-retried. Slack tools are synthetic to isolate skill compliance from connector credentials;
-these are not native Cowork, Slack, proxy reconnect, or Desktop sleep/resume tests.
+wait and use Slack instead of trusting the disconnect notice. Code cases start with cached
+Gmail tools and require successful authentication before service calls, through either
+native HTTP CLI login or a proxy's exposed authentication tool. Cancellation must finish
+without calling Gmail; login and service calls in the same model response are rejected.
+Model requests are not retried. Connector tools and CLI results are synthetic to isolate
+skill compliance from credentials; these are not native Desktop OAuth, Gmail, Cowork,
+proxy reconnect, or sleep/resume tests.
 
 The suite is excluded from default collection. Run it with an explicitly chosen workspace,
 profile, and exact Claude model-service name; missing inputs fail rather than skip:

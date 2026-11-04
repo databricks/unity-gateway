@@ -143,7 +143,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | Smart-routing hooks | Merge | Merge | `PreToolUse`, `SessionStart`, `SubagentStart`; only `ug`'s own marked handlers, other hooks left alone |
 | Admin `agent_native_settings` | Ignore | Create/replace | Managed file only; copied as-is. Keys `ug` owns are skipped, `permissions.deny` and hooks are merged, and `ug`'s MCP servers are added to an admin `allowedMcpServers`. Removed when the admin drops them, unless edited by hand |
 | Smart Router Orchestrator hooks | Merge | Merge | Launch-only `UserPromptSubmit` and compact `SessionStart` handlers for smart-routed sessions with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; read the same session controls as routing |
-| Header mod | Merge | Merge | Managed file only, Linux and macOS: `extraKnownMarketplaces.ucode-managed`, `enabledPlugins["ug-headers@ucode-managed"]`, and `ug-headers@ucode-managed` first in `prependPlugins` (an unset list becomes the mod plus `sec-default@builtin`). The mod's files live in a root-owned `ucode-plugins` folder beside the managed file and add `UG_HEADERS` to each request. Installed, upgraded, and enabled only by `ug configure`, never by a launch (even with `UG_HEADERS`, which instead warns when the mod is missing or stale), so a launch writes no machine-wide files and another writer of the file that drops them isn't fought on every launch. The entries are written only once the files are in place; revert removes both, keeping `sec-default@builtin` when an admin has extended the list |
+| Header mod | Merge | Merge | Managed file only, Linux, macOS, and Windows: `extraKnownMarketplaces.ucode-managed`, `enabledPlugins["ug-headers@ucode-managed"]`, and `ug-headers@ucode-managed` first in `prependPlugins` (an unset list becomes the mod plus `sec-default@builtin`). The mod's files live in an administrator-only `ucode-plugins` folder beside the managed file and add `UG_HEADERS` to each request. Installed, upgraded, and enabled only by `ug configure` (a terminal, or in place over an existing managed file through `sudo -n`; on Windows, elevated), never by a launch (even with `UG_HEADERS`, which instead warns when no header mod is enabled: neither ug's, current, nor another tool's enabled `ug-headers@` plugin such as Isaac's), so a launch writes no machine-wide files and another writer of the file that drops them isn't fought on every launch. The entries are written only once the files are in place; revert removes both, keeping `sec-default@builtin` when an admin has extended the list |
 
 </details>
 
@@ -178,6 +178,21 @@ custom registration names and full proxy URLs are preserved. Its name and displa
 are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old
 `unity-gateway@unity-gateway-cowork` registration only after installing/updating `ug`;
 revert removes both IDs. New sessions use the `mcp__plugin_ug_...` tool namespace.
+Claude Code also receives `ug@unity-gateway-code` in its regular user plugin scope,
+shared with the Desktop Code tab. The generated source lives at
+`~/.ucode/claude-code-marketplace`, with its config root recorded in
+`~/.ucode/claude-code-plugin.json`; native plugin installation owns only that
+marketplace's `extraKnownMarketplaces` entry and its `enabledPlugins` entry.
+This plugin contains only the generated `unity-gateway-connectors` skill with Code-specific
+authentication guidance and native MCP registration names. Existing MCP registrations and
+downloaded skill files stay in their native locations; Cowork hooks are not installed in Code.
+Code setup is independent of Cowork account discovery and best-effort. Model-configured Claude and
+explicit Claude MCP clients are eligible. Managed configure refreshes Code after successful
+MCP reconciliation even if skill downloads fail; Cowork keeps its existing model and skill
+requirements. MCP updates refresh eligible plugins, and revert removes both while preserving
+unrelated plugins.
+Code and Cowork skill templates live in `src/ucode/agents/desktop/connector_skills/`;
+the generator inserts connector names and bounds each description.
 See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>

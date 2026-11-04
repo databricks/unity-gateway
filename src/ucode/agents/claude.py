@@ -2030,8 +2030,8 @@ def _allow_ug_mcp_servers(settings: dict, admin_allowlist: list | None, names: s
 
 
 CLAUDE_HEADER_MOD_MARKETPLACE = "ucode-managed"
-CLAUDE_HEADER_MOD_ID = f"ug-headers@{CLAUDE_HEADER_MOD_MARKETPLACE}"
 _HEADER_MOD_PREFIX = "ug-headers@"
+CLAUDE_HEADER_MOD_ID = f"{_HEADER_MOD_PREFIX}{CLAUDE_HEADER_MOD_MARKETPLACE}"
 _CLAUDE_GUARD_MOD_ID = "sec-default@builtin"
 # The header mod's managed-file entries. Revert removes them; they never count as conflicts, since
 # nothing in ug's own settings file can be overridden by them.
@@ -2098,16 +2098,25 @@ def request_explicit_configure(requested: bool = True) -> None:
     _explicit_configure = requested
 
 
-def _install_header_mod(root: Path | None) -> bool:
+def _install_header_mod(root: Path | None, *, managed_file_exists: bool) -> bool:
     """Install or update the header mod's files, returning whether this run did.
 
-    A failure only costs ``ug --header`` for Claude; the caller then doesn't enable the mod."""
-    if root is None or is_dry_run() or not managed_writes_allowed():
+    They are installed only where the managed file can be written, since the mod is enabled in
+    that file. A failure only costs ``ug --header`` for Claude; the caller then doesn't enable
+    the mod."""
+    if root is None or is_dry_run():
+        return False
+    if not managed_writes_allowed(repair_existing=managed_file_exists):
         return False
     try:
         reconcile_privileged_files(_header_mod_files(root), display="Claude Code")
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-        print_warning(f"Couldn't install ug's Claude header mod at {root}: {exc}")
+        hint = (
+            ""
+            if managed_writes_allowed()
+            else " (run `ug configure` from a terminal to install it)"
+        )
+        print_warning(f"Couldn't install ug's Claude header mod at {root}: {exc}{hint}")
         return False
     return True
 
@@ -2289,7 +2298,9 @@ def _reconcile_managed_settings(
     wants_mod = _explicit_configure
     # Install the files before the settings name them, so a failed install never enables a
     # plugin that isn't there; a run that can't write as root leaves any earlier entries as is.
-    installed = wants_mod and _install_header_mod(header_mod_root)
+    installed = wants_mod and _install_header_mod(
+        header_mod_root, managed_file_exists=current_text is not None
+    )
     desired_settings = _enable_header_mod(compose(existing), header_mod_root if installed else None)
     # Only the explicit `ug configure` path adds the blanks.
     _settle_credential_blanks(desired_settings, managed_before, add=_explicit_configure)
@@ -2300,6 +2311,22 @@ def _reconcile_managed_settings(
     if not managed_writes_allowed() and not conflicts:
         warn_managed_write_skipped(path, managed_before, desired_settings)
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
+        # A headless configure enables only the mod it installed, repairing the file in place.
+        mod_only = _enable_header_mod(
+            copy.deepcopy(managed_before), header_mod_root if installed else None
+        )
+        if mod_only != managed_before:
+            try:
+                reconcile_managed_file(
+                    path,
+                    _dump_managed_settings(mod_only),
+                    tool="claude",
+                    display="Claude Code",
+                    owned_paths=owned_paths,
+                    parser=_parse_managed_settings,
+                )
+            except ManagedFileWriteUnavailable as exc:
+                print_warning(str(exc))
         return
     try:
         reconcile_managed_file(
@@ -2739,10 +2766,9 @@ def launch(
     ensure_hooks_modules_gate()
     if os.environ.get(UG_HEADERS_ENV_VAR, "").strip() and not header_mod_active():
         print_warning(
-            "Claude Code won't send your `ug --header` / UG_HEADERS headers: ug's header mod isn't "
-            "installed or is out of date, and a launch never changes machine-wide files. Run "
-            "`ug configure` from an interactive terminal on Linux or macOS, without "
-            "UG_SKIP_OS_SETTINGS."
+            "Claude Code won't send your `ug --header` / UG_HEADERS headers: no header mod is enabled "
+            "or ug's is out of date, and a launch never changes machine-wide files. Run `ug configure` "
+            "without UG_SKIP_OS_SETTINGS or `--user`."
         )
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
         # Discovery is launch-scoped. Pass it in the process environment rather
