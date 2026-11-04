@@ -61,7 +61,10 @@ from ucode.databricks import (
     CodexMpsModelCatalogUnavailable,
     _fetch_codex_model_catalog,
     build_auth_token_argv,
+    build_mcp_proxy_argv,
+    build_mcp_service_url,
     build_tool_base_url,
+    get_model_provider_service,
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
@@ -1426,6 +1429,53 @@ def read_managed_mcp_urls() -> dict[str, str]:
     return urls
 
 
+WEB_SEARCH_MCP_SERVICE = "system.ai.web_search"
+WEB_SEARCH_MCP_NAME = WEB_SEARCH_MCP_SERVICE.replace(".", "-")  # same name `ug mcp add` registers
+# Bedrock's runtime Responses API rejects Codex's built-in web_search tool and the stream dies before
+# response.completed. Bedrock Mantle serves it, so only the runtime provider type is affected.
+_BUILTIN_WEB_SEARCH_UNSUPPORTED_PROVIDER_TYPE = "amazon_bedrock"
+
+
+def _web_search_mcp_configured(state: dict, url: str) -> bool:
+    """Whether Codex already has the web_search MCP service under any name, in user or managed config."""
+    user = read_toml_safe(user_mcp_config_path()).get(MANAGED_MCP_CONFIG_KEY)
+    if isinstance(user, dict):
+        for name, entry in user.items():
+            args = entry.get("args") if isinstance(entry, dict) else None
+            if name == WEB_SEARCH_MCP_NAME or (isinstance(args, list) and url in args):
+                return True
+            if isinstance(entry, dict) and entry.get("url") == url:
+                return True
+    managed = [*read_managed_mcp_urls().items()]
+    for server in state.get("managed_mcp_servers") or []:
+        if isinstance(server, dict) and "codex" in (server.get("clients") or []):
+            managed.append((server.get("name"), server.get("url")))
+    return any(name == WEB_SEARCH_MCP_NAME or managed_url == url for name, managed_url in managed)
+
+
+def _bedrock_runtime_web_search_overlay(
+    state: dict, workspace: str, token: str, provider: str
+) -> dict:
+    """Launch-scoped config that swaps Codex's built-in web_search for the web_search MCP service
+    when ``provider`` is an Amazon Bedrock runtime Model Provider Service; empty otherwise.
+
+    A failed provider lookup leaves the launch unchanged rather than blocking Codex."""
+    service, reason = get_model_provider_service(provider, workspace, token)
+    if service is None:
+        print_warning_err(f"Could not check the provider type of {provider}: {reason}")
+        return {}
+    if service.get("provider_type") != _BUILTIN_WEB_SEARCH_UNSUPPORTED_PROVIDER_TYPE:
+        return {}
+    overlay: dict = {"web_search": "disabled"}
+    url = build_mcp_service_url(workspace, WEB_SEARCH_MCP_SERVICE)
+    if not _web_search_mcp_configured(state, url):
+        argv = build_mcp_proxy_argv(
+            url, workspace, state.get("profile"), use_pat=bool(state.get("use_pat"))
+        )
+        overlay[MANAGED_MCP_CONFIG_KEY] = {WEB_SEARCH_MCP_NAME: managed_mcp_entry(argv)}
+    return overlay
+
+
 def default_model(state: dict) -> str | None:
     """Return a managed Codex model, or leave selection to Codex."""
     if isinstance(state.get("codex_default_model"), str):
@@ -1866,6 +1916,9 @@ def launch(
     _export_launch_routing_headers(profile_doc)
     _add_launch_headers(profile_doc)
     updating = tool_args[:1] == ["update"]
+    launches_session_on_mps = bool(workspace and token and provider) and not (updating or relayed)
+    if launches_session_on_mps:
+        profile_doc.update(_bedrock_runtime_web_search_overlay(state, workspace, token, provider))
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")
     if workspace and token and (provider or parent_schema) and not updating and not relayed:

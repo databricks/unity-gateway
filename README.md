@@ -120,6 +120,11 @@ config can set one for Copilot. `ug copilot --model-location <catalog>.<schema>`
 services of one schema instead: services named like Claude or GPT models use their usual API, and
 the rest go through the gateway's Anthropic endpoint, as for Claude Code.
 
+`ug codex --provider <catalog>.<schema>.<name>` on an Amazon Bedrock (runtime) service turns off Codex's
+built-in `web_search` for that launch, because Bedrock's Responses API rejects it, and registers the
+`system.ai.web_search` MCP service instead. Nothing is added if that service is already configured
+for Codex. Bedrock Mantle and other providers keep the built-in tool.
+
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
