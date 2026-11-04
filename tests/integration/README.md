@@ -121,7 +121,8 @@ the integration journeys do not inspect OS-managed directories.
 only the user source, no elevation, preservation of the registered legacy root source,
 one registration when switching an earlier root source to user scope, explicit cache
 refresh, content versions, downloaded workspace skills/assets, previous-account cleanup,
-malformed marketplace metadata, equivalent path aliases, source-switch failure recovery,
+malformed marketplace metadata, equivalent path aliases, source-switch failure recovery
+for both current and legacy-only plugin identities, preserved nonlocal registrations,
 and retained user source/state after refresh failures. Explicit global skips ordinary
 Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
 Overlapping installer/state checks and duplicate simulated-OS cases are consolidated;

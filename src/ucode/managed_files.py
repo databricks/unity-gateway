@@ -129,13 +129,13 @@ def config_scope() -> str:
 
 
 def set_machine_wide_only(enabled: bool) -> None:
-    """Mark this run as an explicit ``ug configure --global``, which writes no per-user settings."""
+    """Mark this run as an explicit ``ug configure --global``, which skips Desktop user configuration."""
     global _machine_wide_only
     _machine_wide_only = enabled
 
 
 def machine_wide_only() -> bool:
-    """Whether this run writes only machine-wide settings and leaves per-user agent settings alone.
+    """Whether this explicit global run skips Desktop user configuration.
 
     True only during an explicit ``ug configure --global``. ug's own state under ``~/.ucode`` and the
     Databricks login are still written, since the machine-wide settings rely on them.

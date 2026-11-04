@@ -650,6 +650,13 @@ def _install_plugin(
     switching_source = (
         previous_source is not None and previous_source.resolve() != marketplace_root.resolve()
     )
+    previous_plugin_id = plugin_id
+    if switching_source:
+        installed = _run_claude_json(claude, ["plugin", "list", "--cowork", "--json"], env)
+        if _contains_plugin_id(installed, plugin_id=LEGACY_PLUGIN_ID) and not _contains_plugin_id(
+            installed, plugin_id=plugin_id
+        ):
+            previous_plugin_id = LEGACY_PLUGIN_ID
     try:
         if switching_source:
             _remove_plugin_registration(config_root)
@@ -658,7 +665,9 @@ def _install_plugin(
         if switching_source and previous_source is not None:
             try:
                 _remove_plugin_registration(config_root)
-                _register_plugin(claude, env, previous_source, cowork, marketplace_name, plugin_id)
+                _register_plugin(
+                    claude, env, previous_source, cowork, marketplace_name, previous_plugin_id
+                )
             except Exception as recovery_error:
                 raise RuntimeError(
                     f"{exc} Could not restore the previous UG plugin: {recovery_error}. "
@@ -705,7 +714,11 @@ def _register_plugin(
         ["plugin", action, plugin_id, *scope, "--json"],
         env,
     )
-    if cowork and _contains_plugin_id(installed, plugin_id=LEGACY_PLUGIN_ID):
+    if (
+        cowork
+        and plugin_id != LEGACY_PLUGIN_ID
+        and _contains_plugin_id(installed, plugin_id=LEGACY_PLUGIN_ID)
+    ):
         _run_claude_json(
             claude,
             ["plugin", "uninstall", LEGACY_PLUGIN_ID, "--cowork", "--json"],

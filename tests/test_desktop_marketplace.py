@@ -70,7 +70,7 @@ def desktop_environment(tmp_path, monkeypatch, platform):
     return path
 
 
-def _source(tmp_path):
+def _source(tmp_path, *, plugin_name="ug"):
     source = tmp_path.resolve() / "source"
     (source / ".claude-plugin").mkdir(parents=True)
     (source / ".claude-plugin/marketplace.json").write_text(
@@ -78,13 +78,15 @@ def _source(tmp_path):
             {
                 "name": cowork.MARKETPLACE_NAME,
                 "owner": {"name": "Databricks"},
-                "plugins": [{"name": "ug", "source": "./plugins/ug"}],
+                "plugins": [{"name": plugin_name, "source": f"./plugins/{plugin_name}"}],
             }
         )
     )
-    plugin = source / "plugins/ug"
+    plugin = source / "plugins" / plugin_name
     (plugin / ".claude-plugin").mkdir(parents=True)
-    (plugin / ".claude-plugin/plugin.json").write_text('{"name":"ug", "version":"1.0.0"}')
+    (plugin / ".claude-plugin/plugin.json").write_text(
+        json.dumps({"name": plugin_name, "version": "1.0.0"})
+    )
     (plugin / "skills/review").mkdir(parents=True)
     (plugin / "skills/review/SKILL.md").write_text("Review carefully")
     (plugin / "skills/review/image.bin").write_bytes(b"\x00\xff\x80")
@@ -94,11 +96,11 @@ def _source(tmp_path):
     return source
 
 
-def _installed_source(*, other_plugins=()):
+def _installed_source(*, other_plugins=(), plugin_id=cowork.PLUGIN_ID):
     root = cowork.discover_cowork_root()
     installed = config_io.read_json_safe(root / "cowork_plugins/installed_plugins.json")
-    assert set(installed["plugins"]) == {cowork.PLUGIN_ID, *other_plugins}
-    entries = installed["plugins"][cowork.PLUGIN_ID]
+    assert set(installed["plugins"]) == {plugin_id, *other_plugins}
+    entries = installed["plugins"][plugin_id]
     assert len(entries) == 1
     return Path(entries[0]["installPath"])
 
@@ -389,6 +391,21 @@ def test_malformed_marketplace_metadata_is_ignored(system_source, contents):
     assert registry.read_text() == contents
 
 
+@pytest.mark.parametrize(
+    "source",
+    [{"source": "github", "repo": "example/plugins"}, {"source": "directory", "path": "relative"}],
+)
+def test_nonlocal_marketplace_registration_is_preserved(system_source, source):
+    assert cowork.configure_cowork(WORKSPACE, SERVERS)
+    root = cowork.discover_cowork_root()
+    registry = root / "cowork_plugins/known_marketplaces.json"
+    config_io.atomic_write_json(registry, {cowork.MARKETPLACE_NAME: {"source": source}})
+    before = cowork._marketplace_files(root)
+    with pytest.raises(RuntimeError, match="not a local directory; left unchanged"):
+        cowork.configure_cowork(WORKSPACE, SERVERS)
+    assert cowork._marketplace_files(root) == before
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory aliases")
 @pytest.mark.parametrize("aliased_path", ["source", "account"])
 def test_equivalent_paths_do_not_remove_existing_registration(
@@ -416,13 +433,15 @@ def test_equivalent_paths_do_not_remove_existing_registration(
 
 
 @pytest.mark.parametrize("failure", ["add", "install", "restore"])
+@pytest.mark.parametrize("previous_plugin_id", [cowork.PLUGIN_ID, cowork.LEGACY_PLUGIN_ID])
 def test_failed_source_switch_restores_previous_plugin(
-    system_source, tmp_path, monkeypatch, failure
+    system_source, tmp_path, monkeypatch, failure, previous_plugin_id
 ):
-    shutil.copytree(_source(tmp_path), system_source)
+    previous_name = previous_plugin_id.split("@")[0]
+    shutil.copytree(_source(tmp_path, plugin_name=previous_name), system_source)
     root = cowork.discover_cowork_root()
-    cowork._install_plugin(root, system_source)
-    old_payload = cowork._marketplace_files(_installed_source())
+    cowork._install_plugin(root, system_source, plugin_id=previous_plugin_id)
+    old_payload = cowork._marketplace_files(_installed_source(plugin_id=previous_plugin_id))
     registry = root / "cowork_plugins/installed_plugins.json"
     installed = config_io.read_json_safe(registry)
     installed["plugins"]["personal@other"] = [{"installPath": "untouched"}]
@@ -456,10 +475,12 @@ def test_failed_source_switch_restores_previous_plugin(
     installed = config_io.read_json_safe(registry)["plugins"]
     assert installed["personal@other"] == [{"installPath": "untouched"}]
     if failure != "restore":
-        assert set(installed) == {cowork.PLUGIN_ID, "personal@other"}
+        assert set(installed) == {previous_plugin_id, "personal@other"}
         assert cowork._registered_marketplace_source(root) == system_source
         assert (
-            cowork._marketplace_files(_installed_source(other_plugins=("personal@other",)))
+            cowork._marketplace_files(
+                _installed_source(other_plugins=("personal@other",), plugin_id=previous_plugin_id)
+            )
             == old_payload
         )
     assert cowork._state_path().exists()
