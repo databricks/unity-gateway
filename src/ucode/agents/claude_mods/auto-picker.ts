@@ -5,6 +5,8 @@ import { setRouting, readEnvironment } from './routing-controls.ts';
 import { requestAutoFeedback, type FeedbackState } from './isaac-feedback.ts';
 import { isRoutingEnabled } from './routing-state.ts';
 
+const PANE = 'ug-model-picker';
+
 type Choice = { auto: boolean; args: readonly string[] };
 export type AutoPolicy = { revision: number; blocked: boolean; picking: boolean };
 
@@ -43,7 +45,6 @@ export function registerAutoPicker(
   on: On, options: PluginOptions, policy: AutoPolicy, feedback: FeedbackState,
 ): void {
   let pending: Choice | undefined;
-  let afterFeedback: Choice | undefined;
   let interactive = true;
   const completedOutputs = new Set<string>();
 
@@ -54,22 +55,27 @@ export function registerAutoPicker(
 
   on('command.run', {command: 'model'}, async ($, e, next) => {
     const args = e.args.trim();
-    const feedbackChoice = afterFeedback;
-    afterFeedback = undefined;
     pending = undefined;
     policy.picking = false;
-    const auto = feedbackChoice?.auto ?? args.toLowerCase() === 'auto';
+    if (!args) {
+      if (!interactive) return {text: 'Choose a concrete model with /model M; Auto requires the Claude terminal.'};
+      const pane = await $.ui.open({id: PANE, title: 'Choose model mode', focus: true, closeOnEscape: true, rows: 5, columns: 64});
+      if (!pane.isPlaced) return {text: 'Could not open /model. Retry in the Claude terminal.'};
+      return {};
+    }
+    const auto = args.toLowerCase() === 'auto';
     if (auto && !interactive) return {text: 'Use /model auto in the Claude terminal to confirm a concrete main model.'};
-    if (!auto && !feedbackChoice) {
+    if (!auto) {
       const handled = await leaveAuto($, options, feedback, async (feedbackArgs) => {
-        afterFeedback = {auto: false, args: feedbackArgs};
+        pending = {auto: false, args: feedbackArgs};
+        policy.picking = true;
         await $.command.run({command: 'model', args});
       });
       if (handled) return {};
     }
-    pending = feedbackChoice ?? {auto, args: []};
+    pending = {auto, args: []};
     policy.picking = true;
-    const result = await next({...e, args: auto || feedbackChoice && !args ? '' : args});
+    const result = await next({...e, args: auto ? '' : args});
     // Headless commands return text directly; interactive picker results arrive later.
     if (typeof result.text === 'string') {
       const choice = pending; pending = undefined;
@@ -97,4 +103,25 @@ export function registerAutoPicker(
     return next(e);
   });
 
+  on('ui.render', {component: 'Pane'}, ($, e, next) => {
+    if (e.requestId !== PANE) return next(e);
+    const {Box, Text, Button} = $.ui.resolve(e);
+    const choose = async (auto: boolean) => {
+      await $.ui.close({id: PANE});
+      const open = async (args: readonly string[]) => {
+        // Calls from this mod skip its own command handler.
+        pending = {auto, args};
+        policy.picking = true;
+        await $.command.run({command: 'model', args: ''});
+      };
+      if (!auto && await leaveAuto($, options, feedback, open)) return;
+      await open([]);
+    };
+    return Box({flexDirection: 'column', children: [
+      Text({children: ['Choose a mode, then confirm your main model with Enter.']}),
+      Button({key: 'auto', label: 'Auto — choose a main model; automatically route subagents', autoFocus: true, onPress: () => choose(true)}),
+      Button({key: 'concrete', label: 'Concrete model — turn Auto off', onPress: () => choose(false)}),
+      Button({key: 'cancel', label: 'Cancel', onPress: () => $.ui.close({id: PANE})}),
+    ]});
+  });
 }

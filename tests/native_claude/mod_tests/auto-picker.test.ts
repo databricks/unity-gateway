@@ -24,13 +24,18 @@ test('Auto command forwards an empty argument to the native concrete picker', {o
   expect(args).toBe('');
 });
 
-test('/model opens the native menu without an intermediary', {options: AUTO}, async ($, on) => {
+test('/model opens the Auto popup before the native main-model picker', {options: AUTO}, async ($, on) => {
   let forwarded = false;
-  on('command.run', {command: 'model'}, ($, e) => {
-    expect(e.args).toBe(''); forwarded = true; return {};
+  let popup;
+  on('command.run', {command: 'model'}, () => { forwarded = true; return {}; });
+  on('ui.open', ($, e) => {
+    popup = e;
+    return {value: {id: e.id, isPlaced: true}};
   });
   await $.command.run({command: 'model', args: ''});
-  expect(forwarded).toBe(true);
+  expect(forwarded).toBe(false);
+  expect(popup.id).toBe('ug-model-picker');
+  expect(popup.closeOnEscape).toBe(true);
 });
 
 test('Auto uses the existing smart-router footer without an Auto label', {options: AUTO}, async ($, on) => {

@@ -18,6 +18,7 @@ def test_auto_picker_tui(native_binary, tmp_path, session_only):
     Expected: actual native picks change live and saved activity; Escape does not.
     This uses the packaged mod with dummy auth and deliberately sends no inference.
     """
+    mode_prompt = "Choose a mode, then confirm your main model with Enter."
     plugin = tmp_path / "plugin"
     v2._write_routed_claude_plugin(plugin, [])
     (plugin / "hooks/observe.ts").write_text("""
@@ -100,12 +101,20 @@ export const register = (on, options) => {
             )
             assert json.loads(controls.read_text())["ENABLE_SMART_ROUTER_ORCHESTRATOR"] == "0"
             off = controls.read_text()
+            tui.submit("/model")
+            tui.wait_for(lambda text: mode_prompt in text, "Auto popup")
+            assert "automatically route subagents" in tui.visible
+            tui.send("\x1b", "cancel mode popup")
+            tui.wait_for(lambda text: mode_prompt not in text, "mode popup cancelled")
+            assert controls.read_text() == off
             tui.submit("/model auto")
             tui.wait_for(lambda text: "Select model" in text, "native main-model picker")
             tui.send("\x1b", "cancel Auto selection")
             tui.wait_for(lambda text: "Select model" not in text, "picker cancelled")
             assert controls.read_text() == off
-            tui.submit("/model auto")
+            tui.submit("/model")
+            tui.wait_for(lambda text: mode_prompt in text, "Auto popup again")
+            tui.send("\r", "choose Auto")
             tui.wait_for(lambda text: "Select model" in text, "native picker again")
             tui.send("\r", "confirm current main model")
             tui.wait_for(
@@ -122,8 +131,10 @@ export const register = (on, options) => {
                 "Auto routing banner restored",
             )
             tui.submit("/model")
-            tui.wait_for(lambda text: "Select model" in text, "native /model menu")
-            assert "Choose model mode" not in tui.visible
+            tui.wait_for(lambda text: mode_prompt in text, "model mode popup")
+            tui.send("\t", "focus concrete mode")
+            tui.send("\r", "choose concrete mode")
+            tui.wait_for(lambda text: "Select model" in text, "native concrete picker")
             tui.send("\r", "confirm concrete main model")
             tui.wait_for(
                 lambda _: (

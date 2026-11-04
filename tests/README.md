@@ -1,9 +1,10 @@
 Auto picker development coverage: `test_claude_auto_picker.py` checks resolved capability,
 inactive provisioning, command-skill cleanup and the internal session writer.
-`native_claude/test_auto_picker.py` drives the actual Claude 2.1.317 TUI without inference:
+`native_claude/test_auto_picker.py` drives the actual Claude 2.1.318 TUI without inference:
 saved selection, cancellation and same-model Auto entry pass; session-only selection is
-currently a failing regression under development. `/model` opens the native picker directly and `/model auto` asks for a
-main model before enabling Auto. Auto restores the existing ON/routing-subagents banner. Live gateway and full resume/rollback coverage are separate.
+currently a failing regression under development. `/model` opens the Auto/concrete popup; both choices open the native main-model picker.
+Popup cancellation, native cancellation and Enter-confirmed choices are covered.
+`/model auto` opens the main-model picker directly. Auto restores the existing ON/routing-subagents banner. Live gateway and full resume/rollback coverage are separate.
 
 # Test suites and user journeys
 
