@@ -1119,9 +1119,10 @@ the live hook journeys retain their routing assertions and include stderr when n
 decision is returned. This diagnostic coverage does not prove routing service health.
 
 Smart-routing scenarios use checked-in model menus assigned to the explicit CI
-workspace. US `task_v3` uses GPT-6 Sol / Luna; the Canadian managed workspace uses
-GPT-5.6 Sol / Terra / Luna, since it has no GPT-6 services. Unknown Codex workspaces
-fail until a fixture is assigned. Claude uses Opus 4.8 / Sonnet 4.6 / Haiku 4.5.
+workspace, selected by hostname for each agent. US `task_v3` uses GPT-6 Sol / Luna; the Canadian managed workspace uses
+GPT-5.6 Sol / Terra / Luna, since it has no GPT-6 services. Claude US uses DeepSeek V4.1 Flash / Sonnet 5.5 / GLM 5.3 Flash; the Canadian workspace keeps
+Opus 4.8 / Sonnet 4.6 / Haiku 4.5 (`claude_smart_routing_ca`). Unknown Claude or Codex
+workspaces fail until a fixture is assigned.
 Direct hook inputs share the US fixture; managed TUI inputs use their workspace's
 fixture. No workspace is auto-selected or modified. All real routing, native notice,
 audit correlation, and child completion assertions remain required.
