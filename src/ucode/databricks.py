@@ -1009,7 +1009,14 @@ def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
 def ensure_databricks_cli_version(
     minimum: tuple[int, int, int] = MIN_DATABRICKS_CLI_VERSION,
 ) -> None:
-    clis = _discover_databricks_clis(use_cache=False)
+    discovery_was_cached = _DISCOVERED_DATABRICKS_CLIS_ORDERED is not None
+    clis = _discover_databricks_clis()
+    if discovery_was_cached and not any(
+        version is not None and version >= minimum for _, version in clis
+    ):
+        # Recheck an insufficient result before upgrading: a prior probe may have failed,
+        # or another process may have installed a CLI that meets this higher floor.
+        clis = _discover_databricks_clis(use_cache=False)
     if not clis:
         raise RuntimeError("Failed to read Databricks CLI version.")
 
@@ -1044,10 +1051,8 @@ def ensure_databricks_cli_version(
         ensure_databricks_cli_version(minimum)
         return
 
-    # A discovered CLI already meets the floor: drop the cached resolution so
-    # `databricks_cli_path()` re-resolves to it (it may differ from whatever was
-    # cached before this call, e.g. right after an install).
-    clear_databricks_cli_cache()
+    # Keep successful discovery for the remaining launch checks and auth calls.
+    # Installers invalidate it after replacing a binary.
 
 
 def databricks_cli_version() -> tuple[int, int, int] | None:
@@ -2110,7 +2115,8 @@ def build_mcp_proxy_argv(
 
     Every coding agent registers this single command as a local stdio MCP
     server instead of a per-client HTTP endpoint with a bearer header. The proxy
-    forwards to ``url`` and mints a fresh OAuth token on each upstream request,
+    connects a small stdio relay to the shared local backend, which forwards to
+    ``url`` and mints a fresh OAuth token on each upstream request,
     so tokens never expire mid-session — the client only ever spawns a process,
     which keeps registration uniform across CLIs that disagree on HTTP-auth
     syntax. Like `build_auth_token_argv`, this resolves the absolute `ug`
@@ -3063,11 +3069,13 @@ def _provider_service_entry(raw_service: object) -> dict | None:
             api_types = entry.get("native_api_types")
             if isinstance(api_types, list):
                 target_api_types[model_id] = tuple(t for t in api_types if isinstance(t, str))
-    # Relayed = credential-less Anthropic (subscription relay). Only whether
+    # Relayed = credential-less Anthropic or OpenAI (subscription relay). Only whether
     # it's relayed matters here; the tier (Max vs Team/Enterprise) is governed
     # server-side, so both launch identically.
-    anthropic_cfg = config.get("anthropic")
-    relayed = isinstance(anthropic_cfg, dict) and "relayed" in anthropic_cfg
+    relayed = any(
+        isinstance(cfg, dict) and "relayed" in cfg
+        for cfg in (config.get("anthropic"), config.get("openai"))
+    )
     raw_type = config.get("provider_type")
     return {
         "name": full_name,
@@ -3162,7 +3170,7 @@ def list_tool_provider_services(
 def _provider_service_unusable_reason(tool: str, service: dict, service_name: str) -> str | None:
     """Why ``tool`` can't route through ``service``, or None when it can.
 
-    Beyond the provider-type match, only claude can use a relayed (subscription) service, and
+    Beyond the provider-type match, only claude (Anthropic) or codex (OpenAI) can use a relayed (subscription) service, and
     claude and copilot can use a Bedrock service only if it has a Claude target — otherwise there's
     no routable model id to pin — or is ``allow_all_targets``, in which case the model id comes
     from elsewhere (the managed config's default or ``--model``). (Anthropic services use canonical
@@ -3175,11 +3183,18 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
             f"Model provider service '{service_name}' is a '{provider_type}' provider, "
             f"which {tool} can't route to (supported: {supported})."
         )
-    if tool != "claude" and service.get("relayed"):
-        return (
-            f"Model provider service '{service_name}' relays a Claude subscription, which only "
-            f"Claude Code can use. Pick a Model Provider Service with an API key for {tool}."
+    if service.get("relayed"):
+        relay_tool, subscription, display = (
+            ("codex", "ChatGPT", "Codex")
+            if provider_type == "openai"
+            else ("claude", "Claude", "Claude Code")
         )
+        if tool != relay_tool:
+            return (
+                f"Model provider service '{service_name}' relays a {subscription} subscription, "
+                f"which only {display} can use. Pick a Model Provider Service with an API key "
+                f"for {tool}."
+            )
     if (
         tool in _CLAUDE_ONLY_BEDROCK_TOOLS
         and provider_type in BEDROCK_PROVIDER_TYPES

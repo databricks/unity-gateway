@@ -4495,6 +4495,7 @@ class TestWriteUserMcpServers:
         path = tmp_path / ".claude.json"
         path.write_text("{ this is not valid json")
         monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+        monkeypatch.setattr(claude.shutil, "which", lambda binary: "/fake/claude")
         added: list[tuple[str, object]] = []
         removed: list[tuple[str, str]] = []
         monkeypatch.setattr(claude, "add_claude_mcp_server", lambda n, e, s: added.append((n, e)))
