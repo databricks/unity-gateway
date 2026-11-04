@@ -30,7 +30,9 @@ from ucode.agents.copilot import (
     claude_model_name,
     copilot_catalog,
     location_catalog,
+    managed_http_headers,
     provider_service_catalog,
+    unservable_static_models,
 )
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command
 from ucode.databricks import build_auth_shell_command
@@ -39,7 +41,7 @@ from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.system_cross_os import windows_program_files_dir
 from ucode.string_utils import model_picker_label
 from ucode.ui import console, print_heading, print_kv, print_note, print_warning
-from ucode.workspace import selector_headers
+from ucode.workspace import workspace_headers
 
 EXTENSION_DIR = Path(__file__).resolve().parent.parent / "vscode" / "extension"
 EXTENSION_ID = "databricks.unity-gateway"
@@ -191,6 +193,9 @@ def _catalog(state: dict, provider: str | None, location: str | None) -> list[Co
     if location:
         return location_catalog(state, location)
     catalog = copilot_catalog(state)
+    if catalog:
+        for model, reason in unservable_static_models(state):
+            print_warning(f"Skipping {model} from your workspace's managed config: {reason}.")
     if not catalog:
         reason = (state.get("_discovery_reasons") or {}).get("copilot")
         raise RuntimeError(
@@ -244,8 +249,9 @@ def next_steps() -> list[str]:
 
 def configure(state: dict, *, provider: str | None = None, location: str | None = None) -> bool:
     """Install the extension with this workspace's setup and the models of ``provider`` (a Model
-    Provider Service), ``location`` (a ``<catalog>.<schema>``) or else ``system.ai``. Returns False,
-    after a warning, if any step fails."""
+    Provider Service), ``location`` (a ``<catalog>.<schema>``) or else the Copilot CLI's, with the
+    workspace's managed headers and its selection on a host that serves several workspaces. Returns
+    False, after a warning, if any step fails."""
     code = find_code()
     if code is None:
         print_note(
@@ -267,9 +273,11 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     }
     if provider:
         config["provider"] = provider
-    # A host that serves several workspaces answers a request without them with its sign-in page.
-    if selector := selector_headers(state.get("workspace_id")):
-        config["headers"] = selector
+    headers = managed_http_headers(state)
+    # Last, so an admin header can't select another workspace.
+    headers.update(workspace_headers(state["workspace"]))
+    if headers:
+        config["headers"] = headers
     source = f" from {provider or location}" if provider or location else ""
     try:
         print_kv(

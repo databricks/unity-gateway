@@ -974,6 +974,10 @@ def _launch_workspace_state(workspace: str | None) -> dict:
     return state
 
 
+# The agents whose `ug configure --agent` reads and installs the policy and applies its MCP and skills.
+_FRESH_POLICY_AGENTS = ("claude", "codex", "copilot")
+
+
 def _setup_single_agent(
     workspace_entries: list[tuple[str, str | None]],
     tool: str,
@@ -1003,7 +1007,7 @@ def _setup_single_agent(
     state = states[0]
     parent_schema = None
     managed = None
-    if apply_managed and tool in ("claude", "codex"):
+    if apply_managed and tool in _FRESH_POLICY_AGENTS:
         # Explicit configure always reads the workspace policy fresh, so it can install it.
         managed, _ = _refresh_configured_policy(state)
     elif apply_managed:
@@ -1024,7 +1028,7 @@ def _setup_single_agent(
         from ucode.agents.desktop.setup import configure_claude_desktop
 
         configure_claude_desktop(state, parent_schema=parent_schema)
-    if apply_managed and tool in ("claude", "codex") and not is_dry_run():
+    if apply_managed and tool in _FRESH_POLICY_AGENTS and not is_dry_run():
         resolved_mcps = _configure_managed_mcp_servers(managed)
         skills_configured = _configure_managed_skills(managed)
         _restore_mcp_after_workspace_switch(previous_workspace, state)
@@ -1034,8 +1038,7 @@ def _setup_single_agent(
             )
     else:
         _restore_mcp_after_workspace_switch(previous_workspace, state)
-    # Only the Claude and Codex branch above reads the managed config fresh.
-    managed_refreshed = apply_managed and tool in ("claude", "codex")
+    managed_refreshed = apply_managed and tool in _FRESH_POLICY_AGENTS
     install_databricks_ai_tools_for_agents([tool], state, force_refresh=not managed_refreshed)
     provider_summary = "Databricks" if parent_schema else _provider_summary(tool, state)
     console.print(

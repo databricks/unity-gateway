@@ -524,6 +524,19 @@ class TestProviderCatalog:
         ]
         assert seen["listing"] == (MPS, "amazon_bedrock")
 
+    @pytest.mark.parametrize("tool", ["copilot", "vscode"])
+    def test_allow_all_adds_the_managed_default_for_the_cli_and_vscode(self, monkeypatch, tool):
+        _stub_provider_service(
+            monkeypatch,
+            {"provider_type": "anthropic", "targets": [], "allow_all_targets": True},
+            listed=["claude-opus-5"],
+        )
+        state = {"workspace": WS, "copilot_default_model": "claude-sonnet-5"}
+
+        models = copilot.provider_service_catalog(state, MPS, None, tool=tool)
+
+        assert sorted(m.id for m in models) == ["claude-opus-5", "claude-sonnet-5"]
+
     def test_allow_all_openai_takes_a_provider_ref_as_the_start_model(self, monkeypatch):
         seen = _stub_provider_service(
             monkeypatch,
@@ -1103,6 +1116,15 @@ class TestWriteToolConfig:
             "COPILOT_OFFLINE": "true",
         }
         assert state["managed_configs"]["copilot"]["keys"] == copilot.MANAGED_KEYS
+
+    @pytest.mark.parametrize(("reported", "recorded"), [("1.0.98", "1.0.98"), ("unknown", None)])
+    def test_records_the_cli_version_it_found(self, tmp_path, monkeypatch, reported, recorded):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: reported)
+
+        state = copilot.write_tool_config({"workspace": WS}, "gpt-5")
+
+        assert state.get(copilot.VERSION_STATE_KEY) == recorded
 
     def test_scrubs_a_token_an_earlier_version_wrote(self, tmp_path, monkeypatch):
         env_path = isolate_copilot_config_paths(monkeypatch, tmp_path)

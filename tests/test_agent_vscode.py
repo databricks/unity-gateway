@@ -123,14 +123,6 @@ class TestConfigure:
         )
         assert "Next, in VS Code: 1. If VS Code is open," in printed
 
-    def test_selects_the_workspace_on_a_host_that_serves_several(self, code):
-        assert vscode.configure({**STATE, "workspace_id": "6051921418418893"})
-
-        assert code.config["headers"] == {
-            "X-Databricks-Org-Id": "6051921418418893",
-            "X-Databricks-Workspace-Id": "6051921418418893",
-        }
-
     def test_models_with_the_same_label_show_their_ids(self, code):
         discovered = copilot.build_copilot_catalog(
             ["system.ai.gpt-6-luna", "main.models.gpt-6-luna", "system.ai.gpt-5-5"]
@@ -326,6 +318,52 @@ class TestConfigure:
         assert not vscode.configure(STATE)
 
         assert "--install-extension` failed: boom" in _printed(capsys)
+
+
+class TestCopilotModels:
+    """With the Copilot CLI's catalog in state, VS Code gets the same models and the managed setup."""
+
+    SONNET = "system.ai.claude-sonnet-5-5"
+    GPT = "system.ai.gpt-6-luna"
+
+    def _state(self, **managed) -> dict:
+        saved = {"models": [self.SONNET, self.GPT], "limits": {self.GPT: [922_000, 128_000]}}
+        return {**STATE, copilot.CATALOG_STATE_KEY: saved, **managed}
+
+    def test_uses_the_catalog_configure_saved_with_its_limits(self, code):
+        assert vscode.configure(self._state())
+
+        assert [model["id"] for model in code.config["models"]] == [self.SONNET, self.GPT]
+        assert code.config["models"][1]["maxInputTokens"] == 794_000
+        assert code.config["models"][1]["maxOutputTokens"] == 128_000
+        assert "headers" not in code.config
+
+    def test_uses_only_the_managed_list_and_says_what_it_skips(self, code, capsys):
+        state = self._state(copilot_static_models=[self.GPT, "system.ai.gemini-4-argon"])
+
+        assert vscode.configure(state)
+
+        assert [model["id"] for model in code.config["models"]] == [self.GPT]
+        assert "Skipping system.ai.gemini-4-argon from your workspace's managed config" in (
+            _printed(capsys)
+        )
+
+    def test_writes_the_managed_headers_without_the_ones_ug_sets(self, code):
+        state = self._state(
+            copilot_http_headers={
+                " X-Team ": "ml",
+                "Authorization": "Bearer x",
+                "content-type": "text/plain",
+                "databricks-model-provider-service": "main.default.other",
+                "X-Bad": 3,
+            },
+            copilot_default_model="claude-sonnet-5-5",
+        )
+
+        assert vscode.configure(state)
+
+        assert code.config["headers"] == {"X-Team": "ml"}
+        assert "defaultModel" not in code.config
 
 
 class TestRevert:

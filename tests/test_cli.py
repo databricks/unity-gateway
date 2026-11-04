@@ -5815,6 +5815,10 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(cli_mod, "configure_single_tool", configure)
         install_ai_tools = MagicMock()
         monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", install_ai_tools)
+        managed_mcps = MagicMock(return_value=[])
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", managed_mcps)
+        managed_skills = MagicMock(return_value=True)
+        monkeypatch.setattr(cli_mod, "_configure_managed_skills", managed_skills)
 
         result = runner.invoke(
             app, ["configure", "--agent", "copilot", "--workspace", "https://w.com"]
@@ -5822,20 +5826,24 @@ class TestConfigureAgentsSelection:
 
         assert result.exit_code == 0, result.output
         assert "(Provider: Databricks)" in _strip_ansi(result.output)
-        refresh.assert_called_once_with(state, force_refresh=False)
+        refresh.assert_called_once_with(state, force_refresh=True)
         configure.assert_called_once_with(
             "copilot", state, parent_schema="main.models", with_vscode=True
         )
-        install_ai_tools.assert_called_once_with(["copilot"], state, force_refresh=True)
+        managed_mcps.assert_called_once_with(managed)
+        managed_skills.assert_called_once_with(managed)
+        install_ai_tools.assert_called_once_with(["copilot"], state, force_refresh=False)
 
     @pytest.mark.parametrize("apply_managed", [True, False])
-    def test_single_copilot_agent_refreshes_ai_tools_since_it_only_reads_the_policy(
+    def test_single_copilot_agent_refreshes_ai_tools_only_without_its_fresh_policy_read(
         self, monkeypatch, apply_managed
     ):
         state = dict(MINIMAL_STATE)
         monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
         monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (None, False))
         monkeypatch.setattr(cli_mod, "configure_single_tool", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *_a: None)
+        monkeypatch.setattr(cli_mod, "_configure_managed_skills", lambda *_a: False)
         install_ai_tools = MagicMock()
         monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", install_ai_tools)
 
@@ -5843,7 +5851,9 @@ class TestConfigureAgentsSelection:
             [("https://w.com", None)], "copilot", apply_managed=apply_managed
         )
 
-        install_ai_tools.assert_called_once_with(["copilot"], state, force_refresh=True)
+        install_ai_tools.assert_called_once_with(
+            ["copilot"], state, force_refresh=not apply_managed
+        )
 
     def test_single_codex_switch_reconciles_managed_mcps_before_restoring_saved_entries(
         self, monkeypatch
