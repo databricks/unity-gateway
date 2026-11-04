@@ -15,6 +15,7 @@ from contextlib import contextmanager, redirect_stdout
 from dataclasses import asdict
 from enum import StrEnum
 from importlib import metadata
+from pathlib import Path
 from typing import Annotated, Any
 
 import typer
@@ -1673,6 +1674,25 @@ def status() -> int:
     return 0
 
 
+def _print_managed_revert_result(display: str, result: str, path: Path | None) -> None:
+    print_kv(f"{display} OS-managed settings", result)
+    if result != "unchanged" or path is None:
+        return
+    try:
+        if not path.exists():
+            return
+    except OSError as exc:
+        print_warning(
+            f"Could not inspect {display} managed settings at {path}: {exc}. "
+            "Check this file manually or ask your administrator."
+        )
+        return
+    print_warning(
+        f"{display} managed settings at {path} were left unchanged because no UG backup record "
+        "was found. If no longer needed, remove the file manually or ask your administrator."
+    )
+
+
 def revert() -> int:
     from ucode.agents.desktop.setup import revert_desktop
 
@@ -1718,9 +1738,13 @@ def revert() -> int:
         print_kv(f"{spec['display']} config", "restored" if results[tool] else "unchanged")
     if legacy_codex_stripped:
         print_kv("Codex shared config", "ucode entries removed")
-    print_kv("Claude Code OS-managed settings", claude_managed_result)
+    _print_managed_revert_result(
+        "Claude Code", claude_managed_result, claude_agent.managed_settings_path()
+    )
     print_kv("Claude Desktop profile", desktop_result)
-    print_kv("Codex OS-managed settings", codex_managed_result)
+    _print_managed_revert_result(
+        "Codex", codex_managed_result, codex_agent.codex_managed_config_path()
+    )
     print_kv("Unity Gateway workspace policy", workspace_policy_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     print_kv("VS Code extension", vscode_result)
