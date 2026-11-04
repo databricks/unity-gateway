@@ -6,9 +6,10 @@ model Copilot can use,
 so `/model` switches between them mid-session, across wire APIs. Each family keeps its native
 wire: Claude on the gateway's Anthropic endpoint (with Copilot's catalog id as `modelId`, so
 Copilot sends Claude request settings), GPT 5+ on Responses (Copilot sends `temperature: 0` on Chat
-Completions, which those models reject), older GPT on Chat Completions. Gemini and open-source
-models are excluded: Databricks' Gemini translation rejects the `stream_options` field Copilot
-sends, and open-source models are not validated with Copilot yet.
+Completions, which those models reject), older GPT on Chat Completions. Open models validated with
+Copilot (GLM, Kimi and DeepSeek, see `_OPEN_MODELS`) use Chat Completions, the one chat API they
+all serve. Gemini and other open models are excluded: Databricks' Gemini translation rejects the
+`stream_options` field Copilot sends, and the others aren't validated with Copilot yet.
 
 `ug copilot --provider` registers a Model Provider Service's models instead: its Claude models on
 the Anthropic endpoint, its other chat models on the gateway's native OpenAI route, with every
@@ -165,6 +166,32 @@ _CLAUDE_CATALOG_VERSION_PATTERN = re.compile(r"^claude-([a-z]+)-(\d+)(?:\.(\d+))
 _CLAUDE_1M_TOKENS = (1_000_000, 128_000)
 _CLAUDE_200K_TOKENS = (200_000, 32_000)
 
+# Open models validated with Copilot, by name.
+_OPEN_MODELS = frozenset(
+    {
+        "glm-5-2",
+        "glm-5-3",
+        "glm-5-3-flash",
+        "glm-5-3-flash-scale",
+        "kimi-k3",
+        "kimi-k3-1-pro",
+        "deepseek-v4-1-flash-1017",
+        "deepseek-v4-1-flash-scale",
+    }
+)
+_OPEN_MODEL_PATTERN = re.compile(r"^(?:glm|kimi|deepseek)-")
+# Their window is 1,048,576 tokens, but Copilot counts tokens like GPT and their tokenizers may
+# count up to a third more, so the prompt Copilot builds stays at 687K of its tokens.
+_OPEN_MODEL_TOKENS = (719_000, 32_000)
+
+# Copilot compacts its history and retries only when an error calls the prompt too long in words it
+# knows; the gateway's context-overflow errors for open models use others.
+_GATEWAY_CONTEXT_OVERFLOW_PATTERN = re.compile(
+    r"Input exceeds the model's maximum context length"
+    r"|The input \(\d+ tokens\) is longer than the model's context length"
+)
+_COPILOT_CONTEXT_OVERFLOW_PREFIX = "prompt is too long: "
+
 # A Model Provider Service target that declares its APIs is usable only if one is a chat API.
 _CHAT_API_TYPES = frozenset(route for routes in _WIRE_ROUTES.values() for route in routes)
 
@@ -213,7 +240,11 @@ def classify_model(
     if wire is None:
         if "gemini-" in tail:
             return None, "the gateway rejects the requests Copilot sends to Gemini models"
-        return None, "ug copilot supports Claude and GPT models"
+        if tail not in _OPEN_MODELS:
+            if _OPEN_MODEL_PATTERN.match(tail):
+                return None, "it isn't validated with ug copilot yet"
+            return None, "ug copilot supports Claude, GPT, GLM, Kimi and DeepSeek models"
+        wire = WIRE_COMPLETIONS
     if declared and not set(declared) & set(_WIRE_ROUTES[wire]):
         return None, f"it isn't served on {_WIRE_ROUTES[wire][0]}"
     return wire, None
@@ -227,6 +258,11 @@ def _wire_from_name(name: str) -> str | None:
     if (gpt and int(gpt.group(1)) >= 5) or _O_SERIES_PATTERN.match(name):
         return WIRE_RESPONSES
     return WIRE_COMPLETIONS if gpt else None
+
+
+def is_open_model(model: str) -> bool:
+    """Whether ``model`` is named like a GLM, Kimi or DeepSeek model."""
+    return bool(_OPEN_MODEL_PATTERN.match(bare_model_name(model)))
 
 
 def uses_responses_api(model: str) -> bool:
@@ -280,9 +316,10 @@ def claude_token_limits(model: str) -> tuple[int, int] | None:
 def catalog_model_limits(model: CopilotModel) -> tuple[int, int] | None:
     """Copilot's ``(maxPromptTokens, maxOutputTokens)`` for ``model``, or None to keep its defaults.
 
-    The limits are the ones the gateway listed for the model, else Claude's by name; the prompt
-    leaves room for the output."""
-    limits = model.listed_limits or claude_token_limits(model.id)
+    The limits are the ones the gateway listed for the model, else Claude's or an open model's by
+    name; the prompt leaves room for the output."""
+    open_limits = _OPEN_MODEL_TOKENS if bare_model_name(model.id) in _OPEN_MODELS else None
+    limits = model.listed_limits or claude_token_limits(model.id) or open_limits
     if limits is None or limits[0] <= limits[1]:
         return None
     return limits[0] - limits[1], limits[1]
@@ -318,7 +355,7 @@ def _catalog_sort_key(model: CopilotModel) -> tuple:
     )
     sort_name = _O_SERIES_PATTERN.sub("o-", _DOTTED_VERSION_PATTERN.sub("-", model.id))
     version_key = model_version_sort_key(sort_name)
-    return (tuple(PROVIDER_NAMES).index(model.wire), family, version_key)
+    return (tuple(PROVIDER_NAMES).index(model.wire), is_open_model(model.id), family, version_key)
 
 
 def build_catalog(
@@ -328,7 +365,8 @@ def build_catalog(
     fallback_wire: str | None = None,
 ) -> tuple[list[CopilotModel], list[tuple[str, str]]]:
     """The ``(model, api_types)`` pairs Copilot can use, sorted Claude first (by family, newest
-    first) then GPT, and the skipped models with the reason (see :func:`classify_model`).
+    first), then GPT, then open models, and the skipped models with the reason (see
+    :func:`classify_model`).
 
     With ``fallback_wire``, a model whose name doesn't decide the wire uses it instead of being
     skipped; unsupported models are still skipped."""
@@ -460,9 +498,14 @@ def catalog_from_listings(
     listing (None when it failed) and ``fallback`` holds the ids the per-family gateway listings
     found instead. None when none answered, so the caller keeps the saved catalog; an empty catalog
     when they answered with nothing Copilot can use."""
-    if gateway is not None and (gateway_models := gateway_catalog(gateway)):
-        return gateway_models
     listed = list(entries or ())
+    # Open models come from the model-services listing, which leaves out the ones this caller
+    # can't call; the Anthropic route doesn't list those it doesn't serve, such as DeepSeek.
+    open_models = [model for model in build_copilot_catalog(listed) if is_open_model(model.id)]
+    if gateway is not None and (
+        gateway_models := [m for m in gateway_catalog(gateway) if not is_open_model(m.id)]
+    ):
+        return sorted([*gateway_models, *open_models], key=_catalog_sort_key)
     fallback_catalog = build_copilot_catalog(list(fallback))
     if not listed:
         return fallback_catalog or None
@@ -591,7 +634,8 @@ def launch_model(
     managed_list: bool = True,
 ) -> CopilotModel:
     """The model a session starts on: ``requested`` (budget recommendation or managed default),
-    then the managed default and list, then the newest Sonnet, Opus or Haiku, then GPT.
+    then the managed default and list, then the newest Sonnet, Opus or Haiku, then GPT, then any
+    other Claude model before an open one.
 
     ``managed_list=False`` ignores the managed model lists, which name Databricks models."""
     static = _string_list(state.get("copilot_static_models")) if managed_list else []
@@ -609,7 +653,9 @@ def launch_model(
         family = next((m for m in catalog if bare_model_name(m.id).startswith(prefix)), None)
         if family is not None:
             return family
-    return next((m for m in catalog if m.wire != WIRE_ANTHROPIC), catalog[0])
+    return next(
+        (m for m in catalog if m.wire != WIRE_ANTHROPIC and not is_open_model(m.id)), catalog[0]
+    )
 
 
 def default_model(state: dict) -> str | None:
@@ -958,6 +1004,22 @@ def managed_user_agent() -> str | None:
     return ucode_user_agent(ug_version(), f"copilot/{version}")
 
 
+def recognizable_context_overflow(body: bytes) -> bytes | None:
+    """A gateway 400 ``body`` reporting a context overflow, reworded so Copilot compacts and
+    retries, or None to relay ``body`` as it is.
+
+    No token counts are added: Copilot trims its history to the limit an error states."""
+    try:
+        text = body.decode()
+    except UnicodeDecodeError:
+        return None
+    match = _GATEWAY_CONTEXT_OVERFLOW_PATTERN.search(text)
+    if match is None:
+        return None
+    start = match.start()
+    return f"{text[:start]}{_COPILOT_CONTEXT_OVERFLOW_PREFIX}{text[start:]}".encode()
+
+
 def _token_provider(state: dict) -> Callable[[bool], str]:
     workspace = state["workspace"]
     return lambda force_refresh: launch_token(state, workspace, force_refresh=force_refresh)
@@ -1045,8 +1107,9 @@ def _session_catalog(
     catalog = copilot_catalog(state)
     if not catalog:
         raise RuntimeError(
-            "No Copilot model is available on this workspace: ug copilot supports its Claude "
-            "and GPT models. Run `ug configure --agents copilot` to rediscover them."
+            "No Copilot model is available on this workspace: ug copilot supports its Claude, "
+            "GPT, GLM, Kimi and DeepSeek models. Run `ug configure --agents copilot` to "
+            "rediscover them."
         )
     for model, reason in unservable_static_models(state):
         print_warning(f"Skipping {model} from your workspace's managed config: {reason}.")
@@ -1084,8 +1147,10 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         sign_in_hint=f"Run `databricks auth login --host {workspace}`, then restart `ug copilot`.",
         on_refresh_failure=_log_proxy_failure,
         # Copilot sends `reasoning_effort` on Chat Completions, but only models that aren't GPT 5+
-        # or o-series use that wire, and OpenAI and Azure reject the field for them.
+        # or o-series use that wire: OpenAI and Azure reject the field for them, GLM 5.3 rejects
+        # `none`, and GLM and Kimi think less at `high` than without it.
         dropped_chat_completions_fields=("reasoning_effort",),
+        bad_request_rewriter=recognizable_context_overflow,
     )
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:

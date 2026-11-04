@@ -351,6 +351,51 @@ class TestGatewayAuthProxyEndToEnd:
         assert json.loads(chat.body) == {"model": "gpt-4o-mini", "messages": []}
         assert responses.body == body
 
+    def test_copilot_session_rewords_a_context_overflow(self, make_gateway):
+        from ucode.agents import copilot
+
+        overflow = (
+            b'{"error_code":"BAD_REQUEST","message":"{\\"error\\":\\"Input exceeds the model\'s'
+            b' maximum context length. Reduce the length of the input messages.\\"}"}'
+        )
+        gw = make_gateway(status=400, chunks=[overflow])
+        with _running_gateway_auth_proxy(
+            gw, bad_request_rewriter=copilot.recognizable_context_overflow
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/mlflow/v1/chat/completions",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b'{"model":"system.ai.glm-5-3"}',
+                timeout=10,
+            )
+        assert resp.status_code == 400
+        assert resp.content == overflow.replace(b"Input", b"prompt is too long: Input")
+        assert resp.headers["Content-Length"] == str(len(resp.content))
+
+    @pytest.mark.parametrize(
+        ("status", "chunks"),
+        [
+            (400, [b'{"error_code":"BAD_REQUEST",', b'"message":"endpoint is deprecated"}']),
+            (200, [b'data: {"a":1}\n\n', b"data: [DONE]\n\n"]),
+            (404, [b'{"message":"Input exceeds the model\'s maximum context length"}']),
+        ],
+    )
+    def test_copilot_session_relays_other_responses_unchanged(self, make_gateway, status, chunks):
+        from ucode.agents import copilot
+
+        gw = make_gateway(status=status, chunks=chunks)
+        with _running_gateway_auth_proxy(
+            gw, bad_request_rewriter=copilot.recognizable_context_overflow
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/mlflow/v1/chat/completions",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b"{}",
+                timeout=10,
+            )
+        assert resp.status_code == status
+        assert resp.content == b"".join(chunks)
+
     def test_accepts_secret_in_x_api_key_and_does_not_forward_it(self, make_gateway):
         gw = make_gateway()
         with _running_gateway_auth_proxy(gw, _counting_token("dbx-token")) as proxy_url:
