@@ -1,9 +1,9 @@
 {
   "spec_version": 1,
-  "default_agent": "CODING_AGENT_COPILOT",
+  "default_agent": "CODING_AGENT_GITHUB_COPILOT",
   "enabled_agents": [
     {
-      "agent": "CODING_AGENT_COPILOT",
+      "agent": "CODING_AGENT_GITHUB_COPILOT",
       "config": {
         "models": {
           "model_services": [
