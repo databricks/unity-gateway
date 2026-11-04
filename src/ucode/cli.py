@@ -29,6 +29,7 @@ from ucode import custom_oauth
 from ucode.agents import (
     GEMINI_API_TOOLS,
     MODEL_LOCATION_TOOLS,
+    TOOL_ALIASES,
     TOOL_SPECS,
     LaunchOptions,
     check_gateway_endpoint,
@@ -102,6 +103,7 @@ from ucode.databricks import (
     resolve_provider_launch_model,
     resolve_provider_service,
     run_databricks_login,
+    ug_binary,
 )
 from ucode.env import env_bool
 from ucode.managed_budget import (
@@ -123,10 +125,16 @@ from ucode.managed_config import (
     revert_machine_policy,
 )
 from ucode.managed_files import (
+    MANAGED_FILES_SUPPORTED_OSES,
+    SKIP_OS_SETTINGS_ENV,
     ManagedFileWriteUnavailable,
     config_scope,
+    current_os,
     explicit_managed_writes,
+    machine_wide_only,
+    managed_settings_skipped,
     managed_write_session,
+    per_user_paths,
     request_explicit_managed_writes,
     set_config_scope,
     set_machine_wide_only,
@@ -210,6 +218,8 @@ from ucode.state import (
     set_current_workspace,
     set_model_location,
     set_provider_service,
+    set_user_mcp_reconcile_pending,
+    user_mcp_reconcile_pending,
     workspace_self_managed_agents,
 )
 from ucode.string_utils import is_valid_catalog_schema
@@ -694,8 +704,7 @@ def configure_shared_state(
                 state["profile"] = profile
         save_state(state)
         # Scrub MCP entries ucode wrote for a previous workspace.
-        if previous_key and previous_key != key:
-            purge_cross_workspace_mcp_residue(state, workspace)
+        _purge_after_workspace_switch(state, workspace, previous_key, key)
         # Diagnostic reasons are transient (attached after save_state so they
         # don't land on disk). No discovery ran, so there is nothing to report.
         state["_discovery_reasons"] = {"claude": None, "gemini": None, "codex": None, "oss": None}
@@ -863,8 +872,7 @@ def configure_shared_state(
     save_state(state)
     # Scrub MCP entries that ucode wrote for the previous workspace so the new
     # workspace's agent configs aren't stale.
-    if previous_key and previous_key != key:
-        purge_cross_workspace_mcp_residue(state, workspace)
+    _purge_after_workspace_switch(state, workspace, previous_key, key)
     # Diagnostic reasons are transient — attach after save_state so they don't
     # land on disk but are available to the caller for this run.
     state["_discovery_reasons"] = {
@@ -1070,12 +1078,38 @@ def _setup_single_agent(
     return state
 
 
+def _purge_after_workspace_switch(
+    state: dict, workspace: str, previous_key: str | None, key: str
+) -> None:
+    """Remove per-user MCP entries ucode wrote for another workspace after a workspace switch.
+
+    ``ug configure --global`` leaves per-user entries alone, so it records the switch instead, and
+    the next run without --global purges and restores them even though it sees no switch.
+    """
+    switched = bool(previous_key and previous_key != key)
+    if machine_wide_only():
+        if switched:
+            set_user_mcp_reconcile_pending(True)
+        return
+    if switched or user_mcp_reconcile_pending():
+        purge_cross_workspace_mcp_residue(state, workspace)
+
+
 def _restore_mcp_after_workspace_switch(previous_workspace: str | None, state: dict) -> None:
-    """Put the selected workspace's saved MCP entries back in global agent configs."""
-    if previous_workspace != state_workspace_key(state) and not is_dry_run():
+    """Put the selected workspace's saved MCP entries back in global agent configs.
+
+    Also runs when an earlier ``ug configure --global`` switched workspace without doing so.
+    """
+    if machine_wide_only():
+        # Those entries live in per-user agent settings; `_purge_after_workspace_switch` defers them.
+        return
+    if is_dry_run():
+        return
+    if previous_workspace != state_workspace_key(state) or user_mcp_reconcile_pending():
         # Managed reconciliation updates the persisted state, not the configure snapshot.
         # Its freshly delivered names must take precedence over saved user selections.
         restore_workspace_mcp_servers(load_state(), set(MCP_CLIENTS))
+        set_user_mcp_reconcile_pending(False)
 
 
 def _record_unmanaged_configured_agents(state: dict, tools: list[str]) -> dict:
@@ -1303,7 +1337,12 @@ def _configure_workspace_command(
                 "configuration; its admin chooses the models."
             )
         refuse_user_scope_over_managed_files(managed_tools)
+        managed_tools = _machine_wide_tools(managed_tools)
+        if not managed_tools:
+            # The workspace enables only agents with per-user settings: nothing to write.
+            return 0
         configured_tools: list[str] = []
+        failed_tools: list[str] = []
         for tool_name in managed_tools:
             resolved = resolve_state(managed, state, tool_name)
             parent_schema = (
@@ -1341,6 +1380,8 @@ def _configure_workspace_command(
                         from ucode.agents.desktop.setup import configure_claude_desktop
 
                         configure_claude_desktop(configured, parent_schema=parent_schema)
+                else:
+                    failed_tools.append(tool_name)
         if not configured_tools:
             raise RuntimeError(
                 "None of the coding agents enabled by your workspace configuration "
@@ -1359,10 +1400,13 @@ def _configure_workspace_command(
                     state, managed_mcp_servers=resolved_mcps, sync_cowork=skills_configured
                 )
         _summarize_managed_config(managed, configured_tools, registered_mcps)
+        _fail_machine_wide_run(failed_tools)
         return 0
 
     available_on_workspace: list[str] = []
-    tools_to_check = selected_tools or list(TOOL_SPECS)
+    tools_to_check = selected_tools or (
+        list(MACHINE_WIDE_TOOLS) if machine_wide_only() else list(TOOL_SPECS)
+    )
     for tool_name in tools_to_check:
         with spinner(f"Checking {TOOL_SPECS[tool_name]['display']} availability..."):
             if check_gateway_endpoint(state, tool_name):
@@ -1465,7 +1509,22 @@ def _configure_workspace_command(
     )
     if offer_optional_setup and not is_dry_run():
         _configure_optional_setup(state, picked)
+    _fail_machine_wide_run([tool_name for tool_name in picked if tool_name not in configured_set])
     return 0
+
+
+def _fail_machine_wide_run(failed_tools: list[str]) -> None:
+    """Fail ``ug configure --global`` once every agent and the MCP/skills setup have run.
+
+    The default run keeps warning and continuing. Machine provisioning runs ``--global`` from
+    scripts, which need a nonzero exit when an agent was not configured.
+    """
+    if not failed_tools or not machine_wide_only():
+        return
+    names = ", ".join(TOOL_SPECS[tool]["display"] for tool in failed_tools)
+    raise RuntimeError(
+        f"`ug configure --global` could not configure {names}; see the warnings above."
+    )
 
 
 def _agent_label(tool: str) -> str:
@@ -3466,7 +3525,16 @@ def _configure_managed_skills(managed: dict | None) -> bool:
     ``.agents/skills`` (both agents) without the developer downloading it. ``managed`` is None when
     the current workspace has no config: the reconcile then removes any managed skills a prior
     workspace left behind. Best-effort: a failure warns and leaves the rest of configure intact.
+    Returns whether the skills were synced; ``ug configure --global`` skips them.
     """
+    if machine_wide_only():
+        # Skills are written to per-user folders such as ~/.claude/skills.
+        if (managed or {}).get("skills"):
+            print_note(
+                "Skipped your workspace's skills: `ug configure --global` writes only machine-wide "
+                "settings, and skills are per-user."
+            )
+        return False
     try:
         written, removed = reconcile_managed_skills(managed or {})
     except (RuntimeError, OSError) as exc:
@@ -4871,10 +4939,8 @@ def configure(
         bool,
         typer.Option(
             "--global",
-            help="Write machine-wide Claude Code/Codex settings (requires administrator rights). "
-            "Skip user-level Claude Desktop configuration and the Claude Code connector plugin "
-            "for this invocation. "
-            "The CLI-agent scope is saved for later commands.",
+            help="Write only the machine-wide Claude Code and Codex managed settings, with sudo, "
+            "and no per-user settings. Without --global or --user, both are written.",
         ),
     ] = False,
     user_scope: Annotated[
@@ -4907,7 +4973,16 @@ def configure(
             raise RuntimeError("Use either --global or --user, not both.")
         scope = "user" if user_scope else "global"
         set_config_scope(scope)
-        set_machine_wide_only(global_scope)
+        if global_scope:
+            _check_machine_wide_only_request(
+                mcp=mcp, enable_databricks_ai_tools=enable_databricks_ai_tools
+            )
+            set_machine_wide_only(True)
+            if agent is None or agents is None:
+                agent, agents = _drop_per_user_agents(agent, agents)
+                if agent is None and agents == "":
+                    # Every requested agent has only per-user settings: nothing to write.
+                    return
         claude_agent.request_explicit_configure()
         request_explicit_managed_writes()
         codex_agent.request_explicit_configure()
@@ -5044,8 +5119,11 @@ def configure(
         else:
             # Tool binaries are installed after the user picks which agents
             # they want, in configure_workspace_command.
+            # MCP servers, skills, and plugins are per-user, so `--global` doesn't offer them.
             combined_optional_setup = (
-                not flag_driven_workspace and enable_databricks_ai_tools is None
+                not flag_driven_workspace
+                and enable_databricks_ai_tools is None
+                and not machine_wide_only()
             )
             if combined_optional_setup:
                 skip_kwargs["offer_optional_setup"] = True
@@ -5059,7 +5137,7 @@ def configure(
             # Only the no-agent, no-workspace path is truly interactive (the user
             # picked agents/workspace via prompts); that's where we offer the MCP
             # step below. Flag-driven runs stay scriptable.
-            fully_interactive = not flag_driven_workspace
+            fully_interactive = not flag_driven_workspace and not machine_wide_only()
         if mcp is not None:
             # The workspace + agents were just configured above, so the current
             # workspace state now lists the agents whose MCP configs we should
@@ -5104,6 +5182,114 @@ def configure(
         raise typer.Exit(130) from None
     finally:
         set_machine_wide_only(False)
+
+
+# Only these agents have machine-wide settings; every other agent is configured per user.
+MACHINE_WIDE_TOOLS = ("claude", "codex")
+
+
+def _check_machine_wide_only_request(
+    *,
+    mcp: str | None,
+    enable_databricks_ai_tools: bool | None,
+) -> None:
+    """Reject a ``ug configure --global`` request that would need per-user settings."""
+    if managed_settings_skipped():
+        raise RuntimeError(
+            f"`ug configure --global` writes machine-wide settings, which {SKIP_OS_SETTINGS_ENV} "
+            f"turns off. Unset {SKIP_OS_SETTINGS_ENV}, or use `ug configure --user`."
+        )
+    if current_os() not in MANAGED_FILES_SUPPORTED_OSES:
+        raise RuntimeError(
+            "`ug configure --global` isn't supported on this platform: it has no machine-wide "
+            "Claude Code or Codex settings. Run `ug configure` without --global."
+        )
+    _require_shared_installation()
+    if mcp is not None:
+        raise RuntimeError(
+            "--mcp registers MCP servers in per-user settings, so it can't be combined with "
+            "--global. Run `ug mcp add` separately."
+        )
+    if enable_databricks_ai_tools:
+        raise RuntimeError(
+            "Databricks AI Tools install into per-user settings, so "
+            "--enable-databricks-ai-tools can't be combined with --global."
+        )
+
+
+def _require_shared_installation() -> None:
+    """Reject ``ug configure --global`` when other users couldn't run this ug installation.
+
+    The machine-wide settings run ``ug`` (and some helpers, its Python) for every user, so an
+    installation in one user's home folder would leave everyone else's agents unable to authenticate.
+    """
+    ug = ug_binary()
+    if not os.path.isabs(ug):
+        raise RuntimeError(
+            "`ug configure --global` needs `ug` on PATH, since machine-wide settings run it by its "
+            "full path. Install ug where every user can run it, then rerun."
+        )
+    found = per_user_paths([ug, sys.executable])
+    if not found:
+        return
+    example = (
+        ""
+        if sys.platform == "win32"
+        else " For example, as root: `UV_TOOL_DIR=/usr/local/unity-gateway/tools "
+        "UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_INSTALL_DIR=/usr/local/unity-gateway/python "
+        "uv tool install git+https://github.com/databricks/unity-gateway` (see scripts/mdm)."
+    )
+    raise RuntimeError(
+        "`ug configure --global` writes settings every user's agents run, but this ug "
+        f"installation is in a user's home folder: {', '.join(found)}. Reinstall ug in a shared "
+        f"location every user can run, then rerun from that installation.{example}"
+    )
+
+
+# Agents ug configures only through per-user settings, by any name `--agent`/`--agents` accept.
+_PER_USER_AGENT_NAMES = {
+    *(name for name, tool in TOOL_ALIASES.items() if tool not in MACHINE_WIDE_TOOLS),
+    "cursor",
+    "vscode",
+}
+
+
+def _drop_per_user_agents(agent: str | None, agents: str | None) -> tuple[str | None, str | None]:
+    """Drop the agents that have only per-user settings from a ``ug configure --global`` request.
+
+    ``--global`` has nothing to write for them, so they are skipped with a note rather than failing
+    the run. Returns the remaining ``(agent, agents)``; ``(None, "")`` means none remain. Unknown
+    names are kept so the usual validation reports them.
+    """
+    if agent is not None:
+        requested = [agent]
+    elif agents is not None:
+        requested = agents.split(",")
+    else:
+        return None, None
+    names = [name.strip() for name in requested if name.strip()]
+    skipped = [name for name in names if name.lower() in _PER_USER_AGENT_NAMES]
+    if not skipped:
+        return agent, agents
+    print_note(
+        f"Skipped {', '.join(skipped)}: `ug configure --global` writes only machine-wide "
+        "settings, and only Claude Code and Codex have them."
+    )
+    kept = [name for name in names if name not in skipped]
+    if agent is not None:
+        return (agent, None) if kept else (None, "")
+    return None, ",".join(kept)
+
+
+def _machine_wide_tools(tools: list[str]) -> list[str]:
+    """``tools`` without the per-user-only agents during ``ug configure --global``."""
+    if not machine_wide_only():
+        return tools
+    skipped = [tool for tool in tools if tool not in MACHINE_WIDE_TOOLS]
+    if skipped:
+        names = ", ".join(TOOL_SPECS[tool]["display"] for tool in skipped)
+        print_note(f"Skipped {names}: `ug configure --global` writes only machine-wide settings.")
+    return [tool for tool in tools if tool in MACHINE_WIDE_TOOLS]
 
 
 @app.command("export", rich_help_panel="Manage")

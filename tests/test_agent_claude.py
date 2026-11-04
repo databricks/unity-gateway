@@ -1103,6 +1103,44 @@ class TestWriteToolConfigManagedSettings:
         assert "modelPicker" not in private_writes[0][1]
         assert "modelPicker" not in json.loads(managed_writes[0][1])
 
+    def test_global_flag_writes_only_managed_file(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        registered: list = []
+        monkeypatch.setattr(
+            claude, "_register_web_search_mcp", lambda *a, **kw: registered.append(a) or True
+        )
+        managed_files.set_machine_wide_only(True)
+        state = {"workspace": WS, "codex_models": ["databricks-gpt-5"]}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert private_writes == []
+        assert [p for p, _ in managed_writes] == [str(FAKE_MANAGED_PATH)]
+        managed = json.loads(managed_writes[0][1])
+        assert managed["env"]["ANTHROPIC_BASE_URL"]
+        # The per-user web_search MCP server is skipped, so native WebSearch isn't denied.
+        assert registered == []
+        assert "WebSearch" not in (managed.get("permissions") or {}).get("deny", [])
+        assert claude.configured_paths(state) == []
+
+    def test_global_flag_rejects_relay_and_missing_managed_file(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        managed_files.set_machine_wide_only(True)
+
+        with pytest.raises(RuntimeError, match="subscription relay"):
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": []}, None, provider="c.s.p", relayed=True
+            )
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        with pytest.raises(RuntimeError, match="no machine-wide Claude Code settings"):
+            claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-x")
+        assert private_writes == []
+        assert managed_writes == []
+
     @pytest.mark.parametrize("opt_out", ["env", "user_scope"])
     def test_skip_env_bypasses_managed_file(self, monkeypatch, opt_out):
         private_writes: list = []
@@ -4590,6 +4628,24 @@ class TestClaudeReconcileManagedMcp:
             captured.update(text=desired_text, tool=tool, owned_paths=owned_paths)
 
         monkeypatch.setattr(claude, "reconcile_managed_file", fake_reconcile)
+
+    @pytest.mark.parametrize("machine_wide_only", [False, True])
+    def test_denied_write_fails_only_a_global_run(self, monkeypatch, machine_wide_only):
+        # Without --global the caller falls back to user scope; `--global` has none, so it fails.
+        self._wire(monkeypatch, None, {})
+
+        def deny(*a, **k):
+            raise managed_files.ManagedFileWriteUnavailable("sudo denied")
+
+        monkeypatch.setattr(claude, "reconcile_managed_file", deny)
+        managed_files.set_machine_wide_only(machine_wide_only)
+        servers = {"system-ai-github": claude.managed_mcp_entry(GH_URL)}
+
+        if machine_wide_only:
+            with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="sudo denied"):
+                claude.reconcile_managed_mcp({}, servers)
+        else:
+            assert claude.reconcile_managed_mcp({}, servers) is False
 
     def test_writes_managed_mcp_servers_preserving_other_keys(self, monkeypatch):
         captured: dict = {}

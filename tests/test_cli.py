@@ -33,6 +33,9 @@ from ucode.managed_config import ManagedConfigResult, normalize_managed_config
 from ucode.smart_routing import config as smart_routing_config
 from ucode.state import save_state as real_save_state
 
+# Captured before the autouse conftest stub replaces it; the installation-location tests restore it.
+_REAL_REQUIRE_SHARED = cli_mod._require_shared_installation
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -6741,6 +6744,198 @@ class TestConfigureScopeFlags:
         mock_install.assert_not_called()
         mock_selected.assert_not_called()
 
+    def test_global_flag_is_machine_wide_only_for_the_run(self):
+        seen: list = []
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch(
+                "ucode.cli.configure_workspace_command",
+                side_effect=lambda **_kw: seen.append(managed_files.machine_wide_only()),
+            ),
+        ):
+            assert runner.invoke(app, [*self.ARGS, "--global"]).exit_code == 0
+            assert runner.invoke(app, self.ARGS).exit_code == 0
+        assert seen == [True, False]
+        assert managed_files.machine_wide_only() is False
+
+    @pytest.mark.parametrize(
+        ("extra", "expected"),
+        [
+            (["--agents", "claude,gemini,cursor"], ((), {"selected_tools": ["claude"]})),
+            (["--agents", "Gemini,vscode"], None),
+            (["--agent", "copilot"], None),
+            (["--agent", "codex"], (("codex",), {})),
+        ],
+    )
+    def test_global_flag_skips_per_user_agents(self, extra, expected):
+        args = ["configure", "--workspace", "https://first.databricks.com", "--global", *extra]
+        result, mock_cfg = self._configure(args=args)
+        output = " ".join(_strip_ansi(result.output).split())
+        assert result.exit_code == 0, output
+        if expected is None:
+            mock_cfg.assert_not_called()
+        else:
+            expected_args, expected_kwargs = expected
+            assert mock_cfg.call_args.args == expected_args
+            for key, value in expected_kwargs.items():
+                assert mock_cfg.call_args.kwargs[key] == value
+        assert ("writes only machine-wide settings" in output) == (extra[1] != "codex")
+
+    def test_global_flag_is_a_noop_when_managed_config_enables_only_per_user_agents(self):
+        managed_files.set_machine_wide_only(True)
+        with (
+            patch(
+                "ucode.cli._configure_shared_workspace_states",
+                return_value=[{"workspace": "https://first.databricks.com"}],
+            ),
+            patch("ucode.cli.save_state"),
+            patch("ucode.cli.refresh_managed_config", return_value=({"enabled": True}, None)),
+            patch("ucode.cli.managed_enabled_tools", return_value=["gemini"]),
+            patch("ucode.cli.configure_selected_tools") as mock_selected,
+            patch("ucode.cli._configure_managed_mcp_servers") as mock_mcp,
+        ):
+            assert (
+                cli_mod._configure_workspace_command(
+                    workspaces=[("https://first.databricks.com", None)]
+                )
+                == 0
+            )
+        mock_selected.assert_not_called()
+        mock_mcp.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("extra", "message"),
+        [
+            (["--mcp", "system.ai.slack"], "--mcp registers MCP servers in per-user settings"),
+            (["--enable-databricks-ai-tools"], "can't be combined with --global"),
+        ],
+    )
+    def test_global_flag_rejects_per_user_requests(self, extra, message):
+        args = ["configure", "--workspace", "https://first.databricks.com", "--global", *extra]
+        result, mock_cfg = self._configure(args=args)
+        assert result.exit_code == 1
+        assert message in " ".join(_strip_ansi(result.output).split())
+        mock_cfg.assert_not_called()
+        assert managed_files.machine_wide_only() is False
+
+    @pytest.mark.parametrize(
+        ("ug", "per_user", "message"),
+        [
+            ("/home/me/.local/bin/ug", ["/home/me/.local/bin/ug"], "in a user's home folder"),
+            ("ug", [], "needs `ug` on PATH"),
+        ],
+    )
+    def test_global_flag_rejects_a_per_user_installation(self, monkeypatch, ug, per_user, message):
+        monkeypatch.setattr(cli_mod, "_require_shared_installation", _REAL_REQUIRE_SHARED)
+        monkeypatch.setattr(cli_mod, "ug_binary", lambda: ug)
+        monkeypatch.setattr(cli_mod, "per_user_paths", lambda paths: per_user)
+        result, mock_cfg = self._configure(["--global"])
+        output = " ".join(_strip_ansi(result.output).split())
+        assert result.exit_code == 1, output
+        assert message in output
+        for path in per_user:
+            assert path in output
+        mock_cfg.assert_not_called()
+
+    def test_global_flag_accepts_a_shared_installation(self, monkeypatch):
+        monkeypatch.setattr(cli_mod, "_require_shared_installation", _REAL_REQUIRE_SHARED)
+        monkeypatch.setattr(cli_mod, "ug_binary", lambda: "/usr/local/bin/ug")
+        checked: list = []
+        monkeypatch.setattr(cli_mod, "per_user_paths", lambda paths: checked.extend(paths) or [])
+        result, mock_cfg = self._configure(["--global"])
+        assert result.exit_code == 0, result.output
+        assert checked == ["/usr/local/bin/ug", sys.executable]
+        mock_cfg.assert_called_once()
+
+    def test_default_run_allows_a_per_user_installation(self, monkeypatch):
+        monkeypatch.setattr(cli_mod, "_require_shared_installation", _REAL_REQUIRE_SHARED)
+        monkeypatch.setattr(cli_mod, "per_user_paths", lambda paths: list(paths))
+        result, mock_cfg = self._configure()
+        assert result.exit_code == 0, result.output
+        mock_cfg.assert_called_once()
+
+    def test_global_flag_rejects_skip_os_settings(self, monkeypatch):
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        result, mock_cfg = self._configure(["--global"])
+        assert result.exit_code == 1
+        assert "Unset UG_SKIP_OS_SETTINGS" in " ".join(_strip_ansi(result.output).split())
+        mock_cfg.assert_not_called()
+
+    @pytest.mark.parametrize("managed", [True, False], ids=["managed_config", "picker"])
+    def test_global_flag_fails_after_every_agent_and_mcp_setup(self, managed):
+        # An agent failing under --global must not stop the others or the MCP reconcile; the run
+        # fails at the end so provisioning scripts see a nonzero exit.
+        managed_files.set_machine_wide_only(True)
+        attempted: list = []
+
+        def configure(state, tools, **_kw):
+            attempted.extend(tools)
+            ok = [tool for tool in tools if tool != "claude"]
+            return {**state, "available_tools": ok, "last_configured_tools": ok}
+
+        with (
+            patch(
+                "ucode.cli._configure_shared_workspace_states",
+                return_value=[{"workspace": "https://first.databricks.com"}],
+            ),
+            patch("ucode.cli.save_state"),
+            patch(
+                "ucode.cli.refresh_managed_config",
+                return_value=({"enabled": True} if managed else None, None),
+            ),
+            patch("ucode.cli.managed_enabled_tools", return_value=["claude", "codex"]),
+            patch("ucode.cli.resolve_state", side_effect=lambda _m, state, _t: state),
+            patch("ucode.cli.check_gateway_endpoint", return_value=True),
+            patch("ucode.cli.install_tool_binary", return_value=True),
+            patch("ucode.cli.configure_selected_tools", side_effect=configure),
+            patch("ucode.cli._record_unmanaged_configured_agents", side_effect=lambda s, _t: s),
+            patch("ucode.cli._configure_managed_mcp_servers", return_value=[]) as mock_mcp,
+            patch("ucode.cli._summarize_managed_config"),
+        ):
+            with pytest.raises(RuntimeError, match="could not configure Claude Code"):
+                cli_mod._configure_workspace_command(
+                    selected_tools=None if managed else ["claude", "codex"],
+                    workspaces=[("https://first.databricks.com", None)],
+                )
+        assert attempted == ["claude", "codex"]
+        mock_mcp.assert_called_once()
+
+    def test_global_flag_skips_per_user_setup(self):
+        managed_files.set_machine_wide_only(True)
+        with (
+            patch(
+                "ucode.cli._configure_shared_workspace_states",
+                return_value=[{"workspace": "https://first.databricks.com"}],
+            ),
+            patch("ucode.cli.save_state"),
+            patch("ucode.cli.refresh_managed_config", return_value=(None, None)),
+            patch("ucode.cli.check_gateway_endpoint", return_value=True) as mock_check,
+            patch("ucode.cli.prompt_for_tools", return_value=["claude"]),
+            patch("ucode.cli.install_tool_binary"),
+            patch("ucode.cli._maybe_select_provider_service", side_effect=lambda _t, state: state),
+            patch(
+                "ucode.cli.configure_selected_tools",
+                side_effect=lambda state, tools, **_kw: {
+                    **state,
+                    "last_configured_tools": tools,
+                },
+            ),
+            patch("ucode.cli._configure_managed_mcp_servers"),
+            patch("ucode.cli.reconcile_managed_skills") as mock_skills,
+            patch("ucode.cli.restore_workspace_mcp_servers") as mock_restore,
+            patch("ucode.agents.desktop.setup._configure_desktop") as mock_desktop,
+            patch("ucode.agents.desktop.setup.configure_cowork") as mock_cowork,
+        ):
+            cli_mod._configure_workspace_command(
+                workspaces=[("https://first.databricks.com", None)]
+            )
+        # The picker offers only the agents with machine-wide settings.
+        assert sorted(call.args[1] for call in mock_check.call_args_list) == ["claude", "codex"]
+        mock_skills.assert_not_called()
+        mock_restore.assert_not_called()
+        mock_desktop.assert_not_called()
+        mock_cowork.assert_not_called()
+
     def test_flags_are_mutually_exclusive(self):
         result, mock_cfg = self._configure(["--global", "--user"])
         assert result.exit_code == 1
@@ -7441,10 +7636,11 @@ class TestConfigureSharedStateMcpCleanup:
         cli_mod._restore_mcp_after_workspace_switch(source, switched)
         assert changes == [([managed], [], ["claude"]), ([], [selected], ["claude"])]
 
+    @pytest.mark.parametrize("via_global", [False, True])
     @pytest.mark.parametrize("same_name", [False, True])
     @pytest.mark.parametrize("same_host", [False, True])
     def test_explicit_configure_switch_restores_saved_mcp_entries(
-        self, monkeypatch, same_name, same_host
+        self, monkeypatch, same_name, same_host, via_global
     ):
         from ucode import mcp
         from ucode import state as state_mod
@@ -7508,9 +7704,20 @@ class TestConfigureSharedStateMcpCleanup:
         )
         actual["a-tools"] = {"url": a_entry["url"]}
 
+        if via_global:
+            # `--global` switches to B without touching per-user entries; the next configure of B
+            # without it sees no switch but still owes the purge and restore.
+            managed_files.set_machine_wide_only(True)
+            cli_mod._configure_workspace_command(
+                selected_tools=["codex"], workspaces=[(b_key, None)]
+            )
+            managed_files.set_machine_wide_only(False)
+            assert actual == {"a-tools": {"url": a_entry["url"]}}
+            assert state_mod.user_mcp_reconcile_pending() is True
         cli_mod._configure_workspace_command(selected_tools=["codex"], workspaces=[(b_key, None)])
         assert actual == {b_entry["name"]: {"url": b_entry["url"]}}
         assert state_mod.current_workspace_key(state_mod.load_full_state()) == b_key
+        assert state_mod.user_mcp_reconcile_pending() is False
 
         cli_mod._configure_workspace_command(selected_tools=["codex"], workspaces=[(a_key, None)])
         assert actual == {"a-tools": {"url": a_entry["url"]}}

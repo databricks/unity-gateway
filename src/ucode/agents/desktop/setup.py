@@ -30,8 +30,9 @@ def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -
     if sys.platform not in ("darwin", "win32", "linux"):
         return
     if machine_wide_only():
+        # Desktop profiles live in the user's own Claude-3p configLibrary.
         print_note(
-            "Skipped user-level Claude Desktop setup under --global; MDM provisioning is separate."
+            "Skipped Claude Desktop: `ug configure --global` writes only machine-wide settings."
         )
         return
     if is_dry_run():
@@ -64,6 +65,7 @@ def configure_claude_cowork(state: dict, mcp_servers: list[dict]) -> None:
     if sys.platform not in ("darwin", "win32", "linux"):
         return
     if machine_wide_only():
+        # The Cowork plugin is installed for the user's own Claude account.
         return
     if is_dry_run():
         print_note("Would configure Claude Cowork workspace skills and MCP servers.")

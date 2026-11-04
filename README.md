@@ -161,17 +161,30 @@ ug configure --profile DEFAULT --agents claude,codex
 ug configure --user
 ```
 
-`--global` (the default) writes the machine-wide Claude Code and Codex managed settings with sudo,
-with or without a terminal: run headless as root (or with passwordless sudo), since a write that
-can't be authorized fails the command.
+By default, `ug configure` writes both the per-user settings and the machine-wide Claude Code and
+Codex managed settings with sudo, with or without a terminal: run headless as root (or with
+passwordless sudo), since a write that can't be authorized fails the command.
+`--global` writes only the machine-wide managed settings and leaves every per-user setting alone:
+`~/.claude/ucode-settings.json`, `~/.codex/ucode.config.toml` and `~/.codex/config.toml`, user MCP
+servers, skills, Databricks AI Tools, Claude Desktop, and Cowork. Only Claude Code and Codex
+(0.134.0 or newer) have machine-wide settings; other agents are skipped with a note, so a run that
+names only them does nothing. It fails for `--mcp`, `--enable-databricks-ai-tools`, a subscription
+relay, and `UG_SKIP_OS_SETTINGS`. It also fails when `ug` or its Python is in a user's home folder
+(checked through symlinks), since every user's agents run them: install ug in a shared location
+first, as `scripts/mdm/macos-provision.sh` does with `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR`, and
+`UV_PYTHON_INSTALL_DIR`. Workspace MCP servers that only user settings can hold, the
+web_search MCP server, and a static Codex model list are skipped with a warning. ug still saves its
+own state in `~/.ucode` and your Databricks login. Only that run is limited: each user's first
+launch writes their per-user settings as usual.
 `--user` skips them, like `UG_SKIP_OS_SETTINGS`, and needs no sudo; use it when you launch through
 `ug`. `UG_SKIP_OS_SETTINGS=1` neither writes nor checks the OS-managed files: ug trusts whatever is
 there and the agents apply their native precedence. Configure fails while a managed file for the agent exists, since managed settings take
 precedence; later launches use whatever files are present.
 The choice is saved for launches after a successful configure; `ug configure` without `--user`
-and `ug revert` return to `--global`.
+and `ug revert` return to the default, which writes both.
 `--user` also fails for a workspace that publishes a managed config, which must be installed
-machine-wide; use `--global` for it.
+machine-wide: run `ug configure` without `--user`, or ask your administrator to run
+`ug configure --global`.
 
 For Claude Desktop, default `ug configure` and `--user` both write only the user's
 3P JSON profile, generated marketplace, and native Cowork registration/cache. They leave
