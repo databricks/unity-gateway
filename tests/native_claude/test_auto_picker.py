@@ -150,6 +150,8 @@ export const register = (on, options) => {
                 "native concrete choice disables Auto",
                 timeout=15,
             )
+            tui.submit("/auto-probe")
+            tui.wait_for(lambda text: '"recipe":"DISABLED_AUTO"' in text, "popup concrete recipe")
             if session_only:
                 tui.submit("/model haiku")
                 tui.wait_for(
