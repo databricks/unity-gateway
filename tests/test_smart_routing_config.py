@@ -211,7 +211,7 @@ def test_known_version(selector, expected):
 
 @pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
 @pytest.mark.parametrize("selector", [None, "", "   ", "unsupported_version"])
-def test_enabled_version_selects_subagent_orch_v0_over_legacy_flags(agent, selector):
+def test_enabled_version_selects_claude_only_over_legacy_flags(agent, selector):
     inherited = {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
@@ -224,8 +224,11 @@ def test_enabled_version_selects_subagent_orch_v0_over_legacy_flags(agent, selec
 
     previous = config.apply_enabled_version(applied, agent=agent)
 
+    expected = _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0]
+    if agent == AGENT_CODEX:
+        expected = dict.fromkeys(expected, "0")
     assert applied == {
-        **_EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0],
+        **expected,
         "INHERITED_SETTING": "preserved",
     }
     v2.restore_smart_routing_env(previous, applied)
@@ -243,6 +246,32 @@ def test_enabled_version_keeps_a_known_version(agent, version):
     assert applied == config.resolve_environment(inherited, agent=agent)
     v2.restore_smart_routing_env(previous, applied)
     assert applied == inherited
+
+
+@pytest.mark.parametrize(
+    ("selector", "routes"),
+    [
+        (None, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
+        ("unsupported_version", {AGENT_CLAUDE: True, AGENT_CODEX: False}),
+        (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
+        *(
+            (version, {AGENT_CLAUDE: True, AGENT_CODEX: True})
+            for version in sorted(set(config._VERSIONS) - {config.SUBAGENT_ORCH_V0_CLAUDE_ONLY})
+        ),
+    ],
+)
+def test_enabled_version_routes(selector, routes):
+    env = {ENABLE_SMART_ROUTING_ENV_VAR: "1", ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}
+    if selector is not None:
+        env[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = selector
+    before = env.copy()
+
+    for agent, expected in routes.items():
+        assert config.enabled_version_routes(env, agent=agent) is expected
+        applied = env.copy()
+        config.apply_enabled_version(applied, agent=agent)
+        assert v2.smart_routing_enabled(applied, default=False, agent=agent) is expected
+    assert env == before
 
 
 @pytest.mark.parametrize("agent, enabled", [(AGENT_CLAUDE, "1"), (AGENT_CODEX, "0")])
@@ -353,3 +382,10 @@ def test_describe_routing_reports_each_version_over_shell_flags(version, harness
 )
 def test_describe_routing_without_a_known_version_reports_shell_flags(source, harnesses):
     assert v2.describe_routing(source) == v2.RoutingDescription(harnesses=harnesses)
+
+
+def test_enabled_version_routes_ignores_uncovered_agent():
+    env = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_V0_CLAUDE_ONLY}
+
+    assert config.enabled_version_routes(env, agent="opencode") is False
+    assert config.enabled_version_routes({}, agent="opencode") is False

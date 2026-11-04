@@ -1,5 +1,13 @@
 # Integration tests
 
+`../test_configure_managed_writes.py` covers `ug revert` output after Claude/Codex managed-file
+deletion fails, its nonzero exit, and retention of the file, backup, and ug state. These component
+tests simulate privileged deletion failure; native OS permissions and live sudo are not exercised.
+The same component suite covers an existing file without a UG backup record, including one that
+blocks Claude relay setup: revert names the retained file and advises manual cleanup, with existing
+exit status and state cleanup preserved. Absent/unsupported paths, inspection failures, and tracked
+baseline restoration are covered separately. These checks do not exercise a live relay MPS.
+
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls
 still routing waiting for a later reply, distinct
@@ -825,8 +833,9 @@ failures leave controls unchanged. Permission failures request native approval;
 full-disk errors retain their own diagnostic. These checks do not simulate a native approval.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
-With orchestration enabled through legacy flags, a preset, or the managed default, both routed
-Codex children must show `[orchestrator on]` in their own subagent banner. Claude shows the selected
+With orchestration enabled through legacy flags or a preset, both routed Codex children must show
+`[orchestrator on]` in their own subagent banner. Codex's managed default is opted out
+(`subagent_orch_v0_claude_only`) and has no skill-toggle case. Claude shows the selected
 model and rationale from each child's audited decision.
 Their off-phase child is an explicit user-requested delegation;
 these journeys do not establish automatic orchestration behavior. Root-only
@@ -837,9 +846,12 @@ observer hook alongside UG's hook and normal TUI trust. Other hook combinations
 remain uncovered.
 
 Preset parameterization augments only routing hooks, skill toggles, and first-prompt routing;
-their original legacy-env cases remain, and the skill toggles add a managed-default case in
-which `smart_routing.enabled` alone routes subagents with Smart Router Orchestrator and no
-first-prompt wrapper starts. The skill toggles' legacy-env cases load the `_off` copy of the
+their original legacy-env cases remain, and the Claude skill toggles add a managed-default case in
+which `smart_routing.enabled` alone routes Claude subagents with Smart Router Orchestrator and no
+first-prompt wrapper starts. Codex's managed default is covered by its launch-only opt-out test,
+`test_smart_router_managed_default_leaves_codex_unrouted_at_launch`, which requires the
+workspace smart-routing warning ("enabled for Codex in this workspace, but it is currently
+only supported for Claude Code") in the launch output and neither Smart Router skill installed. The skill toggles' legacy-env cases load the `_off` copy of the
 workspace's routing fixture (`claude_smart_routing_off.json`, `codex_smart_routing_off.json`, or
 `codex_smart_routing_ca_off.json`): the same models without `smart_routing`, because managed
 smart routing overrides individual routing env vars.
@@ -884,8 +896,8 @@ MPS CUJs select the existing services already used by e2e:
   requires `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) so the relayed
   launch runs headless instead of opening a browser login.
 - Codex: `main.ucode.ci_openai_mps`, using its allowed `gpt-5-nano` model.
-- Antigravity CLI (Gemini Enterprise): `main.ucode.ci-gemini-mps`, using its `gemini-4-argon`
-  and `gemini-3.8-flash` targets (`--antigravity-provider`, `--antigravity-provider-models`).
+- Antigravity CLI (Gemini Enterprise): `main.ucode.ci-gemini-mps`, using its `gemini-3.8-flash`
+  target (`--antigravity-provider`, `--antigravity-provider-models`).
 - Codex and Copilot (Azure OpenAI): `main.ucode.ci_azure_openai_mps`, using its `gpt-5-nano` model.
 - Codex and Copilot (Microsoft Foundry): `main.ucode.ci_foundry_mps`, using its `gpt-5-nano` model.
 
@@ -1363,9 +1375,8 @@ The smart-routing banner journeys inject static Claude and Codex model lists wit
 `smart_routing` enabled in the agent config, run `ug configure`, then launch the real TUI with
 `first_prompt_and_subagent_no_orch_v0` and submit one small file task, asserting the
 "Using Unity Gateway Smart Router." banner naming the selected model, a routed answer completing
-the file task, and normal exit. The managed default alone routes only subagents, with the
-orchestrator; the
-managed-default skill-toggle cases cover it.
+the file task, and normal exit. The managed default alone routes only Claude subagents, with the
+orchestrator; Codex's managed default is opted out and covered by its launch-only test.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
 these same-repository secrets rather than storing a long-lived bearer:

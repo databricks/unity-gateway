@@ -17,7 +17,7 @@ import threading
 import time
 
 import pyte
-from wcwidth import wcwidth
+from pyte.screens import wcwidth  # wcwidth is only a pyte dependency
 
 from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
 
@@ -85,27 +85,26 @@ class TerminalScreen(pyte.Screen):
         super().__init__(columns, lines)
         self.send = send
 
-    @property
-    def display(self):
-        rendered = []
-        for y in range(self.lines):
-            row = self.buffer[y]
-            cells = []
-            x = 0
-            while x < self.columns:
-                # Partial wide-character edits can leave an empty stub in pyte 0.8.2.
-                # It occupies a blank column even when its leading character is gone.
-                char = row[x].data or " "
-                assert sum(wcwidth(c) for c in char[1:]) == 0
-                cells.append(char)
-                x += 2 if wcwidth(char[0]) == 2 else 1
-            rendered.append("".join(cells))
-        return rendered
-
     def write_process_input(self, data):
         # Real TUIs query cursor position/device attributes during startup.
         # pyte replies according to the terminal state it has actually rendered.
         self.send(data)
+
+    @property
+    def display(self):
+        # pyte's own display indexes char[0], which raises on the empty cell a stray zero-width
+        # character can leave behind; render that cell as a space instead.
+        def render(line):
+            skip_stub = False
+            for x in range(self.columns):
+                if skip_stub:
+                    skip_stub = False
+                    continue
+                char = line[x].data or " "
+                skip_stub = wcwidth(char[0]) == 2
+                yield char
+
+        return ["".join(render(self.buffer[y])) for y in range(self.lines)]
 
 
 class PosixPty:
