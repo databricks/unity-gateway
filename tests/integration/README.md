@@ -1,5 +1,9 @@
 # Integration tests
 
+`../test_skills_download.py` covers shared-source refresh across project installs
+using temporary files and controlled fetches. It checks freshness, repair, collisions,
+attribution, and failure recovery; live skill API latency remains unmeasured.
+
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls
 still routing waiting for a later reply, distinct

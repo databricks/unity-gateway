@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+`test_skills_download.py` verifies that a launch refresh fetches shared skill
+metadata and bundles once per sweep across project installations, while retaining
+per-install freshness, missing-directory repair, collision protection, attribution,
+and retries in the next sweep after a failed fetch. These are component checks.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered

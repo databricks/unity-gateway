@@ -1309,6 +1309,32 @@ class TestEligibleLaunchRecords:
 
 
 class TestRefsNeedingRefresh:
+    def test_shared_metadata_keeps_each_installs_freshness_and_missing_dirs(
+        self, tmp_path, monkeypatch
+    ):
+        records = []
+        for name, stored in (
+            ("stale", "2026-01-01T00:00:00Z"),
+            ("current", "2026-02-01T00:00:00Z"),
+            ("missing", "2026-02-01T00:00:00Z"),
+        ):
+            directory = tmp_path / name
+            if name != "missing":
+                directory.mkdir()
+            records.append(
+                {"fqn": "main.default.triage", "uc_update_time": stored, "dirs": [str(directory)]}
+            )
+        calls = []
+
+        def get(workspace, token, fqn):
+            calls.append((workspace, token, fqn))
+            return _skill("triage", "2026-02-01T00:00:00Z")
+
+        monkeypatch.setattr(sd, "get_skill", get)
+        pairs = sd._refs_needing_refresh(WS, "token", records, time.monotonic() + 30)
+        assert [record for record, _ in pairs] == [records[0], records[2]]
+        assert calls == [(WS, "token", "main.default.triage")]
+
     def test_flags_only_newer_or_unversioned(self, monkeypatch):
         records = [
             {"fqn": "main.default.newer", "uc_update_time": "2026-01-01T00:00:00Z"},
@@ -1364,6 +1390,43 @@ class TestRefsNeedingRefresh:
 
 
 class TestUpdateStaleSkills:
+    @pytest.mark.parametrize("failed", [False, True])
+    def test_shared_bundle_preserves_per_base_collisions_and_attribution(
+        self, tmp_path, monkeypatch, failed
+    ):
+        bases = [tmp_path / name for name in ("collision", "first", "second")]
+        for base in bases:
+            base.mkdir()
+        user_skill = bases[0] / ".claude/skills/renamed/SKILL.md"
+        user_skill.parent.mkdir(parents=True)
+        user_skill.write_bytes(b"user-authored")
+        calls = []
+
+        def fetch(workspace, token, catalog, schema, name):
+            calls.append((workspace, token, catalog, schema, name))
+            return (None, "unavailable") if failed else ({"SKILL.md": b"updated"}, None)
+
+        monkeypatch.setattr(sd, "fetch_skill_bundle", fetch)
+        renamed = ref("triage", "renamed")
+        pairs = [({"base": str(base), "bundle_name": "triage"}, renamed) for base in bases]
+        updated = sd._update_stale_skills(WS, "token", pairs, time.monotonic() + 30)
+        assert updated == (0 if failed else 2)
+        assert user_skill.read_bytes() == b"user-authored"
+        assert calls == [(WS, "token", "main", "default", "triage")]
+        if failed:
+            assert skills_state.list_downloaded() == []
+            assert all(not (base / ".claude/skills/renamed").exists() for base in bases[1:])
+            failed = False
+            assert sd._update_stale_skills(WS, "token", pairs, time.monotonic() + 30) == 2
+            assert len(calls) == 2
+        else:
+            assert {record["base"] for record in skills_state.list_downloaded()} == {
+                str(base) for base in bases[1:]
+            }
+            for base in bases[1:]:
+                for root in skill_dir_roots(str(base)):
+                    assert (root / "renamed/SKILL.md").read_bytes() == b"updated"
+
     def test_overwrites_both_roots_and_refreshes_record(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
         monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: home))
