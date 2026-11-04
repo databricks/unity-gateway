@@ -5,6 +5,7 @@ import os
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -42,6 +43,7 @@ def system_source(tmp_path, monkeypatch, request):
         )
         if platform == "linux":
             script = script.replace("/usr/bin/stat -f %u", "stat -c %u")
+        script = script.replace("root_uid=0", f"root_uid={os.getuid()}")
         script = script.replace('\ncase "$mode" in', '\nchown() { :; }\ncase "$mode" in')
         script = script.replace(
             '\ncase "$mode" in',
@@ -300,6 +302,33 @@ def test_ordinary_configure_needs_no_root_write_permission(system_source, monkey
     )
     assert not system_source.exists()
     assert cowork.revert_cowork()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell worker")
+@pytest.mark.parametrize("system_source", ["macos"], indirect=True)
+def test_macos_publication_requires_root_without_starting_sudo(system_source, monkeypatch):
+    monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
+    worker = Mock(side_effect=AssertionError("MDM publication must not start sudo"))
+    monkeypatch.setattr(managed_files, "_session_worker", worker)
+    with pytest.raises(RuntimeError, match="as root"):
+        managed_files.replace_privileged_bundle(system_source, None)
+    worker.assert_not_called()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell worker")
+@pytest.mark.parametrize("system_source", ["macos"], indirect=True)
+def test_macos_worker_rejects_non_root_bundle_requests(system_source, monkeypatch):
+    command = managed_files._sudo_replace_command
+
+    def non_root_command(mode):
+        argv = command(mode)
+        argv[1] = f"SUDO_UID={os.getuid() + 1}"
+        return argv
+
+    monkeypatch.setattr(managed_files, "_sudo_replace_command", non_root_command)
+    with pytest.raises(RuntimeError, match="requires a root caller"):
+        managed_files.replace_privileged_bundle(system_source, None)
+    assert not system_source.exists()
 
 
 @pytest.mark.parametrize("opt_out", ["default", "user", "environment"])

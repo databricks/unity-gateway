@@ -225,8 +225,8 @@ def replace_privileged_bundle(path: Path, source: Path | None) -> None:
         return
     if current_os() is not OS.MACOS:
         raise RuntimeError("System Desktop marketplaces require macOS or Windows.")
-    if _sudo_may_prompt():
-        _print_managed_write_permission("Claude Desktop")
+    if not system_cross_os.is_admin():
+        raise RuntimeError("Run Desktop MDM publication as root from your MDM script.")
     try:
         with managed_write_session():
             _session_worker().replace(

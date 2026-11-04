@@ -262,6 +262,11 @@ remove_one() (
 
 replace_bundle() (
     set -eu
+    root_uid=0
+    if [ "${SUDO_UID:-}" != "$root_uid" ]; then
+        printf '%s\n' "Desktop MDM publication requires a root caller" >&2
+        exit 1
+    fi
     source_path=$1
     target=$2
     if [ "$platform:$target" != "macos:/Library/Application Support/UnityGateway/claude-cowork-marketplace" ]; then

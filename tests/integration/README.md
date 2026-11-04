@@ -123,12 +123,12 @@ refresh, content versions, downloaded workspace skills/assets, previous-account 
 and retained user source/state after refresh failures. Explicit global skips ordinary
 Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
 The shared privileged directory writer has separate copy/retry, whole-directory
-replacement, target validation, and macOS linked/special-entry rejection checks for MDM.
+replacement, target validation, and macOS root-caller enforcement and linked/special-entry rejection checks for MDM.
 Temporary filesystem destinations are real; external Claude registry/cache operations
 and platform privilege boundaries are simulated. These checks do not establish native
 Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
 `test_desktop_configure_cli.py` also checks explicit-global selection versus default and
-`--user`, reset after the command, and skipping user Desktop profile/plugin writers.
+`--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.web_search and allow

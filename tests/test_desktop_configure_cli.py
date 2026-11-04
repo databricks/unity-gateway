@@ -39,8 +39,10 @@ def test_global_skips_user_desktop_setup(monkeypatch):
 
     monkeypatch.setattr(desktop_setup, "write_claude_desktop_profile", unexpected_write)
     monkeypatch.setattr(desktop_setup, "configure_cowork", unexpected_write)
+    monkeypatch.setattr(desktop_setup, "configure_code", unexpected_write)
     desktop_setup.configure_claude_desktop({})
     desktop_setup.configure_claude_cowork({}, [])
+    desktop_setup.configure_claude_code_plugin([])
 
 
 @pytest.fixture

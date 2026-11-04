@@ -189,7 +189,8 @@ generated user marketplace, including manual edits. Its writer retains staged re
 and rollback. Native refresh failures retain the source/state for retry/revert. Ordinary
 revert removes user source/registration only. Explicit MCP/skill changes resync this source;
 launches do not. The shared privileged bundle writer remains for MDM publication; its
-macOS worker validates caller ownership and rejects links/special files before copying.
+macOS worker accepts only root callers, validates root ownership, and rejects links/special
+files before copying. Unprivileged callers cannot elevate to publish a Desktop marketplace.
 Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
 custom registration names and full proxy URLs are preserved. Its name and display name
 are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old
@@ -203,7 +204,8 @@ marketplace's `extraKnownMarketplaces` entry and its `enabledPlugins` entry.
 This plugin contains only the generated `unity-gateway-connectors` skill with Code-specific
 authentication guidance and native MCP registration names. Existing MCP registrations and
 downloaded skill files stay in their native locations; Cowork hooks are not installed in Code.
-Code setup is independent of Cowork account discovery and best-effort. Model-configured Claude and
+Code setup is independent of Cowork account discovery and best-effort; explicit `--global`
+skips this user-scope plugin too. Model-configured Claude and
 explicit Claude MCP clients are eligible. Managed configure refreshes Code after successful
 MCP reconciliation even if skill downloads fail; Cowork keeps its existing model and skill
 requirements. MCP updates refresh eligible plugins, and revert removes both while preserving

@@ -46,6 +46,8 @@ def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -
 def configure_claude_code_plugin(mcp_servers: list[dict]) -> None:
     if sys.platform not in ("darwin", "win32", "linux"):
         return
+    if machine_wide_only():
+        return
     if is_dry_run():
         print_note("Would configure Claude Code connector guidance.")
         return
