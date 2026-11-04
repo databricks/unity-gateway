@@ -6,6 +6,8 @@ import json
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from ucode import config_io, skills_state
 from ucode.skills_state import SkillInstall
 
@@ -208,9 +210,12 @@ class TestReconciliation:
         assert all(not Path(path).exists() for i in (old, duplicate) for path in i.dirs)
         assert all(Path(path).exists() for i in (foreign, new) for path in i.dirs)
 
-    def test_unhashable_identity_keeps_directory_collision_behavior(self, tmp_path):
+    @pytest.mark.parametrize(
+        "invalid", [{"metastore_id": ["invalid"]}, {"base": None}, {"fqn": {}}]
+    )
+    def test_unhashable_identity_keeps_directory_collision_behavior(self, tmp_path, invalid):
         current = _install(tmp_path, "main.default.current", "shared")
-        malformed = {**skills_state._to_record(current), "metastore_id": ["invalid"]}
+        malformed = {**skills_state._to_record(current), **invalid}
         unrelated = {**malformed, "dirs": [str(tmp_path / "unrelated")]}
         skills_state._save([malformed, unrelated])
         _write_dirs(current)

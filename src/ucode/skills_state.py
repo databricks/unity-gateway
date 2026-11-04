@@ -157,6 +157,8 @@ def record_downloads(installs: list[SkillInstall]) -> None:
     by_dir: dict[str, set[int]] = {}
 
     def indexed_key(record: dict) -> tuple[str | None, str | None, str] | None:
+        if not isinstance(record.get("base", ""), str):
+            return None
         key = _record_key(record)
         # Malformed identities cannot match a typed install, but may still claim a directory.
         return key if all(part is None or isinstance(part, str) for part in key) else None
