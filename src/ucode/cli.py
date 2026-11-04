@@ -715,6 +715,8 @@ def configure_shared_state(
     #    auth + the AI Gateway, then discover the available models. ──
     if cli_custom_oauth:
         pass  # The dedicated profile was authenticated above.
+    elif machine_wide_only() and sys.platform == "darwin" and (tools is None or "claude" in tools):
+        get_databricks_token(workspace, profile, browser_login=False)
     elif use_pat:
         if not profile:
             raise RuntimeError(
@@ -5022,6 +5024,18 @@ def configure(
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
         if not mdm_desktop:
+            if global_scope and sys.platform == "darwin":
+                requested = [
+                    normalize_tool(name)
+                    for name in (agent or agents or "").split(",")
+                    if name.strip() and name.strip().lower() not in ("cursor", "vscode")
+                ]
+                if not (agent or agents) or "claude" in requested:
+                    from ucode.agents.desktop import mdm
+
+                    mdm._require_macos(administrator=True)
+                    if not dry_run:
+                        mdm.validate_cli_discovery()
             install_databricks_cli()
         if agent is not None and agents is not None:
             raise RuntimeError("Use either --agent or --agents, not both.")

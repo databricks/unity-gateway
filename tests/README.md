@@ -531,6 +531,10 @@ MDM compatibility cases cover unrestricted empty agent lists and feature-disable
 discovery. MCP/tracing helper checks keep explicit OAuth profiles independent of unrelated
 saved PAT mode while retaining saved PAT mode for the matching MCP profile. An untrusted CLI candidate
 is rejected by real path validation before any version discovery or subprocess call.
+A public `configure --global --agents claude --profile` regression checks that privileged
+CLI discovery is validated before installer probes and cached OAuth is used without
+forced login or browser recovery. It stops at the credential/discovery boundary;
+it does not establish a complete native MDM configuration.
 Managed-config responses use the API's agent list and pass through the real fetch gate
 and normalization; checks cover enum/name spellings, headers/tracing, omitted configs,
 and rejection when Claude is absent.

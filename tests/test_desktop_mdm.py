@@ -44,6 +44,7 @@ def device(system_source, monkeypatch, tmp_path):
     # These temporary directories belong to the test runner, not root. Validate ownership separately.
     monkeypatch.setattr(mdm, "_check_machine_path", lambda *a, **kw: None)
     monkeypatch.setattr(mdm, "_runtime", lambda: dict(RUNTIME))
+    monkeypatch.setattr(mdm, "validate_cli_discovery", lambda: None)
     activate = Mock()
     monkeypatch.setattr(mdm, "_activate_logged_in_user", activate)
     state = SimpleNamespace(
@@ -631,6 +632,31 @@ def test_cli_rejects_pat_profile_with_mdm_specific_error(monkeypatch):
     assert result.exit_code == 1
     assert "PAT/custom OAuth" in result.output
     configure.assert_not_called()
+
+
+def test_global_with_cached_oauth_does_not_force_browser_login(device, monkeypatch):
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
+    monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+    monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+    monkeypatch.setattr(cli, "_parse_profile_option", lambda value: [(WORKSPACE, value)])
+    events = []
+    monkeypatch.setattr(mdm, "validate_cli_discovery", lambda: events.append("validated"))
+    monkeypatch.setattr(cli, "install_databricks_cli", lambda: events.append("installed"))
+    login = Mock(side_effect=AssertionError("MDM must not start browser login"))
+    monkeypatch.setattr(cli, "run_databricks_login", login)
+    monkeypatch.setattr(cli, "ensure_databricks_auth", login)
+    token = Mock(side_effect=["cached-oauth", RuntimeError("stop before gateway discovery")])
+    monkeypatch.setattr(cli, "get_databricks_token", token)
+    result = CliRunner().invoke(
+        cli.app, ["configure", "--global", "--agents", "claude", "--profile", "CACHED"]
+    )
+    assert result.exit_code == 1
+    assert "stop before gateway discovery" in result.output
+    assert events == ["validated", "installed"]
+    assert token.call_args_list[0].args == (WORKSPACE, "CACHED")
+    assert token.call_args_list[0].kwargs == {"browser_login": False}
+    assert token.call_count == 2
+    login.assert_not_called()
 
 
 def test_cli_dispatches_mdm_without_normal_agent_configuration(monkeypatch):

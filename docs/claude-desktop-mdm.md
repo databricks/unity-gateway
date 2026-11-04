@@ -86,10 +86,10 @@ export PATH="/opt/unitygateway/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 UG obtains one provisioning credential and reuses it to read the workspace policy,
 discover models/connectors, and download skill bundles. Unattended scripts can supply
 the existing `DATABRICKS_BEARER` or `DATABRICKS_BEARER_COMMAND` mechanism using their
-secret broker. An interactive administrator can instead supply `--profile <name>`;
-normal Databricks CLI authentication applies. A headless MDM process needs a usable
-credential before this command. Provisioning never starts browser login and fails before
-publishing files if credentials are unavailable.
+secret broker. To use cached Databricks OAuth credentials, supply `--profile <name>`.
+A headless MDM process needs a usable credential before this command. Both `--global`
+and `--mdm-desktop` use existing credentials without forcing browser login and fail
+before publishing Desktop files if credentials are unavailable.
 
 An empty enabled-agent list leaves Claude unrestricted. With no managed config or a
 feature-disabled config API, provisioning uses model discovery without managed assets.
