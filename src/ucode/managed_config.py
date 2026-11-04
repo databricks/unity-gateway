@@ -46,6 +46,7 @@ from ucode.managed_files import (
     SKIP_OS_SETTINGS_ENV,
     UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
     current_os,
+    explicit_skip_requested,
     managed_file_fingerprint,
     managed_settings_skipped,
     update_workspace_policy,
@@ -818,7 +819,7 @@ def managed_launch_workspace(workspace: str | None) -> str | None:
     selected = normalize_workspace_url(workspace) if workspace else None
     if installed and selected and selected != installed:
         # UG_SKIP_OS_SETTINGS never writes the policy, so the switch must run without it.
-        without_skip = f" without {SKIP_OS_SETTINGS_ENV}" if managed_settings_skipped() else ""
+        without_skip = f" without {SKIP_OS_SETTINGS_ENV}" if explicit_skip_requested() else ""
         raise RuntimeError(
             f"This machine is managed for {installed}, but your selected workspace is {selected}. "
             f"Launch refused. Use `--workspace {installed}`, or ask your IT team or an administrator "
@@ -962,7 +963,7 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
         pending_config_hash = _policy_hash(workspace, raw or {})
         entry = config_io.read_json_safe(REFRESH_TS_PATH).get(normalize_workspace_url(workspace))
         if not isinstance(entry, dict) or entry.get("pending_config_hash") != pending_config_hash:
-            if managed_settings_skipped():
+            if explicit_skip_requested():
                 print_warning(
                     f"Your workspace policy changed, but {SKIP_OS_SETTINGS_ENV} is set, so the "
                     f"installed policy at {MANAGED_CONFIG_PATH} was not updated. Run `ug configure` "

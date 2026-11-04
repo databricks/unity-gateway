@@ -1108,6 +1108,88 @@ class TestManagedSettingsSkipped:
         assert result == "unsupported"
 
 
+class TestLaunchScope:
+    """Launches skip OS-managed files like ``UG_SKIP_OS_SETTINGS`` unless they opt back in."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        monkeypatch.delenv(managed_files.SKIP_OS_SETTINGS_ENV, raising=False)
+        monkeypatch.delenv(managed_files.LAUNCH_WRITE_OS_SETTINGS_ENV, raising=False)
+
+    def test_outside_a_launch_nothing_is_skipped(self):
+        assert managed_files.managed_settings_skipped() is False
+
+    def test_a_launch_skips_by_default_and_restores_on_exit(self):
+        with managed_files.launch_scope():
+            assert managed_files.managed_settings_skipped() is True
+            assert managed_files.explicit_skip_requested() is False
+            with managed_files.launch_scope():
+                assert managed_files.managed_settings_skipped() is True
+            assert managed_files.managed_settings_skipped() is True
+        assert managed_files.managed_settings_skipped() is False
+
+    def test_scope_restores_after_an_error(self):
+        with pytest.raises(RuntimeError), managed_files.launch_scope():
+            raise RuntimeError("boom")
+        assert managed_files.managed_settings_skipped() is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "Yes", "on", " on "])
+    def test_truthy_opt_in_restores_launch_writes(self, monkeypatch, value):
+        monkeypatch.setenv(managed_files.LAUNCH_WRITE_OS_SETTINGS_ENV, value)
+        with managed_files.launch_scope():
+            assert managed_files.managed_settings_skipped() is False
+
+    @pytest.mark.parametrize("value", ["0", "false", "off", "no", ""])
+    def test_falsey_opt_in_still_skips(self, monkeypatch, value):
+        monkeypatch.setenv(managed_files.LAUNCH_WRITE_OS_SETTINGS_ENV, value)
+        with managed_files.launch_scope():
+            assert managed_files.managed_settings_skipped() is True
+
+    def test_opt_in_alone_changes_nothing_outside_a_launch(self, monkeypatch):
+        monkeypatch.setenv(managed_files.LAUNCH_WRITE_OS_SETTINGS_ENV, "1")
+        assert managed_files.managed_settings_skipped() is False
+
+    def test_explicit_skip_wins_over_the_launch_opt_in(self, monkeypatch):
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        monkeypatch.setenv(managed_files.LAUNCH_WRITE_OS_SETTINGS_ENV, "1")
+        with managed_files.launch_scope():
+            assert managed_files.managed_settings_skipped() is True
+            assert managed_files.explicit_skip_requested() is True
+
+    def test_user_scope_wins_over_the_launch_opt_in(self, monkeypatch):
+        monkeypatch.setenv(managed_files.LAUNCH_WRITE_OS_SETTINGS_ENV, "1")
+        managed_files.set_config_scope("user")
+        with managed_files.launch_scope():
+            assert managed_files.managed_settings_skipped() is True
+
+    def test_a_launch_prevents_privileged_writes_without_the_opt_in(self, monkeypatch):
+        monkeypatch.setattr(managed_files, "managed_files_supported", _REAL_MANAGED_FILES_SUPPORTED)
+        monkeypatch.setattr(
+            managed_files, "_sudo_replace", lambda *args: pytest.fail("must not write")
+        )
+        with managed_files.launch_scope():
+            assert _REAL_MANAGED_FILES_SUPPORTED() is False
+            result = managed_files.reconcile_managed_file(
+                Path("/tmp/ucode-test/managed.json"),
+                '{"ucode": true}\n',
+                tool="claude",
+                display="Claude Code",
+                owned_paths=[["ucode"]],
+                parser=json.loads,
+            )
+        assert result == "unsupported"
+
+    def test_a_launch_cannot_write_the_workspace_policy(self, monkeypatch):
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        with (
+            managed_files.launch_scope(),
+            pytest.raises(managed_files.ManagedFileWriteUnavailable, match="skipped for this run"),
+        ):
+            managed_files.update_workspace_policy(
+                managed_files.UNITY_GATEWAY_MANAGED_SETTINGS_PATH, "{}", allow_sudo=True
+            )
+
+
 class TestWindowsManagedWrites:
     """Windows has no sudo: an elevated process writes Program Files directly, others can't."""
 

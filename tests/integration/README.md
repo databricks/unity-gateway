@@ -769,7 +769,7 @@ All user journeys are top-level tests. There is no separate regressions category
 ```text
 test_ug_configure_claude.py             # Databricks Hosted and Anthropic MPS
 test_ug_configure_codex.py              # Databricks Hosted and OpenAI MPS
-test_ug_claude_custom_oauth.py           # CLI custom-OAuth launch, profile, and managed helper
+test_ug_claude_custom_oauth.py           # CLI custom-OAuth launch, profile, and user-scope helper
 test_ug_codex_custom_oauth.py            # CLI custom-OAuth launch and profile
 test_ug_claude_headless.py              # script prompts, models, caller settings
 test_ug_claude_relayed.py               # relayed session: subscription + Databricks-hosted models
@@ -1215,7 +1215,8 @@ Claude settings (a launcher's full field set with neutral values, its own `model
 opus/sonnet/haiku defaults, OTEL pointed at the CUJ workspace, rewritten only on drift through
 `sudo mkdir`/`chattr`/`cp`/`chmod`, leaving `apiKeyHelper`, its TTL, and foreign header lines to
 ug), then runs `ug claude --workspace <ws> -- <launcher's Claude args>` in a real TUI with the launcher's
-launch environment, including its `subagent_orch_v0_claude_only` routing preset, opens
+launch environment (plus `UG_LAUNCH_WRITE_OS_SETTINGS=1`, since launches otherwise skip the OS-managed
+file), including its `subagent_orch_v0_claude_only` routing preset, opens
 `/model`, and completes a file task. It requires at most two privileged writes in the first
 session and none after, no ug password notice after the first session, no ug warnings or
 errors, the writer's picker in `/model`, every writer field unchanged except the ones ug owns,

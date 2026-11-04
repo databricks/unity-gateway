@@ -12,6 +12,7 @@ import pytest
 import ucode.config_io as config_io_mod
 import ucode.databricks as db_mod
 import ucode.managed_config as mc_mod
+import ucode.managed_files as managed_files_mod
 from ucode.managed_config import (
     get_managed_config,
     load_managed_configuration,
@@ -1558,6 +1559,24 @@ class TestPolicyWithoutInstallation:
         output = " ".join(capsys.readouterr().out.split())
         assert "UG_SKIP_OS_SETTINGS is set" in output
         assert "Continuing with the installed policy" in output
+
+    def test_launch_default_still_enforces_the_installed_policy(self, monkeypatch, capsys):
+        """A launch never writes the policy but keeps reading and enforcing what an admin installed."""
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (changed, None))
+
+        with managed_files_mod.launch_scope():
+            result = refresh_managed_config(_state())
+            with pytest.raises(RuntimeError, match="Launch refused"):
+                mc_mod.managed_launch_workspace("https://other.cloud.databricks.com")
+
+        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
+        assert load_managed_configuration(WORKSPACE) == RAW_MANIFEST
+        output = " ".join(capsys.readouterr().out.split())
+        assert "Continuing with the installed policy" in output
+        # The launch default is not the developer's own opt-out, so the warning must not blame it.
+        assert "UG_SKIP_OS_SETTINGS" not in output
 
     def test_configure_with_skip_degrades_like_a_launch(self, monkeypatch, capsys):
         """The installed policy can't be updated with the opt-out, so configure warns, not fails."""

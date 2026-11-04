@@ -168,6 +168,14 @@ can't be authorized fails the command.
 `ug`. `UG_SKIP_OS_SETTINGS=1` neither writes nor checks the OS-managed files: ug trusts whatever is
 there and the agents apply their native precedence. Configure fails while a managed file for the agent exists, since managed settings take
 precedence; later launches use whatever files are present.
+`ug configure` with `UG_SKIP_OS_SETTINGS` set prints a note recommending `--user`; unlike the
+variable, `--user` refuses a workspace that publishes a managed config.
+`ug claude`, `ug codex`, and bare `ug` launches behave as if `UG_SKIP_OS_SETTINGS=1` were set by
+default: they never write or check the OS-managed files (no sudo prompt), trust whatever an
+administrator installed, and still enforce an installed workspace policy. Set
+`UG_LAUNCH_WRITE_OS_SETTINGS=1` to let a launch reconcile those files as `ug configure` does; an
+explicit `UG_SKIP_OS_SETTINGS=1` or `--user` scope wins when both are set. `ug configure` and
+`ug revert` are unaffected.
 The choice is saved for launches after a successful configure; `ug configure` without `--user`
 and `ug revert` return to `--global`.
 `--user` also fails for a workspace that publishes a managed config, which must be installed
@@ -225,7 +233,7 @@ Nothing is written to a config file.
 - **Claude Code**: added by a mod, even when managed settings set `ANTHROPIC_CUSTOM_HEADERS`.
   Only `ug configure` installs or upgrades it beside the managed settings (with sudo, or as an
   administrator on Windows; not under `--user` or `UG_SKIP_OS_SETTINGS`); a launch never writes
-  there. Without a terminal, configure needs passwordless sudo and an existing managed file. Another
+  there unless `UG_LAUNCH_WRITE_OS_SETTINGS=1`. Without a terminal, configure needs passwordless sudo and an existing managed file. Another
   tool's copy of the mod, such as Isaac's, also counts. When none is enabled, or ug's is out of
   date, the launch warns and Claude doesn't send them.
 

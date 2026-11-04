@@ -2085,6 +2085,31 @@ class TestCodexManagedConfig:
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
         assert not managed_path.exists()
 
+    def test_launch_skips_managed_config_by_default(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+        )
+        with managed_files.launch_scope():
+            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+        assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+        assert not managed_path.exists()
+
+    def test_launch_opt_in_writes_managed_config(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv(managed_files.LAUNCH_WRITE_OS_SETTINGS_ENV, "1")
+        with managed_files.launch_scope():
+            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+        assert read_toml_safe(managed_path)["model_provider"] == "Databricks"
+
+    def test_explicit_skip_beats_launch_opt_in(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv(managed_files.LAUNCH_WRITE_OS_SETTINGS_ENV, "1")
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        with managed_files.launch_scope():
+            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+        assert not managed_path.exists()
+
     def test_skip_env_trusts_a_stale_managed_file(self, tmp_path, monkeypatch):
         """The opt-out trusts whatever OS-managed file exists: no check, no write, no error."""
         config_path, managed_path = self._patch(tmp_path, monkeypatch)

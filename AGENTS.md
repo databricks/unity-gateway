@@ -124,6 +124,8 @@ This is the intended behavior; we are still working to make the code match it in
 
 Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file (`/etc/claude-code/managed-settings.json` on Linux, `/Library/Application Support/ClaudeCode/managed-settings.json` on macOS, `C:\Program Files\ClaudeCode\managed-settings.json` on Windows), which takes precedence.
 
+Launches (`ug claude`, `ug codex`, bare `ug`) skip the OS-managed file like `UG_SKIP_OS_SETTINGS=1`: they write only per-user settings and per-launch values, and read an installed workspace policy without writing it. `UG_LAUNCH_WRITE_OS_SETTINGS=1` lets a launch reconcile the managed file; an explicit skip wins. `ug configure` and `ug revert` are unaffected.
+
 | Field | Without managed config | With managed config | Notes |
 |-------|------------------------|---------------------|-------|
 | `apiKeyHelper` | Create/replace | Create/replace | Gateway auth-token helper |
