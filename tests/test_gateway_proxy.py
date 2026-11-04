@@ -9,6 +9,7 @@ import os
 import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock
 
 import httpx
@@ -375,6 +376,19 @@ class TestTokenCache:
         cache.run_refresher()  # must RETURN, not propagate — else the thread dies
         assert ticks == [1]
 
+    def test_failed_rejection_refresh_remains_retryable(self):
+        state, provider = _fake_token_provider([5000])
+        cache = gateway_proxy.TokenCache(provider)
+        original = cache.token_snapshot()
+        state["raise"] = True
+        with pytest.raises(RuntimeError, match="mint failed"):
+            cache.refresh(rejected_generation=original[1])
+        assert cache.token_snapshot() == original
+        state["raise"] = False
+        cache.refresh(rejected_generation=original[1])
+        assert cache.token_snapshot()[1] == original[1] + 1
+        assert state["forces"] == [False, True]
+
 
 class _FakeResp:
     def __init__(self, status: int, body: bytes = b"", headers: dict | None = None):
@@ -418,7 +432,10 @@ class _FakeCache:
     def token(self):
         return self._t.replace("Bearer-", "")
 
-    def refresh(self):
+    def token_snapshot(self):
+        return self.token, self.refreshed
+
+    def refresh(self, *, rejected_generation=None):
         self.refreshed += 1
         self._t = "Bearer-tok2"
 
@@ -434,7 +451,10 @@ class _RefreshFailsCache:
     def token(self):
         return "tok1"
 
-    def refresh(self):
+    def token_snapshot(self):
+        return self.token, self.refreshed
+
+    def refresh(self, *, rejected_generation=None):
         self.refreshed += 1
         raise RuntimeError("mint failed")
 
@@ -467,6 +487,65 @@ class _Collect(io.RawIOBase):
 
 
 class TestRetryOn401:
+    @pytest.mark.parametrize("status", [401, 403])
+    @pytest.mark.parametrize("same_token", [False, True])
+    def test_concurrent_rejections_share_one_refresh(self, status, same_token):
+        forces = []
+
+        def provider(force):
+            forces.append(force)
+            return "tok1" if same_token or not force else "tok2"
+
+        cache = gateway_proxy.TokenCache(provider)
+        barrier = threading.Barrier(8, timeout=10)
+
+        class RejectedClient(_FakeClient):
+            def stream(self, *args, **kwargs):
+                response = super().stream(*args, **kwargs)
+                if len(self.sent_tokens) == 1:
+                    barrier.wait()
+                return response
+
+        clients = [RejectedClient([_FakeResp(status), _FakeResp(200, b"ok")]) for _ in range(8)]
+        outputs = [_Collect() for _ in clients]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [
+                pool.submit(_handle_handler(client, cache, output)._handle)
+                for client, output in zip(clients, outputs, strict=True)
+            ]
+            for future in futures:
+                future.result(timeout=10)
+        assert forces == [False, True]
+        for client, output in zip(clients, outputs, strict=True):
+            assert client.sent_tokens == [
+                "Bearer tok1",
+                "Bearer tok1" if same_token else "Bearer tok2",
+            ]
+            assert bytes(output.data).endswith(b"ok")
+
+    def test_delayed_rejection_uses_already_refreshed_token(self):
+        forces = []
+
+        def provider(force):
+            forces.append(force)
+            return "tok2" if force else "tok1"
+
+        cache = gateway_proxy.TokenCache(provider)
+
+        class DelayedRejection(_FakeClient):
+            def stream(self, *args, **kwargs):
+                response = super().stream(*args, **kwargs)
+                if len(self.sent_tokens) == 1:
+                    cache.refresh()
+                return response
+
+        client = DelayedRejection([_FakeResp(401), _FakeResp(200, b"ok")])
+        output = _Collect()
+        _handle_handler(client, cache, output)._handle()
+        assert forces == [False, True]
+        assert client.sent_tokens == ["Bearer tok1", "Bearer tok2"]
+        assert bytes(output.data).endswith(b"ok")
+
     def test_401_forces_refresh_and_retries(self):
         # A stale swap token yields 401; the proxy force-refreshes and retries,
         # this time succeeding, so Claude Code never sees the 401.
@@ -623,6 +702,7 @@ class TestRelayedOssRouting:
 class TestCodexRelayProxy:
     def test_relays_chatgpt_login_to_codex_upstream(self, monkeypatch):
         cache = Mock(token="tok1")
+        cache.token_snapshot.return_value = ("tok1", 1)
         monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: cache)
         server, _cache, upstream = gateway_proxy.start_relay_proxy(
             "https://w", lambda _f: "t", 0, agent="codex"

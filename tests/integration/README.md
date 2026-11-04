@@ -1,5 +1,10 @@
 # Integration tests
 
+`../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
+behavior with controlled authentication and transport boundaries. The local-socket
+proxy suite also covers refresh/retry wiring; these checks do not establish live
+provider latency or token renewal behavior.
+
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls
 still routing waiting for a later reply, distinct
