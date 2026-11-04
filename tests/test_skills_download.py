@@ -1596,6 +1596,75 @@ def _record_download(home, monkeypatch, *, uc_update_time="2026-01-01T00:00:00Z"
 
 
 class TestRefreshOnLaunch:
+    def test_shared_source_refreshes_stale_and_missing_projects_once(self, tmp_path, monkeypatch):
+        """Exercise download, launch refresh, and the next launch with real files and attribution."""
+        stale, current, missing = [tmp_path / name for name in ("stale", "current", "missing")]
+        source = _skill("triage", "2026-01-01T00:00:00Z")
+        contents = b"old"
+        metadata_calls = []
+        bundle_calls = []
+        token_calls = []
+
+        def get(workspace, token, fqn):
+            metadata_calls.append((workspace, token, fqn))
+            return source
+
+        def fetch(workspace, token, catalog, schema, name):
+            bundle_calls.append((workspace, token, catalog, schema, name))
+            return {"SKILL.md": contents}, None
+
+        monkeypatch.setattr(sd, "get_skill", get)
+        monkeypatch.setattr(sd, "fetch_skill_bundle", fetch)
+        monkeypatch.setattr(
+            sd, "get_databricks_token", lambda *args: token_calls.append(args) or "token"
+        )
+        stale.mkdir()
+        sd.download_selected_skills(WS, "token", [source.fqn], str(stale))
+        source = _skill("triage", "2026-02-01T00:00:00Z")
+        contents = b"fresh"
+        for base in (current, missing):
+            base.mkdir()
+            sd.download_selected_skills(WS, "token", [source.fqn], str(base))
+
+        # A current install must keep local files; a missing mirror must be repaired.
+        for root in skill_dir_roots(str(current)):
+            (root / "triage/local-note.md").write_bytes(b"keep")
+        removed = missing / ".agents/skills/triage"
+        (removed / "SKILL.md").unlink()
+        removed.rmdir()
+        current_record = next(
+            record for record in skills_state.list_downloaded() if record["base"] == str(current)
+        )
+        metadata_calls.clear()
+        bundle_calls.clear()
+
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+        assert metadata_calls == [(WS, "token", source.fqn)]
+        assert bundle_calls == [(WS, "token", "main", "default", "triage")]
+        records = {record["base"]: record for record in skills_state.list_downloaded()}
+        assert set(records) == {str(base) for base in (stale, current, missing)}
+        assert records[str(current)] == current_record
+        for base in (stale, current, missing):
+            roots = skill_dir_roots(str(base))
+            for root in roots:
+                assert (root / "triage/SKILL.md").read_bytes() == b"fresh"
+            record = records[str(base)]
+            assert record["fqn"] == source.fqn
+            assert record["scope"] == "project"
+            assert record["uc_update_time"] == source.uc_update_time
+            assert record["dirs"] == [str(root / "triage") for root in roots]
+        for root in skill_dir_roots(str(current)):
+            assert (root / "triage/local-note.md").read_bytes() == b"keep"
+
+        checked = skills_state.last_update_check()
+        assert checked is not None
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+        assert skills_state.last_update_check() == checked
+        assert token_calls == [(WS, None)]
+        assert metadata_calls == [(WS, "token", source.fqn)]
+        assert bundle_calls == [(WS, "token", "main", "default", "triage")]
+
     def test_interval_is_one_day(self):
         assert sd.SKILL_UPDATE_CHECK_INTERVAL == timedelta(hours=24)
 
