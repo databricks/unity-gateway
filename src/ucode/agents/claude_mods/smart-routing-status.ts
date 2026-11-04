@@ -75,10 +75,7 @@ export const registerStatusBand = (on: On, auto = false, policy?: AutoPolicy): v
       if (count !== running) $.ui.invalidate('ui.render')
     })
     const agents = running ? ` · ${running} subagent${running === 1 ? '' : 's'} running` : ''
-    const active = auto && enabled && await $.env.get('ENABLE_SMART_ROUTER_ORCHESTRATOR') === '1'
-    const state = auto
-      ? `${active ? 'Auto · Main: ' : ''}${await $.session.model()}${agents}`
-      : `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
+    const state = `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
     const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
     return next({ ...e, props: { ...e.props, tail } })
   })
