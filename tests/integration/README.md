@@ -178,6 +178,8 @@ temporary paths and simulated external boundaries. Its runtime-probe regression 
 isolated Python child to catch binary stdout being passed to `Path` during provisioning. Runtime paths are compared in the host OS format.
 Provisioning rejects selected shared-workspace hosts before authentication and missing
 credentials before publication; browser login is disabled.
+The generated ordinary Desktop auth argv is also parsed by the real CLI and pins its
+workspace ID before requesting credentials; external authentication is replaced.
 Component fixtures also exercise API-format agent lists through the fetch gate and
 normalization, including headers/tracing, absent configs, and Claude enablement checks.
 User refresh follows the same serial registration flow without a shared Cowork lock;
