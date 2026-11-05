@@ -1351,8 +1351,11 @@ Only the three Claude Smart Router toggle tests (`test_smart_router_routes_claud
 `test_smart_router_skill_turns_claude_subagent_routing_off` and
 `test_smart_router_skill_turns_claude_subagent_routing_back_on`) and their six variants each carry
 `soft_fail`. The **Soft-fail journeys · claude · Linux/Windows (non-blocking)** jobs run those cases
-unchanged, with the pinned Claude version and existing e2e workspace/bearer. They run after
-Full and Managed config finish, one OS at a time, to avoid adding concurrent inference load.
+unchanged, with the pinned Claude version and existing e2e workspace/bearer. They run one OS at a
+time. The soft-fail, OpenCode, Copilot, and Managed OpenCode jobs live in their own
+`integration-advisory.yml` workflow (**Integration (non-blocking)**), which runs in parallel with
+`integration.yml` on the shared e2e workspace by design, so neither `e2e` nor `All integration tests`
+waits for it. It also runs on demand through `workflow_dispatch` for faster feedback.
 They use `continue-on-error`, stay outside `All integration tests`, and upload separate
 `integration-soft-fail-claude-<os>` artifacts even when tests fail.
 No skip, xfail, task retry, weaker assertion, or production routing change is involved.

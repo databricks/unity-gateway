@@ -113,18 +113,18 @@ def _ci_marker_expression(job, agent, *, smart_routing=False):
 
 def test_soft_fail_ci_is_non_blocking_on_both_platforms():
     jobs = _integration_jobs()
-    job = jobs["soft-fail"]
+    job = _integration_jobs("integration-advisory.yml")["soft-fail"]
     assert "continue-on-error: true" in job
     assert "os: [ubuntu-22.04, windows-latest]" in job
     assert "runs-on: ${{ matrix.os }}" in job
-    assert "needs: [workspace, full, managed]" in job
+    assert "needs: workspace\n" in job
     assert "!cancelled() && needs.workspace.result == 'success'" in job
     assert "fail-fast: false" in job
     assert "max-parallel: 1" in job
     assert "agent: [claude]" in job
     assert "AGENT: ${{ matrix.agent }}" in job
     assert "ARTIFACT_NAME: integration-soft-fail-${{ matrix.agent }}-${{ matrix.os }}" in job
-    assert "steps: *live-steps" in job
+    assert "steps: &live-steps" in job
     needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
     assert needs is not None
     assert "soft-fail" not in {name.strip() for name in needs.group(1).split(",")}
@@ -241,7 +241,9 @@ def test_full_claude_lane_includes_both_desktop_journeys():
     ],
 )
 def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, smart_routing, retained_test):
-    job = _integration_jobs()[job_name]
+    job = _integration_jobs(
+        "integration-advisory.yml" if job_name == "soft-fail" else "integration.yml"
+    )[job_name]
     cases = _collect_integration_cases(
         _ci_marker_expression(job, agent, smart_routing=smart_routing)
     )
@@ -467,20 +469,16 @@ SKIPPED_ON_FORK_PRS = {
     "smoke",
     "headless-windows",
     "full",
-    "soft-fail",
-    "opencode",
-    "copilot",
     "antigravity",
     "managed",
-    "managed-opencode",
     "dedicated-cuj-plan",
     "dedicated-cuj",
     "cujs",
 }
 
 
-def _integration_jobs():
-    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
+def _integration_jobs(name="integration.yml"):
+    workflow = (Path(__file__).parent.parent / ".github/workflows" / name).read_text()
     body = workflow.split("\njobs:\n", 1)[1]
     return dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", body))
 
@@ -500,15 +498,41 @@ def _skips_fork_prs(jobs, name):
     return False
 
 
-def test_integration_jobs_that_run_on_fork_pull_requests_need_no_credentials():
-    jobs = _integration_jobs()
+# The non-blocking lanes live in integration-advisory.yml, with their own workspace job.
+ADVISORY_JOBS = {"soft-fail", "opencode", "copilot", "managed-opencode"}
+
+
+@pytest.mark.parametrize(
+    ("workflow", "expected"),
+    [
+        ("integration.yml", SKIPPED_ON_FORK_PRS),
+        ("integration-advisory.yml", ADVISORY_JOBS | {"workspace"}),
+    ],
+)
+def test_integration_jobs_that_run_on_fork_pull_requests_need_no_credentials(workflow, expected):
+    jobs = _integration_jobs(workflow)
     skipped = {name for name in jobs if _skips_fork_prs(jobs, name)}
 
-    assert skipped == SKIPPED_ON_FORK_PRS
+    assert skipped == expected
     for name in set(jobs) - skipped:
         assert "secrets." not in jobs[name] and "id-token: write" not in jobs[name], (
             f"{name} runs on fork PRs, which get no secrets or OIDC token"
         )
+
+
+def test_advisory_integration_is_a_separate_workflow_nothing_depends_on():
+    advisory = _workflow("integration-advisory.yml")
+    assert "pull_request_target" not in advisory
+    assert "\n  workflow_dispatch:\n" in advisory
+    assert set(_integration_jobs("integration-advisory.yml")) == ADVISORY_JOBS | {"workspace"}
+    ci = _workflow("ci.yml")
+    assert "integration-advisory" not in ci
+    for name in ADVISORY_JOBS:
+        assert f"\n  {name}:\n" not in _workflow("integration.yml")
+    gate = ci.split("\n  required-e2e:\n", 1)[1]
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", gate)
+    assert needs is not None
+    assert {job.strip() for job in needs.group(1).split(",")} == {"e2e", "integration"}
 
 
 MEMBER_ONLY = 'contains(fromJSON(\'["MEMBER", "OWNER"]\'), github.event.comment.author_association)'
