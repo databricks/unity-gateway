@@ -1,8 +1,7 @@
 # Windows Claude Desktop probe
 
 Exploratory CI checks for [AIGTWY-5412](https://databricks.atlassian.net/browse/AIGTWY-5412).
-Run only on a disposable Windows runner. The branch workflow is not yet a
-completed Cowork inference regression test.
+Run only on a disposable Windows runner. The branch workflow exercises real Cowork inference through Unity Gateway.
 
 The existing Windows CI runner provides an accessible interactive desktop and
 successfully starts a nested Hyper-V VM. The app probe installs a signed,
@@ -11,9 +10,12 @@ SHA256-pinned Claude MSIX and drives the real app through Windows UI Automation.
 
 The probe installs UG from the checkout, runs `ug configure` with the existing
 `UCODE_TEST_WORKSPACE` and `DATABRICKS_BEARER` CI secrets, and checks the generated
-gateway profile. It then accepts gateway onboarding and navigates toward Cowork.
+gateway profile. It accepts gateway onboarding, opens Cowork, verifies the selected model maps to
+`system.ai.claude-haiku-4-5`, and submits a number-conversion prompt. It asserts
+the expected assistant response and the app's response-finished announcement.
 The named `desktop-ci` Databricks profile contains host/auth metadata, not a token.
-Opening Cowork alone does not establish runtime readiness or successful inference.
+The prompt requests no tools; this test does not establish tool execution or
+Cowork VM readiness.
 
 Claude 2.42304.2 rejects the debugging switches used by Playwright's Electron
 launcher. Native launch succeeds. The optional `try_playwright` workflow input
@@ -37,12 +39,11 @@ and removes temporary registry credentials after installation.
 ## Evidence and limits
 
 Artifacts contain installer provenance, configuration status, UI control names,
-window screenshots, and native launch logs. Known bearer values are redacted
-from text artifacts; app profiles and credential files are not archived.
+window screenshots, and native launch logs. Raw process logs stay outside the artifact directory. Known bearer values are
+redacted before writing text artifacts; app profiles and credential files are not archived.
 Artifacts expire after three days.
 
-Verified so far: native installation/launch, accessibility interaction, real UG
-configuration, and Claude's gateway welcome screen without a Claude.ai login.
-Still required: complete Cowork onboarding, select a `system.ai` Claude model,
-submit a prompt, and assert the completed response through the desktop UI.
+The test requires a completed `48213` response in Cowork without a Claude.ai
+login. It verifies the configured provider/model and the desktop response; it
+does not independently trace the gateway HTTP request.
 macOS, Code-tab, MCP, and file-operation coverage are outside this first probe.

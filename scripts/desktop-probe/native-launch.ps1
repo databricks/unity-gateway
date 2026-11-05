@@ -6,10 +6,12 @@ New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
 $report = [ordered]@{}
 $process = $null
+$nativeLogDirectory = Join-Path $env:RUNNER_TEMP ('claude-native-' + [Guid]::NewGuid().ToString())
+New-Item -ItemType Directory -Path $nativeLogDirectory | Out-Null
 try {
     $process = Start-Process -FilePath $env:CLAUDE_DESKTOP_EXECUTABLE -ArgumentList '--force-renderer-accessibility' -PassThru `
-        -RedirectStandardOutput (Join-Path $OutputDirectory 'native-stdout.log') `
-        -RedirectStandardError (Join-Path $OutputDirectory 'native-stderr.log')
+        -RedirectStandardOutput (Join-Path $nativeLogDirectory 'native-stdout.log') `
+        -RedirectStandardError (Join-Path $nativeLogDirectory 'native-stderr.log')
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     do {
         Start-Sleep -Seconds 1
@@ -84,28 +86,23 @@ try {
         $submit.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
         $report.promptSubmitted = $true
         $deadline = [DateTime]::UtcNow.AddSeconds(240)
-        $stableSince = $null
         do {
             Start-Sleep -Seconds 2
-            $controls = $window.FindAll([Windows.Automation.TreeScope]::Descendants,
-                [Windows.Automation.Condition]::TrueCondition)
-            $answer = @($controls | Where-Object {
-                $_.Current.ControlType -eq [Windows.Automation.ControlType]::Text -and
-                $_.Current.Name.Trim() -eq '48213'
-            })
-            $stopControls = @($controls | Where-Object {
-                $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and
-                $_.Current.Name -match '^Stop( |$)' -and $_.Current.IsEnabled
-            })
-            if ($answer.Count -and -not $stopControls.Count) {
-                if (-not $stableSince) { $stableSince = [DateTime]::UtcNow }
-                if (([DateTime]::UtcNow - $stableSince).TotalSeconds -ge 6) {
-                    $report.responseAsserted = $true
-                    $report.expectedResponse = '48213'
-                    break
-                }
-            } else {
-                $stableSince = $null
+            $paneCondition = [Windows.Automation.PropertyCondition]::new(
+                [Windows.Automation.AutomationElement]::NameProperty, 'Primary pane')
+            $pane = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $paneCondition)
+            if (-not $pane) { continue }
+            $responseCondition = [Windows.Automation.PropertyCondition]::new(
+                [Windows.Automation.AutomationElement]::NameProperty, 'Claude responded: 48213')
+            $finishedCondition = [Windows.Automation.PropertyCondition]::new(
+                [Windows.Automation.AutomationElement]::NameProperty, 'Claude finished the response')
+            $answer = $pane.FindFirst([Windows.Automation.TreeScope]::Descendants, $responseCondition)
+            $finished = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $finishedCondition)
+            if ($answer -and $finished) {
+                $report.responseAsserted = $true
+                $report.responseFinished = $true
+                $report.expectedResponse = '48213'
+                break
             }
         } until ([DateTime]::UtcNow -ge $deadline)
         if (-not $report.responseAsserted) { throw 'Cowork did not show the expected response within 240 seconds' }
@@ -143,15 +140,21 @@ try {
     } catch {
         $report.captureError = $_.Exception.Message
     }
-    Get-Process -Name Claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    $claudeProcesses = @(Get-Process -Name Claude -ErrorAction SilentlyContinue)
+    $claudeProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
+    foreach ($claudeProcess in $claudeProcesses) {
+        try { [void]$claudeProcess.WaitForExit(10000) } catch { }
+    }
+    if ($process) { [void]$process.WaitForExit(10000) }
+    foreach ($log in Get-ChildItem -LiteralPath $nativeLogDirectory -Filter '*.log') {
+        $text = Get-Content -LiteralPath $log.FullName -Raw
+        if ($text) {
+            if ($env:DATABRICKS_BEARER) { $text = $text.Replace($env:DATABRICKS_BEARER, '[REDACTED]') }
+            $text | Set-Content -LiteralPath (Join-Path $OutputDirectory $log.Name) -Encoding utf8
+        }
+    }
     $json = $report | ConvertTo-Json -Depth 8
     if ($env:DATABRICKS_BEARER) { $json = $json.Replace($env:DATABRICKS_BEARER, '[REDACTED]') }
     $json | Set-Content -LiteralPath (Join-Path $OutputDirectory 'native-launch.json') -Encoding utf8
-    foreach ($log in Get-ChildItem $OutputDirectory/native-*.log) {
-        if ($env:DATABRICKS_BEARER) {
-            $text = Get-Content -LiteralPath $log.FullName -Raw
-            if ($text) { $text.Replace($env:DATABRICKS_BEARER, '[REDACTED]') | Set-Content -LiteralPath $log.FullName }
-        }
-    }
 }
 if ($report.error) { exit 1 }
