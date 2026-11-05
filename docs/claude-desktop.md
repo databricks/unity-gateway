@@ -80,7 +80,11 @@ MCP-only Claude setup (`ug mcp add --agents claude`) is also eligible for Code
 guidance without model setup. During managed configure, successful MCP reconciliation
 refreshes Code even if skill downloads fail. Native Desktop connectors also sync independently
 of skill-download success after model setup; failed downloads leave the existing Cowork skill
-plugin intact. Failed MCP reconciliation preserves both plugins.
+plugin intact. Failed MCP reconciliation preserves both plugins and the native connector
+list for the same workspace. Desktop uses the CLI's resolved MCP list: successful refreshes
+apply additions, updates, and removals; failed discovery keeps the previous list. Configure
+does not test live connector connections. Switching workspaces does not retain the old
+workspace's connectors.
 
 Code and Cowork plugin installation are independent and best-effort. A Cowork
 setup failure does not block the Code plugin or native MCP configuration. The
@@ -133,6 +137,9 @@ UG owns the generated user marketplace: configure replaces its contents, includi
 edits, and ordinary `ug revert` removes it and UG's user registration. Root files are left
 alone. The existing user-source writer retains staged replacement and rollback.
 A native refresh failure leaves the user source and tracking state for retry or revert.
+After a successful plugin update, failure to remove the legacy UG plugin only warns:
+the updated plugin and native connectors remain configured. Run `ug configure` again
+to retry cleanup; the old plugin may remain installed until cleanup succeeds.
 If a source switch fails, UG attempts to restore the previous marketplace/plugin through
 native Claude commands. A failed restoration reports instructions to repair the installation.
 Malformed directory paths are ignored during UG's source inspection. The native
@@ -423,8 +430,9 @@ UG supports one configured workspace at a time, so switching workspaces replaces
 the same profile rather than creating another one. The display name remains
 `Unity Gateway - <CLI profile name>`.
 
-Each `ug configure` replaces the entire reserved profile and updates its metadata
+Each `ug configure` replaces the reserved profile and updates its metadata
 entry and selection, whether or not the file or previous UG state exists.
+Existing same-workspace connectors are retained until their replacement succeeds.
 Unknown fields, manual edits, and omitted optional fields in that profile are not
 preserved. This profile is fully managed by UG; do not edit it manually. UG writes
 only supported Desktop configuration keys: unknown keys such as `_comment` trigger

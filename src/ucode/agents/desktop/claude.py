@@ -137,6 +137,19 @@ def configure_claude_desktop(
     profile_path = paths.directory / f"{PROFILE_ID}.json"
     with desktop_config.locked(paths.lock):
         profile_before = desktop_config.read_optional_bytes(profile_path)
+        if profile_before is not None:
+            try:
+                previous = desktop_config.parse_object(
+                    profile_before, profile_path, "Claude Desktop profile"
+                )
+            except ClaudeDesktopConflictError:
+                previous = {}
+            if (
+                previous.get("inferenceGatewayBaseUrl") == rendered["inferenceGatewayBaseUrl"]
+                and _workspace_selectors(previous) == _workspace_selectors(rendered)
+                and isinstance(previous.get("managedMcpServers"), list)
+            ):
+                rendered["managedMcpServers"] = previous["managedMcpServers"]
         metadata_before = desktop_config.read_optional_bytes(paths.metadata)
         state_before = desktop_config.read_optional_bytes(paths.state)
         metadata = desktop_config.validate_metadata(
@@ -232,6 +245,17 @@ def revert_claude_desktop(*, state_path: Path | str | None = None) -> RevertResu
         return RevertResult(profile_id=PROFILE_ID if changed else None, changed=changed)
 
 
+def _workspace_selectors(profile: Mapping[str, object]) -> dict[str, object]:
+    headers = profile.get("inferenceCustomHeaders")
+    if not isinstance(headers, dict):
+        return {}
+    return {
+        name.casefold(): value
+        for name, value in headers.items()
+        if name.casefold() in {"x-databricks-org-id", "x-databricks-workspace-id"}
+    }
+
+
 @contextmanager
 def desktop_mcp_configuration(workspace: str, mcp_config: dict) -> Iterator[None]:
     """Keep native connector registration consistent with a Cowork plugin update."""
@@ -247,24 +271,13 @@ def desktop_mcp_configuration(workspace: str, mcp_config: dict) -> Iterator[None
             yield
             return
         profile = desktop_config.parse_object(before, profile_path, "Claude Desktop profile")
-        headers = profile.get("inferenceCustomHeaders") or {}
-        selector_names = {"x-databricks-org-id", "x-databricks-workspace-id"}
-        selectors = (
-            {
-                name.casefold(): value
-                for name, value in headers.items()
-                if name.casefold() in selector_names
-            }
-            if isinstance(headers, dict)
-            else {}
-        )
         expected_selectors = {
             name.casefold(): value for name, value in workspace_headers(workspace).items()
         }
         if (
             profile.get("inferenceGatewayBaseUrl")
             != f"{workspace.rstrip('/')}/ai-gateway/anthropic"
-            or selectors != expected_selectors
+            or _workspace_selectors(profile) != expected_selectors
         ):
             raise ClaudeDesktopConflictError(
                 "Claude Desktop is configured for another workspace. Run ug configure again."

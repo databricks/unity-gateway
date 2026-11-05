@@ -101,6 +101,8 @@ Cowork's frozen prompt fixture protects discovery without startup sleeps and ret
 for Code guidance and Code refresh despite skill-download failures in single-agent and
 managed configure. Failed MCP reconciliation preserves both plugins. Failed skill downloads
 preserve the Cowork plugin while native Desktop connectors still sync after model setup.
+Desktop lifecycle comparisons include connectors added through `ug mcp add`, retaining the
+original model/authentication-field assertions across reconfigure.
 Reconfigure regressions use real profile writers to check connector replacement/removal and
 unchanged plugin files, with external setup/download boundaries controlled. These are
 component checks, not native Desktop or live connector coverage.
@@ -144,7 +146,9 @@ skills/assets, previous-account cleanup,
 malformed marketplace metadata (including missing or nonstring directory paths),
 equivalent path aliases, source-switch failure recovery
 for both current and legacy-only plugin identities, preserved nonlocal registrations,
-and retained user source/state after refresh failures. Explicit global skips ordinary
+and retained user source/state after refresh failures. Legacy uninstall errors and timeouts
+warn while preserving the updated plugin and native connectors; retry removes the legacy
+registration and preserves unrelated plugins. Explicit global skips ordinary
 Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
 Overlapping installer/state checks and duplicate simulated-OS cases are consolidated;
 user installation, persisted account state and registered-source preservation remain covered.
@@ -697,8 +701,10 @@ preservation, order-independent collisions, and repeated replacement of old keys
 Manifest checks require the `ug` name and display name in both manifests.
 Legacy-registration component checks cover replacement after successful install/update,
 preservation on install failure, scoped cleanup, and unrelated-plugin preservation.
-`../test_desktop_configure_cli.py` covers managed orchestration and
-cleanup. Both are mocked component coverage; the integration suite does not launch Cowork,
+`../test_desktop_configure_cli.py` covers managed orchestration and cleanup, retaining native
+connectors after discovery errors or rate limits, and applying replacements/removals despite
+failed skill downloads. Profile component tests limit fallback to the same workspace,
+including workspace selector headers. These are mocked component checks; the integration suite does not launch Cowork,
 connect a plugin MCP server, discover its deferred tool, or run a task through it.
 
 `../test_mcp_proxy.py` covers persistent OAuth U2M authentication-tool discovery, explicit

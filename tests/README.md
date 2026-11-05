@@ -490,7 +490,9 @@ skills/assets, previous-account cleanup,
 malformed marketplace metadata (including missing or nonstring directory paths),
 equivalent path aliases, source-switch failure recovery
 for both current and legacy-only plugin identities, preserved nonlocal registrations,
-and retained user source/state after refresh failures. Explicit global skips ordinary
+and retained user source/state after refresh failures. Legacy uninstall errors and timeouts
+warn while preserving the updated plugin and native connectors; retry removes the legacy
+registration and preserves unrelated plugins. Explicit global skips ordinary
 Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
 Overlapping installer/state checks and duplicate simulated-OS cases are consolidated;
 user installation, persisted account state and registered-source preservation remain covered.
@@ -1270,7 +1272,12 @@ check. These tests do not establish live gateway or native Windows coverage.
 Desktop connector component checks cover `toolSearchEnabled: true`, native stdio registration,
 removal of plugin MCP declarations on repeated setup, preserved skills/hooks, registration before
 the first Cowork session, last-connector removal, and profile rollback on plugin failure.
+CLI configure regressions retain native connectors after discovery errors or rate limits,
+apply replacements/removals despite failed skill downloads, and keep connector fallback
+scoped to the same workspace, including workspace selector headers.
 Missing, malformed, and other-workspace profiles leave plugin setup untouched.
 Installed-CLI Desktop journeys read MCP commands from `managedMcpServers` and require the
-installed plugin to contain no duplicate servers. These checks do not prove Desktop GUI
+installed plugin to contain no duplicate servers. Reconfigure comparisons include connectors
+added through `ug mcp add`, while retaining the original model/authentication-field assertions.
+These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.

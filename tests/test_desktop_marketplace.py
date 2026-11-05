@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -324,6 +325,8 @@ def test_failed_refresh_retains_generated_sources_for_recovery(
 ):
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
     user_before = cowork._marketplace_files(cowork._marketplace_root())
+    connectors_before = _native_servers()
+    _configure_profile(WORKSPACE["workspace"])
     managed_files.set_config_scope("global")
     run = cowork.subprocess_cross_os.run
     failed = False
@@ -340,6 +343,7 @@ def test_failed_refresh_retains_generated_sources_for_recovery(
     monkeypatch.setattr(cowork.subprocess_cross_os, "run", fail_refresh)
     with pytest.raises(RuntimeError, match="refresh failed"):
         cowork.configure_cowork(WORKSPACE, [{**SERVERS[0], "name": "changed"}])
+    assert _native_servers() == connectors_before
     generated = cowork._marketplace_files(cowork._marketplace_root())
     assert generated != user_before
     state = config_io.read_json_safe(cowork._state_path())
@@ -359,6 +363,48 @@ def test_failed_refresh_retains_generated_sources_for_recovery(
         cowork._registered_marketplace_source(cowork.discover_cowork_root())
         == cowork._marketplace_root()
     )
+
+
+@pytest.mark.parametrize("failure", ["exit", "timeout"])
+def test_legacy_cleanup_failure_keeps_updated_plugin_and_native_connectors(
+    system_source, monkeypatch, capsys, failure
+):
+    assert cowork.configure_cowork(WORKSPACE, SERVERS)
+    (_installed_source() / ".mcp.json").write_text(
+        json.dumps(cowork._cowork_mcp_config(SERVERS, **WORKSPACE))
+    )
+    registry = cowork.discover_cowork_root() / "cowork_plugins/installed_plugins.json"
+    installed = config_io.read_json_safe(registry)
+    installed["plugins"][cowork.LEGACY_PLUGIN_ID] = [{"installPath": "old-plugin"}]
+    installed["plugins"]["other@unrelated"] = [{"installPath": "unrelated-plugin"}]
+    config_io.atomic_write_json(registry, installed)
+    _configure_profile(WORKSPACE["workspace"])
+    run = cowork.subprocess_cross_os.run
+
+    def fail_legacy_cleanup(argv, **kwargs):
+        if argv[1:4] == ["plugin", "uninstall", cowork.LEGACY_PLUGIN_ID]:
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(argv, 120)
+            return SimpleNamespace(returncode=1, stdout="", stderr="cleanup failed")
+        return run(argv, **kwargs)
+
+    monkeypatch.setattr(cowork.subprocess_cross_os, "run", fail_legacy_cleanup)
+    servers = [{**SERVERS[0], "name": "github"}]
+    assert cowork.configure_cowork(WORKSPACE, servers)
+    assert [server["name"] for server in _native_servers()] == ["github"]
+    plugin = _installed_source(other_plugins=(cowork.LEGACY_PLUGIN_ID, "other@unrelated"))
+    assert not (plugin / ".mcp.json").exists()
+    assert cowork._marketplace_files(plugin) == cowork._marketplace_files(
+        cowork._marketplace_root() / "plugins/ug"
+    )
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Could not remove legacy Claude Desktop plugin" in output
+    assert "Run `ug configure` again to retry cleanup" in output
+
+    monkeypatch.setattr(cowork.subprocess_cross_os, "run", run)
+    assert cowork.configure_cowork(WORKSPACE, servers)
+    _installed_source(other_plugins=("other@unrelated",))
+    assert [server["name"] for server in _native_servers()] == ["github"]
 
 
 def test_changed_payload_updates_user_source_and_installed_version(system_source):

@@ -11,8 +11,9 @@ from ucode.agents.desktop import claude as desktop
 from ucode.agents.desktop import cowork
 from ucode.agents.desktop import setup as desktop_setup
 from ucode.agents.desktop.setup import configure_claude_cowork
-from ucode.cli import _configure_managed_skills
+from ucode.cli import _configure_managed_mcp_servers, _configure_managed_skills
 from ucode.databricks import AnthropicModelCatalog
+from ucode.mcp import McpServiceListingRateLimited
 
 
 @pytest.mark.parametrize("flags", [[], ["--user"], ["--global"]])
@@ -318,10 +319,11 @@ def test_managed_sync_failure_preserves_existing_cowork(
 
 @pytest.mark.parametrize("flow", ["single", "managed"])
 @pytest.mark.parametrize("remove_connectors", [False, True], ids=["replace", "remove"])
-def test_skill_download_failure_still_updates_native_connectors(
-    configuration, monkeypatch, tmp_path, capsys, flow, remove_connectors
+@pytest.mark.parametrize("failure", ["skills", "rate-limit", "discovery-error"])
+def test_reconfigure_preserves_connectors_until_refresh_succeeds(
+    configuration, monkeypatch, tmp_path, capsys, flow, remove_connectors, failure
 ):
-    """Reconfigure replaces native connectors while a failed download preserves the plugin."""
+    """Failed discovery keeps old connectors; successful discovery applies replacements/removals."""
     directory = tmp_path / "Desktop" / "configLibrary"
     directory.mkdir(parents=True)
     monkeypatch.setattr(desktop, "claude_desktop_directory", lambda: directory)
@@ -368,6 +370,15 @@ def test_skill_download_failure_still_updates_native_connectors(
         ]
     )
     monkeypatch.setattr(cli, "_configure_managed_mcp_servers", lambda managed: servers)
+    if failure != "skills":
+        monkeypatch.setattr(cli, "_configure_managed_mcp_servers", _configure_managed_mcp_servers)
+
+        def fail_discovery(*args):
+            if failure == "rate-limit":
+                raise McpServiceListingRateLimited("system.ai")
+            raise RuntimeError("connector discovery unavailable")
+
+        monkeypatch.setattr(cli, "reconcile_managed_mcp_servers", fail_discovery)
     monkeypatch.setattr(
         cli,
         "refresh_managed_config",
@@ -384,11 +395,18 @@ def test_skill_download_failure_still_updates_native_connectors(
 
     profile = json.loads((directory / f"{desktop.PROFILE_ID}.json").read_text())
     connectors = profile["managedMcpServers"]
-    assert [server["name"] for server in connectors] == ([] if remove_connectors else ["github"])
-    if connectors:
-        assert connectors[0]["transport"] == "stdio"
-        assert connectors[0]["command"] == str(tmp_path / "bin" / "ug")
-        assert servers[0]["url"] in connectors[0]["args"]
+    if failure != "skills":
+        assert connectors == [
+            {"name": "old", "transport": "stdio", "command": "/old-proxy", "args": []}
+        ]
+    else:
+        assert [server["name"] for server in connectors] == (
+            [] if remove_connectors else ["github"]
+        )
+        if connectors:
+            assert connectors[0]["transport"] == "stdio"
+            assert connectors[0]["command"] == str(tmp_path / "bin" / "ug")
+            assert servers[0]["url"] in connectors[0]["args"]
     assert cowork._marketplace_files(marketplace) == before_plugin
     assert "skill download unavailable" in capsys.readouterr().out
 

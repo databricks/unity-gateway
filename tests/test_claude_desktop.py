@@ -391,6 +391,28 @@ def test_configure_replaces_entire_reserved_profile_without_records(tmp_path, di
     assert _read(result.metadata_path) == {"entries": [], "unrelated": {"keep": True}}
 
 
+@pytest.mark.parametrize("change", ["models", "workspace", "workspace-selector"])
+def test_reconfigure_preserves_connectors_only_for_same_workspace(tmp_path, directory, change):
+    state_path = tmp_path / "state.json"
+    result = _configure(state_path)
+    profile = _read(result.profile_path)
+    connectors = [{"name": "slack", "transport": "stdio", "command": "/old-ug", "args": []}]
+    profile["managedMcpServers"] = connectors
+    if change == "workspace-selector":
+        profile["inferenceCustomHeaders"] = {"X-Databricks-Workspace-Id": "previous"}
+    _write_json(result.profile_path, profile)
+
+    _configure(
+        state_path,
+        workspace="https://other.example" if change == "workspace" else "https://workspace.example",
+        models=("new-claude-model",),
+    )
+
+    updated = _read(result.profile_path)
+    assert updated["inferenceModels"] == [{"name": "new-claude-model"}]
+    assert updated.get("managedMcpServers", []) == (connectors if change == "models" else [])
+
+
 def test_repeat_configure_and_workspace_switch_replace_same_file(tmp_path, directory):
     prior = _seed_metadata(directory)
     state_path = tmp_path / "state.json"

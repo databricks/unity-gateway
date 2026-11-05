@@ -716,12 +716,19 @@ def _register_plugin(
         and plugin_id != LEGACY_PLUGIN_ID
         and _contains_plugin_id(installed, plugin_id=LEGACY_PLUGIN_ID)
     ):
-        _run_claude_json(
-            claude,
-            ["plugin", "uninstall", LEGACY_PLUGIN_ID, "--cowork", "--json"],
-            env,
-            accepted_failures=("not installed", "not_installed", "not found"),
-        )
+        try:
+            _run_claude_json(
+                claude,
+                ["plugin", "uninstall", LEGACY_PLUGIN_ID, "--cowork", "--json"],
+                env,
+                accepted_failures=("not installed", "not_installed", "not found"),
+            )
+        except Exception as exc:
+            print_warning(
+                f"Could not remove legacy Claude Desktop plugin {LEGACY_PLUGIN_ID}: {exc}. "
+                "The updated plugin and native connectors remain configured. "
+                "Run `ug configure` again to retry cleanup."
+            )
 
 
 def _claude_binary() -> str:
