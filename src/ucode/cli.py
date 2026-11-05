@@ -3054,6 +3054,8 @@ def codex_router_hook_cmd(
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
     model: Annotated[list[str] | None, typer.Option("--model")] = None,
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
+    provider: Annotated[str | None, typer.Option("--provider", hidden=True)] = None,
+    models_file: Annotated[str | None, typer.Option("--models-file", hidden=True)] = None,
 ) -> None:
     """Run a Codex smart-routing lifecycle hook."""
     if host and workspace_id:
@@ -3111,12 +3113,20 @@ def codex_router_hook_cmd(
     token = _router_hook_token(host, profile, use_pat)
     if not token:
         return
+    available_models = model or []
+    provider_kwargs: dict[str, Any] = {}
+    if provider:
+        available_models, _ = smart_routing_v2.provider_subagent_candidates(
+            models_file, available_models
+        )
+        provider_kwargs = {"provider": provider}
     output = route_pre_tool_use(
         payload,
         workspace=host,
         token=token,
-        available_models=model or [],
+        available_models=available_models,
         audit_decision=True,
+        **provider_kwargs,
     )
     if output is not None:
         sys.stdout.write(json.dumps(output))

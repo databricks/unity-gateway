@@ -71,6 +71,12 @@ from ucode.smart_routing.claude_hooks import (
     sync_first_prompt_hook,
     sync_smart_routing_hooks,
 )
+from ucode.smart_routing.codex_hooks import (
+    ROUTING_MODELS_FILE_STATE_KEY as CODEX_ROUTING_MODELS_FILE_STATE_KEY,
+)
+from ucode.smart_routing.codex_hooks import (
+    ROUTING_PROVIDER_STATE_KEY as CODEX_ROUTING_PROVIDER_STATE_KEY,
+)
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
 from ucode.smart_routing.config import apply_config, apply_enabled_version, resolve_environment
 from ucode.smart_routing.routing_models_cache import (
@@ -80,6 +86,7 @@ from ucode.smart_routing.routing_models_cache import (
     routing_models_from_json,
     routing_models_to_json,
     write_routing_models,
+    write_routing_models_snapshot,
 )
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_note, print_warning
@@ -676,7 +683,7 @@ def _is_claude_target_model(value: object) -> bool:
 
 def provider_routing_enabled(*, agent: str) -> bool:
     """Whether smart routing may run over a Model Provider Service's models for ``agent``."""
-    return agent == AGENT_CLAUDE and env_bool(SMART_ROUTING_PROVIDER_ENV_VAR)
+    return agent in (AGENT_CLAUDE, AGENT_CODEX) and env_bool(SMART_ROUTING_PROVIDER_ENV_VAR)
 
 
 def _claude_routing_provider(state: dict) -> str | None:
@@ -1021,7 +1028,15 @@ def launch_codex(
     binary: str,
     start_model: str | None,
     render_overlay: Callable[..., dict],
+    provider: str | None = None,
+    provider_models: list[RoutingModel] | None = None,
+    provider_catalog_path: Path | None = None,
 ) -> NoReturn:
+    """Launch Codex with smart routing.
+
+    With ``provider``, routing runs over that Model Provider Service's ``provider_models`` slugs,
+    verbatim, and ``provider_catalog_path`` (when known) replaces any custom model catalog.
+    """
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -1033,13 +1048,24 @@ def launch_codex(
         )
 
     os.environ[OAUTH_TOKEN_ENV_VAR] = launch_token(state, workspace)
-    catalog_models = custom_catalog_models()
-    available_models = catalog_models or _cached_routing_models(state)
-    if not available_models:
-        print_warning(
-            "Smart routing model metadata is unavailable; automatic model switching is unavailable. "
-            "Run `ucode configure codex` to enable routing."
-        )
+    hook_state = state
+    if provider is not None:
+        available_models = [model.id for model in provider_models or []]
+        hook_state = {
+            **state,
+            CODEX_ROUTING_PROVIDER_STATE_KEY: provider,
+            CODEX_ROUTING_MODELS_FILE_STATE_KEY: str(
+                write_routing_models_snapshot(provider_models or [])
+            ),
+        }
+    else:
+        catalog_models = custom_catalog_models()
+        available_models = catalog_models or _cached_routing_models(state)
+        if not available_models:
+            print_warning(
+                "Smart routing model metadata is unavailable; automatic model switching is "
+                "unavailable. Run `ucode configure codex` to enable routing."
+            )
     custom_oauth = state.get("custom_oauth")
     overlay = render_overlay(
         workspace,
@@ -1049,10 +1075,10 @@ def launch_codex(
         custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
         managed_http_headers=state.get("codex_http_headers"),
     )
-    catalog_path = custom_catalog_path()
+    catalog_path = provider_catalog_path if provider is not None else custom_catalog_path()
     if catalog_path is not None:
         overlay["model_catalog_json"] = str(catalog_path)
-    overlay["hooks"] = _v2_hooks(state, available_models)
+    overlay["hooks"] = _v2_hooks(hook_state, available_models)
     overlay["features.hooks"] = True
     overlay["features.multi_agent_v2.non_code_mode_only"] = False
     overlay["features.multi_agent_v2.root_agent_usage_hint_text"] = (
@@ -1104,6 +1130,7 @@ def launch_codex(
             token_provider=lambda: launch_token(state, workspace),
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
+            map_model_ids=provider is None,
         )
         tui_url = _loopback_websocket_url(tui_port)
         provider_args = []

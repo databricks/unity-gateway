@@ -11,6 +11,10 @@ from ucode.smart_routing import hooks
 from ucode.workspace import workspace_id_args
 
 ROUTING_HOOK_COMMAND_MARKER = "codex-router-hook"
+# Set on a launch's routing state when subagents route over a Model Provider Service's slugs: the
+# service, and the launch's snapshot of them for the hook to read.
+ROUTING_PROVIDER_STATE_KEY = "_codex_routing_provider"
+ROUTING_MODELS_FILE_STATE_KEY = "_codex_routing_models_file"
 
 
 def routing_models(state: dict) -> list[str]:
@@ -101,6 +105,11 @@ def _routing_hook_argv(
     for model in models:
         if isinstance(model, str) and model:
             argv += ["--model", model]
+    provider = state.get(ROUTING_PROVIDER_STATE_KEY)
+    models_file = state.get(ROUTING_MODELS_FILE_STATE_KEY)
+    if isinstance(provider, str) and provider and isinstance(models_file, str) and models_file:
+        # The hook reads the launch's model snapshot; the --model slugs are its fallback.
+        argv += ["--provider", provider, "--models-file", models_file]
     return argv
 
 

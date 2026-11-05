@@ -704,6 +704,12 @@ cache. `TestProviderRoutingLaunchHygiene` checks that relayed providers keep the
 and that launch-scoped routing keys never reach `state.json`.
 `TestProviderSubagentHook` checks the hook routes over the launch snapshot, falls back
 to its `--model` IDs without one, and keeps the exact call without `--provider`.
+`test_codex_smart_routing_v2.py::TestCodexProviderRouting` and
+`TestCodexProviderLaunch` cover the same gate for Codex: the provider's `codex/v1/models`
+request carries the provider header and refreshes a Codex-only cache, a failed fetch falls
+back to it, the interposer and `spawn_agent` hooks route over raw provider slugs (no bundled
+slug mapping) through a content-addressed snapshot, and `test_codex_routing.py` checks
+decision records name the provider.
 These are unit/component checks; the gateway and router are stubbed.
 
 `test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
