@@ -235,11 +235,6 @@ async function applyAutoPolicy($: EngineInterface, enabled: boolean, args: reado
   }
 }
 
-async function leaveAuto($: EngineInterface, options: PluginOptions, feedback: FeedbackState, proceed: (args: readonly string[]) => Promise<void>): Promise<boolean> {
-  if (!isRoutingEnabled(await readEffectiveEnvironment($))) return false;
-  return requestAutoFeedback($, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string, proceed);
-}
-
 async function selectAuto($: EngineInterface, options: PluginOptions, policy: AutoPolicy, runModel?: (model: string) => Promise<{text?: string}>): Promise<{text: string}> {
   policy.picking = false;
   const model = options.autoMainModel;
@@ -288,7 +283,8 @@ function registerAutoPicker(
       return selectAuto($, options, policy, (model) => next({...e, args: model}));
     }
     // Ask before the native picker: its closing callback cannot place a feedback pane.
-    if (!approved && await leaveAuto($, options, feedback, async (feedbackArgs) => {
+    if (!approved && isRoutingEnabled(await readEffectiveEnvironment($))
+        && await requestAutoFeedback($, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string, async (feedbackArgs) => {
       approved = pending = feedbackArgs;
       policy.picking = true;
       const result = await $.command.run({command: 'model', args});
@@ -324,51 +320,58 @@ function registerAutoPicker(
     return result;
   });
 
-  on('ui.render', {component: 'PromptHint'}, async ($, e, next) => {
-    // Session-only picks do not save config or always emit a CommandOutput event.
-    if (!policy.blocked && await $.session.model() === 'auto') {
+  on('session.append', {door: 'command'}, async ($, e, next) => {
+    if (!policy.picking) return next(e);
+    const text = e.message.content.filter((block) => block.type === 'text').map((block) => block.text).join('');
+    const output = /^<local-command-stdout>([\s\S]*)<\/local-command-stdout>$/.exec(text);
+    if (!output) return next(e);
+    const choice = approved ?? pending;
+    approved = pending = undefined;
+    if (await $.session.model() === 'auto') {
+      policy.picking = false;
       policy.blocked = true;
+      // The native command must finish appending before another /model command runs.
       $.clock.after(1, async () => {
         const result = await selectAuto($, options, policy);
         $.ui.log(result.text);
         $.ui.invalidate('ui.render');
       });
+    } else {
+      await applyAutoPolicy($, false, choice, options, policy, modelSelected(output[1]));
     }
     return next(e);
   });
 
   on('ui.render', {component: 'CommandOutput'}, async ($, e, next) => {
-    const fresh = !completedOutputs.has(e.requestId);
-    if (!fresh) {
+    if (!/^\/?model$/.test(String(e.props.command))) return next(e);
+    if (completedOutputs.has(e.requestId)) {
       const text = completedOutputs.get(e.requestId);
       return next(text === undefined ? e : {...e, props: {...e.props, text}});
     }
     completedOutputs.set(e.requestId, undefined);
-    if (/^\/?model$/.test(String(e.props.command))) {
-      // Native session-only picks bypass config.set.
-      if (await $.session.model() === 'auto') {
-        if (policy.blocked) return next(e);
-        pending = undefined;
+    // Native session-only picks bypass config.set.
+    if (await $.session.model() === 'auto') {
+      if (policy.blocked) return next(e);
+      pending = undefined;
+      const result = await selectAuto($, options, policy);
+      completedOutputs.set(e.requestId, result.text);
+      return next({...e, props: {...e.props, text: result.text}});
+    }
+    if (applyAuto) {
+      applyAuto = false;
+      policy.blocked = true;
+      $.clock.after(1, async () => {
         const result = await selectAuto($, options, policy);
         completedOutputs.set(e.requestId, result.text);
-        return next({...e, props: {...e.props, text: result.text}});
-      }
-      if (applyAuto) {
-        applyAuto = false;
-        policy.blocked = true;
-        $.clock.after(1, async () => {
-          const result = await selectAuto($, options, policy);
-          completedOutputs.set(e.requestId, result.text);
-          $.ui.invalidate('ui.render');
-        });
-        const text = 'Applying Auto with the admin default main model.';
-        completedOutputs.set(e.requestId, text);
-        return next({...e, props: {...e.props, text}});
-      }
-      const choice = approved ?? pending; pending = undefined;
-      if (modelSelected(e.props.text)) approved = undefined;
-      await applyAutoPolicy($, false, choice, options, policy, modelSelected(e.props.text));
+        $.ui.invalidate('ui.render');
+      });
+      const text = 'Applying Auto with the admin default main model.';
+      completedOutputs.set(e.requestId, text);
+      return next({...e, props: {...e.props, text}});
     }
+    const choice = approved ?? pending; pending = undefined;
+    if (modelSelected(e.props.text)) approved = undefined;
+    await applyAutoPolicy($, false, choice, options, policy, modelSelected(e.props.text));
     return next(e);
   });
 

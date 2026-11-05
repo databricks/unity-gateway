@@ -12,13 +12,15 @@ from ucode.smart_routing import config, session_env, v2
 
 
 @pytest.mark.parametrize(
-    ("session_only", "managed_picker", "feedback"),
+    ("session_only", "managed_picker", "feedback", "same_model"),
     [
-        (False, False, False),
-        (True, True, False),
-        (False, True, False),
-        (False, False, True),
-        (False, True, True),
+        (False, False, False, False),
+        (True, True, False, False),
+        (False, True, False, False),
+        (False, False, True, False),
+        (False, True, True, False),
+        (True, True, False, True),
+        (True, True, True, False),
     ],
     ids=[
         "native-saved",
@@ -26,14 +28,20 @@ from ucode.smart_routing import config, session_env, v2
         "managed-picker",
         "feedback-command",
         "feedback-picker",
+        "same-model-session-only",
+        "feedback-session-only",
     ],
 )
-def test_auto_picker_tui(native_binary, tmp_path, session_only, managed_picker, feedback):
+def test_auto_picker_tui(
+    native_binary, tmp_path, session_only, managed_picker, feedback, same_model
+):
     """Scenario: start off, cancel entry, enter Auto, then return to concrete mode.
 
     Expected: actual native picks change live and saved activity; Escape does not.
     This uses the packaged mod with dummy auth and deliberately sends no inference.
     """
+    target = "sonnet" if same_model else "haiku"
+    target_model = f"system.ai.claude-{target}-5-5"
     plugin = tmp_path / "plugin"
     v2._write_routed_claude_plugin(plugin, [])
     (plugin / "hooks/observe.ts").write_text("""
@@ -204,9 +212,14 @@ printf '{"message_id":null}\\n'
                 lambda text: "unity gateway smart router" in text and "routing subagents" in text,
                 "Auto routing banner restored",
             )
-            tui.submit(
-                "/model" if feedback and managed_picker else "/model system.ai.claude-haiku-5-5"
-            )
+            if managed_picker and not feedback:
+                active = controls.read_text()
+                tui.submit("/model")
+                tui.wait_for(lambda text: "Select model" in text, "picker while Auto is active")
+                tui.send("\x1b", "cancel leaving Auto")
+                tui.wait_for(lambda text: "Select model" not in text, "active picker cancelled")
+                assert controls.read_text() == active
+            tui.submit("/model" if managed_picker else f"/model {target_model}")
             if feedback:
                 tui.wait_for(
                     lambda text: "Why are you leaving Auto?" in text, "Leave Auto feedback"
@@ -221,10 +234,10 @@ printf '{"message_id":null}\\n'
                 tui.send("\x15", "clear short feedback")
                 tui.send("I want to choose my own model", "enter feedback")
                 tui.send("\r", "submit feedback")
-            if feedback and managed_picker:
+            if managed_picker:
                 tui.wait_for(lambda text: "Select model" in text, "picker for leaving Auto")
                 visited = set()
-                while "haiku" not in selected_model().lower():
+                while target not in selected_model().lower():
                     current = selected_model()
                     assert current not in visited, tui.visible
                     visited.add(current)
@@ -232,7 +245,7 @@ printf '{"message_id":null}\\n'
                     tui.wait_for(
                         lambda _, before=current: selected_model() != before, "next option"
                     )
-                tui.send("\r", "choose concrete model")
+                tui.send("s" if session_only else "\r", "choose concrete model")
             tui.wait_for(
                 lambda _: (
                     json.loads(controls.read_text()).get("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
@@ -244,7 +257,7 @@ printf '{"message_id":null}\\n'
             tui.submit("/auto-probe")
             tui.wait_for(
                 lambda text: (
-                    '"model":"system.ai.claude-haiku-5-5","subagent":"0","orchestrator":"0"' in text
+                    f'"model":"{target_model}","subagent":"0","orchestrator":"0"' in text
                     and "DISABLED_AUTO" in text
                 ),
                 "concrete model, disabled activity, and Auto opt-out attribution",

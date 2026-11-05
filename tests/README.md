@@ -14,7 +14,8 @@ session-only selections, redraws, failed transitions, already-concrete selection
 feedback enabled, `DISABLED_AUTO` attribution, and stale spawn routes while existing
 children resume. `native_claude/test_mod.py` also characterizes native
 command interception and forwarding. `native_claude/test_auto_picker.py` drives the
-real picker and feedback opt-out through direct commands and saved rows; its fixture
+real picker and feedback opt-out through direct commands, saved rows, and session-only
+rows, including the existing main model and cancellation while Auto is active; its fixture
 requires a machine policy permitting its models. Feedback transport is isolated; native
 selection and session controls stay real. These component checks do not establish
 live gateway inference, real feedback delivery, or durable resume.

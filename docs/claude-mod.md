@@ -8,7 +8,9 @@ Auto is excluded from routing candidates. See [configuration](../README.md#smart
 
 `register.ts` handles `/model auto` and saved/session-only Auto rows with the same
 transition. Saved rows are intercepted before assigning the virtual model; their
-status survives redraws and reflects the actual result. Concrete selections disable
+status survives redraws and reflects the actual result. Native command completion also
+handles session-only choices that bypass saved settings and rendered command hooks.
+Concrete selections disable
 future Auto behavior without cancelling existing children and set the body recipe to
 `DISABLED_AUTO`; legacy off controls retain `DISABLED`. Already-concrete picks do not
 require opt-out feedback. With feedback enabled, `/model` asks for the reason before
