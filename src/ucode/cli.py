@@ -3141,6 +3141,8 @@ def claude_router_hook_cmd(
     model: Annotated[list[str] | None, typer.Option("--model")] = None,
     socket_path: Annotated[str | None, typer.Option("--socket")] = None,
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
+    provider: Annotated[str | None, typer.Option("--provider", hidden=True)] = None,
+    models_file: Annotated[str | None, typer.Option("--models-file", hidden=True)] = None,
 ) -> None:
     """Run a Claude Code smart-routing lifecycle hook."""
     if host and workspace_id:
@@ -3218,15 +3220,23 @@ def claude_router_hook_cmd(
     token = _router_hook_token(host, profile, use_pat)
     if not token:
         return
+    available_models = model or []
+    provider_kwargs: dict[str, Any] = {}
+    if provider:
+        available_models, max_input_tokens = smart_routing_v2.provider_subagent_candidates(
+            models_file, available_models
+        )
+        provider_kwargs = {"provider": provider, "max_input_tokens": max_input_tokens}
     output = smart_routing_v2.route_claude_subagent(
         payload,
         workspace=host,
         token=token,
-        available_models=model or [],
+        available_models=available_models,
         audit_decision=True,
         # Hooks persisted by earlier UG versions still call route-subagent and expect a
         # PreToolUse response; the mod's route-subagent-mod event takes the plain details.
         hook_output=event == "route-subagent",
+        **provider_kwargs,
     )
     if output is not None:
         sys.stdout.write(json.dumps(output))
