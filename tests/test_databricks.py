@@ -4746,6 +4746,19 @@ class TestEnsureDatabricksCliVersion:
 
         assert len(probes) == 1
 
+    @pytest.mark.parametrize("checked_at", [10**400, -(10**400)])
+    def test_oversized_saved_timestamp_is_reprobed(self, tmp_path, monkeypatch, checked_at):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
+        monkeypatch.setattr("os.environ", env)
+        ensure_databricks_cli_version()
+        self._edit_saved_versions(lambda entry: entry.update(checked_at=checked_at))
+        self._start_new_process()
+        probes = self._record_probes(monkeypatch)
+
+        ensure_databricks_cli_version()
+
+        assert len(probes) == 1
+
     def test_insufficient_saved_version_rechecks_before_upgrading(self, tmp_path, monkeypatch):
         env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
         monkeypatch.setattr("os.environ", env)

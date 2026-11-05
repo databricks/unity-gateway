@@ -1,11 +1,5 @@
 # Test suites and user journeys
 
-The managed Codex MCP journey requires the managed workspace's connection-backed
-GitHub service to use native HTTP/OAuth, with its exact URL, resource and client ID.
-Real `codex mcp get` readback must preserve the HTTP transport and URL; a fallback
-to stdio fails this journey. User-scope registrations remain separate. Proxy fallback
-selection is covered by component tests in `test_mcp.py`.
-
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
@@ -330,7 +324,8 @@ again when the binary is replaced or the saved version is over a day old. An
 insufficient saved version is rechecked before any upgrade; unparseable versions and
 dry runs save nothing, a PATH refresh keeps saved versions, and `ug doctor` probes.
 An unwritable cache directory is best-effort: failed temporary-file creation never
-blocks ordinary CLI discovery or launch preflight.
+blocks ordinary CLI discovery or launch preflight. Oversized saved timestamps are
+ignored and re-probed without overflowing numeric conversion.
 
 These component checks do not establish end-to-end launch latency.
 

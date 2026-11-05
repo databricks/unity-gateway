@@ -873,7 +873,8 @@ def _fresh_saved_entry(entry: object) -> TypeGuard[dict]:
     checked_at = entry.get("checked_at")
     if not isinstance(checked_at, int | float) or isinstance(checked_at, bool):
         return False
-    return 0 <= time.time() - checked_at < SAVED_CLI_VERSION_MAX_AGE_SECONDS
+    now = time.time()
+    return now - SAVED_CLI_VERSION_MAX_AGE_SECONDS < checked_at <= now
 
 
 def _saved_cli_version(entry: object, signature: list[int] | None) -> tuple[int, int, int] | None:
