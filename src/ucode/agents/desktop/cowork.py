@@ -67,10 +67,9 @@ def configure_code(mcp_servers: list[dict]) -> bool:
         marketplace_root,
         marketplace_root / "plugins" / PLUGIN_NAME,
         [],
-        {"mcpServers": {}},
+        server_names,
         marketplace_name=CODE_MARKETPLACE_NAME,
         description="Unity Gateway connector guidance for Claude Code",
-        connector_names=server_names,
         code=True,
     )
     _install_plugin(
@@ -168,9 +167,8 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
             marketplace_root,
             plugin_root,
             skill_records,
-            {"mcpServers": {}},
+            list(mcp_config["mcpServers"]),
             hooks,
-            connector_names=list(mcp_config["mcpServers"]),
         )
         config_io.atomic_write_json(
             _state_path(),
@@ -423,12 +421,11 @@ def _write_marketplace(
     marketplace_root: Path,
     plugin_root: Path,
     skill_records: list[dict],
-    mcp_config: dict,
+    connector_names: list[str],
     hooks: dict | None = None,
     *,
     marketplace_name: str = MARKETPLACE_NAME,
     description: str = "Unity Gateway workspace skills and connector guidance for Cowork",
-    connector_names: list[str] | None = None,
     code: bool = False,
 ) -> None:
     marketplace_root.parent.mkdir(parents=True, exist_ok=True)
@@ -442,11 +439,10 @@ def _write_marketplace(
             staging,
             staging_plugin,
             skill_records,
-            mcp_config,
+            connector_names,
             hooks,
             marketplace_name=marketplace_name,
             description=description,
-            connector_names=connector_names,
             code=code,
         )
         if backup.exists():
@@ -470,12 +466,11 @@ def _write_marketplace_contents(
     marketplace_root: Path,
     plugin_root: Path,
     skill_records: list[dict],
-    mcp_config: dict,
+    connector_names: list[str],
     hooks: dict | None,
     *,
     marketplace_name: str = MARKETPLACE_NAME,
-    description: str = "Unity Gateway workspace skills and MCP servers for Cowork",
-    connector_names: list[str] | None = None,
+    description: str = "Unity Gateway workspace skills and connector guidance for Cowork",
     code: bool = False,
 ) -> None:
     (marketplace_root / ".claude-plugin").mkdir(parents=True)
@@ -498,10 +493,10 @@ def _write_marketplace_contents(
         "description": description,
         "author": {"name": "Databricks"},
     }
-    _write_plugin_connectors(plugin_root, plugin, mcp_config, hooks)
+    if hooks:
+        _write_json(plugin_root / "hooks" / "hooks.json", hooks)
     _write_json(marketplace_root / ".claude-plugin" / "marketplace.json", marketplace)
-    names = list(mcp_config["mcpServers"]) if connector_names is None else connector_names
-    _write_plugin_skills(plugin_root / "skills", skill_records, names, code=code)
+    _write_plugin_skills(plugin_root / "skills", skill_records, connector_names, code=code)
     if not code:
         files = _marketplace_files(plugin_root)
         if files is None:
@@ -509,16 +504,6 @@ def _write_marketplace_contents(
         files[".claude-plugin/plugin.json"] = (_json_bytes(plugin), 0o644)
         plugin["version"] = "0.0.0-ug-" + _marketplace_digest(files)
     _write_json(plugin_root / ".claude-plugin" / "plugin.json", plugin)
-
-
-def _write_plugin_connectors(
-    plugin_root: Path, plugin: dict, mcp_config: dict, hooks: dict | None
-) -> None:
-    if mcp_config["mcpServers"]:
-        plugin["mcpServers"] = "./.mcp.json"
-        _write_json(plugin_root / ".mcp.json", mcp_config)
-    if hooks:
-        _write_json(plugin_root / "hooks" / "hooks.json", hooks)
 
 
 def _write_plugin_skills(

@@ -678,7 +678,7 @@ def test_empty_content_replaces_prior_plugin(tmp_path, monkeypatch):
         {"workspace": "https://workspace.example", "profile": "chosen"}, []
     )
 
-    assert writes[0][3] == {"mcpServers": {}}
+    assert writes[0][3] == []
     assert installs[0][0] == cowork_root
 
 
