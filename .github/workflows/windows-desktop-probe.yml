@@ -60,22 +60,21 @@ jobs:
       - name: Download and verify the approved Claude installer
         shell: pwsh
         env:
-          INSTALLER_URL: ${{ inputs.installer_url || 'https://claude.ai/api/desktop/win32/x64/msix/latest/redirect' }}
-          INSTALLER_SHA256: ${{ inputs.installer_sha256 }}
+          INSTALLER_URL: ${{ inputs.installer_url || 'https://downloads.claude.ai/releases/win32/x64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.msix' }}
+          INSTALLER_SHA256: ${{ inputs.installer_sha256 || 'D737861F0DA3175C6B663172AF0E602494CD99FF1B350D57DAE5910A49519FC9' }}
         run: |
           $uri = [Uri]$env:INSTALLER_URL
-          $official = $uri.AbsoluteUri -eq 'https://claude.ai/api/desktop/win32/x64/msix/latest/redirect'
+          $official = $uri.Host -eq 'downloads.claude.ai' -and $uri.AbsolutePath.StartsWith('/releases/win32/x64/')
           if ($uri.Scheme -ne 'https' -or
               (-not $official -and $uri.Host -ne 'databricks.jfrog.io' -and -not $uri.Host.EndsWith('.cloud.databricks.com'))) {
             throw 'Installer must come from the approved Anthropic endpoint or an internal source'
           }
-          if (-not $official -and $env:INSTALLER_SHA256 -notmatch '^[a-fA-F0-9]{64}$') {
+          if ($env:INSTALLER_SHA256 -notmatch '^[a-fA-F0-9]{64}$') {
             throw 'An installer SHA256 is required'
           }
           $installer = Join-Path $env:RUNNER_TEMP 'Claude.msix'
           Invoke-WebRequest -Uri $uri -OutFile $installer -TimeoutSec 300
           $digest = $env:INSTALLER_SHA256
-          if (-not $digest) { $digest = (Get-FileHash $installer -Algorithm SHA256).Hash }
           & ./scripts/desktop-probe/install.ps1 -InstallerPath $installer `
             -ExpectedSha256 $digest `
             -OutputDirectory "$env:RUNNER_TEMP/claude-desktop-probe"

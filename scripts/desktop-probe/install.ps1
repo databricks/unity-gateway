@@ -15,7 +15,9 @@ try {
     $signature = Get-AuthenticodeSignature -LiteralPath $InstallerPath
     $report.signature = $signature.Status.ToString()
     $report.signer = $signature.SignerCertificate.Subject
-    if ($signature.Status -ne 'Valid' -or $report.signer -notmatch '\bO=Anthropic\b') {
+    $publisher = $signature.SignerCertificate.GetNameInfo(
+        [Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+    if ($signature.Status -ne 'Valid' -or $publisher -ne 'Anthropic, PBC') {
         throw 'Expected a valid Anthropic-signed installer'
     }
     if (@(Get-AppxPackage -Name '*Claude*').Count -ne 0) {

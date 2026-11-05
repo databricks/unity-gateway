@@ -9,9 +9,10 @@ It fails if installation, attachment, or the Cowork control is unavailable.
 Opening Cowork alone does not establish its execution environment or inference.
 
 The user approved direct official Anthropic installer and runtime downloads for
-this disposable probe. By default the workflow downloads the official x64 MSIX,
-records its SHA256, and verifies its Anthropic signature before installation.
-This exploratory download discovers the release; it is not a pre-pinned release.
+this disposable probe. By default the workflow downloads the official 2.42304.2
+x64 MSIX and verifies its SHA256 and Anthropic signature before installation.
+The versioned URL and SHA256 come from Microsoft's winget-pkgs catalog:
+`manifests/a/Anthropic/Claude/2.42304.2/Anthropic.Claude.installer.yaml`.
 An internal installer URL and independently pinned SHA256 can also be supplied.
 
 Playwright Core 1.62.1 is pinned through the internal npm proxy, with its integrity
