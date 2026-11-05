@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from utils.constants import CLAUDE_TEST_MODEL, CODEX_TEST_MODEL, COPILOT_HEADLESS_FLAGS
+from utils.constants import CLAUDE_TEST_MODEL, COPILOT_GPT_TEST_MODEL, COPILOT_HEADLESS_FLAGS
 from utils.evidence import FileTask, assert_no_bearer_on_disk, fresh_id
 from utils.terminal import TerminalProcess
 
@@ -198,12 +198,12 @@ def test_ug_configure_copilot_repeat_and_revert(live_session, workspace):
     _configure(session, workspace)
     assert session.workspace_state()["available_tools"] == first["available_tools"]
     assert_no_bearer_on_disk(session)
-    session.record("copilot-model.json", {"model": CODEX_TEST_MODEL})
+    session.record("copilot-model.json", {"model": COPILOT_GPT_TEST_MODEL})
 
     result = session.run(
         "copilot",
         "--model",
-        CODEX_TEST_MODEL,
+        COPILOT_GPT_TEST_MODEL,
         "-p",
         task.prompt_with_path,
         *COPILOT_HEADLESS_FLAGS,
@@ -255,11 +255,11 @@ def test_ug_copilot_upgrade_scrubs_token_saved_by_older_ug(live_session, workspa
 
     _configure(session, workspace)
     assert_no_bearer_on_disk(session)
-    session.record("copilot-model.json", {"model": CODEX_TEST_MODEL})
+    session.record("copilot-model.json", {"model": COPILOT_GPT_TEST_MODEL})
     result = session.run(
         "copilot",
         "--model",
-        CODEX_TEST_MODEL,
+        COPILOT_GPT_TEST_MODEL,
         "-p",
         task.prompt_with_path,
         *COPILOT_HEADLESS_FLAGS,

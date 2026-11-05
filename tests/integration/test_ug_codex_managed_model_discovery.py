@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from utils.constants import MANAGED_CODEX_PROVIDER_SERVICE
 from utils.managed import (
-    is_managed_config_control_plane_cache,
+    codex_state_and_agent_files,
     use_managed_config_fixture,
 )
 from utils.provider_catalog import (
@@ -40,30 +40,13 @@ def _managed_codex_config(live_session):
     use_managed_config_fixture(live_session, "codex_mps")
 
 
-def _codex_state_and_agent_files(session):
-    paths = []
-    for directory in (session.home / ".ucode", session.home / ".codex"):
-        if directory.exists():
-            paths.extend(path for path in directory.rglob("*") if path.is_file())
-    return {
-        str(path.relative_to(session.home)): path.read_bytes()
-        for path in paths
-        if path.is_file()
-        # A fresh launch must retrieve and cache the control-plane input before it can reject an
-        # override. Exclude that expected cache and Codex's disposable arg0 executable links,
-        # which even a version check recreates; persistent agent-owned files stay compared.
-        and not is_managed_config_control_plane_cache(session.home, path)
-        and not path.is_relative_to(session.home / ".codex" / "tmp" / "arg0")
-    }
-
-
 def _assert_rejected_before_codex_started(session, result, before=None):
     output = (result.stdout + result.stderr).lower()
     assert result.returncode == 1
     assert "`--provider` or `--model-location` is not allowed" in output
     assert "managed config exists for the workspace" in output
     if before is not None:
-        assert _codex_state_and_agent_files(session) == before
+        assert codex_state_and_agent_files(session) == before
 
 
 def _assert_managed_provider_catalog(
@@ -215,7 +198,7 @@ def test_case_04_managed_codex_rejects_provider_override_after_configure(
         timeout=240,
     )
     assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
-    before = _codex_state_and_agent_files(session)
+    before = codex_state_and_agent_files(session)
 
     result = session.run(
         "codex",
@@ -271,7 +254,7 @@ def test_case_06_managed_codex_rejects_model_location_override_after_configure(
         timeout=240,
     )
     assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
-    before = _codex_state_and_agent_files(session)
+    before = codex_state_and_agent_files(session)
 
     result = session.run(
         "codex",

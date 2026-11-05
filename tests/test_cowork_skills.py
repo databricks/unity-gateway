@@ -199,7 +199,7 @@ def test_missing_claude_cli_warns_without_failing_download(cowork_home, monkeypa
     result = CliRunner().invoke(cli.app, ["skills", "add", "--names", "main.default.review"])
 
     assert result.exit_code == 0, result.output
-    assert "Could not configure Claude Cowork" in result.output
+    assert "Could not configure Claude Desktop workspace plugin" in result.output
     assert (cowork_home / ".claude" / "skills" / "review" / "SKILL.md").read_bytes() == SKILL_FILES[
         "SKILL.md"
     ]

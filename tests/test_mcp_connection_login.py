@@ -13,6 +13,7 @@ import pytest
 
 from ucode import databricks as db_mod
 from ucode import mcp_connection_login as mcl
+from ucode.os_compatibility import browser_cross_os
 
 WS = "https://ws.staging.cloud.databricks.com"
 AIGW_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
@@ -69,7 +70,7 @@ def sign_in(monkeypatch):
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
-    monkeypatch.setattr(mcl.subprocess_cross_os, "run", launch)
+    monkeypatch.setattr(browser_cross_os.subprocess_cross_os, "run", launch)
     return states, requests, launches, metadata
 
 
@@ -113,8 +114,8 @@ class TestRunConnectionLogin:
         ] * 3
         assert {r.get_header("Authorization") for r in requests} == {"Bearer selected-user-token"}
         assert kwargs["stdin"] == subprocess.DEVNULL
-        assert kwargs["stdout"] is sys.stderr
-        assert kwargs["stderr"] is sys.stderr
+        assert kwargs["stdout"] == subprocess.DEVNULL  # never the MCP stdout wire
+        assert kwargs["stderr"] == subprocess.DEVNULL
         output = capsys.readouterr()
         assert output.out == ""
         assert argv[-1] in output.err
@@ -154,7 +155,7 @@ class TestRunConnectionLogin:
                 raise outcome
             return subprocess.CompletedProcess(args[0], outcome)
 
-        monkeypatch.setattr(mcl.subprocess_cross_os, "run", launch)
+        monkeypatch.setattr(browser_cross_os.subprocess_cross_os, "run", launch)
         assert mcl.run_connection_login(AIGW_URL, WS, profile="selected")[0]
         output = capsys.readouterr()
         assert output.out == ""

@@ -82,6 +82,12 @@ def main() -> None:
         import_module(helper).run(sys.argv[1:])
         return
 
+    if sys.argv[1:2] == ["mcp-proxy"]:
+        from ucode.mcp_proxy_runtime import main as proxy_main
+
+        proxy_main()
+        return
+
     from ucode.cli import main as cli_main
 
     cli_main()
