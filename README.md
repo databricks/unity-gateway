@@ -168,8 +168,10 @@ ug configure --user
 ```
 
 With a workspace-managed configuration, `--agents` limits setup to the requested agents the admin
-enables. Omitting `--agents` configures every enabled agent. A requested disabled agent is skipped
-with a warning, or fails the command when none of the requested agents are enabled.
+enables, plus requested agents already added with `ug agents add`. Those self-managed agents
+retain their own model/provider settings. Omitting `--agents` configures every admin-enabled agent.
+A requested agent with neither admin enablement nor a self-managed opt-in is skipped with a
+warning, or fails the command when none of the requested agents can be configured.
 
 `--global` (the default) writes the machine-wide Claude Code and Codex managed settings with sudo,
 with or without a terminal: run headless as root (or with passwordless sudo), since a write that

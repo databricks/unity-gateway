@@ -5618,21 +5618,30 @@ class TestConfigureAgentsSelection:
         assert picked_for == ["claude"]
 
     @pytest.mark.parametrize(
-        ("selected", "expected", "excluded"),
+        ("selected", "expected", "excluded", "self_managed"),
         [
-            (None, ["claude", "codex", "pi"], None),
-            (["claude"], ["claude"], None),
-            (["codex", "claude"], ["claude", "codex"], None),
-            (["claude", "gemini"], ["claude"], "Gemini"),
+            (None, ["claude", "codex", "pi"], None, []),
+            (["claude"], ["claude"], None, []),
+            (["codex", "claude"], ["claude", "codex"], None, []),
+            (["claude", "gemini"], ["claude"], "Gemini", []),
+            (["gemini"], ["gemini"], None, ["gemini"]),
+            (["claude", "gemini"], ["claude", "gemini"], None, ["gemini"]),
         ],
-        ids=["all-enabled", "claude-only", "requested-subset", "disabled-request-excluded"],
+        ids=[
+            "all-enabled",
+            "claude-only",
+            "requested-subset",
+            "disabled-request-excluded",
+            "self-managed",
+            "mixed-management",
+        ],
     )
     def test_managed_config_applies_selected_enabled_agents_without_picker(
-        self, monkeypatch, capsys, selected, expected, excluded
+        self, monkeypatch, capsys, selected, expected, excluded, self_managed
     ):
         import ucode.cli as cli_mod
 
-        state = {**MINIMAL_STATE, "available_tools": []}
+        state = {**MINIMAL_STATE, "available_tools": [], "self_managed_agents": self_managed}
         monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
         monkeypatch.setattr(
             cli_mod,
@@ -5646,7 +5655,8 @@ class TestConfigureAgentsSelection:
             "install_tool_binary",
             lambda tool, **kwargs: installed.append(tool) or True,
         )
-        monkeypatch.setattr(cli_mod, "resolve_state", lambda managed, s, tool: s)
+        resolve = MagicMock(side_effect=lambda managed, s, tool: s)
+        monkeypatch.setattr(cli_mod, "resolve_state", resolve)
         summaries: list[list[str]] = []
         monkeypatch.setattr(
             cli_mod,
@@ -5673,6 +5683,9 @@ class TestConfigureAgentsSelection:
         )
         assert installed == expected
         assert configured == expected
+        assert [call.args[2] for call in resolve.call_args_list] == [
+            tool for tool in expected if tool not in self_managed
+        ]
         assert summaries == [expected]
         output = " ".join(_strip_ansi(capsys.readouterr().out).split())
         if excluded:
@@ -7640,6 +7653,26 @@ class TestConfiguredLaunchPreflightCache:
         assert preflight.authentication.call_count == preflight.token.call_count == 2
         assert preflight.probe.call_count == preflight.listing.call_count == 1
         assert "current-token" not in json.dumps(preflight.load())
+
+    @pytest.mark.parametrize("tool", ["codex", "pi", "opencode"])
+    def test_successful_empty_optional_families_are_reused(self, preflight, monkeypatch, tool):
+        preflight.listing.return_value = (
+            {"opus": "system.ai.claude-opus-4-8"},
+            ["system.ai.gpt-5"],
+            [],
+            [],
+            None,
+        )
+        monkeypatch.setattr(cli_mod, "discover_gemini_models", lambda *a: ([], None))
+
+        first = preflight.configure(tools=[tool])
+        second = preflight.configure(tools=[tool])
+
+        assert first["launch_preflight"] == second["launch_preflight"]
+        assert preflight.probe.call_count == preflight.listing.call_count == 1
+        assert preflight.authentication.call_count == preflight.token.call_count == 2
+        for field in {"gemini_models", "oss_models"} & set(second["launch_preflight"]["fields"]):
+            assert second[field] == []
 
     @pytest.mark.parametrize("age", [300, 301, -1])
     def test_expired_or_future_stamp_rechecks(self, preflight, age):

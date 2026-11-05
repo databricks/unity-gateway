@@ -423,7 +423,8 @@ component tests in `../test_cli.py`: overlap, probe failure without waiting, lis
 errors, the `skip_model_discovery` and `skip_preflight` paths, and explicit reconfiguration
 refreshing the process-local probe and listing caches. The same component file covers bounded
 persisted success reuse, fresh auth and credential/workspace/profile invalidation, model-field and
-discovery-mode coverage, malformed/expired stamps, and failed-refresh invalidation.
+discovery-mode coverage, successfully empty optional Gemini/OSS families, malformed/expired
+stamps, and failed-refresh invalidation.
 `../test_databricks.py` checks that interrupted pagination retains usable models without caching an
 incomplete catalog. This suite does not assert live request overlap, cache timing, or launch-time
 savings.
@@ -847,7 +848,9 @@ agents below its required minimum; before/after version checks still enforce the
 selected versions. Fable, subset selection, and required-update policy are covered
 by unit/component tests, not dedicated live journeys. The managed-config subset cases in
 `../test_cli.py` preserve default all-enabled setup, limit explicit `--agents` to enabled
-requests, and reject an entirely disabled selection before installing agents.
+requests and existing self-managed opt-ins (without admin model/provider overrides), and reject
+an entirely disabled selection before installing agents. Mixed managed/self-managed setup has
+component coverage only.
 `test_ug_configure_selected_managed_agents.py` uses the checked-in
 `selected_agents_startup` admin input, which enables Claude/Codex/Pi without model pins, to
 configure only Claude, check that Codex config and Pi's binary/files remain absent, and complete

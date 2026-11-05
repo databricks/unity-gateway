@@ -614,7 +614,7 @@ def _can_reuse_launch_preflight(state: dict, identity: str, fields: set[str]) ->
 
 
 def _has_preflight_models(state: dict, fields: set[str]) -> bool:
-    """Incomplete discovery remains retryable instead of becoming a warm-launch success."""
+    """Require valid catalogs, allowing successfully discovered empty optional families."""
     for field in fields:
         value = state.get(field)
         if field == "web_search_model":
@@ -631,7 +631,9 @@ def _has_preflight_models(state: dict, fields: set[str]) -> bool:
             models = value.get("models") if isinstance(value, dict) else None
         else:
             models = value
-        if not isinstance(models, list) or not models:
+        if not isinstance(models, list):
+            return False
+        if not models and field not in {"oss_models", "gemini_models"}:
             return False
         if not all(isinstance(model, str) and model.strip() for model in models):
             return False
@@ -1457,9 +1459,21 @@ def _configure_workspace_command(
                 "configuration; its admin chooses the models."
             )
         summary_managed = managed
+        selected_self_managed: list[str] = []
         if selected_tools is not None:
-            excluded = [name for name in selected_tools if name not in managed_tools]
-            managed_tools = [name for name in managed_tools if name in selected_tools]
+            selected_self_managed = [
+                name
+                for name in selected_tools
+                if name not in managed_tools and is_self_managed(state, name)
+            ]
+            excluded = [
+                name
+                for name in selected_tools
+                if name not in managed_tools and name not in selected_self_managed
+            ]
+            managed_tools = [name for name in managed_tools if name in selected_tools] + (
+                selected_self_managed
+            )
             if not managed_tools:
                 if selected_tools:
                     _reject_disabled_agent(managed, selected_tools[0])
@@ -1473,7 +1487,9 @@ def _configure_workspace_command(
             # Unrequested agents were not attempted, so the summary must not call them failures.
             summary_managed = {
                 **managed,
-                "enabled_agents": {name: managed["enabled_agents"][name] for name in managed_tools},
+                "enabled_agents": {
+                    name: managed["enabled_agents"].get(name, {}) for name in managed_tools
+                },
             }
         refuse_user_scope_over_managed_files(managed_tools)
         managed_tools = _machine_wide_tools(managed_tools)
@@ -1483,10 +1499,16 @@ def _configure_workspace_command(
         configured_tools: list[str] = []
         failed_tools: list[str] = []
         for tool_name in managed_tools:
-            resolved = resolve_state(managed, state, tool_name)
+            # A developer's existing opt-in keeps its own model/provider settings.
+            resolved = (
+                state
+                if tool_name in selected_self_managed
+                else resolve_state(managed, state, tool_name)
+            )
             parent_schema = (
                 managed_unity_catalog_location(managed, tool_name)
                 if tool_name in MODEL_LOCATION_TOOLS
+                and tool_name not in selected_self_managed
                 and not managed_provider_service(managed, tool_name)
                 else None
             )

@@ -631,6 +631,7 @@ keeps its web-search lookup, and that explicit reconfiguration refreshes the pro
 and listing caches. The skip-preflight tests also reject starting a background worker.
 `TestConfiguredLaunchPreflightCache` checks persisted five-minute success reuse after fresh auth,
 credential/profile/auth-mode/workspace-ID changes, family and discovery-mode coverage,
+reuse when optional Gemini/OSS families are successfully empty,
 expired/future/malformed stamps and model data, explicit refresh, and auth/probe/listing failure
 invalidation. Partial-pagination regressions in `test_databricks.py` retain useful models while
 leaving incomplete listings retryable and uncached. These component checks control HTTP and clock
@@ -752,7 +753,8 @@ keyboard selection: nothing is selected by default, selecting Codex installs onl
 Codex, and submitting an empty selection installs nothing. Rendering checks cover
 the selected and empty checkboxes. These are local component checks, not live gateway tests.
 Managed-config selection cases in `test_cli.py` check that a plain configure still installs all
-enabled agents, while explicit `--agents` installs only the requested enabled subset. Disabled
+enabled agents, while explicit `--agents` installs only the requested enabled subset and existing
+self-managed opt-ins without applying admin model/provider overrides to those opt-ins. Disabled
 requests warn when an enabled subset remains and fail before installation when none remains;
 unrequested agents are not reported as configuration failures. These are component checks.
 `integration/test_ug_configure_selected_managed_agents.py` exercises the managed-fixture input
