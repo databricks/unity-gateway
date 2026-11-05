@@ -31,6 +31,11 @@ from ucode.cli import app
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
 from ucode.smart_routing import config as smart_routing_config
+from ucode.smart_routing.routing_models_cache import (
+    RoutingModel,
+    read_routing_models,
+    write_routing_models,
+)
 from ucode.state import save_state as real_save_state
 
 # Captured before the autouse conftest stub replaces it; the installation-location tests restore it.
@@ -9447,3 +9452,218 @@ class TestLaunchWithManagedFilePicker:
         assert result.exit_code == 0, result.output
         # The launch's own source supplies the models, so the picker neither seeds nor skips.
         assert calls["configure"].call_args.args[1]["claude_models"] == discovered
+
+
+class TestProviderSmartRoutingGate:
+    """`UCODE_SMART_ROUTING_PROVIDER` lets Claude, and only Claude, route over a provider."""
+
+    PROVIDER = "main.agents.anthropic_provider"
+
+    @pytest.mark.parametrize(
+        ("tool", "gate", "expected"),
+        [
+            ("claude", None, False),
+            ("claude", "1", True),
+            ("codex", "1", False),
+        ],
+    )
+    def test_launch_options_route_provider_only_for_gated_claude(
+        self, monkeypatch, tool, gate, expected
+    ):
+        if gate is None:
+            monkeypatch.delenv("UCODE_SMART_ROUTING_PROVIDER", raising=False)
+        else:
+            monkeypatch.setenv("UCODE_SMART_ROUTING_PROVIDER", gate)
+
+        options = cli_mod._launch_options(
+            tool,
+            [],
+            smart_routing_enabled=True,
+            explicit_prompt=False,
+            user_pinned_model=None,
+            provider=self.PROVIDER,
+        )
+
+        assert options.launch_smart_routing is expected
+
+    @pytest.mark.parametrize(
+        ("tool", "gate"),
+        [("claude", None), ("claude", "0"), ("codex", "1")],
+        ids=["claude-gate-unset", "claude-gate-off", "codex-gate-on"],
+    )
+    def test_provider_with_smart_routing_is_rejected_outside_gated_claude(
+        self, monkeypatch, tool, gate
+    ):
+        if gate is None:
+            monkeypatch.delenv("UCODE_SMART_ROUTING_PROVIDER", raising=False)
+        else:
+            monkeypatch.setenv("UCODE_SMART_ROUTING_PROVIDER", gate)
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V1)
+
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, [tool, "--provider", self.PROVIDER])
+
+        assert result.exit_code == 1
+        assert "smart routing cannot be enabled with" in " ".join(result.output.split())
+        calls["launch"].assert_not_called()
+
+    def test_gated_claude_launches_routed_with_provider(self, monkeypatch):
+        monkeypatch.setenv("UCODE_SMART_ROUTING_PROVIDER", "1")
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V1)
+        observed = []
+
+        with _launch_policy_patches(None) as calls:
+            calls["launch"].side_effect = lambda _tool, state, *_args, options: observed.append(
+                (options.launch_smart_routing, state.get("_claude_launch_provider"))
+            )
+            result = runner.invoke(app, ["claude", "--provider", self.PROVIDER])
+
+        assert result.exit_code == 0, result.output
+        assert observed == [(True, self.PROVIDER)]
+
+    WS = MINIMAL_STATE["workspace"]
+    OPUS = "us.anthropic.claude-opus-4-6-v1"
+    HAIKU = "anthropic.claude-haiku-4-5@20251001"
+    LAUNCH_MODELS_KEY = cli_mod.smart_routing_v2.CLAUDE_LAUNCH_ROUTING_MODELS_STATE_KEY
+
+    @staticmethod
+    def _routed_env(monkeypatch, gate: bool) -> None:
+        if gate:
+            monkeypatch.setenv("UCODE_SMART_ROUTING_PROVIDER", "1")
+        else:
+            monkeypatch.delenv("UCODE_SMART_ROUTING_PROVIDER", raising=False)
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V1)
+
+    def _invoke(self, catalog):
+        launched = []
+        with _launch_policy_patches(None, picker_catalog=catalog) as calls:
+            calls["launch"].side_effect = lambda _tool, state, *_args, options: launched.append(
+                dict(state)
+            )
+            result = runner.invoke(app, ["claude", "--provider", self.PROVIDER])
+        return result, calls, launched
+
+    def test_gated_launch_fetches_once_and_caches_for_the_routed_launch(self, monkeypatch):
+        self._routed_env(monkeypatch, gate=True)
+        catalog = db_mod.AnthropicModelCatalog(
+            model_ids=[self.OPUS, self.HAIKU],
+            model_id_to_display_name={self.OPUS: "Claude Opus 4.6"},
+            model_id_to_limits={self.OPUS: (1_000_000, 64_000)},
+        )
+
+        result, calls, launched = self._invoke(catalog)
+
+        assert result.exit_code == 0, result.output
+        assert calls["list_catalog"].call_count == 1
+        assert calls["list_catalog"].call_args.kwargs == {"provider": self.PROVIDER}
+        cached = [RoutingModel(self.OPUS, "Claude Opus 4.6", 1_000_000), RoutingModel(self.HAIKU)]
+        assert read_routing_models(self.WS, self.PROVIDER) == cached
+        [state] = launched
+        assert state[self.LAUNCH_MODELS_KEY] == [
+            {"id": self.OPUS, "display_name": "Claude Opus 4.6", "max_input_tokens": 1_000_000},
+            {"id": self.HAIKU},
+        ]
+
+    def test_gated_launch_falls_back_to_cached_models_when_fetch_fails(self, monkeypatch):
+        self._routed_env(monkeypatch, gate=True)
+        write_routing_models(self.WS, self.PROVIDER, [RoutingModel(self.OPUS, "Opus", 1_000_000)])
+        failed = db_mod.AnthropicModelCatalog(
+            model_ids=[], model_id_to_display_name={}, error_msg="HTTP 503"
+        )
+
+        result, calls, launched = self._invoke(failed)
+
+        assert result.exit_code == 0, result.output
+        assert "last known list" in " ".join(result.output.split())
+        assert calls["list_catalog"].call_count == 1
+        assert calls["configure"].call_args.kwargs["picker_catalog"].model_ids == [self.OPUS]
+        [state] = launched
+        assert state[self.LAUNCH_MODELS_KEY] == [
+            {"id": self.OPUS, "display_name": "Opus", "max_input_tokens": 1_000_000}
+        ]
+
+    def test_gated_launch_fails_when_fetch_and_cache_both_fail(self, monkeypatch):
+        self._routed_env(monkeypatch, gate=True)
+        failed = db_mod.AnthropicModelCatalog(
+            model_ids=[], model_id_to_display_name={}, error_msg="HTTP 503"
+        )
+
+        result, calls, _launched = self._invoke(failed)
+
+        assert result.exit_code == 1
+        assert (
+            f"Could not discover Claude models for Model Provider Service {self.PROVIDER}: "
+            "HTTP 503" in " ".join(result.output.split())
+        )
+        calls["launch"].assert_not_called()
+
+    @pytest.mark.parametrize("fetch_fails", [False, True], ids=["fetch-ok", "fetch-fails"])
+    def test_ungated_provider_fetch_is_unchanged(self, monkeypatch, fetch_fails):
+        monkeypatch.delenv("UCODE_SMART_ROUTING_PROVIDER", raising=False)
+        for key in smart_routing_config.SMART_ROUTING_ENV_KEYS:
+            monkeypatch.setenv(key, "0")
+        monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        write_routing_models(self.WS, self.PROVIDER, [RoutingModel("cached-model")])
+        catalog = db_mod.AnthropicModelCatalog(
+            model_ids=[] if fetch_fails else [self.OPUS],
+            model_id_to_display_name={},
+            error_msg="HTTP 503" if fetch_fails else None,
+        )
+
+        result, calls, launched = self._invoke(catalog)
+
+        assert calls["list_catalog"].call_count == 1
+        assert read_routing_models(self.WS, self.PROVIDER) == [RoutingModel("cached-model")]
+        if fetch_fails:
+            assert result.exit_code == 1
+            assert "HTTP 503" in result.output
+            assert "last known list" not in result.output
+        else:
+            assert result.exit_code == 0, result.output
+            [state] = launched
+            assert self.LAUNCH_MODELS_KEY not in state
+
+
+class TestProviderRoutingLaunchHygiene:
+    PROVIDER = "main.agents.anthropic_provider"
+
+    @pytest.fixture(autouse=True)
+    def _gated_routing(self, monkeypatch):
+        monkeypatch.setenv("UCODE_SMART_ROUTING_PROVIDER", "1")
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V1)
+
+    def test_relayed_provider_keeps_the_guard(self):
+        with _launch_policy_patches(None) as calls:
+            calls["resolve_provider"].return_value = (None, None, True)
+            result = runner.invoke(app, ["claude", "--provider", self.PROVIDER])
+
+        output = " ".join(result.output.split())
+        assert result.exit_code == 1
+        assert "smart routing cannot be enabled with --provider" in output
+        assert "one-time hook review" not in output
+        calls["launch"].assert_not_called()
+
+    def test_gated_launch_persists_no_launch_scoped_keys(self):
+        import ucode.state as state_mod
+
+        catalog = db_mod.AnthropicModelCatalog(
+            model_ids=["us.anthropic.claude-opus-4-6-v1"], model_id_to_display_name={}
+        )
+        launched = []
+        with _launch_policy_patches(None, picker_catalog=catalog) as calls:
+            # Launch persists state when it configures the tool, before launch-only keys exist.
+            calls["configure"].side_effect = lambda _tool, state, *_a, **_k: (
+                real_save_state(state) or state
+            )
+            calls["launch"].side_effect = lambda _tool, state, *_a, **_k: launched.append(state)
+            result = runner.invoke(app, ["claude", "--provider", self.PROVIDER])
+
+        assert result.exit_code == 0, result.output
+        [state] = launched
+        assert state["_claude_launch_routing_models"]
+        saved = json.dumps(json.loads(state_mod.STATE_PATH.read_text()))
+        for key in (
+            "_claude_launch_provider",
+            "_claude_launch_routing_models",
+        ):
+            assert key not in saved

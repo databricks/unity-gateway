@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -37,6 +38,7 @@ from ucode.constants import (
     LOOPBACK_HOST,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
+    SMART_ROUTING_PROVIDER_ENV_VAR,
 )
 from ucode.custom_oauth import custom_oauth_cli_enabled, launch_token
 from ucode.databricks import (
@@ -46,6 +48,7 @@ from ucode.databricks import (
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
 )
+from ucode.env import env_bool
 from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
@@ -68,8 +71,16 @@ from ucode.smart_routing.claude_hooks import (
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
 from ucode.smart_routing.config import apply_config, apply_enabled_version, resolve_environment
+from ucode.smart_routing.routing_models_cache import (
+    RoutingModel,
+    read_routing_models,
+    routing_models_from_catalog,
+    routing_models_from_json,
+    write_routing_models,
+)
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_note, print_warning
+from ucode.workspace import state_workspace_key
 
 LEGACY_STATE_KEY = "smart_routing_enabled"
 
@@ -92,6 +103,12 @@ OAUTH_TOKEN_ENV_VAR = "OAUTH_TOKEN"
 HEALTH_REQUEST_TIMEOUT_SECONDS = 1
 HEALTH_POLL_INTERVAL_SECONDS = 0.25
 CLAUDE_ROUTE_SELECTION_TIMEOUT_S = 20.0
+# Claude Code's `[1m]` hint for a provider model is earned only by the context its catalog reports.
+CLAUDE_1M_CONTEXT_TOKENS = 1_000_000
+# The Model Provider Service the CLI resolved for this Claude launch (explicit, managed, or saved).
+CLAUDE_LAUNCH_PROVIDER_STATE_KEY = "_claude_launch_provider"
+# The provider's routing models the CLI already resolved for this launch, as cache JSON rows.
+CLAUDE_LAUNCH_ROUTING_MODELS_STATE_KEY = "_claude_launch_routing_models"
 CLAUDE_ROUTED_AGENT_PREFIX = "ucode-route-"
 CLAUDE_ROUTING_PLUGIN_NAME = "ug-smart-router"
 CLAUDE_ROUTED_AGENT_PROMPT = (
@@ -479,8 +496,12 @@ def _request_claude_routing_decision(
     token: str,
     prompt: str,
     model_ids: list[str],
+    *,
+    canonicalize: bool = True,
 ) -> tuple[routing.RoutingDecision | None, str | None]:
-    route_options = routing.route_options_for(_canonical_claude_models(model_ids), "claude")
+    # A provider's ids name its own models, so system.ai alias rewrites never apply to them.
+    candidates = _canonical_claude_models(model_ids) if canonicalize else model_ids
+    route_options = routing.route_options_for(candidates, "claude")
     if not route_options:
         return None, "Anthropic models endpoint returned no Claude models"
     return routing.select_route(
@@ -498,6 +519,8 @@ def _route_claude_prompt(
     token: str,
     prompt: str,
     model_ids: list[str] | None = None,
+    *,
+    canonicalize: bool = True,
 ) -> routing.RoutingDecision:
     workspace = state.get("workspace")
     if not isinstance(workspace, str):
@@ -509,7 +532,9 @@ def _route_claude_prompt(
             raise RuntimeError(
                 discovery_error or "Anthropic models endpoint returned no Claude models"
             )
-    decision, error = _request_claude_routing_decision(workspace, token, prompt, model_ids)
+    decision, error = _request_claude_routing_decision(
+        workspace, token, prompt, model_ids, canonicalize=canonicalize
+    )
     if decision is None:
         raise RuntimeError(error or "router returned no Claude model selection")
     return decision
@@ -521,10 +546,11 @@ def _route_print_mode_prompt(
     prompt: str,
     catalog: AnthropicModelCatalog,
     model_name: Callable[[str], str],
+    **route_kwargs: bool,
 ) -> str | None:
     """Pick a model for a headless prompt; None keeps Claude's default if the router fails."""
     try:
-        decision = _route_claude_prompt(state, token, prompt, catalog.model_ids)
+        decision = _route_claude_prompt(state, token, prompt, catalog.model_ids, **route_kwargs)
     except RuntimeError as exc:
         print_warning(f"Smart routing couldn't pick a model ({exc}); using Claude's default.")
         return None
@@ -594,10 +620,79 @@ def route_claude_subagent(
     }
 
 
+def _provider_context(models: list[RoutingModel]) -> dict[str, int]:
+    return {model.id: model.max_input_tokens for model in models if model.max_input_tokens}
+
+
 def _is_claude_target_model(value: object) -> bool:
     if not isinstance(value, str):
         return False
     return value.removesuffix("[1m]") == CLAUDE_TARGET_MODEL.removesuffix("[1m]")
+
+
+def provider_routing_enabled(*, agent: str) -> bool:
+    """Whether smart routing may run over a Model Provider Service's models for ``agent``."""
+    return agent == AGENT_CLAUDE and env_bool(SMART_ROUTING_PROVIDER_ENV_VAR)
+
+
+def _claude_routing_provider(state: dict) -> str | None:
+    """The launch's Model Provider Service when provider routing is enabled, else None."""
+    if not provider_routing_enabled(agent=AGENT_CLAUDE):
+        return None
+    provider = state.get(CLAUDE_LAUNCH_PROVIDER_STATE_KEY)
+    return provider if isinstance(provider, str) and provider else None
+
+
+def refresh_provider_routing_models(
+    state: dict, provider: str, fetched: AnthropicModelCatalog
+) -> list[RoutingModel] | None:
+    """Cache a successful provider catalog, or fall back to the cached one; None if neither."""
+    cache_key = state_workspace_key(state) or str(state.get("workspace") or "")
+    if fetched.model_ids and not fetched.error_msg:
+        models = routing_models_from_catalog(fetched)
+        write_routing_models(cache_key, provider, models)
+        return models
+    models = read_routing_models(cache_key, provider)
+    if not models:
+        return None
+    print_warning(
+        f"Could not refresh models for Model Provider Service {provider} "
+        f"({fetched.error_msg or 'no models returned'}); routing over the last known list."
+    )
+    return models
+
+
+def catalog_from_routing_models(models: list[RoutingModel]) -> AnthropicModelCatalog:
+    return AnthropicModelCatalog(
+        model_ids=[model.id for model in models],
+        model_id_to_display_name={
+            model.id: model.display_name for model in models if model.display_name
+        },
+    )
+
+
+def _provider_routing_models(
+    state: dict, workspace: str, token: str, provider: str
+) -> list[RoutingModel]:
+    """The provider's models: the CLI's, else fetched, else the cached list."""
+    resolved = state.get(CLAUDE_LAUNCH_ROUTING_MODELS_STATE_KEY)
+    models = routing_models_from_json(resolved) if isinstance(resolved, list) else None
+    if not models:
+        fetched = list_anthropic_model_catalog(workspace, token, provider=provider)
+        models = refresh_provider_routing_models(state, provider, fetched)
+        if not models:
+            raise RuntimeError(
+                f"Could not discover Claude models for Model Provider Service {provider}: "
+                f"{fetched.error_msg or 'the provider returned no models'}"
+            )
+    return models
+
+
+def _provider_model_name(max_input_tokens: Mapping[str, int], model: str) -> str:
+    """Keep a provider id verbatim, adding `[1m]` only when its catalog reports 1M context."""
+    if model.endswith("[1m]") or max_input_tokens.get(model, 0) < CLAUDE_1M_CONTEXT_TOKENS:
+        return model
+    return f"{model}[1m]"
 
 
 def _claude_print_mode(tool_args: list[str]) -> bool:
@@ -688,14 +783,26 @@ def launch_claude(
         )
     token = launch_token(state, workspace)
     os.environ[OAUTH_TOKEN_ENV_VAR] = token
-    # if modelPicker is defined, then skip model discovery.
-    picker_catalog = _model_picker_catalog()
-    if picker_catalog is None:
-        os.environ[GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
-        os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-        catalog = list_anthropic_model_catalog(workspace, token)
+    provider = _claude_routing_provider(state)
+    provider_models: list[RoutingModel] = []
+    provider_context: dict[str, int] | None = None
+    if provider is not None:
+        # The provider's own catalog is the candidate set; a picker would list other models.
+        provider_models = _provider_routing_models(state, workspace, token, provider)
+        catalog = catalog_from_routing_models(provider_models)
+        provider_context = _provider_context(provider_models)
+        model_name = functools.partial(_provider_model_name, provider_context)
     else:
-        catalog = picker_catalog
+        # if modelPicker is defined, then skip model discovery.
+        picker_catalog = _model_picker_catalog()
+        if picker_catalog is None:
+            os.environ[GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
+            os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
+            catalog = list_anthropic_model_catalog(workspace, token)
+        else:
+            catalog = picker_catalog
+    canonicalize = provider is None
+    route_kwargs = {} if canonicalize else {"canonicalize": False}
     if not catalog.model_ids:
         raise RuntimeError(
             catalog.error_msg or "Anthropic models endpoint returned no Claude models"
@@ -716,7 +823,9 @@ def launch_claude(
         ):
             prompt, stdin_prompt = _claude_print_prompt(remaining)
             if prompt:
-                routed_model = _route_print_mode_prompt(state, token, prompt, catalog, model_name)
+                routed_model = _route_print_mode_prompt(
+                    state, token, prompt, catalog, model_name, **route_kwargs
+                )
     # TODO: Restore first-prompt routing on Windows after replacing the Unix-only PTY wrapper:
     # https://databricks.atlassian.net/browse/AIGTWY-4385
     elif route_first_prompt and os.name == "nt":
@@ -742,7 +851,9 @@ def launch_claude(
     model_overrides = settings.setdefault("modelOverrides", {})
     if not isinstance(model_overrides, dict):
         raise RuntimeError("Claude settings 'modelOverrides' must be an object for smart routing.")
-    model_overrides.update(_claude_model_overrides(model_ids))
+    if canonicalize:
+        # These map Claude Code's names to system.ai ids, which would leave a provider's models.
+        model_overrides.update(_claude_model_overrides(model_ids))
     routing_state = {
         **state,
         "claude_models": {str(index): model for index, model in enumerate(model_ids)},
@@ -754,7 +865,7 @@ def launch_claude(
     model_setting = _ClaudeModelSettingGuard(user_settings_path)
 
     def route_prompt(prompt: str) -> claude_pty.FirstPromptRoute:
-        decision = _route_claude_prompt(state, token, prompt, model_ids)
+        decision = _route_claude_prompt(state, token, prompt, model_ids, **route_kwargs)
         return claude_pty.FirstPromptRoute(
             model=model_name(_unwrapped_claude_model_id(decision.model)),
             display_model=catalog.model_id_to_display_name.get(decision.model, decision.model),

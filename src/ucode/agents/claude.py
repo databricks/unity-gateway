@@ -2897,6 +2897,7 @@ def launch(
         # than persisting it in Claude's private or OS-managed settings.
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
     if state.get("claude_relayed"):
+        # The relay proxy path has no routing wiring; the CLI refuses routing for relayed providers.
         _launch_relayed(state, binary, tool_args)
         return
     server_side_search = _use_server_side_web_search(state)

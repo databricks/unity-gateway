@@ -17,6 +17,11 @@ from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import claude_hooks, routing, v2
+from ucode.smart_routing.routing_models_cache import (
+    RoutingModel,
+    read_routing_models,
+    write_routing_models,
+)
 
 if sys.platform != "win32":
     from ucode.smart_routing import claude_pty
@@ -1220,3 +1225,214 @@ def test_routing_hook_command_keeps_posix_quoting_on_windows(monkeypatch):
     monkeypatch.setattr(subprocess_cross_os.platform, "system", lambda: "Windows")
     hook = claude_hooks._routing_command_hook([r"C:\Users\me\.local\bin\ug.EXE", "route-subagent"])
     assert hook["command"] == r"'C:\Users\me\.local\bin\ug.EXE' route-subagent"
+
+
+class TestV2ProviderRouting:
+    """Gated routing over a Model Provider Service's own catalog."""
+
+    WS = "https://example.com"
+    PROVIDER = "main.agents.bedrock_provider"
+    OPUS = "us.anthropic.claude-opus-4-6-v1"
+    HAIKU = "anthropic.claude-haiku-4-5@20251001"
+    # Matches the system.ai family pattern; its `[1m]` must still come only from the catalog.
+    NATIVE = "claude-opus-4-6"
+    PAYLOAD = {
+        "data": [
+            {
+                "id": OPUS,
+                "display_name": "Claude Opus 4.6",
+                "max_input_tokens": 1_000_000,
+                "max_tokens": 64_000,
+            },
+            {"id": HAIKU, "max_input_tokens": 200_000, "max_tokens": 8_192},
+            {"id": NATIVE, "max_input_tokens": 200_000, "max_tokens": 8_192},
+        ]
+    }
+
+    @pytest.fixture
+    def env(self, monkeypatch, tmp_path):
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.SMART_ROUTING_PROVIDER_ENV_VAR, "1")
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+        monkeypatch.setattr(
+            v2, "_model_picker_catalog", Mock(side_effect=AssertionError("picker read"))
+        )
+        monkeypatch.setattr(v2.sys, "stdin", Mock(isatty=lambda: True))
+        captured: dict = {"requests": []}
+
+        def fake_get_json(url, token, **kwargs):
+            captured["requests"].append((url, kwargs.get("headers")))
+            return captured.get("response", (self.PAYLOAD, None))
+
+        def fake_select(workspace, token, task, route_options, **kwargs):
+            captured["route_options"] = list(route_options)
+            return routing.RoutingDecision(model=captured["routed"], rationale="why"), None
+
+        monkeypatch.setattr("ucode.databricks._http_get_json", fake_get_json)
+        monkeypatch.setattr(routing, "select_route", fake_select)
+        return captured
+
+    def _launch(self, monkeypatch, tmp_path, captured, tool_args, *, resolved=None):
+        class FakeProc:
+            def __init__(self, argv, **_kwargs):
+                captured["argv"] = argv
+                captured["settings"] = json.loads(
+                    Path(argv[argv.index("--settings") + 1]).read_text()
+                )
+                self.stdin = None
+
+            def wait(self):
+                return 0
+
+        monkeypatch.setattr(v2.subprocess, "Popen", FakeProc)
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_claude(
+                {
+                    "workspace": self.WS,
+                    "_claude_launch_provider": self.PROVIDER,
+                    **(
+                        {}
+                        if resolved is None
+                        else {v2.CLAUDE_LAUNCH_ROUTING_MODELS_STATE_KEY: resolved}
+                    ),
+                },
+                tool_args,
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=None,
+                compose_settings=lambda args: ({}, list(args)),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+        assert exc.value.code == 0
+        argv = captured["argv"]
+        return argv[argv.index("--model") + 1]
+
+    @pytest.mark.parametrize(
+        ("routed", "expected"),
+        [(OPUS, f"{OPUS}[1m]"), (HAIKU, HAIKU), (NATIVE, NATIVE)],
+    )
+    def test_routes_over_provider_catalog_with_raw_ids(
+        self, monkeypatch, tmp_path, env, routed, expected
+    ):
+        env["routed"] = routed
+
+        model = self._launch(monkeypatch, tmp_path, env, ["-p", "fix the parser"])
+
+        assert model == expected
+        [(url, headers)] = env["requests"]
+        assert url.endswith("/ai-gateway/anthropic/v1/models?limit=1000")
+        assert headers == {"Databricks-Model-Provider-Service": self.PROVIDER}
+        assert env["route_options"] == [
+            (self.OPUS, "claude"),
+            (self.HAIKU, "claude"),
+            (self.NATIVE, "claude"),
+        ]
+        assert env["settings"].get("modelOverrides", {}) == {}
+        assert read_routing_models(self.WS, self.PROVIDER) == [
+            RoutingModel(self.OPUS, "Claude Opus 4.6", 1_000_000),
+            RoutingModel(self.HAIKU, None, 200_000),
+            RoutingModel(self.NATIVE, None, 200_000),
+        ]
+
+    def test_falls_back_to_cached_models_when_fetch_fails(self, monkeypatch, tmp_path, env):
+        write_routing_models(self.WS, self.PROVIDER, [RoutingModel(self.OPUS, None, 1_000_000)])
+        env["response"] = (None, "HTTP 503")
+        env["routed"] = self.OPUS
+        warnings: list[str] = []
+        monkeypatch.setattr(v2, "print_warning", warnings.append)
+
+        model = self._launch(monkeypatch, tmp_path, env, ["-p", "fix the parser"])
+
+        assert model == f"{self.OPUS}[1m]"
+        assert env["route_options"] == [(self.OPUS, "claude")]
+        assert any("last known list" in warning for warning in warnings)
+
+    def test_fails_when_fetch_and_cache_both_fail(self, monkeypatch, tmp_path, env):
+        env["response"] = (None, "HTTP 503")
+
+        with pytest.raises(RuntimeError, match=f"Model Provider Service {self.PROVIDER}: HTTP 503"):
+            self._launch(monkeypatch, tmp_path, env, ["-p", "fix the parser"])
+
+    def test_cache_is_scoped_to_the_launch_provider(self, monkeypatch, tmp_path, env):
+        write_routing_models(self.WS, "main.agents.other", [RoutingModel(self.OPUS)])
+        write_routing_models(self.WS, None, [RoutingModel(self.OPUS)])
+        env["response"] = (None, "HTTP 503")
+
+        with pytest.raises(RuntimeError, match="HTTP 503"):
+            self._launch(monkeypatch, tmp_path, env, ["-p", "fix the parser"])
+
+    @requires_pty
+    def test_first_prompt_keeps_raw_id_and_earns_1m_from_catalog(self, monkeypatch, tmp_path, env):
+        routes = []
+
+        def fake_run(_argv, **kwargs):
+            for model in (self.OPUS, self.HAIKU, self.NATIVE):
+                env["routed"] = model
+                routes.append(kwargs["route_prompt"]("fix the parser"))
+            return 0
+
+        monkeypatch.setattr(claude_pty, "run_claude_pty", fake_run)
+        with pytest.raises(SystemExit):
+            v2.launch_claude(
+                {"workspace": self.WS, "_claude_launch_provider": self.PROVIDER},
+                [],
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=None,
+                compose_settings=lambda args: ({}, list(args)),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+
+        assert routes == [
+            claude_pty.FirstPromptRoute(
+                model=f"{self.OPUS}[1m]", display_model="Claude Opus 4.6", rationale="why"
+            ),
+            claude_pty.FirstPromptRoute(
+                model=self.HAIKU, display_model=self.HAIKU, rationale="why"
+            ),
+            claude_pty.FirstPromptRoute(
+                model=self.NATIVE, display_model=self.NATIVE, rationale="why"
+            ),
+        ]
+
+    def test_gate_off_ignores_launch_provider(self, monkeypatch, tmp_path, env):
+        monkeypatch.delenv(v2.SMART_ROUTING_PROVIDER_ENV_VAR)
+        monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
+        env["routed"] = "system.ai.claude-sonnet-5"
+        monkeypatch.setattr(
+            v2,
+            "list_anthropic_model_catalog",
+            lambda *args, **kwargs: (
+                env.setdefault("catalog_calls", []).append(kwargs)
+                or AnthropicModelCatalog(
+                    model_ids=["databricks-claude-sonnet-5"], model_id_to_display_name={}
+                )
+            ),
+        )
+
+        model = self._launch(monkeypatch, tmp_path, env, ["-p", "fix the parser"])
+
+        assert env["catalog_calls"] == [{}]
+        assert env["route_options"] == [("system.ai.claude-sonnet-5", "claude")]
+        assert model == "system.ai.claude-sonnet-5[1m]"
+        assert read_routing_models(self.WS, self.PROVIDER) is None
+
+    def test_reuses_models_the_cli_resolved_without_fetching(self, monkeypatch, tmp_path, env):
+        env["routed"] = self.OPUS
+
+        model = self._launch(
+            monkeypatch,
+            tmp_path,
+            env,
+            ["-p", "fix the parser"],
+            resolved=[{"id": self.OPUS, "max_input_tokens": 1_000_000}, {"id": self.HAIKU}],
+        )
+
+        assert env["requests"] == []
+        assert model == f"{self.OPUS}[1m]"
+        assert env["route_options"] == [(self.OPUS, "claude"), (self.HAIKU, "claude")]

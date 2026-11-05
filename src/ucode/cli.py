@@ -194,6 +194,7 @@ from ucode.smart_routing.claude_hooks import (
     ROUTE_FIRST_PROMPT_EVENT,
     ROUTE_SUBAGENT_MOD_EVENT,
 )
+from ucode.smart_routing.routing_models_cache import routing_models_to_json
 from ucode.smart_routing.session_env import (
     effective_environment,
     session_env_path,
@@ -3602,8 +3603,8 @@ def _launch_options(
             smart_routing_enabled
             # Only Claude Code and Codex currently support smart routing.
             and tool in CAN_USE_CACHED_CONFIG_AGENTS
-            # Smart routing does not currently support Model Provider Services.
-            and provider is None
+            # Model Provider Services route only behind their rollout gate.
+            and (provider is None or smart_routing_v2.provider_routing_enabled(agent=tool))
             # Route a supported interactive launch shape.
             and _should_launch_smart_routing(
                 tool,
@@ -3612,6 +3613,13 @@ def _launch_options(
                 model=user_pinned_model,
             )
         ),
+    )
+
+
+def _smart_routing_provider_error(tool: str) -> RuntimeError:
+    return RuntimeError(
+        f"{TOOL_SPECS[tool]['display']} smart routing cannot be enabled with "
+        "--provider. Launch without a Model Provider Service and try again."
     )
 
 
@@ -3905,11 +3913,13 @@ def _launch_tool(
             raise RuntimeError("--provider and --model-location cannot be used together.")
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
         # guard too, or routing would be persisted as on while a provider is active.
-        if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and provider:
-            raise RuntimeError(
-                f"{TOOL_SPECS[tool]['display']} smart routing cannot be enabled with "
-                "--provider. Launch without a Model Provider Service and try again."
-            )
+        if (
+            tool in CAN_USE_CACHED_CONFIG_AGENTS
+            and smart_routing_enabled
+            and provider
+            and not smart_routing_v2.provider_routing_enabled(agent=tool)
+        ):
+            raise _smart_routing_provider_error(tool)
         # Validate the provider service before launching — it must exist, be a
         # provider type this tool can route to (e.g. claude can't use an OpenAI
         # or Foundry service), and, for Claude on Bedrock, expose Claude models to pin.
@@ -3948,6 +3958,9 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
+        # A relayed provider launches through its own proxy path, which has no smart routing.
+        if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and relayed:
+            raise _smart_routing_provider_error(tool)
         # Managed defaults choose models without limiting the selected source's catalog.
         should_fetch_claude_picker_catalog = (
             tool == "claude"
@@ -3957,6 +3970,7 @@ def _launch_tool(
                 or (managed is None and bool(explicit_provider or parent_schema))
             )
         )
+        provider_routing_models = None
         if should_fetch_claude_picker_catalog:
             token = get_databricks_token(state["workspace"], catalog_profile)
             picker_catalog = list_anthropic_model_catalog(
@@ -3965,6 +3979,20 @@ def _launch_tool(
                 **({"provider": provider} if provider else {"parent_schema": parent_schema}),
             )
             error = picker_catalog.error_msg
+            if (
+                provider
+                and smart_routing_enabled
+                and smart_routing_v2.provider_routing_enabled(agent=tool)
+            ):
+                # The routed launch reuses this fetch; a failed one falls back to the cached list.
+                provider_routing_models = smart_routing_v2.refresh_provider_routing_models(
+                    state, provider, picker_catalog
+                )
+                if provider_routing_models is not None and (error or not picker_catalog.model_ids):
+                    picker_catalog = smart_routing_v2.catalog_from_routing_models(
+                        provider_routing_models
+                    )
+                    error = None
             if error:
                 if provider:
                     source = f"Model Provider Service {provider}"
@@ -4143,7 +4171,14 @@ def _launch_tool(
         print_section(_launch_title(tool))
         if provider:
             print_kv("Provider", provider)
-        if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and not provider:
+        if (
+            tool in CAN_USE_CACHED_CONFIG_AGENTS
+            and smart_routing_enabled
+            and (
+                not provider
+                or (smart_routing_v2.provider_routing_enabled(agent=tool) and not relayed)
+            )
+        ):
             print_note(
                 f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
                 "`/hooks` and trust the ug routing hooks if prompted."
@@ -4160,6 +4195,10 @@ def _launch_tool(
         if tool == AGENT_CLAUDE:
             if provider:
                 state["_claude_launch_provider"] = provider
+            if provider_routing_models is not None:
+                state[smart_routing_v2.CLAUDE_LAUNCH_ROUTING_MODELS_STATE_KEY] = (
+                    routing_models_to_json(provider_routing_models)
+                )
         elif tool == AGENT_CODEX:
             if provider:
                 state["_codex_launch_provider"] = provider
