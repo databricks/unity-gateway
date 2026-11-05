@@ -39,7 +39,8 @@ def wait_for(label, timeout=40):
     while time.monotonic() < deadline:
         try:
             last = ui("snapshot")
-            if any(value in last for value in ([label] if isinstance(label, str) else label)):
+            labels = [label] if isinstance(label, str) else label
+            if any(value in row.split(" | ") for value in labels for row in last.splitlines()):
                 return last
         except RuntimeError as exc:
             last = str(exc)
@@ -122,10 +123,15 @@ def main():
         wait_for("Continue")
         ui("click", "Continue")
         print("Gateway onboarding accepted", flush=True)
+        navigation = wait_for(("Cowork", "Show sidebar"), timeout=60)
+        if "Show sidebar" in navigation:
+            ui("click", "Show sidebar")
         wait_for("Cowork", timeout=60)
         save("navigation-ui.txt", ui("snapshot"))
         ui("click", "Cowork")
-        print("Cowork activation requested", flush=True)
+        wait_for("Scheduled")
+        report["coworkActivated"] = True
+        print("Cowork selected", flush=True)
         snapshot = wait_for("Write your prompt to Claude", timeout=60)
         save("cowork-ui.txt", snapshot)
         if f"Model: {model_label}" not in snapshot:

@@ -56,7 +56,7 @@ def main():
         stages = {
             "UG gateway profile configured",
             "Gateway onboarding accepted",
-            "Cowork activation requested",
+            "Cowork selected",
             "Start task requested",
             "Cowork inference passed",
             "Cowork probe failed; see evidence",
