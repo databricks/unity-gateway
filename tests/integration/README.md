@@ -161,7 +161,7 @@ Other component regressions cover MCP-only requests bypassing Desktop provisioni
 intermediate runtime symlink trust, and early Databricks/Claude CLI validation before
 installer or version probes. Six representative unsafe-CLI cases cover the global path,
 dry run, and named/empty/omitted profiles. Omitted-agent selection and the
-managed-only Desktop connector policy under `--global --mcp` also have component
+rejection of `--global --mcp` before Desktop publication also have component
 coverage; these are not native macOS integration checks.
 
 macOS MDM provisioning and its per-user LaunchAgent are outside these Linux/Windows

@@ -5314,16 +5314,10 @@ class TestConfigureMcpFlag:
         mock_mcp.assert_called_once_with(services={"system.ai.slack", "system.ai.github"})
         mock_sync.assert_called_once_with()
 
-    @pytest.mark.parametrize("flags", [[], ["--global"]])
-    def test_mcp_only_configures_workspace_without_agent_picker(self, monkeypatch, flags):
+    def test_mcp_only_configures_workspace_without_agent_picker(self):
         # `--mcp` with no --agents (e.g. Cursor): configure the workspace directly,
         # never the interactive agent picker, then register the MCP service.
-        monkeypatch.setattr(cli_mod.sys, "platform", "darwin")
         with (
-            patch(
-                "ucode.agents.desktop.mdm.validate_mdm_execution",
-                side_effect=AssertionError("MCP-only configure must not require Desktop MDM"),
-            ) as desktop_preflight,
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
             patch("ucode.cli._configure_shared_workspace_states") as mock_shared,
@@ -5338,11 +5332,9 @@ class TestConfigureMcpFlag:
                     "https://ws.databricks.com",
                     "--mcp",
                     "system.ai.slack",
-                    *flags,
                 ],
             )
         assert result.exit_code == 0, result.output
-        desktop_preflight.assert_not_called()
         # Never the model-agent picker path.
         mock_cfg.assert_not_called()
         mock_shared.assert_called_once()
@@ -6936,7 +6928,12 @@ class TestConfigureScopeFlags:
             patch("ucode.cli._configure_managed_mcp_servers"),
             patch("ucode.cli.reconcile_managed_skills") as mock_skills,
             patch("ucode.cli.restore_workspace_mcp_servers") as mock_restore,
-            patch("ucode.agents.desktop.setup._configure_desktop") as mock_desktop,
+            patch(
+                "ucode.agents.desktop.setup._configure_claude_desktop_user_level"
+            ) as mock_desktop,
+            patch("ucode.agents.desktop.mdm.configure"),
+            patch("ucode.agents.desktop.mdm.validate_mdm_execution"),
+            patch("ucode.agents.desktop.mdm.validate_cli_discovery"),
             patch("ucode.agents.desktop.setup.configure_cowork") as mock_cowork,
         ):
             cli_mod._configure_workspace_command(

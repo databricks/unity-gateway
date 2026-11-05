@@ -34,7 +34,11 @@ def desktop_configuration(device, monkeypatch):
     monkeypatch.setattr(setup, "get_databricks_token", device.auth)
     monkeypatch.setattr(cli, "_configure_shared_workspace_states", lambda *a, **kw: [state])
     monkeypatch.setattr(cli, "refresh_managed_config", lambda *a, **kw: (None, False))
-    monkeypatch.setattr(cli, "configure_selected_tools", lambda *a, **kw: state)
+    monkeypatch.setattr(
+        cli,
+        "configure_selected_tools",
+        lambda state, tools, **kwargs: {**state, "last_configured_tools": tools},
+    )
     monkeypatch.setattr(cli, "configure_single_tool", lambda *a, **kw: state)
     monkeypatch.setattr(cli, "save_state", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "install_databricks_cli", lambda: None)
@@ -145,20 +149,17 @@ def test_global_provisions_without_a_desktop_account(
     assert not (tmp_path / "Desktop").exists()
 
 
-def test_global_extra_mcp_selection_applies_only_to_cli_clients(
-    desktop_configuration, device, monkeypatch
-):
+def test_global_rejects_extra_user_mcp_selection(desktop_configuration, device, monkeypatch):
     configure_mcp = Mock()
     monkeypatch.setattr(cli, "configure_mcp_command", configure_mcp)
 
     result = _configure("--global", "--mcp", "system.ai.gmail")
 
-    assert result.exit_code == 0, result.output
-    configure_mcp.assert_called_once_with(services={"system.ai.gmail"})
-    plugin = device.source / "plugins/ug"
-    servers = json.loads((plugin / ".mcp.json").read_bytes())["mcpServers"]
-    assert set(servers) == {"slack"}
-    assert servers["slack"]["command"] == str(mdm.MDM_ROOT / "ug")
+    assert result.exit_code == 1, result.output
+    assert "--mcp registers MCP servers in per-user settings" in " ".join(result.output.split())
+    configure_mcp.assert_not_called()
+    assert not mdm.POLICY_PATH.exists()
+    assert not device.source.exists()
     assert not cowork._marketplace_root().exists()
 
 

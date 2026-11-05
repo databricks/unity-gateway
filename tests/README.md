@@ -579,11 +579,10 @@ CLI-agent setup and external services
 are isolated; this is component coverage, not native macOS or live connector coverage.
 Omitted-agent cases cover managed and interactive selection: Codex-only configuration
 works without Desktop privileges, while selecting Claude validates MDM before binary
-installation or agent writes. An explicit `--global --mcp` case keeps the additional
-services in CLI clients and the root Desktop marketplace limited to managed connectors.
-`test_cli.py::TestConfigureMcpFlag` checks that MCP-only default/global requests without
-agent flags bypass Desktop MDM prerequisites while still configuring their workspace
-and registering their requested MCP services.
+installation or agent writes. An explicit `--global --mcp` case rejects user-level
+MCP registration before any Desktop publication, following the shared global contract.
+`test_cli.py::TestConfigureMcpFlag` retains coverage for ordinary MCP-only configure;
+`TestConfigureScopeFlags` covers rejection of user-level requests under `--global`.
 
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
 It checks that Claude uses an available Slack tool despite a stale disconnect notice, discovers

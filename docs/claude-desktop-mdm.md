@@ -54,7 +54,8 @@ connector consent and subscription relay sign-in remain per-user. Existing MCP/t
 helpers keep their current authentication behavior; coexistence with a saved user PAT
 configuration is outside this MDM release.
 
-`--global --mcp` adds services to CLI clients; Desktop receives workspace-managed MCPs.
+`--global` rejects `--mcp`, which registers user-level servers. Desktop receives the
+workspace-managed MCPs from policy.
 `UG_SKIP_OS_SETTINGS` is incompatible with MDM. Explicit Desktop provisioning
 errors fail configure. Desktop dry runs report destinations without publishing files;
 other agents retain their own dry-run behavior.

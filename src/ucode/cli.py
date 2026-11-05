@@ -4959,10 +4959,9 @@ def configure(
         bool,
         typer.Option(
             "--global",
-            help="Write machine-wide Claude Code/Codex settings and provision Claude Desktop through "
-            "macOS MDM (requires root and a shared runtime). Desktop user settings and the Claude Code "
-            "user connector plugin are left alone. "
-            "Without --global, Desktop writes only user-level files.",
+            help="Write only machine-wide Claude Code/Codex settings and, on macOS, provision Claude "
+            "Desktop through MDM. Leave per-user agent settings alone. Desktop MDM requires root and "
+            "a shared runtime; without --global, Desktop writes only user-level files.",
         ),
     ] = False,
     user_scope: Annotated[
