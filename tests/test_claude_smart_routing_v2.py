@@ -627,7 +627,7 @@ class TestV2Launch:
         assert argv[argv.index("--model") + 1] == (model if pinned else auto_default)
         options = captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]
         if auto_default == "legacy":
-            assert "autoMainModel" not in options
+            assert options["autoMainModel"] == ""
             load_managed.assert_not_called()
         else:
             assert options["autoMainModel"] == (auto_default or "")

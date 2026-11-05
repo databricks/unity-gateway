@@ -14,8 +14,8 @@ admin-default plumbing, and exclusion of Auto from router candidates.
 `native_claude/mod_tests/auto-picker.test.ts` verifies native commands, saved and
 session-only selections, redraws, failed transitions, already-concrete selections with
 feedback enabled, `DISABLED_AUTO` attribution, and stale spawn routes while existing
-children resume. `native_claude/test_mod.py` also characterizes native
-command interception and forwarding. `native_claude/test_auto_picker.py` drives the
+children resume. `native_claude/test_mod.py` validates the plugin and launch options
+with the CI-pinned Claude 2.1.290 binary. `native_claude/test_auto_picker.py` drives the
 real picker and feedback opt-out through direct commands, saved rows, and session-only
 rows, including the existing main model and cancellation while Auto is active; its fixture
 requires a machine policy permitting its models. Feedback transport is isolated; native
