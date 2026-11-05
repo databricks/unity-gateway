@@ -161,6 +161,12 @@ ug configure --profile DEFAULT --agents claude,codex
 ug configure --user
 ```
 
+With a workspace-managed configuration, `--agents` limits setup to the requested agents the admin
+enables, plus requested agents already added with `ug agents add`. Those self-managed agents
+retain their own model/provider settings. Omitting `--agents` configures every admin-enabled agent.
+A requested agent with neither admin enablement nor a self-managed opt-in is skipped with a
+warning, or fails the command when none of the requested agents can be configured.
+
 By default, `ug configure` writes both the per-user settings and the machine-wide Claude Code and
 Codex managed settings with sudo, with or without a terminal: run headless as root (or with
 passwordless sudo), since a write that can't be authorized fails the command.

@@ -1,5 +1,14 @@
 # Test suites and user journeys
 
+Managed-config selection cases in `tests/test_cli.py` check default all-enabled setup,
+explicit enabled subsets, existing self-managed opt-ins without admin model/provider overrides,
+disabled-request warnings, and rejection before installation when no requested agent is allowed.
+`tests/integration/test_ug_configure_selected_managed_agents.py` uses the checked-in
+`selected_managed_agents` admin fixture enabling Claude/Codex/Pi to configure only Claude,
+check that Codex's generated config and Pi's binary/files remain absent, and complete a real
+Claude TUI file-reading task. Mixed managed/self-managed setup has component coverage only.
+No remote workspace policy is changed.
+
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
