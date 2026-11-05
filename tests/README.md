@@ -1,5 +1,12 @@
 # Test suites and user journeys
 
+Windows first-launch configuration has component coverage in
+`test_desktop_setup.py`: an installed MSIX creates the missing Desktop profile
+store; absent installations, package-query failures, and timeouts leave it absent.
+The native Windows Cowork probe in `.github/workflows/windows-desktop-probe.yml`
+exercises real installation, UG configuration before first launch, and completed
+`system.ai.claude-haiku-4-5` inference through the desktop UI.
+
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.

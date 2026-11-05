@@ -1,5 +1,12 @@
 # Integration tests
 
+Windows first-launch configuration has component coverage in
+`../test_desktop_setup.py`: an installed MSIX creates the missing Desktop profile
+store; absent installations, package-query failures, and timeouts leave it absent.
+The native Windows Cowork probe in `.github/workflows/windows-desktop-probe.yml`
+exercises real installation, UG configuration before first launch, and completed
+`system.ai.claude-haiku-4-5` inference through the desktop UI.
+
 Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
 before numbered reuse, stable names during routing and in parallel cards, and unchanged
 execution inputs and row controls. They cover a lone call's decision under its Agent row,

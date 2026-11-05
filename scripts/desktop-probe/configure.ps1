@@ -14,10 +14,8 @@ if (-not $env:CLAUDE_DESKTOP_EXECUTABLE -or
 if (@(Get-Process -Name Claude -ErrorAction SilentlyContinue).Count) {
     throw 'Desktop must not be running before the first configured launch'
 }
-New-Item -ItemType Directory -Path $root -Force | Out-Null
 $report = [ordered]@{
     claude3pRootExistedAfterInstall = $rootExisted
-    claude3pRootPreparedWithoutLaunch = $true
     profile = 'desktop-ci'
 }
 $report | ConvertTo-Json |

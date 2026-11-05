@@ -8,6 +8,7 @@ import shutil
 import sys
 
 from ucode.agents.desktop.claude import (
+    can_initialize_claude_desktop_directory,
     claude_desktop_directory,
     revert_claude_desktop,
 )
@@ -105,7 +106,7 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
     directory = claude_desktop_directory()
     if directory is None:
         raise RuntimeError("Claude Desktop profile configuration is unavailable on this platform.")
-    if sys.platform != "darwin" and not directory.parent.is_dir():
+    if sys.platform != "darwin" and not can_initialize_claude_desktop_directory(directory):
         raise RuntimeError("Open Claude Desktop once, then run ug configure again.")
     relayed = bool(state.get("claude_relayed"))
     claude_binary = None

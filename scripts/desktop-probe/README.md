@@ -11,11 +11,9 @@ SHA256-pinned Claude MSIX and drives the real app through Windows UI Automation.
 
 The probe installs UG from the checkout, runs `ug configure` with the existing
 `UCODE_TEST_WORKSPACE` and `DATABRICKS_BEARER` CI secrets, and checks the generated
-gateway profile. Configuration runs before the first Desktop launch. The test
-creates only the empty `%LOCALAPPDATA%/Claude-3p` directory after verifying the
-installation: UG currently requires this directory to detect Desktop on Windows.
-UG itself writes the profile and metadata. Simply skipping the preliminary
-launch without preparing this directory fails at that UG guard.
+gateway profile. Configuration runs before the first Desktop launch. UG detects the installed Windows MSIX package and executable, then creates
+`%LOCALAPPDATA%/Claude-3p/configLibrary` itself. The test does not create the app-data
+directory or launch Desktop before configuration.
 The test rejects model-provider routing and requires the target model service below.
 It accepts gateway onboarding, opens Cowork, verifies the selected model maps to
 `system.ai.claude-haiku-4-5`, and submits a number-conversion prompt. It asserts

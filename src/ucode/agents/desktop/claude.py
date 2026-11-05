@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -23,6 +24,8 @@ from ucode.agents.desktop.claude_config import (
 )
 from ucode.agents.desktop.claude_state import STATE_FILENAME
 from ucode.config_io import APP_DIR
+from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility.system_cross_os import windows_system32_dir
 
 __all__ = [
     "STATE_FILENAME",
@@ -35,6 +38,7 @@ __all__ = [
     "ClaudeDesktopUnsupportedError",
     "ConfigureResult",
     "RevertResult",
+    "can_initialize_claude_desktop_directory",
     "claude_desktop_directory",
     "claude_desktop_root_directory",
     "configure_claude_desktop",
@@ -248,10 +252,7 @@ def _resolve_paths(*, state_path: Path | str | None, initialize: bool = True) ->
             "Claude Desktop profile configuration is unavailable on this platform."
         )
     if initialize and not resolved_directory.exists():
-        can_initialize = resolved_directory.parent.is_dir()
-        if sys.platform == "darwin":
-            can_initialize = _claude_desktop_installed()
-        if not can_initialize:
+        if not can_initialize_claude_desktop_directory(resolved_directory):
             raise ClaudeDesktopUnavailableError(
                 f"Claude Desktop profile directory is unavailable at {resolved_directory}. "
                 "Install/open Claude Desktop once, then run configure again; Unity Gateway will not "
@@ -279,14 +280,47 @@ def _resolve_paths(*, state_path: Path | str | None, initialize: bool = True) ->
     )
 
 
-def _claude_desktop_installed(*, home: Path | str | None = None) -> bool:
-    """Best-effort macOS app presence check used before creating a native profile directory."""
+def can_initialize_claude_desktop_directory(directory: Path) -> bool:
+    if sys.platform == "darwin":
+        return _claude_desktop_installed()
+    if directory.parent.is_dir():
+        return True
+    return sys.platform == "win32" and _claude_desktop_installed()
 
-    home_path = Path(home) if home is not None else Path.home()
-    return any(
-        path.is_dir()
-        for path in (
-            Path("/Applications/Claude.app"),
-            home_path / "Applications" / "Claude.app",
+
+def _claude_desktop_installed(*, home: Path | str | None = None) -> bool:
+    if sys.platform != "win32":
+        home_path = Path(home) if home is not None else Path.home()
+        return any(
+            path.is_dir()
+            for path in (
+                Path("/Applications/Claude.app"),
+                home_path / "Applications" / "Claude.app",
+            )
         )
-    )
+
+    powershell = windows_system32_dir() / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    command = r"""
+$ErrorActionPreference = 'Stop'
+foreach ($package in Get-AppxPackage -Name Claude) {
+    $manifest = Get-AppxPackageManifest -Package $package.PackageFullName
+    foreach ($app in $manifest.Package.Applications.Application) {
+        if ($app.Executable -match '(^|[\\/])claude\.exe$' -and
+            (Test-Path -LiteralPath (Join-Path $package.InstallLocation $app.Executable) -PathType Leaf)) {
+            exit 0
+        }
+    }
+}
+exit 1
+"""
+    try:
+        result = subprocess_cross_os.run(
+            [str(powershell), "-NoProfile", "-NonInteractive", "-Command", command],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0

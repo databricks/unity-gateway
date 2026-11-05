@@ -8,8 +8,9 @@ headers as Claude Code. There is no separate Desktop checkbox or managed field.
 
 ## Requirements and setup
 
-- Claude Desktop installed on macOS, Windows, or Linux. On Windows/Linux, open it
-  once to initialize application data.
+- Claude Desktop installed on macOS, Windows, or Linux. On Windows, UG can initialize application data before the first launch when it
+  detects Claude's registered MSIX package and executable. On Linux, open it once
+  to initialize application data.
 - A named Databricks CLI OAuth profile with gateway/model access. A bearer token
   alone is not enough for Desktop's credential helper.
 - At least one Claude-named model in the configured static list or gateway catalog.
