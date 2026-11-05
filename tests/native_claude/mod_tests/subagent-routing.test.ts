@@ -54,14 +54,14 @@ test('animal names stay distinct and stable without changing routed calls or row
       else expect(name).toBe(names[index]);
       await mounted.unmount();
     }
-    expect(forwarded[index]).toEqual({ ...input, subagent_type: 'ug-smart-router:ucode-route-haiku-hash', name: names[index], tool: 'Agent', tool_use_id: id });
+    expect(forwarded[index]).toEqual({ ...input, tool: 'Agent', tool_use_id: id });
   }
   expect(new Set(names).size).toBe(101);
   expect(names.slice(0, 100).every((name) => !name.includes(' '))).toBe(true);
   expect(names[100]).toMatch(/ 2$/);
 });
 
-test('bottom-bar names join the actual spawned child ID without changing the spawn', async ($, on) => {
+test('routing changes only the matching spawn model and joins its display name to the child ID', async ($, on) => {
   const writes: any[] = [];
   const forwarded: any[] = [];
   const shown = new Map<string, string>();
@@ -106,7 +106,8 @@ test('bottom-bar names join the actual spawned child ID without changing the spa
       parentAgentId: 'parent', cwd: '/workspace',
     };
     const result = await $.agent.spawn(spawn);
-    expect(forwarded[forwarded.length - 1]).toEqual(spawn);
+    expect(forwarded[forwarded.length - 1]).toEqual(id === 'unrouted' ? spawn
+      : { ...spawn, model: 'system.ai.claude-sonnet-5' });
     expect(result).toEqual(id === 'denied' ? { deny: 'Permission denied' }
       : { model: 'claude-sonnet-5', agentId: `child-${id}` });
   }
@@ -115,6 +116,10 @@ test('bottom-bar names join the actual spawned child ID without changing the spa
     expect(writes[index].path.endsWith(`/agent-names/agent-child-${id}.json`)).toBe(true);
     expect(JSON.parse(writes[index].text)).toEqual({ session_id: 'session-1', name: shown.get(id) });
   }
+  const resumed = { ...forwarded[0], model: 'existing-child-model', resume: { agentId: 'child-call-b' } };
+  await $.agent.spawn(resumed);
+  expect(forwarded[forwarded.length - 1]).toEqual(resumed);
+  expect(writes.length).toBe(2);
   failWrite = true;
   const result = await $.agent.spawn(forwarded[0]);
   expect(result).toEqual({ model: 'claude-sonnet-5', agentId: 'child-call-b' });
@@ -146,9 +151,8 @@ test('a lone call keeps its decision under its own row and draws no card', async
   await $.tool.call({ tool: 'Agent', tool_use_id: 'call-b', ...originalInput });
   expect(calls.length).toBe(2);
   expect(calls[0].tool_use_id).toBe('call-a');
-  expect(calls[0].subagent_type).toBe('ug-smart-router:call-a');
-  expect(calls[0].model).toBeUndefined();
-  expect(calls[1].subagent_type).toBe('ug-smart-router:call-b');
+  expect(calls[0]).toEqual({ tool: 'Agent', tool_use_id: 'call-a', ...originalInput });
+  expect(calls[1]).toEqual({ tool: 'Agent', tool_use_id: 'call-b', ...originalInput });
   expect(logs).toEqual([]);
 
   for (const [id, model] of [['call-a', 'claude-sonnet-5'], ['call-b', 'claude-opus-4-8']]) {
@@ -404,6 +408,19 @@ test('a waiting call shows a spinner on its row and its card keeps the routing t
   expect(await cards.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();
   expect(await cards.find({ type: 'Text', text: ' (routed in 3.2s)' })).toBeDefined();
   await cards.unmount();
+});
+
+test('fork and resumed calls retain their native model without requesting a route', async ($, on) => {
+  const calls: any[] = [];
+  let routes = 0;
+  on('process.run', () => { routes++; return { value: { exitCode: 0, stdout: '', stderr: '' } }; });
+  on('tool.call', ($, e) => { calls.push(e); return { result: 'ok' }; });
+  for (const input of [{ ...originalInput, subagent_type: 'fork' }, { ...originalInput, resume: 'child' }]) {
+    const call = { tool: 'Agent', tool_use_id: 'inherited', ...input };
+    await $.tool.call(call);
+    expect(calls[calls.length - 1]).toEqual(call);
+  }
+  expect(routes).toBe(0);
 });
 
 test('a name the call gave is kept as the routed agent name', async ($, on) => {

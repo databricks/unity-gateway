@@ -95,7 +95,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
 
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[]
-    if (!command.length) return next(e)
+    if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
     const { tool, tool_use_id, agentId, ...input } = e
     let route
     let spinner: { cancel: () => void } | undefined
@@ -154,23 +154,21 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
         records.set(tool_use_id, {
           name: names.get(tool_use_id)!,
           task: input.description || input.subagent_type || tool,
-          model: shortModel(route.model),
+          model: route.model,
           rationale: route.rationale,
           seconds,
         })
       }
       $.ui.invalidate('ui.render')
     }
-    if (!route) return next(e)
-    // Claude labels a subagent's messages with its name, else its routed agent type.
-    const name = route.updatedInput.name || (tool_use_id && names.get(tool_use_id))
-    // Preserve Claude's permission checks and every other mod's tool handlers.
-    return next({ ...route.updatedInput, ...(name ? { name } : {}), tool, tool_use_id, agentId })
+    // Auto mode reviewed this input; choose the child's model at agent.spawn instead.
+    return next(e)
   })
 
   on('agent.spawn', async ($, e, next) => {
-    const result = await next(e)
-    const name = records.get(e.tool_use_id)?.name
+    const route = e.resume ? undefined : records.get(e.tool_use_id)
+    const name = route?.name
+    const result = await next(route ? { ...e, model: route.model } : e)
     if (name && result.agentId) {
       try {
         // The native bottom bar is outside ui.render; join its task ID to this call.
