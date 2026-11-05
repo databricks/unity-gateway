@@ -162,3 +162,38 @@ def test_ug_configure_codex_foundry_mps(
     _run_codex_openai_dialect_mps_cuj(
         live_session, workspace, codex_foundry_provider, codex_foundry_provider_model, "foundry"
     )
+
+
+def test_ug_codex_pat_auth_helper_uses_saved_profile_for_host(live_session, workspace):
+    """Scenario: a PAT user configures Codex, then runs the shared MDM auth command.
+
+    The user's own ~/.databrickscfg holds a PAT profile (the scenario input, carrying the
+    e2e bearer as its token) and no DATABRICKS_BEARER is exported. After `ug configure
+    --profile <it> --use-pat`, Codex's desktop and plain launches run
+    `ug auth-token --host <workspace> --browser-login` with no --profile.
+
+    Expected: that command finds the saved PAT profile for the matching host and prints
+    only its token, with nothing on stderr. This checks the helper, not a Codex task.
+    """
+    session = live_session
+    pat = session.env.pop("DATABRICKS_BEARER")
+    (session.home / ".databrickscfg").write_text(f"[ug-pat]\nhost = {workspace}\ntoken = {pat}\n")
+
+    session.run(
+        "configure",
+        "--agents",
+        "codex",
+        "--profile",
+        "ug-pat",
+        "--use-pat",
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+        timeout=240,
+    )
+    assert session.workspace_state()["use_pat"] is True
+
+    result = session.run(
+        "auth-token", "--host", workspace, "--browser-login", strip_ansi=False, timeout=30
+    )
+    assert result.stdout == "<redacted>\n"
+    assert result.stderr == ""

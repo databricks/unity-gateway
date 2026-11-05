@@ -2762,6 +2762,144 @@ class TestAuthTokenCommand:
             "https://override", "prod", force_refresh=False, browser_login=False
         )
 
+    @pytest.mark.parametrize(
+        ("saved", "expected_profile"),
+        [
+            ({"profile": "oauth-prof"}, "oauth-prof"),
+            (
+                {
+                    "profile": "workspace-prof",
+                    "custom_oauth": {
+                        "client_id": "c",
+                        "redirect_url": "http://localhost:8020",
+                        "scopes": ["all-apis", "offline_access"],
+                        "profile": "custom-prof",
+                    },
+                },
+                "custom-prof",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("host", ["https://saved.example/", None])
+    def test_host_matching_saved_workspace_uses_saved_profile(self, saved, expected_profile, host):
+        # The Codex MDM auth command passes only --host; the saved choices supply the profile.
+        state = {"workspace": "https://saved.example", **saved}
+        host_args = ["--host", host] if host else []
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.get_databricks_token", return_value="tok") as fetch,
+        ):
+            result = runner.invoke(app, ["auth-token", *host_args, "--browser-login"])
+        assert result.exit_code == 0
+        assert result.stdout == "tok\n"
+        assert fetch.call_args.args == (host or "https://saved.example", expected_profile)
+        assert fetch.call_args.kwargs["browser_login"] is True
+
+    @pytest.mark.parametrize(
+        ("host", "expected_profile"),
+        [
+            ("https://unified.example", "saved-prof"),
+            ("https://unified.example?w=123", "saved-prof"),
+            ("https://unified.example?w=456", None),
+        ],
+    )
+    def test_multi_workspace_host_matches_saved_workspace_id(self, host, expected_profile):
+        state = {
+            "workspace": "https://unified.example",
+            "workspace_id": "123",
+            "profile": "saved-prof",
+        }
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.workspace.host_type", return_value="unified"),
+            patch("ucode.cli.get_databricks_token", return_value="tok") as fetch,
+        ):
+            result = runner.invoke(app, ["auth-token", "--host", host])
+        assert result.exit_code == 0
+        assert fetch.call_args.args == (host, expected_profile)
+
+    def test_host_resolution_notes_stay_off_token_stdout(self):
+        def resolve(url):
+            print("a note")
+            return url
+
+        with (
+            patch("ucode.cli.load_state", return_value={"workspace": "https://saved.example"}),
+            patch("ucode.cli.resolve_workspace", side_effect=resolve),
+            patch("ucode.cli.get_databricks_token", return_value="tok"),
+        ):
+            result = runner.invoke(app, ["auth-token", "--host", "https://saved.example"])
+        assert result.stdout == "tok\n"
+        assert "a note" in result.stderr
+
+    def test_host_resolution_failure_warns_and_skips_saved_profile(self):
+        state = {"workspace": "https://saved.example", "profile": "saved-prof"}
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.resolve_workspace", side_effect=RuntimeError("Check your network")),
+            patch("ucode.cli.get_databricks_token", return_value="tok") as fetch,
+        ):
+            result = runner.invoke(app, ["auth-token", "--host", "https://saved.example?w=1"])
+        assert result.exit_code == 0
+        assert result.stdout == "tok\n"
+        assert "Check your network" in result.stderr
+        assert fetch.call_args.args == ("https://saved.example?w=1", None)
+
+    def test_host_matching_saved_workspace_keeps_explicit_client_id_profile_free(self):
+        state = {"workspace": "https://saved.example", "profile": "workspace-prof"}
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.custom_oauth.get_custom_client_token", return_value="tok") as fetch,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "auth-token",
+                    "--host",
+                    "https://saved.example",
+                    "--client-id",
+                    "c",
+                    "--scopes",
+                    "all-apis,offline_access",
+                ],
+            )
+        assert result.exit_code == 0
+        assert fetch.call_args.kwargs["profile"] is None
+
+    def test_host_matching_saved_pat_workspace_serves_saved_profile_pat(self, monkeypatch):
+        monkeypatch.setattr(
+            "ucode.databricks.resolve_pat_token",
+            lambda p: "dapi-pat" if p == "pat-prof" else None,
+        )
+        state = {"workspace": "https://saved.example", "profile": "pat-prof", "use_pat": True}
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch(
+                "ucode.cli.get_databricks_token",
+                side_effect=lambda w, p, **_kwargs: os.environ.get("DATABRICKS_BEARER", ""),
+            ),
+        ):
+            result = runner.invoke(
+                app, ["auth-token", "--host", "https://saved.example", "--browser-login"]
+            )
+        assert result.exit_code == 0
+        assert result.stdout == "dapi-pat\n"
+
+    def test_host_not_matching_saved_workspace_ignores_saved_profile(self):
+        # Before the first `ug codex` for this host, the CLI's first profile for it is used.
+        state = {"workspace": "https://saved.example", "profile": "saved-prof"}
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.get_databricks_token", return_value="tok") as fetch,
+        ):
+            result = runner.invoke(
+                app, ["auth-token", "--host", "https://other.example", "--browser-login"]
+            )
+        assert result.exit_code == 0
+        fetch.assert_called_once_with(
+            "https://other.example", None, force_refresh=False, browser_login=True
+        )
+
     def test_force_refresh_is_forwarded(self):
         with (
             patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),

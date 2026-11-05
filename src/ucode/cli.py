@@ -234,6 +234,7 @@ from ucode.ui import (
     print_section,
     print_success,
     print_warning,
+    print_warning_err,
     prompt_for_selection,
     prompt_for_text,
     prompt_for_tools,
@@ -2893,8 +2894,20 @@ def auth_token_cmd(
     if not workspace:
         print_err("No workspace configured. Run `ug configure` first.")
         raise typer.Exit(1)
-    if profile is None and not explicit_host:
-        profile = state.get("profile")
+    saved_workspace = not explicit_host
+    # --client-id names its own OAuth client, so the saved profile would select the wrong one.
+    if profile is None and explicit_host and client_id is None:
+        try:
+            # stdout carries only the token, so resolve_workspace's notes go to stderr.
+            with redirect_stdout(sys.stderr):
+                key = resolve_workspace(workspace)
+            # ug's own helpers pass the bare host even when the saved key selects a workspace.
+            saved_workspace = key in (state_workspace_key(state), state.get("workspace"))
+        except RuntimeError as exc:
+            # An unknown host type shouldn't block the token; just skip the saved profile.
+            print_warning_err(str(exc))
+    if profile is None and saved_workspace:
+        profile = _get_catalog_profile(state)
     if client_id is None and (use_pat or state.get("use_pat")):
         # --use-pat explicitly means "serve the profile's static PAT". Fail
         # closed if it can't be read rather than falling through to OAuth —
