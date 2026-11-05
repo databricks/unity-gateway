@@ -10,7 +10,9 @@ back verbatim.
 With relayed OSS-routing on, the proxy picks per request by the requested model:
 Databricks-hosted ids (system.ai / OSS) take the gateway-auth path while relayed
 subscription models keep the OAuth passthrough, so one Claude Code session can use
-both.
+both. A customer Unity Catalog model service (``catalog.schema.name``) may route to a
+relayed provider, so it keeps the OAuth passthrough plus the swap header and drops the
+model-provider-service header, letting the service's own routing pick the destination.
 
 The gateway-auth proxy serves agents that can only hold a static credential
 (Copilot CLI): the agent authenticates to the proxy with a per-session secret,
@@ -255,6 +257,20 @@ def is_databricks_routed_model(model: str | None) -> bool:
     return "." in model or model.startswith("databricks-")
 
 
+def is_uc_model_service(model: str | None) -> bool:
+    """True when ``model`` names a customer Unity Catalog model service (``catalog.schema.name``).
+
+    Such a service can route to a relayed Model Provider Service, which only accepts a
+    credential-swapped request: the caller's subscription OAuth in ``Authorization`` and the
+    Databricks token in the swap header. The gateway authenticates the swap header for any
+    destination, so services that route only to Databricks-hosted models work the same way.
+    ``system.*`` ids and ``databricks-*`` names are Databricks-hosted and keep the gateway-auth
+    path."""
+    if not model or model.startswith(("system.", "databricks-")):
+        return False
+    return model.count(".") >= 2
+
+
 def _request_model(body: bytes | None) -> str | None:
     """The ``model`` field of a JSON request body, or None when absent/unparseable."""
     if not body:
@@ -475,9 +491,17 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         raise AttributeError(name)
 
 
+# A UC model service keeps the relay credentials but must not be pinned to the launch's
+# model provider service: its own routing chooses the destination.
+_MODEL_SERVICE_ROUTE_STRIP = frozenset({MODEL_PROVIDER_SERVICE_HEADER.lower()})
+
+
 class _RelayProxyHandler(_ProxyHandler):
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
-        if is_databricks_routed_model(_request_model(body)):
+        model = _request_model(body)
+        if is_uc_model_service(model):
+            return self.token_header, _MODEL_SERVICE_ROUTE_STRIP, "relay-model-service"
+        if is_databricks_routed_model(model):
             return AUTHORIZATION_HEADER, _DATABRICKS_ROUTE_STRIP, "databricks"
         return self.token_header, frozenset(), "relay"
 
