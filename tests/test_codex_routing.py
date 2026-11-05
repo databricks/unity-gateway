@@ -532,3 +532,42 @@ def test_failed_subagent_routing_reports_reason_without_hook_response(monkeypatc
     assert "router returned HTTP 400: unsupported model" in caplog.text
     assert "private-bearer" not in caplog.text
     assert "Review the parser" not in caplog.text
+
+
+@pytest.mark.parametrize("provider", [None, "main.agents.openai_provider"])
+def test_provider_slugs_route_verbatim_and_are_logged(monkeypatch, tmp_path, provider):
+    decisions = tmp_path / "decisions.jsonl"
+    monkeypatch.setattr(codex_routing, "DECISIONS_PATH", decisions)
+    monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "0")
+    captured = {}
+
+    def fake_select(workspace, token, task, route_options, **kwargs):
+        captured["route_options"] = list(route_options)
+        return codex_routing.RoutingDecision(model="system.ai.gpt-5-4", rationale="why"), None
+
+    monkeypatch.setattr(codex_routing.routing, "select_route", fake_select)
+    slugs = ["system.ai.gpt-5-4", "gpt-oss-120b"]
+
+    output = codex_routing.route_pre_tool_use(
+        {
+            "tool_name": "collaboration.spawn_agent",
+            "tool_input": {"task_name": "t", "message": "fix it"},
+        },
+        workspace=WS,
+        token="token",
+        available_models=slugs,
+        audit_decision=True,
+        **({} if provider is None else {"provider": provider}),
+    )
+
+    assert captured["route_options"] == [(slug, "codex") for slug in slugs]
+    model = output["hookSpecificOutput"]["updatedInput"]["model"]
+    record = json.loads(decisions.read_text())
+    if provider is None:
+        # The system.ai path still maps to Codex's bundled slug.
+        assert model == codex_routing.codex_model_id("system.ai.gpt-5-4") == "gpt-5.4"
+        assert "provider_service" not in record
+    else:
+        assert model == "system.ai.gpt-5-4"
+        assert record["provider_service"] == provider
+        assert record["requested_model"] == "system.ai.gpt-5-4"

@@ -97,11 +97,17 @@ from ucode.smart_routing.codex_hooks import (
 )
 from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.smart_routing.routing import configured_router_name
+from ucode.smart_routing.routing_models_cache import (
+    HARNESS_CODEX,
+    RoutingModel,
+    read_routing_models,
+    write_routing_models,
+)
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ug_headers import ug_headers
 from ucode.ui import print_note, print_success, print_warning_err
-from ucode.workspace import workspace_headers, workspace_id_args
+from ucode.workspace import state_workspace_key, workspace_headers, workspace_id_args
 
 from .args import LaunchOptions
 from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
@@ -1995,6 +2001,10 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
     ensure_minimum_version("codex", lambda: minimum_version_error(smart_routing_enabled=True))
 
     configured_model = _smart_routing_config_model(state)
+    provider = _smart_routing_provider(state)
+    if provider is not None:
+        _launch_provider_smart_routing(state, tool_args, binary, provider, configured_model)
+        return
     # Prefer the custom catalog if it exists.
     models = custom_catalog_models() or routing_models(state)
     start_model = (
@@ -2009,6 +2019,107 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
         start_model=start_model,
         render_overlay=_render_launch_overlay,
     )
+
+
+def _smart_routing_provider(state: dict) -> str | None:
+    """The launch's Model Provider Service when provider routing is enabled, else None."""
+    if not smart_routing_v2.provider_routing_enabled(agent=AGENT_CODEX):
+        return None
+    provider = state.get("_codex_launch_provider")
+    return provider.strip() if isinstance(provider, str) and provider.strip() else None
+
+
+def _launch_provider_smart_routing(
+    state: dict, tool_args: list[str], binary: str, provider: str, configured_model: str | None
+) -> None:
+    workspace = state.get("workspace")
+    if not workspace:
+        raise RuntimeError(
+            "Smart routing needs a configured workspace; run `ucode configure codex` first."
+        )
+    models, catalog_path = _provider_routing_models(state, workspace, binary, provider)
+    slugs = [model.id for model in models]
+    # The provider routes only its own slugs, so a saved system.ai default can't start the session.
+    start_model = configured_model if configured_model in slugs else slugs[0]
+
+    def render(*args, **kwargs) -> dict:
+        overlay = _render_launch_overlay(*args, **kwargs)
+        _set_provider_header(overlay, provider)
+        return overlay
+
+    smart_routing_v2.launch_codex(
+        state,
+        tool_args,
+        binary=binary,
+        start_model=start_model,
+        render_overlay=render,
+        provider=provider,
+        provider_models=models,
+        provider_catalog_path=catalog_path,
+    )
+
+
+def _provider_routing_models(
+    state: dict, workspace: str, binary: str, provider: str
+) -> tuple[list[RoutingModel], Path | None]:
+    """The provider's Codex models and catalog file, refreshed or else the last known ones."""
+    cache_key = state_workspace_key(state) or workspace
+    catalog_path = _model_catalog_path(workspace, f"provider:{provider}")
+    try:
+        catalog = _fetch_codex_model_catalog(
+            workspace,
+            _launch_token(state, workspace),
+            source=CodexCatalogSource.PROVIDER,
+            identifier=provider,
+        )
+        validate_codex_catalog(binary, catalog)
+    except RuntimeError as exc:
+        models = read_routing_models(cache_key, provider, harness=HARNESS_CODEX)
+        if not models:
+            raise RuntimeError(
+                f"Could not discover Codex models for Model Provider Service {provider}: {exc}"
+            ) from exc
+        print_warning_err(
+            f"Could not refresh models for Model Provider Service {provider} ({exc}); "
+            "routing over the last known list."
+        )
+        return models, catalog_path if catalog_path.is_file() else None
+    models = _routing_models_from_codex_catalog(catalog)
+    if not models:
+        raise RuntimeError(f"Model Provider Service {provider} returned no Codex model slugs.")
+    _write_model_catalog(catalog_path, catalog)
+    write_routing_models(cache_key, provider, models, harness=HARNESS_CODEX)
+    return models, catalog_path
+
+
+def _routing_models_from_codex_catalog(catalog: dict) -> list[RoutingModel]:
+    """Routable models from a Codex catalog: ``slug`` verbatim, plus its name and context window."""
+    rows = {
+        row["slug"].strip(): row
+        for row in catalog.get("models") or []
+        if isinstance(row, dict) and isinstance(row.get("slug"), str)
+    }
+    models = []
+    for slug in catalog_slugs(catalog):
+        row = rows.get(slug, {})
+        display_name = row.get("display_name")
+        context_window = row.get("context_window")
+        models.append(
+            RoutingModel(
+                id=slug,
+                display_name=display_name
+                if isinstance(display_name, str) and display_name
+                else None,
+                max_input_tokens=(
+                    context_window
+                    if isinstance(context_window, int)
+                    and not isinstance(context_window, bool)
+                    and context_window > 0
+                    else None
+                ),
+            )
+        )
+    return models
 
 
 def disable_smart_routing(state: dict) -> bool:

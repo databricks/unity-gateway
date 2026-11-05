@@ -9455,7 +9455,7 @@ class TestLaunchWithManagedFilePicker:
 
 
 class TestProviderSmartRoutingGate:
-    """`UCODE_SMART_ROUTING_PROVIDER` lets Claude, and only Claude, route over a provider."""
+    """`UCODE_SMART_ROUTING_PROVIDER` lets Claude and Codex route over a provider."""
 
     PROVIDER = "main.agents.anthropic_provider"
 
@@ -9464,12 +9464,11 @@ class TestProviderSmartRoutingGate:
         [
             ("claude", None, False),
             ("claude", "1", True),
-            ("codex", "1", False),
+            ("codex", None, False),
+            ("codex", "1", True),
         ],
     )
-    def test_launch_options_route_provider_only_for_gated_claude(
-        self, monkeypatch, tool, gate, expected
-    ):
+    def test_launch_options_route_provider_only_when_gated(self, monkeypatch, tool, gate, expected):
         if gate is None:
             monkeypatch.delenv("UCODE_SMART_ROUTING_PROVIDER", raising=False)
         else:
@@ -9488,10 +9487,10 @@ class TestProviderSmartRoutingGate:
 
     @pytest.mark.parametrize(
         ("tool", "gate"),
-        [("claude", None), ("claude", "0"), ("codex", "1")],
-        ids=["claude-gate-unset", "claude-gate-off", "codex-gate-on"],
+        [("claude", None), ("claude", "0"), ("codex", None), ("codex", "0")],
+        ids=["claude-gate-unset", "claude-gate-off", "codex-gate-unset", "codex-gate-off"],
     )
-    def test_provider_with_smart_routing_is_rejected_outside_gated_claude(
+    def test_provider_with_smart_routing_is_rejected_without_the_gate(
         self, monkeypatch, tool, gate
     ):
         if gate is None:
@@ -9705,10 +9704,11 @@ class TestProviderRoutingLaunchHygiene:
         monkeypatch.setenv("UCODE_SMART_ROUTING_PROVIDER", "1")
         monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V1)
 
-    def test_relayed_provider_keeps_the_guard(self):
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_relayed_provider_keeps_the_guard(self, tool):
         with _launch_policy_patches(None) as calls:
             calls["resolve_provider"].return_value = (None, None, True)
-            result = runner.invoke(app, ["claude", "--provider", self.PROVIDER])
+            result = runner.invoke(app, [tool, "--provider", self.PROVIDER])
 
         output = " ".join(result.output.split())
         assert result.exit_code == 1
@@ -9742,3 +9742,79 @@ class TestProviderRoutingLaunchHygiene:
             "_claude_routing_models_file",
         ):
             assert key not in saved
+
+
+class TestCodexProviderSmartRouting:
+    WS = "https://example.com"
+    PROVIDER = "main.agents.openai_provider"
+    SLUG = "system.ai.gpt-5-4"
+
+    def test_gated_codex_launches_routed_with_provider(self, monkeypatch):
+        monkeypatch.setenv("UCODE_SMART_ROUTING_PROVIDER", "1")
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V1)
+        observed = []
+
+        with _launch_policy_patches(None) as calls:
+            calls["launch"].side_effect = lambda _tool, state, *_args, options: observed.append(
+                (options.launch_smart_routing, state.get("_codex_launch_provider"))
+            )
+            result = runner.invoke(app, ["codex", "--provider", self.PROVIDER])
+
+        assert result.exit_code == 0, result.output
+        assert observed == [(True, self.PROVIDER)]
+
+    def _invoke_hook(self, monkeypatch, extra_args):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
+        token = _jwt(time.time() + 300)
+        payload = {"tool_name": "collaboration.spawn_agent", "tool_input": {"message": "fix it"}}
+        with patch(
+            "ucode.smart_routing.codex_routing.route_pre_tool_use", return_value=None
+        ) as route:
+            result = runner.invoke(
+                app,
+                [
+                    "codex-router-hook",
+                    "route-subagent",
+                    "--host",
+                    self.WS,
+                    "--model",
+                    "fallback-slug",
+                    *extra_args,
+                ],
+                input=json.dumps(payload),
+                env={"OAUTH_TOKEN": token},
+            )
+        assert result.exit_code == 0, result.output
+        route.assert_called_once()
+        return route, payload, token
+
+    def test_hook_routes_over_the_launch_snapshot(self, monkeypatch, tmp_path):
+        snapshot = tmp_path / "snapshot.json"
+        snapshot.write_text(json.dumps([{"id": self.SLUG}, {"id": "gpt-oss-120b"}]))
+
+        route, _payload, _token = self._invoke_hook(
+            monkeypatch, ["--provider", self.PROVIDER, "--models-file", str(snapshot)]
+        )
+
+        assert route.call_args.kwargs["available_models"] == [self.SLUG, "gpt-oss-120b"]
+        assert route.call_args.kwargs["provider"] == self.PROVIDER
+
+    def test_hook_falls_back_to_model_args_without_snapshot(self, monkeypatch, tmp_path):
+        route, _payload, _token = self._invoke_hook(
+            monkeypatch,
+            ["--provider", self.PROVIDER, "--models-file", str(tmp_path / "missing.json")],
+        )
+
+        assert route.call_args.kwargs["available_models"] == ["fallback-slug"]
+
+    def test_hook_without_provider_keeps_the_exact_old_call(self, monkeypatch):
+        route, payload, token = self._invoke_hook(monkeypatch, [])
+
+        route.assert_called_once_with(
+            payload,
+            workspace=self.WS,
+            token=token,
+            available_models=["fallback-slug"],
+            audit_decision=True,
+        )

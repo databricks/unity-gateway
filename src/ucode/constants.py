@@ -19,9 +19,9 @@ SMART_ROUTING_ENV_KEYS = (
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
 )
-# Rollout gate for Claude smart routing over a Model Provider Service's own models. A launch-time
-# capability gate, not a routing mode: versions and session controls don't own it, so it stays out
-# of SMART_ROUTING_ENV_KEYS. Off unless set.
+# Rollout gate for Claude and Codex smart routing over a Model Provider Service's own models.
+# A launch-time capability gate, not a routing mode: versions and session controls don't own it,
+# so it stays out of SMART_ROUTING_ENV_KEYS. Off unless set.
 SMART_ROUTING_PROVIDER_ENV_VAR = "UCODE_SMART_ROUTING_PROVIDER"
 
 MODEL_PROVIDER_SERVICE_HEADER = "Databricks-Model-Provider-Service"

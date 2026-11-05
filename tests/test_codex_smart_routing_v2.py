@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tomllib
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -1137,3 +1139,253 @@ def test_routing_request_sends_each_model_id_once_as_given(monkeypatch):
         ("gpt-5.6-sol", "codex"),
         ("system.ai.gpt-5-6-luna", "codex"),
     ]
+
+
+class TestProviderInterposerSession(TestInterposerSession):
+    def test_provider_session_keeps_the_raw_routed_slug(self):
+        def select(_prompt):
+            return (
+                codex_interposer.routing.RoutingDecision(model="system.ai.gpt-5-6-luna"),
+                None,
+            )
+
+        sess = codex_interposer._Session(
+            None,
+            log=lambda _m: None,
+            route_decision=select,
+            switch_message_fn=v2._switch_message,
+            map_model_ids=False,
+        )
+
+        result = sess.on_tui_frame(self._turn_start("other"))
+
+        assert json.loads(result.frame)["params"]["model"] == "system.ai.gpt-5-6-luna"
+
+
+class TestCodexProviderRouting:
+    PROVIDER = "main.agents.openai_provider"
+    CATALOG = {
+        "models": [
+            {"slug": "system.ai.gpt-5-4", "display_name": "GPT 5.4", "context_window": 1_050_000},
+            {"slug": "gpt-oss-120b", "context_window": 131_072},
+            {"slug": "no-window"},
+        ]
+    }
+
+    @pytest.fixture
+    def env(self, monkeypatch, tmp_path):
+        from ucode.smart_routing import routing_models_cache
+
+        monkeypatch.setenv(v2.SMART_ROUTING_PROVIDER_ENV_VAR, "1")
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.164.0")
+        monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: "system.ai.other")
+        monkeypatch.setattr(codex, "validate_codex_catalog", lambda binary, catalog: None)
+        monkeypatch.setattr(codex, "_launch_token", lambda state, workspace, **_kw: "token")
+        monkeypatch.setattr(
+            codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "codex" / "model-catalog.json"
+        )
+        captured: dict = {"requests": []}
+
+        def fake_get_json(url, token, **kwargs):
+            captured["requests"].append((url, kwargs.get("headers")))
+            return captured.get("response", (self.CATALOG, None))
+
+        monkeypatch.setattr("ucode.databricks._http_get_json", fake_get_json)
+        monkeypatch.setattr(
+            v2, "launch_codex", lambda state, tool_args, **kwargs: captured.update(launch=kwargs)
+        )
+        captured["cache"] = lambda: routing_models_cache.read_routing_models(
+            WS, self.PROVIDER, harness=routing_models_cache.HARNESS_CODEX
+        )
+        return captured
+
+    def _launch(self):
+        codex._launch_smart_routing({"workspace": WS, "_codex_launch_provider": self.PROVIDER}, [])
+
+    def test_fetches_provider_catalog_and_caches_raw_slugs(self, env):
+        from ucode.smart_routing.routing_models_cache import RoutingModel
+
+        self._launch()
+
+        [(url, headers)] = env["requests"]
+        assert url == f"{WS}/ai-gateway/codex/v1/models"
+        assert headers == {"Databricks-Model-Provider-Service": self.PROVIDER}
+        expected = [
+            RoutingModel("system.ai.gpt-5-4", "GPT 5.4", 1_050_000),
+            RoutingModel("gpt-oss-120b", None, 131_072),
+            RoutingModel("no-window"),
+        ]
+        assert env["cache"]() == expected
+        launch = env["launch"]
+        assert launch["provider"] == self.PROVIDER
+        assert launch["provider_models"] == expected
+        # A saved system.ai default the provider doesn't serve can't start the session.
+        assert launch["start_model"] == "system.ai.gpt-5-4"
+        assert json.loads(launch["provider_catalog_path"].read_text()) == self.CATALOG
+        overlay = launch["render_overlay"](
+            WS, "system.ai.gpt-5-4", None, use_pat=False, custom_oauth=None
+        )
+        headers = overlay["model_providers"]["Databricks"]["http_headers"]
+        assert headers["Databricks-Model-Provider-Service"] == self.PROVIDER
+
+    def test_falls_back_to_cached_slugs_when_fetch_fails(self, env, capsys):
+        from ucode.smart_routing import routing_models_cache
+
+        routing_models_cache.write_routing_models(
+            WS,
+            self.PROVIDER,
+            [routing_models_cache.RoutingModel("gpt-oss-120b")],
+            harness=routing_models_cache.HARNESS_CODEX,
+        )
+        # A Claude list for the same service lives apart from the Codex one.
+        routing_models_cache.write_routing_models(
+            WS, self.PROVIDER, [routing_models_cache.RoutingModel("claude-x")]
+        )
+        env["response"] = (None, "HTTP 503")
+
+        self._launch()
+
+        assert [model.id for model in env["launch"]["provider_models"]] == ["gpt-oss-120b"]
+        assert env["launch"]["provider_catalog_path"] is None
+        assert "last known list" in " ".join(capsys.readouterr().err.split())
+
+    def test_fails_when_fetch_and_cache_both_fail(self, env):
+        env["response"] = (None, "HTTP 503")
+
+        with pytest.raises(RuntimeError, match=f"Model Provider Service {self.PROVIDER}"):
+            self._launch()
+        assert "launch" not in env
+
+    def test_gate_off_ignores_the_launch_provider(self, env, monkeypatch):
+        monkeypatch.delenv(v2.SMART_ROUTING_PROVIDER_ENV_VAR)
+        monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
+
+        codex._launch_smart_routing(
+            {
+                "workspace": WS,
+                "_codex_launch_provider": self.PROVIDER,
+                "codex_models": ["system.ai.gpt-5-6-sol"],
+            },
+            [],
+        )
+
+        assert env["requests"] == []
+        assert set(env["launch"]) == {"binary", "start_model", "render_overlay"}
+
+
+class TestCodexProviderLaunch:
+    PROVIDER = "main.agents.openai_provider"
+
+    def test_provider_launch_routes_raw_slugs_through_snapshot_and_interposer(
+        self, tmp_path, monkeypatch
+    ):
+        from ucode.smart_routing.routing_models_cache import RoutingModel
+
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.164.0")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_k: "token")
+        monkeypatch.setattr(v2, "_free_port", lambda: 41001)
+        monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
+        monkeypatch.setattr(
+            v2, "custom_catalog_models", Mock(side_effect=AssertionError("custom catalog"))
+        )
+        processes = []
+
+        class FakeProcess:
+            def __init__(self, argv, **_kwargs):
+                self.argv = argv
+                processes.append(self)
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                pass
+
+        monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
+        interposer: dict = {}
+
+        def start_interposer(*_args, **kwargs):
+            interposer.update(kwargs)
+            return 41002, lambda: None
+
+        monkeypatch.setattr(codex_interposer, "start_interposer_thread", start_interposer)
+        catalog_path = tmp_path / "provider-catalog.json"
+        models = [RoutingModel("system.ai.gpt-5-4", None, 1_050_000), RoutingModel("gpt-oss")]
+
+        with pytest.raises(SystemExit):
+            v2.launch_codex(
+                {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
+                [],
+                binary="codex",
+                start_model="system.ai.gpt-5-4",
+                render_overlay=codex.render_overlay,
+                provider=self.PROVIDER,
+                provider_models=models,
+                provider_catalog_path=catalog_path,
+            )
+
+        assert interposer["available_models"] == ["system.ai.gpt-5-4", "gpt-oss"]
+        assert interposer["map_model_ids"] is False
+        app_server_argv = processes[0].argv
+        assert f'model_catalog_json="{catalog_path}"' in app_server_argv
+        [hooks] = [arg for arg in app_server_argv if arg.startswith("hooks.PreToolUse=")]
+        assert "--model system.ai.gpt-5-4 --model gpt-oss" in hooks
+        assert "system.ai.gpt-5-6-sol" not in hooks
+        assert f"--provider {self.PROVIDER} --models-file " in hooks
+        # Both the POSIX and Windows hook commands name the same snapshot.
+        [snapshot_name] = set(re.findall(r"routing-model-snapshots/[0-9a-f]+\.json", hooks))
+        snapshot = tmp_path / ".ucode" / snapshot_name
+        assert json.loads(snapshot.read_text()) == [
+            {"id": "system.ai.gpt-5-4", "max_input_tokens": 1_050_000},
+            {"id": "gpt-oss"},
+        ]
+        assert v2.provider_subagent_candidates(str(snapshot), []) == (
+            ["system.ai.gpt-5-4", "gpt-oss"],
+            {"system.ai.gpt-5-4": 1_050_000},
+        )
+
+    def test_non_provider_launch_keeps_model_id_mapping(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.164.0")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_k: "token")
+        monkeypatch.setattr(v2, "_free_port", lambda: 41001)
+        monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
+        monkeypatch.setattr(v2, "custom_catalog_models", lambda: None)
+        monkeypatch.setattr(v2, "custom_catalog_path", lambda: None)
+
+        class FakeProcess:
+            def __init__(self, argv, **_kwargs):
+                self.argv = argv
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                pass
+
+        monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
+        interposer: dict = {}
+        monkeypatch.setattr(
+            codex_interposer,
+            "start_interposer_thread",
+            lambda *_a, **kwargs: interposer.update(kwargs) or (41002, lambda: None),
+        )
+
+        with pytest.raises(SystemExit):
+            v2.launch_codex(
+                {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
+                [],
+                binary="codex",
+                start_model="gpt-start",
+                render_overlay=codex.render_overlay,
+            )
+
+        assert interposer["available_models"] == ["system.ai.gpt-5-6-sol"]
+        assert interposer["map_model_ids"] is True

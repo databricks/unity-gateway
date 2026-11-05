@@ -82,8 +82,13 @@ def route_pre_tool_use(
     available_models: list[str],
     timeout: float = REQUEST_TIMEOUT_S,
     audit_decision: bool = False,
+    provider: str | None = None,
 ) -> dict[str, Any] | None:
-    """Route one Codex ``spawn_agent`` call and rewrite its model."""
+    """Route one Codex ``spawn_agent`` call and rewrite its model.
+
+    With ``provider``, ``available_models`` are that Model Provider Service's own slugs and the
+    routed one is used verbatim rather than mapped to a bundled Codex slug.
+    """
     record = None
     if audit_decision:
 
@@ -97,7 +102,13 @@ def route_pre_tool_use(
                 else None,
             )
             routing.write_decision_record(
-                DECISIONS_PATH, payload, task, audit, requested, include_task_text=False
+                DECISIONS_PATH,
+                payload,
+                task,
+                audit,
+                requested,
+                include_task_text=False,
+                provider_service=provider,
             )
 
     name_suffix = " [orchestrator on]" if orchestrator.enabled(agent=AGENT_CODEX) else ""
@@ -108,10 +119,14 @@ def route_pre_tool_use(
             workspace, token, task, available_models, timeout=timeout
         ),
         default_task_label="Codex subagent task",
-        model_id_mapper=codex_model_id,
+        model_id_mapper=codex_model_id if provider is None else _unchanged_model_id,
         notice_config=replace(SUBAGENT_NOTICE_CONFIG, name_suffix=name_suffix),
         record_decision=record,
     )
+
+
+def _unchanged_model_id(model: str) -> str:
+    return model
 
 
 def is_spawn_agent_tool(tool_name: Any) -> bool:

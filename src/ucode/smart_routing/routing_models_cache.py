@@ -1,9 +1,10 @@
 """On-disk cache of the models smart routing may choose from, per workspace and provider.
 
 Launches fetch a catalog and record it here, so a launch whose fetch fails can fall back to the
-last good list. Kept in its own file, ``~/.ucode/routing-models.json``, so a ``state.json``
-version change or ``ug revert`` leaves it alone. It holds model metadata only, never tokens or
-other credentials.
+last good list; routing hooks read a launch-scoped snapshot instead. Kept in its own files,
+``~/.ucode/routing-models.json`` (Claude) and ``~/.ucode/codex-routing-models.json``, so a
+``state.json`` version change or ``ug revert`` leaves them alone. They hold model metadata only,
+never tokens or other credentials.
 
 Layout (version 1)::
 
@@ -17,6 +18,7 @@ Layout (version 1)::
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -35,6 +37,8 @@ if TYPE_CHECKING:
 ROUTING_MODELS_CACHE_VERSION = 1
 _DEFAULT_KEY = "default"
 _PROVIDERS_KEY = "providers"
+HARNESS_CLAUDE = "claude"
+HARNESS_CODEX = "codex"
 # Concurrent launches share the file; a stalled writer must not hold a launch for long.
 _LOCK_TIMEOUT_SECONDS = 5.0
 
@@ -48,9 +52,11 @@ class RoutingModel:
     max_input_tokens: int | None = None
 
 
-def routing_models_cache_path() -> Path:
-    # Resolved per call so a redirected APP_DIR (tests, alternate homes) is honored.
-    return config_io.APP_DIR / "routing-models.json"
+def routing_models_cache_path(harness: str = HARNESS_CLAUDE) -> Path:
+    # Resolved per call so a redirected APP_DIR (tests, alternate homes) is honored. Each harness
+    # lists a provider through its own API, so a service both serve keeps two separate lists.
+    name = "routing-models.json" if harness == HARNESS_CLAUDE else f"{harness}-routing-models.json"
+    return config_io.APP_DIR / name
 
 
 def routing_models_from_catalog(catalog: AnthropicModelCatalog) -> list[RoutingModel]:
@@ -73,6 +79,8 @@ def write_routing_models(
     workspace: str,
     provider_service: str | None,
     models: list[RoutingModel],
+    *,
+    harness: str = HARNESS_CLAUDE,
 ) -> bool:
     """Replace the cached list for ``(workspace, provider_service)``; other entries are kept.
 
@@ -82,7 +90,7 @@ def write_routing_models(
     """
     if not workspace or config_io.is_dry_run():
         return False
-    path = routing_models_cache_path()
+    path = routing_models_cache_path(harness)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         lock = open(path.with_name(f"{path.name}.lock"), "a+", encoding="utf-8")
@@ -131,7 +139,9 @@ def _write_locked(
     return True
 
 
-def read_routing_models(workspace: str, provider_service: str | None) -> list[RoutingModel] | None:
+def read_routing_models(
+    workspace: str, provider_service: str | None, *, harness: str = HARNESS_CLAUDE
+) -> list[RoutingModel] | None:
     """The cached list for ``(workspace, provider_service)``, or None when there is none.
 
     Never raises: routing hooks call this, so a missing, unreadable, corrupt, or other-version
@@ -139,7 +149,7 @@ def read_routing_models(workspace: str, provider_service: str | None) -> list[Ro
     """
     if not workspace:
         return None
-    workspaces = _load(routing_models_cache_path()).get("workspaces")
+    workspaces = _load(routing_models_cache_path(harness)).get("workspaces")
     block = workspaces.get(workspace) if isinstance(workspaces, dict) else None
     if not isinstance(block, dict):
         return None
@@ -199,3 +209,17 @@ def _model_from_json(row: object) -> RoutingModel | None:
             else None
         ),
     )
+
+
+def write_routing_models_snapshot(models: list[RoutingModel]) -> Path:
+    """Write ``models`` to an immutable, content-addressed file and return its path.
+
+    For launches that hand off the process (``exec``) and so cannot clean up a temporary file: the
+    name depends only on the content, so concurrent launches never change each other's snapshot.
+    """
+    payload = json.dumps(routing_models_to_json(models), indent=2)
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    path = config_io.APP_DIR / "routing-model-snapshots" / f"{digest}.json"
+    if not path.is_file():
+        config_io.atomic_write_json(path, json.loads(payload))
+    return path

@@ -268,3 +268,38 @@ def test_write_gives_up_while_another_writer_holds_the_lock(monkeypatch):
             release_file_lock(held)
 
     assert write_routing_models(WS, PROVIDER, MODELS) is True
+
+
+def test_harnesses_keep_separate_lists_for_one_provider():
+    from ucode.smart_routing.routing_models_cache import HARNESS_CODEX
+
+    write_routing_models(WS, PROVIDER, MODELS[:1])
+    write_routing_models(WS, PROVIDER, MODELS[1:], harness=HARNESS_CODEX)
+
+    assert read_routing_models(WS, PROVIDER) == MODELS[:1]
+    assert read_routing_models(WS, PROVIDER, harness=HARNESS_CODEX) == MODELS[1:]
+    assert routing_models_cache_path(HARNESS_CODEX).name == "codex-routing-models.json"
+
+
+def test_snapshots_are_content_addressed_and_never_rewritten():
+    from ucode.smart_routing.routing_models_cache import write_routing_models_snapshot
+
+    first = write_routing_models_snapshot(MODELS)
+    again = write_routing_models_snapshot(MODELS)
+    other = write_routing_models_snapshot(MODELS[:1])
+
+    assert first == again
+    assert first != other
+    assert json.loads(first.read_text()) == [
+        {
+            "id": "us.anthropic.claude-opus-4-6-v1",
+            "display_name": "Claude Opus 4.6",
+            "max_input_tokens": 1_000_000,
+        },
+        {"id": "anthropic.claude-haiku-4-5@20251001"},
+        {
+            "id": "databricks-claude-sonnet-4-5",
+            "display_name": "Sonnet",
+            "max_input_tokens": 200_000,
+        },
+    ]
