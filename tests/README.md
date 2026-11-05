@@ -1,5 +1,9 @@
 # Test suites and user journeys
 
+The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
+including exact service URLs, native OAuth metadata, and real `codex mcp get`
+readback. The per-user configuration remains separate.
+
 Opt-in startup timing has offline component coverage in `test_startup_timing.py`,
 `test_startup_imports.py`, `test_cli.py`, and `test_launcher.py` (all under `tests/`).
 It checks silence when disabled, real CLI import timing, phase boundaries and failures,
