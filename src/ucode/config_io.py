@@ -185,7 +185,7 @@ def apply_json_mcp_diff(
 ) -> set[str]:
     """Apply an ``add``/``remove`` MCP-server diff to the ``key`` map in a JSON config, in one
     read-modify-write. Shared by the agents whose MCP servers live in a JSON object keyed by name
-    (copilot/cursor/gemini/opencode); the developer's own entries and every other key are kept.
+    (cursor/gemini/kilo/opencode); the developer's own entries and every other key are kept.
     ``backup_path`` snapshots the file first when the agent keeps a revert backup. Returns the subset
     of ``remove`` names that were actually present (so callers can report only real removals)."""
     if backup_path is not None:

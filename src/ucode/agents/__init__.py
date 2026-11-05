@@ -17,7 +17,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from ucode.config_io import ToolSpec
+from ucode.config_io import ToolSpec, is_dry_run
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT
 from ucode.databricks import (
     AnthropicModelCatalog,
@@ -29,7 +29,7 @@ from ucode.databricks import (
 )
 from ucode.env import env_bool
 from ucode.managed_config import refresh_managed_config
-from ucode.managed_files import config_scope, managed_write_batch
+from ucode.managed_files import config_scope, machine_wide_only, managed_write_batch
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import get_model_location, get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
@@ -122,6 +122,12 @@ def install_databricks_ai_tools_for_agents(
     """
     if not state.get("databricks_ai_tools_enabled"):
         return
+    if machine_wide_only():
+        # AI Tools install into per-user agent settings.
+        print_note(
+            "Skipped Databricks AI Tools: `ug configure --global` writes only machine-wide settings."
+        )
+        return
     # An admin's managed config governs the workspace, so ucode does not
     # self-install AI Tools under one (may become a managed-config option later).
     if refresh_managed_config(state, force_refresh=force_refresh).manifest is not None:
@@ -196,6 +202,28 @@ def _minimum_version_error(tool: str) -> str | None:
     return checker()
 
 
+def ensure_minimum_version(
+    tool: str, version_check: Callable[[], str | None], *, allow_upgrade: bool = True
+) -> None:
+    version_error = version_check()
+    if version_error and allow_upgrade:
+        print_warning(version_error)
+        # Native upgraders run in place; EOF/piped runs take the existing default.
+        if (
+            tool in _NATIVE_UPGRADE_COMMANDS
+            and not _auto_upgrade_agent_enabled()
+            and not prompt_yes_no_default(
+                f"Upgrade {TOOL_SPECS[tool]['display']} if available?", default=True
+            )
+        ):
+            raise RuntimeError(version_error)
+        if not _update_installed_tool_binary(tool):
+            raise RuntimeError(version_error)
+        version_error = version_check()
+    if version_error:
+        raise RuntimeError(version_error)
+
+
 def _too_new_downgrade(tool: str) -> tuple[str, str] | None:
     """Return (installed_version, downgrade_target) when the installed tool is
     too new to work, or None. Agents opt in by defining `too_new_downgrade`."""
@@ -242,25 +270,9 @@ def install_tool_binary(
         # against the gateway), so check it on every launch — not just when
         # auto-configuring — mirroring the minimum-version gate below.
         too_new = _maybe_downgrade_too_new_tool(tool)
-        version_error = _minimum_version_error(tool)
-
-        if not too_new and version_error:
-            print_warning(version_error)
-            # Native upgraders run in place, so confirm before mutating the install;
-            # EOF/piped runs take the default and upgrade (a required fix must not stall).
-            if (
-                tool in _NATIVE_UPGRADE_COMMANDS
-                and not _auto_upgrade_agent_enabled()
-                and not prompt_yes_no_default(
-                    f"Upgrade {spec['display']} if available?", default=True
-                )
-            ):
-                raise RuntimeError(version_error)
-            if not _update_installed_tool_binary(tool):
-                raise RuntimeError(version_error)
-            version_error = _minimum_version_error(tool)
-        if version_error:
-            raise RuntimeError(version_error)
+        ensure_minimum_version(
+            tool, lambda: _minimum_version_error(tool), allow_upgrade=not too_new
+        )
         return True
 
     installer = getattr(_MODULES[tool], "install_binary", None)
@@ -522,8 +534,8 @@ def refuse_user_scope_over_managed_files(tools: list[str]) -> None:
         if path is not None and path.exists():
             raise RuntimeError(
                 f"`ug configure --user` can't be used while {display} managed settings exist at "
-                f"{path}; they take precedence over user settings. Run `ug revert` if ug wrote "
-                "them, ask your administrator to remove them, or use `ug configure --global`."
+                f"{path}; they take precedence over user settings. Run `ug configure` without "
+                "--user, run `ug revert` if ug wrote them, or ask your administrator to remove them."
             )
 
 
@@ -537,7 +549,8 @@ def refuse_user_scope_over_managed_config(workspace: str | None, managed: dict |
         return
     raise RuntimeError(
         f"`ug configure --user` can't be used with {workspace}: it publishes a managed config, "
-        "which must be installed machine-wide. Use `ug configure --global` (the default)."
+        "which must be installed machine-wide. Run `ug configure` without --user, or ask your "
+        "administrator to run `ug configure --global`."
     )
 
 
@@ -558,7 +571,7 @@ def configure_tool(
     result: dict | tuple[dict, str]
     if tool == AGENT_CODEX:
         result = codex.write_tool_config(
-            state, model, provider=provider, parent_schema=parent_schema
+            state, model, provider=provider, parent_schema=parent_schema, relayed=relayed
         )
     elif tool == AGENT_CLAUDE:
         # A Model Provider Service or parent schema routes by header and discovers models natively,
@@ -680,10 +693,38 @@ def _availability_failure_detail(tool: str, state: dict) -> str:
     return " (" + "; ".join(parts) + ")"
 
 
+_vscode_with_copilot = True
+
+
+def request_vscode_with_copilot(requested: bool = True) -> None:
+    """Whether configuring Copilot in this run also sets up VS Code (``ug configure --no-vscode``
+    passes ``False``)."""
+    global _vscode_with_copilot
+    _vscode_with_copilot = requested
+
+
+def configure_vscode(state: dict, *, provider: str | None, parent_schema: str | None) -> None:
+    """Set up Copilot Chat in VS Code with the models the Copilot CLI was configured with."""
+    if not _vscode_with_copilot:
+        return
+    if is_dry_run():
+        print_note("Dry run: VS Code isn't changed.")
+        return
+    from . import vscode
+
+    vscode.configure(state, provider=provider, location=parent_schema)
+
+
 def configure_single_tool(
-    tool: str, state: dict, *, parent_schema: str | None = None, provider: str | None = None
+    tool: str,
+    state: dict,
+    *,
+    parent_schema: str | None = None,
+    provider: str | None = None,
+    with_vscode: bool = False,
 ) -> dict:
-    """Check availability, configure, and persist state for one tool only."""
+    """Check availability, configure, and persist state for one tool only. ``with_vscode`` also
+    sets up VS Code after Copilot."""
     parent_schema = parent_schema or _persisted_model_location(tool, state, provider)
     provider = None if parent_schema else provider or get_provider_service(state, tool)
     # A Model Provider Service or parent schema routes through the same gateway and pins no
@@ -698,6 +739,8 @@ def configure_single_tool(
             )
     with managed_write_batch(_managed_settings_displays([tool])):
         state = _configure_one(tool, state, provider, parent_schema=parent_schema)
+    if with_vscode and tool == AGENT_COPILOT:
+        configure_vscode(state, provider=provider, parent_schema=parent_schema)
     available_tools = list(set((state.get("available_tools") or []) + [tool]))
     state["available_tools"] = available_tools
     save_state(state)
@@ -782,6 +825,9 @@ def configure_selected_tools(
                 )
                 continue
             configured.append(tool)
+            # `ug configure` sets up Copilot Chat in VS Code along with the Copilot CLI.
+            if tool == AGENT_COPILOT:
+                configure_vscode(state, provider=provider, parent_schema=parent_schema)
 
     existing = state.get("available_tools") or []
     state["available_tools"] = sorted(set(existing) | set(configured))
