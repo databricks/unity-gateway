@@ -1234,6 +1234,54 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         assert observed == [routed]
 
+    @pytest.mark.parametrize("managed_enabled", [False, True])
+    @pytest.mark.parametrize(
+        ("bare", "launch_args"),
+        [
+            (True, []),
+            (False, []),
+            (False, ["--enable-smart-routing"]),
+            (False, ["--disable-smart-routing"]),
+            (False, ["update"]),
+        ],
+    )
+    def test_managed_auto_launch_defaults_respect_explicit_flags(
+        self, monkeypatch, managed_enabled, launch_args, bare
+    ):
+        version = smart_routing_config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
+        managed = {"enabled_agents": {"claude": {"smart_routing_enabled": managed_enabled}}}
+        if bare:
+            monkeypatch.setattr("ucode.cli.install_databricks_cli", lambda *a, **k: None)
+            monkeypatch.setattr("ucode.cli.refresh_managed_config", lambda state: (managed, False))
+        observed = []
+        before = dict(os.environ)
+        with _launch_policy_patches(managed) as calls:
+            calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
+                (
+                    options.launch_smart_routing,
+                    smart_routing_config.auto_picker_enabled(agent="claude"),
+                    _routing_env(),
+                )
+            )
+            result = runner.invoke(app, ([] if bare else ["claude"]) + launch_args)
+        assert result.exit_code == 0, result.output
+        enabled = launch_args == ["--enable-smart-routing"] or (not launch_args and managed_enabled)
+        expected = _version_routing_env(version, "claude")
+        if enabled:
+            expected.update(
+                ENABLE_SMART_ROUTING_SUBAGENT_ONLY="1", ENABLE_SMART_ROUTER_ORCHESTRATOR="1"
+            )
+        if launch_args == ["update"]:
+            expected = dict.fromkeys(ROUTING_ENV_KEYS)
+        assert observed == [(launch_args != ["update"], True, expected)]
+        for key in (
+            *ROUTING_ENV_KEYS,
+            "EXPOSE_AUTO_IN_MODEL_PICKER",
+            smart_routing_config.AUTO_PICKER_CONFIG_ENV_VAR,
+        ):
+            assert os.environ.get(key) == before.get(key)
+
     def test_bare_launch_keeps_a_known_version_over_managed_smart_routing(self, monkeypatch):
         monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ONLY_V0)
         managed = {"enabled_agents": {"claude": {"smart_routing_enabled": True}}}

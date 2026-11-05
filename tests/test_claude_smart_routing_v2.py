@@ -542,10 +542,38 @@ class TestV2Launch:
         # The model-setting guard is a first-prompt concern; user settings stay untouched.
         assert json.loads(user_settings.read_text()) == {"model": "opus"}
 
-    def test_subagent_only_launch_keeps_the_forwarded_model(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        ("auto_default", "auto_active", "pinned"),
+        [
+            ("legacy", False, True),
+            ("system.ai.claude-sonnet-5", False, True),
+            (None, False, True),
+            ("system.ai.claude-sonnet-5", True, False),
+            ("system.ai.claude-sonnet-5", True, True),
+            (None, True, False),
+            ("auto", True, False),
+        ],
+    )
+    def test_subagent_launch_preserves_pins_and_uses_admin_default_for_auto(
+        self, tmp_path, monkeypatch, auto_default, auto_active, pinned
+    ):
         model = "system.ai.claude-opus-5-5"
+        if auto_default != "legacy":
+            monkeypatch.setenv(
+                "SMART_ROUTER_CONFIG_VERSION", "subagent_orch_auto_picker_v0_claude_only"
+            )
+        managed = {"enabled_agents": {"claude": {"model_config": {"default_model": auto_default}}}}
+        load_managed = Mock(return_value=managed)
+        monkeypatch.setattr(v2, "load_managed_state", load_managed)
+        monkeypatch.setenv("ANTHROPIC_MODEL", "untrusted-shell-model")
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        if auto_active:
+            activated = {"SMART_ROUTER_CONFIG_VERSION": "subagent_orch_auto_picker_v0_claude_only"}
+            v2.apply_enabled_version(activated, agent="claude")
+            monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION")
+            for key, value in activated.items():
+                monkeypatch.setenv(key, value)
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(
             v2,
@@ -576,23 +604,37 @@ class TestV2Launch:
 
         monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
 
-        with pytest.raises(SystemExit) as exc:
+        invalid_default = auto_active and not pinned and auto_default in (None, "auto")
+        with pytest.raises(RuntimeError if invalid_default else SystemExit) as exc:
             v2.launch_claude(
                 {"workspace": "https://example.com"},
-                ["--model", model],
+                ["--model", model] if pinned else [],
                 binary="claude",
                 user_settings_path=tmp_path / "settings.json",
-                launch_model=model,
+                launch_model=model if pinned else None,
                 compose_settings=lambda args: ({}, list(args)),
                 launch_model_args=claude._launch_model_args,
                 model_name=claude._maybe_add_1m_suffix,
             )
 
+        if invalid_default:
+            assert "default_model" in str(exc.value)
+            assert "argv" not in captured
+            return
         assert exc.value.code == 0
         argv = captured["argv"]
         assert argv.count("--model") == 1
-        assert argv[argv.index("--model") + 1] == model
-        assert captured["settings"]["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+        assert argv[argv.index("--model") + 1] == (model if pinned else auto_default)
+        options = captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]
+        if auto_default == "legacy":
+            assert "autoMainModel" not in options
+            load_managed.assert_not_called()
+        else:
+            assert options["autoMainModel"] == (auto_default or "")
+            load_managed.assert_called_once_with("https://example.com")
+        assert captured["settings"]["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == (
+            "1" if auto_default == "legacy" or auto_active else "0"
+        )
         assert claude_hooks.FIRST_PROMPT_SOCKET_ENV not in captured["settings"]["env"]
 
 

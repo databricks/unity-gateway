@@ -3277,9 +3277,12 @@ CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
 def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[bool]:
     """Apply an explicit routing choice without leaking into an embedding process.
 
-    Yields whether the flag or a known version already chose this launch's routing.
+    Yields whether the flag or a legacy version already chose this launch's routing.
     """
-    routing_chosen = enabled is not None or smart_routing_config.known_version()
+    routing_chosen = enabled is not None or (
+        smart_routing_config.known_version()
+        and not smart_routing_config.auto_picker_enabled(agent=agent)
+    )
     previous = (
         smart_routing_v2.apply_config(agent=agent)
         if enabled is None
@@ -3642,7 +3645,7 @@ def _launch_options(
         user_pinned_model=user_pinned_model if provider is None else None,
         launch_smart_routing=(
             # Smart routing is enabled globally.
-            smart_routing_enabled
+            (smart_routing_enabled or smart_routing_config.auto_picker_enabled(agent=tool))
             # Only Claude Code and Codex currently support smart routing.
             and tool in CAN_USE_CACHED_CONFIG_AGENTS
             # Smart routing does not currently support Model Provider Services.
@@ -3726,7 +3729,10 @@ def _launch_tool(
     previous = {}
     try:
         tool = normalize_tool(tool_name)
-        routing_chosen = routing_already_chosen or smart_routing_config.known_version()
+        routing_chosen = routing_already_chosen or (
+            smart_routing_config.known_version()
+            and not smart_routing_config.auto_picker_enabled(agent=tool)
+        )
         previous = smart_routing_v2.apply_config(agent=tool)
         if not custom_oauth_cli_enabled(custom_oauth):
             os.environ.pop(CUSTOM_OAUTH_CLI_ENV_VAR, None)
@@ -3849,10 +3855,14 @@ def _launch_tool(
             # rewriting it; the admin's location exists only for this launch.
             provider = None
             parent_schema = managed_parent_schema
-        # Managed smart routing overrides individual routing env vars, but not the flag or a known
-        # version. Its version is applied right before launch, after the launch options below.
+        # Auto exposure accepts managed launch enablement; explicit flags and legacy presets win.
         managed_smart_routing_applies = (
-            _managed_smart_routing_enabled(managed, tool) and not routing_chosen
+            _managed_smart_routing_enabled(managed, tool)
+            and not routing_chosen
+            and (
+                not smart_routing_config.auto_picker_enabled(agent=tool)
+                or _smart_routing_launch_shape(tool, ctx.args, explicit_prompt)
+            )
         )
         # Checked before the managed version is applied, which consumes the selector. A version
         # that leaves this agent unrouted makes the launch a plain one: no skills, hooks, or note.

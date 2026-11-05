@@ -1,8 +1,10 @@
 # Claude mod entry point
 
-The native mod consumes a resolved Auto capability and an `autoMainModel` option.
-No config version registers this capability yet; managed exposure and admin-default
-startup are wired in the following change. Auto is excluded from routing candidates.
+With `subagent_orch_auto_picker_v0_claude_only`, managed smart routing injects Auto
+into the native picker and starts eligible sessions with the admin's concrete default,
+subagent routing, and orchestration. Explicit launch flags/pins retain precedence;
+other versions keep their existing behavior. The launcher passes `autoMainModel`;
+Auto is excluded from routing candidates. See [configuration](../README.md#smart-router-orchestrator).
 
 `register.ts` handles `/model auto` and saved/session-only Auto rows with the same
 transition. Saved rows are intercepted before assigning the virtual model; their

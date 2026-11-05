@@ -49,6 +49,31 @@ _EXPECTED_PRESETS = {
 }
 
 
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+@pytest.mark.parametrize("inherited", [None, "0", "1"])
+def test_auto_picker_preset_is_claude_only_and_restorable(agent, inherited):
+    source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: "subagent_orch_auto_picker_v0_claude_only"}
+    if inherited is not None:
+        source.update(dict.fromkeys(config.SMART_ROUTING_ENV_KEYS, inherited))
+        source["EXPOSE_AUTO_IN_MODEL_PICKER"] = inherited
+    original = source.copy()
+    previous = config.apply_config(source, agent=agent)
+    enabled = "1" if agent == AGENT_CLAUDE else "0"
+    assert config.auto_picker_enabled(source, agent=agent) is (agent == AGENT_CLAUDE)
+    resolved_marker = source.pop("UCODE_AUTO_PICKER_CONFIG", None)
+    assert resolved_marker == (
+        config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY if agent == AGENT_CLAUDE else None
+    )
+    assert source == {
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        "EXPOSE_AUTO_IN_MODEL_PICKER": enabled,
+    }
+    v2.restore_smart_routing_env(previous, source)
+    assert source == original
+
+
 @pytest.mark.parametrize("version", sorted(config._VERSIONS))
 @pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
 def test_picker_exposure_overrides_shell_and_is_not_an_activity_flag(version, agent):
@@ -56,7 +81,11 @@ def test_picker_exposure_overrides_shell_and_is_not_an_activity_flag(version, ag
         SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version,
         "EXPOSE_AUTO_IN_MODEL_PICKER": "1",
     }
-    expected = "0"
+    expected = (
+        "1"
+        if version == config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY and agent == AGENT_CLAUDE
+        else "0"
+    )
     assert (
         config.resolve_environment(source, agent=agent)["EXPOSE_AUTO_IN_MODEL_PICKER"] == expected
     )
@@ -72,7 +101,9 @@ def test_picker_exposure_overrides_shell_and_is_not_an_activity_flag(version, ag
 def test_picker_exposure_requires_an_explicit_binary_value(value):
     agents = {
         agent: flags.copy()
-        for agent, flags in config._VERSIONS[config.SUBAGENT_ORCH_V0_CLAUDE_ONLY].items()
+        for agent, flags in config._VERSIONS[
+            config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY
+        ].items()
     }
     if value is None:
         agents[AGENT_CLAUDE].pop("EXPOSE_AUTO_IN_MODEL_PICKER")
@@ -94,8 +125,7 @@ def test_session_off_preserves_auto_picker_capability(tmp_path):
     controls = tmp_path / "controls.json"
     controls.write_text(json.dumps(dict.fromkeys(config.SMART_ROUTING_ENV_KEYS, "0")))
     env = {
-        "UCODE_AUTO_PICKER_CONFIG": config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY,
-        "EXPOSE_AUTO_IN_MODEL_PICKER": "1",
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY,
         session_env.SESSION_ENV_VAR: str(controls),
     }
     effective = session_env.effective_environment(env, agent=AGENT_CLAUDE)
@@ -104,15 +134,7 @@ def test_session_off_preserves_auto_picker_capability(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "selector",
-    [
-        None,
-        "",
-        "   ",
-        "unsupported_version",
-        " unsupported_version ",
-        config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY,
-    ],
+    "selector", [None, "", "   ", "unsupported_version", " unsupported_version "]
 )
 def test_absent_or_unknown_selector_is_a_no_op(selector):
     applied = {
@@ -420,6 +442,19 @@ def test_enabled_version_with_inherited_auto_capability():
     }
     applied = inherited.copy()
     previous = config.apply_enabled_version(applied, agent=AGENT_CLAUDE)
-    assert applied == _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0]
+    assert applied == {**inherited, ENABLE_SMART_ROUTING_ENV_VAR: "0"}
     v2.restore_smart_routing_env(previous, applied)
     assert applied == inherited
+
+
+def test_managed_enablement_preserves_an_already_resolved_auto_version():
+    source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY}
+    config.apply_config(source, agent=AGENT_CLAUDE)
+    before = dict(source)
+    previous = config.apply_enabled_version(source, agent=AGENT_CLAUDE)
+    assert config.auto_picker_enabled(source, agent=AGENT_CLAUDE)
+    assert source[ENABLE_SMART_ROUTING_ENV_VAR] == "0"
+    assert source[ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+    assert source[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == "1"
+    v2.restore_smart_routing_env(previous, source)
+    assert source == before
