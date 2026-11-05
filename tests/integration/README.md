@@ -4,6 +4,8 @@
 manifests/directories, including ownership changes, malformed-directory recovery
 during collisions and renames, metastore identities, and orphan cleanup within and across batches.
 Normalization complexity and live skill download latency are not covered.
+Malformed directory-container checks intercept deletion and verify persisted replacement
+attribution without treating string characters, object keys, or scalar values as paths.
 
 The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
 service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.

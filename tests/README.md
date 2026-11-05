@@ -7,6 +7,8 @@ malformed-directory recovery during collisions and renames, and orphan cleanup w
 batches using real temporary files. These component checks establish reconciliation
 behavior, not normalization complexity
 or live download latency.
+Malformed directory containers (string, object, scalar) never become deletion paths;
+mixed directory lists retain only string entries for collision and rename recovery.
 
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including

@@ -222,6 +222,21 @@ class TestReconciliation:
 
         assert len(skills_state.list_downloaded()) == 1
 
+    @pytest.mark.parametrize("invalid_dirs", ["invalid", {"invalid": "ignored"}, 42])
+    def test_rename_ignores_non_list_directories(self, tmp_path, monkeypatch, invalid_dirs):
+        old = _install(tmp_path, "main.default.triage", "old")
+        new = _install(tmp_path, "main.default.triage", "new")
+        skills_state._save([{**skills_state._to_record(old), "dirs": invalid_dirs}])
+        deleted = []
+        monkeypatch.setattr(skills_state, "_delete_dirs", lambda dirs: deleted.extend(dirs))
+
+        skills_state.record_downloads([new])
+
+        assert deleted == []
+        records = skills_state.list_downloaded()
+        assert len(records) == 1
+        assert records[0]["dirs"] == list(new.dirs)
+
     @pytest.mark.parametrize(
         ("same_batch", "malformed_orphan"),
         [(False, False), (True, False), (False, True)],

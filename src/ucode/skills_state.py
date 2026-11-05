@@ -116,6 +116,16 @@ def _record_key(record: dict) -> tuple[str | None, str | None, str]:
     return (record.get("metastore_id"), record.get("fqn"), _norm(record.get("base", "")))
 
 
+def _record_dirs(record: dict) -> list[str]:
+    """Read persisted directory lists without interpreting malformed containers as paths."""
+    directories = record.get("dirs")
+    return (
+        [path for path in directories if isinstance(path, str)]
+        if isinstance(directories, list)
+        else []
+    )
+
+
 def _delete_dirs(dirs: list[str]) -> list[str]:
     undeletable: list[str] = []
     for directory in dirs:
@@ -173,17 +183,15 @@ class _AttributionIndex:
         self.records[record_id] = record
         if (key := self._key(record)) is not None:
             self.by_key.setdefault(key, set()).add(record_id)
-        for directory in record.get("dirs") or []:
-            if isinstance(directory, str):
-                self.by_dir.setdefault(_norm(directory), set()).add(record_id)
+        for directory in _record_dirs(record):
+            self.by_dir.setdefault(_norm(directory), set()).add(record_id)
 
     def remove(self, record_id: int) -> dict:
         record = self.records.pop(record_id)
         if (key := self._key(record)) is not None:
             self.by_key[key].discard(record_id)
-        for directory in record.get("dirs") or []:
-            if isinstance(directory, str):
-                self.by_dir[_norm(directory)].discard(record_id)
+        for directory in _record_dirs(record):
+            self.by_dir[_norm(directory)].discard(record_id)
         return record
 
 
@@ -207,9 +215,7 @@ def record_downloads(installs: list[SkillInstall]) -> None:
             old = index.remove(old_id)
             # Overwritten directories belong to the new install; only renames leave orphans.
             if old_id not in overwritten:
-                _delete_dirs(
-                    [directory for directory in old.get("dirs") or [] if isinstance(directory, str)]
-                )
+                _delete_dirs(_record_dirs(old))
         index.add(record)
     _save(list(index.records.values()))
 
