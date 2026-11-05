@@ -3,11 +3,11 @@
 Windows first-launch configuration has component coverage in
 `../test_desktop_setup.py`: an installed MSIX creates the missing Desktop profile
 store; absent installations, package-query failures, and timeouts leave it absent.
-The native Windows Cowork inference job in `.github/workflows/ci.yml`
+The native Windows Cowork inference job in `.github/workflows/integration.yml`
 exercises real installation, UG configuration before first launch, and completed
 `system.ai.claude-haiku-4-5` inference through the desktop UI. CI contract checks
 verify credential-job event guards and that failed, cancelled, or unexpectedly
-skipped Cowork runs fail the existing required `e2e` check.
+skipped Cowork runs fail the integration gate and the existing required `e2e` check.
 
 The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
 service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.

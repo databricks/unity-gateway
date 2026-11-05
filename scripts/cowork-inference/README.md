@@ -1,10 +1,11 @@
 # Windows Cowork inference test
 
-The `cowork-inference-windows` job in `.github/workflows/ci.yml` exercises real
+The `cowork-inference-windows` job in `.github/workflows/integration.yml` exercises real
 Claude Desktop inference through Unity Gateway on a disposable Windows runner.
 It runs after lint for same-repository PRs, main pushes, scheduled CI, and manual
 CI dispatches. It skips merge-group runs and fork PRs, which lack the required
-credentials. Its result participates in the existing required `e2e` check.
+credentials. Authorized fork-integration runs test the explicitly approved commit.
+Its result is required by the integration gate, which feeds the required `e2e` check.
 
 The test installs a signed, SHA256-pinned Claude MSIX and drives the real app
 through Windows UI Automation. `--force-renderer-accessibility` exposes the app's
@@ -25,7 +26,7 @@ The prompt spells the number in words so echoing the input cannot pass.
 ## Dependencies
 
 The official Claude Desktop 2.42304.2 x64 MSIX is pinned by URL and SHA256 in
-`ci.yml`; the installer script also verifies the Anthropic signature. Installer
+`integration.yml`; the installer script also verifies the Anthropic signature. Installer
 provenance comes from Microsoft's winget-pkgs catalog:
 `manifests/a/Anthropic/Claude/2.42304.2/Anthropic.Claude.installer.yaml`.
 Direct official Anthropic installer/runtime downloads were approved for these

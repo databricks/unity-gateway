@@ -463,6 +463,7 @@ FORK_GUARD = (
 )
 # Fork PRs get no secrets or OIDC token, so jobs that need either must skip them.
 SKIPPED_ON_FORK_PRS = {
+    "cowork-inference-windows",
     "workspace",
     "smoke",
     "headless-windows",
@@ -698,6 +699,7 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "installation",
         "installation-windows",
         "headless-windows",
+        "cowork-inference-windows",
         "workspace",
         "smoke",
         "full",
@@ -719,6 +721,7 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "installation",
             "installation-windows",
             "headless-windows",
+            "cowork-inference-windows",
             "workspace",
             "smoke",
             "full",
@@ -921,33 +924,39 @@ def test_live_suites_use_fresh_id_for_random_ids():
 
 
 def test_cowork_ci_job_requires_credentials_only_on_trusted_events():
-    workflow = _workflow("ci.yml")
-    job = workflow.split("\n  cowork-inference-windows:\n", 1)[1].split("\n  e2e:\n", 1)[0]
+    jobs = _integration_jobs()
+    job = jobs["cowork-inference-windows"]
     condition = re.search(r"(?m)^    if: (.*)$", job)
     assert condition is not None
     assert FORK_GUARD in condition.group(1)
     assert "github.event_name != 'merge_group'" in condition.group(1)
     assert "id-token: write" in job
     assert "secrets.DATABRICKS_BEARER" in job
-    required = workflow.split("\n  required-e2e:\n", 1)[1]
-    assert "needs: [e2e, integration, cowork-inference-windows]" in required
-    assert FORK_GUARD in required.split("COWORK_EXPECTED:", 1)[1].splitlines()[0]
+    assert "ref: ${{ inputs.ref || github.sha }}" in job
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert needs is not None
+    assert "cowork-inference-windows" in {name.strip() for name in needs.group(1).split(",")}
+    for caller in ("ci.yml", "fork-integration.yml"):
+        integration = _workflow(caller).split("\n  integration:\n", 1)[1].split("\n  #", 1)[0]
+        integration = re.split(r"\n  [a-z-]+:\n", integration, maxsplit=1)[0]
+        assert "id-token: write" in integration
+    required = _workflow("ci.yml").split("\n  required-e2e:\n", 1)[1]
+    assert "needs: [e2e, integration]" in required
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-e2e runs on Linux")
 @pytest.mark.parametrize(
-    ("event", "cowork_result", "cowork_expected", "passes"),
+    ("event", "integration_result", "passes"),
     [
-        ("pull_request", "success", "success", True),
-        ("pull_request", "failure", "success", False),
-        ("pull_request", "cancelled", "success", False),
-        ("pull_request", "skipped", "success", False),
-        ("pull_request", "skipped", "skipped", True),
-        ("push", "failure", "success", False),
-        ("merge_group", "skipped", "success", True),
+        ("pull_request", "success", True),
+        ("pull_request", "failure", False),
+        ("pull_request", "cancelled", False),
+        ("pull_request", "skipped", False),
+        ("push", "failure", False),
+        ("merge_group", "skipped", True),
     ],
 )
-def test_required_e2e_enforces_cowork_result(event, cowork_result, cowork_expected, passes):
+def test_required_e2e_enforces_integration_result(event, integration_result, passes):
     required = _workflow("ci.yml").split("\n  required-e2e:\n", 1)[1]
     script = textwrap.dedent(required.split("        run: |\n", 1)[1])
     result = subprocess.run(
@@ -956,9 +965,7 @@ def test_required_e2e_enforces_cowork_result(event, cowork_result, cowork_expect
             **os.environ,
             "EVENT_NAME": event,
             "RESULT": "success",
-            "INTEGRATION_RESULT": "success",
-            "COWORK_RESULT": cowork_result,
-            "COWORK_EXPECTED": cowork_expected,
+            "INTEGRATION_RESULT": integration_result,
         },
         capture_output=True,
         text=True,
