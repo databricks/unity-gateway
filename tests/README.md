@@ -1,5 +1,14 @@
 # Test suites and user journeys
 
+The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
+including exact service URLs, native OAuth metadata, and real `codex mcp get`
+readback. The per-user configuration remains separate.
+
+`test_model_service_retries.py` exercises model discovery against a local HTTP server: definitive
+client errors return after one request, while transient HTTP failures retain bounded retries.
+It covers returned models/error reasons and request counts; it does not establish live gateway
+or interactive startup recovery.
+
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.

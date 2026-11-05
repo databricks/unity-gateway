@@ -1,5 +1,9 @@
 # Integration tests
 
+The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
+including exact service URLs, native OAuth metadata, and real `codex mcp get`
+readback. The per-user configuration remains separate.
+
 Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
 before numbered reuse, stable names during routing and in parallel cards, and unchanged
 execution inputs and row controls. They cover a lone call's decision under its Agent row,
@@ -70,6 +74,11 @@ amounts. Zero and fractional decimal strings remain valid. Explicit nulls in
 percent consumed, spend, and threshold are treated like missing optional fields,
 individually or together, without discarding valid statuses. Redundant client error
 variants are reduced to one opaque passthrough case; later-page failure checks remain.
+
+`../test_model_service_retries.py` exercises model discovery against a local HTTP server: definitive
+client errors return after one request, while transient HTTP failures retain bounded retries.
+It covers returned models/error reasons and request counts; it does not establish live gateway
+or interactive startup recovery.
 
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
