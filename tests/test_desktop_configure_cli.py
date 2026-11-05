@@ -267,7 +267,7 @@ def test_desktop_failure_preserves_successful_configure_exit(
     def fail(*a, **k):
         raise OSError("Desktop profile is not writable")
 
-    monkeypatch.setattr(desktop_setup, "_configure_desktop", fail)
+    monkeypatch.setattr(desktop_setup, "_configure_claude_desktop_user_level", fail)
     monkeypatch.setattr(desktop_setup.sys, "platform", "darwin")
     args = {"selected_tools": ["claude"]}
     if flow == "single":

@@ -67,7 +67,7 @@ def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -
         print_note("Would configure Claude Desktop alongside Claude Code.")
         return
     try:
-        _configure_desktop(state, parent_schema=parent_schema)
+        _configure_claude_desktop_user_level(state, parent_schema=parent_schema)
     except Exception as exc:  # noqa: BLE001 -- Desktop must not block Claude Code setup
         print_warning(f"Could not configure Claude Desktop: {exc}. Claude Code setup is unchanged.")
 
@@ -131,7 +131,7 @@ def revert_claude_code_plugin() -> str:
         return "failed"
 
 
-def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
+def _configure_claude_desktop_user_level(state: dict, *, parent_schema: str | None) -> None:
     directory = claude_desktop_directory()
     if directory is None:
         raise RuntimeError("Claude Desktop profile configuration is unavailable on this platform.")
