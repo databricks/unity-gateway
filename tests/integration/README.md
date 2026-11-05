@@ -415,7 +415,7 @@ tests in `../test_claude_search_discovery.py`, including legacy catalog fallback
 an explicit model override, and no available GPT model. Live search remains
 outside this integration suite.
 
-`TestHttpGetJsonRetries` in `../test_databricks.py` covers discarded truncated HTTP bodies,
+`TestHttpGetJsonRetries` in `../test_databricks.py` covers malformed HTTP responses, discarded truncated bodies,
 bounded retry recovery, and failure reasons on exhaustion. This is component coverage;
 the live journeys still fail when the gateway cannot supply a complete response.
 

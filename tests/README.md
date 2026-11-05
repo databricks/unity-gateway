@@ -1,6 +1,6 @@
 # Test suites and user journeys
 
-`TestHttpGetJsonRetries` in `test_databricks.py` covers truncated HTTP response bodies:
+`TestHttpGetJsonRetries` in `test_databricks.py` covers malformed HTTP responses and truncated bodies:
 partial data is discarded, optional retries retain their existing budget/backoff, and
 exhaustion returns a network-error reason. These component checks do not establish live
 gateway availability or relief from workspace rate limits.

@@ -4156,6 +4156,26 @@ class TestHttpGetJsonRetries:
             assert payload is None
             assert reason == "network error: IncompleteRead(17 bytes read, 100 more expected)"
 
+    @pytest.mark.parametrize("error_type", ["BadStatusLine", "LineTooLong"])
+    def test_retries_protocol_errors_before_response_body(self, monkeypatch, error_type):
+        import http.client
+        from unittest.mock import MagicMock
+
+        urlopen = MagicMock(
+            side_effect=[
+                getattr(http.client, error_type)("invalid HTTP response"),
+                _FakeResponse({"complete": True}),
+            ]
+        )
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda delay: None)
+
+        payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=1)
+
+        assert payload == {"complete": True}
+        assert reason is None
+        assert urlopen.call_count == 2
+
     def test_retries_429_after_retry_after_delay(self, monkeypatch):
         outcomes = iter(
             [
