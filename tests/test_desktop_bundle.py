@@ -1,4 +1,4 @@
-"""Root marketplace publication for macOS MDM, using the packaged shell worker."""
+"""Root organization-plugin publication for macOS MDM, using the packaged shell worker."""
 
 import json
 import os
@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from tests.test_desktop_marketplace import _source, desktop_environment
+from tests.test_desktop_marketplace import desktop_environment
 from ucode import managed_files
 from ucode.agents.desktop import cowork
 
@@ -15,12 +15,12 @@ from ucode.agents.desktop import cowork
 def system_source(tmp_path, monkeypatch):
     if os.name == "nt":
         pytest.skip("macOS MDM publication uses a POSIX shell")
-    path = desktop_environment(tmp_path, monkeypatch, "macos")
-    monkeypatch.setattr(managed_files, "claude_desktop_marketplace_path", lambda: path)
+    path = desktop_environment(tmp_path, monkeypatch, "macos").parent / "org-plugins/ug"
+    monkeypatch.setattr(managed_files, "claude_desktop_org_plugin_path", lambda: path)
     # Run the packaged shell on Linux/macOS without sudo, with only target/OS adapters changed.
     platform = "macos" if os.uname().sysname == "Darwin" else "linux"
     script = managed_files._SUDO_REPLACE_SCRIPT.replace(
-        "macos:/Library/Application Support/UnityGateway/claude-cowork-marketplace",
+        "macos:/Library/Application Support/Claude/org-plugins/ug",
         f"{platform}:{path}",
     )
     if platform == "linux":
@@ -57,6 +57,23 @@ case "$mode" in""",
     return path
 
 
+def _source(tmp_path):
+    source = tmp_path / "organization-plugin"
+    (source / ".claude-plugin").mkdir(parents=True)
+    (source / ".claude-plugin/plugin.json").write_text(
+        json.dumps({"name": "ug", "version": "1.0.0", "installationPreference": "required"})
+    )
+    (source / "version.json").write_text(json.dumps({"version": "1.0.0"}))
+    skill = source / "skills/review"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("Review carefully")
+    (skill / "image.bin").write_bytes(b"\x00\xff\x80")
+    script = skill / "run.sh"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o755)
+    return source
+
+
 def test_publish_update_and_removal_preserve_other_plugins(system_source, tmp_path):
     source = _source(tmp_path)
     unrelated = system_source.parent / "personal"
@@ -65,20 +82,20 @@ def test_publish_update_and_removal_preserve_other_plugins(system_source, tmp_pa
 
     managed_files.replace_privileged_bundle(system_source, source)
     first = cowork._marketplace_files(system_source)
-    manifest = json.loads((system_source / "plugins/ug/.claude-plugin/plugin.json").read_text())
-    assert manifest == {"name": "ug", "version": "1.0.0"}
-    assert not (system_source / "version.json").exists()
+    manifest = json.loads((system_source / ".claude-plugin/plugin.json").read_text())
+    assert manifest == {"name": "ug", "version": "1.0.0", "installationPreference": "required"}
+    assert json.loads((system_source / "version.json").read_text()) == {"version": "1.0.0"}
     assert cowork._marketplace_files(source) == first
-    assert (system_source / "plugins/ug/skills/review/image.bin").read_bytes() == b"\x00\xff\x80"
-    assert (system_source / "plugins/ug/skills/review/run.sh").stat().st_mode & 0o777 == 0o755
+    assert (system_source / "skills/review/image.bin").read_bytes() == b"\x00\xff\x80"
+    assert (system_source / "skills/review/run.sh").stat().st_mode & 0o777 == 0o755
     managed_files.replace_privileged_bundle(system_source, source)
     assert cowork._marketplace_files(system_source) == first
 
-    (source / "plugins/ug/skills/review/image.bin").unlink()
-    (source / "plugins/ug/skills/review/SKILL.md").write_text("Updated skill")
+    (source / "skills/review/image.bin").unlink()
+    (source / "skills/review/SKILL.md").write_text("Updated skill")
     managed_files.replace_privileged_bundle(system_source, source)
-    assert not (system_source / "plugins/ug/skills/review/image.bin").exists()
-    assert (system_source / "plugins/ug/skills/review/SKILL.md").read_text() == "Updated skill"
+    assert not (system_source / "skills/review/image.bin").exists()
+    assert (system_source / "skills/review/SKILL.md").read_text() == "Updated skill"
     assert cowork._marketplace_files(source) == cowork._marketplace_files(system_source)
     managed_files.replace_privileged_bundle(system_source, None)
     assert not system_source.exists()
@@ -94,7 +111,7 @@ def test_ug_directory_is_replaced_without_ownership_hashes(system_source, tmp_pa
     custom.write_text("Manual content in UG's directory")
     managed_files.replace_privileged_bundle(system_source, source)
     assert not custom.exists()
-    skill = system_source / "plugins/ug/skills/review/SKILL.md"
+    skill = system_source / "skills/review/SKILL.md"
     skill.write_text("External edit")
     managed_files.replace_privileged_bundle(system_source, source)
     assert skill.read_text() == "Review carefully"
@@ -110,7 +127,7 @@ def test_macos_root_copy_rejects_linked_and_special_source_files(
     source = _source(tmp_path)
     managed_files.replace_privileged_bundle(system_source, source)
     original = cowork._marketplace_files(system_source)
-    skill = source / "plugins/ug/skills/review/SKILL.md"
+    skill = source / "skills/review/SKILL.md"
     extra = skill.with_name("extra")
     if entry_type == "symlink":
         extra.symlink_to(skill)
@@ -152,7 +169,7 @@ def test_macos_worker_rejects_non_root_bundle_requests(system_source, monkeypatc
 def test_failed_root_copy_can_be_retried(system_source, tmp_path, monkeypatch):
     source = _source(tmp_path)
     managed_files.replace_privileged_bundle(system_source, source)
-    (source / "plugins/ug/skills/review/SKILL.md").write_text("Updated skill")
+    (source / "skills/review/SKILL.md").write_text("Updated skill")
     before = cowork._marketplace_files(system_source)
     monkeypatch.setenv("UG_TEST_BUNDLE_FAIL", "rename")
     with pytest.raises(RuntimeError):
@@ -185,9 +202,7 @@ def test_root_copy_preserves_linked_system_destination(system_source, tmp_path):
     assert (foreign / "keep").read_text() == "untouched"
 
 
-@pytest.mark.parametrize(
-    "manifest", [".claude-plugin/marketplace.json", "plugins/ug/.claude-plugin/plugin.json"]
-)
+@pytest.mark.parametrize("manifest", ["version.json", ".claude-plugin/plugin.json"])
 def test_missing_manifest_reports_path_and_preserves_published_bundle(
     system_source, tmp_path, manifest
 ):

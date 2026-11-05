@@ -102,6 +102,13 @@ def render_profile(
     return profile
 
 
+def render_managed_mcp_servers(mcp_config: dict) -> list[dict]:
+    return [
+        {"name": name, "transport": "stdio", **{k: v for k, v in entry.items() if k != "type"}}
+        for name, entry in mcp_config["mcpServers"].items()
+    ]
+
+
 def render_otel_helper(command: Sequence[str], *, windows: bool) -> str:
     if not command:
         raise ClaudeDesktopError("Claude Desktop OTEL headers command is required.")

@@ -282,10 +282,7 @@ def desktop_mcp_configuration(workspace: str, mcp_config: dict) -> Iterator[None
             raise ClaudeDesktopConflictError(
                 "Claude Desktop is configured for another workspace. Run ug configure again."
             )
-        profile["managedMcpServers"] = [
-            {"name": name, "transport": "stdio", **{k: v for k, v in entry.items() if k != "type"}}
-            for name, entry in mcp_config["mcpServers"].items()
-        ]
+        profile["managedMcpServers"] = desktop_config.render_managed_mcp_servers(mcp_config)
         profile["toolSearchEnabled"] = True
         after = _serialize_json(profile, before)
         desktop_config.write_configuration([(profile_path, before, after, 0o600)])

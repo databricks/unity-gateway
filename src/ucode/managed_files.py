@@ -206,12 +206,6 @@ def _windows_claude_header_mod_root() -> Path:
     return windows_claude_managed_settings_path().parent / "ucode-plugins"
 
 
-def claude_desktop_marketplace_path() -> Path | None:
-    if current_os() is not OS.MACOS:
-        return None
-    return Path("/Library/Application Support/UnityGateway/claude-cowork-marketplace")
-
-
 def claude_desktop_org_plugin_path() -> Path | None:
     if current_os() is OS.MACOS:
         return Path("/Library/Application Support/Claude/org-plugins/ug")
@@ -221,8 +215,8 @@ def claude_desktop_org_plugin_path() -> Path | None:
 
 
 def replace_privileged_bundle(path: Path, source: Path | None) -> None:
-    """Copy or remove UG's Desktop marketplace in its system directory."""
-    if path != claude_desktop_marketplace_path():
+    """Copy or remove UG's Desktop organization plugin."""
+    if path != claude_desktop_org_plugin_path():
         raise RuntimeError(f"Refusing unexpected privileged bundle target: {path}")
     if is_dry_run():
         return
@@ -230,7 +224,7 @@ def replace_privileged_bundle(path: Path, source: Path | None) -> None:
         if folder.is_symlink() or folder.is_junction():
             raise RuntimeError(f"Refusing linked Desktop plugin path: {folder}")
     if current_os() is not OS.MACOS:
-        raise RuntimeError("System Desktop marketplaces require macOS.")
+        raise RuntimeError("System Desktop plugins require macOS.")
     if not system_cross_os.is_admin():
         raise RuntimeError("Run Desktop MDM publication as root from your MDM script.")
     try:

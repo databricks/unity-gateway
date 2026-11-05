@@ -107,15 +107,15 @@ to the generated guidance, not Desktop browser sign-in or live Gmail access.
 Default `ug configure` and `ug configure --user` both write only user-level Desktop
 files: the 3P JSON profile, generated marketplace at `~/.ucode/claude-cowork-marketplace`,
 and the normal Cowork registration/cache. This applies even when UG's saved configuration
-scope is `global`. Neither path publishes or removes a root marketplace or managed plist.
+scope is `global`. Neither path publishes or removes a root organization plugin or managed plist.
 Claude Code and other CLI agents retain their own scope handling.
 
 Explicit `--global` skips these per-user Desktop writers. Machine policy, shared-runtime
-bindings, the root marketplace, and automatic per-user refresh use the
+bindings, connectors in the managed plist, and a root organization plugin use the
 [macOS MDM deployment path](claude-desktop-mdm.md). It uses these machine locations:
 
 - Policy: `/Library/Managed Preferences/com.anthropic.claudefordesktop.plist`
-- Marketplace: `/Library/Application Support/UnityGateway/claude-cowork-marketplace`
+- Skills/hooks plugin: `/Library/Application Support/Claude/org-plugins/ug`
 
 Ordinary configure uses `claude plugin ... --cowork --json` with one
 `ug@unity-gateway-cowork` registration for the selected account/org. If an earlier UG
@@ -135,8 +135,9 @@ live in the user 3P profile, not the plugin.
 The plugin version changes with its contents. Configure explicitly updates the marketplace
 and installs or updates the user-cached plugin: changing source files alone is insufficient.
 The 3P connection profile, telemetry helper, runtime authentication, and UG state remain
-user-local. A pre-existing `Claude/org-plugins/ug` installation must be removed by its owner
-before configuration, so the organization loader cannot expose a duplicate UG plugin.
+user-local. An installed `Claude/org-plugins/ug` organization plugin blocks user plugin
+installation to avoid duplicates. Remove the managed deployment through its owner before
+switching to the user plugin.
 
 UG records the account/org in `~/.ucode/claude-cowork.json`.
 UG owns the generated user marketplace: configure replaces its contents, including manual
@@ -538,7 +539,7 @@ and discovers/calls web_search using the profile's stdio registration to find Da
 They also verify that the installed plugin contains no duplicate MCP declarations.
 Both check repeated configuration, preservation of unrelated settings, and revert cleanup.
 Both platforms invoke the Claude CLI's installed Cowork plugin and check registration against
-the user source, a matching cached manifest, and no generated root marketplace.
+the user source, a matching cached manifest, and no generated root organization plugin.
 All calls use the journey's existing model workspace. CUJ1 and CUJ2 compare complete Desktop
 profile/metadata JSON for system.ai models and non-relay Anthropic MPS. CUJ3's existing configure
 journey checks that its incompatible scoped aliases preserve all Desktop profile/metadata bytes.

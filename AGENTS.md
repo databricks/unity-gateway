@@ -201,19 +201,23 @@ revert removes user source/registration only. Explicit MCP/skill changes resync 
 launches do not. The privileged bundle writer is used only for MDM publication; its
 macOS worker accepts only root callers, validates root ownership, and rejects links/special
 files before copying. Staged replacement restores the previous bundle if publication fails.
-Unprivileged callers cannot elevate to publish a Desktop marketplace.
+Unprivileged callers cannot elevate to publish a Desktop organization plugin.
 The macOS Desktop MDM mode requires root and preinstalled, root-owned shared UG/Python,
-Databricks CLI, and Claude CLI runtimes. It publishes the managed plist, root marketplace,
-shared helpers/state, and a per-user LaunchAgent. No administrator-local profile, skills,
-or credentials are copied. Workspace-managed skills and MCPs reuse the normal bundle writers;
-provisioning reuses one token. Background native refresh never authenticates; Desktop uses
-each user's OAuth profile. Native registration and content-derived plugin versions drive
-refresh, without per-user MDM state or account-cleanup queues. Publication reuses existing
-bundle and atomic file writers without cross-file recovery backups or ownership hashes;
-rerun configure after a partial publication failure. A foreign policy is recognized by its
-credential helper and preserved. Generated root files belong to UG and are replaced.
-Explicit removal deletes machine files; unloading active login jobs and removing cached
-user plugins is manual. See the deployment guide before uninstalling.
+Databricks CLI, and Claude CLI runtimes. It publishes the managed plist with
+`managedMcpServers` and `toolSearchEnabled`, shared helpers, and a required organization
+plugin at `/Library/Application Support/Claude/org-plugins/ug`. That plugin contains
+skills/assets, connector guidance, and warming hooks, with no MCP declarations.
+It reuses the normal generator and content-derived version, with matching `version.json`.
+Desktop loads the organization plugin itself; no LaunchAgent, timer, per-user marketplace
+sync, deployment descriptor, or `desktop-mdm-sync` command is installed. No administrator-local
+profile, skills, or credentials are copied. Provisioning reuses one token and existing
+bundle/atomic writers; rerun configure after partial publication failure. Existing auth,
+MCP proxy and tracing commands are unchanged; users authenticate with their own OAuth profiles.
+A foreign policy is recognized by its credential helper and preserved. Generated root files
+belong to UG and are replaced. Revert removes machine files only. Earlier marketplace/LaunchAgent
+builds require manual migration; remove prior UG marketplace registrations to avoid duplicate
+skills/hooks. Restart Desktop after updates. Native organization-plugin delivery remains a
+validation gap. See the deployment guide before migration or rollout.
 Windows MDM and shared-runtime installation remain unsupported. See docs/claude-desktop-mdm.md.
 Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
 custom registration names and full proxy URLs are preserved. Its name and display name

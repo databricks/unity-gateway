@@ -2835,18 +2835,6 @@ def claude_desktop_auth_cmd(
         sys.stdout.write(json.dumps(credential, separators=(",", ":")) + "\n")
 
 
-@app.command("desktop-mdm-sync", hidden=True)
-def desktop_mdm_sync_cmd() -> None:
-    """Refresh the current user's Cowork installation from the machine deployment."""
-    from ucode.agents.desktop import mdm
-
-    try:
-        mdm.sync_user()
-    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
-        print_err(str(exc))
-        raise typer.Exit(1) from None
-
-
 @app.command("auth-token", hidden=True)
 def auth_token_cmd(
     host: Annotated[
@@ -5026,7 +5014,7 @@ def configure(
                 )
             from ucode.agents.desktop import mdm
 
-            mdm.validate_mdm_execution(administrator=True)
+            mdm.validate_mdm_execution()
             mdm.validate_cli_discovery()
         install_databricks_cli()
         if agent is not None and agents is not None:
@@ -5377,7 +5365,7 @@ def revert_cmd(
         bool,
         typer.Option(
             "--mdm-desktop",
-            help="Remove Claude Desktop machine files (macOS, root); user plugin cleanup is manual.",
+            help="Remove Claude Desktop machine files (macOS, root); restart Desktop afterward.",
         ),
     ] = False,
 ) -> None:
@@ -5391,9 +5379,7 @@ def revert_cmd(
                 mdm.remove()
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 raise RuntimeError(f"Desktop MDM removal failed: {exc}") from exc
-            print_success(
-                "Desktop MDM machine files removed. Remove the cached UG plugin from each user's Desktop separately."
-            )
+            print_success("Desktop MDM machine files removed. Quit and reopen Claude Desktop.")
             return
         result = revert()
     except RuntimeError as exc:

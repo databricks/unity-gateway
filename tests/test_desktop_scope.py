@@ -1,6 +1,7 @@
 """Configure scope selects real Desktop writers with external services isolated."""
 
 import json
+import plistlib
 import shutil
 import sys
 from types import SimpleNamespace
@@ -66,7 +67,6 @@ def test_desktop_scope_selects_profile_sources_and_registration(
 
     mdm_only = flags == ["--global"]
     assert mdm.POLICY_PATH.exists() is mdm_only
-    assert mdm.AGENT_PATH.exists() is mdm_only
     assert mdm.MDM_ROOT.exists() is mdm_only
     assert claude.claude_desktop_directory().exists() is not mdm_only
     assert cowork._marketplace_root().exists() is not mdm_only
@@ -77,10 +77,10 @@ def test_desktop_scope_selects_profile_sources_and_registration(
     if mdm_only:
         assert not registry.exists()
         assert not list(device.home.iterdir())
-        plugin = device.source / "plugins/ug"
+        plugin = device.source
         assert (plugin / "skills/review/SKILL.md").read_bytes() == device.skill
-        servers = json.loads((plugin / ".mcp.json").read_bytes())["mcpServers"]
-        assert servers["slack"]["command"] == str(mdm.MDM_ROOT / "ug")
+        servers = json.loads(plistlib.loads(mdm.POLICY_PATH.read_bytes())["managedMcpServers"])
+        assert servers[0]["command"] == str(mdm.MDM_ROOT / "ug")
         return
 
     plugins = json.loads(registry.read_bytes())["plugins"]
@@ -98,7 +98,6 @@ def test_ordinary_configure_preserves_existing_mdm_deployment(desktop_configurat
     policy = mdm.POLICY_PATH.read_bytes()
     source = cowork._marketplace_files(device.source)
     helpers = cowork._marketplace_files(mdm.MDM_ROOT)
-    agent = mdm.AGENT_PATH.read_bytes()
 
     result = _configure(*flags)
 
@@ -106,12 +105,8 @@ def test_ordinary_configure_preserves_existing_mdm_deployment(desktop_configurat
     assert mdm.POLICY_PATH.read_bytes() == policy
     assert cowork._marketplace_files(device.source) == source
     assert cowork._marketplace_files(mdm.MDM_ROOT) == helpers
-    assert mdm.AGENT_PATH.read_bytes() == agent
     assert claude.claude_desktop_directory().exists()
-    assert (
-        cowork._registered_marketplace_source(cowork.discover_cowork_root())
-        == cowork._marketplace_root()
-    )
+    assert not cowork._state_path().exists()
 
 
 def test_global_preserves_existing_desktop_user_files(desktop_configuration, device):

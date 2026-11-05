@@ -1,4 +1,4 @@
-"""MDM filesystem lifecycle with external workspace, launchd, and native Claude boundaries replaced."""
+"""MDM filesystem lifecycle with external workspace and machine ownership boundaries replaced."""
 
 import json
 import os
@@ -33,6 +33,7 @@ RUNTIME = {
 @pytest.fixture
 def device(system_source, monkeypatch, tmp_path):
     tmp_path.chmod(0o755)
+    shutil.rmtree(tmp_path / "Native")
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
@@ -40,17 +41,13 @@ def device(system_source, monkeypatch, tmp_path):
     monkeypatch.setattr(mdm, "sys", SimpleNamespace(platform="darwin"))
     monkeypatch.setattr(mdm, "MDM_ROOT", tmp_path / "machine/mdm")
     monkeypatch.setattr(mdm, "POLICY_PATH", tmp_path / "machine/policy.plist")
-    monkeypatch.setattr(mdm, "AGENT_PATH", tmp_path / "machine/agents/ug.plist")
     # These temporary directories belong to the test runner, not root. Validate ownership separately.
     monkeypatch.setattr(mdm, "_check_machine_path", lambda *a, **kw: None)
     monkeypatch.setattr(mdm, "_runtime", lambda: dict(RUNTIME))
     monkeypatch.setattr(mdm, "validate_cli_discovery", lambda: None)
-    activate = Mock()
-    monkeypatch.setattr(mdm, "_activate_logged_in_user", activate)
     state = SimpleNamespace(
         admin=True,
         source=system_source,
-        activate=activate,
         home=home,
         manifest={
             "enabled_agents": [
@@ -84,20 +81,11 @@ def device(system_source, monkeypatch, tmp_path):
     return state
 
 
-def _installed(root):
-    registry = config_io.read_json_safe(root / "cowork_plugins/installed_plugins.json")
-    assert list(registry["plugins"]) == [cowork.PLUGIN_ID]
-    entries = registry["plugins"][cowork.PLUGIN_ID]
-    assert len(entries) == 1
-    return Path(entries[0]["installPath"])
-
-
 def _snapshot(device):
     return {
         "source": cowork._marketplace_files(device.source),
         "mdm": cowork._marketplace_files(mdm.MDM_ROOT),
         "policy": mdm.POLICY_PATH.read_bytes(),
-        "agent": mdm.AGENT_PATH.read_bytes(),
     }
 
 
@@ -109,86 +97,68 @@ def test_provision_without_account_has_no_admin_credentials_or_user_writes(devic
     assert policy["inferenceGatewayBaseUrl"] == f"{WORKSPACE}/ai-gateway/anthropic"
     assert json.loads(policy["inferenceModels"]) == [{"name": "system.ai.claude-sonnet-4-6"}]
     assert policy["modelDiscoveryEnabled"] == "false"
+    assert policy["toolSearchEnabled"] == "true"
     assert policy["otlpTracesEnabled"] == "true"
     assert policy["inferenceCredentialHelperTimeoutSec"] == "300"
-    descriptor = json.loads((mdm.MDM_ROOT / "deployment.json").read_bytes())
-    assert descriptor["profile"].startswith("UG_DESKTOP_")
-    assert json.loads(policy["inferenceCredentialHelperArgs"]) == [
-        "claude-desktop-auth",
-        "--host",
-        WORKSPACE,
-        "--profile",
-        descriptor["profile"],
-    ]
-    plugin = device.source / "plugins/ug"
-    servers = json.loads((plugin / ".mcp.json").read_bytes())["mcpServers"]
-    assert list(servers) == ["slack"]
-    assert servers["slack"]["command"] == str(mdm.MDM_ROOT / "ug")
+    helper_args = json.loads(policy["inferenceCredentialHelperArgs"])
+    assert helper_args[:4] == ["claude-desktop-auth", "--host", WORKSPACE, "--profile"]
+    assert helper_args[4].startswith("UG_DESKTOP_")
+    servers = json.loads(policy["managedMcpServers"])
+    assert [entry["name"] for entry in servers] == ["slack"]
+    assert servers[0]["command"] == str(mdm.MDM_ROOT / "ug")
+    assert servers[0]["transport"] == "stdio"
+    assert "type" not in servers[0]
+    assert servers[0]["args"][:1] == ["mcp-proxy"]
+    assert servers[0]["args"][-2:] == ["--profile", helper_args[4]]
+    plugin = device.source
+    assert not (plugin / ".mcp.json").exists()
+    manifest = json.loads((plugin / ".claude-plugin/plugin.json").read_bytes())
+    assert manifest["installationPreference"] == "required"
+    assert "mcpServers" not in manifest
+    assert json.loads((plugin / "version.json").read_bytes()) == {"version": manifest["version"]}
     assert (plugin / "skills/review/SKILL.md").read_bytes() == device.skill
     assert (plugin / "skills/review/asset.bin").read_bytes() == b"\x00\xff"
     assert (plugin / "skills/unity-gateway-connectors/SKILL.md").is_file()
-    assert (plugin / "hooks/hooks.json").is_file()
-    assert not (plugin / "version.json").exists()
-    for bundle in (
-        cowork._marketplace_files(device.source),
-        cowork._marketplace_files(mdm.MDM_ROOT),
-    ):
+    hooks = json.loads((plugin / "hooks/hooks.json").read_bytes())["hooks"]
+    assert set(hooks) == {"SessionStart", "UserPromptSubmit"}
+    for handlers in hooks.values():
+        command = shlex.split(handlers[0]["hooks"][0]["command"])
+        assert command[:2] == [str(mdm.MDM_ROOT / "ug"), "cowork-hook"]
+        assert command[command.index("--profile") + 1] == helper_args[4]
+    for bundle in (cowork._marketplace_files(plugin), cowork._marketplace_files(mdm.MDM_ROOT)):
         for data, _ in bundle.values():
             assert b"provisioning-secret" not in data
             assert b"ADMIN_PROFILE" not in data
             assert str(device.home).encode() not in data
+            assert b"desktop-mdm-sync" not in data
     assert not list(device.home.iterdir())
     assert not cowork._marketplace_root().exists()
     assert not cowork._state_path().exists()
-    agent = plistlib.loads(mdm.AGENT_PATH.read_bytes())
-    assert agent["ProgramArguments"] == [str(mdm.MDM_ROOT / "ug"), "desktop-mdm-sync"]
-    assert agent["RunAtLoad"] is True and agent["StartInterval"] == 900
+    assert not (mdm.MDM_ROOT / "deployment.json").exists()
     if os.name != "nt":
-        assert (mdm.MDM_ROOT / "deployment.json").stat().st_mode & 0o777 == 0o644
         assert (mdm.MDM_ROOT / "ug").stat().st_mode & 0o777 == 0o755
-    assert not (mdm.MDM_ROOT / "state.json").exists()
     device.auth.assert_called_once_with(WORKSPACE, "ADMIN_PROFILE", browser_login=False)
-    device.admin = False
-    assert mdm.sync_user() is False  # An account appears only when the user opens Cowork.
-    device.auth.assert_called_once()
 
 
-def test_provision_refresh_and_remove_root_files_without_authentication(device):
+def test_provision_update_and_remove_root_files(device):
     mdm.configure(WORKSPACE, "admin")
-    device.auth.reset_mock()
-    device.admin = False
-    root = cowork.discover_cowork_root()
-    assert mdm.sync_user()
-    installed = _installed(root)
-    assert cowork._marketplace_files(installed) == cowork._marketplace_files(
-        device.source / "plugins/ug"
-    )
-    assert cowork._registered_marketplace_source(root) == device.source
-    assert mdm.sync_user() is False
-    device.auth.assert_not_called()
-
-    device.admin = True
+    plugin = device.source
+    before = json.loads((plugin / "version.json").read_bytes())
     device.skill = device.skill.replace(b"Check tests.", b"Updated verification code.")
     device.manifest["mcp_servers"]["names"].append("system.ai.github")
     device.manifest["enabled_agents"][0]["config"]["tracing"]["enabled"] = False
     mdm.configure(WORKSPACE, "admin")
-    assert "otlpEndpoint" not in plistlib.loads(mdm.POLICY_PATH.read_bytes())
+    policy = plistlib.loads(mdm.POLICY_PATH.read_bytes())
+    assert "otlpEndpoint" not in policy
     assert not (mdm.MDM_ROOT / "otel-headers.sh").exists()
-    assert (installed / "skills/review/SKILL.md").read_bytes() != device.skill
+    assert (plugin / "skills/review/SKILL.md").read_bytes() == device.skill
+    assert json.loads((plugin / "version.json").read_bytes()) != before
+    assert len(json.loads(policy["managedMcpServers"])) == 2
+    assert not (plugin / ".mcp.json").exists()
     device.auth.reset_mock()
-    device.admin = False
-    assert mdm.sync_user()
-    assert (_installed(root) / "skills/review/SKILL.md").read_bytes() == device.skill
-    assert len(json.loads((_installed(root) / ".mcp.json").read_bytes())["mcpServers"]) == 2
-    device.auth.assert_not_called()
-
-    device.admin = True
     mdm.remove()
     assert not device.source.exists() and not mdm.POLICY_PATH.exists()
-    assert not mdm.AGENT_PATH.exists() and not mdm.MDM_ROOT.exists()
-    assert cowork._registered_marketplace_source(root) == device.source
-    assert _installed(root).exists()
-    assert not (device.home / ".ucode/claude-desktop-mdm.json").exists()
+    assert not mdm.MDM_ROOT.exists()
     mdm.remove()
     device.auth.assert_not_called()
 
@@ -215,7 +185,6 @@ def test_missing_provisioning_auth_fails_before_machine_writes(device):
     with pytest.raises(RuntimeError, match="authenticate before.*OAuth session expired"):
         mdm.configure(WORKSPACE, "ADMIN_PROFILE")
     device.auth.assert_called_once_with(WORKSPACE, "ADMIN_PROFILE", browser_login=False)
-    device.activate.assert_not_called()
     assert not mdm.MDM_ROOT.exists()
     assert not device.source.exists()
     assert not mdm.POLICY_PATH.exists()
@@ -242,34 +211,37 @@ def test_provision_without_managed_config(device, monkeypatch, reason):
     mdm.configure(WORKSPACE, "admin")
     policy = plistlib.loads(mdm.POLICY_PATH.read_bytes())
     assert json.loads(policy["inferenceModels"]) == [{"name": "system.ai.claude-sonnet-4-6"}]
-    assert not (device.source / "plugins/ug/.mcp.json").exists()
+    assert not (device.source / ".mcp.json").exists()
 
 
 def test_provision_with_unrestricted_agents_keeps_managed_connectors_and_skills(device):
     device.manifest["enabled_agents"] = []
     mdm.configure(WORKSPACE, "ADMIN_PROFILE")
-    plugin = device.source / "plugins/ug"
+    plugin = device.source
     assert (plugin / "skills/review/SKILL.md").read_bytes() == device.skill
-    assert list(json.loads((plugin / ".mcp.json").read_bytes())["mcpServers"]) == ["slack"]
+    assert [
+        entry["name"]
+        for entry in json.loads(plistlib.loads(mdm.POLICY_PATH.read_bytes())["managedMcpServers"])
+    ] == ["slack"]
 
 
-def test_sync_migrates_user_source_and_preserves_unrelated_plugin(device):
-    mdm.configure(WORKSPACE, "admin")
+def test_provision_leaves_existing_user_registration_unchanged(device):
     user_source = cowork._marketplace_root()
-    shutil.copytree(device.source, user_source)
+    cowork._write_marketplace(user_source, user_source / "plugins/ug", [], [])
     root = cowork.discover_cowork_root()
     cowork._install_plugin(root, user_source)
     registry_path = root / "cowork_plugins/installed_plugins.json"
     registry = config_io.read_json_safe(registry_path)
     registry["plugins"]["personal@local"] = [{"installPath": "/personal/plugin"}]
     config_io.atomic_write_json(registry_path, registry)
-    device.admin = False
-    mdm.sync_user()
-    registry = config_io.read_json_safe(registry_path)
-    assert set(registry["plugins"]) == {cowork.PLUGIN_ID, "personal@local"}
-    assert len(registry["plugins"][cowork.PLUGIN_ID]) == 1
-    assert cowork._registered_marketplace_source(root) == device.source
-    assert user_source.exists()
+    before = cowork._marketplace_files(root)
+    user_before = cowork._marketplace_files(user_source)
+    mdm.configure(WORKSPACE, "admin")
+    assert cowork._marketplace_files(root) == before
+    assert cowork._marketplace_files(user_source) == user_before
+    mdm.remove()
+    assert cowork._marketplace_files(root) == before
+    assert cowork._marketplace_files(user_source) == user_before
 
 
 @pytest.mark.parametrize("failure", ["fetch", "malformed_mcp", "missing_skill", "download"])
@@ -308,7 +280,7 @@ def test_failed_publication_is_reported_and_reconfigure_repairs_it(device, monke
     with pytest.raises(RuntimeError, match="test publication failure"):
         mdm.configure(WORKSPACE, "admin")
     assert mdm.POLICY_PATH.read_bytes() == policy_before
-    assert (device.source / "plugins/ug/skills/review/SKILL.md").read_bytes() == device.skill
+    assert (device.source / "skills/review/SKILL.md").read_bytes() == device.skill
 
     monkeypatch.setattr(claude_config, "_write_or_remove", write)
     mdm.configure(WORKSPACE, "admin")
@@ -334,17 +306,18 @@ def test_existing_policy_is_preserved_and_generated_source_is_replaced(device, t
         path.chmod(0o644)
         mdm.configure(WORKSPACE, "admin")
         assert not path.exists()
-        assert (device.source / "plugins/ug/.mcp.json").is_file()
+        assert (device.source / ".claude-plugin/plugin.json").is_file()
 
 
 @pytest.mark.parametrize(
     "plugins", [None, [], {cowork.PLUGIN_ID: [None]}, {cowork.PLUGIN_ID: [{"installPath": 123}]}]
 )
-def test_malformed_cached_plugin_registration_is_unmodified(tmp_path, plugins):
-    registry = tmp_path / "cowork_plugins/installed_plugins.json"
+def test_provision_does_not_inspect_or_repair_user_plugin_registration(device, plugins):
+    root = cowork.discover_cowork_root()
+    registry = root / "cowork_plugins/installed_plugins.json"
     config_io.atomic_write_json(registry, {"plugins": plugins})
     before = registry.read_bytes()
-    assert mdm._cached_version(tmp_path) is None
+    mdm.configure(WORKSPACE, "admin")
     assert registry.read_bytes() == before
 
 
@@ -361,37 +334,23 @@ def test_location_discovery_reuses_provisioning_auth(device, monkeypatch):
 
 def test_workspace_removals_clear_old_assets_and_connectors(device):
     mdm.configure(WORKSPACE, "admin")
-    device.admin = False
-    mdm.sync_user()
-    device.admin = True
     device.manifest["skills"] = {}
     device.manifest["mcp_servers"] = {}
     mdm.configure(WORKSPACE, "admin")
-    device.admin = False
-    mdm.sync_user()
-    plugin = _installed(cowork.discover_cowork_root())
+    plugin = device.source
     assert not (plugin / "skills/review").exists()
     assert not (plugin / "hooks/hooks.json").exists()
     assert not (plugin / ".mcp.json").exists()
+    assert json.loads(plistlib.loads(mdm.POLICY_PATH.read_bytes())["managedMcpServers"]) == []
 
 
-@pytest.mark.parametrize("conflict", ["source", "org_plugin"])
-def test_refresh_preserves_conflicting_installations(device, monkeypatch, tmp_path, conflict):
+def test_provision_does_not_run_native_plugin_commands(device, monkeypatch):
+    native_commands = Mock(side_effect=AssertionError("MDM must not register per-user plugins"))
+    monkeypatch.setattr(cowork, "_run_claude", native_commands)
+    monkeypatch.setattr(cowork, "_run_claude_json", native_commands)
     mdm.configure(WORKSPACE, "admin")
-    root = cowork.discover_cowork_root()
-    other = tmp_path / "other-plugin"
-    if conflict == "source":
-        shutil.copytree(device.source, other)
-        cowork._install_plugin(root, other)
-    else:
-        other.mkdir()
-        monkeypatch.setattr(mdm.managed_files, "claude_desktop_org_plugin_path", lambda: other)
-    before = cowork._marketplace_files(root)
-    device.admin = False
-    with pytest.raises(RuntimeError):
-        mdm.sync_user()
-    assert cowork._marketplace_files(root) == before
-    assert other.exists()
+    mdm.remove()
+    native_commands.assert_not_called()
 
 
 def test_reconfigure_replaces_edited_generated_policy(device):
@@ -408,24 +367,15 @@ def test_dry_run_has_no_auth_discovery_or_writes(device):
     config_io.set_dry_run(True)
     mdm.configure(WORKSPACE, "admin")
     device.auth.assert_not_called()
-    device.activate.assert_not_called()
     assert not device.source.exists() and not mdm.MDM_ROOT.exists()
 
 
-@pytest.mark.parametrize(
-    "platform,admin,provision",
-    [
-        ("linux", True, True),
-        ("win32", True, True),
-        ("darwin", False, True),
-        ("darwin", True, False),
-    ],
-)
-def test_platform_and_identity_guards(monkeypatch, platform, admin, provision):
+@pytest.mark.parametrize("platform,admin", [("linux", True), ("win32", True), ("darwin", False)])
+def test_platform_and_identity_guards(monkeypatch, platform, admin):
     monkeypatch.setattr(mdm, "sys", SimpleNamespace(platform=platform))
     monkeypatch.setattr(mdm.system_cross_os, "is_admin", lambda: admin)
     with pytest.raises(RuntimeError):
-        mdm.validate_mdm_execution(administrator=provision)
+        mdm.validate_mdm_execution()
 
 
 @pytest.mark.parametrize("private", [False, True])

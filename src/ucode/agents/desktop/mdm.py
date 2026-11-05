@@ -1,4 +1,4 @@
-"""Publish machine configuration and refresh each user's normal Cowork installation."""
+"""Publish Claude Desktop's machine policy and organization plugin."""
 
 from __future__ import annotations
 
@@ -26,23 +26,18 @@ from ucode.managed_resolve import (
 from ucode.mcp import _resolve_managed_mcp_servers
 from ucode.os_compatibility import subprocess_cross_os, system_cross_os
 from ucode.skills_download import _fetch_bundles, _resolve_managed_skills, _write_bundle
-from ucode.ui import print_note, print_warning
+from ucode.ui import print_note
 from ucode.workspace import split_workspace_key, workspace_id_args
 
 MDM_ROOT = Path("/Library/Application Support/UnityGateway/claude-desktop-mdm")
 POLICY_PATH = Path("/Library/Managed Preferences/com.anthropic.claudefordesktop.plist")
-AGENT_LABEL = "com.databricks.unity-gateway.claude-desktop"
-AGENT_PATH = Path("/Library/LaunchAgents") / f"{AGENT_LABEL}.plist"
 
 
-def validate_mdm_execution(*, administrator: bool) -> None:
+def validate_mdm_execution() -> None:
     if sys.platform != "darwin":
         raise RuntimeError("Desktop MDM currently supports macOS only.")
-    if system_cross_os.is_admin() != administrator:
-        role = "root from your MDM script" if administrator else "the logged-in user, not root"
-        raise RuntimeError(
-            f"Run Desktop MDM {'provisioning' if administrator else 'refresh'} as {role}."
-        )
+    if not system_cross_os.is_admin():
+        raise RuntimeError("Run Desktop MDM provisioning as root from your MDM script.")
 
 
 def _check_machine_path(path: Path, *, required: bool = False) -> None:
@@ -195,7 +190,7 @@ def _publish(source: Path | None, files: dict[Path, tuple[bytes | None, int]]) -
             )
     for path in files:
         _machine_directory(path.parent)
-    system_path = managed_files.claude_desktop_marketplace_path()
+    system_path = managed_files.claude_desktop_org_plugin_path()
     if system_path is None:
         raise RuntimeError("Desktop MDM publication requires macOS.")
     _check_machine_path(system_path)
@@ -263,16 +258,14 @@ def require_dedicated_workspace(workspace: str) -> None:
 
 
 def configure(workspace: str, profile: str | None) -> None:
-    validate_mdm_execution(administrator=True)
+    validate_mdm_execution()
     if managed_files.managed_settings_skipped():
         raise RuntimeError(
             "Unset UG_SKIP_OS_SETTINGS and use global scope for Desktop MDM provisioning."
         )
     require_dedicated_workspace(workspace)
     if config_io.is_dry_run():
-        print_note(
-            f"Would publish Desktop policy to {POLICY_PATH}, a root marketplace, and {AGENT_PATH}."
-        )
+        print_note(f"Would publish Desktop policy to {POLICY_PATH} and a root organization plugin.")
         return
     runtime = _runtime()
     try:
@@ -316,7 +309,6 @@ def configure(workspace: str, profile: str | None) -> None:
         helper_args=helper_args,
         otel_headers_helper=MDM_ROOT / "otel-headers.sh",
     )
-    policy = plistlib.dumps(_policy_values(rendered))
     otel = (
         claude_config.render_otel_helper(
             [
@@ -335,6 +327,8 @@ def configure(workspace: str, profile: str | None) -> None:
     mcp_config = cowork._cowork_mcp_config(
         servers, workspace, user_profile, mdm_ug_executable=helper
     )
+    rendered["managedMcpServers"] = claude_config.render_managed_mcp_servers(mcp_config)
+    policy = plistlib.dumps(_policy_values(rendered))
     hooks = cowork._connector_hooks(mcp_config, workspace, user_profile, use_pat=False)
     with tempfile.TemporaryDirectory(prefix="ug-mdm-stage-") as directory:
         staging = Path(directory).resolve()
@@ -342,126 +336,41 @@ def configure(workspace: str, profile: str | None) -> None:
             workspace, token, (managed or {}).get("skills") or {}, staging / "skills"
         )
         source = staging / "marketplace"
-        cowork._write_marketplace(source, source / "plugins/ug", records, mcp_config, hooks)
-        configuration = {
-            "version": 1,
-            "workspace": workspace,
-            "profile": user_profile,
-            "runtime": runtime,
-        }
-        agent = plistlib.dumps(
-            {
-                "Label": AGENT_LABEL,
-                "ProgramArguments": [str(helper), "desktop-mdm-sync"],
-                "RunAtLoad": True,
-                "StartInterval": 900,
-                "ProcessType": "Background",
-            }
+        plugin_root = source / "plugins/ug"
+        cowork._write_marketplace(
+            source, plugin_root, records, list(mcp_config["mcpServers"]), hooks
         )
+        manifest_path = plugin_root / ".claude-plugin/plugin.json"
+        manifest = json.loads(manifest_path.read_bytes())
+        manifest["installationPreference"] = "required"
+        manifest_path.write_bytes(_json_bytes(manifest))
+        (plugin_root / "version.json").write_bytes(_json_bytes({"version": manifest["version"]}))
         _publish(
-            source,
+            plugin_root,
             {
                 helper: (_runtime_script(runtime), 0o755),
                 MDM_ROOT / "otel-headers.sh": (otel, 0o755),
-                MDM_ROOT / "deployment.json": (_json_bytes(configuration), 0o644),
-                AGENT_PATH: (agent, 0o644),
                 POLICY_PATH: (policy, 0o644),
             },
         )
-    _activate_logged_in_user()
-
-
-def _activate_logged_in_user() -> None:
-    try:
-        uid = Path("/dev/console").stat().st_uid
-        if uid < 500:
-            return
-        subprocess_cross_os.run(
-            ["/bin/launchctl", "bootstrap", f"gui/{uid}", str(AGENT_PATH)],
-            capture_output=True,
-            check=False,
-            timeout=15,
-            stdin=subprocess.DEVNULL,
-        )
-        kicked = subprocess_cross_os.run(
-            ["/bin/launchctl", "kickstart", f"gui/{uid}/{AGENT_LABEL}"],
-            capture_output=True,
-            check=False,
-            timeout=15,
-            stdin=subprocess.DEVNULL,
-        )
-        if kicked.returncode == 0:
-            return
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    print_warning(
-        "Desktop refresh will start at the next macOS login; the current user can run `ug desktop-mdm-sync` now."
-    )
 
 
 def remove() -> None:
-    validate_mdm_execution(administrator=True)
-    if not MDM_ROOT.exists() and not POLICY_PATH.exists():
+    validate_mdm_execution()
+    plugin = managed_files.claude_desktop_org_plugin_path()
+    if (
+        not MDM_ROOT.exists()
+        and not POLICY_PATH.exists()
+        and (plugin is None or not plugin.exists())
+    ):
         return
     _publish(
         None,
         {
             POLICY_PATH: (None, 0o644),
-            AGENT_PATH: (None, 0o644),
             MDM_ROOT / "ug": (None, 0o755),
             MDM_ROOT / "otel-headers.sh": (None, 0o755),
-            MDM_ROOT / "deployment.json": (None, 0o644),
         },
     )
-    if not any(MDM_ROOT.iterdir()):
+    if MDM_ROOT.exists() and not any(MDM_ROOT.iterdir()):
         MDM_ROOT.rmdir()
-
-
-def _cached_version(cowork_root: Path) -> str | None:
-    registry = config_io.read_json_safe(cowork_root / "cowork_plugins/installed_plugins.json")
-    plugins = registry.get("plugins")
-    if not isinstance(plugins, dict):
-        return None
-    entries = plugins.get(cowork.PLUGIN_ID, [])
-    if not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict):
-        return None
-    install_path = entries[0].get("installPath")
-    if not isinstance(install_path, str) or not install_path:
-        return None
-    plugin = Path(install_path)
-    return config_io.read_json_safe(plugin / ".claude-plugin/plugin.json").get("version")
-
-
-def sync_user() -> bool:
-    validate_mdm_execution(administrator=False)
-    path = MDM_ROOT / "deployment.json"
-    _check_machine_path(path, required=True)
-    configuration = json.loads(path.read_bytes())
-    if configuration.get("version") != 1:
-        raise RuntimeError("Unsupported Desktop MDM deployment version; update UG.")
-    if not cowork._cowork_roots():
-        return False
-    system_source = managed_files.claude_desktop_marketplace_path()
-    if system_source is None:
-        raise RuntimeError("Desktop MDM refresh requires macOS.")
-    _check_machine_path(system_source, required=True)
-    root = cowork.discover_cowork_root()
-    source = cowork._registered_marketplace_source(root)
-    if source is not None and source not in (cowork._marketplace_root(), system_source):
-        raise RuntimeError("UG marketplace is registered to another source; left unchanged.")
-    org_plugin = managed_files.claude_desktop_org_plugin_path()
-    if org_plugin is not None and (org_plugin.exists() or org_plugin.is_symlink()):
-        raise RuntimeError("Remove the prior organization-loader UG plugin before MDM refresh.")
-    version = json.loads((system_source / "plugins/ug/.claude-plugin/plugin.json").read_bytes())[
-        "version"
-    ]
-    if source == system_source and _cached_version(root) == version:
-        return False
-    cowork._install_plugin(
-        root, system_source, mdm_claude_binary=configuration["runtime"]["claude"]
-    )
-    if _cached_version(root) != version:
-        raise RuntimeError(
-            "Desktop plugin refresh did not install the published version; retry refresh."
-        )
-    return True

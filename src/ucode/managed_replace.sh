@@ -269,7 +269,7 @@ replace_bundle() (
     fi
     source_path=$1
     target=$2
-    if [ "$platform:$target" != "macos:/Library/Application Support/UnityGateway/claude-cowork-marketplace" ]; then
+    if [ "$platform:$target" != "macos:/Library/Application Support/Claude/org-plugins/ug" ]; then
         printf '%s\n' "Refusing unexpected Desktop plugin target: $target" >&2
         exit 1
     fi
@@ -307,7 +307,7 @@ replace_bundle() (
         printf '%s\n' "Desktop plugin contains non-regular files" >&2
         exit 1
     fi
-    for manifest in .claude-plugin/marketplace.json plugins/ug/.claude-plugin/plugin.json; do
+    for manifest in .claude-plugin/plugin.json version.json; do
         if [ ! -f "$staging/new/$manifest" ]; then
             printf 'Desktop plugin source is missing manifest: %s\n' "$manifest" >&2
             exit 1
