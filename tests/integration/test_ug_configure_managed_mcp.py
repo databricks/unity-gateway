@@ -54,7 +54,8 @@ def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspa
     """Scenario: an interactive configure with a managed MCP server writes Codex's managed file.
 
     Expected: Codex reads the server from the OS-managed file, using native HTTP/OAuth when
-    available or the ug stdio proxy otherwise; the user's config gains no managed server.
+    available or the ug stdio proxy otherwise. Native readback preserves the transport and
+    endpoint; the user's config gains no managed server.
     """
     session = live_session
     use_managed_config_fixture(session, "codex_mcp")
@@ -83,7 +84,16 @@ def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspa
         assert entry["args"][entry["args"].index("--url") + 1] == expected_url, entry
 
     result = session.run("mcp", "get", name, "--json", binary=session.which("codex"), timeout=30)
-    assert json.loads(result.stdout)["name"] == name, result.stdout
+    native = json.loads(result.stdout)
+    assert native["name"] == name, native
+    transport = native["transport"]
+    if "url" in entry:
+        assert transport["type"] == "streamable_http", native
+        assert transport["url"] == expected_url, native
+    else:
+        assert transport["type"] == "stdio", native
+        assert transport["command"] == entry["command"], native
+        assert transport["args"] == entry["args"], native
 
     personal_path = session.home / ".codex" / "config.toml"
     personal = tomllib.loads(personal_path.read_text()) if personal_path.exists() else {}
