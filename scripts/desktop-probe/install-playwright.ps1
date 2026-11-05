@@ -32,9 +32,12 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Playwright installation through JFrog failed' }
         return
     }
-    & $npm install -g '@anthropic-ai/claude-code@2.1.290' --ignore-scripts --no-audit --fund=false `
+    & $npm install -g '@anthropic-ai/claude-code@2.1.290' --no-audit --fund=false `
         --userconfig $config --fetch-retries=0 --fetch-timeout=30000
     if ($LASTEXITCODE -ne 0) { throw 'Claude CLI installation through JFrog failed' }
+    $claude = (Get-Command claude.cmd -ErrorAction Stop).Source
+    & $claude --version
+    if ($LASTEXITCODE -ne 0) { throw 'Installed Claude CLI did not start' }
     $encoded = $token.Split('.')[1].Replace('-', '+').Replace('_', '/')
     $encoded = $encoded.PadRight([int]([Math]::Ceiling($encoded.Length / 4.0) * 4), '=')
     $claims = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded)) | ConvertFrom-Json
