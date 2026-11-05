@@ -1,11 +1,12 @@
 # Integration tests
 
+Picker export checks preserve explicit and wildcard imports alongside lazy-wrapper parameter parity.
 Routing-enabled startup import guards require the real session-start canary and its
 session ID, so a disabled early return cannot satisfy their import assertions.
 
-The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
-including exact service URLs, native OAuth metadata, and real `codex mcp get`
-readback. The per-user configuration remains separate.
+The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
+service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
+It replaces the obsolete stdio-only expectation; this checks configuration, not live login.
 
 Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
 before numbered reuse, stable names during routing and in parallel cards, and unchanged

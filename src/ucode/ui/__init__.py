@@ -787,3 +787,11 @@ def prompt_for_client_secret() -> str:
         if client_secret:
             return client_secret
         print_err("Client secret cannot be empty.")
+
+
+# Include the lazily loaded presentation names in Python's wildcard-import contract.
+__all__ = [name for name in globals() if not name.startswith("_")] + [
+    "questionary",
+    "StreamingInquirerControl",
+    "merge_new_choices",
+]

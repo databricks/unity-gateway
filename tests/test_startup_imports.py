@@ -171,6 +171,11 @@ def test_public_picker_exports_preserve_identity_and_parameters():
         == signature(interactive_picker.scrolling_checkbox).parameters
     )
 
+    namespace = {}
+    exec("from ucode.ui import *", namespace)
+    assert namespace["StreamingInquirerControl"] is interactive_picker.StreamingInquirerControl
+    assert namespace["merge_new_choices"] is interactive_picker.merge_new_choices
+
 
 def test_auth_token_helper_skips_picker_imports(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
