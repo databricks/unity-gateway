@@ -3681,7 +3681,6 @@ class TestSystemModelServiceProbe:
             ([], None),
             (None, "HTTP 403 Forbidden: PERMISSION_DENIED"),
             (None, "HTTP 404 Not Found"),
-            (None, "HTTP 503 Service Unavailable"),
         ],
     )
     def test_unavailable_system_models_fall_back_to_unscoped_probe(
@@ -3714,6 +3713,26 @@ class TestSystemModelServiceProbe:
         with pytest.raises(RuntimeError, match="rejected the access token"):
             db_mod.probe_unity_gateway_capabilities(WS, "token")
         assert len(calls) == 1
+
+    @pytest.mark.parametrize("status", [499, 503, None])
+    def test_transient_failure_uses_only_the_scoped_retry_budget(self, monkeypatch, status):
+        calls = []
+
+        def urlopen(request, timeout=None):
+            calls.append(request.full_url)
+            if status is None:
+                raise TimeoutError("connection timed out")
+            raise TestHttpGetJsonRetries._http_error(status, "Unavailable")
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda delay: None)
+
+        with pytest.raises(RuntimeError, match="Could not verify"):
+            db_mod.probe_unity_gateway_capabilities(WS, "token")
+
+        assert len(calls) == db_mod._MODEL_SERVICE_PROBE_MAX_RETRIES + 1
+        assert all("parent=schemas%2Fsystem.ai" in url for url in calls)
+        assert db_mod.cached_model_service_entries(WS) is None
 
     def test_new_credential_reprobes_and_replaces_complete_listing(self, monkeypatch):
         calls = []

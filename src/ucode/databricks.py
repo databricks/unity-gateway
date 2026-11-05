@@ -3881,7 +3881,9 @@ def _probe_system_model_services(workspace: str, token: str) -> GatewayProbe | N
         max_retries=_MODEL_SERVICE_PROBE_MAX_RETRIES,
     )
     if payload is None:
-        if reason is not None and _looks_like_definitive_auth_failure(reason):
+        if reason is not None and (
+            _looks_like_definitive_auth_failure(reason) or _looks_like_transient_failure(reason)
+        ):
             return GatewayProbe(False, reason)
         return None
     data = payload if isinstance(payload, dict) else {}
