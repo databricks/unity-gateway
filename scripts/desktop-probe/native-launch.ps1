@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][string]$OutputDirectory)
+param([Parameter(Mandatory)][string]$OutputDirectory, [switch]$Configured)
 
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Run on a disposable GitHub Actions runner' }
@@ -20,7 +20,7 @@ try {
     $window = [Windows.Automation.AutomationElement]::FromHandle($windows[0].MainWindowHandle)
     $condition = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::NameProperty, 'Get started')
-    $deadline = [DateTime]::UtcNow.AddSeconds(45)
+    $deadline = [DateTime]::UtcNow.AddSeconds($(if ($Configured) { 15 } else { 45 }))
     do {
         $startButton = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
         if (-not $startButton) { Start-Sleep -Seconds 1 }
@@ -60,8 +60,17 @@ try {
     }
 } catch {
     $report.error = $_.Exception.Message
+    $global:LASTEXITCODE = 1
 } finally {
     Get-Process -Name Claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    $report | ConvertTo-Json -Depth 8 |
-        Set-Content -LiteralPath (Join-Path $OutputDirectory 'native-launch.json') -Encoding utf8
+    $json = $report | ConvertTo-Json -Depth 8
+    if ($env:DATABRICKS_BEARER) { $json = $json.Replace($env:DATABRICKS_BEARER, '[REDACTED]') }
+    $json | Set-Content -LiteralPath (Join-Path $OutputDirectory 'native-launch.json') -Encoding utf8
+    foreach ($log in Get-ChildItem $OutputDirectory/native-*.log) {
+        if ($env:DATABRICKS_BEARER) {
+            $text = Get-Content -LiteralPath $log.FullName -Raw
+            if ($text) { $text.Replace($env:DATABRICKS_BEARER, '[REDACTED]') | Set-Content -LiteralPath $log.FullName }
+        }
+    }
 }
+if ($report.error) { exit 1 }

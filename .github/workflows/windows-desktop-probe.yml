@@ -96,6 +96,23 @@ jobs:
           & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/desktop-probe/native-launch.ps1 `
             -OutputDirectory "$env:RUNNER_TEMP/claude-desktop-probe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install UG with existing Windows package infrastructure
+        shell: pwsh
+        run: ./scripts/desktop-probe/install-playwright.ps1 -InstallUg
+      - name: Configure Desktop with existing CI credentials
+        shell: pwsh
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: ./scripts/desktop-probe/configure.ps1
+      - name: Inspect configured Claude through Windows accessibility
+        shell: pwsh
+        env:
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/desktop-probe/native-launch.ps1 `
+            -OutputDirectory "$env:RUNNER_TEMP/claude-desktop-probe" -Configured
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Launch Claude and inspect Cowork
         if: inputs.try_playwright == true
         shell: pwsh
