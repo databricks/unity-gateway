@@ -15,9 +15,13 @@ A service principal is used only while the Jamf policy runs, to download the wor
 1. A Jamf policy runs `macos-provision.sh` as root, with the workspace URL and the service
    principal's client id and secret as policy parameters.
 2. The script installs the tools under `/usr/local`, exchanges the credentials for a short-lived
-   token, and runs `ug configure`, which installs the workspace policy at
+   token, and runs `ug configure --global`, which installs the workspace policy at
    `/etc/unitygateway/managed-settings.json`. Neither the credentials nor the token are written to
    disk.
+
+   `ug` must be installed in a shared path such as `/usr/local/bin`, not under root's home
+   directory: `ug configure` records the absolute path to `ug` in the machine-wide agent settings,
+   and every developer's agent runs it from there to authenticate.
 3. Developers launch with `UG_SKIP_OS_SETTINGS=1 ug claude` (or `ug codex`). The launch reads the
    installed policy, writes only the developer's own settings, and authenticates as the developer.
 
@@ -44,12 +48,15 @@ A service principal is used only while the Jamf policy runs, to download the wor
 
 1. In the workspace, go to **Settings → Identity and access → Service principals → Add service
    principal → Add new**, and name it, for example, `ug-jamf-provisioning`.
-2. On its **Configurations** tab, leave only **Workspace access** enabled. Grant nothing else: the
-   policy run only reads the coding-agent config and lists models.
-3. On its **Secrets** tab, choose **Generate secret** with a short lifetime, and copy the client id
-   and secret. The secret is shown only once. The script requests the `all-apis` OAuth scope, so
-   the client needs it.
-4. Check that it can see your models. With a token for the service principal:
+2. On its **Configurations** tab, leave only **Workspace access** enabled. It needs no other
+   entitlements: the policy run only reads the coding-agent config and lists models.
+3. Grant it access to the models, MCP servers, and skills in the published configuration, including
+   the Unity Catalog privileges they need. Without this, `ug configure` finds no models and
+   configures no agents.
+4. On its **Secrets** tab, choose **Generate secret** with a short lifetime. Under **Scope**, choose
+   **Other APIs**, add the `ai-gateway` and `unity-catalog` scopes, and set each to **Read**. Copy
+   the client id and secret; you can't view the secret again after you close the dialog.
+5. Check that it can see your models. With a token for the service principal:
 
    ```bash
    curl -sS -H "Authorization: Bearer $TOKEN" \
@@ -68,6 +75,10 @@ A service principal is used only while the Jamf policy runs, to download the wor
    **Parameter 6** `Client secret`.
 4. Save.
 
+The script installs Claude Code, Codex and the Databricks CLI only when they're missing, and
+reinstalls `ug` on each run. It doesn't update the agents or the CLI after the first install; to
+keep them current, modify the script to match how you update software on your Macs.
+
 ## 3. Create the policy
 
 Go to **Computers → Policies → New**:
@@ -81,7 +92,7 @@ Go to **Computers → Policies → New**:
 
 | Parameter | Value |
 | --- | --- |
-| 4 | Workspace URL, e.g. `https://myws.cloud.databricks.com` |
+| 4 | Workspace URL, starting with `https://` |
 | 5 | The service principal's client id |
 | 6 | The service principal's secret |
 
@@ -105,7 +116,13 @@ UG_SKIP_OS_SETTINGS=1 ug codex
 ```
 
 To avoid typing the variable, they can add `export UG_SKIP_OS_SETTINGS=1` to `~/.zshrc`. Without it,
-a launch may try to update the machine-wide settings with sudo and stop.
+a launch may try to update the machine-wide settings with sudo and stop. Admins may also deploy
+aliases in a shell profile:
+
+```bash
+alias claude='UG_SKIP_OS_SETTINGS=1 ug claude'
+alias codex='UG_SKIP_OS_SETTINGS=1 ug codex'
+```
 
 ## Rotate the secret
 
@@ -118,7 +135,7 @@ a launch may try to update the machine-wide settings with sudo and stop.
 | Policy log shows | Cause |
 | --- | --- |
 | `Token request to … failed: {"error":"invalid_client"…}` | Wrong client id or secret in parameters 5 and 6, or the secret expired. |
-| `Token request … failed: … Scopes … are not assigned to the client` | The client lacks the `all-apis` OAuth scope. |
+| `Token request … failed: … Scopes … are not assigned to the client` | The secret lacks the `ai-gateway:read` and `unity-catalog:read` scopes. |
 | `Token request … failed` with an HTTP 403 page | The workspace blocks the Mac's network (IP access list or private link). |
 | `Connection refused` or a timeout fetching PyPI or GitHub | A network or DNS block on the Mac. See the access list in "Before you start". |
 | `None of the coding agents enabled by your workspace configuration are available` | No enabled agent has models the service principal can use, for example Claude Code configured with non-Claude models. |
