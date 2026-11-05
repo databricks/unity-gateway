@@ -3665,6 +3665,13 @@ def _get_catalog_profile(state: dict) -> str | None:
     return state.get("profile")
 
 
+class _RecommendationNotFetched:
+    """Distinguish an unread recommendation from a completed read returning None."""
+
+
+_RECOMMENDATION_NOT_FETCHED = _RecommendationNotFetched()
+
+
 def _launch_tool(
     tool_name: str,
     ctx: typer.Context,
@@ -3673,7 +3680,7 @@ def _launch_tool(
     skip_preflight: bool = False,
     workspace_url: str | None = None,
     managed: dict | None = None,
-    recommendation: dict | None = None,
+    recommendation: dict | None | _RecommendationNotFetched = _RECOMMENDATION_NOT_FETCHED,
     model: str | None = None,
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
@@ -3874,8 +3881,9 @@ def _launch_tool(
         # An admin-published managed config wins over the developer's own settings. Layered on after
         # `configure_shared_state`, whose returned state it overrides, and before the provider and
         # model are settled below — the two state files are never merged on disk.
-        # Bare `ucode` already read one to choose the agent; refetching would double the round trip.
-        if recommendation is None:
+        # Bare ug already read the recommendation to choose its agent. Reuse even an empty or
+        # failed result, rather than repeating the request and any warning on the launch path.
+        if isinstance(recommendation, _RecommendationNotFetched):
             recommendation = _fetch_budget_recommendation(state, managed)
         _note_recommended_agent(recommendation, tool)
         if managed is not None:

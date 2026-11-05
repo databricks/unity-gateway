@@ -8810,10 +8810,52 @@ class TestBudgetRecommendationAtLaunch:
             patch("ucode.cli.configure_tool", return_value=state) as cfg,
             patch("ucode.cli.get_databricks_token", return_value="tok"),
             patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.refresh_managed_config", return_value=(managed, False)),
             patch("ucode.cli.launch_agent"),
         ):
-            result = runner.invoke(app, [tool])
+            result = runner.invoke(app, [tool] if tool else [])
         return result, calls, cfg
+
+    @pytest.mark.parametrize("tool", [None, "claude", "codex"])
+    @pytest.mark.parametrize(
+        ("recommendation", "reason", "warnings"),
+        [
+            ({"agent": "claude", "model": "system.ai.claude-haiku-4-5"}, None, 0),
+            (None, None, 0),
+            (None, "HTTP 404 Not Found", 0),
+            (None, "HTTP 500 Internal Server Error", 1),
+            (None, "request timed out", 1),
+        ],
+    )
+    def test_launch_reads_recommendation_once(
+        self, monkeypatch, tool, recommendation, reason, warnings
+    ):
+        managed = {
+            "default_agent": "claude",
+            "enabled_agents": {
+                "claude": {"model_config": {"default_model": "system.ai.claude-opus-4-8"}},
+                "codex": {"model_config": {"default_model": "system.ai.gpt-5-4"}},
+            },
+            **self.SMART_DEFAULTS,
+        }
+        result, calls, cfg = self._launch(
+            monkeypatch,
+            tool=tool,
+            managed=managed,
+            recommendation=recommendation,
+            reason=reason,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert calls == [MINIMAL_STATE["workspace"]]
+        assert result.output.count("Could not check your budget") == warnings
+        launched_tool = tool or "claude"
+        assert cfg.call_args.args[0] == launched_tool
+        expected_model = managed["enabled_agents"][launched_tool]["model_config"]["default_model"]
+        if recommendation and launched_tool == "claude":
+            expected_model = recommendation["model"]
+        assert cfg.call_args.args[2] == expected_model
 
     def test_not_checked_without_a_managed_config(self, monkeypatch):
         result, calls, _ = self._launch(monkeypatch, managed=None)
