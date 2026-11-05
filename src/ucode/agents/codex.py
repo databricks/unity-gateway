@@ -1775,7 +1775,15 @@ def _launch_codex_with_otel_proxy(
             proxies.append(otel)
             threading.Thread(target=otel[0].serve_forever, daemon=True).start()
             endpoint = f"http://{LOOPBACK_HOST}:{otel[0].server_address[1]}/v1/traces"
+            if os.environ.get("ISAAC_CLI_METRICS_CONTEXT"):
+                from ucode.startup_telemetry import metrics_trace_endpoint
+
+                endpoint = metrics_trace_endpoint("codex", endpoint) or endpoint
             otel_args = codex_config_args(_otel_proxy_overlay(endpoint))
+        if os.environ.get("ISAAC_CLI_METRICS_CONTEXT"):
+            from ucode.startup_telemetry import record_handoff
+
+            record_handoff()
         proc = subprocess_cross_os.popen([*base_argv, *otel_args, *tool_args])
         try:
             returncode = proc.wait()

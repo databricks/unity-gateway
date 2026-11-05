@@ -74,6 +74,11 @@ def main() -> None:
         proxy_main()
         return
 
+    if os.environ.get("ISAAC_CLI_METRICS_CONTEXT"):
+        from ucode.startup_telemetry import record_entry
+
+        record_entry()
+
     from ucode.cli import main as cli_main
 
     cli_main()

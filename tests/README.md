@@ -1,5 +1,14 @@
 # Test suites and user journeys
 
+The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
+including exact service URLs, native OAuth metadata, and real `codex mcp get`
+readback. The per-user configuration remains separate.
+
+`test_startup_telemetry.py` exercises parent-launcher timing over real loopback
+datagrams, startup-error propagation, cancellation, malformed contexts, and
+preserving trace settings when the receiver is unavailable. These are component
+checks; they do not establish rendered TUI readiness or live inference latency.
+
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.

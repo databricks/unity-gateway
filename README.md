@@ -668,6 +668,21 @@ An exporter you already set is left alone. Disabling tracing or `ug revert` remo
 | macOS | LaunchAgent `com.databricks.ug-codex-otel` | `launchctl print gui/$(id -u)/com.databricks.ug-codex-otel` |
 | Windows | Scheduled task `com.databricks.ug-codex-otel` | `schtasks /Query /TN com.databricks.ug-codex-otel /V /FO LIST` |
 
+## Parent launcher metrics
+
+Isaac can supply an `ISAAC_CLI_METRICS_CONTEXT` for one launch. UG carries the
+parent's launch identity through agent dispatch and process replacement, reports
+UG entry/dispatch/handoff timestamps, and distinguishes setup failures from
+cancellation. Events contain structural timing metadata only. Delivery uses a
+nonblocking loopback datagram; unavailable telemetry does not change launch
+behavior or errors. Uninstrumented launches do not create a metrics process.
+
+When the parent supplies its native OTel receiver, UG retains the parent's
+trace observer while preserving an existing trace destination. Claude request
+TTFT remains a request-level observation; Codex turn TTFT remains turn-level.
+Agent startup measurements end at session initialization, not rendered TUI
+readiness or successful first-prompt inference.
+
 ## Development
 
 ```bash

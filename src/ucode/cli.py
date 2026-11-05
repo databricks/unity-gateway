@@ -199,6 +199,7 @@ from ucode.smart_routing.session_env import (
     session_env_path,
     set_session_environment,
 )
+from ucode.startup_telemetry import observe_agent_launch, record_dispatch
 from ucode.state import (
     MANAGED_OVERLAY_KEY,
     SELF_MANAGED_AGENTS_KEY,
@@ -3665,6 +3666,7 @@ def _get_catalog_profile(state: dict) -> str | None:
     return state.get("profile")
 
 
+@observe_agent_launch
 def _launch_tool(
     tool_name: str,
     ctx: typer.Context,
@@ -4185,6 +4187,7 @@ def _launch_tool(
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):
+            record_dispatch()
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
         print_err(str(exc))
