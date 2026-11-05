@@ -1,5 +1,13 @@
 # Test suites and user journeys
 
+`TestBudgetRecommendationAtLaunch` in `test_cli.py` checks that bare `ug` reuses
+an empty, unavailable, or failed budget recommendation within the launch. Explicit
+`ug claude` still reads once, the next launch reads again, warnings appear once,
+and the configured fallback model and successful agent/model recommendations are
+preserved. These component tests replace authentication and network boundaries;
+they do not measure live startup latency. `scripts/benchmark_startup_budget.py`
+retains raw samples and nearest-rank p90 for a controlled unavailable-budget request.
+
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
