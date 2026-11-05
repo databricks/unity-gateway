@@ -1,5 +1,9 @@
 # Integration tests
 
+The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
+including exact service URLs, native OAuth metadata, and real `codex mcp get`
+readback. The per-user configuration remains separate.
+
 Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
 before numbered reuse, stable names during routing and in parallel cards, and unchanged
 execution inputs and row controls. They cover a lone call's decision under its Agent row,
@@ -290,6 +294,23 @@ It neither stops tasks nor confirms an exit dialog. Process exit retains its 30-
 timeout. Offline PTY checks cover this ordering.
 The shared wait also runs before CUJ4's Claude delegation sessions exit, after delegated-task
 evidence is checked, because Claude can resume a child after its first completed answer.
+
+`TestEnsureDatabricksCliVersion` in `../test_databricks.py` covers recovery from timeout,
+execution failure, malformed output, or nonzero exit, including valid `v1.22.1`
+output on retry. Discovery and retries share one 20-second budget across PATH
+candidates; each subprocess receives at most ten seconds or the remaining budget.
+Checks retain the initial failure and retry diagnostics, reject nonzero exits with
+parseable versions, prefer a recovered modern CLI over upgrading an old candidate,
+and preserve cached selection and PATH tie order. Incomplete discovery, including
+a retry that times out at the shared deadline, fails with diagnostics instead of
+upgrading a known old CLI while other candidates remain unverified. Presence checks
+do not probe.
+An old retry still goes through the minimum-version gate; one upgrade gets a new
+validation budget and a still-old CLI fails instead of repeatedly upgrading.
+Fresh validation after a same-path CLI replacement also refreshes cached auth-login
+capabilities in both directions; subsequent checks reuse the new version and capabilities.
+These component checks do not establish live agent startup or first-message
+completion, or explain the underlying CLI timeout.
 
 `../test_startup_imports.py` covers the bare version fast path, deferred imports,
 metadata fallback, and other-argument dispatch as component checks. Installation

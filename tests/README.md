@@ -1,5 +1,9 @@
 # Test suites and user journeys
 
+The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
+including exact service URLs, native OAuth metadata, and real `codex mcp get`
+readback. The per-user configuration remains separate.
+
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
@@ -291,6 +295,23 @@ first-prompt routing, orchestrator context in inference input, and a completed e
 requested routed subagent. A separate Claude-only test covers the status band and hint row. It does not establish
 automatic orchestrator delegation. Routing-disabled coverage is deferred until a separately
 preconfigured workspace is assigned.
+
+`TestEnsureDatabricksCliVersion` in `test_databricks.py` covers recovery from timeout,
+execution failure, malformed output, or nonzero exit, including valid `v1.22.1`
+output on retry. Discovery and retries share one 20-second budget across PATH
+candidates; each subprocess receives at most ten seconds or the remaining budget.
+Checks retain the initial failure and retry diagnostics, reject nonzero exits with
+parseable versions, prefer a recovered modern CLI over upgrading an old candidate,
+and preserve cached selection and PATH tie order. Incomplete discovery, including
+a retry that times out at the shared deadline, fails with diagnostics instead of
+upgrading a known old CLI while other candidates remain unverified. Presence checks
+do not probe.
+An old retry still goes through the minimum-version gate; one upgrade gets a new
+validation budget and a still-old CLI fails instead of repeatedly upgrading.
+Fresh validation after a same-path CLI replacement also refreshes cached auth-login
+capabilities in both directions; subsequent checks reuse the new version and capabilities.
+These component checks do not establish live agent startup or first-message
+completion, or explain the underlying CLI timeout.
 
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.
