@@ -30,12 +30,18 @@ def prepare_cowork_home(session) -> Path:
 
 def installed_cowork_servers(session, root: Path) -> dict:
     state = json.loads((session.home / ".ucode/claude-cowork.json").read_text())
+    source = session.home / ".ucode/claude-cowork-marketplace"
     assert Path(state["cowork_root"]) == root
+    known = json.loads((root / "cowork_plugins/known_marketplaces.json").read_text())
+    assert Path(known["unity-gateway-cowork"]["source"]["path"]) == source
     installed = json.loads((root / "cowork_plugins/installed_plugins.json").read_text())
     entries = installed["plugins"]["ug@unity-gateway-cowork"]
     assert len(entries) == 1, entries
+    assert "unity-gateway@unity-gateway-cowork" not in installed["plugins"]
     plugin = Path(entries[0]["installPath"])
     manifest = json.loads((plugin / ".claude-plugin/plugin.json").read_text())
+    assert manifest == json.loads((source / "plugins/ug/.claude-plugin/plugin.json").read_text())
+    assert "installationPreference" not in manifest
     assert manifest["name"] == "ug"
     assert manifest["mcpServers"] == "./.mcp.json"
     return json.loads((plugin / manifest["mcpServers"]).read_text())["mcpServers"]

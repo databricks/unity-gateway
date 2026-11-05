@@ -437,6 +437,37 @@ class TestDiscoverClaudeModels:
             )
         ]
 
+    def test_keeps_the_listed_token_limits(self, monkeypatch):
+        payload = {
+            "data": [
+                {
+                    "id": "system.ai.claude-opus-4-8",
+                    "max_input_tokens": 1000000,
+                    "max_tokens": 128000,
+                },
+                {
+                    "id": "anthropic-aigw-481f0baa-system.ai.gpt-6-luna",
+                    "max_input_tokens": 922000,
+                    "max_tokens": 128000,
+                },
+                {
+                    "id": "anthropic-aigw-73ea02b2-system.ai.glm-5-2",
+                    "max_input_tokens": 0,
+                    "max_tokens": 0,
+                },
+                {"id": "system.ai.claude-odd", "max_input_tokens": True, "max_tokens": 64000},
+                {"id": "system.ai.claude-unlisted"},
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *_args, **_kwargs: (payload, None))
+
+        catalog = db_mod.list_anthropic_model_catalog(WS, "token")
+
+        assert catalog.model_id_to_limits == {
+            "system.ai.claude-opus-4-8": (1000000, 128000),
+            "anthropic-aigw-481f0baa-system.ai.gpt-6-luna": (922000, 128000),
+        }
+
     def test_selects_opus_4_8_when_advertised(self, monkeypatch):
         payload = {
             "data": [
