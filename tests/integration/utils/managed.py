@@ -6,9 +6,7 @@ this module imports nothing from the ``ucode`` application package (tests/test_i
 enforces that boundary).
 """
 
-import os
 from pathlib import Path
-from urllib.parse import urlparse
 
 MANAGED_CONFIGS_PATH = "/api/ai-gateway/v2/coding-agent-configs"
 # One JSON CodingAgentConfig per scenario, in the GET shape `ug configure --file` will accept.
@@ -73,26 +71,11 @@ def codex_state_and_agent_files(session):
 def use_smart_routing_fixture(
     session, agent: str, workspace: str, *, smart_routing: bool = True
 ) -> Path:
-    """Select the checked-in scenario input for the two configured CI workspaces.
+    """Select the checked-in scenario input shared by both configured CI workspaces.
 
-    The regions publish different GPT generations. This chooses no workspace and
-    retries no request; unsupported workspaces need an explicit fixture assignment.
     ``smart_routing=False`` selects the same models without ``smart_routing.enabled``.
     """
-    if agent == "claude":
-        name = "claude_smart_routing"
-    elif agent == "codex":
-        override = os.environ.get("UCODE_TEST_CODEX_ROUTING_FIXTURE", "").strip()
-        fixtures = {
-            "eng-ml-inference-team-us-east-1.cloud.databricks.com": "codex_smart_routing",
-            "eng-ml-inference-team-ca-central-1.cloud.databricks.com": "codex_smart_routing_ca",
-        }
-        hostname = urlparse(workspace).hostname
-        name = override or fixtures.get(hostname)
-        assert name, (
-            f"No Codex routing fixture assigned to {hostname}; set "
-            "UCODE_TEST_CODEX_ROUTING_FIXTURE to a fixture basename validated for that workspace"
-        )
-    else:
+    if agent not in ("claude", "codex"):
         raise AssertionError(f"No routing fixture for {agent}")
+    name = f"{agent}_smart_routing"
     return use_managed_config_fixture(session, name if smart_routing else f"{name}_off")
