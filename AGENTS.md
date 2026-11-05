@@ -113,6 +113,7 @@ alone. For each listed field, `ug` does one of:
 - **Create/replace**: `ug` owns the whole value and writes it.
 - **Merge**: `ug` writes only its own entries within a shared value and leaves the rest alone.
 - **Ignore**: `ug` does not touch the field.
+- **Launch-only (-c), never written**: `ug` overrides the value for that session without changing the saved file.
 
 The two columns show what `ug` does without and with a [managed config](https://docs.databricks.com/aws/en/ai-gateway/coding-agent-configure-govern), the coding agent config admins publish through the API.
 
@@ -136,13 +137,13 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | `env.ANTHROPIC_MODEL` | Ignore | Create/replace | The config's `default_model`, written by `ug configure` and identically by a plain launch (launch never changes it). A budget recommendation that differs, `--model`, or a forwarded `-- --model` reaches only that session through Claude Code's native `--model` flag, which outranks a managed `ANTHROPIC_MODEL`; no file is written |
 | `env.ANTHROPIC_DEFAULT_*_MODEL` | Create/replace | Create/replace | Per-family default (opus, sonnet, haiku, fable); the config's family default wins under managed config. Without a managed config, left as the OS-managed file has them (model discovery skipped) when that file has a `modelPicker` with family defaults |
 | Model picker | Ignore | Create/replace | `availableModels`, `enforceAvailableModels`, `modelPicker`; only for a managed static model list |
-| `permissions.deny` | Merge | Merge | Add `ug`'s own `WebSearch` rule when it replaces web search; other rules left alone |
+| `permissions.deny` | Merge | Merge | Add `ug`'s own `WebSearch` rule when it replaces web search; other rules left alone. `UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1` makes one launch strip the bare rule and hide `web_search` in its inline `--settings`; a managed, drop-in or user `WebSearch` deny makes it keep ug's MCP. The managed file never gets the deny; `ug configure --enable-server-side-web-search` (saved as `claude_server_side_web_search`) makes an explicit configure remove an existing bare one unless the admin's settings request it |
 | Tracing | Ignore | Create/replace | The seven `CLAUDE_CODE_*`/`OTEL_*` trace keys and `otelHeadersHelper`; only when the config enables tracing |
 | `managedMcpServers` | Ignore | Merge | Add/update the config's MCP server entries; other entries left alone |
 | Smart-routing hooks | Merge | Merge | `PreToolUse`, `SessionStart`, `SubagentStart`; only `ug`'s own marked handlers, other hooks left alone |
 | Admin `agent_native_settings` | Ignore | Create/replace | Managed file only; copied as-is. Keys `ug` owns are skipped, `permissions.deny` and hooks are merged, and `ug`'s MCP servers are added to an admin `allowedMcpServers`. Removed when the admin drops them, unless edited by hand |
 | Smart Router Orchestrator hooks | Merge | Merge | Launch-only `UserPromptSubmit` and compact `SessionStart` handlers for smart-routed sessions with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; read the same session controls as routing |
-| Header mod | Merge | Merge | Managed file only, Linux and macOS: `extraKnownMarketplaces.ucode-managed`, `enabledPlugins["ug-headers@ucode-managed"]`, and `ug-headers@ucode-managed` first in `prependPlugins` (an unset list becomes the mod plus `sec-default@builtin`). The mod's files live in a root-owned `ucode-plugins` folder beside the managed file and add `UG_HEADERS` to each request. Installed, upgraded, and enabled only by `ug configure`, never by a launch (even with `UG_HEADERS`, which instead warns when the mod is missing or stale), so a launch writes no machine-wide files and another writer of the file that drops them isn't fought on every launch. The entries are written only once the files are in place; revert removes both, keeping `sec-default@builtin` when an admin has extended the list |
+| Header mod | Merge | Merge | Managed file only, Linux, macOS, and Windows: `extraKnownMarketplaces.ucode-managed`, `enabledPlugins["ug-headers@ucode-managed"]`, and `ug-headers@ucode-managed` first in `prependPlugins` (an unset list becomes the mod plus `sec-default@builtin`). The mod's files live in an administrator-only `ucode-plugins` folder beside the managed file and add `UG_HEADERS` to each request. Installed, upgraded, and enabled only by `ug configure` (a terminal, or in place over an existing managed file through `sudo -n`; on Windows, elevated), never by a launch (even with `UG_HEADERS`, which instead warns when no header mod is enabled: neither ug's, current, nor another tool's enabled `ug-headers@` plugin such as Isaac's), so a launch writes no machine-wide files and another writer of the file that drops them isn't fought on every launch. The entries are written only once the files are in place; revert removes both, keeping `sec-default@builtin` when an admin has extended the list |
 
 </details>
 
@@ -168,15 +169,49 @@ rollback shared with the profile. Disabled tracing omits these fields on replace
 Claude setup also installs a generated Cowork plugin containing only the current
 workspace's managed and user-downloaded home-level skills and Claude-targeted MCP servers.
 Downloaded skill additions and removals resync the plugin; project-local,
-user-authored, and other-workspace skills are excluded. The source lives at
-`~/.ucode/claude-cowork-marketplace`, and `~/.ucode/claude-cowork.json` records the selected
-account/org root for cleanup. Cowork must have started once. Setup and cleanup use scoped
-`claude plugin ... --cowork --json` commands with `CLAUDE_CONFIG_DIR`; failures stay best-effort.
+user-authored, and other-workspace skills are excluded. The user-scope source lives at
+`~/.ucode/claude-cowork-marketplace`. Default configure and `--user` both write only
+this user source, the user 3P profile, and native Cowork registration/cache, even when saved
+scope is `global`. They never publish or remove root Desktop files. Explicit `--global`
+is detected by the command-local `machine_wide_only` switch and skips ordinary Desktop
+profile/plugin setup; macOS MDM provisioning is a separate follow-up. CLI-agent behavior
+is unchanged by these Desktop guards.
+Ordinary plugin setup requires Desktop's local account/org directory and uses scoped
+`claude plugin ... --cowork --json` with `CLAUDE_CONFIG_DIR`. First configure skips if no
+Cowork sessions directory exists. An earlier root-source registration switches to the
+user source without deleting root files or creating a duplicate plugin. Content-derived
+manifest versions and an explicit native update refresh changed skills/MCPs in the user
+cache. A pre-existing org-plugins/ug copy blocks duplicate loading.
+`~/.ucode/claude-cowork.json` records the account/org in version-1
+state. Account changes clean up the prior account before generation; no configure/revert
+lock, pending-cleanup queue, or migration bookkeeping is added. UG replaces the whole
+generated user marketplace, including manual edits. Its writer retains staged replacement
+and rollback. Native refresh failures retain the source/state for retry/revert. A failed source switch
+restores the previous marketplace/plugin through native commands when possible, and
+reports a failed recovery with configure retry instructions. Ordinary
+revert removes user source/registration only. Explicit MCP/skill changes resync this source;
+launches do not. Root bundle publication is implemented in the separate MDM follow-up.
 Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
 custom registration names and full proxy URLs are preserved. Its name and display name
 are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old
 `unity-gateway@unity-gateway-cowork` registration only after installing/updating `ug`;
 revert removes both IDs. New sessions use the `mcp__plugin_ug_...` tool namespace.
+Claude Code also receives `ug@unity-gateway-code` in its regular user plugin scope,
+shared with the Desktop Code tab. The generated source lives at
+`~/.ucode/claude-code-marketplace`, with its config root recorded in
+`~/.ucode/claude-code-plugin.json`; native plugin installation owns only that
+marketplace's `extraKnownMarketplaces` entry and its `enabledPlugins` entry.
+This plugin contains only the generated `unity-gateway-connectors` skill with Code-specific
+authentication guidance and native MCP registration names. Existing MCP registrations and
+downloaded skill files stay in their native locations; Cowork hooks are not installed in Code.
+Code setup is independent of Cowork account discovery and best-effort; explicit `--global`
+skips this user-scope plugin too. Model-configured Claude and
+explicit Claude MCP clients are eligible. Managed configure refreshes Code after successful
+MCP reconciliation even if skill downloads fail; Cowork keeps its existing model and skill
+requirements. MCP updates refresh eligible plugins, and revert removes both while preserving
+unrelated plugins.
+Code and Cowork skill templates live in `src/ucode/agents/desktop/connector_skills/`;
+the generator inserts connector names and bounds each description.
 See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>
@@ -195,5 +230,6 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `otel.trace_exporter` | Ignore | Create/replace | In `~/.codex/config.toml` when the config enables tracing, for Codex desktop; another exporter and other telemetry settings left alone |
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone. A same-name entry in `~/.codex/config.toml` of the other transport (stdio vs HTTP) is removed, since Codex would merge the two into an invalid entry |
 | Smart Router and Smart Router Orchestrator hooks | Merge | Merge | Launch-only `PreToolUse`, plus `UserPromptSubmit` and compact `SessionStart` with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; Codex combines them with its native hook sources and applies project trust; `features.hooks` is enabled for a smart-routed launch |
+| Native v2 collaboration | Launch-only (-c), never written | Launch-only (-c), never written | `features.multi_agent_v2.non_code_mode_only=false` and matching `root_agent_usage_hint_text` / `subagent_usage_hint_text` override saved values for the session; only for smart routing on Codex 0.164.0 or newer. User config files, general developer instructions, and native delegation-mode controls are preserved |
 
 </details>

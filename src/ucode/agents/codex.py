@@ -61,7 +61,10 @@ from ucode.databricks import (
     CodexMpsModelCatalogUnavailable,
     _fetch_codex_model_catalog,
     build_auth_token_argv,
+    build_mcp_proxy_argv,
+    build_mcp_service_url,
     build_tool_base_url,
+    get_model_provider_service,
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
@@ -71,6 +74,7 @@ from ucode.managed_files import (
     ManagedFileWriteUnavailable,
     current_os,
     explicit_managed_writes,
+    machine_wide_only,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -131,6 +135,8 @@ _LAUNCH_ROUTING_HEADER_ENV_VARS = {
 }
 MINIMUM_CODEX_VERSION = (0, 145, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.145.0"
+MINIMUM_SMART_ROUTING_CODEX_VERSION = (0, 164, 0)
+MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT = "0.164.0"
 # Codex 0.134.0 introduced per-profile config files; older releases use the legacy layout.
 LEGACY_LAYOUT_CODEX_VERSION = (0, 134, 0)
 LEGACY_LAYOUT_CODEX_VERSION_TEXT = "0.134.0"
@@ -173,9 +179,28 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
     return int(major), int(minor), int(patch)
 
 
-def minimum_version_error() -> str | None:
+def minimum_version_error(*, smart_routing_enabled: bool = False) -> str | None:
     version = agent_version(SPEC["binary"])
     parsed = _parse_version(version)
+    if smart_routing_enabled:
+        if parsed is None:
+            # The short telemetry probe can time out on a cold npm wrapper.
+            version = agent_version(SPEC["binary"], timeout=10)
+            parsed = _parse_version(version)
+        if parsed is None:
+            raise RuntimeError(
+                "Could not determine the installed Codex version. "
+                f"Smart routing requires Codex {MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT} "
+                "or newer. Run `codex --version` to check the installation, "
+                "or launch with --disable-smart-routing."
+            )
+        if parsed >= MINIMUM_SMART_ROUTING_CODEX_VERSION:
+            return None
+        return (
+            f"Codex smart routing requires Codex {MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT} "
+            f"or newer for readable delegated assignments; found {version}. "
+            "Upgrade Codex or launch with --disable-smart-routing."
+        )
     if parsed is None or parsed >= MINIMUM_CODEX_VERSION:
         return None
     return f"ug requires Codex {MINIMUM_CODEX_VERSION_TEXT} or newer; found {version}."
@@ -442,6 +467,8 @@ def configured_paths(state: dict) -> list[str]:
 
     Includes the model catalog only when a managed static list drives it (same condition as
     :func:`write_tool_config`), so the summary names it exactly when it was written."""
+    if machine_wide_only():
+        return []
     paths = [str(CODEX_CONFIG_PATH)]
     static_models = state.get("codex_static_models")
     if (
@@ -469,6 +496,26 @@ def write_tool_config(
     databricks_profile = state.get("profile")
     static_models = state.get("codex_static_models")
     static_models = static_models if isinstance(static_models, list) and static_models else None
+
+    if machine_wide_only():
+        if relayed:
+            # The relay provider is written only to per-user settings; it skips the managed file.
+            raise RuntimeError(
+                "`ug configure --global` can't configure a Codex ChatGPT subscription relay: it "
+                "runs only through per-user settings. Run `ug configure` without --global."
+            )
+        if _use_legacy_layout():
+            raise RuntimeError(
+                f"`ug configure --global` needs Codex {LEGACY_LAYOUT_CODEX_VERSION_TEXT} or "
+                "newer: earlier versions read only per-user settings. Upgrade Codex and retry."
+            )
+        if static_models and not provider:
+            # The static model list reaches Codex only through a per-user catalog reference.
+            print_warning_err(
+                "Skipped your workspace's Codex model list: `ug configure --global` writes only "
+                "machine-wide settings, and Codex reads that list from per-user settings."
+            )
+            static_models = None
 
     if _use_legacy_layout():
         if relayed:
@@ -527,10 +574,12 @@ def write_tool_config(
         _detach_app_catalog_after_failure()
         raise
 
-    _remove_legacy_ucode_profile()
+    if not machine_wide_only():
+        _remove_legacy_ucode_profile()
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
     # revert would restore that snapshot instead of deleting the file.
+    # The backup goes under ~/.ucode, so `--global` keeps it: revert deletes an unbacked file.
     if not is_tool_managed(state, "codex"):
         backup_existing_file(CODEX_CONFIG_PATH, CODEX_BACKUP_PATH)
     overlay = render_overlay(
@@ -562,21 +611,23 @@ def write_tool_config(
         _set_provider_header(base, None)
         return base
 
-    if catalog is not None:
-        sync_app_model_catalog(catalog)
-    elif not is_dry_run():
-        detach_app_model_catalog()
-        if CODEX_MODEL_CATALOG_PATH.exists():
-            CODEX_MODEL_CATALOG_PATH.unlink()
+    # `ug configure --global` writes only the machine-wide file below.
+    if not machine_wide_only():
+        if catalog is not None:
+            sync_app_model_catalog(catalog)
+        elif not is_dry_run():
+            detach_app_model_catalog()
+            if CODEX_MODEL_CATALOG_PATH.exists():
+                CODEX_MODEL_CATALOG_PATH.unlink()
 
-    doc = read_toml_safe(CODEX_CONFIG_PATH)
-    compose(doc)
-    sync_smart_routing_hooks(
-        doc,
-        state,
-        enabled=False,
-    )
-    write_toml_file(CODEX_CONFIG_PATH, doc)
+        doc = read_toml_safe(CODEX_CONFIG_PATH)
+        compose(doc)
+        sync_smart_routing_hooks(
+            doc,
+            state,
+            enabled=False,
+        )
+        write_toml_file(CODEX_CONFIG_PATH, doc)
     _reconcile_managed_config(
         state, lambda base: compose(base, include_catalog=False), relayed=relayed
     )
@@ -589,6 +640,9 @@ def write_tool_config(
     save_state(state)
     # The desktop proxy reads authentication from the saved workspace.
     tracing = bool(state.get("codex_otel_tracing"))
+    if machine_wide_only():
+        # The Codex app settings in ~/.codex/config.toml are per-user.
+        return state
     if _explicit_configure:  # like Claude Desktop, only `ug configure` changes the app
         _sync_desktop_relay(state, workspace, provider if relayed else None, tracing=tracing)
     _sync_desktop_tracing(workspace if tracing else None)
@@ -1081,6 +1135,11 @@ def _reconcile_managed_config(
     if managed_settings_skipped():
         # Opted out: trust whatever OS-managed file exists and leave it untouched.
         return
+    if path is None and machine_wide_only():
+        raise RuntimeError(
+            "`ug configure --global` can't configure Codex here: this platform has no "
+            "machine-wide Codex settings. Run `ug configure` without --global."
+        )
     if path is None:
         print_warning_err(
             "Machine-wide Codex settings aren't supported on this platform; skipped the managed "
@@ -1283,6 +1342,19 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
             f"Cannot safely update Codex managed settings at {path}: {exc}. ucode did not modify "
             "the file. Repair it or contact your administrator."
         ) from exc
+    user = read_toml_safe(user_mcp_config_path()).get(MANAGED_MCP_CONFIG_KEY)
+    if machine_wide_only() and isinstance(user, dict):
+        # `ug configure --global` can't remove the user's same-name entry of the other transport,
+        # and Codex can't start with both, so leave that server out of the managed file instead.
+        kept_out = sorted(_transport_conflicts(user, servers))
+        if kept_out:
+            print_warning_err(
+                f"Skipped Codex managed MCP server(s) {', '.join(kept_out)}: "
+                f"{user_mcp_config_path()} defines the same name with another transport, which "
+                "`ug configure --global` doesn't change. Remove those entries, or run "
+                "`ug configure` without --global."
+            )
+            servers = {name: entry for name, entry in servers.items() if name not in kept_out}
     # Nothing managed to clear: never create or rewrite the file just to remove an absent key.
     if not servers and MANAGED_MCP_CONFIG_KEY not in existing:
         return True
@@ -1305,23 +1377,30 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
             parser=_parse_managed_config,
         )
     except ManagedFileWriteUnavailable:
+        # Without --global the caller falls back to user scope; `--global` has no fallback, so a
+        # denied write must fail the run rather than leave the servers silently undelivered.
+        if machine_wide_only():
+            raise
         return False
     # Codex merges this file over the user config key by key, so a same-name user entry of the other
     # transport (stdio `command` vs HTTP `url`) would get both and stop Codex from starting.
-    user = read_toml_safe(user_mcp_config_path()).get(MANAGED_MCP_CONFIG_KEY)
     if isinstance(user, dict):
-        conflicts = {
-            name
-            for name, entry in servers.items()
-            if isinstance(user.get(name), dict)
-            and ("command" in user[name]) != ("command" in entry)
-        }
+        conflicts = _transport_conflicts(user, servers)
         if conflicts:
             write_user_mcp_servers({}, conflicts)
     # Preserve the scope the model reconcile recorded (e.g. relay-compatible); an MCP-only write only
     # refreshes the fingerprint, it does not change how the file relates to the model settings.
     mark_managed_file_verified(state, "codex", path, scope=managed_file_scope(state, "codex"))
     return True
+
+
+def _transport_conflicts(user: dict, servers: dict[str, dict]) -> set[str]:
+    """Names in ``servers`` whose user entry uses the other transport (stdio vs HTTP)."""
+    return {
+        name
+        for name, entry in servers.items()
+        if isinstance(user.get(name), dict) and ("command" in user[name]) != ("command" in entry)
+    }
 
 
 def read_managed_mcp_urls() -> dict[str, str]:
@@ -1348,6 +1427,53 @@ def read_managed_mcp_urls() -> dict[str, str]:
             if index + 1 < len(args):
                 urls[name] = str(args[index + 1])
     return urls
+
+
+WEB_SEARCH_MCP_SERVICE = "system.ai.web_search"
+WEB_SEARCH_MCP_NAME = WEB_SEARCH_MCP_SERVICE.replace(".", "-")  # same name `ug mcp add` registers
+# Bedrock's runtime Responses API rejects Codex's built-in web_search tool and the stream dies before
+# response.completed. Bedrock Mantle serves it, so only the runtime provider type is affected.
+_BUILTIN_WEB_SEARCH_UNSUPPORTED_PROVIDER_TYPE = "amazon_bedrock"
+
+
+def _web_search_mcp_configured(state: dict, url: str) -> bool:
+    """Whether Codex already has the web_search MCP service under any name, in user or managed config."""
+    user = read_toml_safe(user_mcp_config_path()).get(MANAGED_MCP_CONFIG_KEY)
+    if isinstance(user, dict):
+        for name, entry in user.items():
+            args = entry.get("args") if isinstance(entry, dict) else None
+            if name == WEB_SEARCH_MCP_NAME or (isinstance(args, list) and url in args):
+                return True
+            if isinstance(entry, dict) and entry.get("url") == url:
+                return True
+    managed = [*read_managed_mcp_urls().items()]
+    for server in state.get("managed_mcp_servers") or []:
+        if isinstance(server, dict) and "codex" in (server.get("clients") or []):
+            managed.append((server.get("name"), server.get("url")))
+    return any(name == WEB_SEARCH_MCP_NAME or managed_url == url for name, managed_url in managed)
+
+
+def _bedrock_runtime_web_search_overlay(
+    state: dict, workspace: str, token: str, provider: str
+) -> dict:
+    """Launch-scoped config that swaps Codex's built-in web_search for the web_search MCP service
+    when ``provider`` is an Amazon Bedrock runtime Model Provider Service; empty otherwise.
+
+    A failed provider lookup leaves the launch unchanged rather than blocking Codex."""
+    service, reason = get_model_provider_service(provider, workspace, token)
+    if service is None:
+        print_warning_err(f"Could not check the provider type of {provider}: {reason}")
+        return {}
+    if service.get("provider_type") != _BUILTIN_WEB_SEARCH_UNSUPPORTED_PROVIDER_TYPE:
+        return {}
+    overlay: dict = {"web_search": "disabled"}
+    url = build_mcp_service_url(workspace, WEB_SEARCH_MCP_SERVICE)
+    if not _web_search_mcp_configured(state, url):
+        argv = build_mcp_proxy_argv(
+            url, workspace, state.get("profile"), use_pat=bool(state.get("use_pat"))
+        )
+        overlay[MANAGED_MCP_CONFIG_KEY] = {WEB_SEARCH_MCP_NAME: managed_mcp_entry(argv)}
+    return overlay
 
 
 def default_model(state: dict) -> str | None:
@@ -1502,8 +1628,11 @@ def _read_app_config() -> tomlkit.TOMLDocument:
 
 
 def detach_app_model_catalog() -> bool:
-    """Remove only a shared catalog reference owned by ucode."""
-    if is_dry_run():
+    """Remove only a shared catalog reference owned by ucode.
+
+    ``ug configure --global`` keeps it: the app settings are per-user, and the user's next launch
+    validates the catalog again."""
+    if is_dry_run() or machine_wide_only():
         return False
     doc = _read_app_config()
     if not _is_ucode_catalog_reference(doc.get("model_catalog_json")):
@@ -1787,6 +1916,9 @@ def launch(
     _export_launch_routing_headers(profile_doc)
     _add_launch_headers(profile_doc)
     updating = tool_args[:1] == ["update"]
+    launches_session_on_mps = bool(workspace and token and provider) and not (updating or relayed)
+    if launches_session_on_mps:
+        profile_doc.update(_bedrock_runtime_web_search_overlay(state, workspace, token, provider))
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")
     if workspace and token and (provider or parent_schema) and not updating and not relayed:
@@ -1857,7 +1989,10 @@ def launch(
 
 def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
+    from ucode.agents import ensure_minimum_version
+
     binary = SPEC["binary"]
+    ensure_minimum_version("codex", lambda: minimum_version_error(smart_routing_enabled=True))
 
     configured_model = _smart_routing_config_model(state)
     # Prefer the custom catalog if it exists.
