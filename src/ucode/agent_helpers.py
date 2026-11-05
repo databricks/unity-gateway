@@ -22,7 +22,7 @@ from ucode.state import load_config_scope, load_saved_state
 from ucode.ui import print_err
 from ucode.workspace import selector_headers
 
-# Keep in sync with `ucode.entrypoint._AGENT_HELPER_COMMANDS`, which can't import this module.
+# Keep in sync with `ucode.entrypoint._AGENT_HELPERS`, which can't import this module.
 COMMANDS = ("auth-token", "otel-headers")
 
 
