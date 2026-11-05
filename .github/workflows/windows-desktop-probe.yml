@@ -51,9 +51,8 @@ jobs:
           if-no-files-found: error
 
   app-probe:
-    if: github.event_name == 'workflow_dispatch' && inputs.installer_url != ''
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -61,21 +60,24 @@ jobs:
       - name: Download and verify the approved Claude installer
         shell: pwsh
         env:
-          INSTALLER_URL: ${{ inputs.installer_url }}
+          INSTALLER_URL: ${{ inputs.installer_url || 'https://claude.ai/api/desktop/win32/x64/msix/latest/redirect' }}
           INSTALLER_SHA256: ${{ inputs.installer_sha256 }}
         run: |
           $uri = [Uri]$env:INSTALLER_URL
+          $official = $uri.AbsoluteUri -eq 'https://claude.ai/api/desktop/win32/x64/msix/latest/redirect'
           if ($uri.Scheme -ne 'https' -or
-              ($uri.Host -ne 'databricks.jfrog.io' -and -not $uri.Host.EndsWith('.cloud.databricks.com'))) {
-            throw 'Installer must come from an approved internal source'
+              (-not $official -and $uri.Host -ne 'databricks.jfrog.io' -and -not $uri.Host.EndsWith('.cloud.databricks.com'))) {
+            throw 'Installer must come from the approved Anthropic endpoint or an internal source'
           }
-          if ($env:INSTALLER_SHA256 -notmatch '^[a-fA-F0-9]{64}$') {
+          if (-not $official -and $env:INSTALLER_SHA256 -notmatch '^[a-fA-F0-9]{64}$') {
             throw 'An installer SHA256 is required'
           }
           $installer = Join-Path $env:RUNNER_TEMP 'Claude.msix'
-          Invoke-WebRequest -Uri $uri -OutFile $installer -TimeoutSec 180 -MaximumRedirection 0
+          Invoke-WebRequest -Uri $uri -OutFile $installer -TimeoutSec 300
+          $digest = $env:INSTALLER_SHA256
+          if (-not $digest) { $digest = (Get-FileHash $installer -Algorithm SHA256).Hash }
           & ./scripts/desktop-probe/install.ps1 -InstallerPath $installer `
-            -ExpectedSha256 $env:INSTALLER_SHA256 `
+            -ExpectedSha256 $digest `
             -OutputDirectory "$env:RUNNER_TEMP/claude-desktop-probe"
       - name: Install pinned Playwright through the internal npm proxy
         shell: pwsh

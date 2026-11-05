@@ -8,9 +8,11 @@ MSIX, launches the installed executable with Playwright, and looks for Cowork.
 It fails if installation, attachment, or the Cowork control is unavailable.
 Opening Cowork alone does not establish its execution environment or inference.
 
-The workflow accepts an approved internal installer URL and SHA256. No internal
-Claude Desktop MSIX source has been identified yet. Public downloads require an
-explicit exception to the session's package-proxy instructions.
+The user approved direct official Anthropic installer and runtime downloads for
+this disposable probe. By default the workflow downloads the official x64 MSIX,
+records its SHA256, and verifies its Anthropic signature before installation.
+This exploratory download discovers the release; it is not a pre-pinned release.
+An internal installer URL and independently pinned SHA256 can also be supplied.
 
 Playwright Core 1.62.1 is pinned through the internal npm proxy, with its integrity
 digest in package-lock.json. It is Microsoft's Apache-2.0-licensed package and
