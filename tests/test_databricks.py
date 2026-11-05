@@ -4612,14 +4612,7 @@ class TestEnsureDatabricksCliVersion:
     def test_launch_checks_probe_a_sufficient_cli_once(self, tmp_path, monkeypatch):
         env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
         monkeypatch.setattr("os.environ", env)
-        probes = []
-        original_run = db_mod.run
-
-        def record_probe(args, **kwargs):
-            probes.append(args)
-            return original_run(args, **kwargs)
-
-        monkeypatch.setattr(db_mod, "run", record_probe)
+        probes = self._record_probes(monkeypatch)
 
         assert databricks_cli_installed() is True
         ensure_databricks_cli_version()
@@ -4816,14 +4809,7 @@ class TestEnsureDatabricksCliVersion:
     def test_raises_when_version_unparseable(self, tmp_path, monkeypatch):
         env = self._fake_databricks(tmp_path, "completely broken output")
         monkeypatch.setattr("os.environ", env)
-        probes = []
-        original_run = db_mod.run
-
-        def record_probe(args, **kwargs):
-            probes.append(args)
-            return original_run(args, **kwargs)
-
-        monkeypatch.setattr(db_mod, "run", record_probe)
+        probes = self._record_probes(monkeypatch)
         with pytest.raises(RuntimeError, match="Could not parse"):
             ensure_databricks_cli_version()
 
