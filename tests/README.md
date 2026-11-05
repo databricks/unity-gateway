@@ -1,5 +1,11 @@
 # Test suites and user journeys
 
+`TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
+normal and exceptional exit, clearing the terminal line for static and callable
+messages, and leaving redirected output free of animation threads. These component
+checks use thread synchronization rather than elapsed-time thresholds; they do not
+establish end-to-end agent startup latency.
+
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
