@@ -13,7 +13,7 @@ from ucode.smart_routing import config, session_env, v2
 AUTO = config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY
 
 
-def test_fresh_picker_session_starts_off_with_auto_assets_available():
+def test_auto_capability_alone_starts_off_with_assets_available():
     env = config.resolve_environment({"SMART_ROUTER_CONFIG_VERSION": AUTO}, agent="claude")
     assert all(env[key] == "0" for key in SMART_ROUTING_ENV_KEYS)
     assert not v2.smart_routing_enabled(env, default=False, agent="claude")

@@ -221,10 +221,15 @@ def apply_enabled_version(
     target = os.environ if env is None else env
     previous = {key: target.get(key) for key in _RESTORE_KEYS}
     if not known_version(target):
-        target[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = DEFAULT_ENABLED_VERSION
+        target[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = (
+            SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY
+            if not target.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
+            and auto_picker_enabled(target, agent=agent)
+            else DEFAULT_ENABLED_VERSION
+        )
     applied = apply_config(target, agent=agent)
     if auto_picker_enabled(target, agent=agent):
-        # Explicit launch enablement opts in; exposing the picker alone starts off.
+        # Managed or explicit launch enablement opts in; exposure alone starts off.
         target[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
         target[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = "1"
     if AUTO_PICKER_CONFIG_ENV_VAR in applied:

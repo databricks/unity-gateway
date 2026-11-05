@@ -441,3 +441,16 @@ def test_enabled_version_routes_ignores_uncovered_agent():
 
     assert config.enabled_version_routes(env, agent="opencode") is False
     assert config.enabled_version_routes({}, agent="opencode") is False
+
+
+def test_managed_enablement_preserves_an_already_resolved_auto_version():
+    source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY}
+    config.apply_config(source, agent=AGENT_CLAUDE)
+    before = dict(source)
+    previous = config.apply_enabled_version(source, agent=AGENT_CLAUDE)
+    assert config.auto_picker_enabled(source, agent=AGENT_CLAUDE)
+    assert source[ENABLE_SMART_ROUTING_ENV_VAR] == "0"
+    assert source[ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+    assert source[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == "1"
+    v2.restore_smart_routing_env(previous, source)
+    assert source == before

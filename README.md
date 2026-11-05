@@ -505,7 +505,7 @@ use identical mappings for both agents. The Claude-only version disables routing
 | `subagent_orch_v0` | Claude, Codex | On | Off | On | Off |
 | `subagent_orch_v1` | Claude, Codex | On | Off | On | Off |
 | `subagent_orch_v0_claude_only` | Claude | On | Off | On | Off |
-| `subagent_orch_auto_picker_v0_claude_only` | Claude after choosing Auto | Off initially | Off | Off initially | On |
+| `subagent_orch_auto_picker_v0_claude_only` | Claude | On with managed enablement or Auto selection | Off | On with managed enablement or Auto selection | On |
 
 `first_prompt_and_subagent_no_orch_v0` routes the first prompt and subagents without
 orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and
@@ -518,14 +518,29 @@ managed default model, without routing or orchestration. `--enable-smart-routing
 workspace smart routing keep this version, so Codex stays unrouted: ug warns and launches it
 like a plain `ug codex`, without the Smart Router skills or routing hooks.
 
-`subagent_orch_auto_picker_v0_claude_only` starts with routing and orchestration off
-and resolves `EXPOSE_AUTO_IN_MODEL_PICKER=1` for Claude. Confirming Auto enables both;
-explicit launch `--enable-smart-routing` also opts in. All other
-presets and Codex resolve it to `0`. The development `/model` popup offers Auto or concrete mode, then opens Claude's native
-main-model picker. `/model auto` goes directly to that second picker. Confirm with Enter;
-Escape leaves routing unchanged. Auto uses the existing ON/routing-subagents indicator
-and smart-router footer. Native session-only (`s`) selections and durable resume remain
-unfinished; keep production assignments on existing versions.
+`subagent_orch_auto_picker_v0_claude_only` resolves `EXPOSE_AUTO_IN_MODEL_PICKER=1`
+for Claude. If the managed config enables Claude smart routing, `ug claude` starts
+in Auto with subagent routing and orchestration enabled, using the admin's managed
+`default_model`. No picker or enable flag is needed. `--disable-smart-routing`
+starts inactive while keeping Auto available. Without managed enablement, the
+capability alone starts inactive; selecting Auto or passing `--enable-smart-routing`
+opts in. Explicit launch model pins retain their existing precedence. All other
+presets and Codex resolve it to `0`. When managed config enables Claude smart routing
+and supplies a model list, configure/apply prepends Auto to the generated `modelPicker`.
+Claude's normal `/model` picker displays that row. Selecting Auto intercepts the
+virtual value before saving or assigning it, then immediately selects the admin's
+managed `model_config.default_model` as the concrete main model and enables routing
+and orchestration. `/model auto` does the same directly, with no second picker.
+A launch pin or shell `ANTHROPIC_MODEL` does not replace this admin default.
+If it is missing or invalid, Auto reports an error; it does not guess a model.
+Cancelling the normal picker leaves routing unchanged. There is no custom picker or mode popup.
+The native concrete restrictions stay in place; the synthetic `auto` value is also
+admitted to `availableModels` so Claude does not filter its row out. It is excluded
+from routing candidates. The downloaded policy is unchanged.
+Auto uses the existing ON/routing-subagents indicator and smart-router footer.
+Durable resume remains unfinished; keep production assignments on existing versions.
+Use the Auto config version for both configure and launch; managed smart routing
+alone still selects the unchanged legacy default.
 The default enabled version remains `subagent_orch_v0_claude_only`.
 
 ```bash

@@ -1,11 +1,29 @@
-Auto picker development coverage: `test_claude_auto_picker.py` checks resolved capability,
-fresh sessions starting off with Auto assets available, inactive provisioning, command-skill
-cleanup and the internal session writer. Config tests preserve explicit launch enablement.
-`native_claude/test_auto_picker.py` drives the actual Claude 2.1.318 TUI without inference:
-the initial OFF indicator, inactive runtime flags, saved selection, cancellation and same-model Auto entry pass; session-only selection is
-currently a failing regression under development. `/model` opens the Auto/concrete popup; both choices open the native main-model picker.
-Popup cancellation, native cancellation and Enter-confirmed choices are covered.
-`/model auto` opens the main-model picker directly. Auto restores the existing ON/routing-subagents banner. Live gateway and full resume/rollback coverage are separate.
+Managed Auto injection coverage: `test_agent_claude.py` checks generated private
+and OS-managed picker rows under both gates, repeated application, unchanged
+concrete IDs/raw policy, and legacy-version exclusion. The virtual Auto value is
+admitted to the native picker allow-list and excluded from router candidates by
+`test_claude_smart_routing_v2.py`.
+`native_claude/mod_tests/auto-picker.test.ts` verifies native command forwarding,
+no custom picker, Auto interception before assignment, immediate admin-default
+selection for commands and saved/session-only rows, and failed/missing defaults.
+Saved Auto rows retain their applying and final status across native redraws,
+without showing the synthetic save denial. Failed model or routing-control
+updates retain an actionable error and do not enable routing.
+Interactive commands return message references instead of text; regression cases
+verify both direct Auto and saved-row transitions accept those references only
+when the native session has the intended concrete model.
+`test_claude_smart_routing_v2.py` checks trusted managed-default plumbing independent
+of launch pins and shell models, with no change to legacy launches. `native_claude/test_auto_picker.py` covers native cancellation and mode
+transitions, including an injected managed row; it requires a machine policy
+compatible with its fixture models. These component tests do not prove live
+staging inference. Config, inactive provisioning, command-skill cleanup, and the
+internal session writer are covered by `test_claude_auto_picker.py`.
+Managed Auto launch defaults in `test_cli.py` cover bare and explicit Claude
+launches, managed enablement on/off, explicit enable/disable precedence, native
+subcommand exclusion, and environment restoration. Config tests preserve the
+resolved Auto version during managed enablement; launcher tests check the admin
+main model, explicit model pins, and rejection of missing/virtual defaults.
+These are component checks, not live gateway inference coverage.
 
 # Test suites and user journeys
 

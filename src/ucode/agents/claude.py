@@ -109,6 +109,7 @@ from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
     release_file_lock,
 )
+from ucode.smart_routing import config as smart_routing_config
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -1588,6 +1589,24 @@ def write_tool_config(
         picker_catalog=picker_catalog,
         managed_http_headers=state.get("claude_http_headers"),
     )
+    managed_claude = ((managed_manifest or {}).get("enabled_agents") or {}).get("claude") or {}
+    if (
+        managed_claude.get("smart_routing_enabled") is True
+        and smart_routing_config.auto_picker_enabled(agent="claude")
+        and not (provider or parent_schema or relayed)
+        and "modelPicker" in overlay
+    ):
+        # Native picker filtering must admit the virtual row; concrete restrictions stay intact.
+        if "availableModels" in overlay:
+            overlay["availableModels"] = ["auto", *overlay["availableModels"]]
+        overlay["modelPicker"]["options"].insert(
+            0,
+            {
+                "model": "auto",
+                "label": "Auto",
+                "description": "Use the admin default model; automatically route subagents",
+            },
+        )
     source_scoped_defaults = bool((provider or parent_schema) and coding_agent_config_defaults)
     family_defaults = get_family_defaults(
         state, managed_config=managed_config_present, provider=provider, parent_schema=parent_schema

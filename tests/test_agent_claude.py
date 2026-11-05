@@ -2680,6 +2680,45 @@ class TestWriteToolConfigManagedSettings:
         assert "modelPicker" in managed_content
         assert len(managed_content["modelPicker"]["options"]) == 2
 
+    @pytest.mark.parametrize(
+        ("version", "managed_routing", "expected"),
+        [
+            ("subagent_orch_auto_picker_v0_claude_only", True, True),
+            ("subagent_orch_auto_picker_v0_claude_only", False, False),
+            ("subagent_orch_v0_claude_only", True, False),
+            (None, True, False),
+        ],
+    )
+    def test_managed_auto_picker_injection(self, monkeypatch, version, managed_routing, expected):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        if version:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
+        else:
+            monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        monkeypatch.setenv("EXPOSE_AUTO_IN_MODEL_PICKER", "1")
+        manifest = {
+            "enabled_agents": {"claude": {"smart_routing_enabled": managed_routing}},
+        }
+        original = json.dumps(manifest)
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda *a, **kw: _managed_config_result(manifest)
+        )
+        models = ["system.ai.claude-opus-4-8", "custom.service.sonnet"]
+        state = {"workspace": WS, "claude_static_models": models}
+        for _ in range(2):
+            claude.write_tool_config(state, models[0])
+            for settings in (private_writes[-1][1], json.loads(managed_writes[-1][1])):
+                rows = settings["modelPicker"]["options"]
+                assert [row["model"] for row in rows] == (["auto"] if expected else []) + models
+                if expected:
+                    assert rows[0]["label"] == "Auto"
+                assert settings["availableModels"] == (["auto"] if expected else []) + models
+                assert settings["enforceAvailableModels"] is True
+                assert settings["modelPicker"]["replaceBuiltInOptions"] is True
+        assert json.dumps(manifest) == original
+
     def test_static_models_not_written_when_absent(self, monkeypatch):
         # When claude_static_models is not in state, picker fields are not written.
         private_writes: list = []
