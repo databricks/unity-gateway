@@ -1,49 +1,6 @@
-Managed Auto injection coverage: `test_agent_claude.py` checks generated private
-and OS-managed picker rows under both gates, repeated application, unchanged
-concrete IDs/raw policy, and legacy-version exclusion. The virtual Auto value is
-admitted to the native picker allow-list and excluded from router candidates by
-`test_claude_smart_routing_v2.py`.
-`native_claude/mod_tests/auto-picker.test.ts` verifies native command forwarding,
-no custom picker, Auto interception before assignment, immediate admin-default
-selection for commands and saved/session-only rows, and failed/missing defaults.
-Saved Auto rows retain their applying and final status across native redraws,
-without showing the synthetic save denial. Failed model or routing-control
-updates retain an actionable error and do not enable routing. Auto changes also
-invalidate routes waiting for native spawn, while existing children can resume.
-Interactive commands return message references instead of text; regression cases
-verify both direct Auto and saved-row transitions accept those references only
-when the native session has the intended concrete model.
-`test_claude_smart_routing_v2.py` checks trusted managed-default plumbing independent
-of launch pins and shell models, with no change to legacy launches. `native_claude/test_auto_picker.py` covers native cancellation and mode
-transitions, including an injected managed row; it requires a machine policy
-compatible with its fixture models. These component tests do not prove live
-staging inference. Config, inactive provisioning, command-skill cleanup, and the
-internal session writer are covered by `test_claude_auto_picker.py`.
-Managed Auto launch defaults in `test_cli.py` cover bare and explicit Claude
-launches, managed enablement on/off, explicit enable/disable precedence, native
-subcommand exclusion, and environment restoration. Config tests preserve the
-resolved Auto version during managed enablement; launcher tests check the admin
-main model, explicit model pins, and rejection of missing/virtual defaults.
-These are component checks, not live gateway inference coverage.
-
 # Integration tests
 
-`native_claude/test_mod.py::test_model_command_hook_intercepts_rewrites_and_observes_same_model`
-characterizes the installed Claude command API: a mod consumes a `/model` action
-without inference, rewrites another action to native Haiku selection, and observes
-a repeated selection of the same model. This is a native component test, not the
-Auto product UI or live gateway coverage.
-
-
-Auto picker config coverage in `tests/test_smart_routing_config.py` and
-`tests/test_claude_mod.py` checks `subagent_orch_auto_picker_v0_claude_only`:
-Claude-only exposure, complete binary preset validation, conflicting inherited
-flags, launch-off preserving exposure, environment restoration, unchanged existing
-presets/default version, and native plugin option plumbing. These are component
-checks. Native picker and transition coverage is described above; `DISABLED_AUTO`
-and live gateway behavior remain outside these checks.
-
-
+Auto picker coverage and limitations are documented in [the test overview](../README.md#auto-model-picker).
 
 `../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
 behavior with controlled authentication and transport boundaries. The local-socket

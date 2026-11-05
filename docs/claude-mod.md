@@ -1,42 +1,18 @@
 # Claude mod entry point
 
-`subagent_orch_auto_picker_v0_claude_only` passes `EXPOSE_AUTO_IN_MODEL_PICKER=1`
-through the native plugin options; other presets pass `0`. Exposure is a launch
-capability and is excluded from activity toggles. When managed Claude smart routing
-is enabled, settings composition injects Auto into the generated managed picker
-without changing the raw policy. `availableModels` admits the virtual value along
-with the existing concrete IDs so native picker filtering retains the row; routing
-catalogs exclude it.
+With `subagent_orch_auto_picker_v0_claude_only`, managed smart routing injects Auto
+into the native picker and starts eligible sessions with the admin's concrete default,
+subagent routing, and orchestration. Explicit launch flags/pins retain precedence;
+other versions keep their existing behavior. The launcher passes `autoMainModel`;
+Auto is excluded from routing candidates. See [configuration](../README.md#smart-router-orchestrator).
 
-Managed Claude smart-routing enablement starts the session in Auto under this
-version, with routing/orchestration active and the admin default pinned as the
-main model when the user has not explicitly pinned another model. No model menu
-opens at startup. Explicit `--disable-smart-routing` wins; without managed
-enablement, capability alone leaves activity off. Legacy versions keep their
-existing launch decisions.
-
-`/model` always uses Claude's normal picker. The mod intercepts a saved `auto`
-selection through `config.set` before native model assignment. Its intentional
-save denial is replaced in the transcript with the Auto transition status, retained
-across redraws and updated with the actual result. After the menu
-closes, it selects the admin's managed `model_config.default_model` and enables
-subagent routing and orchestration. A native session-only Auto selection bypasses
-`config.set`; the output hook replaces that virtual selection with the same admin
-default before allowing inference. `/model auto` forwards the admin's concrete
-model to the native command and applies the same transition. No second picker or
-custom pane is opened. Leaving Auto through a concrete selection keeps the
-existing opt-out flow, without cancelling children already running.
-
-The launcher reads the managed default from the stored workspace policy and
-passes it as `autoMainModel` in the launch-scoped plugin options. User launch pins
-and shell model variables do not define it. Missing defaults leave the current
-concrete model unchanged with an actionable error. Failed model or session-control
-writes pause dispatch until the user retries or selects a concrete model.
-
-Native component tests verify direct commands, saved and session-only Auto rows,
-admin-default selection, and error handling. The terminal fixture requires a machine
-whose managed policy permits its fixture models; it does not establish live gateway
-coverage. Durable resume remains an open integration gap.
+`register.ts` handles `/model auto` and saved/session-only Auto rows with the same
+transition. Saved rows are intercepted before assigning the virtual model; their
+status survives redraws and reflects the actual result. Concrete selections disable
+future Auto behavior without cancelling existing children. Missing defaults and failed
+transitions report actionable errors; failed writes pause dispatch. Native component
+coverage is listed in [the test overview](../tests/README.md#auto-model-picker).
+Durable resume and live gateway coverage remain open.
 
 UG's Claude launcher loads `hooks/register.ts` through the existing launch-scoped
 `ug-smart-router` plugin in sessions launched with smart routing. Claude Code 2.1.290 or

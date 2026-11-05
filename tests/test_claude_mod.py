@@ -24,11 +24,9 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     # The entry point imports these, so they ship beside it unmodified.
     for name in (
         "register.ts",
-        "auto-picker.ts",
         "constants.ts",
         "extra-body.ts",
         "isaac-feedback.ts",
-        "routing-controls.ts",
         "routing-state.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
@@ -36,13 +34,11 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     ):
         assert (tmp_path / "hooks" / name).read_bytes() == (mods / name).read_bytes()
     assert sorted(path.name for path in (tmp_path / "hooks").iterdir()) == [
-        "auto-picker.ts",
         "constants.ts",
         "extra-body.ts",
         "hooks.json",
         "isaac-feedback.ts",
         "register.ts",
-        "routing-controls.ts",
         "routing-state.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",

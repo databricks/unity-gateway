@@ -1,4 +1,4 @@
-import type { AutoPolicy } from './auto-picker.ts'
+import type { AutoPolicy } from './register.ts'
 import type { On } from 'claude-code'
 import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'

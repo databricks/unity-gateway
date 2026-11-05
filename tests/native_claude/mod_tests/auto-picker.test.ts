@@ -45,15 +45,17 @@ function engine(on: On, {rejectModel = false, failControls = false, referenceRes
   return {commands, env, model: () => model, setModel: (value: string) => { model = value; }};
 }
 
-test('Auto directly applies the admin main model and enables both activities', {options: AUTO}, async ($, on) => {
-  const state = engine(on);
-  const result = await $.command.run({command: 'model', args: 'auto'});
-  expect(result.text).toContain('Auto enabled');
-  expect(state.commands).toEqual(['admin-sonnet']);
-  expect(state.model()).toBe('admin-sonnet');
-  expect(state.env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
-  expect(state.env.ENABLE_SMART_ROUTER_ORCHESTRATOR).toBe('1');
-});
+for (const referenceResult of [false, true]) {
+  test(`Auto applies the admin main model with ${referenceResult ? 'reference' : 'text'} results`, {options: AUTO}, async ($, on) => {
+    const state = engine(on, {referenceResult});
+    const result = await $.command.run({command: 'model', args: 'auto'});
+    expect(result.text).toContain('Auto enabled');
+    expect(state.commands).toEqual(['admin-sonnet']);
+    expect(state.model()).toBe('admin-sonnet');
+    expect(state.env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
+    expect(state.env.ENABLE_SMART_ROUTER_ORCHESTRATOR).toBe('1');
+  });
+}
 
 test('/model keeps the normal native picker and opens no custom pane', {options: AUTO}, async ($, on) => {
   on('session.model', () => ({value: 'sonnet'}));
@@ -146,15 +148,6 @@ test('a concrete selection after Auto disables both activities without touching 
   expect(state.env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
   expect(state.env.ENABLE_SMART_ROUTER_ORCHESTRATOR).toBe('0');
   expect(state.commands).toEqual(['admin-sonnet', 'admin-sonnet']);
-});
-
-test('interactive Auto accepts a native message reference after confirming the concrete model', {options: AUTO}, async ($, on) => {
-  const state = engine(on, {referenceResult: true});
-  const result = await $.command.run({command: 'model', args: 'auto'});
-  expect(result.text).toContain('Auto enabled');
-  expect(state.model()).toBe('admin-sonnet');
-  expect(state.env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
-  expect(state.env.ENABLE_SMART_ROUTER_ORCHESTRATOR).toBe('1');
 });
 
 test('a native message reference cannot confirm an unchanged main model', {options: AUTO}, async ($, on) => {

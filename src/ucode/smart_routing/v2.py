@@ -480,11 +480,9 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
     # These are imported by the entry point, so they ship beside it rather than as modules.
     for name in (
         "register.ts",
-        "auto-picker.ts",
         "constants.ts",
         "extra-body.ts",
         "isaac-feedback.ts",
-        "routing-controls.ts",
         "routing-state.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",

@@ -1,4 +1,4 @@
-import type { AutoPolicy } from './auto-picker.ts'
+import type { AutoPolicy } from './register.ts'
 import type { On, PluginOptions } from 'claude-code'
 
 type RoutingRecord = { name: string; task: string; model: string; rationale: string; seconds?: number; revision?: number }
