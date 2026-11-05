@@ -237,7 +237,7 @@ class TestHelp:
             result = runner.invoke(app, ["codex", "--enable-smart-routing"])
 
         assert result.exit_code == 0, result.output
-        toggle.assert_called_once_with(True, None)
+        toggle.assert_called_once_with(True, None, agent="codex")
         launch.assert_not_called()
 
     def test_configure_help_lists_agents_flag(self):
