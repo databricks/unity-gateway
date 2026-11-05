@@ -73,7 +73,7 @@ AGENT_ENUM_TO_TOOL: dict[str, str] = {
     "CODING_AGENT_CLAUDE_CODE": "claude",
     "CODING_AGENT_CODEX": "codex",
     "CODING_AGENT_GEMINI": "gemini",
-    "CODING_AGENT_COPILOT": "copilot",
+    "CODING_AGENT_GITHUB_COPILOT": "copilot",
     "CODING_AGENT_PI": "pi",
     "CODING_AGENT_OPENCODE": "opencode",
 }

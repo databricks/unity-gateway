@@ -11,6 +11,7 @@ import sys
 import time
 import urllib.request
 from collections.abc import Callable, Mapping, MutableMapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
@@ -73,6 +74,14 @@ from ucode.ui import print_note, print_warning
 LEGACY_STATE_KEY = "smart_routing_enabled"
 
 CODEX_INTERPOSER_LOG = APP_DIR / "codex-v2-interposer.log"
+
+# Native v2's default role hints assume direct tools even when code mode exposes them.
+CODEX_V2_COLLABORATION_GUIDANCE = """Use collaboration tools through the interface in their tool definitions. When listed in the code executor's `tools` namespace, invoke their exact declared names through `functions.exec`. When exposed as direct tools, call them directly.
+
+Use `spawn_agent` to create an agent, `followup_task` to start another turn on an existing agent, and `send_message` to send a message without starting a turn. The tool descriptions define valid task paths, history inheritance, model overrides, and concurrency limits. Full-history forks inherit the parent's model and effort. Set model or effort overrides only when the user, AGENTS.md, or skill instructions request them, and use `fork_turns="none"` with overrides.
+
+All agents share the current working directory and filesystem; coordinate edits. Messages identify their sender and recipient. Child final answers are delivered to their parent. Use `wait_agent` when a result is needed and no independent work remains; prefer longer waits to repeated polling.
+"""
 
 CLAUDE_TARGET_MODEL = "system.ai.claude-sonnet-4-6[1m]"  # TODO(lilly): replace with smart router.
 CLAUDE_PTY_LOG = APP_DIR / "claude-v2-pty.log"
@@ -179,6 +188,31 @@ def first_prompt_routing_enabled(
     return (
         source.get(ENABLE_SMART_ROUTING_ENV_VAR) == "1"
         and source.get(ENABLE_SUBAGENT_ROUTING_ENV_VAR) != "1"
+    )
+
+
+@dataclass(frozen=True)
+class RoutingDescription:
+    """The agents a launch would route, as `ug smart-router-describe` prints them."""
+
+    # Bump on any incompatible change: launchers parse the printed JSON.
+    schema: int = field(default=1, init=False)
+    harnesses: tuple[str, ...]
+
+
+def describe_routing(env: MutableMapping[str, str] | None = None) -> RoutingDescription:
+    """The agents a launch with this environment would route.
+
+    Depends only on the environment, so callers may cache it per ug version and routing env:
+    a workspace's managed config and launch flags are not applied.
+    """
+    source = os.environ if env is None else env
+    return RoutingDescription(
+        harnesses=tuple(
+            agent
+            for agent in (AGENT_CLAUDE, AGENT_CODEX)
+            if smart_routing_enabled(source, default=False, agent=agent)
+        )
     )
 
 
@@ -423,9 +457,21 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
         "routing-state.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
+        "subagent-statusline.py",
     ):
         write_text_file(plugin_dir / "hooks" / name, (mods / name).read_text(encoding="utf-8"))
     write_json_file(plugin_dir / "hooks" / "hooks.json", {"modules": ["./register.ts"]})
+    write_json_file(
+        plugin_dir / "settings.json",
+        {
+            "subagentStatusLine": {
+                "type": "command",
+                "command": subprocess_cross_os.shell_command(
+                    [sys.executable, str(plugin_dir / "hooks" / "subagent-statusline.py")]
+                ),
+            }
+        },
+    )
 
 
 def _request_claude_routing_decision(
@@ -496,7 +542,7 @@ def route_claude_subagent(
     audit_decision: bool = False,
     hook_output: bool = False,
 ) -> dict | None:
-    """Return a routed Agent input and UI details using the shared Python client.
+    """Return the spawn-ready model and UI details using the shared Python client.
 
     ``hook_output`` returns the legacy PreToolUse hook response instead, with its plain-text
     notice, for hooks that earlier UG versions persisted in settings files.
@@ -520,11 +566,11 @@ def route_claude_subagent(
             route.decision,
             route.routed_model,
         )
-    updated_input = {
-        **{key: value for key, value in route.tool_input.items() if key != "model"},
-        "subagent_type": _routed_claude_agent_name(route.routed_model),
-    }
     if hook_output:
+        updated_input = {
+            **{key: value for key, value in route.tool_input.items() if key != "model"},
+            "subagent_type": _routed_claude_agent_name(route.routed_model),
+        }
         agent_name = updated_input["subagent_type"]
         if orchestrator.enabled(agent=AGENT_CLAUDE):
             agent_name += " [orchestrator on]"
@@ -543,8 +589,7 @@ def route_claude_subagent(
             },
         }
     return {
-        "updatedInput": updated_input,
-        "model": route.routed_model,
+        "model": maybe_add_gpt_1m_suffix(route.routed_model),
         "rationale": route.decision.rationale,
     }
 
@@ -843,6 +888,15 @@ def launch_codex(
         overlay["model_catalog_json"] = str(catalog_path)
     overlay["hooks"] = _v2_hooks(state, available_models)
     overlay["features.hooks"] = True
+    overlay["features.multi_agent_v2.non_code_mode_only"] = False
+    overlay["features.multi_agent_v2.root_agent_usage_hint_text"] = (
+        "You are /root, the primary agent coordinating the user's task.\n\n"
+        + CODEX_V2_COLLABORATION_GUIDANCE
+    )
+    overlay["features.multi_agent_v2.subagent_usage_hint_text"] = (
+        "You are a child agent completing the task assigned by your parent. "
+        "Your assigned task path identifies you.\n\n" + CODEX_V2_COLLABORATION_GUIDANCE
+    )
     session_env_path = _prepare_smart_router_session("codex")
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.

@@ -137,7 +137,7 @@ def codex_config_args(config: dict) -> list[str]:
     for key, value in config.items():
         # These maps contain named entries. Override each entry individually so
         # the rest of the user's base map remains intact.
-        if key in {"hooks", "model_providers"} and isinstance(value, dict):
+        if key in {"hooks", "model_providers", "mcp_servers"} and isinstance(value, dict):
             for entry_name, entry_config in value.items():
                 args.extend(
                     [

@@ -1,0 +1,66 @@
+name: Publish skills action
+on:
+  pull_request:
+    paths: ['actions/publish-skills/**', '.github/workflows/publish-skills-test.yml']
+  push:
+    branches: [main]
+    paths: ['actions/publish-skills/**', '.github/workflows/publish-skills-test.yml']
+  merge_group:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: publish-skills-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  tests:
+    name: Publisher tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.13']
+    defaults:
+      run:
+        working-directory: actions/publish-skills
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - run: python -m pytest tests -q
+      - run: ruff check . && ruff format --check .
+      - run: zizmor --offline action.yml ../../.github/workflows/publish-skills-test.yml
+      - run: python -m pip_audit -r requirements.txt --strict --vulnerability-service osv --timeout 20
+  smoke:
+    name: Publisher composite action
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./actions/publish-skills # zizmor: ignore[self-repository] -- test checked-out action without credentials
+        id: directory
+        with:
+          source-directory: actions/publish-skills/tests/fixture
+          skills-directory: skills
+          target-schema: acme.skills
+          dry-run: 'true'
+      - name: Verify directory result
+        env:
+          REPORT: ${{ steps.directory.outputs.report-file }}
+        run: python -c 'import json,os; r=json.load(open(os.environ["REPORT"])); assert r["dry_run"] and r["results"][0]["target"] == "acme.skills.example" and r["results"][0]["status"] == "validated"'
+      - uses: ./actions/publish-skills # zizmor: ignore[self-repository] -- test checked-out action without credentials
+        id: mapping
+        with:
+          source-directory: actions/publish-skills/tests/fixture
+          dry-run: 'true'
+      - name: Verify mapping result
+        env:
+          REPORT: ${{ steps.mapping.outputs.report-file }}
+        run: python -c 'import json,os; r=json.load(open(os.environ["REPORT"])); assert r["dry_run"] and len(r["results"]) == 1 and r["results"][0]["status"] == "validated"'

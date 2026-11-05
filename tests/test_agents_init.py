@@ -236,6 +236,25 @@ class TestConfigureWiresAiToolsInstall:
             "claude", state, None, provider="main.default.relay", provider_models=None, relayed=True
         )
 
+    def test_configure_selected_tools_records_failures_without_raising(self, monkeypatch):
+        # The CLI fails a `--global` run once every agent and the MCP/skills setup have run, so the
+        # dispatcher reports failures through `last_configured_tools` instead of raising.
+        from ucode import managed_files
+
+        def configure_one(tool, state, provider, **_kw):
+            if tool == "claude":
+                raise RuntimeError("needs a managed file")
+            return state
+
+        monkeypatch.setattr(agents_mod, "_configure_one", configure_one)
+        monkeypatch.setattr(agents_mod, "save_state", lambda _state: None)
+        managed_files.set_machine_wide_only(True)
+
+        state = agents_mod.configure_selected_tools({}, ["claude", "codex"])
+
+        assert state["last_configured_tools"] == ["codex"]
+        assert state["available_tools"] == ["codex"]
+
     def test_configure_selected_tools_triggers_install(self, monkeypatch):
         captured = self._stub_configure(monkeypatch)
         agents_mod.configure_selected_tools(
@@ -1307,7 +1326,9 @@ class TestConfigureToolUserScope:
         managed_files.set_config_scope("user")
 
         if exists:
-            with pytest.raises(RuntimeError, match=r"--user.*managed settings exist.*--global"):
+            with pytest.raises(
+                RuntimeError, match=r"--user.*managed settings exist.*without --user"
+            ):
                 agents_mod.refuse_user_scope_over_managed_files([tool])
         else:
             agents_mod.refuse_user_scope_over_managed_files([tool])
@@ -1330,8 +1351,13 @@ class TestConfigureToolUserScope:
 
     def test_managed_config_blocks_user_scope(self):
         managed_files.set_config_scope("user")
-        with pytest.raises(RuntimeError, match=r"--user.*publishes a managed config.*--global"):
+        with pytest.raises(
+            RuntimeError,
+            match=r"--user.*publishes a managed config.*without --user.*administrator.*--global",
+        ) as excinfo:
             agents_mod.refuse_user_scope_over_managed_config("https://ws.example.com", {"x": 1})
+        # `--global` writes only machine-wide settings now, so it is no longer the default.
+        assert "the default" not in str(excinfo.value)
 
     @pytest.mark.parametrize("scope", ["user", "global"])
     def test_no_managed_config_does_not_block(self, scope):

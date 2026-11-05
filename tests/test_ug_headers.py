@@ -2,13 +2,33 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
+from anyio import to_thread
 from typer.testing import CliRunner
 
 from ucode.cli import app
-from ucode.ug_headers import ug_headers
+from ucode.ug_headers import scoped_ug_headers, ug_headers
+
+
+def test_concurrent_sessions_keep_headers_in_their_auth_workers(monkeypatch):
+    monkeypatch.setenv("UG_HEADERS", "X-Agent: inherited")
+
+    async def read_session(value):
+        with scoped_ug_headers(f"X-Agent: {value}"):
+            await asyncio.sleep(0)
+            return await to_thread.run_sync(ug_headers)
+
+    async def scenario():
+        assert await asyncio.gather(read_session("first"), read_session("second")) == [
+            {"X-Agent": "first"},
+            {"X-Agent": "second"},
+        ]
+
+    asyncio.run(scenario())
+    assert ug_headers() == {"X-Agent": "inherited"}
 
 
 def test_ug_headers_parse_one_per_line(monkeypatch):
