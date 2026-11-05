@@ -639,14 +639,17 @@ real temporary config files and local helper JSON-RPC subprocesses. It checks
 legacy ownership, copied marked helpers, custom/disabled entry preservation, config conflicts, caller
 arguments, routing/direct/relayed paths, and concurrent standalone/custom helper
 catalogs. It also checks that an empty search-model catalog preserves registration
-ownership for later external handoff or standalone refresh. These are component
-checks, not a live Isaac or gateway journey.
+ownership for later external handoff or standalone refresh, and that standalone
+refresh preserves unmarked/custom entries and unreadable configuration. These are
+component checks, not a live Isaac or gateway journey.
 
 `test_claude_search_discovery.py` covers fresh Claude-only setup through model
 discovery, saved state, and search registration, with both UC and legacy model
 catalogs. It also checks explicit search-model precedence and preservation of an
-existing Isaac server when no GPT model is available. These component tests mock
-external discovery and the Claude CLI; they do not establish live search coverage.
+existing Isaac server when no GPT model is available. Repeat setup repairs marked
+search registrations after missing/stale ownership records or switching back to a
+previous workspace, saves the new fingerprint, and remains idempotent. These component
+tests mock external discovery and the Claude CLI; they do not establish live search coverage.
 
 `test_agent_claude.py`, `test_agent_codex.py`, and `test_managed_files.py` cover headless repair of
 conflicting managed settings, compatible/absent no-ops, policy and backup preservation, denied

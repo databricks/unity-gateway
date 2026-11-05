@@ -279,10 +279,25 @@ def test_external_configuration_preserves_saved_entry_and_ownership(
     assert PROVIDER_ENV not in claude.CLAUDE_SETTINGS_PATH.read_text()
 
 
-def test_standalone_refresh_preserves_custom_user_entry(search_config, monkeypatch):
+@pytest.mark.parametrize(
+    "customization", ["unmarked", "command", "env", "field", "args", "unreadable"]
+)
+def test_standalone_refresh_preserves_custom_user_entry(search_config, monkeypatch, customization):
     monkeypatch.delenv(PROVIDER_ENV)
-    search_config.config["mcpServers"]["web_search"]["command"] = "custom"
+    entry = search_config.config["mcpServers"]["web_search"]
+    if customization != "unmarked":
+        entry["args"].append(MANAGED_ENTRY_FLAG)
+    if customization == "command":
+        entry["command"] = "custom"
+    elif customization == "env":
+        entry["env"]["CUSTOM"] = "keep"
+    elif customization == "field":
+        entry["custom"] = "keep"
+    elif customization == "args":
+        entry["args"].append("--custom")
     write_json_file(claude.claude_code_config_path(), search_config.config)
+    if customization == "unreadable":
+        claude.claude_code_config_path().write_text("not JSON")
     monkeypatch.setattr(
         claude, "remove_claude_mcp_server", lambda *a: pytest.fail("removed custom")
     )
@@ -401,15 +416,6 @@ def test_stale_shared_state_preserves_new_registration_and_falls_back(
     assert claude._external_web_search_args(state, ["-p", "hello"]) == ["-p", "hello"]
     assert os.environ[PROVIDER_ENV] == "ucode"
     assert "duplicates may remain" in capsys.readouterr().out
-    monkeypatch.setattr(
-        claude, "remove_claude_mcp_server", lambda *a: pytest.fail("removed newer entry")
-    )
-    monkeypatch.setattr(
-        claude, "add_claude_mcp_server", lambda *a: pytest.fail("replaced newer entry")
-    )
-    assert not claude._register_web_search_mcp(
-        state["workspace"], "m", previous_entry=state[claude.WEB_SEARCH_MCP_STATE_KEY]
-    )
     assert claude.claude_code_config_path().read_bytes() == before
 
 

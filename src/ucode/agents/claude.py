@@ -1267,8 +1267,8 @@ def _register_web_search_mcp(
     previous_entry: object = None,
 ) -> bool:
     """Register (or replace) the web_search MCP server in Claude Code's user
-    scope via `claude mcp add-json`. Replace only a known generated user entry;
-    project/local entries and user edits belong to the caller.
+    scope via `claude mcp add-json`. Refresh marked generated entries; unmarked
+    legacy entries must still match their saved fingerprint. Custom entries stay intact.
 
     Returns True if registration succeeded. Failures are non-blocking: we warn
     and return False so the rest of `ucode claude` setup can complete.
@@ -1276,13 +1276,16 @@ def _register_web_search_mcp(
     config = _read_claude_config_for_rewrite(claude_code_config_path())
     servers = config.get("mcpServers", {}) if config is not None else None
     existing = servers.get(WEB_SEARCH_MCP_NAME) if isinstance(servers, dict) else None
-    if not isinstance(servers, dict) or (
-        existing is not None
-        and (existing != previous_entry or not _generated_search_entry(existing))
-    ):
+    # Claude's entry is global, so a workspace's saved fingerprint can be missing or stale.
+    owned = (
+        isinstance(existing, dict)
+        and _generated_search_entry(existing)
+        and (existing == previous_entry or MANAGED_ENTRY_FLAG in existing["args"])
+    )
+    if not isinstance(servers, dict) or (existing is not None and not owned):
         print_warning(
             "Preserving web_search: its Claude configuration is unreadable or its entry is not "
-            "an unchanged ug-generated registration. Review it before reconfiguring search."
+            "a managed ug registration. Review it before reconfiguring search."
         )
         return False
     try:

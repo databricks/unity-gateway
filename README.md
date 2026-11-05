@@ -369,13 +369,17 @@ are preserved without launch overrides, and `--strict-mcp-config` excludes saved
 an override. Unknown ownership, overlapping config scopes, or command-based
 MCP policies produce a warning and retain the existing provider; duplicate
 providers may remain. Explicit `external` selection instead fails on a conflict.
-Standalone refreshes preserve edited user entries and project/local servers.
+Standalone refreshes update generated entries carrying `--managed-by-ucode`, even
+when a workspace switch or lost state leaves their saved ownership fingerprint
+out of date. These entries' generated workspace, model, and profile values belong
+to ug. Unmarked legacy entries still require an exact saved fingerprint; custom
+commands, extra arguments/settings, and project/local servers are preserved.
 If no search model is available, they retain ownership of the installed entry so a
 later refresh or external-provider launch can still verify it.
 The selection does not authorize search or remove any permission denial.
 Concurrent setup still uses ug's existing whole-workspace state writes. A stale
-ownership fingerprint safely preserves the server and prevents automatic handoff;
-this contract does not make shared setup transactional.
+ownership fingerprint prevents automatic handoff until a standalone refresh repairs
+the marked registration and its fingerprint. Setup is not transactional.
 
 ## Skills
 
