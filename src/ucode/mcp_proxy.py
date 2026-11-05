@@ -364,10 +364,17 @@ class _McpBridge:
 
     def _authentication_tool(self) -> dict:
         connection = self.connection_login.connection or "this service"
+        sign_in_requirement = (
+            "Sign-in is required to discover this connector's tools. "
+            "Call this tool to sign in before retrying discovery. "
+            if self.authentication_required
+            else ""
+        )
         return {
             "name": AUTHENTICATE_TOOL_NAME,
             "description": (
-                f"Sign in to the Unity Gateway {connection} connection. Call this when the user "
+                f"{sign_in_requirement}Sign in to the Unity Gateway {connection} connection. "
+                "Call this when the user "
                 "requests this service and its tools report missing or expired sign-in, or "
                 "authentication is required to discover its tools. For an access denial, "
                 "including an IP-address denial, try sign-in once before recommending "
@@ -402,6 +409,7 @@ class _McpBridge:
         tools = payload.result.get("tools")
         if not isinstance(tools, list):
             return message
+        self.authentication_required = False
         if (
             request is None
             or not isinstance(request.params, dict)
