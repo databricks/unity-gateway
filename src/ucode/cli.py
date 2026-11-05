@@ -923,7 +923,8 @@ def _configure_shared_workspace_states(
     return states
 
 
-_MODEL_LOCATION_TOOLS = ("claude", "codex")
+# Copilot takes --model-location only through `--agents copilot` (the copilot_source path).
+_MODEL_LOCATION_TOOLS = tuple(tool for tool in MODEL_LOCATION_TOOLS if tool != AGENT_COPILOT)
 _PROVIDER_TOOLS = ("claude", "codex", "gemini")
 
 
