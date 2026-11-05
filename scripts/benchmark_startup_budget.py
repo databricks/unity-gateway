@@ -18,7 +18,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-def measure(delay: float) -> dict:
+def measure(delay: float, source: Path) -> dict:
     import typer
 
     from ucode import cli
@@ -26,6 +26,9 @@ def measure(delay: float) -> dict:
         SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
         SMART_ROUTING_ENV_KEYS,
     )
+
+    if not Path(cli.__file__).resolve().is_relative_to(source / "src"):
+        raise RuntimeError("loaded CLI is not from --source")
 
     state = {
         "workspace": "https://benchmark.invalid",
@@ -105,6 +108,9 @@ def main() -> None:
     args = parser.parse_args()
     if args.runs < 1 or not math.isfinite(args.delay_ms) or args.delay_ms < 0:
         parser.error("--runs must be positive and --delay-ms must be finite and nonnegative")
+    for source in (args.source, args.baseline):
+        if source is not None and not (source / "src/ucode/cli.py").is_file():
+            parser.error("each source must be a Unity Gateway checkout")
     sys.path.insert(0, str(args.source.resolve() / "src"))
     if args.baseline is not None:
         from ucode.os_compatibility import subprocess_cross_os
@@ -164,14 +170,25 @@ def main() -> None:
             )
         )
         return
-    measure(args.delay_ms / 1000)
-    samples = [measure(args.delay_ms / 1000) for _ in range(args.runs)]
+    from ucode.os_compatibility import subprocess_cross_os
+
+    revision = subprocess_cross_os.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=args.source,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    ).stdout.strip()
+    measure(args.delay_ms / 1000, args.source.resolve())
+    samples = [measure(args.delay_ms / 1000, args.source.resolve()) for _ in range(args.runs)]
     values = sorted(sample["elapsed_ms"] for sample in samples)
     print(
         json.dumps(
             {
                 "scope": "component: bare launch with unavailable budget recommendation",
                 "source": str(args.source.resolve()),
+                "revision": revision,
                 "simulated_request_ms": args.delay_ms,
                 "warmups": 1,
                 "runs": args.runs,
