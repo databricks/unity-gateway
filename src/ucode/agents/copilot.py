@@ -33,7 +33,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -41,8 +41,8 @@ from typing import Any, Protocol
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
-    apply_json_mcp_diff,
     backup_existing_file,
+    is_dry_run,
     parse_dotenv,
     read_json_safe,
     write_dotenv,
@@ -64,6 +64,7 @@ from ucode.databricks import (
     ANTHROPIC_API_PROVIDER_TYPES,
     ANTHROPIC_FAMILIES,
     MICROSOFT_FOUNDRY_PROVIDER_TYPE,
+    AnthropicModelCatalog,
     ModelServiceEntry,
     bare_model_name,
     build_copilot_base_url,
@@ -79,18 +80,21 @@ from ucode.os_compatibility.file_lock_cross_os import (
     release_file_lock,
 )
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
-from ucode.state import is_tool_managed, mark_tool_managed, save_state
+from ucode.state import is_tool_managed, load_state, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_warning
+from ucode.workspace import SELECTOR_HEADER_NAMES
 
 from .args import LaunchOptions, explicit_model_arg_value
 from .request_tags import request_tags_header_value
 
 COPILOT_CONFIG_DIR = Path.home() / ".copilot"
 COPILOT_ENV_PATH = COPILOT_CONFIG_DIR / "ucode.env"
-COPILOT_MCP_CONFIG_PATH = COPILOT_CONFIG_DIR / "ucode-mcp-config.json"
+COPILOT_MCP_CONFIG_PATH = COPILOT_CONFIG_DIR / "mcp-config.json"
 COPILOT_BACKUP_PATH = APP_DIR / "copilot-ucode-env.backup"
-COPILOT_MCP_BACKUP_PATH = APP_DIR / "copilot-ucode-mcp-config.backup.json"
+# Older ug versions kept their servers in a side file loaded with `--additional-mcp-config`.
+LEGACY_MCP_CONFIG_PATH = COPILOT_CONFIG_DIR / "ucode-mcp-config.json"
+LEGACY_MCP_BACKUP_PATH = APP_DIR / "copilot-ucode-mcp-config.backup.json"
 COPILOT_PROXY_LOG_PATH = APP_DIR / "logs" / "copilot-proxy.log"
 _REGISTRY_PREFIX = "ug-providers-"
 _REGISTRY_LOCK_NAME = "ug-providers.lock"
@@ -119,6 +123,8 @@ LEGACY_ENV_KEYS = [
 # Earlier versions wrote the Databricks token (or PAT) under these keys.
 CREDENTIAL_ENV_KEYS = ("COPILOT_PROVIDER_BEARER_TOKEN", "OAUTH_TOKEN")
 CATALOG_STATE_KEY = "copilot_catalog"
+# The Copilot CLI version configure found, for the managed-config read's User-Agent.
+VERSION_STATE_KEY = "copilot_cli_version"
 # The Model Provider Service this launch routes through; set by the launch command, never saved.
 LAUNCH_PROVIDER_SERVICE_KEY = "_copilot_launch_provider_service"
 # The Unity Catalog schema whose model services this launch uses; never saved.
@@ -155,26 +161,9 @@ _DOTTED_VERSION_PATTERN = re.compile(r"(?<=\d)\.(?=\d)")
 _O_SERIES_PATTERN = re.compile(r"^o(?=\d)")
 _CLAUDE_CATALOG_VERSION_PATTERN = re.compile(r"^claude-([a-z]+)-(\d+)(?:\.(\d+))?$")
 
-# (maxPromptTokens, maxOutputTokens) by Copilot catalog id. Copilot assumes a 128K prompt for
-# registry models without limits, and its own values differ between versions.
-_CLAUDE_LIMITS: dict[str, tuple[int, int]] = {
-    "claude-fable-5.1": (936_000, 32_000),
-    "claude-fable-5": (936_000, 32_000),
-    "claude-opus-5.5": (936_000, 32_000),
-    "claude-opus-5": (936_000, 32_000),
-    "claude-opus-4.8": (936_000, 32_000),
-    "claude-opus-4.7": (936_000, 32_000),
-    "claude-opus-4.6": (936_000, 32_000),
-    "claude-opus-4.5": (168_000, 32_000),
-    "claude-sonnet-5.5": (872_000, 128_000),
-    "claude-sonnet-5": (936_000, 32_000),
-    "claude-sonnet-4.6": (936_000, 32_000),
-    "claude-sonnet-4.5": (168_000, 32_000),
-    "claude-haiku-4.5": (136_000, 64_000),
-}
-_CLAUDE_1M_LIMITS = (936_000, 32_000)
-_CLAUDE_200K_LIMITS = (168_000, 32_000)
-_CLAUDE_200K_WINDOW = 200_000
+# (max_input_tokens, max_tokens) of Claude models the gateway lists no limits for.
+_CLAUDE_1M_TOKENS = (1_000_000, 128_000)
+_CLAUDE_200K_TOKENS = (200_000, 32_000)
 
 # A Model Provider Service target that declares its APIs is usable only if one is a chat API.
 _CHAT_API_TYPES = frozenset(route for routes in _WIRE_ROUTES.values() for route in routes)
@@ -274,30 +263,29 @@ def copilot_catalog_model_id(model: str) -> str | None:
     return catalog_id
 
 
-def copilot_model_limits(model: str) -> tuple[int, int] | None:
-    """``(maxPromptTokens, maxOutputTokens)`` for a Claude model, or None for other models."""
+def claude_token_limits(model: str) -> tuple[int, int] | None:
+    """``(max_input_tokens, max_tokens)`` of a Claude model by its name, or None for other models."""
     catalog_id = copilot_catalog_model_id(model)
     if catalog_id is None:
         return None
-    if catalog_id in _CLAUDE_LIMITS:
-        return _CLAUDE_LIMITS[catalog_id]
     version = _CLAUDE_CATALOG_VERSION_PATTERN.match(catalog_id)
     if version is None:
-        return _CLAUDE_200K_LIMITS
+        return _CLAUDE_200K_TOKENS
     family, major, minor = version.group(1), int(version.group(2)), int(version.group(3) or 0)
-    one_million = major >= 5 or (family in ("opus", "sonnet") and (major, minor) >= (4, 6))
-    return _CLAUDE_1M_LIMITS if one_million else _CLAUDE_200K_LIMITS
+    if major >= 5 or (family in ("opus", "sonnet") and (major, minor) >= (4, 6)):
+        return _CLAUDE_1M_TOKENS
+    return _CLAUDE_200K_TOKENS
 
 
-def catalog_model_limits(model: CopilotModel, *, external: bool) -> tuple[int, int] | None:
-    """:func:`copilot_model_limits` for a Claude ``model`` of the catalog, or None for others.
+def catalog_model_limits(model: CopilotModel) -> tuple[int, int] | None:
+    """Copilot's ``(maxPromptTokens, maxOutputTokens)`` for ``model``, or None to keep its defaults.
 
-    ``external`` (a Model Provider Service, or a location's model service) caps them at 200K, which
-    such a service may serve instead of the 1M window."""
-    limits = copilot_model_limits(model.id) if model.wire == WIRE_ANTHROPIC else None
-    if limits is not None and external and sum(limits) > _CLAUDE_200K_WINDOW:
-        return _CLAUDE_200K_LIMITS
-    return limits
+    The limits are the ones the gateway listed for the model, else Claude's by name; the prompt
+    leaves room for the output."""
+    limits = model.listed_limits or claude_token_limits(model.id)
+    if limits is None or limits[0] <= limits[1]:
+        return None
+    return limits[0] - limits[1], limits[1]
 
 
 @dataclass(frozen=True)
@@ -306,6 +294,8 @@ class CopilotModel:
 
     id: str
     wire: str
+    # (max_input_tokens, max_tokens) the gateway listed for the model.
+    listed_limits: tuple[int, int] | None = field(default=None, compare=False)
 
     @property
     def provider(self) -> str:
@@ -374,7 +364,7 @@ def provider_service_catalog(
 
     A service that allows every model registers what the gateway lists for it, plus ``requested``
     (the launch's ``--model``) or the managed default, so a model the listing omits can be named.
-    ``tool`` is ``vscode`` for Copilot Chat in VS Code, which has neither."""
+    ``tool`` is ``vscode`` for Copilot Chat in VS Code, which has no ``--model``."""
     workspace = state["workspace"]
     token = launch_token(state, workspace)
     service, error = resolve_provider_service(tool, service_name, workspace, token)
@@ -387,7 +377,7 @@ def provider_service_catalog(
     allow_all = bool(service.get("allow_all_targets"))
     if allow_all:
         start = _without_registry_prefix(requested) if requested else None
-        managed_default = state.get("copilot_default_model") if tool == "copilot" else None
+        managed_default = state.get("copilot_default_model")
         start = start or (managed_default if isinstance(managed_default, str) else None)
         listed, reason = list_provider_service_models(workspace, token, service_name, provider_type)
         if reason and not start:
@@ -429,17 +419,29 @@ def provider_service_catalog(
     return catalog
 
 
-def location_catalog(state: dict, schema: str) -> list[CopilotModel]:
-    """The model services of Unity Catalog schema ``schema`` that this launch registers.
+def gateway_catalog(
+    listing: AnthropicModelCatalog, *, fallback_wire: str | None = None
+) -> list[CopilotModel]:
+    """The models of an AI Gateway Anthropic-route listing Copilot can use, with their limits.
 
     The listing names some services by gateway alias (``anthropic-aigw-<hash>-<name>``); Copilot
     sends the full name, which the gateway routes directly."""
+    limits = {
+        unwrap_anthropic_gateway_model(model): limit
+        for model, limit in listing.model_id_to_limits.items()
+    }
+    models = (unwrap_anthropic_gateway_model(model) for model in listing.model_ids)
+    catalog, _ = build_catalog(((model, ()) for model in models), fallback_wire=fallback_wire)
+    return [replace(model, listed_limits=limits.get(model.id)) for model in catalog]
+
+
+def location_catalog(state: dict, schema: str) -> list[CopilotModel]:
+    """The model services of Unity Catalog schema ``schema`` that this launch registers."""
     workspace = state["workspace"]
     listing = list_anthropic_model_catalog(
         workspace, launch_token(state, workspace), parent_schema=schema
     )
-    models = (unwrap_anthropic_gateway_model(model) for model in listing.model_ids)
-    catalog, _ = build_catalog(((model, ()) for model in models), fallback_wire=WIRE_ANTHROPIC)
+    catalog = gateway_catalog(listing, fallback_wire=WIRE_ANTHROPIC)
     if not catalog:
         reason = f": {listing.error_msg}" if listing.error_msg else ""
         raise RuntimeError(f"Found no model services to use in {schema}{reason}.")
@@ -447,13 +449,19 @@ def location_catalog(state: dict, schema: str) -> list[CopilotModel]:
 
 
 def catalog_from_listings(
-    entries: Iterable[ModelServiceEntry] | None, fallback: Iterable[str]
+    entries: Iterable[ModelServiceEntry] | None,
+    fallback: Iterable[str],
+    gateway: AnthropicModelCatalog | None = None,
 ) -> list[CopilotModel] | None:
     """The Copilot catalog from this run's model listings.
 
-    ``entries`` is the UC model-services listing (None when it failed); ``fallback`` holds the ids
-    the per-family gateway listings found instead. None when neither answered, so the caller keeps
-    the saved catalog; an empty catalog when they answered with nothing Copilot can use."""
+    ``gateway`` is AI Gateway's Anthropic-route listing, which also reports the models' limits; it
+    wins whenever it lists a model Copilot can use. Otherwise ``entries`` is the UC model-services
+    listing (None when it failed) and ``fallback`` holds the ids the per-family gateway listings
+    found instead. None when none answered, so the caller keeps the saved catalog; an empty catalog
+    when they answered with nothing Copilot can use."""
+    if gateway is not None and (gateway_models := gateway_catalog(gateway)):
+        return gateway_models
     listed = list(entries or ())
     fallback_catalog = build_copilot_catalog(list(fallback))
     if not listed:
@@ -470,7 +478,18 @@ def catalog_from_listings(
 def catalog_state(models: list[CopilotModel]) -> dict:
     return {
         "models": [model.id for model in models],
+        "limits": {model.id: list(model.listed_limits) for model in models if model.listed_limits},
         "discovered_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+
+
+def _saved_limits(value: object) -> dict[str, tuple[int, int]]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        model: (limit[0], limit[1])
+        for model, limit in value.items()
+        if isinstance(limit, list) and len(limit) == 2 and all(isinstance(n, int) for n in limit)
     }
 
 
@@ -491,7 +510,11 @@ def copilot_catalog(state: dict) -> list[CopilotModel]:
         return static
     saved = state.get(CATALOG_STATE_KEY)
     if isinstance(saved, dict):
-        return build_copilot_catalog(_string_list(saved.get("models")))
+        limits = _saved_limits(saved.get("limits"))
+        return [
+            replace(model, listed_limits=limits.get(model.id))
+            for model in build_copilot_catalog(_string_list(saved.get("models")))
+        ]
     claude_models = state.get("claude_models")
     legacy = list(claude_models.values()) if isinstance(claude_models, dict) else []
     return build_copilot_catalog([*_string_list(legacy), *_string_list(state.get("codex_models"))])
@@ -634,7 +657,6 @@ def render_providers_config(
     session_secret: str,
     *,
     provider_service: str | None = None,
-    model_location: str | None = None,
 ) -> dict:
     """Copilot's providers.json for ``catalog``: one provider per wire, all on the session proxy.
 
@@ -680,8 +702,7 @@ def render_providers_config(
         catalog_id = copilot_catalog_model_id(model.id) if model.wire == WIRE_ANTHROPIC else None
         if catalog_id is not None:
             entry["modelId"] = catalog_id
-        limits = catalog_model_limits(model, external=bool(provider_service or model_location))
-        if limits is not None:
+        if limits := catalog_model_limits(model):
             entry["maxPromptTokens"], entry["maxOutputTokens"] = limits
         models.append(entry)
     return {"providers": providers, "models": models}
@@ -800,35 +821,90 @@ def build_mcp_server_entry(argv: list[str]) -> dict:
     }
 
 
-def write_mcp_server_config(name: str, argv: list[str]) -> bool:
-    backup_existing_file(COPILOT_MCP_CONFIG_PATH, COPILOT_MCP_BACKUP_PATH)
-    existing = read_json_safe(COPILOT_MCP_CONFIG_PATH)
-    mcp_servers = existing.get("mcpServers")
-    if not isinstance(mcp_servers, dict):
-        mcp_servers = {}
-    removed = name in mcp_servers
-    mcp_servers[name] = build_mcp_server_entry(argv)
-    existing["mcpServers"] = mcp_servers
-    write_json_file(COPILOT_MCP_CONFIG_PATH, existing)
+def copilot_mcp_config_path() -> Path:
+    """The user config Copilot reads ``mcpServers`` from (and ``copilot mcp add`` writes)."""
+    copilot_home = os.environ.get("COPILOT_HOME")
+    return Path(copilot_home) / "mcp-config.json" if copilot_home else COPILOT_MCP_CONFIG_PATH
+
+
+def _read_mcp_config_for_rewrite(path: Path) -> dict | None:
+    """``path`` parsed for a rewrite: ``{}`` when absent, ``None`` when it isn't a JSON object, so
+    a caller never overwrites it. Copilot also accepts JSON with comments, which lands here."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def remove_legacy_mcp_config() -> bool:
+    """Delete the legacy side file and its backup (everything in them is ug's)."""
+    existed = LEGACY_MCP_CONFIG_PATH.exists() or LEGACY_MCP_BACKUP_PATH.exists()
+    if is_dry_run():
+        return existed
+    for path in (LEGACY_MCP_CONFIG_PATH, LEGACY_MCP_BACKUP_PATH):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise RuntimeError(f"Failed to remove {path}") from exc
+    return existed
+
+
+def _read_legacy_mcp_servers() -> dict[str, dict]:
+    """The servers in the legacy side file. Every entry there was written by ug, so it moves into
+    the user config as-is."""
+    servers = read_json_safe(LEGACY_MCP_CONFIG_PATH).get("mcpServers")
+    if not isinstance(servers, dict):
+        return {}
+    return {name: entry for name, entry in servers.items() if isinstance(entry, dict)}
+
+
+def _apply_mcp_diff(add: dict[str, dict], remove: set[str]) -> set[str]:
+    path = copilot_mcp_config_path()
+    config = _read_mcp_config_for_rewrite(path)
+    if config is None:
+        raise RuntimeError(
+            f"{path} isn't plain JSON (it may have comments). Remove the comments, then try "
+            "again; VS Code's local agent also skips the file while it has them."
+        )
+    legacy = _read_legacy_mcp_servers()
+    upserts = {name: entry for name, entry in legacy.items() if name not in remove} | add
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = {}
+    removed = {name for name in remove if name in servers or name in legacy}
+    if upserts or removed:
+        for name in remove:
+            servers.pop(name, None)
+        servers.update(upserts)
+        config["mcpServers"] = servers
+        write_json_file(path, config)
+    remove_legacy_mcp_config()
     return removed
 
 
+def migrate_legacy_mcp_config() -> None:
+    """Move the servers in the legacy side file into the user config, once."""
+    if LEGACY_MCP_CONFIG_PATH.exists() or LEGACY_MCP_BACKUP_PATH.exists():
+        _apply_mcp_diff({}, set())
+
+
+def write_mcp_server_config(name: str, argv: list[str]) -> bool:
+    """Add (or replace) a stdio (`ug mcp-proxy`) MCP server in Copilot's user config. Returns
+    True when an entry of that name was replaced."""
+    return bool(_apply_mcp_diff({name: build_mcp_server_entry(argv)}, {name}))
+
+
 def remove_mcp_server_config(name: str) -> bool:
-    existing = read_json_safe(COPILOT_MCP_CONFIG_PATH)
-    mcp_servers = existing.get("mcpServers")
-    if not isinstance(mcp_servers, dict) or name not in mcp_servers:
-        return False
-    mcp_servers.pop(name)
-    existing["mcpServers"] = mcp_servers
-    write_json_file(COPILOT_MCP_CONFIG_PATH, existing)
-    return True
+    return bool(_apply_mcp_diff({}, {name}))
 
 
 def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
-    """Apply ``add``/``remove`` to Copilot's `mcpServers` in a single read-modify-write. Returns the names actually removed."""
-    return apply_json_mcp_diff(
-        COPILOT_MCP_CONFIG_PATH, "mcpServers", add, remove, backup_path=COPILOT_MCP_BACKUP_PATH
-    )
+    """Apply ``add``/``remove`` to Copilot's user-config ``mcpServers`` in a single
+    read-modify-write. Returns the names actually removed."""
+    return _apply_mcp_diff(add, remove)
 
 
 def scrub_stored_credentials() -> None:
@@ -864,8 +940,22 @@ def write_tool_config(state: dict, model: str | None) -> dict:
     existing["COPILOT_OFFLINE"] = "true"
     write_dotenv(COPILOT_ENV_PATH, existing)
     state = mark_tool_managed(state, "copilot", MANAGED_KEYS)
+    version = agent_version(SPEC["binary"])
+    if version != "unknown":
+        state[VERSION_STATE_KEY] = version
     save_state(state)
     return state
+
+
+def managed_user_agent() -> str | None:
+    """The User-Agent for the Copilot CLI version configure recorded, when Copilot is configured.
+
+    Claude Code and Codex read theirs back from their OS-managed files; Copilot has none."""
+    state = load_state()
+    version = state.get(VERSION_STATE_KEY)
+    if "copilot" not in (state.get("available_tools") or []) or not isinstance(version, str):
+        return None
+    return ucode_user_agent(ug_version(), f"copilot/{version}")
 
 
 def _token_provider(state: dict) -> Callable[[bool], str]:
@@ -873,23 +963,48 @@ def _token_provider(state: dict) -> Callable[[bool], str]:
     return lambda force_refresh: launch_token(state, workspace, force_refresh=force_refresh)
 
 
+# Headers ug sets on Copilot's gateway requests itself, which an admin header must not replace:
+# the credential, the body type, the Model Provider Service and the workspace selection.
+_RESERVED_HEADERS = frozenset(
+    name.casefold()
+    for name in (
+        "Authorization",
+        "Content-Type",
+        MODEL_PROVIDER_SERVICE_HEADER,
+        *SELECTOR_HEADER_NAMES,
+    )
+)
+
+
+def managed_http_headers(state: dict) -> dict[str, str]:
+    """The admin's headers for Copilot's gateway requests, without the ones ug sets itself."""
+    managed = state.get("copilot_http_headers")
+    return {
+        name.strip(): value
+        for name, value in (managed if isinstance(managed, dict) else {}).items()
+        if isinstance(name, str)
+        and isinstance(value, str)
+        and name.strip()
+        and name.strip().casefold() not in _RESERVED_HEADERS
+    }
+
+
 def proxy_headers(state: dict) -> dict[str, str]:
     """Headers the proxy adds to every gateway request; admin-managed headers win by name."""
     headers = {
-        "User-Agent": ucode_user_agent(ug_version(), f"copilot/{agent_version(SPEC['binary'])}")
+        "User-Agent": ucode_user_agent(ug_version(), f"copilot/{agent_version(SPEC['binary'])}"),
+        # Makes the gateway map or drop the Anthropic betas its serving backend lacks. Without it,
+        # Copilot's tool search beta (`advanced-tool-use-2025-11-20`, sent once it has enough MCP
+        # tools) gets a 400 from Claude served through Bedrock.
+        "x-databricks-use-coding-agent-mode": "true",
     }
     request_tags = request_tags_header_value()
     if request_tags:
         headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
-    managed = state.get("copilot_http_headers")
-    for name, value in (managed if isinstance(managed, dict) else {}).items():
-        if not isinstance(name, str) or not isinstance(value, str):
-            continue
-        if name.strip().casefold() == "authorization":
-            continue
-        for existing in [key for key in headers if key.casefold() == name.strip().casefold()]:
+    for name, value in managed_http_headers(state).items():
+        for existing in [key for key in headers if key.casefold() == name.casefold()]:
             headers.pop(existing)
-        headers[name.strip()] = value
+        headers[name] = value
     return headers
 
 
@@ -951,6 +1066,10 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         managed_list=not (provider_service or model_location),
     )
     scrub_stored_credentials()
+    try:
+        migrate_legacy_mcp_config()
+    except RuntimeError as exc:
+        print_warning(f"ug's MCP servers aren't available in this session: {exc}")
 
     # Only Copilot launches need the proxy (and its `httpx` import).
     from ucode import gateway_proxy
@@ -976,7 +1095,6 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
             proxy_base_url,
             session_secret,
             provider_service=provider_service,
-            model_location=model_location,
         )
         wire_override = os.environ.get("COPILOT_PROVIDER_WIRE_MODEL")
         if wire_override:
@@ -986,7 +1104,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         with session_registry(config) as registry_path:
             env = build_runtime_env(registry_path, start_model)
             proc = subprocess_cross_os.popen(
-                [SPEC["binary"], *mcp_config_args(), *tool_args], env=env
+                [SPEC["binary"], *MCP_LAUNCH_ARGS, *tool_args], env=env
             )
             returncode = _wait_for_exit(proc)
     finally:
@@ -1000,14 +1118,13 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
 def validate_cmd(binary: str) -> list[str]:
     return [
         binary,
-        *mcp_config_args(),
+        *MCP_LAUNCH_ARGS,
         "--prompt",
         "say hi in 5 words or less",
         "--allow-all-tools",
     ]
 
 
-def mcp_config_args() -> list[str]:
-    if not COPILOT_MCP_CONFIG_PATH.exists():
-        return []
-    return ["--additional-mcp-config", f"@{COPILOT_MCP_CONFIG_PATH}"]
+# Offline mode empties Copilot's allowlist of servers whose `instructions` reach the model, so
+# without this the gateway's servers lose theirs.
+MCP_LAUNCH_ARGS = ("--allow-all-mcp-server-instructions",)
