@@ -67,14 +67,14 @@ def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspa
     )
     servers = managed.get("mcp_servers") or {}
     entries = {name: entry for name, entry in servers.items() if "github" in name.lower()}
-    assert entries, managed
-    assert len(entries) == 1, entries
-    entry = next(iter(entries.values()))
-    service_url = f"{workspace.rstrip('/')}/ai-gateway/mcp-services/system.ai.github"
-    assert entry["url"] == service_url, entry
-    assert entry["oauth_resource"] == service_url, entry
-    assert entry["oauth"]["client_id"] == "https://chatgpt.com/oauth/codex/client.json", entry
-    assert "command" not in entry and "args" not in entry, entry
+    url = f"{workspace.rstrip('/')}/ai-gateway/mcp-services/system.ai.github"
+    assert entries == {
+        "system-ai-github": {
+            "url": url,
+            "oauth_resource": url,
+            "oauth": {"client_id": "https://chatgpt.com/oauth/codex/client.json"},
+        },
+    }, servers
 
     personal_path = session.home / ".codex" / "config.toml"
     personal = tomllib.loads(personal_path.read_text()) if personal_path.exists() else {}
