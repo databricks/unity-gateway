@@ -346,6 +346,7 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(native_b
 event = json.load(sys.stdin)
 updated = {key: value for key, value in event["tool_input"].items() if key != "model"}
 updated["subagent_type"] = sys.argv[2]
+updated["prompt"] = "Routed prompt"
 print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                   "updatedInput": updated}))
 """
@@ -369,6 +370,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
             server.message_count = 0
             server.classifier_requests = 0
             server.verdict = verdict
+            debug_file = root / "debug.log"
             result = subprocess.run(
                 [
                     native_binary,
@@ -391,7 +393,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     "stream-json",
                     "--verbose",
                     "--debug-file",
-                    str(root / "debug.log"),
+                    str(debug_file),
                     "Use a subagent to return 10, with no tools.",
                 ],
                 cwd=root,
@@ -413,6 +415,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                 timeout=45,
             )
             assert result.returncode == 0, result.stderr
+            debug_log = debug_file.read_text(encoding="utf-8")
             events = [
                 json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")
             ]
@@ -445,7 +448,11 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     event.get("subagent_stats", {}).get("by_type", {}).get("general-purpose") == 1
                     for event in results
                 ), results
-                assert "next() passed an argument with a changed name" not in result.stderr
+                warning = "next() passed an argument with a changed name"
+                assert warning not in result.stderr + debug_log, {
+                    "stderr": result.stderr,
+                    "debug_log": debug_log,
+                }
             else:
                 assert denials, results
                 assert spawned == 0, results

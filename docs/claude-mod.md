@@ -19,7 +19,9 @@ The same entry point routes Agent/Task calls in a native `tool.call` hook. It pi
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
 the `routeCommand` plugin option, and continues with the original input. The matching
 `agent.spawn` hook applies only the selected model, preserving the agent's type, prompt,
-name and permissions. Forks and resumed agents keep their native model. This preserves
+name and permissions. The routing response contains only `model` and `rationale`;
+the model retains Claude's `[1m]` context hint for eligible GPT models.
+Forks and resumed agents keep their native model. This preserves
 auto mode's review of the tool input instead of invalidating it with a routing rewrite.
 The display label uses a random animal from a list of 100, without repeats until the list
 is exhausted; later cycles append `2`, `3`, and so on. Each call keeps its name while

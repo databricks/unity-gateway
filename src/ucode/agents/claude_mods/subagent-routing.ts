@@ -137,8 +137,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       route = result.stdout.trim() ? JSON.parse(result.stdout) : undefined
       if (route !== undefined && (
           typeof route?.model !== 'string' || !route.model ||
-          typeof route.rationale !== 'string' ||
-          typeof route.updatedInput?.subagent_type !== 'string' || !route.updatedInput.subagent_type)) {
+          typeof route.rationale !== 'string')) {
         throw new Error('Invalid routing response')
       }
     } catch {

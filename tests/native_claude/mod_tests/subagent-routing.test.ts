@@ -27,7 +27,6 @@ test('animal names stay distinct and stable without changing routed calls or row
     expect(JSON.parse(event.init.stdin).tool_input).toEqual(input);
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model: 'system.ai.claude-haiku-5-5', rationale: 'Selected for the task',
-      updatedInput: { ...input, subagent_type: 'ug-smart-router:ucode-route-haiku-hash' },
     }) } };
   });
   on('tool.call', ($, event) => { forwarded.push(event); return { result: 'ok' }; });
@@ -67,12 +66,11 @@ test('routing changes only the matching spawn model and joins its display name t
   const shown = new Map<string, string>();
   let failWrite = false;
   const logs: string[] = [];
+  const routedModel = 'system.ai.gpt-5-6-sol[1m]';
   on('session.id', () => ({ value: 'session-1' }));
-  on('process.run', ($, e) => {
-    const { tool_input } = JSON.parse(e.init.stdin);
+  on('process.run', () => {
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-      model: 'system.ai.claude-sonnet-5', rationale: 'Selected for the task',
-      updatedInput: tool_input,
+      model: routedModel, rationale: 'Selected for the task',
     }) } };
   });
   on('tool.call', () => ({ result: 'ok' }));
@@ -107,7 +105,7 @@ test('routing changes only the matching spawn model and joins its display name t
     };
     const result = await $.agent.spawn(spawn);
     expect(forwarded[forwarded.length - 1]).toEqual(id === 'unrouted' ? spawn
-      : { ...spawn, model: 'system.ai.claude-sonnet-5' });
+      : { ...spawn, model: routedModel });
     expect(result).toEqual(id === 'denied' ? { deny: 'Permission denied' }
       : { model: 'claude-sonnet-5', agentId: `child-${id}` });
   }
@@ -127,7 +125,7 @@ test('routing changes only the matching spawn model and joins its display name t
   expect(logs).toEqual(['Could not save the subagent display name; its bottom bar will use the native label.']);
 });
 
-test('a lone call keeps its decision under its own row and draws no card', async ($, on) => {
+test('a lone call ignores extra updatedInput and keeps its decision under its own row', async ($, on) => {
   const calls: any[] = [];
   const logs: string[] = [];
   on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
@@ -141,7 +139,13 @@ test('a lone call keeps its decision under its own row and draws no card', async
     const model = payload.tool_use_id === 'call-a' ? 'system.ai.claude-sonnet-5' : 'system.ai.claude-opus-4-8';
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model, rationale: `Selected for ${payload.tool_use_id}`,
-      updatedInput: { prompt: originalInput.prompt, description: originalInput.description, subagent_type: `ug-smart-router:${payload.tool_use_id}` },
+      updatedInput: {
+        ...payload.tool_input,
+        prompt: 'Routed prompt',
+        description: 'Routed description',
+        subagent_type: `ug-smart-router:${payload.tool_use_id}`,
+        model: 'malicious-model',
+      },
     }) } };
   });
   on('tool.call', ($, e) => { calls.push(e); return { result: 'ok' }; });
@@ -192,7 +196,6 @@ test('parallel cards keep call order, skip replies drawn earlier, and wait for r
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model: tool_use_id === 'call-a' ? 'system.ai.claude-sonnet-5' : 'system.ai.claude-opus-4-8',
       rationale: `Selected for ${tool_input.description}`,
-      updatedInput: { ...tool_input, subagent_type: `ug-smart-router:${tool_use_id}` },
     }) } };
   });
   on('tool.call', ($, e) => {
@@ -245,14 +248,13 @@ test('an aborted turn leaves no card for the next turn, but a finished one keeps
   const bothStarted = new Promise<void>((resolve) => { started = resolve; });
   on('session.id', () => ({ value: 'session-1' }));
   on('process.run', async ($, e) => {
-    const { tool_use_id, tool_input } = JSON.parse(e.init.stdin);
+    const { tool_use_id } = JSON.parse(e.init.stdin);
     await new Promise<void>((resolve) => {
       gates.set(tool_use_id, resolve);
       if (gates.size === 2) started();
     });
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model: 'system.ai.claude-sonnet-5', rationale: `Selected for ${tool_use_id}`,
-      updatedInput: { ...tool_input, subagent_type: `ug-smart-router:${tool_use_id}` },
     }) } };
   });
   on('tool.call', () => ({ result: 'ok' }));
@@ -283,14 +285,13 @@ test('a turn that ends while the reply waits on a background agent keeps its car
   const bothStarted = new Promise<void>((resolve) => { started = resolve; });
   on('session.id', () => ({ value: 'session-1' }));
   on('process.run', async ($, e) => {
-    const { tool_use_id, tool_input } = JSON.parse(e.init.stdin);
+    const { tool_use_id } = JSON.parse(e.init.stdin);
     await new Promise<void>((resolve) => {
       gates.set(tool_use_id, resolve);
       if (gates.size === 2) started();
     });
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model: 'system.ai.claude-sonnet-5', rationale: `Selected for ${tool_use_id}`,
-      updatedInput: { ...tool_input, subagent_type: `ug-smart-router:${tool_use_id}` },
     }) } };
   });
   on('tool.call', () => ({ result: 'ok' }));
@@ -322,7 +323,10 @@ for (const [name, result, warningCount] of [
   ['disabled', { value: { exitCode: 0, stdout: '', stderr: '' } }, 0],
   ['command failure', { value: { exitCode: 1, stdout: '', stderr: 'failure' } }, 1],
   ['invalid JSON', { value: { exitCode: 0, stdout: 'invalid', stderr: '' } }, 1],
-  ['invalid response', { value: { exitCode: 0, stdout: '{}', stderr: '' } }, 1],
+  ['missing model', { value: { exitCode: 0, stdout: JSON.stringify({ rationale: 'Selected' }), stderr: '' } }, 1],
+  ['invalid model', { value: { exitCode: 0, stdout: JSON.stringify({ model: 42, rationale: 'Selected' }), stderr: '' } }, 1],
+  ['missing rationale', { value: { exitCode: 0, stdout: JSON.stringify({ model: 'system.ai.claude-sonnet-5' }), stderr: '' } }, 1],
+  ['invalid rationale', { value: { exitCode: 0, stdout: JSON.stringify({ model: 'system.ai.claude-sonnet-5', rationale: 42 }), stderr: '' } }, 1],
   ['process unavailable', { deny: 'process unavailable' }, 1],
 ] as const) {
   test(`${name} forwards the original call without a routing annotation`, async ($, on) => {
@@ -358,7 +362,6 @@ test('a waiting call shows a spinner on its row and its card keeps the routing t
     await routed;
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model: 'system.ai.claude-sonnet-5', rationale: 'Small task',
-      updatedInput: { prompt: originalInput.prompt, subagent_type: 'ug-smart-router:haiku' },
     }) } };
   });
   on('tool.call', () => ({ result: 'ok' }));
@@ -426,9 +429,8 @@ test('fork and resumed calls retain their native model without requesting a rout
 test('a name the call gave is kept as the routed agent name', async ($, on) => {
   const forwarded: any[] = [];
   on('session.id', () => ({ value: 'session-1' }));
-  on('process.run', ($, event) => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
     model: 'system.ai.claude-haiku-5-5', rationale: 'Selected for the task',
-    updatedInput: { ...JSON.parse(event.init.stdin).tool_input, subagent_type: 'ug-smart-router:haiku' },
   }) } }));
   on('tool.call', ($, event) => { forwarded.push(event); return { result: 'ok' }; });
   await $.tool.call({ tool: 'Agent', tool_use_id: 'named', ...originalInput, name: 'scout' });
