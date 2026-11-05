@@ -815,6 +815,14 @@ skip the routed launch path (no Smart Router skills or hooks) and the hook-revie
 Claude, routing versions, `--disable-smart-routing`, plain launches, and native subcommands do
 not warn. The live Codex managed-default journey also requires the workspace warning text.
 
+`test_smart_routing_launch_matrix.py` pins 792 launches in `fixtures/smart_routing_launch_matrix.tsv`:
+`ug claude`, `ug codex`, `ug gemini`, and bare `ug`, across interactive, prompt, print, native
+subcommand, `--model`, and `--provider` shapes, the launch flag, the admin config, and twelve
+routing env setups including Isaac's. Each row records the result, routing mode, routing env and
+version the agent starts with, whether Codex config is written with routing on, and the hook note.
+Auth, discovery, config writing, and the agent process are stubbed, so this is component coverage.
+Regenerate with `UPDATE_SMART_ROUTING_LAUNCH_MATRIX=1` and review the table diff.
+
 The toggle integration journeys retain the legacy routing-only and orchestration cases and
 add the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only
 `smart-router` for routing-only cases, and both bundled skills when orchestration is enabled;

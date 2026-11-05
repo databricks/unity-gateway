@@ -1,0 +1,793 @@
+command	env	admin smart routing	result	routing	V2/SUB/ORCH at launch	version at launch	codex config written with routing	hook note
+ug claude	none	no admin config	launched	off	-/-/-	-	-	no
+ug claude	none	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	none	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	none	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing	none	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing	none	on	launched	off	0/0/0	-	-	no
+ug claude -- "fix the test"	none	no admin config	launched	off	-/-/-	-	-	no
+ug claude -- "fix the test"	none	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	none	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	none	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -- "fix the test"	none	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -- "fix the test"	none	on	launched	off	0/0/0	-	-	no
+ug claude -p "fix the test"	none	no admin config	launched	off	-/-/-	-	-	no
+ug claude -p "fix the test"	none	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	none	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	none	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -p "fix the test"	none	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -p "fix the test"	none	on	launched	off	0/0/0	-	-	no
+ug claude update	none	no admin config	launched	off	-/-/-	-	-	no
+ug claude update	none	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing update	none	no admin config	launched	off	-/-/-	-	-	no
+ug claude --enable-smart-routing update	none	on	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	none	no admin config	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	none	on	launched	off	-/-/-	-	-	no
+ug claude --model databricks-claude-sonnet-4	none	no admin config	launched	off	-/-/-	-	-	no
+ug claude --model databricks-claude-sonnet-4	none	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	none	no admin config	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	none	on	launched	off	0/1/1	-	-	yes
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	none	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	none	on	launched	off	0/0/0	-	-	no
+ug claude --provider svc	none	no admin config	launched	off	-/-/-	-	-	no
+ug claude --enable-smart-routing --provider svc	none	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --disable-smart-routing --provider svc	none	no admin config	launched	off	0/0/0	-	-	no
+ug codex	none	no admin config	launched	off	-/-/-	-	off	no
+ug codex	none	on	launched	subagents, orchestrator	0/1/1	-	off	yes
+ug codex --enable-smart-routing	none	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing	none	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing	none	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing	none	on	launched	off	0/0/0	-	off	no
+ug codex -- "fix the test"	none	no admin config	launched	off	-/-/-	-	off	no
+ug codex -- "fix the test"	none	on	launched	subagents, orchestrator	0/1/1	-	off	yes
+ug codex --enable-smart-routing -- "fix the test"	none	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing -- "fix the test"	none	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing -- "fix the test"	none	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing -- "fix the test"	none	on	launched	off	0/0/0	-	off	no
+ug codex app	none	no admin config	launched	off	-/-/-	-	off	no
+ug codex app	none	on	launched	off	0/1/1	-	off	yes
+ug codex --enable-smart-routing app	none	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing app	none	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	none	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	none	on	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	none	no admin config	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	none	on	launched	off	0/1/1	-	off	yes
+ug codex --enable-smart-routing --model gpt-5.5	none	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing --model gpt-5.5	none	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	none	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	none	on	launched	off	-/-/-	-	off	no
+ug codex --provider svc	none	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing --provider svc	none	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug codex --disable-smart-routing --provider svc	none	no admin config	launched	off	0/0/0	-	off	no
+ug gemini	none	no admin config	launched	off	-/-/-	-	-	no
+ug gemini	none	on	launched	off	-/-/-	subagent_orch_v0	-	no
+ug (admin agent claude)	none	off	launched	off	-/-/-	-	-	no
+ug (admin agent claude)	none	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug (admin agent codex)	none	off	launched	off	-/-/-	-	off	no
+ug (admin agent codex)	none	on	launched	subagents, orchestrator	0/1/1	-	off	yes
+ug claude	V2=1	no admin config	launched	first prompt, subagents	1/-/-	-	-	yes
+ug claude	V2=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	V2=1	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	V2=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing	V2=1	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing	V2=1	on	launched	off	0/0/0	-	-	no
+ug claude -- "fix the test"	V2=1	no admin config	launched	first prompt, subagents	1/-/-	-	-	yes
+ug claude -- "fix the test"	V2=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	V2=1	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	V2=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -- "fix the test"	V2=1	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -- "fix the test"	V2=1	on	launched	off	0/0/0	-	-	no
+ug claude -p "fix the test"	V2=1	no admin config	launched	first prompt, subagents	1/-/-	-	-	yes
+ug claude -p "fix the test"	V2=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	V2=1	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	V2=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -p "fix the test"	V2=1	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -p "fix the test"	V2=1	on	launched	off	0/0/0	-	-	no
+ug claude update	V2=1	no admin config	launched	off	-/-/-	-	-	no
+ug claude update	V2=1	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing update	V2=1	no admin config	launched	off	-/-/-	-	-	no
+ug claude --enable-smart-routing update	V2=1	on	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	V2=1	no admin config	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	V2=1	on	launched	off	-/-/-	-	-	no
+ug claude --model databricks-claude-sonnet-4	V2=1	no admin config	launched	off	1/-/-	-	-	yes
+ug claude --model databricks-claude-sonnet-4	V2=1	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	V2=1	no admin config	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	V2=1	on	launched	off	0/1/1	-	-	yes
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	V2=1	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	V2=1	on	launched	off	0/0/0	-	-	no
+ug claude --provider svc	V2=1	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --enable-smart-routing --provider svc	V2=1	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --disable-smart-routing --provider svc	V2=1	no admin config	launched	off	0/0/0	-	-	no
+ug codex	V2=1	no admin config	launched	first prompt, subagents	1/-/-	-	on	yes
+ug codex	V2=1	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing	V2=1	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing	V2=1	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing	V2=1	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing	V2=1	on	launched	off	0/0/0	-	off	no
+ug codex -- "fix the test"	V2=1	no admin config	launched	first prompt, subagents	1/-/-	-	on	yes
+ug codex -- "fix the test"	V2=1	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing -- "fix the test"	V2=1	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing -- "fix the test"	V2=1	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing -- "fix the test"	V2=1	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing -- "fix the test"	V2=1	on	launched	off	0/0/0	-	off	no
+ug codex app	V2=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex app	V2=1	on	launched	off	0/1/1	-	off	yes
+ug codex --enable-smart-routing app	V2=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing app	V2=1	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	V2=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	V2=1	on	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	V2=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	V2=1	on	launched	off	0/1/1	-	off	yes
+ug codex --enable-smart-routing --model gpt-5.5	V2=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing --model gpt-5.5	V2=1	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	V2=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	V2=1	on	launched	off	-/-/-	-	off	no
+ug codex --provider svc	V2=1	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug codex --enable-smart-routing --provider svc	V2=1	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug codex --disable-smart-routing --provider svc	V2=1	no admin config	launched	off	0/0/0	-	off	no
+ug gemini	V2=1	no admin config	launched	off	1/-/-	-	-	no
+ug gemini	V2=1	on	launched	off	1/-/-	subagent_orch_v0	-	no
+ug (admin agent claude)	V2=1	off	launched	first prompt, subagents	1/-/-	-	-	yes
+ug (admin agent claude)	V2=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug (admin agent codex)	V2=1	off	launched	first prompt, subagents	1/-/-	-	on	yes
+ug (admin agent codex)	V2=1	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug claude	V2=0	no admin config	launched	off	0/-/-	-	-	no
+ug claude	V2=0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	V2=0	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	V2=0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing	V2=0	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing	V2=0	on	launched	off	0/0/0	-	-	no
+ug claude -- "fix the test"	V2=0	no admin config	launched	off	0/-/-	-	-	no
+ug claude -- "fix the test"	V2=0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	V2=0	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	V2=0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -- "fix the test"	V2=0	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -- "fix the test"	V2=0	on	launched	off	0/0/0	-	-	no
+ug claude -p "fix the test"	V2=0	no admin config	launched	off	0/-/-	-	-	no
+ug claude -p "fix the test"	V2=0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	V2=0	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	V2=0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -p "fix the test"	V2=0	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -p "fix the test"	V2=0	on	launched	off	0/0/0	-	-	no
+ug claude update	V2=0	no admin config	launched	off	-/-/-	-	-	no
+ug claude update	V2=0	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing update	V2=0	no admin config	launched	off	-/-/-	-	-	no
+ug claude --enable-smart-routing update	V2=0	on	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	V2=0	no admin config	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	V2=0	on	launched	off	-/-/-	-	-	no
+ug claude --model databricks-claude-sonnet-4	V2=0	no admin config	launched	off	0/-/-	-	-	no
+ug claude --model databricks-claude-sonnet-4	V2=0	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	V2=0	no admin config	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	V2=0	on	launched	off	0/1/1	-	-	yes
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	V2=0	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	V2=0	on	launched	off	0/0/0	-	-	no
+ug claude --provider svc	V2=0	no admin config	launched	off	0/-/-	-	-	no
+ug claude --enable-smart-routing --provider svc	V2=0	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --disable-smart-routing --provider svc	V2=0	no admin config	launched	off	0/0/0	-	-	no
+ug codex	V2=0	no admin config	launched	off	0/-/-	-	off	no
+ug codex	V2=0	on	launched	subagents, orchestrator	0/1/1	-	off	yes
+ug codex --enable-smart-routing	V2=0	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing	V2=0	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing	V2=0	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing	V2=0	on	launched	off	0/0/0	-	off	no
+ug codex -- "fix the test"	V2=0	no admin config	launched	off	0/-/-	-	off	no
+ug codex -- "fix the test"	V2=0	on	launched	subagents, orchestrator	0/1/1	-	off	yes
+ug codex --enable-smart-routing -- "fix the test"	V2=0	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing -- "fix the test"	V2=0	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing -- "fix the test"	V2=0	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing -- "fix the test"	V2=0	on	launched	off	0/0/0	-	off	no
+ug codex app	V2=0	no admin config	launched	off	-/-/-	-	off	no
+ug codex app	V2=0	on	launched	off	0/1/1	-	off	yes
+ug codex --enable-smart-routing app	V2=0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing app	V2=0	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	V2=0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	V2=0	on	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	V2=0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	V2=0	on	launched	off	0/1/1	-	off	yes
+ug codex --enable-smart-routing --model gpt-5.5	V2=0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing --model gpt-5.5	V2=0	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	V2=0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	V2=0	on	launched	off	-/-/-	-	off	no
+ug codex --provider svc	V2=0	no admin config	launched	off	0/-/-	-	off	no
+ug codex --enable-smart-routing --provider svc	V2=0	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug codex --disable-smart-routing --provider svc	V2=0	no admin config	launched	off	0/0/0	-	off	no
+ug gemini	V2=0	no admin config	launched	off	0/-/-	-	-	no
+ug gemini	V2=0	on	launched	off	0/-/-	subagent_orch_v0	-	no
+ug (admin agent claude)	V2=0	off	launched	off	0/-/-	-	-	no
+ug (admin agent claude)	V2=0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug (admin agent codex)	V2=0	off	launched	off	0/-/-	-	off	no
+ug (admin agent codex)	V2=0	on	launched	subagents, orchestrator	0/1/1	-	off	yes
+ug claude	SUB=0	no admin config	launched	off	-/0/-	-	-	no
+ug claude	SUB=0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	SUB=0	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	SUB=0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing	SUB=0	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing	SUB=0	on	launched	off	0/0/0	-	-	no
+ug claude -- "fix the test"	SUB=0	no admin config	launched	off	-/0/-	-	-	no
+ug claude -- "fix the test"	SUB=0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	SUB=0	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	SUB=0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -- "fix the test"	SUB=0	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -- "fix the test"	SUB=0	on	launched	off	0/0/0	-	-	no
+ug claude -p "fix the test"	SUB=0	no admin config	launched	off	-/0/-	-	-	no
+ug claude -p "fix the test"	SUB=0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	SUB=0	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	SUB=0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -p "fix the test"	SUB=0	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -p "fix the test"	SUB=0	on	launched	off	0/0/0	-	-	no
+ug claude update	SUB=0	no admin config	launched	off	-/-/-	-	-	no
+ug claude update	SUB=0	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing update	SUB=0	no admin config	launched	off	-/-/-	-	-	no
+ug claude --enable-smart-routing update	SUB=0	on	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	SUB=0	no admin config	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	SUB=0	on	launched	off	-/-/-	-	-	no
+ug claude --model databricks-claude-sonnet-4	SUB=0	no admin config	launched	off	-/0/-	-	-	no
+ug claude --model databricks-claude-sonnet-4	SUB=0	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	SUB=0	no admin config	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	SUB=0	on	launched	off	0/1/1	-	-	yes
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	SUB=0	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	SUB=0	on	launched	off	0/0/0	-	-	no
+ug claude --provider svc	SUB=0	no admin config	launched	off	-/0/-	-	-	no
+ug claude --enable-smart-routing --provider svc	SUB=0	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --disable-smart-routing --provider svc	SUB=0	no admin config	launched	off	0/0/0	-	-	no
+ug codex	SUB=0	no admin config	launched	off	-/0/-	-	off	no
+ug codex	SUB=0	on	launched	subagents, orchestrator	0/1/1	-	off	yes
+ug codex --enable-smart-routing	SUB=0	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing	SUB=0	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing	SUB=0	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing	SUB=0	on	launched	off	0/0/0	-	off	no
+ug codex -- "fix the test"	SUB=0	no admin config	launched	off	-/0/-	-	off	no
+ug codex -- "fix the test"	SUB=0	on	launched	subagents, orchestrator	0/1/1	-	off	yes
+ug codex --enable-smart-routing -- "fix the test"	SUB=0	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing -- "fix the test"	SUB=0	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing -- "fix the test"	SUB=0	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing -- "fix the test"	SUB=0	on	launched	off	0/0/0	-	off	no
+ug codex app	SUB=0	no admin config	launched	off	-/-/-	-	off	no
+ug codex app	SUB=0	on	launched	off	0/1/1	-	off	yes
+ug codex --enable-smart-routing app	SUB=0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing app	SUB=0	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	SUB=0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	SUB=0	on	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	SUB=0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	SUB=0	on	launched	off	0/1/1	-	off	yes
+ug codex --enable-smart-routing --model gpt-5.5	SUB=0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing --model gpt-5.5	SUB=0	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	SUB=0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	SUB=0	on	launched	off	-/-/-	-	off	no
+ug codex --provider svc	SUB=0	no admin config	launched	off	-/0/-	-	off	no
+ug codex --enable-smart-routing --provider svc	SUB=0	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug codex --disable-smart-routing --provider svc	SUB=0	no admin config	launched	off	0/0/0	-	off	no
+ug gemini	SUB=0	no admin config	launched	off	-/0/-	-	-	no
+ug gemini	SUB=0	on	launched	off	-/0/-	subagent_orch_v0	-	no
+ug (admin agent claude)	SUB=0	off	launched	off	-/0/-	-	-	no
+ug (admin agent claude)	SUB=0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug (admin agent codex)	SUB=0	off	launched	off	-/0/-	-	off	no
+ug (admin agent codex)	SUB=0	on	launched	subagents, orchestrator	0/1/1	-	off	yes
+ug claude	ORCH=1	no admin config	launched	off	-/-/1	-	-	no
+ug claude	ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	ORCH=1	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing	ORCH=1	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing	ORCH=1	on	launched	off	0/0/0	-	-	no
+ug claude -- "fix the test"	ORCH=1	no admin config	launched	off	-/-/1	-	-	no
+ug claude -- "fix the test"	ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	ORCH=1	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -- "fix the test"	ORCH=1	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -- "fix the test"	ORCH=1	on	launched	off	0/0/0	-	-	no
+ug claude -p "fix the test"	ORCH=1	no admin config	launched	off	-/-/1	-	-	no
+ug claude -p "fix the test"	ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	ORCH=1	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -p "fix the test"	ORCH=1	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -p "fix the test"	ORCH=1	on	launched	off	0/0/0	-	-	no
+ug claude update	ORCH=1	no admin config	launched	off	-/-/-	-	-	no
+ug claude update	ORCH=1	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing update	ORCH=1	no admin config	launched	off	-/-/-	-	-	no
+ug claude --enable-smart-routing update	ORCH=1	on	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	ORCH=1	no admin config	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	ORCH=1	on	launched	off	-/-/-	-	-	no
+ug claude --model databricks-claude-sonnet-4	ORCH=1	no admin config	launched	off	-/-/1	-	-	no
+ug claude --model databricks-claude-sonnet-4	ORCH=1	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	ORCH=1	no admin config	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	ORCH=1	on	launched	off	0/1/1	-	-	yes
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	ORCH=1	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	ORCH=1	on	launched	off	0/0/0	-	-	no
+ug claude --provider svc	ORCH=1	no admin config	launched	off	-/-/1	-	-	no
+ug claude --enable-smart-routing --provider svc	ORCH=1	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --disable-smart-routing --provider svc	ORCH=1	no admin config	launched	off	0/0/0	-	-	no
+ug codex	ORCH=1	no admin config	launched	off	-/-/1	-	off	no
+ug codex	ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	off	yes
+ug codex --enable-smart-routing	ORCH=1	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing	ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing	ORCH=1	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing	ORCH=1	on	launched	off	0/0/0	-	off	no
+ug codex -- "fix the test"	ORCH=1	no admin config	launched	off	-/-/1	-	off	no
+ug codex -- "fix the test"	ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	off	yes
+ug codex --enable-smart-routing -- "fix the test"	ORCH=1	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing -- "fix the test"	ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing -- "fix the test"	ORCH=1	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing -- "fix the test"	ORCH=1	on	launched	off	0/0/0	-	off	no
+ug codex app	ORCH=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex app	ORCH=1	on	launched	off	0/1/1	-	off	yes
+ug codex --enable-smart-routing app	ORCH=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing app	ORCH=1	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	ORCH=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	ORCH=1	on	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	ORCH=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	ORCH=1	on	launched	off	0/1/1	-	off	yes
+ug codex --enable-smart-routing --model gpt-5.5	ORCH=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing --model gpt-5.5	ORCH=1	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	ORCH=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	ORCH=1	on	launched	off	-/-/-	-	off	no
+ug codex --provider svc	ORCH=1	no admin config	launched	off	-/-/1	-	off	no
+ug codex --enable-smart-routing --provider svc	ORCH=1	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug codex --disable-smart-routing --provider svc	ORCH=1	no admin config	launched	off	0/0/0	-	off	no
+ug gemini	ORCH=1	no admin config	launched	off	-/-/1	-	-	no
+ug gemini	ORCH=1	on	launched	off	-/-/1	subagent_orch_v0	-	no
+ug (admin agent claude)	ORCH=1	off	launched	off	-/-/1	-	-	no
+ug (admin agent claude)	ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug (admin agent codex)	ORCH=1	off	launched	off	-/-/1	-	off	no
+ug (admin agent codex)	ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	off	yes
+ug claude	V2=0 SUB=1 ORCH=1	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude	V2=0 SUB=1 ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	V2=0 SUB=1 ORCH=1	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	V2=0 SUB=1 ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing	V2=0 SUB=1 ORCH=1	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing	V2=0 SUB=1 ORCH=1	on	launched	off	0/0/0	-	-	no
+ug claude -- "fix the test"	V2=0 SUB=1 ORCH=1	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude -- "fix the test"	V2=0 SUB=1 ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	V2=0 SUB=1 ORCH=1	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	V2=0 SUB=1 ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -- "fix the test"	V2=0 SUB=1 ORCH=1	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -- "fix the test"	V2=0 SUB=1 ORCH=1	on	launched	off	0/0/0	-	-	no
+ug claude -p "fix the test"	V2=0 SUB=1 ORCH=1	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude -p "fix the test"	V2=0 SUB=1 ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	V2=0 SUB=1 ORCH=1	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	V2=0 SUB=1 ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -p "fix the test"	V2=0 SUB=1 ORCH=1	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -p "fix the test"	V2=0 SUB=1 ORCH=1	on	launched	off	0/0/0	-	-	no
+ug claude update	V2=0 SUB=1 ORCH=1	no admin config	launched	off	-/-/-	-	-	no
+ug claude update	V2=0 SUB=1 ORCH=1	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing update	V2=0 SUB=1 ORCH=1	no admin config	launched	off	-/-/-	-	-	no
+ug claude --enable-smart-routing update	V2=0 SUB=1 ORCH=1	on	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	V2=0 SUB=1 ORCH=1	no admin config	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	V2=0 SUB=1 ORCH=1	on	launched	off	-/-/-	-	-	no
+ug claude --model databricks-claude-sonnet-4	V2=0 SUB=1 ORCH=1	no admin config	launched	off	0/1/1	-	-	yes
+ug claude --model databricks-claude-sonnet-4	V2=0 SUB=1 ORCH=1	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	V2=0 SUB=1 ORCH=1	no admin config	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	V2=0 SUB=1 ORCH=1	on	launched	off	0/1/1	-	-	yes
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	V2=0 SUB=1 ORCH=1	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	V2=0 SUB=1 ORCH=1	on	launched	off	0/0/0	-	-	no
+ug claude --provider svc	V2=0 SUB=1 ORCH=1	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --enable-smart-routing --provider svc	V2=0 SUB=1 ORCH=1	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --disable-smart-routing --provider svc	V2=0 SUB=1 ORCH=1	no admin config	launched	off	0/0/0	-	-	no
+ug codex	V2=0 SUB=1 ORCH=1	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex	V2=0 SUB=1 ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing	V2=0 SUB=1 ORCH=1	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing	V2=0 SUB=1 ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing	V2=0 SUB=1 ORCH=1	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing	V2=0 SUB=1 ORCH=1	on	launched	off	0/0/0	-	off	no
+ug codex -- "fix the test"	V2=0 SUB=1 ORCH=1	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex -- "fix the test"	V2=0 SUB=1 ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing -- "fix the test"	V2=0 SUB=1 ORCH=1	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing -- "fix the test"	V2=0 SUB=1 ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing -- "fix the test"	V2=0 SUB=1 ORCH=1	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing -- "fix the test"	V2=0 SUB=1 ORCH=1	on	launched	off	0/0/0	-	off	no
+ug codex app	V2=0 SUB=1 ORCH=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex app	V2=0 SUB=1 ORCH=1	on	launched	off	0/1/1	-	off	yes
+ug codex --enable-smart-routing app	V2=0 SUB=1 ORCH=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing app	V2=0 SUB=1 ORCH=1	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	V2=0 SUB=1 ORCH=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	V2=0 SUB=1 ORCH=1	on	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	V2=0 SUB=1 ORCH=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	V2=0 SUB=1 ORCH=1	on	launched	off	0/1/1	-	off	yes
+ug codex --enable-smart-routing --model gpt-5.5	V2=0 SUB=1 ORCH=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing --model gpt-5.5	V2=0 SUB=1 ORCH=1	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	V2=0 SUB=1 ORCH=1	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	V2=0 SUB=1 ORCH=1	on	launched	off	-/-/-	-	off	no
+ug codex --provider svc	V2=0 SUB=1 ORCH=1	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug codex --enable-smart-routing --provider svc	V2=0 SUB=1 ORCH=1	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug codex --disable-smart-routing --provider svc	V2=0 SUB=1 ORCH=1	no admin config	launched	off	0/0/0	-	off	no
+ug gemini	V2=0 SUB=1 ORCH=1	no admin config	launched	off	0/1/1	-	-	no
+ug gemini	V2=0 SUB=1 ORCH=1	on	launched	off	0/1/1	subagent_orch_v0	-	no
+ug (admin agent claude)	V2=0 SUB=1 ORCH=1	off	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug (admin agent claude)	V2=0 SUB=1 ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug (admin agent codex)	V2=0 SUB=1 ORCH=1	off	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug (admin agent codex)	V2=0 SUB=1 ORCH=1	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug claude	version first_prompt	no admin config	launched	first prompt, subagents	1/0/0	-	-	yes
+ug claude	version first_prompt	on	launched	first prompt, subagents	1/0/0	-	-	yes
+ug claude --enable-smart-routing	version first_prompt	no admin config	launched	first prompt, subagents	1/0/0	-	-	yes
+ug claude --enable-smart-routing	version first_prompt	on	launched	first prompt, subagents	1/0/0	-	-	yes
+ug claude --disable-smart-routing	version first_prompt	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing	version first_prompt	on	launched	off	0/0/0	-	-	no
+ug claude -- "fix the test"	version first_prompt	no admin config	launched	first prompt, subagents	1/0/0	-	-	yes
+ug claude -- "fix the test"	version first_prompt	on	launched	first prompt, subagents	1/0/0	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	version first_prompt	no admin config	launched	first prompt, subagents	1/0/0	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	version first_prompt	on	launched	first prompt, subagents	1/0/0	-	-	yes
+ug claude --disable-smart-routing -- "fix the test"	version first_prompt	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -- "fix the test"	version first_prompt	on	launched	off	0/0/0	-	-	no
+ug claude -p "fix the test"	version first_prompt	no admin config	launched	first prompt, subagents	1/0/0	-	-	yes
+ug claude -p "fix the test"	version first_prompt	on	launched	first prompt, subagents	1/0/0	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	version first_prompt	no admin config	launched	first prompt, subagents	1/0/0	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	version first_prompt	on	launched	first prompt, subagents	1/0/0	-	-	yes
+ug claude --disable-smart-routing -p "fix the test"	version first_prompt	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -p "fix the test"	version first_prompt	on	launched	off	0/0/0	-	-	no
+ug claude update	version first_prompt	no admin config	launched	off	-/-/-	-	-	no
+ug claude update	version first_prompt	on	launched	off	-/-/-	-	-	no
+ug claude --enable-smart-routing update	version first_prompt	no admin config	launched	off	-/-/-	-	-	no
+ug claude --enable-smart-routing update	version first_prompt	on	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	version first_prompt	no admin config	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	version first_prompt	on	launched	off	-/-/-	-	-	no
+ug claude --model databricks-claude-sonnet-4	version first_prompt	no admin config	launched	off	1/0/0	-	-	yes
+ug claude --model databricks-claude-sonnet-4	version first_prompt	on	launched	off	1/0/0	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	version first_prompt	no admin config	launched	off	1/0/0	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	version first_prompt	on	launched	off	1/0/0	-	-	yes
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	version first_prompt	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	version first_prompt	on	launched	off	0/0/0	-	-	no
+ug claude --provider svc	version first_prompt	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --enable-smart-routing --provider svc	version first_prompt	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --disable-smart-routing --provider svc	version first_prompt	no admin config	launched	off	0/0/0	-	-	no
+ug codex	version first_prompt	no admin config	launched	first prompt, subagents	1/0/0	-	on	yes
+ug codex	version first_prompt	on	launched	first prompt, subagents	1/0/0	-	on	yes
+ug codex --enable-smart-routing	version first_prompt	no admin config	launched	first prompt, subagents	1/0/0	-	on	yes
+ug codex --enable-smart-routing	version first_prompt	on	launched	first prompt, subagents	1/0/0	-	on	yes
+ug codex --disable-smart-routing	version first_prompt	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing	version first_prompt	on	launched	off	0/0/0	-	off	no
+ug codex -- "fix the test"	version first_prompt	no admin config	launched	first prompt, subagents	1/0/0	-	on	yes
+ug codex -- "fix the test"	version first_prompt	on	launched	first prompt, subagents	1/0/0	-	on	yes
+ug codex --enable-smart-routing -- "fix the test"	version first_prompt	no admin config	launched	first prompt, subagents	1/0/0	-	on	yes
+ug codex --enable-smart-routing -- "fix the test"	version first_prompt	on	launched	first prompt, subagents	1/0/0	-	on	yes
+ug codex --disable-smart-routing -- "fix the test"	version first_prompt	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing -- "fix the test"	version first_prompt	on	launched	off	0/0/0	-	off	no
+ug codex app	version first_prompt	no admin config	launched	off	-/-/-	-	off	no
+ug codex app	version first_prompt	on	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing app	version first_prompt	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing app	version first_prompt	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	version first_prompt	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	version first_prompt	on	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	version first_prompt	no admin config	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	version first_prompt	on	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing --model gpt-5.5	version first_prompt	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing --model gpt-5.5	version first_prompt	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	version first_prompt	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	version first_prompt	on	launched	off	-/-/-	-	off	no
+ug codex --provider svc	version first_prompt	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug codex --enable-smart-routing --provider svc	version first_prompt	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug codex --disable-smart-routing --provider svc	version first_prompt	no admin config	launched	off	0/0/0	-	off	no
+ug gemini	version first_prompt	no admin config	launched	off	-/-/-	first_prompt_and_subagent_no_orch_v0	-	no
+ug gemini	version first_prompt	on	launched	off	-/-/-	first_prompt_and_subagent_no_orch_v0	-	no
+ug (admin agent claude)	version first_prompt	off	launched	first prompt, subagents	1/0/0	-	-	yes
+ug (admin agent claude)	version first_prompt	on	launched	first prompt, subagents	1/0/0	-	-	yes
+ug (admin agent codex)	version first_prompt	off	launched	first prompt, subagents	1/0/0	-	on	yes
+ug (admin agent codex)	version first_prompt	on	launched	first prompt, subagents	1/0/0	-	on	yes
+ug claude	version subagent_only_v0	no admin config	launched	subagents	0/1/0	-	-	yes
+ug claude	version subagent_only_v0	on	launched	subagents	0/1/0	-	-	yes
+ug claude --enable-smart-routing	version subagent_only_v0	no admin config	launched	subagents	0/1/0	-	-	yes
+ug claude --enable-smart-routing	version subagent_only_v0	on	launched	subagents	0/1/0	-	-	yes
+ug claude --disable-smart-routing	version subagent_only_v0	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing	version subagent_only_v0	on	launched	off	0/0/0	-	-	no
+ug claude -- "fix the test"	version subagent_only_v0	no admin config	launched	subagents	0/1/0	-	-	yes
+ug claude -- "fix the test"	version subagent_only_v0	on	launched	subagents	0/1/0	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	version subagent_only_v0	no admin config	launched	subagents	0/1/0	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	version subagent_only_v0	on	launched	subagents	0/1/0	-	-	yes
+ug claude --disable-smart-routing -- "fix the test"	version subagent_only_v0	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -- "fix the test"	version subagent_only_v0	on	launched	off	0/0/0	-	-	no
+ug claude -p "fix the test"	version subagent_only_v0	no admin config	launched	subagents	0/1/0	-	-	yes
+ug claude -p "fix the test"	version subagent_only_v0	on	launched	subagents	0/1/0	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	version subagent_only_v0	no admin config	launched	subagents	0/1/0	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	version subagent_only_v0	on	launched	subagents	0/1/0	-	-	yes
+ug claude --disable-smart-routing -p "fix the test"	version subagent_only_v0	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -p "fix the test"	version subagent_only_v0	on	launched	off	0/0/0	-	-	no
+ug claude update	version subagent_only_v0	no admin config	launched	off	-/-/-	-	-	no
+ug claude update	version subagent_only_v0	on	launched	off	-/-/-	-	-	no
+ug claude --enable-smart-routing update	version subagent_only_v0	no admin config	launched	off	-/-/-	-	-	no
+ug claude --enable-smart-routing update	version subagent_only_v0	on	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	version subagent_only_v0	no admin config	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	version subagent_only_v0	on	launched	off	-/-/-	-	-	no
+ug claude --model databricks-claude-sonnet-4	version subagent_only_v0	no admin config	launched	off	0/1/0	-	-	yes
+ug claude --model databricks-claude-sonnet-4	version subagent_only_v0	on	launched	off	0/1/0	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	version subagent_only_v0	no admin config	launched	off	0/1/0	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	version subagent_only_v0	on	launched	off	0/1/0	-	-	yes
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	version subagent_only_v0	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	version subagent_only_v0	on	launched	off	0/0/0	-	-	no
+ug claude --provider svc	version subagent_only_v0	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --enable-smart-routing --provider svc	version subagent_only_v0	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --disable-smart-routing --provider svc	version subagent_only_v0	no admin config	launched	off	0/0/0	-	-	no
+ug codex	version subagent_only_v0	no admin config	launched	subagents	0/1/0	-	on	yes
+ug codex	version subagent_only_v0	on	launched	subagents	0/1/0	-	on	yes
+ug codex --enable-smart-routing	version subagent_only_v0	no admin config	launched	subagents	0/1/0	-	on	yes
+ug codex --enable-smart-routing	version subagent_only_v0	on	launched	subagents	0/1/0	-	on	yes
+ug codex --disable-smart-routing	version subagent_only_v0	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing	version subagent_only_v0	on	launched	off	0/0/0	-	off	no
+ug codex -- "fix the test"	version subagent_only_v0	no admin config	launched	subagents	0/1/0	-	on	yes
+ug codex -- "fix the test"	version subagent_only_v0	on	launched	subagents	0/1/0	-	on	yes
+ug codex --enable-smart-routing -- "fix the test"	version subagent_only_v0	no admin config	launched	subagents	0/1/0	-	on	yes
+ug codex --enable-smart-routing -- "fix the test"	version subagent_only_v0	on	launched	subagents	0/1/0	-	on	yes
+ug codex --disable-smart-routing -- "fix the test"	version subagent_only_v0	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing -- "fix the test"	version subagent_only_v0	on	launched	off	0/0/0	-	off	no
+ug codex app	version subagent_only_v0	no admin config	launched	off	-/-/-	-	off	no
+ug codex app	version subagent_only_v0	on	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing app	version subagent_only_v0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing app	version subagent_only_v0	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	version subagent_only_v0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	version subagent_only_v0	on	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	version subagent_only_v0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	version subagent_only_v0	on	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing --model gpt-5.5	version subagent_only_v0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing --model gpt-5.5	version subagent_only_v0	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	version subagent_only_v0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	version subagent_only_v0	on	launched	off	-/-/-	-	off	no
+ug codex --provider svc	version subagent_only_v0	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug codex --enable-smart-routing --provider svc	version subagent_only_v0	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug codex --disable-smart-routing --provider svc	version subagent_only_v0	no admin config	launched	off	0/0/0	-	off	no
+ug gemini	version subagent_only_v0	no admin config	launched	off	-/-/-	subagent_only_v0	-	no
+ug gemini	version subagent_only_v0	on	launched	off	-/-/-	subagent_only_v0	-	no
+ug (admin agent claude)	version subagent_only_v0	off	launched	subagents	0/1/0	-	-	yes
+ug (admin agent claude)	version subagent_only_v0	on	launched	subagents	0/1/0	-	-	yes
+ug (admin agent codex)	version subagent_only_v0	off	launched	subagents	0/1/0	-	on	yes
+ug (admin agent codex)	version subagent_only_v0	on	launched	subagents	0/1/0	-	on	yes
+ug claude	version subagent_orch_v0	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude	version subagent_orch_v0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	version subagent_orch_v0	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	version subagent_orch_v0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing	version subagent_orch_v0	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing	version subagent_orch_v0	on	launched	off	0/0/0	-	-	no
+ug claude -- "fix the test"	version subagent_orch_v0	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude -- "fix the test"	version subagent_orch_v0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	version subagent_orch_v0	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	version subagent_orch_v0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -- "fix the test"	version subagent_orch_v0	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -- "fix the test"	version subagent_orch_v0	on	launched	off	0/0/0	-	-	no
+ug claude -p "fix the test"	version subagent_orch_v0	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude -p "fix the test"	version subagent_orch_v0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	version subagent_orch_v0	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	version subagent_orch_v0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -p "fix the test"	version subagent_orch_v0	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -p "fix the test"	version subagent_orch_v0	on	launched	off	0/0/0	-	-	no
+ug claude update	version subagent_orch_v0	no admin config	launched	off	-/-/-	-	-	no
+ug claude update	version subagent_orch_v0	on	launched	off	-/-/-	-	-	no
+ug claude --enable-smart-routing update	version subagent_orch_v0	no admin config	launched	off	-/-/-	-	-	no
+ug claude --enable-smart-routing update	version subagent_orch_v0	on	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	version subagent_orch_v0	no admin config	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	version subagent_orch_v0	on	launched	off	-/-/-	-	-	no
+ug claude --model databricks-claude-sonnet-4	version subagent_orch_v0	no admin config	launched	off	0/1/1	-	-	yes
+ug claude --model databricks-claude-sonnet-4	version subagent_orch_v0	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	version subagent_orch_v0	no admin config	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	version subagent_orch_v0	on	launched	off	0/1/1	-	-	yes
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	version subagent_orch_v0	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	version subagent_orch_v0	on	launched	off	0/0/0	-	-	no
+ug claude --provider svc	version subagent_orch_v0	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --enable-smart-routing --provider svc	version subagent_orch_v0	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --disable-smart-routing --provider svc	version subagent_orch_v0	no admin config	launched	off	0/0/0	-	-	no
+ug codex	version subagent_orch_v0	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex	version subagent_orch_v0	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing	version subagent_orch_v0	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing	version subagent_orch_v0	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing	version subagent_orch_v0	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing	version subagent_orch_v0	on	launched	off	0/0/0	-	off	no
+ug codex -- "fix the test"	version subagent_orch_v0	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex -- "fix the test"	version subagent_orch_v0	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing -- "fix the test"	version subagent_orch_v0	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing -- "fix the test"	version subagent_orch_v0	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing -- "fix the test"	version subagent_orch_v0	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing -- "fix the test"	version subagent_orch_v0	on	launched	off	0/0/0	-	off	no
+ug codex app	version subagent_orch_v0	no admin config	launched	off	-/-/-	-	off	no
+ug codex app	version subagent_orch_v0	on	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing app	version subagent_orch_v0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing app	version subagent_orch_v0	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	version subagent_orch_v0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	version subagent_orch_v0	on	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	version subagent_orch_v0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	version subagent_orch_v0	on	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing --model gpt-5.5	version subagent_orch_v0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing --model gpt-5.5	version subagent_orch_v0	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	version subagent_orch_v0	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	version subagent_orch_v0	on	launched	off	-/-/-	-	off	no
+ug codex --provider svc	version subagent_orch_v0	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug codex --enable-smart-routing --provider svc	version subagent_orch_v0	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug codex --disable-smart-routing --provider svc	version subagent_orch_v0	no admin config	launched	off	0/0/0	-	off	no
+ug gemini	version subagent_orch_v0	no admin config	launched	off	-/-/-	subagent_orch_v0	-	no
+ug gemini	version subagent_orch_v0	on	launched	off	-/-/-	subagent_orch_v0	-	no
+ug (admin agent claude)	version subagent_orch_v0	off	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug (admin agent claude)	version subagent_orch_v0	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug (admin agent codex)	version subagent_orch_v0	off	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug (admin agent codex)	version subagent_orch_v0	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug claude	version unknown	no admin config	launched	off	-/-/-	not_a_version	-	no
+ug claude	version unknown	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	version unknown	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	version unknown	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing	version unknown	no admin config	launched	off	0/0/0	not_a_version	-	no
+ug claude --disable-smart-routing	version unknown	on	launched	off	0/0/0	not_a_version	-	no
+ug claude -- "fix the test"	version unknown	no admin config	launched	off	-/-/-	not_a_version	-	no
+ug claude -- "fix the test"	version unknown	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	version unknown	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	version unknown	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -- "fix the test"	version unknown	no admin config	launched	off	0/0/0	not_a_version	-	no
+ug claude --disable-smart-routing -- "fix the test"	version unknown	on	launched	off	0/0/0	not_a_version	-	no
+ug claude -p "fix the test"	version unknown	no admin config	launched	off	-/-/-	not_a_version	-	no
+ug claude -p "fix the test"	version unknown	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	version unknown	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	version unknown	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -p "fix the test"	version unknown	no admin config	launched	off	0/0/0	not_a_version	-	no
+ug claude --disable-smart-routing -p "fix the test"	version unknown	on	launched	off	0/0/0	not_a_version	-	no
+ug claude update	version unknown	no admin config	launched	off	-/-/-	-	-	no
+ug claude update	version unknown	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing update	version unknown	no admin config	launched	off	-/-/-	-	-	no
+ug claude --enable-smart-routing update	version unknown	on	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	version unknown	no admin config	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	version unknown	on	launched	off	-/-/-	-	-	no
+ug claude --model databricks-claude-sonnet-4	version unknown	no admin config	launched	off	-/-/-	not_a_version	-	no
+ug claude --model databricks-claude-sonnet-4	version unknown	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	version unknown	no admin config	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	version unknown	on	launched	off	0/1/1	-	-	yes
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	version unknown	no admin config	launched	off	0/0/0	not_a_version	-	no
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	version unknown	on	launched	off	0/0/0	not_a_version	-	no
+ug claude --provider svc	version unknown	no admin config	launched	off	-/-/-	not_a_version	-	no
+ug claude --enable-smart-routing --provider svc	version unknown	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --disable-smart-routing --provider svc	version unknown	no admin config	launched	off	0/0/0	not_a_version	-	no
+ug codex	version unknown	no admin config	launched	off	-/-/-	not_a_version	off	no
+ug codex	version unknown	on	launched	subagents, orchestrator	0/1/1	-	off	yes
+ug codex --enable-smart-routing	version unknown	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing	version unknown	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing	version unknown	no admin config	launched	off	0/0/0	not_a_version	off	no
+ug codex --disable-smart-routing	version unknown	on	launched	off	0/0/0	not_a_version	off	no
+ug codex -- "fix the test"	version unknown	no admin config	launched	off	-/-/-	not_a_version	off	no
+ug codex -- "fix the test"	version unknown	on	launched	subagents, orchestrator	0/1/1	-	off	yes
+ug codex --enable-smart-routing -- "fix the test"	version unknown	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing -- "fix the test"	version unknown	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing -- "fix the test"	version unknown	no admin config	launched	off	0/0/0	not_a_version	off	no
+ug codex --disable-smart-routing -- "fix the test"	version unknown	on	launched	off	0/0/0	not_a_version	off	no
+ug codex app	version unknown	no admin config	launched	off	-/-/-	-	off	no
+ug codex app	version unknown	on	launched	off	0/1/1	-	off	yes
+ug codex --enable-smart-routing app	version unknown	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing app	version unknown	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	version unknown	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	version unknown	on	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	version unknown	no admin config	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	version unknown	on	launched	off	0/1/1	-	off	yes
+ug codex --enable-smart-routing --model gpt-5.5	version unknown	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing --model gpt-5.5	version unknown	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	version unknown	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	version unknown	on	launched	off	-/-/-	-	off	no
+ug codex --provider svc	version unknown	no admin config	launched	off	-/-/-	not_a_version	off	no
+ug codex --enable-smart-routing --provider svc	version unknown	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug codex --disable-smart-routing --provider svc	version unknown	no admin config	launched	off	0/0/0	not_a_version	off	no
+ug gemini	version unknown	no admin config	launched	off	-/-/-	not_a_version	-	no
+ug gemini	version unknown	on	launched	off	-/-/-	subagent_orch_v0	-	no
+ug (admin agent claude)	version unknown	off	launched	off	-/-/-	not_a_version	-	no
+ug (admin agent claude)	version unknown	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug (admin agent codex)	version unknown	off	launched	off	-/-/-	not_a_version	off	no
+ug (admin agent codex)	version unknown	on	launched	subagents, orchestrator	0/1/1	-	off	yes
+ug claude	isaac cohort	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude	isaac cohort	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	isaac cohort	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	isaac cohort	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing	isaac cohort	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing	isaac cohort	on	launched	off	0/0/0	-	-	no
+ug claude -- "fix the test"	isaac cohort	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude -- "fix the test"	isaac cohort	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	isaac cohort	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	isaac cohort	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -- "fix the test"	isaac cohort	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -- "fix the test"	isaac cohort	on	launched	off	0/0/0	-	-	no
+ug claude -p "fix the test"	isaac cohort	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude -p "fix the test"	isaac cohort	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	isaac cohort	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	isaac cohort	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -p "fix the test"	isaac cohort	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -p "fix the test"	isaac cohort	on	launched	off	0/0/0	-	-	no
+ug claude update	isaac cohort	no admin config	launched	off	-/-/-	-	-	no
+ug claude update	isaac cohort	on	launched	off	-/-/-	-	-	no
+ug claude --enable-smart-routing update	isaac cohort	no admin config	launched	off	-/-/-	-	-	no
+ug claude --enable-smart-routing update	isaac cohort	on	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	isaac cohort	no admin config	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	isaac cohort	on	launched	off	-/-/-	-	-	no
+ug claude --model databricks-claude-sonnet-4	isaac cohort	no admin config	launched	off	0/1/1	-	-	yes
+ug claude --model databricks-claude-sonnet-4	isaac cohort	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	isaac cohort	no admin config	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	isaac cohort	on	launched	off	0/1/1	-	-	yes
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	isaac cohort	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	isaac cohort	on	launched	off	0/0/0	-	-	no
+ug claude --provider svc	isaac cohort	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --enable-smart-routing --provider svc	isaac cohort	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --disable-smart-routing --provider svc	isaac cohort	no admin config	launched	off	0/0/0	-	-	no
+ug codex	isaac cohort	no admin config	launched	off	0/0/0	-	off	no
+ug codex	isaac cohort	on	launched	off	0/0/0	-	off	no
+ug codex --enable-smart-routing	isaac cohort	no admin config	launched	off	0/0/0	-	off	no
+ug codex --enable-smart-routing	isaac cohort	on	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing	isaac cohort	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing	isaac cohort	on	launched	off	0/0/0	-	off	no
+ug codex -- "fix the test"	isaac cohort	no admin config	launched	off	0/0/0	-	off	no
+ug codex -- "fix the test"	isaac cohort	on	launched	off	0/0/0	-	off	no
+ug codex --enable-smart-routing -- "fix the test"	isaac cohort	no admin config	launched	off	0/0/0	-	off	no
+ug codex --enable-smart-routing -- "fix the test"	isaac cohort	on	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing -- "fix the test"	isaac cohort	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing -- "fix the test"	isaac cohort	on	launched	off	0/0/0	-	off	no
+ug codex app	isaac cohort	no admin config	launched	off	-/-/-	-	off	no
+ug codex app	isaac cohort	on	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing app	isaac cohort	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing app	isaac cohort	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	isaac cohort	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	isaac cohort	on	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	isaac cohort	no admin config	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	isaac cohort	on	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing --model gpt-5.5	isaac cohort	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing --model gpt-5.5	isaac cohort	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	isaac cohort	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	isaac cohort	on	launched	off	-/-/-	-	off	no
+ug codex --provider svc	isaac cohort	no admin config	launched	off	0/0/0	-	off	no
+ug codex --enable-smart-routing --provider svc	isaac cohort	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing --provider svc	isaac cohort	no admin config	launched	off	0/0/0	-	off	no
+ug gemini	isaac cohort	no admin config	launched	off	-/-/1	subagent_orch_v0_claude_only	-	no
+ug gemini	isaac cohort	on	launched	off	-/-/1	subagent_orch_v0_claude_only	-	no
+ug (admin agent claude)	isaac cohort	off	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug (admin agent claude)	isaac cohort	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug (admin agent codex)	isaac cohort	off	launched	off	0/0/0	-	off	no
+ug (admin agent codex)	isaac cohort	on	launched	off	0/0/0	-	off	no
+ug claude	isaac default	no admin config	launched	off	-/-/1	-	-	no
+ug claude	isaac default	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	isaac default	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing	isaac default	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing	isaac default	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing	isaac default	on	launched	off	0/0/0	-	-	no
+ug claude -- "fix the test"	isaac default	no admin config	launched	off	-/-/1	-	-	no
+ug claude -- "fix the test"	isaac default	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	isaac default	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -- "fix the test"	isaac default	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -- "fix the test"	isaac default	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -- "fix the test"	isaac default	on	launched	off	0/0/0	-	-	no
+ug claude -p "fix the test"	isaac default	no admin config	launched	off	-/-/1	-	-	no
+ug claude -p "fix the test"	isaac default	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	isaac default	no admin config	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --enable-smart-routing -p "fix the test"	isaac default	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug claude --disable-smart-routing -p "fix the test"	isaac default	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing -p "fix the test"	isaac default	on	launched	off	0/0/0	-	-	no
+ug claude update	isaac default	no admin config	launched	off	-/-/-	-	-	no
+ug claude update	isaac default	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing update	isaac default	no admin config	launched	off	-/-/-	-	-	no
+ug claude --enable-smart-routing update	isaac default	on	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	isaac default	no admin config	launched	off	-/-/-	-	-	no
+ug claude --disable-smart-routing update	isaac default	on	launched	off	-/-/-	-	-	no
+ug claude --model databricks-claude-sonnet-4	isaac default	no admin config	launched	off	-/-/1	-	-	no
+ug claude --model databricks-claude-sonnet-4	isaac default	on	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	isaac default	no admin config	launched	off	0/1/1	-	-	yes
+ug claude --enable-smart-routing --model databricks-claude-sonnet-4	isaac default	on	launched	off	0/1/1	-	-	yes
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	isaac default	no admin config	launched	off	0/0/0	-	-	no
+ug claude --disable-smart-routing --model databricks-claude-sonnet-4	isaac default	on	launched	off	0/0/0	-	-	no
+ug claude --provider svc	isaac default	no admin config	launched	off	-/-/1	-	-	no
+ug claude --enable-smart-routing --provider svc	isaac default	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug claude --disable-smart-routing --provider svc	isaac default	no admin config	launched	off	0/0/0	-	-	no
+ug codex	isaac default	no admin config	launched	off	-/-/1	-	off	no
+ug codex	isaac default	on	launched	subagents, orchestrator	0/1/1	-	off	yes
+ug codex --enable-smart-routing	isaac default	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing	isaac default	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing	isaac default	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing	isaac default	on	launched	off	0/0/0	-	off	no
+ug codex -- "fix the test"	isaac default	no admin config	launched	off	-/-/1	-	off	no
+ug codex -- "fix the test"	isaac default	on	launched	subagents, orchestrator	0/1/1	-	off	yes
+ug codex --enable-smart-routing -- "fix the test"	isaac default	no admin config	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --enable-smart-routing -- "fix the test"	isaac default	on	launched	subagents, orchestrator	0/1/1	-	on	yes
+ug codex --disable-smart-routing -- "fix the test"	isaac default	no admin config	launched	off	0/0/0	-	off	no
+ug codex --disable-smart-routing -- "fix the test"	isaac default	on	launched	off	0/0/0	-	off	no
+ug codex app	isaac default	no admin config	launched	off	-/-/-	-	off	no
+ug codex app	isaac default	on	launched	off	0/1/1	-	off	yes
+ug codex --enable-smart-routing app	isaac default	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing app	isaac default	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	isaac default	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing app	isaac default	on	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	isaac default	no admin config	launched	off	-/-/-	-	off	no
+ug codex --model gpt-5.5	isaac default	on	launched	off	0/1/1	-	off	yes
+ug codex --enable-smart-routing --model gpt-5.5	isaac default	no admin config	launched	off	-/-/-	-	off	no
+ug codex --enable-smart-routing --model gpt-5.5	isaac default	on	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	isaac default	no admin config	launched	off	-/-/-	-	off	no
+ug codex --disable-smart-routing --model gpt-5.5	isaac default	on	launched	off	-/-/-	-	off	no
+ug codex --provider svc	isaac default	no admin config	launched	off	-/-/1	-	off	no
+ug codex --enable-smart-routing --provider svc	isaac default	no admin config	error: smart routing with a provider	-	-	-	-	no
+ug codex --disable-smart-routing --provider svc	isaac default	no admin config	launched	off	0/0/0	-	off	no
+ug gemini	isaac default	no admin config	launched	off	-/-/1	-	-	no
+ug gemini	isaac default	on	launched	off	-/-/1	subagent_orch_v0	-	no
+ug (admin agent claude)	isaac default	off	launched	off	-/-/1	-	-	no
+ug (admin agent claude)	isaac default	on	launched	subagents, orchestrator	0/1/1	-	-	yes
+ug (admin agent codex)	isaac default	off	launched	off	-/-/1	-	off	no
+ug (admin agent codex)	isaac default	on	launched	subagents, orchestrator	0/1/1	-	off	yes
