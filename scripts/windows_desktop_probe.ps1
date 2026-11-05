@@ -99,6 +99,23 @@ Measure-Capability 'testWindow' {
         $form.Dispose()
     }
 }
+Measure-Capability 'nestedVmBoot' {
+    Import-Module Hyper-V -ErrorAction Stop
+    $vmName = 'ug-desktop-probe-' + [Guid]::NewGuid().ToString('N')
+    $created = $false
+    try {
+        $vm = New-VM -Name $vmName -Generation 2 -MemoryStartupBytes 256MB -NoVHD
+        $created = $true
+        Start-VM -VM $vm -ErrorAction Stop
+        $state = (Get-VM -Name $vmName).State.ToString()
+        @{ started = ($state -eq 'Running'); state = $state; guest = 'UEFI only, no disk or network' }
+    } finally {
+        if ($created) {
+            Stop-VM -Name $vmName -TurnOff -Force -ErrorAction SilentlyContinue
+            Remove-VM -Name $vmName -Force -ErrorAction Stop
+        }
+    }
+}
 
 $json = $report | ConvertTo-Json -Depth 8
 $json | Set-Content -LiteralPath $OutputPath -Encoding utf8
