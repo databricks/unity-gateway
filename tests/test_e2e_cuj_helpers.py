@@ -34,6 +34,7 @@ from tests.e2e_cuj.helpers.session import (
     dirty_runner_message,
     record_machine_wide_leak,
 )
+from tests.e2e_cuj.helpers.skills import codex_exec_final_answer
 from tests.e2e_cuj.helpers.terminal import Terminal
 from tests.e2e_cuj.helpers.workspace import Workspace
 from tests.e2e_cuj.test_cuj3_models import _catalog_display_names
@@ -127,6 +128,59 @@ def _fake_ug(tmp_path, body):
         script.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/fake_ug.py" "$@"\n')
         script.chmod(0o755)
     return UserSession(tmp_path, script, tmp_path / "artifacts", "token")
+
+
+@requires_pty
+@pytest.mark.parametrize(
+    ("version", "review_hooks"),
+    [("0.154.0", False), ("0.165.0", False), ("0.165.0", True)],
+)
+def test_codex_boot_waits_for_session_after_startup_draft(tmp_path, version, review_hooks):
+    """Replay startup screens offline; the draft can precede native hook review."""
+    cwd = tmp_path / "project with spaces"
+    header = f"  >_ OpenAI Codex (v{version})\n     {cwd}"
+    draft = header + "\n\n\n› Ask Codex to do anything\n\n  ? for shortcuts"
+    if version == "0.154.0":
+        draft = draft.replace(str(cwd), "loading")
+    status = f"  GPT-6-Sol default · {cwd}"
+    ready = header + f"\n\n› Ask Codex to do anything\n\n{status}\n  ? for shortcuts"
+    review = (
+        "  Hooks need review\n  2 hooks are new or changed.\n"
+        "  Hooks can run outside the sandbox after you trust them.\n\n"
+        "› 1. Review hooks\n  2. Trust all and continue\n"
+        "  3. Continue without trusting (hooks won't run)\n\n"
+        "  enter confirm · esc skip"
+    )
+    selected = review.replace("› 1.", "  1.").replace("  2.", "› 2.")
+    session = _fake_ug(
+        tmp_path,
+        f"""import sys, time, tty
+tty.setraw(sys.stdin.fileno())
+def show(text):
+    print("\\x1b[2J\\x1b[H" + text.replace("\\n", "\\r\\n"), end="", flush=True)
+show({draft!r})
+time.sleep(1.5)
+if {review_hooks!r}:
+    show({review!r})
+    assert sys.stdin.read(3) == "\\x1b[B"
+    show({selected!r})
+    assert sys.stdin.read(1) == "\\r"
+show({ready!r})
+typed = ""
+while True:
+    key = sys.stdin.read(1)
+    if key == "\\r":
+        break
+    typed += key
+    show({ready!r}.replace("Ask Codex to do anything", typed))
+assert typed == "ready check", repr(typed)
+""",
+    )
+    with Terminal(session, "codex-startup", [], agent=CODEX) as tui:
+        tui.boot(timeout=10)
+        assert status in tui.visible
+        tui.submit("ready check")
+        tui.finish(timeout=5)
 
 
 @pytest.mark.parametrize(
@@ -230,9 +284,12 @@ time.sleep(30)
         "empty",
         "completed",
         "detail",
+        "routed_detail",
         "resumed",
         "running",
         "detail_running",
+        "routed_detail_running",
+        "detail_transcript",
         "mixed",
         "scheduled",
         "partial",
@@ -282,8 +339,13 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
         ),
         "transcript": ("Background\n\n  Completed (1)\n✔ ug_subagent_one   done · Sonnet 5\n\n❯"),
     }
+    for name in ("detail", "detail_running"):
+        views[f"routed_{name}"] = views[name].replace(
+            "agent ›", "ug-smart-router:ucode-route-claude-haiku-4-5-83f7d1b2 ›"
+        )
+    views["detail_transcript"] = views["routed_detail"].split("← to go back")[0]
     views["resumed"] = views["mixed"]
-    complete = view in ("empty", "completed", "detail", "resumed")
+    complete = view in ("empty", "completed", "detail", "routed_detail", "resumed")
     script = tmp_path / "ug"
     script.write_text(
         f"""#!{sys.executable}
@@ -732,6 +794,53 @@ def test_mcp_completion_accepts_a_fenced_reply(monkeypatch):
     assert task.completed(None, "claude")
 
 
+@pytest.mark.parametrize(
+    "native_apis, accepted",
+    [
+        (["openai/v1/responses"], False),
+        (["openai/v1/chat/completions", "openai/v1/responses"], True),
+        (["openai/v1/responses", "openai/v1/chat/completions"], True),
+        (["openai/v1/chat/completions"], False),
+        (["openai/v1/chat/completions", "openai/v1/responses", "openai/v1/embeddings"], False),
+        ([], False),
+        (None, False),
+    ],
+)
+def test_cuj2_mps_catalog_requires_fixture_apis(native_apis, accepted):
+    services = {}
+    for agent, (name, model) in constants.MODEL_PROVIDER_SERVICE_FIXTURES.items():
+        name = f"model-provider-services/{name}"
+        services[name] = SimpleNamespace(
+            name=name,
+            config=SimpleNamespace(
+                allow_all_targets=False,
+                provider_type=(
+                    "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC"
+                    if agent == CLAUDE
+                    else "EXTERNAL_MODEL_PROVIDER_TYPE_OPENAI"
+                ),
+                targets=[
+                    SimpleNamespace(
+                        model=model,
+                        native_api_types=["anthropic/v1/messages"]
+                        if agent == CLAUDE
+                        else native_apis,
+                    )
+                ],
+            ),
+        )
+    gateway = SimpleNamespace(
+        list_model_provider_services=lambda **kwargs: services.values(),
+        get_model_provider_service=services.__getitem__,
+    )
+    workspace = SimpleNamespace(client=SimpleNamespace(ai_gateway=gateway))
+    if accepted:
+        cuj2._assert_mps_catalog(workspace)
+    else:
+        with pytest.raises(AssertionError):
+            cuj2._assert_mps_catalog(workspace)
+
+
 def test_cuj2_mcp_listing_retries_a_banner_only_claude_listing(tmp_path, monkeypatch):
     suffix = ".EXE" if sys.platform == "win32" else ""
     for agent in (CLAUDE, CODEX):
@@ -751,3 +860,25 @@ def test_cuj2_mcp_listing_retries_a_banner_only_claude_listing(tmp_path, monkeyp
     cuj2._assert_generated_mcp_listings(SimpleNamespace(env={"PATH": str(tmp_path)}, run=run))
 
     assert calls == [CLAUDE, CLAUDE, CODEX]
+
+
+def _codex_events(*events):
+    return "\n".join(json.dumps(event) for event in events)
+
+
+def test_codex_exec_final_answer_reads_the_last_message_of_a_completed_turn():
+    stdout = _codex_events(
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "I'll fetch it."}},
+        {"type": "item.completed", "item": {"type": "command_execution", "command": "cat"}},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "ugsum-4c1e9a"}},
+        {"type": "turn.completed", "usage": {}},
+    )
+    assert codex_exec_final_answer("Reading prompt from stdin...\n" + stdout) == "ugsum-4c1e9a"
+
+
+def test_codex_exec_final_answer_is_empty_without_a_completed_turn():
+    stdout = _codex_events(
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "ugsum-4c1e9a"}},
+        {"type": "turn.failed", "error": {"message": "boom"}},
+    )
+    assert codex_exec_final_answer(stdout) == ""

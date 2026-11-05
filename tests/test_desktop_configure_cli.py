@@ -3,9 +3,46 @@
 from unittest.mock import Mock
 
 import pytest
+from typer.testing import CliRunner
 
-from ucode import cli
+from ucode import cli, managed_files
 from ucode.agents.desktop import setup as desktop_setup
+
+
+@pytest.mark.parametrize("flags", [[], ["--user"], ["--global"]])
+@pytest.mark.parametrize("failed", [False, True])
+def test_explicit_global_desktop_scope_is_command_local(monkeypatch, flags, failed):
+    selections = []
+    monkeypatch.setattr(cli, "install_databricks_cli", lambda: None)
+
+    def configure_workspace(*args, **kwargs):
+        selections.append(managed_files.machine_wide_only())
+        if failed:
+            raise RuntimeError("workspace unavailable")
+        return 0
+
+    monkeypatch.setattr(cli, "_configure_workspace_command", configure_workspace)
+    result = CliRunner().invoke(
+        cli.app,
+        ["configure", "--agents", "claude", "--workspace", "https://workspace.example", *flags],
+    )
+    assert result.exit_code == (1 if failed else 0), result.output
+    assert selections == [flags == ["--global"]]
+    assert not managed_files.machine_wide_only()
+
+
+def test_global_skips_user_desktop_setup(monkeypatch):
+    managed_files.set_machine_wide_only(True)
+
+    def unexpected_write(*args, **kwargs):
+        pytest.fail("--global attempted user-level Desktop setup")
+
+    monkeypatch.setattr(desktop_setup, "write_claude_desktop_profile", unexpected_write)
+    monkeypatch.setattr(desktop_setup, "configure_cowork", unexpected_write)
+    monkeypatch.setattr(desktop_setup, "configure_code", unexpected_write)
+    desktop_setup.configure_claude_desktop({})
+    desktop_setup.configure_claude_cowork({}, [])
+    desktop_setup.configure_claude_code_plugin([])
 
 
 @pytest.fixture
@@ -28,6 +65,7 @@ def configuration(monkeypatch):
     monkeypatch.setattr(cli, "refresh_managed_config", lambda *a, **k: (None, False))
     monkeypatch.setattr(cli, "configure_single_tool", lambda *a, **k: state)
     monkeypatch.setattr(cli, "configure_selected_tools", lambda *a, **k: state)
+    monkeypatch.setattr(desktop_setup, "configure_claude_code_plugin", lambda *a, **k: None)
     monkeypatch.setattr(desktop_setup, "configure_claude_cowork", lambda *a, **k: None)
     monkeypatch.setattr(desktop_setup, "revert_claude_cowork", lambda *a, **k: "unchanged")
     return state
@@ -141,9 +179,11 @@ def test_single_managed_claude_configures_cowork(configuration, monkeypatch):
     managed = {"enabled_agents": {"claude": {}}}
     servers = [{"name": "github", "clients": ["claude"]}]
     configure_cowork = Mock()
+    configure_code = Mock()
     configure_mcps = Mock(return_value=servers)
     monkeypatch.setattr(desktop_setup, "configure_claude_desktop", lambda *a, **k: None)
     monkeypatch.setattr(desktop_setup, "configure_claude_cowork", configure_cowork)
+    monkeypatch.setattr(desktop_setup, "configure_claude_code_plugin", configure_code)
     monkeypatch.setattr(cli, "_configure_managed_mcp_servers", configure_mcps)
     monkeypatch.setattr(cli, "_configure_managed_skills", lambda configured: True)
     monkeypatch.setattr(cli, "refresh_managed_config", lambda *a, **k: (managed, False))
@@ -155,6 +195,7 @@ def test_single_managed_claude_configures_cowork(configuration, monkeypatch):
         == 0
     )
     configure_mcps.assert_called_once_with(managed)
+    configure_code.assert_called_once_with(servers)
     configure_cowork.assert_called_once_with(configuration, servers)
 
 
@@ -209,8 +250,10 @@ def test_managed_claude_configures_cowork_after_mcp_and_skill_sync(configuration
         }
     ]
     configure_cowork = Mock()
+    configure_code = Mock()
     monkeypatch.setattr(desktop_setup, "configure_claude_desktop", lambda *a, **k: None)
     monkeypatch.setattr(desktop_setup, "configure_claude_cowork", configure_cowork)
+    monkeypatch.setattr(desktop_setup, "configure_claude_code_plugin", configure_code)
     monkeypatch.setattr(cli, "_configure_managed_mcp_servers", lambda managed: servers)
     monkeypatch.setattr(cli, "_configure_managed_skills", lambda managed: True)
     monkeypatch.setattr(
@@ -225,18 +268,25 @@ def test_managed_claude_configures_cowork_after_mcp_and_skill_sync(configuration
         )
         == 0
     )
+    configure_code.assert_called_once_with(servers)
     configure_cowork.assert_called_once_with(configuration, servers)
 
 
+@pytest.mark.parametrize("flow", ["single", "managed"])
 @pytest.mark.parametrize("failed_sync", ["mcp", "skills"])
-def test_managed_sync_failure_preserves_existing_cowork(configuration, monkeypatch, failed_sync):
+def test_managed_sync_failure_preserves_existing_cowork(
+    configuration, monkeypatch, failed_sync, flow
+):
+    servers = [{"name": "system-ai-github", "clients": ["claude"]}]
     configure_cowork = Mock()
+    configure_code = Mock()
     monkeypatch.setattr(desktop_setup, "configure_claude_desktop", lambda *a, **k: None)
     monkeypatch.setattr(desktop_setup, "configure_claude_cowork", configure_cowork)
+    monkeypatch.setattr(desktop_setup, "configure_claude_code_plugin", configure_code)
     monkeypatch.setattr(
         cli,
         "_configure_managed_mcp_servers",
-        lambda managed: None if failed_sync == "mcp" else [],
+        lambda managed: None if failed_sync == "mcp" else servers,
     )
     monkeypatch.setattr(cli, "_configure_managed_skills", lambda managed: failed_sync != "skills")
     monkeypatch.setattr(
@@ -247,11 +297,16 @@ def test_managed_sync_failure_preserves_existing_cowork(configuration, monkeypat
 
     assert (
         cli._configure_workspace_command(
-            workspaces=[("https://workspace.example", "chosen-profile")]
+            workspaces=[("https://workspace.example", "chosen-profile")],
+            **({"tool": "claude"} if flow == "single" else {}),
         )
         == 0
     )
     configure_cowork.assert_not_called()
+    if failed_sync == "mcp":
+        configure_code.assert_not_called()
+    else:
+        configure_code.assert_called_once_with(servers)
 
 
 def test_unmanaged_configure_syncs_user_mcp_servers_to_cowork(configuration, monkeypatch):

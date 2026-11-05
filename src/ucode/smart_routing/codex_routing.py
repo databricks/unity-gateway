@@ -30,6 +30,7 @@ SPAWN_AGENT_TOOL_SUFFIX = "spawn_agent"
 CANARY_PATH = APP_DIR / "codex-smart-routing-canary.json"
 AUDIT_PATH = APP_DIR / "codex-smart-routing-audit.jsonl"
 DECISIONS_PATH = APP_DIR / "codex-smart-routing-decisions.jsonl"
+MAX_AUDIT_RATIONALE_CHARS = 1000
 SUBAGENT_NOTICE_CONFIG = routing.SubagentNoticeConfig(
     name_field="task_name",
     prompt_field="message",
@@ -37,20 +38,6 @@ SUBAGENT_NOTICE_CONFIG = routing.SubagentNoticeConfig(
 )
 
 _GPT_RE = re.compile(r"gpt-(\d+)(?:[.-](\d+))?(?:[.-](\d+))?(-.+|[a-z].*)?")
-
-_normalize_model = routing.normalize_model
-
-
-# TODO: Remove once server-side smart routing is more robust to duplicate model names.
-def _normalize_route_model(model: str) -> str:
-    """Canonicalize equivalent Codex GPT spellings to one router option."""
-    normalized = _normalize_model(model)
-    match = _GPT_RE.fullmatch(normalized)
-    if match is None:
-        return normalized
-    major, minor, patch, suffix = match.groups()
-    version = "-".join(part for part in (major, minor, patch) if part is not None)
-    return f"gpt-{version}{suffix or ''}"
 
 
 def request_routing_decision(
@@ -63,8 +50,7 @@ def request_routing_decision(
     log: Callable[[str], None] | None = None,
 ) -> tuple[RoutingDecision | None, str | None]:
     """Ask the router for a servable Codex model."""
-    available = {_normalize_route_model(model): model for model in available_models}
-    route_options = [(model, "codex") for model in available]
+    route_options = routing.route_options_for(available_models, "codex")
     if not route_options:
         return None, "no cached model services are available"
     router_name = routing.configured_router_name()
@@ -83,16 +69,9 @@ def request_routing_decision(
         token,
         task,
         route_options,
-        lambda raw_model: available.get(_normalize_route_model(raw_model)),
         router_name=router_name,
         timeout=timeout,
     )
-
-
-def resolve_routed_model(raw_model: str, available_models: list[str]) -> str | None:
-    """Map a router arm to a model the configured workspace can serve."""
-    normalized = {_normalize_route_model(model): model for model in available_models}
-    return normalized.get(_normalize_route_model(raw_model))
 
 
 def route_pre_tool_use(
@@ -109,7 +88,17 @@ def route_pre_tool_use(
     if audit_decision:
 
         def record(payload, task, decision, requested):
-            routing.write_decision_record(DECISIONS_PATH, payload, task, decision, requested)
+            # Bound diagnostic text without changing the router input or native hook output.
+            audit = replace(
+                decision,
+                rationale=decision.rationale[:MAX_AUDIT_RATIONALE_CHARS],
+                raw_rationale=decision.raw_rationale[:MAX_AUDIT_RATIONALE_CHARS]
+                if decision.raw_rationale is not None
+                else None,
+            )
+            routing.write_decision_record(
+                DECISIONS_PATH, payload, task, audit, requested, include_task_text=False
+            )
 
     name_suffix = " [orchestrator on]" if orchestrator.enabled(agent=AGENT_CODEX) else ""
     return routing.route_spawn_tool(
@@ -146,22 +135,6 @@ def record_subagent_start(payload: dict[str, Any]) -> dict[str, Any]:
 def clear_routing_artifacts() -> None:
     """Remove ucode-owned routing canary and audit files."""
     routing.clear_artifacts((CANARY_PATH, AUDIT_PATH, DECISIONS_PATH))
-
-
-def _parse_gpt(model: str) -> tuple[int, int, int, str] | None:
-    match = _GPT_RE.fullmatch(_normalize_model(model))
-    if not match:
-        return None
-    major, minor, patch, suffix = match.groups()
-    return int(major), int(minor or 0), int(patch or 0), suffix or ""
-
-
-def _model_strength(model: str) -> tuple[int, int, int, int]:
-    parsed = _parse_gpt(model)
-    if parsed is None:
-        return (0, 0, 0, 0)
-    major, minor, patch, suffix = parsed
-    return major, minor, patch, 1 if not suffix else 0
 
 
 def codex_model_id(model: str) -> str:

@@ -3,8 +3,11 @@
 import os
 
 CLAUDE_TEST_MODEL = "system.ai.claude-haiku-4-5"
+CLAUDE_RELAY_TEST_MODEL = "claude-haiku-4-5-20251001"
 # nano sometimes nests powershell inside Codex's pwsh, breaking `$` expansion in its file reads.
 CODEX_TEST_MODEL = "system.ai.gpt-5-6-luna" if os.name == "nt" else "system.ai.gpt-5-4-nano"
+# Copilot discovers models from the gateway's Anthropic route, which doesn't list gpt-5-4-nano.
+COPILOT_GPT_TEST_MODEL = "system.ai.gpt-5-6-luna"
 
 COPILOT_HEADLESS_FLAGS = (
     "--allow-all-tools",

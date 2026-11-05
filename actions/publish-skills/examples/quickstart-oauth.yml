@@ -1,0 +1,45 @@
+# Use this variant if your organization already uses OAuth M2M in GitHub CI.
+name: Publish skills to Databricks
+on:
+  push:
+    branches: [main]
+    paths: ['skills/**', '.github/workflows/publish-skills.yml']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Validate folders only (does not test Databricks authentication)
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: publish-uc-skills
+  cancel-in-progress: false
+jobs:
+  publish:
+    # For private workspaces, use a Linux runner with workspace network access.
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DATABRICKS_AUTH_TYPE: oauth-m2m
+      DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      # @main follows repository updates; replace with a reviewed SHA to pin behavior.
+      - uses: databricks/unity-gateway/actions/publish-skills@main
+        id: skills
+        with:
+          skills-directory: skills
+          target-schema: acme.team_skills
+          prune-files: 'true'
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+      - name: Upload publishing report
+        if: always() && steps.skills.outputs.report-file != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: uc-skills-report
+          path: ${{ steps.skills.outputs.report-file }}
