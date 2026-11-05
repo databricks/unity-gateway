@@ -74,6 +74,7 @@ from ucode.managed_files import (
     ManagedFileWriteUnavailable,
     current_os,
     explicit_managed_writes,
+    machine_wide_only,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -88,6 +89,7 @@ from ucode.managed_files import (
     warn_managed_write_skipped,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility.system_cross_os import is_admin
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.codex_hooks import (
     remove_smart_routing_hooks,
@@ -113,6 +115,8 @@ CODEX_BACKUP_PATH = APP_DIR / "codex-ucode-config.backup.toml"
 CODEX_MODEL_CATALOG_PATH = APP_DIR / "codex-model-catalog.json"
 LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
+# Where the MDM run writes UG's requirements.toml and config.toml on Linux and macOS.
+CODEX_SYSTEM_DIR = Path("/etc/codex")
 CODEX_MODEL_PROVIDER_NAME = "Databricks"
 LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
 # The Codex app relay's own provider in ~/.codex/config.toml, apart from the managed `Databricks`.
@@ -1105,6 +1109,9 @@ def _reconcile_managed_config(
     if managed_settings_skipped():
         # Opted out: trust whatever OS-managed file exists and leave it untouched.
         return
+    if _is_mdm_run() and not relayed:
+        _write_mdm_files(state)
+        return
     if path is None:
         print_warning_err(
             "Machine-wide Codex settings aren't supported on this platform; skipped the managed "
@@ -1177,6 +1184,33 @@ def _as_requirements(compose: Callable[[dict], dict]) -> Callable[[dict], dict]:
         return doc
 
     return compose_requirements
+
+
+def _is_mdm_run() -> bool:
+    """An MDM run is an explicit ``ug configure --global`` as root on Linux or macOS. It writes
+    ``requirements.toml`` and ``config.toml`` in ``/etc/codex`` instead of ``managed_config.toml``."""
+    return machine_wide_only() and current_os() in (OS.LINUX, OS.MACOS) and is_admin()
+
+
+def _write_mdm_files(state: dict) -> None:
+    """Rebuild UG's provider lock in ``requirements.toml`` and its default model in ``config.toml``.
+
+    Every user shares the provider, so its auth command names no profile, PAT, or OAuth client.
+    The entry replaces any ``-c`` provider, so per-launch headers come from ``env_http_headers``."""
+    provider = _provider_block(
+        state["workspace"], None, managed_http_headers=state.get("codex_http_headers")
+    )
+    for header in _LAUNCH_ROUTING_HEADER_ENV_VARS:
+        provider["http_headers"].pop(header, None)
+    provider["env_http_headers"] = dict(_LAUNCH_ROUTING_HEADER_ENV_VARS)
+    requirements = {
+        "model_provider": CODEX_MODEL_PROVIDER_NAME,
+        "model_providers": {CODEX_MODEL_PROVIDER_NAME: provider},
+    }
+    model = state.get("codex_default_model")
+    config = {"model": model} if isinstance(model, str) else {}
+    write_text_file(CODEX_SYSTEM_DIR / CODEX_REQUIREMENTS_FILE, tomlkit.dumps(requirements))
+    write_text_file(CODEX_SYSTEM_DIR / "config.toml", tomlkit.dumps(config))
 
 
 MANAGED_MCP_CONFIG_KEY = "mcp_servers"
@@ -1290,6 +1324,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
         or path.name == CODEX_REQUIREMENTS_FILE
         or managed_settings_skipped()
         or not managed_writes_allowed()
+        or _is_mdm_run()
     ):
         return False
     if path.is_symlink():
