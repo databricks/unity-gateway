@@ -1,6 +1,10 @@
 # Integration tests
 
-`test_ug_configure_managed_mcp.py` checks both supported Codex managed transports: native HTTP/OAuth on a capable workspace, or the stdio proxy. The exact endpoint, native resource/client, exclusive transport fields, and real `codex mcp get` readback are asserted. Readback checks the HTTP transport/URL or the stdio transport/command/arguments; user-scope registrations remain separate.
+The managed Codex MCP journey requires the managed workspace's connection-backed
+GitHub service to use native HTTP/OAuth, with its exact URL, resource and client ID.
+Real `codex mcp get` readback must preserve the HTTP transport and URL; a fallback
+to stdio fails this journey. User-scope registrations remain separate. Proxy fallback
+selection is covered by component tests in `../test_mcp.py`.
 
 Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
 before numbered reuse, stable names during routing and in parallel cards, and unchanged
