@@ -31,6 +31,7 @@ from ucode.config_io import (
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    AUTO_PICKER_CONFIG_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
@@ -111,8 +112,12 @@ class ClaudeRoutingSetupError(RuntimeError):
 
 
 def _prepare_smart_router_session(agent: str) -> Path:
-    skills = [SMART_ROUTER_SKILL]
-    if orchestrator.feature_enabled(agent=agent):
+    auto = auto_picker_enabled(agent=agent)
+    skills = [] if auto else [SMART_ROUTER_SKILL]
+    if auto:
+        # shortcut: shared skill installs can clobber concurrent sessions; isolate them if coexistence becomes required.
+        uninstall_agent_skill(SMART_ROUTER_SKILL, agent, config_io.APP_DIR.parent)
+    if auto or orchestrator.feature_enabled(agent=agent):
         skills.append(SMART_ROUTER_ORCHESTRATOR_SKILL)
     for skill in skills:
         try:
@@ -163,7 +168,7 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
             if not isinstance(row, dict) or not isinstance(row.get("model"), str):
                 continue
             model_id = row["model"].strip()
-            if not model_id or model_id in seen:
+            if not model_id or model_id == "auto" or model_id in seen:
                 continue
             seen.add(model_id)
             model_ids.append(model_id)
@@ -368,9 +373,11 @@ def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
         else "0",
         "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
         "routeCommand": [],
+        "autoMainModel": "",
         "orchestratorInstructions": (
             orchestrator.CLAUDE_AGENT_DESCRIPTION
-            if orchestrator.enabled(source, agent=AGENT_CLAUDE)
+            if auto_picker_enabled(source, agent=AGENT_CLAUDE)
+            or orchestrator.enabled(source, agent=AGENT_CLAUDE)
             else ""
         ),
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
@@ -393,6 +400,12 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             "description": "Launch-scoped agents for Unity Gateway smart routing.",
             "author": {"name": "Databricks"},
             "userConfig": {
+                "autoMainModel": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Auto main model",
+                    "description": "Concrete admin default from the managed configuration",
+                },
                 "orchestratorInstructions": {
                     "type": "string",
                     "default": "",
@@ -752,8 +765,20 @@ def launch_claude(
     )
     if route_first_prompt:
         env[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
-    else:
+    elif not auto_picker_enabled(agent=AGENT_CLAUDE):
         env[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
+    if auto_picker_enabled(agent=AGENT_CLAUDE):
+        source = resolve_environment(agent=AGENT_CLAUDE)
+        env.update(
+            {
+                key: source[key]
+                for key in (
+                    *SMART_ROUTING_ENV_KEYS,
+                    EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR,
+                    AUTO_PICKER_CONFIG_ENV_VAR,
+                )
+            }
+        )
     model_overrides = settings.setdefault("modelOverrides", {})
     if not isinstance(model_overrides, dict):
         raise RuntimeError("Claude settings 'modelOverrides' must be an object for smart routing.")

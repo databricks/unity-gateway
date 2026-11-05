@@ -1,13 +1,11 @@
 # Integration tests
 
+Auto picker and feedback-transition component coverage and limitations are documented in [the test overview](../README.md#auto-model-picker). Native plugin validation covers the CI-pinned Claude 2.1.290 binary.
+
 The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
 service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
 It replaces the obsolete stdio-only expectation; this checks configuration, not live login.
 
-Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
-before numbered reuse, stable names during routing and in parallel cards, and unchanged
-execution inputs and row controls. They cover a lone call's decision under its Agent row,
-parallel calls as cards above the parent's next reply in call order, calls
 `../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
 behavior with controlled authentication and transport boundaries. The local-socket
 proxy suite also covers refresh/retry wiring; these checks do not establish live
@@ -21,8 +19,9 @@ blocks Claude relay setup: revert names the retained file and advises manual cle
 exit status and state cleanup preserved. Absent/unsupported paths, inspection failures, and tracked
 baseline restoration are covered separately. These checks do not exercise a live relay MPS.
 
-Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
-its Agent row, parallel calls as cards above the parent's next reply in call order, calls
+Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
+before numbered reuse, stable names during routing and in parallel cards, and unchanged
+execution inputs and row controls. They cover a lone call's decision under its Agent row, parallel calls as cards above the parent's next reply in call order, calls
 still routing waiting for a later reply, distinct
 IDs for identical tasks, pending row and turn-spinner routing timers, and disabled/failed routing. These are not live
 parallel-agent TUI or gateway checks.
@@ -1800,7 +1799,3 @@ Missing, malformed, and other-workspace profiles leave plugin setup untouched.
 Installed-CLI Desktop journeys read MCP commands from `managedMcpServers` and require the
 installed plugin to contain no duplicate servers. These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
-
-Auto session-control component checks are listed in [the test overview](../README.md#auto-session-controls).
-They include Codex toggle isolation, feedback boundaries, and inactive picker options;
-they do not establish native picker or live gateway coverage.

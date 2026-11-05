@@ -749,4 +749,5 @@ presets explicitly disable exposure and keep their current behavior. The new
 Auto preset is not registered yet. Resolved Auto sessions use the hidden
 `claude-auto-mode auto|concrete` command for validated, atomic session writes;
 concrete opt-out requires feedback when configured. Legacy sessions retain
-`/smart-router` controls. Native picker and managed startup wiring follow separately.
+`/smart-router` controls. Native `/model auto` and concrete opt-out now use these controls with resolved
+launch options. Managed picker injection and admin-default startup follow separately.
