@@ -171,7 +171,7 @@ def test_router_hook_records_skip_the_cli(tmp_path, command, event, payload, art
         f"os.environ.update(HOME={str(tmp_path)!r}, USERPROFILE={str(tmp_path)!r}, "
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY='1', "
         f"UCODE_SESSION_ENV_FILE={str(session)!r})\n"
-        f"sys.argv, sys.stdin = ['ug', {command!r}, {event!r}], io.StringIO({json.dumps(payload)!r})\n"
+        f"sys.argv, sys.stdin = ['ug', {command!r}, {event!r}], io.TextIOWrapper(io.BytesIO({json.dumps(payload)!r}.encode()), encoding='cp1252')\n"
         "from ucode.entrypoint import main\n"
         "try:\n    main()\nexcept SystemExit as exc:\n    assert not exc.code, exc.code"
     )

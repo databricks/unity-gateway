@@ -110,7 +110,7 @@ def test_auth_missing_configuration_fails_before_requesting_a_token(monkeypatch,
     assert "GITHUB_OUTPUT is missing" in capsys.readouterr().out
 
 
-def test_workflow_keeps_member_only_comment_trusted_checkout_and_existing_credentials():
+def test_workflow_keeps_authorized_comment_trusted_checkout_and_existing_credentials():
     workflow = WORKFLOW_PATH.read_text()
     assert "issue_comment:\n    types: [created]" in workflow
     assert "github.event.issue.pull_request &&" in workflow

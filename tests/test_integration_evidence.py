@@ -13,6 +13,53 @@ from tests.integration.utils.evidence import (
     assistant_answer_contains,
     tool_outputs,
 )
+from tests.integration.utils.terminal import codex_command_approval_pending
+
+
+@pytest.mark.parametrize(
+    ("command", "environment", "missing", "expected"),
+    [
+        ("ug codex --disable-smart-routing", "local", None, True),
+        ("ug codex --enable-smart-routing", "local", None, None),
+        ("ug codex --disable-smart-routing", "remote", None, None),
+        ("ug codex --disable-smart-routing", "localhost", None, None),
+        ("ug codex --disable-smart-routing", "local", "prompt", False),
+        ("ug codex --disable-smart-routing", "local", "footer", False),
+        ("ug codex --disable-smart-routing", "local", "current-footer", False),
+        ("ug codex --disable-smart-routing", "local", "choice", None),
+    ],
+    ids=[
+        "exact",
+        "wrong-command",
+        "remote",
+        "not-local",
+        "no-prompt",
+        "no-footer",
+        "old-footer",
+        "no-choice",
+    ],
+)
+def test_codex_approval_requires_the_exact_local_command(command, environment, missing, expected):
+    prompt = "Would you like to run the following command?"
+    footer = "Press enter to confirm or esc to cancel"
+    choice = "› 1. Yes, proceed (y)"
+    screen = f"{prompt}\nEnvironment: {environment}\n  $ {command}\n{choice}\n{footer}"
+    if missing == "prompt":
+        screen = screen.replace(prompt, "")
+    elif missing == "footer":
+        screen = screen.replace(footer, "")
+    elif missing == "current-footer":
+        screen = screen + "\n" + screen.replace(footer, "")
+    elif missing == "choice":
+        screen = screen.replace(choice, "")
+
+    if expected is None:
+        with pytest.raises(AssertionError, match="unexpected command approval"):
+            codex_command_approval_pending(screen, "ug codex --disable-smart-routing")
+    else:
+        assert (
+            codex_command_approval_pending(screen, "ug codex --disable-smart-routing") is expected
+        )
 
 
 class _Session:
@@ -21,6 +68,102 @@ class _Session:
 
     def record(self, _name, _value):
         pass
+
+
+def _records(*results):
+    """One native tool result per call id send-1, send-2, ..."""
+    return [
+        {
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": f"send-{i}"}]},
+            "toolUseResult": result,
+        }
+        for i, result in enumerate(results, 1)
+    ]
+
+
+def _call(index=1, to="child-id"):
+    return {"id": f"send-{index}", "input": {} if to is None else {"to": to}}
+
+
+_RESUMED = {"success": True, "resumedAgentId": "child-id"}
+_QUEUED = {
+    "success": True,
+    "message": "Message queued for delivery to child-id at its next tool round.",
+    "pin": {"id": "child-id"},
+}
+# Real result from run 41768149986: no pin, no resumedAgentId.
+_REJECTED = {
+    "success": False,
+    "message": "notify_when_idle is only supported for Claude sessions on this machine in "
+    "this release (not teammates, subagents, Remote Control or cloud sessions). Your "
+    "message was NOT delivered; send it again without notify_when_idle if it should still go.",
+}
+
+
+@pytest.mark.parametrize("recipient", ["child-id", "child-name"])
+def test_claude_send_resumed_accepts_id_or_name_resolved_to_original_child(recipient):
+    records = [{"type": "user", "message": {"content": "An ordinary user prompt"}}]
+    records += _records(_RESUMED)
+    assert claude.classify_send_message(_call(to=recipient), records, "child-id") == "resumed"
+
+
+def test_claude_send_queued_to_the_child():
+    assert claude.classify_send_message(_call(), _records(_QUEUED), "child-id") == "queued"
+
+
+def test_claude_send_rejected_for_the_child_by_to_or_pin():
+    records = _records(_REJECTED)
+    assert claude.classify_send_message(_call(), records, "child-id") == "rejected"
+    pinned = _records({**_REJECTED, "pin": {"id": "child-id"}})
+    assert claude.classify_send_message(_call(to="child-name"), pinned, "child-id") == "rejected"
+
+
+@pytest.mark.parametrize(
+    ("call", "result"),
+    [
+        (_call(to="other-child"), _REJECTED),
+        (_call(), {"success": True, "resumedAgentId": "other-child"}),
+        (_call(), {**_QUEUED, "pin": {"id": "other-child"}}),
+        (_call(), {**_QUEUED, "message": "Delivered"}),
+        (_call(), {"success": True, "message": "queued"}),
+        (_call(), {"success": False, "resumedAgentId": "other-child"}),
+        (_call(), "not a dict"),
+        (_call(), None),
+    ],
+)
+def test_claude_send_rejects_other_agents_and_unknown_shapes(call, result):
+    with pytest.raises(AssertionError, match="neither resumed nor was queued or rejected"):
+        claude.classify_send_message(call, _records(result), "child-id")
+
+
+@pytest.mark.parametrize("recipient", [None, "", "  "])
+def test_claude_send_missing_recipient_has_readable_assertion(recipient):
+    with pytest.raises(AssertionError, match="requires a nonempty 'to' recipient"):
+        claude.classify_send_message(_call(to=recipient), _records(_RESUMED), "child-id")
+
+
+def test_claude_send_requires_matching_native_result():
+    with pytest.raises(AssertionError, match="No native tool result for SendMessage send-2"):
+        claude.classify_send_message(_call(2), _records(_RESUMED), "child-id")
+
+
+def test_claude_follow_ups_tolerate_queued_and_rejected_alongside_a_resume():
+    calls = [_call(1), _call(2), _call(3)]
+    claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _QUEUED, _REJECTED), "child-id")
+
+
+@pytest.mark.parametrize("results", [(_QUEUED,), (_REJECTED,), (_QUEUED, _REJECTED)])
+def test_claude_follow_ups_require_a_real_resume(results):
+    calls = [_call(i) for i in range(1, len(results) + 1)]
+    with pytest.raises(AssertionError, match="No SendMessage resumed child-id"):
+        claude.assert_follow_ups_resumed(calls, _records(*results), "child-id")
+
+
+def test_claude_follow_ups_fail_when_any_send_targets_another_agent():
+    calls = [_call(1), _call(2, to="other-child")]
+    with pytest.raises(AssertionError, match="neither resumed nor was queued or rejected"):
+        claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _REJECTED), "child-id")
 
 
 def _transcript_session(home, agent, transcripts):
