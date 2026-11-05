@@ -3786,11 +3786,21 @@ class TestSystemModelServiceProbe:
         assert all("parent=schemas%2Fsystem.ai" in url for url in calls)
         assert db_mod.cached_model_service_entries(WS) is None
 
-    def test_new_credential_reprobes_and_replaces_complete_listing(self, monkeypatch):
+    @pytest.mark.parametrize("second_is_paginated", [False, True])
+    def test_new_credential_reprobes_and_replaces_complete_listing(
+        self, monkeypatch, second_is_paginated
+    ):
         calls = []
 
         def get(url, token, **kwargs):
             calls.append(token)
+            if token == "second" and second_is_paginated:
+                if "page_token=" in url:
+                    return {"model_services": [{"name": "system.ai.second-extra"}]}, None
+                return {
+                    "model_services": [{"name": "system.ai.second"}],
+                    "next_page_token": "next",
+                }, None
             return {"model_services": [{"name": f"system.ai.{token}"}]}, None
 
         monkeypatch.setattr(db_mod, "_http_get_json", get)
@@ -3798,9 +3808,18 @@ class TestSystemModelServiceProbe:
         db_mod.probe_unity_gateway_capabilities(WS, "first")
         db_mod.probe_unity_gateway_capabilities(WS, "second")
         assert calls == ["first", "second"]
-        assert db_mod.cached_model_service_entries(WS) == [
-            db_mod.ModelServiceEntry("system.ai.second")
-        ]
+        expected_second = [db_mod.ModelServiceEntry("system.ai.second")]
+        if second_is_paginated:
+            expected_second.append(db_mod.ModelServiceEntry("system.ai.second-extra"))
+        assert db_mod.list_model_service_entries(WS, "second") == (expected_second, None)
+
+        # A cached probe for the first credential must not expose the second one's listing.
+        before_cached_probe = len(calls)
+        db_mod.probe_unity_gateway_capabilities(WS, "first")
+        assert len(calls) == before_cached_probe
+        expected_first = [db_mod.ModelServiceEntry("system.ai.first")]
+        assert db_mod.list_model_service_entries(WS, "first") == (expected_first, None)
+        assert db_mod.cached_model_service_entries(WS) == expected_first
 
 
 class TestProbeUnityGatewayCapabilities:

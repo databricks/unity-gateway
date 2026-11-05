@@ -7899,7 +7899,9 @@ class TestConfigureSharedStateCopilotCatalog:
             cli_mod, "load_full_state", lambda: {"workspaces": {self.WS: dest_block}}
         )
         if listed is not None:
-            db_mod._MODEL_SERVICES_CACHE[self.WS] = [db_mod.ModelServiceEntry(m) for m in listed]
+            db_mod._MODEL_SERVICES_CACHE[self.WS] = db_mod._CachedModelServices(
+                "token", [db_mod.ModelServiceEntry(m) for m in listed]
+            )
         reason = None if listed else "HTTP 503"
         sonnet = "system.ai.claude-sonnet-4-6"
         monkeypatch.setattr(

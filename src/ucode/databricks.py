@@ -2315,13 +2315,25 @@ def _get_model_services_page(
     return payload, reason
 
 
-# Successful model-service listings for this process, keyed by workspace. The listing is a paginated
+# Successful listings for this process, keyed by workspace and bound to the token. The listing is a paginated
 # walk of the whole metastore catalog, and several callers want different views of the same result
 # (`discover_model_services` buckets it per family, `discover_claude_models_unbucketed` keeps the raw
 # Claude ids), so a single `ucode setup` run would otherwise page it twice. Cached per process, not
 # persisted: a long-lived process is not a thing here, and a new model appearing mid-command is not
 # worth a second walk. Failures are never cached, so a transient error still retries.
-_MODEL_SERVICES_CACHE: dict[str, list[ModelServiceEntry]] = {}
+class _CachedModelServices(NamedTuple):
+    token: str
+    entries: list[ModelServiceEntry]
+
+
+_MODEL_SERVICES_CACHE: dict[str, _CachedModelServices] = {}
+
+
+def _discard_model_services_for_other_token(workspace: str, token: str) -> None:
+    cached = _MODEL_SERVICES_CACHE.get(workspace)
+    if cached is not None and cached.token != token:
+        _MODEL_SERVICES_CACHE.pop(workspace, None)
+
 
 # Same idea for the Model Provider Service listing (a different endpoint). It is workspace-wide and
 # filtered per agent afterwards, so `ucode setup` would otherwise re-list it once per MPS-capable
@@ -2333,7 +2345,7 @@ _MODEL_PROVIDER_SERVICES_CACHE: dict[tuple[str, str], list[dict]] = {}
 def cached_model_service_entries(workspace: str) -> list[ModelServiceEntry] | None:
     """The model services this process already listed for ``workspace``, without a request."""
     cached = _MODEL_SERVICES_CACHE.get(workspace)
-    return list(cached) if cached is not None else None
+    return list(cached.entries) if cached is not None else None
 
 
 def clear_model_services_cache() -> None:
@@ -2387,13 +2399,14 @@ def list_model_service_entries(
     across dozens of ~2s pages (~50s on a busy workspace) only to keep the same
     ``system.ai.*`` subset — see ``_MODEL_SERVICE_PARENT_SCHEMA``.
 
-    A successful result is memoized per workspace for the life of the process; pass
-    ``use_cache=False`` to force a fresh walk.
+    A successful result is memoized per workspace and credential for the life of the process;
+    pass ``use_cache=False`` to force a fresh walk.
     """
+    _discard_model_services_for_other_token(workspace, token)
     if use_cache:
         cached = _MODEL_SERVICES_CACHE.get(workspace)
-        if cached is not None:
-            return list(cached), None
+        if cached is not None and cached.token == token:
+            return list(cached.entries), None
 
     origin = workspace_origin(workspace)
     entries: dict[str, ModelServiceEntry] = {}
@@ -2430,7 +2443,7 @@ def list_model_service_entries(
     listed = [entries[model_id] for model_id in sorted(entries)]
     if listed:
         if use_cache:
-            _MODEL_SERVICES_CACHE[workspace] = list(listed)
+            _MODEL_SERVICES_CACHE[workspace] = _CachedModelServices(token, list(listed))
         return listed, None
     return [], last_reason or "model-services listing returned no models"
 
@@ -3926,7 +3939,9 @@ def _probe_system_model_services(workspace: str, token: str) -> GatewayProbe | N
     if not entries:
         return None
     if not data.get("next_page_token"):
-        _MODEL_SERVICES_CACHE[workspace] = [entries[model_id] for model_id in sorted(entries)]
+        _MODEL_SERVICES_CACHE[workspace] = _CachedModelServices(
+            token, [entries[model_id] for model_id in sorted(entries)]
+        )
     return GatewayProbe(True, "reachable, accessible model service returned", True)
 
 
@@ -3995,6 +4010,8 @@ def clear_gateway_probe_cache() -> None:
 
 def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe:
     """Return the model service probe, raising if model service access can't be verified."""
+    # A cached probe or partial response must not leave another credential's catalog active.
+    _discard_model_services_for_other_token(workspace, token)
     cache_key = (workspace, token)
     cached = _GATEWAY_PROBE_CACHE.get(cache_key)
     if cached is not None:
