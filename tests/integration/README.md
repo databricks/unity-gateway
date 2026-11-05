@@ -7,6 +7,10 @@ The native Windows Cowork probe in `.github/workflows/windows-desktop-probe.yml`
 exercises real installation, UG configuration before first launch, and completed
 `system.ai.claude-haiku-4-5` inference through the desktop UI.
 
+The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
+service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
+It replaces the obsolete stdio-only expectation; this checks configuration, not live login.
+
 Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
 before numbered reuse, stable names during routing and in parallel cards, and unchanged
 execution inputs and row controls. They cover a lone call's decision under its Agent row,
@@ -102,12 +106,16 @@ retained source after a failed removal, dry-run behavior, and
 Code setup succeeding when Cowork setup fails. Native Desktop GUI discovery and
 live connector calls remain unverified.
 Generated-plugin component tests cover the packaged Code/Cowork Markdown templates;
-Cowork's frozen prompt fixture protects its previous content.
+Cowork's frozen prompt fixture protects discovery without startup sleeps and retry-later guidance.
 
 `../test_cli.py` and `../test_desktop_configure_cli.py` cover MCP-only Claude eligibility
 for Code guidance and Code refresh despite skill-download failures in single-agent and
-managed configure. Failed MCP reconciliation preserves both plugins, and Cowork retains
-its model and skill-success gates. Both plugin setup boundaries are mocked; these are
+managed configure. Failed MCP reconciliation preserves both plugins. Failed skill downloads
+preserve the Cowork plugin while native Desktop connectors still sync after model setup.
+Desktop lifecycle comparisons include connectors added through `ug mcp add`, retaining the
+original model/authentication-field assertions across reconfigure.
+Reconfigure regressions use real profile writers to check connector replacement/removal and
+unchanged plugin files, with external setup/download boundaries controlled. These are
 component checks, not native Desktop or live connector coverage.
 
 CUJ6 compares parsed Claude user settings across repeated configure calls. Its
@@ -131,7 +139,7 @@ Each of these two journeys supplies pre-existing Desktop account directories as 
 requires real Claude CLI installation of the Cowork plugin on both Linux and Windows.
 Both platforms require the user marketplace source and registration,
 one installed UG entry, and a matching cached version. It registers system.ai.web_search through
-`ug mcp add --names system.ai.web_search`, then runs the command from the installed plugin with the
+`ug mcp add --names system.ai.web_search`, then runs the command from the Desktop profile with the
 MCP SDK. The check initializes the protocol, discovers web_search, and searches for Databricks'
 official website. A successful result must contain a URL on databricks.com or www.databricks.com;
 the response wording and search rankings are not asserted. No SQL compute is needed.
@@ -149,7 +157,9 @@ skills/assets, previous-account cleanup,
 malformed marketplace metadata (including missing or nonstring directory paths),
 equivalent path aliases, source-switch failure recovery
 for both current and legacy-only plugin identities, preserved nonlocal registrations,
-and retained user source/state after refresh failures. Explicit global skips ordinary
+and retained user source/state after refresh failures. Legacy uninstall errors and timeouts
+warn while preserving the updated plugin and native connectors; retry removes the legacy
+registration and preserves unrelated plugins. Explicit global skips ordinary
 Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
 Overlapping installer/state checks and duplicate simulated-OS cases are consolidated;
 user installation, persisted account state and registered-source preservation remain covered.
@@ -694,19 +704,25 @@ a repeated revert also returns 0. This does not establish native Desktop coverag
 scoped Claude plugin commands, install/update selection, PAT/custom-OAuth behavior, and
 owned-file cleanup. It checks bounded skill descriptions and full connector lists for both
 Code and Cowork. A frozen fixture verifies that both default and explicit Cowork generation
-preserve the pre-Code-authentication skill text, including its description.
+retain discovery and the user-retry fallback when tools remain unavailable. Generated-skill
+assertions require the startup-readiness caveat, no startup sleeps, and no login solely because
+an authentication tool is visible; model compliance remains unverified by these component checks.
 Alias checks cover short UC names, unchanged proxy routing, custom-name
 preservation, order-independent collisions, and repeated replacement of old keys.
 Manifest checks require the `ug` name and display name in both manifests.
 Legacy-registration component checks cover replacement after successful install/update,
 preservation on install failure, scoped cleanup, and unrelated-plugin preservation.
-`../test_desktop_configure_cli.py` covers managed orchestration and
-cleanup. Both are mocked component coverage; the integration suite does not launch Cowork,
+`../test_desktop_configure_cli.py` covers managed orchestration and cleanup, retaining native
+connectors after discovery errors or rate limits, and applying replacements/removals despite
+failed skill downloads. Profile component tests limit fallback to the same workspace,
+including workspace selector headers. These are mocked component checks; the integration suite does not launch Cowork,
 connect a plugin MCP server, discover its deferred tool, or run a task through it.
 
 `../test_mcp_proxy.py` covers persistent OAuth U2M authentication-tool discovery, explicit
 reauthentication after success/cancellation, refresh and task retry over in-memory MCP
-streams, and renewed discovery-auth failures. Failed metadata lookups remain retryable, and
+streams, and renewed discovery-auth failures. Authentication-error responses explicitly require
+sign-in in the tool description; successful discovery or login clears that requirement while
+keeping the recovery tool available. Failed metadata lookups remain retryable, and
 discovery and unrelated replies continue during interactive login. Metadata/pagination and
 upstream tool names are preserved. A fresh listing that removes upstream `authenticate`
 restores local recovery, while continuation pages preserve ownership from earlier pages.
@@ -718,8 +734,11 @@ native Cowork browser recovery.
 Generated-guidance checks include one sign-in attempt for access/IP denials and stopping
 authentication retries if the denial persists. They verify the instructions, not model compliance.
 The separately selected `../connector_behavior/` suite tests model compliance using a real Claude
-model and synthetic connector tools: available Slack tools despite a stale notice, tools appearing
-after an actual wait, and tools absent through the wait limit. Code cases require sign-in before
+model and synthetic connector tools: available Slack tools despite a stale notice, deferred tools
+found through discovery, and missing tools prompting a retry-later response without sleeps or
+startup polling. A visible authentication tool must not trigger login by itself; an explicit
+sign-in requirement must trigger one login followed by task completion. These replace the old
+fixed-wait scenarios. Code cases require sign-in before
 cached Gmail tools are called, with native HTTP CLI login or proxy authentication. Successful
 sign-in resumes the task; cancellation stops without a service call. CLI results are synthetic;
 these cases do not establish native Desktop OAuth, Gmail, sleep/resume, discovery, or proxy
@@ -1767,3 +1786,11 @@ coverage in `../test_mcp_proxy_shared.py`. The latter runs real relay/backend pr
 against a local HTTP MCP peer, checking concurrent session isolation, credentials,
 headers, EOF/reset disconnect diagnostics, crash recovery, local authentication, idle
 shutdown, and sign-in output with native line endings. These component checks do not establish live gateway or native Windows coverage.
+
+Desktop connector component checks cover `toolSearchEnabled: true`, native stdio registration,
+removal of plugin MCP declarations on repeated setup, preserved skills/hooks, registration before
+the first Cowork session, last-connector removal, and profile rollback on plugin failure.
+Missing, malformed, and other-workspace profiles leave plugin setup untouched.
+Installed-CLI Desktop journeys read MCP commands from `managedMcpServers` and require the
+installed plugin to contain no duplicate servers. These checks do not prove Desktop GUI
+tool search, reduced context usage, or native connector consent.

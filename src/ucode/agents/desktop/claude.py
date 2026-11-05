@@ -6,7 +6,8 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from ucode.agents.desktop.claude_state import STATE_FILENAME
 from ucode.config_io import APP_DIR
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.system_cross_os import windows_system32_dir
+from ucode.workspace import workspace_headers
 
 __all__ = [
     "STATE_FILENAME",
@@ -42,6 +44,7 @@ __all__ = [
     "claude_desktop_directory",
     "claude_desktop_root_directory",
     "configure_claude_desktop",
+    "desktop_mcp_configuration",
     "render_profile",
     "revert_claude_desktop",
 ]
@@ -138,6 +141,19 @@ def configure_claude_desktop(
     profile_path = paths.directory / f"{PROFILE_ID}.json"
     with desktop_config.locked(paths.lock):
         profile_before = desktop_config.read_optional_bytes(profile_path)
+        if profile_before is not None:
+            try:
+                previous = desktop_config.parse_object(
+                    profile_before, profile_path, "Claude Desktop profile"
+                )
+            except ClaudeDesktopConflictError:
+                previous = {}
+            if (
+                previous.get("inferenceGatewayBaseUrl") == rendered["inferenceGatewayBaseUrl"]
+                and _workspace_selectors(previous) == _workspace_selectors(rendered)
+                and isinstance(previous.get("managedMcpServers"), list)
+            ):
+                rendered["managedMcpServers"] = previous["managedMcpServers"]
         metadata_before = desktop_config.read_optional_bytes(paths.metadata)
         state_before = desktop_config.read_optional_bytes(paths.state)
         metadata = desktop_config.validate_metadata(
@@ -231,6 +247,57 @@ def revert_claude_desktop(*, state_path: Path | str | None = None) -> RevertResu
             ]
         )
         return RevertResult(profile_id=PROFILE_ID if changed else None, changed=changed)
+
+
+def _workspace_selectors(profile: Mapping[str, object]) -> dict[str, object]:
+    headers = profile.get("inferenceCustomHeaders")
+    if not isinstance(headers, dict):
+        return {}
+    return {
+        name.casefold(): value
+        for name, value in headers.items()
+        if name.casefold() in {"x-databricks-org-id", "x-databricks-workspace-id"}
+    }
+
+
+@contextmanager
+def desktop_mcp_configuration(workspace: str, mcp_config: dict) -> Iterator[None]:
+    """Keep native connector registration consistent with a Cowork plugin update."""
+    paths = _resolve_paths(state_path=None, initialize=False)
+    profile_path = paths.directory / f"{PROFILE_ID}.json"
+    with desktop_config.locked(paths.lock):
+        before = desktop_config.read_optional_bytes(profile_path)
+        if before is None:
+            if mcp_config["mcpServers"]:
+                raise ClaudeDesktopUnavailableError(
+                    "Configure the Unity Gateway Claude Desktop profile before adding connectors."
+                )
+            yield
+            return
+        profile = desktop_config.parse_object(before, profile_path, "Claude Desktop profile")
+        expected_selectors = {
+            name.casefold(): value for name, value in workspace_headers(workspace).items()
+        }
+        if (
+            profile.get("inferenceGatewayBaseUrl")
+            != f"{workspace.rstrip('/')}/ai-gateway/anthropic"
+            or _workspace_selectors(profile) != expected_selectors
+        ):
+            raise ClaudeDesktopConflictError(
+                "Claude Desktop is configured for another workspace. Run ug configure again."
+            )
+        profile["managedMcpServers"] = [
+            {"name": name, "transport": "stdio", **{k: v for k, v in entry.items() if k != "type"}}
+            for name, entry in mcp_config["mcpServers"].items()
+        ]
+        profile["toolSearchEnabled"] = True
+        after = _serialize_json(profile, before)
+        desktop_config.write_configuration([(profile_path, before, after, 0o600)])
+        try:
+            yield
+        except Exception:
+            desktop_config.write_configuration([(profile_path, after, before, 0o600)])
+            raise
 
 
 def _serialize_json(payload: Mapping[str, object] | None, before: bytes | None) -> bytes | None:
