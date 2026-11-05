@@ -690,6 +690,11 @@ Model Provider Service behind `UCODE_SMART_ROUTING_PROVIDER`: the catalog reques
 carries the provider header and refreshes the cache, the router sees the provider's raw
 IDs, a failed fetch falls back to that provider's cached list (and fails the launch
 without one), and the routed model gains `[1m]` only from `max_input_tokens`.
+`TestV2ProviderSubagentRouting` covers subagents on that path: the launch writes a
+launch-scoped model snapshot and the mod's route command gains `--provider` and
+`--models-file`; routed agents and spawn models keep raw provider IDs, with
+deterministic hash-suffixed slugs for IDs containing `.`, `@` or `/`; and `[1m]` comes
+only from `max_input_tokens`.
 
 `test_cli.py::TestProviderSmartRoutingGate` checks that only gated Claude may combine
 smart routing with `--provider`, that such a launch fetches the provider catalog once
@@ -697,6 +702,8 @@ and hands it to the routed launch, that a failed fetch launches on the cached li
 fails without one), and that ungated provider launches neither read nor write the
 cache. `TestProviderRoutingLaunchHygiene` checks that relayed providers keep the guard
 and that launch-scoped routing keys never reach `state.json`.
+`TestProviderSubagentHook` checks the hook routes over the launch snapshot, falls back
+to its `--model` IDs without one, and keeps the exact call without `--provider`.
 These are unit/component checks; the gateway and router are stubbed.
 
 `test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the

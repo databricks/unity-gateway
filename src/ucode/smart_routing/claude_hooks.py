@@ -18,6 +18,10 @@ ROUTE_FIRST_PROMPT_EVENT = "route-first-prompt"
 ROUTE_SUBAGENT_MOD_EVENT = "route-subagent-mod"
 FIRST_PROMPT_HOOK_MARKER = f"{ROUTING_HOOK_COMMAND_MARKER} {ROUTE_FIRST_PROMPT_EVENT}"
 FIRST_PROMPT_SOCKET_ENV = "UCODE_CLAUDE_V2_SOCKET"
+# Set on a launch's routing state when subagents route over a Model Provider Service's models:
+# the service, and the launch-scoped snapshot of its models.
+ROUTING_PROVIDER_STATE_KEY = "_claude_routing_provider"
+ROUTING_MODELS_FILE_STATE_KEY = "_claude_routing_models_file"
 
 
 def sync_smart_routing_hooks(doc: dict, state: dict, *, enabled: bool) -> None:
@@ -91,6 +95,11 @@ def routing_hook_argv(state: dict, event: str) -> list[str]:
         for model in claude_models.values():
             if isinstance(model, str) and model:
                 argv += ["--model", model]
+    provider = state.get(ROUTING_PROVIDER_STATE_KEY)
+    models_file = state.get(ROUTING_MODELS_FILE_STATE_KEY)
+    if isinstance(provider, str) and provider and isinstance(models_file, str) and models_file:
+        # The hook reads the launch's model snapshot; the --model ids are its fallback.
+        argv += ["--provider", provider, "--models-file", models_file]
     return argv
 
 

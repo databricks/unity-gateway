@@ -9624,6 +9624,79 @@ class TestProviderSmartRoutingGate:
             assert self.LAUNCH_MODELS_KEY not in state
 
 
+class TestProviderSubagentHook:
+    WS = "https://example.com"
+    PROVIDER = "main.agents.bedrock_provider"
+    OPUS = "us.anthropic.claude-opus-4-6-v1"
+    HAIKU = "anthropic.claude-haiku-4-5@20251001"
+
+    def _invoke(self, monkeypatch, extra_args):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
+        token = _jwt(time.time() + 300)
+        payload = {"tool_name": "Agent", "tool_input": {"prompt": "fix it"}}
+        with patch(
+            "ucode.cli.smart_routing_v2.route_claude_subagent", return_value={"model": "m"}
+        ) as route:
+            result = runner.invoke(
+                app,
+                [
+                    "claude-router-hook",
+                    "route-subagent-mod",
+                    "--host",
+                    self.WS,
+                    "--model",
+                    self.HAIKU,
+                    *extra_args,
+                ],
+                input=json.dumps(payload),
+                env={"OAUTH_TOKEN": token},
+            )
+        assert result.exit_code == 0, result.output
+        route.assert_called_once()
+        return route, payload, token
+
+    def test_routes_over_the_launch_snapshot(self, monkeypatch, tmp_path):
+        snapshot = tmp_path / "routing-models.json"
+        snapshot.write_text(
+            json.dumps([{"id": self.OPUS, "max_input_tokens": 1_000_000}, {"id": self.HAIKU}])
+        )
+        # The shared cache is for launch-time fallback only; the hook never reads it.
+        write_routing_models(self.WS, self.PROVIDER, [RoutingModel("shared-cache-model")])
+
+        route, _payload, _token = self._invoke(
+            monkeypatch, ["--provider", self.PROVIDER, "--models-file", str(snapshot)]
+        )
+
+        kwargs = route.call_args.kwargs
+        assert kwargs["available_models"] == [self.OPUS, self.HAIKU]
+        assert kwargs["provider"] == self.PROVIDER
+        assert kwargs["max_input_tokens"] == {self.OPUS: 1_000_000}
+
+    def test_missing_snapshot_falls_back_to_model_args(self, monkeypatch, tmp_path):
+        route, _payload, _token = self._invoke(
+            monkeypatch,
+            ["--provider", self.PROVIDER, "--models-file", str(tmp_path / "missing.json")],
+        )
+
+        kwargs = route.call_args.kwargs
+        assert kwargs["available_models"] == [self.HAIKU]
+        assert kwargs["provider"] == self.PROVIDER
+        assert kwargs["max_input_tokens"] == {}
+
+    def test_without_provider_keeps_the_exact_old_call(self, monkeypatch):
+        route, payload, token = self._invoke(monkeypatch, [])
+
+        route.assert_called_once_with(
+            payload,
+            workspace=self.WS,
+            token=token,
+            available_models=[self.HAIKU],
+            audit_decision=True,
+            hook_output=False,
+        )
+
+
 class TestProviderRoutingLaunchHygiene:
     PROVIDER = "main.agents.anthropic_provider"
 
@@ -9665,5 +9738,7 @@ class TestProviderRoutingLaunchHygiene:
         for key in (
             "_claude_launch_provider",
             "_claude_launch_routing_models",
+            "_claude_routing_provider",
+            "_claude_routing_models_file",
         ):
             assert key not in saved

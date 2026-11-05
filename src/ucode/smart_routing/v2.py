@@ -65,6 +65,8 @@ from ucode.smart_routing import claude_routing, orchestrator, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     ROUTE_SUBAGENT_MOD_EVENT,
+    ROUTING_MODELS_FILE_STATE_KEY,
+    ROUTING_PROVIDER_STATE_KEY,
     routing_hook_argv,
     sync_first_prompt_hook,
     sync_smart_routing_hooks,
@@ -76,6 +78,7 @@ from ucode.smart_routing.routing_models_cache import (
     read_routing_models,
     routing_models_from_catalog,
     routing_models_from_json,
+    routing_models_to_json,
     write_routing_models,
 )
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
@@ -339,8 +342,8 @@ def _claude_model_overrides(model_ids: list[str]) -> dict[str, str]:
     return overrides
 
 
-def _routed_claude_agent_slug(model: str) -> str:
-    canonical = _canonical_claude_model_id(model)
+def _routed_claude_agent_slug(model: str, *, canonicalize: bool = True) -> str:
+    canonical = _canonical_claude_model_id(model) if canonicalize else model
     readable = canonical.rsplit("/", 1)[-1]
     for prefix in ("databricks-", "system.ai."):
         if readable.startswith(prefix):
@@ -352,11 +355,23 @@ def _routed_claude_agent_slug(model: str) -> str:
     return f"{CLAUDE_ROUTED_AGENT_PREFIX}{slug[:36]}-{digest}"
 
 
-def _routed_claude_agent_name(model: str) -> str:
-    return f"{CLAUDE_ROUTING_PLUGIN_NAME}:{_routed_claude_agent_slug(model)}"
+def _routed_claude_agent_name(model: str, *, canonicalize: bool = True) -> str:
+    return f"{CLAUDE_ROUTING_PLUGIN_NAME}:{_routed_claude_agent_slug(model, canonicalize=canonicalize)}"
 
 
-def _routed_claude_agent_definitions(model_ids: list[str]) -> dict[str, dict[str, str]]:
+def _routed_claude_agent_definitions(
+    model_ids: list[str], provider_context: Mapping[str, int] | None = None
+) -> dict[str, dict[str, str]]:
+    """Agents per model; with ``provider_context`` the ids are a provider's own, kept verbatim."""
+    if provider_context is not None:
+        return {
+            _routed_claude_agent_name(model, canonicalize=False): {
+                "description": f"Smart-routed coding agent using {model}",
+                "prompt": CLAUDE_ROUTED_AGENT_PROMPT,
+                "model": _provider_model_name(provider_context, model),
+            }
+            for model in dict.fromkeys(model_ids)
+        }
     return {
         _routed_claude_agent_name(model): {
             "description": f"Smart-routed coding agent using {model}",
@@ -391,7 +406,9 @@ def _claude_mod_launch_args(options: Mapping[str, object]) -> list[str]:
     return ["--system-prompt-snapshot", "off"] if options.get("orchestratorInstructions") else []
 
 
-def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
+def _write_routed_claude_plugin(
+    plugin_dir: Path, model_ids: list[str], provider_context: Mapping[str, int] | None = None
+) -> None:
     """Write exact-model agents for launch-scoped loading through --plugin-dir."""
     write_json_file(
         plugin_dir / ".claude-plugin" / "plugin.json",
@@ -446,7 +463,7 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             },
         },
     )
-    for name, definition in _routed_claude_agent_definitions(model_ids).items():
+    for name, definition in _routed_claude_agent_definitions(model_ids, provider_context).items():
         slug = name.partition(":")[2]
         write_text_file(
             plugin_dir / "agents" / f"{slug}.md",
@@ -567,17 +584,21 @@ def route_claude_subagent(
     available_models: list[str],
     audit_decision: bool = False,
     hook_output: bool = False,
+    provider: str | None = None,
+    max_input_tokens: Mapping[str, int] | None = None,
 ) -> dict | None:
     """Return the spawn-ready model and UI details using the shared Python client.
 
     ``hook_output`` returns the legacy PreToolUse hook response instead, with its plain-text
-    notice, for hooks that earlier UG versions persisted in settings files.
+    notice, for hooks that earlier UG versions persisted in settings files. With ``provider``,
+    ``available_models`` are that Model Provider Service's own ids and are used verbatim.
     """
+    route_kwargs = {} if provider is None else {"canonicalize": False}
     route = routing.resolve_spawn_route(
         payload,
         is_spawn_agent=claude_routing.is_spawn_agent_tool,
         decision_fn=lambda task: _request_claude_routing_decision(
-            workspace, token, task, available_models
+            workspace, token, task, available_models, **route_kwargs
         ),
         default_task_label="Claude Code subagent task",
         model_id_mapper=lambda model: model,
@@ -595,7 +616,9 @@ def route_claude_subagent(
     if hook_output:
         updated_input = {
             **{key: value for key, value in route.tool_input.items() if key != "model"},
-            "subagent_type": _routed_claude_agent_name(route.routed_model),
+            "subagent_type": _routed_claude_agent_name(
+                route.routed_model, canonicalize=provider is None
+            ),
         }
         agent_name = updated_input["subagent_type"]
         if orchestrator.enabled(agent=AGENT_CLAUDE):
@@ -615,9 +638,29 @@ def route_claude_subagent(
             },
         }
     return {
-        "model": maybe_add_gpt_1m_suffix(route.routed_model),
+        "model": (
+            maybe_add_gpt_1m_suffix(route.routed_model)
+            if provider is None
+            else _provider_model_name(max_input_tokens or {}, route.routed_model)
+        ),
         "rationale": route.decision.rationale,
     }
+
+
+def provider_subagent_candidates(
+    models_file: str | None, fallback: list[str]
+) -> tuple[list[str], dict[str, int]]:
+    """The launch snapshot's ids and context sizes, or ``fallback`` ids when it is unreadable."""
+    rows = None
+    if models_file:
+        try:
+            rows = json.loads(Path(models_file).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            rows = None
+    models = routing_models_from_json(rows) if isinstance(rows, list) else []
+    if not models:
+        return list(fallback), {}
+    return [model.id for model in models], _provider_context(models)
 
 
 def _provider_context(models: list[RoutingModel]) -> dict[str, int]:
@@ -858,6 +901,8 @@ def launch_claude(
         **state,
         "claude_models": {str(index): model for index, model in enumerate(model_ids)},
     }
+    if provider is not None:
+        routing_state[ROUTING_PROVIDER_STATE_KEY] = provider
     sync_smart_routing_hooks(settings, routing_state, enabled=True)
     if route_first_prompt:
         sync_first_prompt_hook(settings, hook_executable)
@@ -879,6 +924,11 @@ def launch_claude(
             settings_path = launch_dir / "settings.json"
             socket_path = launch_dir / "first.sock"
             plugin_dir = launch_dir / "plugin"
+            # A launch-scoped copy: another launch refreshing the shared cache must not change
+            # this session's candidates.
+            models_snapshot_path = launch_dir / "routing-models.json"
+            if provider is not None:
+                routing_state[ROUTING_MODELS_FILE_STATE_KEY] = str(models_snapshot_path)
             if route_first_prompt:
                 env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
             session_path = _prepare_smart_router_session("claude")
@@ -893,7 +943,11 @@ def launch_claude(
             ] = mod_options
             try:
                 write_json_file(settings_path, settings)
-                _write_routed_claude_plugin(plugin_dir, model_ids)
+                if provider is not None:
+                    config_io.atomic_write_json(
+                        models_snapshot_path, routing_models_to_json(provider_models)
+                    )
+                _write_routed_claude_plugin(plugin_dir, model_ids, provider_context)
             except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
                 raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc
             model_args = launch_model_args(remaining, routed_model or launch_model)

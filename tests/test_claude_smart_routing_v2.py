@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -1436,3 +1437,221 @@ class TestV2ProviderRouting:
         assert env["requests"] == []
         assert model == f"{self.OPUS}[1m]"
         assert env["route_options"] == [(self.OPUS, "claude"), (self.HAIKU, "claude")]
+
+
+class TestV2ProviderSubagentRouting:
+    """Subagent routing over a Model Provider Service's own ids."""
+
+    WS = "https://example.com"
+    PROVIDER = "main.agents.bedrock_provider"
+    OPUS = "us.anthropic.claude-opus-4-6-v1"
+    HAIKU = "anthropic.claude-haiku-4-5@20251001"
+    PLATFORM = "claude_platform/claude-sonnet-5-5"
+    CONTEXT = {OPUS: 1_000_000, PLATFORM: 200_000}
+
+    def test_hook_argv_carries_provider_only_when_set(self):
+        base = {"workspace": self.WS, "claude_models": {"0": self.OPUS}}
+
+        plain = claude_hooks.routing_hook_argv(base, claude_hooks.ROUTE_SUBAGENT_MOD_EVENT)
+        gated = claude_hooks.routing_hook_argv(
+            {
+                **base,
+                claude_hooks.ROUTING_PROVIDER_STATE_KEY: self.PROVIDER,
+                claude_hooks.ROUTING_MODELS_FILE_STATE_KEY: "/tmp/launch/routing-models.json",
+            },
+            claude_hooks.ROUTE_SUBAGENT_MOD_EVENT,
+        )
+
+        assert "--provider" not in plain
+        assert gated == [
+            *plain,
+            "--provider",
+            self.PROVIDER,
+            "--models-file",
+            "/tmp/launch/routing-models.json",
+        ]
+        session_start = claude_hooks.routing_hook_argv(
+            {**base, claude_hooks.ROUTING_PROVIDER_STATE_KEY: self.PROVIDER}, "session-start"
+        )
+        assert "--provider" not in session_start
+
+    def test_agent_definitions_keep_raw_ids_and_earn_1m_from_context(self):
+        ids = [self.OPUS, self.HAIKU, self.PLATFORM]
+
+        definitions = v2._routed_claude_agent_definitions(ids, self.CONTEXT)
+
+        assert [definition["model"] for definition in definitions.values()] == [
+            f"{self.OPUS}[1m]",
+            self.HAIKU,
+            self.PLATFORM,
+        ]
+        slugs = [name.partition(":")[2] for name in definitions]
+        assert slugs == [v2._routed_claude_agent_slug(model, canonicalize=False) for model in ids]
+        assert len(set(slugs)) == 3
+        for slug, model in zip(slugs, ids, strict=True):
+            assert slug.startswith(v2.CLAUDE_ROUTED_AGENT_PREFIX)
+            assert all(ch.isalnum() or ch == "-" for ch in slug)
+            assert slug.endswith(hashlib.sha256(model.encode()).hexdigest()[:8])
+        assert slugs[2].startswith(f"{v2.CLAUDE_ROUTED_AGENT_PREFIX}claude-sonnet-5-5-")
+
+    def test_ids_with_the_same_readable_slug_stay_distinct(self):
+        first = v2._routed_claude_agent_slug("a/claude-x", canonicalize=False)
+        second = v2._routed_claude_agent_slug("b/claude-x", canonicalize=False)
+
+        assert first != second
+        assert first.rsplit("-", 1)[0] == second.rsplit("-", 1)[0]
+
+    def test_plugin_writes_provider_agents(self, tmp_path):
+        v2._write_routed_claude_plugin(tmp_path, [self.OPUS, self.HAIKU], self.CONTEXT)
+
+        assert _plugin_agent_models(tmp_path) == {f"{self.OPUS}[1m]", self.HAIKU}
+
+    def test_non_provider_definitions_are_unchanged(self):
+        definitions = v2._routed_claude_agent_definitions(
+            ["databricks-claude-opus-4-8", "system.ai.gpt-5-6-sol"]
+        )
+
+        assert {name: d["model"] for name, d in definitions.items()} == {
+            v2._routed_claude_agent_name("system.ai.claude-opus-4-8"): "system.ai.claude-opus-4-8",
+            v2._routed_claude_agent_name("system.ai.gpt-5-6-sol"): "system.ai.gpt-5-6-sol[1m]",
+        }
+
+    @pytest.mark.parametrize(
+        ("routed", "spawn_model"),
+        [(OPUS, f"{OPUS}[1m]"), (HAIKU, HAIKU), (PLATFORM, PLATFORM)],
+    )
+    def test_routes_subagent_over_raw_ids(self, tmp_path, monkeypatch, routed, spawn_model):
+        decisions_path = tmp_path / "decisions.jsonl"
+        monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", decisions_path)
+        captured = {}
+
+        def fake_select(workspace, token, task, route_options, **kwargs):
+            captured["route_options"] = list(route_options)
+            return routing.RoutingDecision(model=routed, rationale="why"), None
+
+        monkeypatch.setattr(routing, "select_route", fake_select)
+        payload = {"session_id": "s1", "tool_name": "Agent", "tool_input": {"prompt": "fix it"}}
+        ids = [self.OPUS, self.HAIKU, self.PLATFORM]
+
+        output = v2.route_claude_subagent(
+            payload,
+            workspace=self.WS,
+            token="token",
+            available_models=ids,
+            audit_decision=True,
+            provider=self.PROVIDER,
+            max_input_tokens=self.CONTEXT,
+        )
+        legacy = v2.route_claude_subagent(
+            payload,
+            workspace=self.WS,
+            token="token",
+            available_models=ids,
+            hook_output=True,
+            provider=self.PROVIDER,
+            max_input_tokens=self.CONTEXT,
+        )
+
+        assert output == {"model": spawn_model, "rationale": "why"}
+        assert captured["route_options"] == [(model, "claude") for model in ids]
+        assert legacy["hookSpecificOutput"]["updatedInput"]["subagent_type"] == (
+            v2._routed_claude_agent_name(routed, canonicalize=False)
+        )
+        assert legacy["hookSpecificOutput"]["updatedInput"]["subagent_type"] in (
+            v2._routed_claude_agent_definitions(ids, self.CONTEXT)
+        )
+        record = json.loads(decisions_path.read_text())
+        assert record["requested_model"] == routed
+
+    @pytest.mark.parametrize("content", [None, "{not json", "[]", '{"id": "x"}'])
+    def test_candidates_fall_back_without_a_readable_snapshot(self, tmp_path, content):
+        snapshot = tmp_path / "routing-models.json"
+        if content is not None:
+            snapshot.write_text(content)
+
+        assert v2.provider_subagent_candidates(str(snapshot), [self.HAIKU]) == ([self.HAIKU], {})
+        assert v2.provider_subagent_candidates(None, [self.HAIKU]) == ([self.HAIKU], {})
+
+    def test_candidates_come_from_the_snapshot_not_the_shared_cache(self, tmp_path):
+        snapshot = tmp_path / "routing-models.json"
+        snapshot.write_text(
+            json.dumps([{"id": self.OPUS, "max_input_tokens": 1_000_000}, {"id": self.PLATFORM}])
+        )
+        # A concurrent launch refreshing the shared cache must not change this session.
+        write_routing_models(self.WS, self.PROVIDER, [RoutingModel(self.HAIKU)])
+
+        assert v2.provider_subagent_candidates(str(snapshot), [self.HAIKU]) == (
+            [self.OPUS, self.PLATFORM],
+            {self.OPUS: 1_000_000},
+        )
+
+    def test_launch_wires_provider_into_hook_and_plugin(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv(v2.SMART_ROUTING_PROVIDER_ENV_VAR, "1")
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+        monkeypatch.setattr(
+            "ucode.smart_routing.claude_hooks.build_auth_token_argv",
+            lambda *_args, **_kwargs: ["ug"],
+        )
+        captured: dict = {}
+
+        class FakeProc:
+            def __init__(self, argv, **_kwargs):
+                settings = json.loads(Path(argv[argv.index("--settings") + 1]).read_text())
+                captured["route_command"] = settings["pluginConfigs"][
+                    v2.CLAUDE_ROUTING_PLUGIN_NAME
+                ]["options"]["routeCommand"]
+                plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
+                captured["plugin_models"] = _plugin_agent_models(plugin_dir)
+                snapshot = plugin_dir.parent / "routing-models.json"
+                captured["snapshot_path"] = str(snapshot)
+                captured["snapshot"] = json.loads(snapshot.read_text())
+                self.stdin = None
+
+            def wait(self):
+                return 0
+
+        monkeypatch.setattr(v2.subprocess, "Popen", FakeProc)
+        with pytest.raises(SystemExit):
+            v2.launch_claude(
+                {
+                    "workspace": self.WS,
+                    "_claude_launch_provider": self.PROVIDER,
+                    v2.CLAUDE_LAUNCH_ROUTING_MODELS_STATE_KEY: [
+                        {"id": self.OPUS, "max_input_tokens": 1_000_000},
+                        {"id": self.PLATFORM},
+                    ],
+                },
+                ["--debug"],
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=None,
+                compose_settings=lambda args: ({}, list(args)),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+
+        assert captured["route_command"] == [
+            "ug",
+            "claude-router-hook",
+            "route-subagent-mod",
+            "--host",
+            self.WS,
+            "--model",
+            self.OPUS,
+            "--model",
+            self.PLATFORM,
+            "--provider",
+            self.PROVIDER,
+            "--models-file",
+            captured["snapshot_path"],
+        ]
+        assert captured["snapshot"] == [
+            {"id": self.OPUS, "max_input_tokens": 1_000_000},
+            {"id": self.PLATFORM},
+        ]
+        assert not Path(captured["snapshot_path"]).exists()
+        assert captured["plugin_models"] == {f"{self.OPUS}[1m]", self.PLATFORM}
