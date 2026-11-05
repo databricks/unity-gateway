@@ -29,7 +29,11 @@ function engine(on: On, {rejectModel = false, failControls = false, referenceRes
   on('session.model', () => ({value: model}));
   on('env.get', ($, e) => ({value: env[e.name]}));
   on('env.set', ($, e) => { env[e.name] = e.value; return {value: undefined}; });
-  on('process.run', () => ({value: {exitCode: failControls ? 1 : 0, stdout: '', stderr: ''}}));
+  on('process.run', ($, e) => ({value: {
+    exitCode: failControls ? 1 : 0,
+    stdout: e.argv[0] === '/router' ? JSON.stringify({model: 'routed-sonnet', rationale: 'Selected for task'}) : '',
+    stderr: '',
+  }}));
   on('command.run', {command: 'model'}, ($, e) => {
     commands.push(e.args);
     if (!e.args) return {};
@@ -178,3 +182,28 @@ for (const failure of ['model', 'controls']) {
     expect(state.env.ENABLE_SMART_ROUTER_ORCHESTRATOR).toBe('0');
   });
 }
+
+test('Auto changes invalidate pending spawn routes while existing children can resume', {options: {...AUTO, routeCommand: ['/router']}}, async ($, on) => {
+  engine(on);
+  on('session.id', () => ({value: 'session-1'}));
+  on('tool.call', () => ({result: 'ok'}));
+  on('agent.spawn', ($, e) => ({model: e.model ?? 'original-model', agentId: 'child-1'}));
+  on('fs.write', () => ({value: undefined}));
+  const call = {tool: 'Agent', tool_use_id: 'pending', prompt: 'Review the code', subagent_type: 'general-purpose'};
+  const spawn = {
+    tool_use_id: 'pending', prompt: call.prompt, description: 'Review',
+    subagentType: call.subagent_type, parentModel: 'admin-sonnet',
+    provider: {plugin: 'engine', tier: 'core' as const}, background: true, fork: false,
+    name: 'reviewer', permissionMode: 'default', parentAgentId: 'parent', cwd: '/workspace',
+  };
+  await $.command.run({command: 'model', args: 'auto'});
+  await $.tool.call(call);
+  await $.command.run({command: 'model', args: 'admin-sonnet'});
+  expect((await $.agent.spawn(spawn)).deny).toContain('Auto changed');
+  const resumed = await $.agent.spawn({...spawn, model: 'existing-child-model', resume: {agentId: 'child-1'}});
+  expect(resumed.model).toBe('existing-child-model');
+  await $.command.run({command: 'model', args: 'auto'});
+  expect((await $.agent.spawn(spawn)).deny).toContain('Auto changed');
+  await $.tool.call({...call, tool_use_id: 'fresh'});
+  expect((await $.agent.spawn({...spawn, tool_use_id: 'fresh'})).model).toBe('routed-sonnet');
+});

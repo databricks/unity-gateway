@@ -118,15 +118,20 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         managed_files_mod, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
     )
     monkeypatch.setattr(managed_files_mod, "_config_scope", "global")
+    monkeypatch.setattr(managed_files_mod, "_machine_wide_only", False)
     # `ug configure` and `ug revert` set this for the rest of the process; start each test as a
     # launch-like run.
     monkeypatch.setattr(managed_files_mod, "_explicit_managed_command", None)
+    monkeypatch.setattr(managed_files_mod, "_machine_wide_only", False)
+    # The test interpreter lives in a developer's checkout; tests of the check itself override this.
+    monkeypatch.setattr("ucode.cli._require_shared_installation", lambda: None)
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
     # Launch seeds Claude's feature cache in `.claude.json`; never touch the developer's copy.
     monkeypatch.setattr(claude_mod, "CLAUDE_CODE_CONFIG_PATH", tmp_path / ".claude.json")
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     # The header mod installs beside the real managed file; tests opt in with a tmp root.
     monkeypatch.setattr(claude_mod, "claude_header_mod_root", lambda: None)
+    monkeypatch.setattr(managed_files_mod, "claude_desktop_org_plugin_path", lambda: None)
     monkeypatch.setattr(
         codex_mod, "CODEX_MODEL_CATALOG_PATH", state_dir / "codex-model-catalog.json"
     )

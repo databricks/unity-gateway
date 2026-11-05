@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 
 import pytest
-from utils.agents.claude import assert_agent_resumed
+from utils.agents.claude import assert_follow_ups_resumed
 from utils.evidence import (
     FileTask,
     SubagentCalculation,
@@ -298,9 +298,8 @@ def test_smart_routing_claude_route_subagent_hook(
     """Scenario: the Claude mod's routing CLI receives an Agent call under legacy
     subagent routing or each supported selector.
 
-    Expected: the shared Python client calls the real router and returns model,
-    rationale, and an updated input naming the dispatched ``ucode-route-`` agent while
-    preserving the task, so the mod labels the row with the agent that actually runs.
+    Expected: the shared Python client calls the real router and returns only the
+    spawn-ready model and rationale, leaving the mod's reviewed tool input intact.
     One decision is audited for the session. This checks the mod's CLI protocol;
     no native mod or agent decides to spawn.
     """
@@ -332,12 +331,7 @@ def test_smart_routing_claude_route_subagent_hook(
     output = json.loads(result.stdout)
     assert output["model"] in CLAUDE_MODELS, output
     assert isinstance(output["rationale"], str), output
-    updated = output["updatedInput"]
-    assert "model" not in updated, updated
-    assert updated["subagent_type"].startswith("ug-smart-router:ucode-route-"), updated
-    assert updated["prompt"] == payload["tool_input"]["prompt"], updated
-    assert updated["description"] == payload["tool_input"]["description"], updated
-    assert "general-purpose" not in json.dumps(output), output
+    assert set(output) == {"model", "rationale"}, output
 
     decisions_path = session.home / ".ucode" / "claude-smart-routing-decisions.jsonl"
     assert decisions_path.is_file(), f"hook wrote no routing decision record: {decisions_path}"
@@ -664,8 +658,7 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
         if part.get("type") == "tool_use" and part.get("name") == "SendMessage"
     }
     assert followups, calls
-    for call in followups.values():
-        assert_agent_resumed(call, parent_records, child_id)
+    assert_follow_ups_resumed(list(followups.values()), parent_records, child_id)
     for task in (first, second):
         task.assert_completed(session, "claude")
         assert any(
