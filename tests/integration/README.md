@@ -1401,6 +1401,11 @@ update both together. The fixtures reference real securables on the managed work
 `main.default.ci_e2e_anthropic_mps` / `ci_e2e_openai_mps`, MCP service `system.ai.github`, skill
 `main.default.forkable-meals`), which must keep existing.
 
+The Codex managed-MCP case checks the exact `system.ai.github` service URL in the OS-managed
+file and requires no duplicate in the user's config. Native HTTP entries must pin both the
+OAuth resource and Codex client ID, with no mixed-in stdio fields. Workspaces without native
+OAuth use the `ug mcp-proxy` fallback. This case verifies configuration, not an MCP tool call.
+
 The `managed_fixture` journeys use `UCODE_MANAGED_CONFIG_STUB` to short-circuit only the
 managed-config HTTP read. The Claude discovery module uses `claude_mps.json`, whose Claude model
 source is `main.default.ci_e2e_anthropic_mps` with no static defaults, across all configured/fresh
