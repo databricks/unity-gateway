@@ -77,7 +77,7 @@ To change the TB2 tasks or pin a model, dispatch the workflow with inputs:
 gh workflow run terminal-bench.yml -f tb2_tasks=fix-git,code-from-image -f model=<model>
 ```
 
-`model` doesn't apply to the GPT jobs. The workflow also takes `tb2_dataset`, `claude_version`, and `codex_version`. GitHub can dispatch the workflow only from a file that is already on `main`.
+`model` doesn't apply to the GPT jobs. The gpt-6-luna job skips `financial-document-processor`, which luna fails about two times in three. The workflow also takes `tb2_dataset`, `claude_version`, and `codex_version`. GitHub can dispatch the workflow only from a file that is already on `main`.
 
 ## Read the results
 

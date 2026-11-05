@@ -30,14 +30,31 @@ denied, the agent does not launch.
 The local file is always written. The OS-managed file is additionally reconciled during interactive
 configuration, except for Claude subscription relay.
 
+## Machine-wide Only
+
+An explicit `ug configure --global` writes only the OS-managed files: the Claude and Codex per-user
+config files, user MCP registrations, skills, Databricks AI Tools, Claude Desktop, Cowork, and the
+Codex app settings are left unchanged. The run backs up a pre-existing per-user file under
+`~/.ucode` as usual, so `ug revert` restores it rather than deleting it. Agents without OS-managed
+files are skipped, so a run naming only them is a no-op. A subscription relay, Codex older than
+0.134.0, `UG_SKIP_OS_SETTINGS`, and platforms without managed files fail. So does an installation
+whose `ug` or Python, as given or with symlinks resolved, is in the current user's home folder or the
+folder holding every user's home (`/home`, `/Users`, `%SystemDrive%\Users`): the managed settings run
+that installation for every user. Each user's later launch
+writes their per-user settings. The limit applies to that run only and is not saved; the saved scope stays
+`global`. A workspace switch under `--global` leaves the per-user MCP entries of the previous
+workspace in place and records `pending_user_mcp_reconcile` in `~/.ucode/state.json`; the next
+configure without `--global` purges and restores them even though it sees no switch. An agent that
+fails to configure fails the run only after the other agents and the MCP and skills setup have run.
+
 ## Per-user Scope
 
 `ug configure --user` (saved as `config_scope` in `~/.ucode/state.json`, default `global`) skips the
 OS-managed files like `UG_SKIP_OS_SETTINGS`: no administrator permission, and managed MCP servers
 register in user scope. Because OS-managed settings take precedence over user settings,
 `ug configure --user` fails before configuring any agent while a selected agent's OS-managed file
-exists (including Windows `requirements.toml`), whoever wrote it; `ug revert`, removal, or
-`--global` resolves it. Launches don't check: a managed file added later simply takes precedence.
+exists (including Windows `requirements.toml`), whoever wrote it; `ug configure` without `--user`,
+`ug revert`, or removing the file resolves it. Launches don't check: a managed file added later simply takes precedence.
 `UG_SKIP_OS_SETTINGS` doesn't check either: ug trusts the OS-managed files present and leaves them
 untouched. `ug configure` without `--user` and `ug revert` reset the scope to `global`.
 `ug configure --user` also fails when the selected workspace publishes a managed config, since that
@@ -195,6 +212,10 @@ If ucode cannot complete a write or revert, the backup remains available for a l
 
 - If the current file exactly matches ucode's last-applied snapshot, restore the exact baseline.
 - If ucode created the file, delete it.
+- If an agent has no backup record but its managed settings file exists, `ug revert` names the
+  file, explains why it was left unchanged, and advises manual removal if it is no longer needed.
+  Revert keeps its existing exit status and state cleanup. This includes existing authentication
+  settings that block Claude subscription relay setup before ug creates a backup.
 - If an administrator or MDM changed the file later, perform a three-way revert.
 - Restore original values only where the current value still matches ucode's last-applied value.
 - Remove only list entries added by ucode while preserving externally added entries.
