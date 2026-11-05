@@ -23,7 +23,7 @@ def save(name, text):
 
 def ui(*args):
     result = process.run(
-        ["/usr/bin/osascript", str(TEMP / "desktop-ui.scpt"), *args],
+        [str(TEMP / "desktop-ui"), *args],
         capture_output=True,
         text=True,
         timeout=45,
@@ -121,6 +121,7 @@ def main():
             ui("click", "Get started")
         wait_for("Continue")
         ui("click", "Continue")
+        print("Gateway onboarding accepted", flush=True)
         wait_for("Cowork", timeout=60)
         save("navigation-ui.txt", ui("snapshot"))
         ui("click", "Cowork")

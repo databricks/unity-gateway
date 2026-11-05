@@ -18,7 +18,7 @@ Temporary credentials are owner-readable, consumed by the Terminal child, delete
 and never included in artifacts. The probe does not change macOS security settings.
 
 Uses existing CI workspace/bearer credentials and `ug configure` with an explicit
-`desktop-ci` profile. AppleScript/System Events drives actual Cowork controls and
+`desktop-ci` profile. A native Swift Accessibility driver manipulates actual Cowork controls and
 requires the selected `system.ai.claude-haiku-4-5` model, the expected assistant
 answer, and a completed response. The prompt spells the number in words, so its
 echo cannot satisfy the numeric answer assertion.

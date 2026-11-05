@@ -52,17 +52,25 @@ def main():
         command.chmod(0o700)
         process.run(["/usr/bin/open", "-a", "Terminal", str(command)], check=True)
         deadline = time.monotonic() + 600
-        previous = ""
+        reported = set()
+        stages = {
+            "UG gateway profile configured",
+            "Gateway onboarding accepted",
+            "Cowork activation requested",
+            "Start task requested",
+            "Cowork inference passed",
+            "Cowork probe failed; see evidence",
+        }
         while time.monotonic() < deadline:
             if output.exists():
-                text = output.read_text(errors="replace").replace(
-                    os.environ["DATABRICKS_BEARER"], "[REDACTED]"
-                )
-                if text != previous:
-                    print(text[len(previous) :], end="", flush=True)
-                    previous = text
+                for line in output.read_text(errors="replace").splitlines():
+                    if line in stages and line not in reported:
+                        print(line, flush=True)
+                        reported.add(line)
             if status.exists():
-                return int(status.read_text().strip())
+                result = status.read_text().strip()
+                if result:
+                    return int(result)
             time.sleep(2)
         raise RuntimeError("Terminal probe did not finish within 600 seconds")
     finally:
