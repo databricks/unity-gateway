@@ -221,11 +221,11 @@ def _remove_plugin_registration(
     cowork: bool = True,
     marketplace_name: str = MARKETPLACE_NAME,
     plugin_ids: tuple[str, ...] = (PLUGIN_ID, LEGACY_PLUGIN_ID),
-    claude: str | None = None,
+    mdm_claude_binary: str | None = None,
 ) -> bool:
     """Remove only UG's plugin and marketplace from the selected scope."""
 
-    claude = claude or _claude_binary()
+    claude = mdm_claude_binary or _claude_binary()
     env = os.environ.copy()
     env["CLAUDE_CONFIG_DIR"] = str(config_root)
     scope = ["--cowork"] if cowork else []
@@ -340,7 +340,7 @@ def _cowork_mcp_config(
     *,
     use_pat: bool = False,
     custom_oauth: bool = False,
-    executable: Path | None = None,
+    mdm_ug_executable: Path | None = None,
 ) -> dict:
     entries: dict[str, dict] = {}
     urls: dict[str, str] = {}
@@ -361,7 +361,7 @@ def _cowork_mcp_config(
             profile,
             use_pat=use_pat,
         )
-        command = executable if executable is not None else Path(argv[0])
+        command = mdm_ug_executable if mdm_ug_executable is not None else Path(argv[0])
         if not command.is_absolute():
             raise RuntimeError(
                 "Could not resolve the absolute `ug` executable required by Claude Cowork."
@@ -659,12 +659,12 @@ def _install_plugin(
             previous_plugin_id = LEGACY_PLUGIN_ID
     try:
         if switching_source:
-            _remove_plugin_registration(config_root, claude=claude)
+            _remove_plugin_registration(config_root, mdm_claude_binary=claude)
         _register_plugin(claude, env, marketplace_root, cowork, marketplace_name, plugin_id)
     except Exception as exc:
         if switching_source and previous_source is not None:
             try:
-                _remove_plugin_registration(config_root, claude=claude)
+                _remove_plugin_registration(config_root, mdm_claude_binary=claude)
                 _register_plugin(
                     claude, env, previous_source, cowork, marketplace_name, previous_plugin_id
                 )

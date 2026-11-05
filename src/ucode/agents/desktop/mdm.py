@@ -337,7 +337,9 @@ def configure(workspace: str, profile: str | None, *, mcp_names: list[str] | Non
         if settings["otel_endpoint"]
         else None
     )
-    mcp_config = cowork._cowork_mcp_config(servers, workspace, user_profile, executable=helper)
+    mcp_config = cowork._cowork_mcp_config(
+        servers, workspace, user_profile, mdm_ug_executable=helper
+    )
     hooks = cowork._connector_hooks(mcp_config, workspace, user_profile, use_pat=False)
     with tempfile.TemporaryDirectory(prefix="ug-mdm-stage-") as directory:
         staging = Path(directory).resolve()
