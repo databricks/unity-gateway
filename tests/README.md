@@ -1,5 +1,9 @@
 # Test suites and user journeys
 
+The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
+including exact service URLs, native OAuth metadata, and real `codex mcp get`
+readback. The per-user configuration remains separate.
+
 `test_startup_telemetry.py` exercises parent-launcher timing over real loopback
 datagrams, startup-error propagation, cancellation, malformed contexts, and
 preserving trace settings when the receiver is unavailable. These are component

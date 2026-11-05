@@ -1,5 +1,9 @@
 # Integration tests
 
+The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
+including exact service URLs, native OAuth metadata, and real `codex mcp get`
+readback. The per-user configuration remains separate.
+
 Parent-launcher metrics currently have component coverage in
 `../test_startup_telemetry.py`; this integration suite does not claim a live
 Isaac-to-UG-to-agent startup or first-token measurement.
