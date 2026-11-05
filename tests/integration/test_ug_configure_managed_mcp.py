@@ -53,8 +53,9 @@ def test_managed_fixture_claude_mcp_lists_configured_server(live_session, worksp
 def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspace):
     """Scenario: an interactive configure with a managed MCP server writes Codex's managed file.
 
-    Expected: Codex reads the server from the OS-managed file, using native HTTP/OAuth when
-    available or the ug stdio proxy otherwise; the user's config gains no managed server.
+    Expected: the managed workspace's connection-backed GitHub service uses native HTTP/OAuth.
+    Codex reads the same HTTP transport and endpoint from the OS-managed file, and the user's
+    config gains no managed server. Falling back to the stdio proxy fails this journey.
     """
     session = live_session
     use_managed_config_fixture(session, "codex_mcp")
@@ -71,19 +72,16 @@ def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspa
     assert len(entries) == 1, entries
     name, entry = next(iter(entries.items()))
     expected_url = f"{workspace.rstrip('/')}/ai-gateway/mcp-services/system.ai.github"
-    if "url" in entry:
-        assert entry["url"] == expected_url, entry
-        assert entry["oauth_resource"] == expected_url, entry
-        assert entry["oauth"]["client_id"] == "https://chatgpt.com/oauth/codex/client.json", entry
-        assert "command" not in entry and "args" not in entry, entry
-    else:
-        assert entry["command"].endswith("ug"), entry
-        assert entry["args"][0] == "mcp-proxy", entry
-        assert "--url" in entry["args"], entry
-        assert entry["args"][entry["args"].index("--url") + 1] == expected_url, entry
+    assert entry["url"] == expected_url, entry
+    assert entry["oauth_resource"] == expected_url, entry
+    assert entry["oauth"]["client_id"] == "https://chatgpt.com/oauth/codex/client.json", entry
+    assert "command" not in entry and "args" not in entry, entry
 
     result = session.run("mcp", "get", name, "--json", binary=session.which("codex"), timeout=30)
-    assert json.loads(result.stdout)["name"] == name, result.stdout
+    native = json.loads(result.stdout)
+    assert native["name"] == name, native
+    assert native["transport"]["type"] == "streamable_http", native
+    assert native["transport"]["url"] == expected_url, native
 
     personal_path = session.home / ".codex" / "config.toml"
     personal = tomllib.loads(personal_path.read_text()) if personal_path.exists() else {}

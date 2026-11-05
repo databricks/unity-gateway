@@ -1,8 +1,10 @@
 # Test suites and user journeys
 
-The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
-including exact service URLs, native OAuth metadata, and real `codex mcp get`
-readback. The per-user configuration remains separate.
+The managed Codex MCP journey requires the managed workspace's connection-backed
+GitHub service to use native HTTP/OAuth, with its exact URL, resource and client ID.
+Real `codex mcp get` readback must preserve the HTTP transport and URL; a fallback
+to stdio fails this journey. User-scope registrations remain separate. Proxy fallback
+selection is covered by component tests in `test_mcp.py`.
 
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
