@@ -105,6 +105,7 @@ def main():
     raw_log = TEMP / "claude-native.log"
     try:
         model_label = configure()
+        print("UG gateway profile configured", flush=True)
         with raw_log.open("w") as log:
             app = process.popen(
                 [
@@ -121,8 +122,9 @@ def main():
         wait_for("Continue")
         ui("click", "Continue")
         wait_for("Cowork", timeout=60)
+        save("navigation-ui.txt", ui("snapshot"))
         ui("click", "Cowork")
-        report["coworkActivated"] = True
+        print("Cowork activation requested", flush=True)
         snapshot = wait_for("Write your prompt to Claude", timeout=60)
         save("cowork-ui.txt", snapshot)
         if f"Model: {model_label}" not in snapshot:
@@ -130,9 +132,9 @@ def main():
         ui("type", "Write your prompt to Claude", PROMPT)
         time.sleep(1)
         ui("click", "Start task")
-        report["promptSubmitted"] = True
+        print("Start task requested", flush=True)
         snapshot = wait_for("Claude finished the response", timeout=240)
-        if "Claude responded: 48213" not in snapshot:
+        if not any("Claude responded: 48213" in row.split(" | ") for row in snapshot.splitlines()):
             raise RuntimeError("Completed response did not match expected answer")
         report.update(responseAsserted=True, responseFinished=True, expectedResponse="48213")
     except Exception as exc:
@@ -143,9 +145,12 @@ def main():
                 save("final-ui.txt", ui("snapshot"))
             except Exception as exc:
                 report["captureError"] = str(exc)
-            process.run(
-                ["/usr/sbin/screencapture", "-x", str(EVIDENCE / "desktop.png")], timeout=15
-            )
+            try:
+                process.run(
+                    ["/usr/sbin/screencapture", "-x", str(EVIDENCE / "desktop.png")], timeout=15
+                )
+            except Exception as exc:
+                report["screenshotError"] = str(exc)
             app.terminate()
             try:
                 app.wait(timeout=10)

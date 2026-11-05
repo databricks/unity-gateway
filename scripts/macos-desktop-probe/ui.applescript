@@ -1,7 +1,7 @@
 on elementText(elementRef)
     set pieces to {}
     tell application "System Events"
-        repeat with attributeName in {"AXRole", "AXTitle", "AXDescription", "AXValue", "AXHelp"}
+        repeat with attributeName in {"AXRole", "AXTitle", "AXDescription", "AXValue", "AXHelp", "AXEnabled", "AXSelected"}
             try
                 set attributeValue to value of attribute (contents of attributeName) of elementRef
                 if attributeValue is not missing value then set end of pieces to attributeValue as text
@@ -48,6 +48,7 @@ on run argv
         if my hasLabel(elementRef, targetLabel) then
             tell application "System Events"
                 if operation is "click" then
+                    if not (value of attribute "AXEnabled" of elementRef) then error "Control disabled: " & targetLabel
                     perform action "AXPress" of elementRef
                     return "clicked"
                 else if operation is "type" then

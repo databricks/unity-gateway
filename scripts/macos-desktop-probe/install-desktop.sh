@@ -17,4 +17,5 @@ grep -Fx 'TeamIdentifier=Q6L2SF6YDW' "$evidence/signature.txt"
 test "$(cat "$evidence/version.txt")" = 4.23118.0
 sw_vers > "$evidence/os.txt"
 uname -m >> "$evidence/os.txt"
+/usr/bin/swift -e 'import Virtualization; print("VZVirtualMachine.isSupported=\(VZVirtualMachine.isSupported)")' > "$evidence/virtualization.txt"
 /usr/bin/osacompile -o "$RUNNER_TEMP/desktop-ui.scpt" scripts/macos-desktop-probe/ui.applescript
