@@ -60,13 +60,28 @@ These deliberately unauthenticated requests do not establish
 successful inference or delegation quality.
 See [the mod guide](../docs/claude-mod.md).
 
-Native mod component tests cover a lone call's decision under its Agent row, parallel calls
+Native mod component tests cover stable random animal labels, 100 distinct names before
+numbered reuse, unchanged execution inputs and row controls, and pending-to-completed
+name stability. They cover a lone call's decision under its Agent row and parallel calls
 drawn as cards above the parent's next reply in call order (replies drawn before routing
 never used, calls still routing waiting for a later reply, cards kept across a turn that
 ends while a background agent runs and dropped on abort), distinct IDs for identical tasks,
 nothing above the prompt, pending row and turn-spinner routing timers, and disabled/failed
 routing. They do not establish live
 parallel-agent TUI or gateway coverage.
+
+The bottom-bar regression in the native mod suite checks the spawn's returned child ID
+against its transcript animal name, reverse completion order, a model-only spawn override,
+denied/unrouted spawns, and nonblocking mapping-write failures. `test_claude_mod.py` exercises
+the generated `subagentStatusLine` command, including paths with spaces, child-ID lookup,
+session isolation, missing/partial records, progress/token updates, and terminal-control
+filtering. These component checks do not establish interactive native-panel rendering.
+
+The native auto-mode regression serves controlled server verdicts to the real Claude binary.
+An approved Agent call retains its original input and starts a child on a different routed
+model without invoking the fallback classifier; a flagged call remains denied and starts no
+child. The fallback response is deliberately malformed, so an input rewrite fails the test.
+These are component checks, not live gateway evidence. Forks and resumed agents bypass routing.
 
 `test_agent_antigravity.py` covers the Antigravity CLI agent: Databricks-to-Antigravity model
 names (dotted versions, `-preview` names and their tiers, image models dropped), the `agy models`
@@ -80,6 +95,18 @@ native installer, `agy mcp list` parsing, `ug antigravity`/`ug agy`, and
 `ug agents add antigravity`. These are unit/component checks. Automated live coverage is the
 eight journeys in `integration/` (blocking Linux CI lane, Databricks Hosted and the Gemini
 Enterprise MPS; see `integration/README.md`).
+
+`ug configure --global` (machine-wide settings only) is covered by unit/component checks:
+`TestConfigureScopeFlags` in `test_cli.py` (the flag lasts one run, per-user-only agents are
+skipped as a no-op, `--mcp`/AI Tools/`UG_SKIP_OS_SETTINGS` are rejected, the picker offers only
+Claude/Codex, skills, MCP restore, Desktop and Cowork are skipped, and an installation in a
+user's home folder is rejected, an agent failure fails the run only after the other agents and MCP setup; `TestPerUserPaths` in `test_managed_files.py` and
+`test_user_profiles_dir` in `test_system_cross_os.py` cover the location check), the `global_flag` tests in `test_agent_claude.py` and `test_agent_codex.py` (only the
+managed file is written; relay, legacy Codex and platforms without one fail), and
+`test_mcp.py` (no user-scope MCP fallback).
+`TestConfigureSharedStateMcpCleanup::test_explicit_configure_switch_restores_saved_mcp_entries` covers
+a `--global` workspace switch followed by a normal configure of the same workspace. No live or integration journey covers `--global`; the
+sudo write is mocked.
 
 `test_mcp.py` and `test_cli.py` cover Claude/Codex MCP setup without their CLIs:
 finding an existing config, creating one with `--agents`, and reporting status
@@ -100,6 +127,11 @@ the managed integration journeys exercise real configure and override rejection.
 ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching a Codex launch's
 `-c` headers (plain and smart-routed) without writing its profile. No automated test checks the
 header at the gateway.
+
+`test_claude_routing.py` and `test_claude_smart_routing_v2.py` cover recording the
+original model selector, agent type and tool-call ID alongside the routed target.
+Omitted selectors stay null. These local audit checks do not establish a resolved
+inherited model, an executed-model match, or a remote metrics export.
 
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
@@ -177,10 +209,15 @@ continuation note, with the `fork` exception only when the host offers fork suba
 
 The live `test_smart_router_claude_resumes_same_subagent_with_send_message` journey
 spawns one child and follows up through `SendMessage` by ID or name, requiring
-the native result to resolve to the original child's ID, both hidden file answers
-in the same child transcript, and exactly one Agent/Task call. Only parent SendMessage
-calls are checked for continuation; child replies to the parent are allowed. Offline checks reject
-missing recipients, wrong children, failed sends, and missing/crossed tool results. Run it with
+both hidden file answers in the same child transcript and exactly one Agent/Task call.
+Each parent SendMessage is classified for the original child: `resumed` (the native result
+resolves to the child's ID), `queued` (accepted for the still-running child, `pin.id` equals
+its ID), or `rejected` (a failed, undelivered send addressed to the child, as for an invented
+`notify_when_idle` option). The journey requires at least one `resumed` send and tolerates
+`queued`/`rejected` only alongside it (runs 41759864769 and 41768149986). Only parent
+SendMessage calls are checked; child replies to the parent are allowed. Offline checks reject
+missing recipients, other agents (resumed, queued, or addressed), unknown result shapes,
+missing tool results, and a follow-up set with no real resume. Run it with
 Claude 2.1.314+; description-only component checks do not prove continuation.
 
 CUJ3 expects GPT Luna in both agents' catalogs and pickers, including Claude's gateway alias,
@@ -381,6 +418,7 @@ regression invokes the Typer CLI and checks exit code 1, one warning, and a fail
 Desktop summary while profile and previous-selection files survive. Retry returns
 exit code 0, deletes the UG profile, and restores the previous selection without
 workspace state; a repeated revert also returns 0.
+This Desktop failure scenario uses isolated OS-managed paths for unrelated agent warnings.
 
 `test_cowork_hooks.py` covers SessionStart guidance naming every connector without reporting
 unanswered or timed-out probes, a timestamped sign-in line for connectors whose probe returns a
@@ -396,7 +434,7 @@ execution remains unverified.
 `test_code_plugin.py` covers the Code-scoped UG connector plugin with real
 files and controlled native CLI boundaries: original registration names, Claude-only
 filtering, Code-only discovery/authentication instructions, no duplicate MCP servers or
-downloaded skills, no Cowork hooks,
+downloaded skills, no Cowork hooks or version metadata,
 refresh after workspace changes and last-connector removal, scoped cleanup,
 repeat cleanup, saved-root cleanup even after source deletion, config-root changes that
 retain the old registration and saved root on installation failure, successful retry,
@@ -436,6 +474,35 @@ mock the Claude plugin CLI and do not establish native Desktop policy, account-f
 late MCP connection, tool discovery, or inference behavior. A frozen fixture verifies that
 Cowork's skill text, including its description, stays identical to the version before the
 Code authentication changes, with either the default scope or explicit `code=False`.
+
+`test_desktop_marketplace.py` covers ordinary default/`--user` configuration writing
+only the user source, no elevation, preservation of the registered legacy root source,
+one registration when switching an earlier root source to user scope, explicit cache
+refresh, content versions (including asset-only skill updates), downloaded workspace
+skills/assets, previous-account cleanup,
+malformed marketplace metadata (including missing or nonstring directory paths),
+equivalent path aliases, source-switch failure recovery
+for both current and legacy-only plugin identities, preserved nonlocal registrations,
+and retained user source/state after refresh failures. Explicit global skips ordinary
+Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
+Overlapping installer/state checks and duplicate simulated-OS cases are consolidated;
+user installation, persisted account state and registered-source preservation remain covered.
+Unreferenced root-path sentinels and an ineffective temporary-directory alias test were
+removed; content updates and empty-payload cache refresh now share one lifecycle test.
+Equivalent registered-directory aliases remain covered separately.
+Dry-run preservation covers both fresh and already-configured installations.
+Root bundle writer checks belong to the separate MDM follow-up.
+Temporary filesystem destinations are real; external Claude registry/cache operations
+and platform privilege boundaries are simulated. These checks do not establish native
+Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
+A native Linux spot check with Claude CLI 2.1.317 and an isolated home confirmed
+`marketplace add --cowork` preserves a repeated same-path registration and updates
+it for a different directory with the same marketplace name. The fixture follows
+that behavior. A null directory path was rejected by native registry validation;
+ignoring it during UG inspection does not establish automatic registry repair.
+This check does not establish native install/update failure recovery or Desktop GUI behavior.
+`test_desktop_configure_cli.py` also checks explicit-global selection versus default and
+`--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers.
 
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
 It checks that Claude uses an available Slack tool despite a stale disconnect notice, actually
@@ -889,7 +956,10 @@ model-list requests; they do not rely solely on ug's generated catalog.
 The dedicated-workspace CUJ suite adds three independently runnable CUJ2 MPS+MCP cases:
 one configuration case and separate Codex and Claude TUI task cases. The workspace is
 preconfigured for CUJ2 and is read-only; every case validates it, and the fixture compares
-it again during teardown. The TUI cases forward agent requests through the shared per-test
+it again during teardown. Each MPS target must advertise the fixture's exact native APIs,
+ignoring order. Offline checks accept Responses with Chat Completions in either order and
+reject missing or additional APIs.
+The TUI cases forward agent requests through the shared per-test
 loopback recorder to the real workspace and assert the provider-service header, model,
 paired HTTP 200 response, and a nonempty final answer in the completed parent turn matching
 the submitted greeting prompt. Request IDs correlate recorded traffic without constraining

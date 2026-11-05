@@ -161,17 +161,38 @@ ug configure --profile DEFAULT --agents claude,codex
 ug configure --user
 ```
 
-`--global` (the default) writes the machine-wide Claude Code and Codex managed settings with sudo,
-with or without a terminal: run headless as root (or with passwordless sudo), since a write that
-can't be authorized fails the command.
+By default, `ug configure` writes both the per-user settings and the machine-wide Claude Code and
+Codex managed settings with sudo, with or without a terminal: run headless as root (or with
+passwordless sudo), since a write that can't be authorized fails the command.
+`--global` writes only the machine-wide managed settings and leaves every per-user setting alone:
+`~/.claude/ucode-settings.json`, `~/.codex/ucode.config.toml` and `~/.codex/config.toml`, user MCP
+servers, skills, Databricks AI Tools, Claude Desktop, and Cowork. Only Claude Code and Codex
+(0.134.0 or newer) have machine-wide settings; other agents are skipped with a note, so a run that
+names only them does nothing. It fails for `--mcp`, `--enable-databricks-ai-tools`, a subscription
+relay, and `UG_SKIP_OS_SETTINGS`. It also fails when `ug` or its Python is in a user's home folder
+(checked through symlinks), since every user's agents run them: install ug in a shared location
+first, as `scripts/mdm/macos-provision.sh` does with `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR`, and
+`UV_PYTHON_INSTALL_DIR`. Workspace MCP servers that only user settings can hold, the
+web_search MCP server, and a static Codex model list are skipped with a warning. ug still saves its
+own state in `~/.ucode` and your Databricks login. Only that run is limited: each user's first
+launch writes their per-user settings as usual.
 `--user` skips them, like `UG_SKIP_OS_SETTINGS`, and needs no sudo; use it when you launch through
 `ug`. `UG_SKIP_OS_SETTINGS=1` neither writes nor checks the OS-managed files: ug trusts whatever is
 there and the agents apply their native precedence. Configure fails while a managed file for the agent exists, since managed settings take
 precedence; later launches use whatever files are present.
 The choice is saved for launches after a successful configure; `ug configure` without `--user`
-and `ug revert` return to `--global`.
+and `ug revert` return to the default, which writes both.
 `--user` also fails for a workspace that publishes a managed config, which must be installed
-machine-wide; use `--global` for it.
+machine-wide: run `ug configure` without `--user`, or ask your administrator to run
+`ug configure --global`.
+
+For Claude Desktop, default `ug configure` and `--user` both write only the user's
+3P JSON profile, generated marketplace, and native Cowork registration/cache. They leave
+root files untouched. Explicit `--global` skips those user-level Desktop writers; machine
+policy and plugin provisioning are separate macOS MDM work. CLI-agent scope handling is
+unchanged. If Desktop has not initialized a Cowork account directory, ordinary configure
+skips plugin setup until that directory exists. See
+[Desktop plugin installation](docs/claude-desktop.md#cowork-workspace-skills-and-mcp-servers).
 
 ### Hosts that serve several workspaces
 
@@ -193,6 +214,18 @@ profile for the host yet, the first login names one `ug-<name>`.
 Not supported yet on these hosts: disaster-recovery stable connection ids, signing in to an MCP
 service connection that needs your own login, and the MDM bootstrap script. MCP servers are
 registered through `ug mcp-proxy`, never as the agent's own OAuth connection.
+
+### Server-side web search for Claude Code
+
+ug denies Claude Code's native `WebSearch` and registers its own `web_search` MCP. For one launch,
+`UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1 ug claude` instead uses the AI Gateway's server-side search,
+writing no file. If the OS-managed settings, their `managed-settings.d`
+drop-ins, or the user settings deny `WebSearch`, ug warns and keeps its MCP for that launch.
+To make it the default, run `ug configure --enable-server-side-web-search` (`--disable-...` undoes it;
+omitting the flag keeps the saved choice). An explicit `ug configure` then also removes a bare
+`WebSearch` deny from the OS-managed settings unless your admin settings request it, and `ug revert`
+restores it only if that deny list wasn't edited since. ug never writes the deny to the managed file.
+Relayed launches are unaffected.
 
 ### Extra headers for one session
 
