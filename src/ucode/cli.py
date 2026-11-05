@@ -580,8 +580,9 @@ _LAUNCH_GATEWAY_CHECK_KEY = "launch_gateway_check"
 
 
 def _gateway_check_identity(state: dict, custom_oauth: dict | None) -> dict:
-    """What a launch gateway check depends on besides the workspace, as saved in state.json."""
+    """The workspace and credentials covered by a launch gateway check in state.json."""
     identity = {
+        "workspace": state_workspace_key(state),
         "profile": state.get("profile"),
         "use_pat": bool(state.get("use_pat")),
         "custom_oauth": custom_oauth,
@@ -666,6 +667,8 @@ def configure_shared_state(
     # `ug configure` — it already validated auth + the AI Gateway and saved the
     # model lists (carried over by load_state, left untouched).
     state = load_state()
+    if previous_key != key:
+        state.pop(_LAUNCH_GATEWAY_CHECK_KEY, None)
     state["workspace"] = workspace
     if workspace_id:
         state["workspace_id"] = workspace_id
@@ -815,6 +818,12 @@ def configure_shared_state(
     if reuse_gateway_check:
         print_success("Unity Gateway connected")
     else:
+        state.pop(_LAUNCH_GATEWAY_CHECK_KEY, None)
+        if previous_key == key and _LAUNCH_GATEWAY_CHECK_KEY in prior_state:
+            # A failed refresh must not leave a prior success reusable. Preserve the saved
+            # configuration until the new preflight succeeds; only invalidate its check now.
+            prior_state.pop(_LAUNCH_GATEWAY_CHECK_KEY)
+            save_state(prior_state)
         with spinner("Verifying Unity AI Gateway..."):
             if not cli_custom_oauth:
                 token = get_databricks_token(workspace, profile)

@@ -637,7 +637,9 @@ live gateway timing, agent launch, or launch-time savings.
 `TestConfigureSharedStateReusesRecentGatewayCheck` in `test_cli.py` checks that a launch that
 skips model discovery reuses a recent passing gateway probe and web-search lookup without moving
 its check time, and checks again without reuse (`--refresh`, configure), after the window, for
-other credentials, after an incomplete check, and whenever discovery runs. `TestSkipPreflightFlag`
+other credentials, after an incomplete check, and whenever discovery runs. It also verifies
+authentication on reused launches, workspace switches, and persisted invalidation before a
+failed refresh or configure probe. `TestSkipPreflightFlag`
 checks that `--refresh` turns reuse off. These component checks do not establish live gateway
 timing or launch-time savings.
 

@@ -425,8 +425,10 @@ of the process-local probe and listing caches. This suite does not assert live r
 probe/listing timing, or launch-time savings.
 
 Reusing a recent gateway check across discovery-skipping launches is covered only by component
-tests in `../test_cli.py`: reuse, the 15-minute window, credential changes, incomplete checks,
-`--refresh`, and launches that run discovery. This suite does not assert live reuse or
+tests in `../test_cli.py`: reuse with authentication on every launch, the 15-minute window,
+credential and workspace changes, incomplete checks, persisted invalidation before failed
+refresh/configure probes, `--refresh`, and launches that run discovery. This suite does not
+assert live reuse or launch-time savings.
 
 Overlapping the model-service listing with the gateway probe is covered only by
 component tests in `../test_cli.py`: overlap, probe failure without waiting, listing

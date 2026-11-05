@@ -7620,7 +7620,9 @@ class TestConfigureSharedStateReusesRecentGatewayCheck:
 
     @pytest.fixture
     def launch(self, monkeypatch):
-        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+        cli_mod, _, self.ensures, _ = TestConfigureSharedStateUsePat._stub_deps(
+            monkeypatch, pat_token=None
+        )
         # Each call sees only what the previous launch saved, through a JSON round trip like disk.
         saved: dict = {}
         monkeypatch.setattr(cli_mod, "load_state", lambda: json.loads(saved.get("state", "{}")))
@@ -7629,10 +7631,13 @@ class TestConfigureSharedStateReusesRecentGatewayCheck:
         )
         self.requests: list[str] = []
         self.probe = MODEL_SERVICE_PROBE
+        self.probe_error: RuntimeError | None = None
         self.web_search_models = ["system.ai.gpt-5"]
 
         def probe(workspace, token):
             self.requests.append("probe")
+            if self.probe_error:
+                raise self.probe_error
             return self.probe
 
         def web_search_lookup(workspace, token):
@@ -7642,9 +7647,9 @@ class TestConfigureSharedStateReusesRecentGatewayCheck:
         monkeypatch.setattr(cli_mod, "probe_unity_gateway_capabilities", probe)
         monkeypatch.setattr(cli_mod, "discover_codex_models", web_search_lookup)
 
-        def run(*, profile="DEFAULT", reuse=True, skip_model_discovery=True):
+        def run(*, workspace=self.WS, profile="DEFAULT", reuse=True, skip_model_discovery=True):
             return cli_mod.configure_shared_state(
-                self.WS,
+                workspace,
                 profile=profile,
                 tools=["claude"],
                 skip_model_discovery=skip_model_discovery,
@@ -7658,6 +7663,7 @@ class TestConfigureSharedStateReusesRecentGatewayCheck:
         second = launch()
 
         assert sorted(self.requests) == ["probe", "web search"]
+        assert self.ensures == [(self.WS, "DEFAULT"), (self.WS, "DEFAULT")]
         assert first["web_search_model"] == second["web_search_model"] == "system.ai.gpt-5"
         output = _strip_ansi(capsys.readouterr().out)
         assert output.count("Unity Gateway connected") == 2
@@ -7687,6 +7693,43 @@ class TestConfigureSharedStateReusesRecentGatewayCheck:
         launch(profile="OTHER")
 
         assert sorted(self.requests) == ["probe", "probe", "web search", "web search"]
+
+    def test_workspace_switch_probes_before_reuse(self, launch):
+        other_workspace = "https://other.databricks.com"
+        launch()
+        launch(workspace=other_workspace)
+        launch(workspace=other_workspace)
+
+        assert self.requests.count("probe") == 2
+        assert self.ensures == [
+            (self.WS, "DEFAULT"),
+            (other_workspace, "DEFAULT"),
+            (other_workspace, "DEFAULT"),
+        ]
+
+    def test_full_discovery_discards_prior_workspace_check(self, launch):
+        other_workspace = "https://other.databricks.com"
+        launch()
+        configured = launch(workspace=other_workspace, skip_model_discovery=False)
+        launch(workspace=other_workspace)
+
+        assert "launch_gateway_check" not in configured
+        assert self.requests.count("probe") == 3
+
+    @pytest.mark.parametrize("skip_model_discovery", [True, False])
+    def test_failed_refresh_discards_cached_success(self, launch, skip_model_discovery):
+        import ucode.cli as cli_mod
+
+        launch()
+        self.probe_error = RuntimeError("Unity Gateway is not enabled")
+        with pytest.raises(RuntimeError, match="not enabled"):
+            launch(reuse=False, skip_model_discovery=skip_model_discovery)
+        persisted = cli_mod.load_state()
+        self.probe_error = None
+        launch()
+
+        assert "launch_gateway_check" not in persisted
+        assert self.requests.count("probe") == 3
 
     @pytest.mark.parametrize("failure", ["no model service", "no web-search model"])
     def test_incomplete_check_is_not_reused(self, launch, failure):
