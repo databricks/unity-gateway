@@ -284,9 +284,12 @@ time.sleep(30)
         "empty",
         "completed",
         "detail",
+        "routed_detail",
         "resumed",
         "running",
         "detail_running",
+        "routed_detail_running",
+        "detail_transcript",
         "mixed",
         "scheduled",
         "partial",
@@ -336,8 +339,13 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
         ),
         "transcript": ("Background\n\n  Completed (1)\n✔ ug_subagent_one   done · Sonnet 5\n\n❯"),
     }
+    for name in ("detail", "detail_running"):
+        views[f"routed_{name}"] = views[name].replace(
+            "agent ›", "ug-smart-router:ucode-route-claude-haiku-4-5-83f7d1b2 ›"
+        )
+    views["detail_transcript"] = views["routed_detail"].split("← to go back")[0]
     views["resumed"] = views["mixed"]
-    complete = view in ("empty", "completed", "detail", "resumed")
+    complete = view in ("empty", "completed", "detail", "routed_detail", "resumed")
     script = tmp_path / "ug"
     script.write_text(
         f"""#!{sys.executable}
@@ -784,6 +792,53 @@ def test_mcp_completion_accepts_a_fenced_reply(monkeypatch):
     monkeypatch.setattr(mcp_registration, "assistant_answers", lambda agent, records: [reply])
 
     assert task.completed(None, "claude")
+
+
+@pytest.mark.parametrize(
+    "native_apis, accepted",
+    [
+        (["openai/v1/responses"], False),
+        (["openai/v1/chat/completions", "openai/v1/responses"], True),
+        (["openai/v1/responses", "openai/v1/chat/completions"], True),
+        (["openai/v1/chat/completions"], False),
+        (["openai/v1/chat/completions", "openai/v1/responses", "openai/v1/embeddings"], False),
+        ([], False),
+        (None, False),
+    ],
+)
+def test_cuj2_mps_catalog_requires_fixture_apis(native_apis, accepted):
+    services = {}
+    for agent, (name, model) in constants.MODEL_PROVIDER_SERVICE_FIXTURES.items():
+        name = f"model-provider-services/{name}"
+        services[name] = SimpleNamespace(
+            name=name,
+            config=SimpleNamespace(
+                allow_all_targets=False,
+                provider_type=(
+                    "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC"
+                    if agent == CLAUDE
+                    else "EXTERNAL_MODEL_PROVIDER_TYPE_OPENAI"
+                ),
+                targets=[
+                    SimpleNamespace(
+                        model=model,
+                        native_api_types=["anthropic/v1/messages"]
+                        if agent == CLAUDE
+                        else native_apis,
+                    )
+                ],
+            ),
+        )
+    gateway = SimpleNamespace(
+        list_model_provider_services=lambda **kwargs: services.values(),
+        get_model_provider_service=services.__getitem__,
+    )
+    workspace = SimpleNamespace(client=SimpleNamespace(ai_gateway=gateway))
+    if accepted:
+        cuj2._assert_mps_catalog(workspace)
+    else:
+        with pytest.raises(AssertionError):
+            cuj2._assert_mps_catalog(workspace)
 
 
 def test_cuj2_mcp_listing_retries_a_banner_only_claude_listing(tmp_path, monkeypatch):

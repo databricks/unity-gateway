@@ -16,7 +16,116 @@ const reply = (id: string) => ({
   ...panel, component: 'AssistantMessage' as const, requestId: id,
   props: { text: 'reply', isFirstOfReply: true },
 });
-test('a lone call keeps its decision under its own row and draws no card', async ($, on) => {
+
+test('animal names stay distinct and stable without changing routed calls or row controls', async ($, on) => {
+  const input = { ...originalInput, subagent_type: 'ug-smart-router:ucode-route-sonnet-hash', run_in_background: true };
+  const names: string[] = [];
+  const forwarded: any[] = [];
+  const displayInputs: any[] = [];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', ($, event) => {
+    expect(JSON.parse(event.init.stdin).tool_input).toEqual(input);
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: 'system.ai.claude-haiku-5-5', rationale: 'Selected for the task',
+    }) } };
+  });
+  on('tool.call', ($, event) => { forwarded.push(event); return { result: 'ok' }; });
+  on('ui.render', ($, event) => {
+    displayInputs.push(event.props);
+    return { type: 'Text', props: {}, children: [`${event.props.tool}(${event.props.input.description}) · Backgrounded agent`] };
+  });
+
+  for (let index = 0; index < 101; index++) {
+    const id = `animal-${index}`;
+    await $.tool.call({ tool: 'Agent', tool_use_id: id, ...input });
+    const event = { ...row(id), props: { ...row(id).props, input } };
+    for (let render = 0; render < 2; render++) {
+      const mounted = await $.ui.mount(event);
+      const displayed = displayInputs[displayInputs.length - 1];
+      const name = displayed.tool;
+      expect(name).toMatch(/^[A-Z][a-z]+(?: 2)?$/);
+      expect(displayed).toEqual({ ...event.props, tool: name });
+      expect(event.props.input).toEqual(input);
+      expect(await mounted.find({ type: 'Text', text: /Backgrounded agent/ })).toBeDefined();
+      expect(await mounted.find({ type: 'Text', text: 'claude-haiku-5-5' })).toBeDefined();
+      expect(await mounted.find({ type: 'Text', text: /ucode-route-|ug-smart-router:/ })).toBeUndefined();
+      if (render === 0) names.push(name);
+      else expect(name).toBe(names[index]);
+      await mounted.unmount();
+    }
+    expect(forwarded[index]).toEqual({ ...input, tool: 'Agent', tool_use_id: id });
+  }
+  expect(new Set(names).size).toBe(101);
+  expect(names.slice(0, 100).every((name) => !name.includes(' '))).toBe(true);
+  expect(names[100]).toMatch(/ 2$/);
+});
+
+test('routing changes only the matching spawn model and joins its display name to the child ID', async ($, on) => {
+  const writes: any[] = [];
+  const forwarded: any[] = [];
+  const shown = new Map<string, string>();
+  let failWrite = false;
+  const logs: string[] = [];
+  const routedModel = 'system.ai.gpt-5-6-sol[1m]';
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', () => {
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: routedModel, rationale: 'Selected for the task',
+    }) } };
+  });
+  on('tool.call', () => ({ result: 'ok' }));
+  on('agent.spawn', ($, e) => {
+    forwarded.push(e);
+    return e.name === 'denied' ? { deny: 'Permission denied' }
+      : { model: 'claude-sonnet-5', agentId: `child-${e.tool_use_id}` };
+  });
+  on('fs.write', ($, e) => {
+    if (failWrite) throw new Error('Read-only filesystem');
+    writes.push(e);
+    return { value: undefined };
+  });
+  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
+  on('ui.render', ($, e) => {
+    shown.set(e.requestId, e.props.tool);
+    return { type: 'Text', props: {}, children: [e.props.tool] };
+  });
+  for (const id of ['call-a', 'call-b', 'denied']) {
+    await $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
+    const mounted = await $.ui.mount(row(id));
+    await mounted.unmount();
+  }
+  // Reverse completion order, identical descriptions: no joining by task text or order.
+  for (const id of ['call-b', 'call-a', 'denied', 'unrouted']) {
+    const spawn = {
+      tool_use_id: id, prompt: originalInput.prompt, description: originalInput.description,
+      subagentType: originalInput.subagent_type, parentModel: 'claude-opus-4-8',
+      provider: { plugin: 'engine', tier: 'core' as const }, background: true, fork: false,
+      name: id === 'denied' ? 'denied' : 'caller-address', permissionMode: 'default',
+      parentAgentId: 'parent', cwd: '/workspace',
+    };
+    const result = await $.agent.spawn(spawn);
+    expect(forwarded[forwarded.length - 1]).toEqual(id === 'unrouted' ? spawn
+      : { ...spawn, model: routedModel });
+    expect(result).toEqual(id === 'denied' ? { deny: 'Permission denied' }
+      : { model: 'claude-sonnet-5', agentId: `child-${id}` });
+  }
+  expect(writes.length).toBe(2);
+  for (const [index, id] of ['call-b', 'call-a'].entries()) {
+    expect(writes[index].path.endsWith(`/agent-names/agent-child-${id}.json`)).toBe(true);
+    expect(JSON.parse(writes[index].text)).toEqual({ session_id: 'session-1', name: shown.get(id) });
+  }
+  const resumed = { ...forwarded[0], model: 'existing-child-model', resume: { agentId: 'child-call-b' } };
+  await $.agent.spawn(resumed);
+  expect(forwarded[forwarded.length - 1]).toEqual(resumed);
+  expect(writes.length).toBe(2);
+  failWrite = true;
+  const result = await $.agent.spawn(forwarded[0]);
+  expect(result).toEqual({ model: 'claude-sonnet-5', agentId: 'child-call-b' });
+  expect(writes.length).toBe(2);
+  expect(logs).toEqual(['Could not save the subagent display name; its bottom bar will use the native label.']);
+});
+
+test('a lone call ignores extra updatedInput and keeps its decision under its own row', async ($, on) => {
   const calls: any[] = [];
   const logs: string[] = [];
   on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
@@ -30,7 +139,13 @@ test('a lone call keeps its decision under its own row and draws no card', async
     const model = payload.tool_use_id === 'call-a' ? 'system.ai.claude-sonnet-5' : 'system.ai.claude-opus-4-8';
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model, rationale: `Selected for ${payload.tool_use_id}`,
-      updatedInput: { prompt: originalInput.prompt, description: originalInput.description, subagent_type: `ug-smart-router:${payload.tool_use_id}` },
+      updatedInput: {
+        ...payload.tool_input,
+        prompt: 'Routed prompt',
+        description: 'Routed description',
+        subagent_type: `ug-smart-router:${payload.tool_use_id}`,
+        model: 'malicious-model',
+      },
     }) } };
   });
   on('tool.call', ($, e) => { calls.push(e); return { result: 'ok' }; });
@@ -40,9 +155,8 @@ test('a lone call keeps its decision under its own row and draws no card', async
   await $.tool.call({ tool: 'Agent', tool_use_id: 'call-b', ...originalInput });
   expect(calls.length).toBe(2);
   expect(calls[0].tool_use_id).toBe('call-a');
-  expect(calls[0].subagent_type).toBe('ug-smart-router:call-a');
-  expect(calls[0].model).toBeUndefined();
-  expect(calls[1].subagent_type).toBe('ug-smart-router:call-b');
+  expect(calls[0]).toEqual({ tool: 'Agent', tool_use_id: 'call-a', ...originalInput });
+  expect(calls[1]).toEqual({ tool: 'Agent', tool_use_id: 'call-b', ...originalInput });
   expect(logs).toEqual([]);
 
   for (const [id, model] of [['call-a', 'claude-sonnet-5'], ['call-b', 'claude-opus-4-8']]) {
@@ -82,7 +196,6 @@ test('parallel cards keep call order, skip replies drawn earlier, and wait for r
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model: tool_use_id === 'call-a' ? 'system.ai.claude-sonnet-5' : 'system.ai.claude-opus-4-8',
       rationale: `Selected for ${tool_input.description}`,
-      updatedInput: { ...tool_input, subagent_type: `ug-smart-router:${tool_use_id}` },
     }) } };
   });
   on('tool.call', ($, e) => {
@@ -135,14 +248,13 @@ test('an aborted turn leaves no card for the next turn, but a finished one keeps
   const bothStarted = new Promise<void>((resolve) => { started = resolve; });
   on('session.id', () => ({ value: 'session-1' }));
   on('process.run', async ($, e) => {
-    const { tool_use_id, tool_input } = JSON.parse(e.init.stdin);
+    const { tool_use_id } = JSON.parse(e.init.stdin);
     await new Promise<void>((resolve) => {
       gates.set(tool_use_id, resolve);
       if (gates.size === 2) started();
     });
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model: 'system.ai.claude-sonnet-5', rationale: `Selected for ${tool_use_id}`,
-      updatedInput: { ...tool_input, subagent_type: `ug-smart-router:${tool_use_id}` },
     }) } };
   });
   on('tool.call', () => ({ result: 'ok' }));
@@ -173,14 +285,13 @@ test('a turn that ends while the reply waits on a background agent keeps its car
   const bothStarted = new Promise<void>((resolve) => { started = resolve; });
   on('session.id', () => ({ value: 'session-1' }));
   on('process.run', async ($, e) => {
-    const { tool_use_id, tool_input } = JSON.parse(e.init.stdin);
+    const { tool_use_id } = JSON.parse(e.init.stdin);
     await new Promise<void>((resolve) => {
       gates.set(tool_use_id, resolve);
       if (gates.size === 2) started();
     });
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model: 'system.ai.claude-sonnet-5', rationale: `Selected for ${tool_use_id}`,
-      updatedInput: { ...tool_input, subagent_type: `ug-smart-router:${tool_use_id}` },
     }) } };
   });
   on('tool.call', () => ({ result: 'ok' }));
@@ -212,7 +323,10 @@ for (const [name, result, warningCount] of [
   ['disabled', { value: { exitCode: 0, stdout: '', stderr: '' } }, 0],
   ['command failure', { value: { exitCode: 1, stdout: '', stderr: 'failure' } }, 1],
   ['invalid JSON', { value: { exitCode: 0, stdout: 'invalid', stderr: '' } }, 1],
-  ['invalid response', { value: { exitCode: 0, stdout: '{}', stderr: '' } }, 1],
+  ['missing model', { value: { exitCode: 0, stdout: JSON.stringify({ rationale: 'Selected' }), stderr: '' } }, 1],
+  ['invalid model', { value: { exitCode: 0, stdout: JSON.stringify({ model: 42, rationale: 'Selected' }), stderr: '' } }, 1],
+  ['missing rationale', { value: { exitCode: 0, stdout: JSON.stringify({ model: 'system.ai.claude-sonnet-5' }), stderr: '' } }, 1],
+  ['invalid rationale', { value: { exitCode: 0, stdout: JSON.stringify({ model: 'system.ai.claude-sonnet-5', rationale: 42 }), stderr: '' } }, 1],
   ['process unavailable', { deny: 'process unavailable' }, 1],
 ] as const) {
   test(`${name} forwards the original call without a routing annotation`, async ($, on) => {
@@ -248,18 +362,21 @@ test('a waiting call shows a spinner on its row and its card keeps the routing t
     await routed;
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model: 'system.ai.claude-sonnet-5', rationale: 'Small task',
-      updatedInput: { prompt: originalInput.prompt, subagent_type: 'ug-smart-router:haiku' },
     }) } };
   });
   on('tool.call', () => ({ result: 'ok' }));
   let seenSpinner: any;
+  const seenNames = new Map<string, string>();
   on('ui.render', ($, e) => {
+    if (e.component === 'ToolUse') seenNames.set(e.requestId, e.props.tool);
     if (e.component !== 'Spinner') return { type: 'Text', props: {}, children: ['original Agent row'] };
     seenSpinner = e.props;
     return { type: 'Text', props: {}, children: [e.props.message ?? e.props.word] };
   });
   const call = $.tool.call({ tool: 'Agent', tool_use_id: 'call-a', ...originalInput });
   const waiting = await $.ui.mount(row('call-a'));
+  const firstName = seenNames.get('call-a');
+  expect(firstName).toMatch(/^[A-Z][a-z]+$/);
   expect(await waiting.find({ type: 'Text', text: 'Selecting a model… 0s' })).toBeDefined();
   await waiting.unmount();
   now += 2_500;
@@ -281,13 +398,41 @@ test('a waiting call shows a spinner on its row and its card keeps the routing t
   await call;
   await parallel;
   const done = await $.ui.mount(row('call-a'));
+  expect(seenNames.get('call-a')).toBe(firstName);
+  expect(seenNames.get('call-b')).not.toBe(firstName);
   expect(await done.find({ type: 'Text', text: /Selecting a model|Selected Model/ })).toBeUndefined();
   await done.unmount();
   const idle = await $.ui.mount(spinner);
   expect(await idle.find({ type: 'Text', text: 'Genieing' })).toBeDefined();
   await idle.unmount();
   const cards = await $.ui.mount(reply('after'));
+  expect(await cards.find({ type: 'Text', text: firstName! })).toBeDefined();
+  expect(await cards.find({ type: 'Text', text: seenNames.get('call-b')! })).toBeDefined();
   expect(await cards.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();
   expect(await cards.find({ type: 'Text', text: ' (routed in 3.2s)' })).toBeDefined();
   await cards.unmount();
+});
+
+test('fork and resumed calls retain their native model without requesting a route', async ($, on) => {
+  const calls: any[] = [];
+  let routes = 0;
+  on('process.run', () => { routes++; return { value: { exitCode: 0, stdout: '', stderr: '' } }; });
+  on('tool.call', ($, e) => { calls.push(e); return { result: 'ok' }; });
+  for (const input of [{ ...originalInput, subagent_type: 'fork' }, { ...originalInput, resume: 'child' }]) {
+    const call = { tool: 'Agent', tool_use_id: 'inherited', ...input };
+    await $.tool.call(call);
+    expect(calls[calls.length - 1]).toEqual(call);
+  }
+  expect(routes).toBe(0);
+});
+
+test('a name the call gave is kept as the routed agent name', async ($, on) => {
+  const forwarded: any[] = [];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+    model: 'system.ai.claude-haiku-5-5', rationale: 'Selected for the task',
+  }) } }));
+  on('tool.call', ($, event) => { forwarded.push(event); return { result: 'ok' }; });
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'named', ...originalInput, name: 'scout' });
+  expect(forwarded[0].name).toBe('scout');
 });
