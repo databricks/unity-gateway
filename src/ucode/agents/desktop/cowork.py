@@ -636,9 +636,9 @@ def _install_plugin(
     cowork: bool = True,
     marketplace_name: str = MARKETPLACE_NAME,
     plugin_id: str = PLUGIN_ID,
-    claude: str | None = None,
+    mdm_claude_binary: str | None = None,
 ) -> None:
-    claude = claude or _claude_binary()
+    claude = mdm_claude_binary or _claude_binary()
     env = os.environ.copy()
     env["CLAUDE_CONFIG_DIR"] = str(config_root)
     _run_claude(

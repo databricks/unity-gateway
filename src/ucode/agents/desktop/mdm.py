@@ -460,7 +460,9 @@ def sync_user() -> bool:
     ]
     if source == system_source and _cached_version(root) == version:
         return False
-    cowork._install_plugin(root, system_source, claude=configuration["runtime"]["claude"])
+    cowork._install_plugin(
+        root, system_source, mdm_claude_binary=configuration["runtime"]["claude"]
+    )
     if _cached_version(root) != version:
         raise RuntimeError(
             "Desktop plugin refresh did not install the published version; retry refresh."
