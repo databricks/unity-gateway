@@ -137,7 +137,7 @@ class TestConfigure:
             "GPT 5.5",
         ]
 
-    def test_a_provider_services_claude_targets_keep_their_ids_and_their_limits(
+    def test_a_bedrock_provider_services_claude_and_gpt_targets_keep_their_ids(
         self, code, monkeypatch, capsys
     ):
         service = {
@@ -147,6 +147,7 @@ class TestConfigure:
                 "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                 "global.anthropic.claude-opus-4-8",
                 "openai.gpt-oss-120b-1:0",
+                "amazon.titan-text-express-v1",
             ],
         }
         monkeypatch.setattr(
@@ -173,10 +174,16 @@ class TestConfigure:
                 "maxInputTokens": 168_000,
                 "maxOutputTokens": 32_000,
             },
+            {
+                "id": "openai.gpt-oss-120b-1:0",
+                "name": "openai.gpt-oss-120b-1:0",
+                "family": "gpt-oss-120b-1:0",
+                "api": "completions",
+            },
         ]
         printed = _printed(capsys)
-        assert "with 2 models from main.default.bedrock" in printed
-        assert "that VS Code can't use: openai.gpt-oss-120b-1:0" in printed
+        assert "with 3 models from main.default.bedrock" in printed
+        assert "that VS Code can't use: amazon.titan-text-express-v1" in printed
 
     def test_a_openai_provider_services_models_on_responses_and_chat_completions(
         self, code, monkeypatch
@@ -201,6 +208,31 @@ class TestConfigure:
         assert code.config["models"] == [
             {"id": "gpt-5.5", "name": "gpt-5.5", "family": "gpt-5.5", "api": "responses"},
             {"id": "gpt-4.1", "name": "gpt-4.1", "family": "gpt-4.1", "api": "completions"},
+        ]
+
+    def test_a_mantle_provider_services_claude_on_anthropic_and_gpt_on_responses(
+        self, code, monkeypatch
+    ):
+        service = {
+            "name": "main.default.mantle",
+            "provider_type": "bedrock_mantle",
+            "allow_all_targets": True,
+            "targets": [],
+        }
+        monkeypatch.setattr(
+            databricks_module, "list_model_provider_services", lambda *a, **k: ([service], None)
+        )
+        monkeypatch.setattr(
+            copilot,
+            "list_provider_service_models",
+            lambda *args: (["anthropic.claude-opus-5-5", "openai.gpt-5.6-terra"], None),
+        )
+
+        assert vscode.configure(STATE, provider="main.default.mantle")
+
+        assert [(m["id"], m["api"]) for m in code.config["models"]] == [
+            ("anthropic.claude-opus-5-5", "anthropic"),
+            ("openai.gpt-5.6-terra", "responses"),
         ]
 
     @pytest.mark.parametrize(

@@ -381,6 +381,11 @@ class TestClassifyProviderModel:
             ("claude-sonnet-5", "anthropic", "anthropic"),
             ("us.anthropic.claude-sonnet-4-6", "amazon_bedrock", "anthropic"),
             ("anthropic.claude-opus-4-8", "bedrock_mantle", "anthropic"),
+            ("openai.gpt-5.6-terra", "bedrock_mantle", "responses"),
+            ("us-gov-west-1/openai.gpt-5.4", "bedrock_mantle", "responses"),
+            ("openai.gpt-oss-120b", "bedrock_mantle", "completions"),
+            ("us.openai.gpt-5.6-terra", "amazon_bedrock", "responses"),
+            ("openai.gpt-oss-120b-1:0", "amazon_bedrock", "completions"),
             ("gpt-5.5", "openai", "responses"),
             ("gpt-5-nano", "openai", "responses"),
             ("o3-mini", "openai", "responses"),
@@ -409,7 +414,9 @@ class TestClassifyProviderModel:
         ("model", "provider_type", "reason"),
         [
             ("us.anthropic.claude-sonnet-4-6", "openai", None),
-            ("amazon.titan-text-express-v1", "amazon_bedrock", "Claude models"),
+            ("amazon.titan-text-express-v1", "amazon_bedrock", "Claude and GPT models"),
+            ("qwen.qwen3-32b", "bedrock_mantle", "Claude and GPT models"),
+            ("gpt-5.5", "anthropic", "only the Claude models"),
         ],
     )
     def test_unusable_models_say_why(self, model, provider_type, reason):
@@ -551,6 +558,22 @@ class TestProviderCatalog:
             ("gpt-4o", "completions"),
         ]
         assert seen["listing"] == (MPS, "openai")
+
+    def test_allow_all_mantle_registers_claude_and_gpt(self, monkeypatch):
+        _stub_provider_service(
+            monkeypatch,
+            {"provider_type": "bedrock_mantle", "targets": [], "allow_all_targets": True},
+            listed=["anthropic.claude-opus-5-5", "openai.gpt-oss-120b", "xai.grok-4.6"],
+        )
+
+        models = copilot.provider_service_catalog({"workspace": WS}, MPS, "openai.gpt-5.6-terra")
+
+        assert [(m.id, m.wire) for m in models] == [
+            ("anthropic.claude-opus-5-5", "anthropic"),
+            ("openai.gpt-5.6-terra", "responses"),
+            ("openai.gpt-oss-120b", "completions"),
+        ]
+        assert copilot.resolve_copilot_model("openai.gpt-5.6-terra", models).wire == "responses"
 
     def test_allow_all_starts_on_the_requested_model_when_listing_fails(self, monkeypatch, capsys):
         _stub_provider_service(

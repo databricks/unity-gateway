@@ -172,3 +172,43 @@ def test_ug_copilot_refuses_a_subscription_relay_provider(
     assert "only Claude Code can use" in result.stderr
     assert not list(session.home.glob(".copilot/session-state/*")), "Copilot started"
     assert_no_session_registry_left(session)
+
+
+def _run_bedrock_gpt_task(session, workspace, provider, model):
+    _configure(session, workspace)
+    session.record("copilot-provider.json", {"provider": provider})
+
+    task, result = _run_task(session, provider, "--model", model)
+
+    task.assert_headless_answer("copilot", result)
+    assert_completed_task_model(session, "copilot", task.value, model)
+    assert f"dbx-responses/{model}" in copilot_selected_models(session)
+    assert_no_session_registry_left(session)
+
+
+def test_ug_copilot_runs_gpt_through_a_bedrock_runtime_provider(
+    live_session, workspace, codex_bedrock_runtime_provider, codex_bedrock_runtime_model
+):
+    """Scenario: configure Copilot, then run a headless task through a Bedrock runtime provider
+    service that allows every model, naming its GPT inference profile with `--model`.
+
+    Expected: the session runs on `dbx-responses/<model>`, the completed answer contains the
+    fixture value and was sent as that model, and no session registry is left.
+    """
+    _run_bedrock_gpt_task(
+        live_session, workspace, codex_bedrock_runtime_provider, codex_bedrock_runtime_model
+    )
+
+
+def test_ug_copilot_runs_gpt_through_a_bedrock_mantle_provider(
+    live_session, workspace, codex_bedrock_mantle_provider, codex_bedrock_mantle_model
+):
+    """Scenario: configure Copilot, then run a headless task through a Bedrock Mantle provider
+    service that allows every model, naming its GPT model with `--model`.
+
+    Expected: the session runs on `dbx-responses/<model>`, the completed answer contains the
+    fixture value and was sent as that model, and no session registry is left.
+    """
+    _run_bedrock_gpt_task(
+        live_session, workspace, codex_bedrock_mantle_provider, codex_bedrock_mantle_model
+    )
