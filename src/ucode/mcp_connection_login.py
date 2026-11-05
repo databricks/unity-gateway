@@ -7,9 +7,9 @@ session stays unchanged. Poll that user's credential before retrying the MCP req
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 import time
+from typing import TextIO
 from urllib.parse import unquote, urlencode
 
 from ucode.databricks import (
@@ -20,7 +20,8 @@ from ucode.databricks import (
     workspace_org_id,
     workspace_origin,
 )
-from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility.browser_cross_os import open_in_browser
+from ucode.workspace import workspace_headers
 
 _LOGIN_TIMEOUT_SECONDS = 300
 _POLL_INTERVAL_SECONDS = 2
@@ -65,15 +66,22 @@ def run_connection_login(
     workspace: str,
     *,
     profile: str | None = None,
+    stderr: TextIO | None = None,
 ) -> tuple[bool, str]:
     """Open MCP service sign-in and wait for the selected profile's credential.
 
     All diagnostics go to stderr because stdout carries MCP JSON-RPC messages.
     Browser launch alone never establishes successful authentication.
     """
+    output = stderr if stderr is not None else sys.stderr
     connection = unquote(connection_from_url(resource_url) or "")
     if len(connection.split(".")) != 3 or not all(connection.split(".")):
         return False, "connection sign-in requires an MCP service name (catalog.schema.service)"
+    if workspace_headers(workspace):
+        return False, (
+            f"signing in to the '{connection}' connection isn't supported yet on a host that "
+            "serves several workspaces. Sign in to it from the workspace in your browser, then retry."
+        )
     origin = workspace_origin(workspace)
     try:
         token = get_databricks_token(workspace, profile)
@@ -107,31 +115,13 @@ def run_connection_login(
         f"Signing in to '{connection}'. Complete provider sign-in using the same Databricks "
         f"account as CLI profile '{profile or '(default)'}'. If the browser or provider popup "
         f"doesn't open, visit this URL and click Login:\n{login_url}",
-        file=sys.stderr,
+        file=output,
         flush=True,
     )
     deadline = time.monotonic() + _LOGIN_TIMEOUT_SECONDS
-    try:
-        # Isolate webbrowser's subprocess output from the MCP stdout wire, including text browsers.
-        result = subprocess_cross_os.run(
-            [
-                sys.executable,
-                "-I",
-                "-c",
-                "import sys, webbrowser; sys.exit(0 if webbrowser.open(sys.argv[1]) else 1)",
-                login_url,
-            ],
-            check=False,
-            timeout=10,
-            stdin=subprocess.DEVNULL,
-            stdout=sys.stderr,
-            stderr=sys.stderr,
-        )
-        browser_opened = result.returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        browser_opened = False
+    browser_opened = open_in_browser(login_url)
     if not browser_opened:
-        print("Could not open a browser. Open the sign-in URL above manually.", file=sys.stderr)
+        print("Could not open a browser. Open the sign-in URL above manually.", file=output)
 
     while time.monotonic() < deadline:
         try:

@@ -12,17 +12,14 @@ from urllib import request as urllib_request
 from urllib.parse import parse_qs, urlparse
 
 from ucode.ui import normalize_workspace_url, print_note
+from ucode.workspace_key import split_workspace_key as split_workspace_key
+from ucode.workspace_key import workspace_key as workspace_key
 
 UNIFIED_HOST_TYPE = "unified"
 WORKSPACE_SELECTOR_PARAMS = ("w", "o", "workspace_id")
 # A numeric id at or above 2^53 makes the server answer an empty 503.
 _MAX_WORKSPACE_ID = 2**53
 _HOST_TYPE_TIMEOUT_SECONDS = 3
-# A saved key also accepts a UUID id, so a key written by a version that supports
-# disaster-recovery stable connection ids still round-trips here.
-_KEY_PATTERN = re.compile(
-    r"^(https?://[^/?#]+)\?w=([0-9]+|[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})$"
-)
 _host_types: dict[str, str | None] = {}
 _DIGITS = re.compile(r"[0-9]+")
 
@@ -68,19 +65,6 @@ def split_workspace_url(raw: str) -> WorkspaceInput:
         workspace_id=next(iter(selectors), None),
         extra_parts=extra_parts,
     )
-
-
-def workspace_key(host: str, workspace_id: str | None) -> str:
-    """The ``state.json`` key: the bare host, plus ``?w=<id>`` on a multi-workspace host."""
-    return f"{host}?w={workspace_id}" if workspace_id else host
-
-
-def split_workspace_key(key: str) -> tuple[str, str | None]:
-    """Inverse of :func:`workspace_key`; any other string is a bare host."""
-    match = _KEY_PATTERN.match(key)
-    if match:
-        return match.group(1), match.group(2)
-    return key, None
 
 
 def state_workspace_key(state: dict) -> str | None:
@@ -142,6 +126,14 @@ def host_type(host: str) -> str | None:
     return result
 
 
+def is_unified_host(host: str) -> bool:
+    """Whether ``host`` serves several workspaces; an unreachable host counts as no."""
+    try:
+        return host_type(host) == UNIFIED_HOST_TYPE
+    except HostUnreachableError:
+        return False
+
+
 def resolve_workspace(
     raw: str,
     workspace_id: str | None = None,
@@ -180,3 +172,134 @@ def resolve_workspace(
     if explicit_id or parsed.workspace_id:
         print_note(f"{parsed.host} serves a single workspace, so the workspace id is not needed.")
     return legacy_key
+
+
+# Org-Id routes in every region. Workspace-Id is the newer header and the only one that accepts a
+# disaster-recovery connection id; both may be sent with the same value.
+SELECTOR_HEADER_NAMES = ("X-Databricks-Org-Id", "X-Databricks-Workspace-Id")
+# Carries the workspace to a ug helper an agent starts with an environment instead of arguments.
+WORKSPACE_ID_ENV_VAR = "UG_WORKSPACE_ID"
+_active_host: str | None = None
+_active_workspace_id: str | None = None
+_pinned = False
+
+
+def selector_headers(workspace_id: str | None) -> dict[str, str]:
+    if not workspace_id:
+        return {}
+    if not _DIGITS.fullmatch(workspace_id):
+        return {SELECTOR_HEADER_NAMES[1]: workspace_id}
+    return dict.fromkeys(SELECTOR_HEADER_NAMES, workspace_id)
+
+
+def activate(host: str | None, workspace_id: str | None) -> None:
+    """Select the workspace whose host gets the selector headers in this process.
+
+    A module global rather than a context variable: worker threads must see it.
+    """
+    global _active_host, _active_workspace_id
+    _active_host = split_workspace_url(host).host if host and workspace_id else None
+    _active_workspace_id = workspace_id if _active_host else None
+
+
+def pin(host: str, workspace_id: str) -> None:
+    """Activate the workspace a helper was started for; loading saved state no longer changes it."""
+    global _pinned
+    activate(host, workspace_id)
+    _pinned = True
+
+
+def activate_state(state: dict) -> None:
+    if _pinned:
+        return
+    workspace = state.get("workspace")
+    workspace_id = state.get("workspace_id")
+    activate(
+        workspace if isinstance(workspace, str) else None,
+        workspace_id if isinstance(workspace_id, str) else None,
+    )
+
+
+def active_workspace_id() -> str | None:
+    return _active_workspace_id
+
+
+def workspace_headers(url: str | None = None) -> dict[str, str]:
+    """The selector headers for ``url``, or for the active workspace's host when ``url`` is None.
+
+    Empty unless the active workspace is on a multi-workspace host and ``url`` is on that host, so
+    nothing is sent to single-workspace hosts, app URLs, or other services.
+    """
+    if not _active_host:
+        return {}
+    if url is not None:
+        parsed = urlparse(url)
+        if f"{parsed.scheme}://{parsed.netloc}" != _active_host:
+            return {}
+    return selector_headers(_active_workspace_id)
+
+
+class WorkspaceSelectionReason(str):
+    """A failure reason that callers report as is, ahead of the auth, scope and permission checks.
+
+    It carries its own sign-in steps where a fresh login can help.
+    """
+
+
+def _origin(url: str) -> str:
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def signin_redirect_reason(url: str) -> WorkspaceSelectionReason:
+    """Why a request to ``url`` was answered with the sign-in page instead of the API."""
+    host = _origin(url)
+    selected = workspace_headers(url).get(SELECTOR_HEADER_NAMES[1])
+    if selected:
+        return WorkspaceSelectionReason(
+            f"{host} did not route the request to workspace {selected}; check the workspace id."
+        )
+    if is_unified_host(host):
+        return WorkspaceSelectionReason(
+            f"{host} serves several workspaces and no workspace was selected. Pass "
+            f"`--workspace '{host}?w=<workspace id>'` or a `--profile` with a workspace_id."
+        )
+    return WorkspaceSelectionReason(
+        f"{host} redirected to sign-in: the token was rejected or needs a fresh login. "
+        f"Sign in again with `databricks auth login --host {host}`."
+    )
+
+
+def workspace_failure_reason(url: str, status: int, body: str) -> WorkspaceSelectionReason | None:
+    """A clearer reason for a failure caused by the workspace selection, else None."""
+    if status == 403 and "account admin" in body and is_unified_host(_origin(url)):
+        return signin_redirect_reason(url)
+    selected = workspace_headers(url).get(SELECTOR_HEADER_NAMES[1])
+    if selected and status == 400 and "Invalid Token" in body:
+        return WorkspaceSelectionReason(
+            f"{_origin(url)} rejected the token for workspace {selected}: the token is invalid, "
+            "or the workspace belongs to another account. Sign in again with "
+            f"`databricks auth login --host '{_origin(url)}?w={selected}'`."
+        )
+    return None
+
+
+def response_workspace_mismatch(
+    url: str, response_org_id: str | None
+) -> WorkspaceSelectionReason | None:
+    """A failure reason when the host answered for a different workspace than the one selected."""
+    selected = workspace_headers(url).get(SELECTOR_HEADER_NAMES[1])
+    if not selected or not response_org_id or response_org_id == selected:
+        return None
+    if not _DIGITS.fullmatch(selected):
+        # The host resolves a stable connection id to the numeric id it echoes.
+        return None
+    return WorkspaceSelectionReason(
+        f"{_origin(url)} answered for workspace {response_org_id}, not the selected {selected}."
+    )
+
+
+def workspace_id_args(host: str) -> list[str]:
+    """``--workspace-id <id>`` for a ug helper bound to ``host``, when the selection applies there."""
+    workspace_id = workspace_headers(host).get(SELECTOR_HEADER_NAMES[1])
+    return ["--workspace-id", workspace_id] if workspace_id else []

@@ -24,6 +24,7 @@ from ucode.mcp_proxy import (
     _httpx,
 )
 from ucode.ug_headers import ug_headers
+from ucode.workspace import workspace_headers
 
 SESSION_START_PROBE_TIMEOUT_SECONDS = 15.0
 # UserPromptSubmit blocks the prompt and has a 30-second default timeout.
@@ -193,7 +194,7 @@ def _is_sign_in_error(exc: BaseException) -> bool:
 
 async def _probe(url: str, token: str, timeout: float) -> None:
     httpx = _httpx()
-    headers = {**ug_headers(), "Authorization": f"Bearer {token}"}
+    headers = {**ug_headers(), **workspace_headers(url), "Authorization": f"Bearer {token}"}
     async with httpx.AsyncClient(headers=headers, timeout=timeout) as client:
         async with streamable_http_client(url, http_client=client) as streams:
             async with ClientSession(streams[0], streams[1]) as session:
