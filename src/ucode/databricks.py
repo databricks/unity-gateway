@@ -27,7 +27,7 @@ from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, NoReturn, cast, overload
+from typing import Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
@@ -124,6 +124,9 @@ class AnthropicModelCatalog:
     model_id_to_display_name: dict[str, str]
     error_msg: str | None = None
     model_id_to_description: dict[str, str] = field(default_factory=dict)
+    # (max_input_tokens, max_tokens) for the models the gateway reports limits for; it reports 0
+    # for unknown ones.
+    model_id_to_limits: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
 class CodexMpsModelCatalogUnavailable(RuntimeError):
@@ -1009,7 +1012,14 @@ def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
 def ensure_databricks_cli_version(
     minimum: tuple[int, int, int] = MIN_DATABRICKS_CLI_VERSION,
 ) -> None:
-    clis = _discover_databricks_clis(use_cache=False)
+    discovery_was_cached = _DISCOVERED_DATABRICKS_CLIS_ORDERED is not None
+    clis = _discover_databricks_clis()
+    if discovery_was_cached and not any(
+        version is not None and version >= minimum for _, version in clis
+    ):
+        # Recheck an insufficient result before upgrading: a prior probe may have failed,
+        # or another process may have installed a CLI that meets this higher floor.
+        clis = _discover_databricks_clis(use_cache=False)
     if not clis:
         raise RuntimeError("Failed to read Databricks CLI version.")
 
@@ -1044,10 +1054,8 @@ def ensure_databricks_cli_version(
         ensure_databricks_cli_version(minimum)
         return
 
-    # A discovered CLI already meets the floor: drop the cached resolution so
-    # `databricks_cli_path()` re-resolves to it (it may differ from whatever was
-    # cached before this call, e.g. right after an install).
-    clear_databricks_cli_cache()
+    # Keep successful discovery for the remaining launch checks and auth calls.
+    # Installers invalidate it after replacing a binary.
 
 
 def databricks_cli_version() -> tuple[int, int, int] | None:
@@ -2110,7 +2118,8 @@ def build_mcp_proxy_argv(
 
     Every coding agent registers this single command as a local stdio MCP
     server instead of a per-client HTTP endpoint with a bearer header. The proxy
-    forwards to ``url`` and mints a fresh OAuth token on each upstream request,
+    connects a small stdio relay to the shared local backend, which forwards to
+    ``url`` and mints a fresh OAuth token on each upstream request,
     so tokens never expire mid-session — the client only ever spawns a process,
     which keeps registration uniform across CLIs that disagree on HTTP-auth
     syntax. Like `build_auth_token_argv`, this resolves the absolute `ug`
@@ -2567,18 +2576,19 @@ _CODING_AGENT_CONFIGS_API_PATH = "/api/ai-gateway/v2/coding-agent-configs"
 
 
 def _managed_config_user_agent() -> str:
-    """``ucode/<v>`` plus each ``<agent>/<v>`` ug already wrote into the OS-managed files, then the
-    client platform.
+    """``ucode/<v>`` plus each configured agent's ``<agent>/<v>``, then the client platform.
 
-    The fetch serves every agent, so it reports what ug configured on this machine; reading the
-    managed files avoids probing each agent's ``--version`` on every fetch."""
-    from ucode.agents import claude, codex  # the agent modules import this one
+    The fetch serves every agent, so it reports what ug configured on this machine: Claude Code and
+    Codex from the OS-managed files ug wrote, and Copilot, which has none, from the version
+    configure recorded. None of them probes an agent's ``--version`` on every fetch."""
+    from ucode.agents import claude, codex, copilot  # the agent modules import this one
     from ucode.managed_files import ug_agent_token
 
     tokens: list[str] = []
     for agent, user_agent in (
         ("claude", claude.managed_user_agent()),
         ("codex", codex.managed_user_agent()),
+        ("copilot", copilot.managed_user_agent()),
     ):
         token = ug_agent_token(user_agent or "", agent)
         if token:
@@ -3067,11 +3077,13 @@ def _provider_service_entry(raw_service: object) -> dict | None:
             api_types = entry.get("native_api_types")
             if isinstance(api_types, list):
                 target_api_types[model_id] = tuple(t for t in api_types if isinstance(t, str))
-    # Relayed = credential-less Anthropic (subscription relay). Only whether
+    # Relayed = credential-less Anthropic or OpenAI (subscription relay). Only whether
     # it's relayed matters here; the tier (Max vs Team/Enterprise) is governed
     # server-side, so both launch identically.
-    anthropic_cfg = config.get("anthropic")
-    relayed = isinstance(anthropic_cfg, dict) and "relayed" in anthropic_cfg
+    relayed = any(
+        isinstance(cfg, dict) and "relayed" in cfg
+        for cfg in (config.get("anthropic"), config.get("openai"))
+    )
     raw_type = config.get("provider_type")
     return {
         "name": full_name,
@@ -3166,7 +3178,7 @@ def list_tool_provider_services(
 def _provider_service_unusable_reason(tool: str, service: dict, service_name: str) -> str | None:
     """Why ``tool`` can't route through ``service``, or None when it can.
 
-    Beyond the provider-type match, only claude can use a relayed (subscription) service, and
+    Beyond the provider-type match, only claude (Anthropic) or codex (OpenAI) can use a relayed (subscription) service, and
     claude and copilot can use a Bedrock service only if it has a Claude target — otherwise there's
     no routable model id to pin — or is ``allow_all_targets``, in which case the model id comes
     from elsewhere (the managed config's default or ``--model``). (Anthropic services use canonical
@@ -3179,11 +3191,18 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
             f"Model provider service '{service_name}' is a '{provider_type}' provider, "
             f"which {tool} can't route to (supported: {supported})."
         )
-    if tool != "claude" and service.get("relayed"):
-        return (
-            f"Model provider service '{service_name}' relays a Claude subscription, which only "
-            f"Claude Code can use. Pick a Model Provider Service with an API key for {tool}."
+    if service.get("relayed"):
+        relay_tool, subscription, display = (
+            ("codex", "ChatGPT", "Codex")
+            if provider_type == "openai"
+            else ("claude", "Claude", "Claude Code")
         )
+        if tool != relay_tool:
+            return (
+                f"Model provider service '{service_name}' relays a {subscription} subscription, "
+                f"which only {display} can use. Pick a Model Provider Service with an API key "
+                f"for {tool}."
+            )
     if (
         tool in _CLAUDE_ONLY_BEDROCK_TOOLS
         and provider_type in BEDROCK_PROVIDER_TYPES
@@ -3631,6 +3650,10 @@ def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | 
 _NO_ANTHROPIC_MODEL_IDS = "AI Gateway returned no Anthropic model ids"
 
 
+def _positive_int(value: object) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
 def list_anthropic_model_catalog(
     workspace: str,
     token: str,
@@ -3652,6 +3675,7 @@ def list_anthropic_model_catalog(
     model_ids: list[str] = []
     display_names: dict[str, str] = {}
     descriptions: dict[str, str] = {}
+    limits: dict[str, tuple[int, int]] = {}
     seen: set[str] = set()
     for model in data.get("data", []):
         if not isinstance(model, dict):
@@ -3666,11 +3690,15 @@ def list_anthropic_model_catalog(
             description = model.get("description")
             if isinstance(description, str) and description:
                 descriptions[model_id] = description
+            max_input, max_output = model.get("max_input_tokens"), model.get("max_tokens")
+            if _positive_int(max_input) and _positive_int(max_output):
+                limits[model_id] = (max_input, max_output)
     if model_ids:
         return AnthropicModelCatalog(
             model_ids=model_ids,
             model_id_to_display_name=display_names,
             model_id_to_description=descriptions,
+            model_id_to_limits=limits,
         )
     return AnthropicModelCatalog(
         model_ids=[],

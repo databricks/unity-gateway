@@ -15,7 +15,8 @@ import httpx
 import pytest
 
 from ucode import databricks as db_mod
-from ucode import mcp_connection_login, mcp_proxy
+from ucode import mcp_proxy
+from ucode.os_compatibility import browser_cross_os
 
 WS = "https://example.databricks.com"
 URL = f"{WS}/api/2.0/mcp/functions/system/ai"
@@ -61,6 +62,98 @@ def test_proxy_imports_the_streamable_http_client_shared_by_both_majors():
     # symbol the single code path relies on; a rename in a resolved SDK fails here.
     assert mcp_proxy.streamable_http_client is not None
     assert mcp_proxy.stdio_server is not None
+
+
+@pytest.mark.parametrize(
+    ("client_info", "expected"),
+    [
+        ({"name": "codex-mcp-client", "version": "0.58.0"}, "codex-mcp-client/0.58.0"),
+        ({"name": "Cursor MCP", "version": "1 beta"}, "Cursor_MCP/1_beta"),
+        ({"name": "future-agent"}, "future-agent"),
+    ],
+)
+def test_client_user_agent_comes_from_initialize_client_info(client_info, expected):
+    request = mcp_proxy.JSONRPCRequest(
+        jsonrpc="2.0",
+        id=1,
+        method="initialize",
+        params={"clientInfo": client_info},
+    )
+
+    assert mcp_proxy._client_user_agent(request) == mcp_proxy.ucode_user_agent(
+        mcp_proxy.ug_version(), expected
+    )
+
+
+def test_client_user_agent_bounds_long_client_metadata():
+    request = mcp_proxy.JSONRPCRequest(
+        jsonrpc="2.0",
+        id=1,
+        method="initialize",
+        params={"clientInfo": {"name": "n" * 10000, "version": "v" * 10000}},
+    )
+
+    assert mcp_proxy._client_user_agent(request) == mcp_proxy.ucode_user_agent(
+        mcp_proxy.ug_version(), f"{'n' * 64}/{'v' * 64}"
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        mcp_proxy.JSONRPCRequest(jsonrpc="2.0", id=1, method="tools/list"),
+        mcp_proxy.JSONRPCRequest(
+            jsonrpc="2.0", id=1, method="initialize", params={"clientInfo": {"name": ""}}
+        ),
+        mcp_proxy.JSONRPCRequest(
+            jsonrpc="2.0", id=1, method="initialize", params={"clientInfo": "codex"}
+        ),
+    ],
+)
+def test_client_user_agent_ignores_non_initialize_or_invalid_client_info(message):
+    assert mcp_proxy._client_user_agent(message) is None
+
+
+def test_bridge_sets_client_user_agent_before_forwarding_initialize():
+    client_user_agents = []
+    expected = mcp_proxy.ucode_user_agent(mcp_proxy.ug_version(), "cursor-vscode/1.7.0")
+
+    class CheckingSend:
+        def __init__(self, stream):
+            self.stream = stream
+
+        async def __aenter__(self):
+            await self.stream.__aenter__()
+            return self
+
+        async def __aexit__(self, *args):
+            return await self.stream.__aexit__(*args)
+
+        async def send(self, message):
+            assert client_user_agents == [expected]
+            await self.stream.send(message)
+
+    async def scenario():
+        source_send, source_read = anyio.create_memory_object_stream(1)
+        dest_send, dest_read = anyio.create_memory_object_stream(1)
+        bridge = mcp_proxy._McpBridge(
+            mcp_proxy._ConnectionLogin(URL, WS, "p"), client_user_agents.append
+        )
+        initialize = mcp_proxy.SessionMessage(
+            mcp_proxy.JSONRPCRequest(
+                jsonrpc="2.0",
+                id=1,
+                method="initialize",
+                params={"clientInfo": {"name": "cursor-vscode", "version": "1.7.0"}},
+            )
+        )
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(bridge.pump_client, source_read, CheckingSend(dest_send))
+            await source_send.send(initialize)
+            assert await dest_read.receive() is initialize
+            tg.cancel_scope.cancel()
+
+    anyio.run(scenario)
 
 
 class TestDatabricksTokenAuth:
@@ -277,7 +370,7 @@ class TestDatabricksTokenAuth:
             return subprocess.CompletedProcess(argv, 0)
 
         monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
-        monkeypatch.setattr(mcp_connection_login.subprocess_cross_os, "run", launch)
+        monkeypatch.setattr(browser_cross_os.subprocess_cross_os, "run", launch)
         auth = mcp_proxy._build_token_auth(CONN_URL, WS, "p")
         sent = []
 
@@ -792,7 +885,10 @@ class TestMcpBridgeConnectionLogin:
         anyio.run(scenario)
 
     @pytest.mark.parametrize("normal_tools", [[], [{"name": "search_pull_requests"}], [None]])
-    def test_successful_discovery_keeps_authentication_available(self, monkeypatch, normal_tools):
+    @pytest.mark.parametrize("previous_auth_error", [False, True])
+    def test_successful_discovery_keeps_authentication_available(
+        self, monkeypatch, normal_tools, previous_auth_error
+    ):
         from mcp.shared.message import ClientMessageMetadata
 
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda *a: "tok")
@@ -815,6 +911,13 @@ class TestMcpBridgeConnectionLogin:
             async with anyio.create_task_group() as tg:
                 tg.start_soon(bridge.pump_upstream, source_read, dest_send, retry_send)
                 with anyio.fail_after(1):
+                    if previous_auth_error:
+                        bridge.pending_requests[0] = self._request(0)
+                        await source_send.send(self._error(request_id=0))
+                        failed = (await dest_read.receive()).message
+                        assert failed.result["tools"][0]["description"].startswith(
+                            "Sign-in is required"
+                        )
                     for request_id in (1, 2):
                         bridge.pending_requests[request_id] = self._request(request_id)
                         response = self._response(request_id)
@@ -828,6 +931,10 @@ class TestMcpBridgeConnectionLogin:
                         }
                         assert received.metadata is response.metadata
                         assert response.message.result["tools"] == normal_tools
+                        assert not received.message.result["tools"][-1]["description"].startswith(
+                            "Sign-in is required"
+                        )
+                        assert not bridge.authentication_required
                 tg.cancel_scope.cancel()
 
         anyio.run(scenario)
@@ -1223,6 +1330,9 @@ class TestMcpBridgeConnectionLogin:
                     response = (await client_receive.receive()).message
                     assert isinstance(response, mcp_proxy.JSONRPCResponse)
                     assert response.result["tools"][0]["name"] == "authenticate"
+                    assert response.result["tools"][0]["description"].startswith(
+                        "Sign-in is required to discover this connector's tools."
+                    )
                     assert "same turn" in response.result["tools"][0]["description"]
                     with pytest.raises(anyio.WouldBlock):
                         upstream_receive.receive_nowait()
@@ -1412,6 +1522,12 @@ class TestMcpBridgeConnectionLogin:
                         *expected_tools,
                         bridge._authentication_tool(),
                     ]
+                    assert (
+                        received.result["tools"][-1]["description"].startswith(
+                            "Sign-in is required"
+                        )
+                        is refresh_requires_auth
+                    )
 
                     authentication = (await client_receive.receive()).message
                     assert isinstance(authentication, mcp_proxy.JSONRPCResponse)

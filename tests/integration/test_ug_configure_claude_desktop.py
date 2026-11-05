@@ -271,6 +271,9 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     _assert_desktop_selection(config_library, configured=True)
     session.run("mcp", "add", "--names", "system.ai.web_search", timeout=240)
     servers = installed_cowork_servers(session, root)
+    profile["managedMcpServers"] = _desktop_profile(session, config_library, workspace)[
+        "managedMcpServers"
+    ]
     _assert_unrelated_cowork_plugin(root, unrelated_plugin)
     anyio.run(assert_desktop_mcp, session, servers["web_search"], workspace)
 
@@ -374,6 +377,9 @@ def test_ug_configure_claude_desktop_subscription_relay(
     _assert_desktop_selection(config_library, configured=True)
     session.run("mcp", "add", "--names", "system.ai.web_search", timeout=240)
     servers = installed_cowork_servers(session, root)
+    profile["managedMcpServers"] = _desktop_profile(session, config_library, workspace)[
+        "managedMcpServers"
+    ]
     _assert_unrelated_cowork_plugin(root, unrelated_plugin)
     anyio.run(assert_desktop_mcp, session, servers["web_search"], workspace)
 

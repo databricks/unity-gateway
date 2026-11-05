@@ -1,5 +1,6 @@
 """Smart-routing CUJ: execute once, then report each contract assertion separately."""
 
+import hashlib
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -155,7 +156,7 @@ def _run_session(session, recorder, agent, task, launch_args):
 
 
 def _task_inference_request(requests, agent, prompt, *, after=0):
-    """Match plaintext task prompts or Codex's encrypted child task name."""
+    """Match exact task prompts, including Codex child assignment envelopes."""
     prompts = {prompt}
     if agent == CLAUDE and after:
         prompts.add(prompt + "\n")
@@ -190,26 +191,41 @@ def _task_inference_request(requests, agent, prompt, *, after=0):
         if not isinstance(entries, list):
             continue
         for entry in entries:
-            # Encrypted Codex child instructions leave only task_name readable.
+            if not isinstance(entry, dict):
+                continue
+            content = entry.get("content", [])
             if (
                 agent == CODEX
                 and after
-                and isinstance(entry, dict)
                 and entry.get("type") == "agent_message"
                 and isinstance(entry.get("recipient"), str)
-                and entry["recipient"].rsplit("/", 1)[-1] == prompt
-                and any(
+                and isinstance(content, list)
+            ):
+                # Encrypted Codex child instructions leave only task_name readable.
+                if entry["recipient"].rsplit("/", 1)[-1] == prompt and any(
                     isinstance(part, dict)
                     and part.get("type") == "encrypted_content"
                     and isinstance(part.get("encrypted_content"), str)
                     and part["encrypted_content"]
-                    for part in entry.get("content", [])
-                )
-            ):
-                return request
-            if not isinstance(entry, dict) or entry.get("role") != "user":
+                    for part in content
+                ):
+                    return request
+                author = entry.get("author")
+                if isinstance(author, str) and author and entry["recipient"]:
+                    # Match the native envelope exactly so notifications cannot qualify.
+                    assignment = (
+                        f"Message Type: NEW_TASK\nTask name: {entry['recipient']}\n"
+                        f"Sender: {author}\nPayload:\n{prompt}"
+                    )
+                    if any(
+                        isinstance(part, dict)
+                        and part.get("type") == "input_text"
+                        and part.get("text") == assignment
+                        for part in content
+                    ):
+                        return request
+            if entry.get("role") != "user":
                 continue
-            content = entry.get("content", [])
             if isinstance(content, str):
                 if content in prompts:
                     return request
@@ -432,16 +448,23 @@ class TestCujSmartRouting(BaseCujTest):
                 }
                 assert completed_children, (agent, children.keys())
                 decisions = read_jsonl(decisions_path)[decision_count:]
-                decision_tasks = {
-                    decision.get("task_name") for decision in decisions if decision.get("task_name")
-                }
+                task_field = "task_sha256" if agent == CODEX else "task_name"
+                decision_tasks = {decision[task_field] for decision in decisions}
                 requests = recorder.requests_after(checkpoint)
-                routes = [
-                    request
-                    for request in requests
-                    if request.path == ROUTING_PATH
-                    and request.payload.get("task", {}).get("prompt") in decision_tasks
-                ]
+                routes = []
+                for request in requests:
+                    if request.path != ROUTING_PATH:
+                        continue
+                    prompt = request.payload.get("task", {}).get("prompt")
+                    if not isinstance(prompt, str):
+                        continue
+                    key = (
+                        hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+                        if agent == CODEX
+                        else prompt
+                    )
+                    if key in decision_tasks:
+                        routes.append(request)
                 assert bool(routes) == subagent_routed, (agent, routes)
                 if subagent_routed:
                     assert_subagent_routed(
@@ -568,13 +591,26 @@ class TestCujSmartRouting(BaseCujTest):
         assert case.observation.turn is not None
         assert case.task.value in case.observation.turn.answer
 
-    @pytest.mark.parametrize("agent", AGENTS)
-    def test_managed_smart_routing_orchestrates_without_routing_the_first_prompt(
-        self, completed_smart_routing_runs, agent
+    def test_managed_smart_routing_orchestrates_claude_without_routing_the_first_prompt(
+        self, completed_smart_routing_runs
     ):
-        case = completed_smart_routing_runs.no_model_override[agent]
+        case = completed_smart_routing_runs.no_model_override[CLAUDE]
         assert not [request for request in case.requests if request.path == ROUTING_PATH]
         assert ORCHESTRATOR_CONTEXT.encode() in case.inference_request.body
+
+    def test_managed_smart_routing_leaves_codex_unrouted_and_unorchestrated(
+        self, completed_smart_routing_runs
+    ):
+        """Scenario: launch Codex with only the managed config's smart_routing.enabled, which
+        selects the Claude-only default preset, and run a no-delegation file task.
+
+        Expected: Codex sends no routing request, its inference carries no Smart Router recipe
+        header, and its inference input has no Smart Router Orchestrator context.
+        """
+        case = completed_smart_routing_runs.no_model_override[CODEX]
+        assert not [request for request in case.requests if request.path == ROUTING_PATH]
+        assert "databricks-smart-router-recipe" not in case.inference_request.headers
+        assert ORCHESTRATOR_CONTEXT.encode() not in case.inference_request.body
 
     @pytest.mark.parametrize("agent", AGENTS)
     def test_admin_default_model_serves_the_first_prompt(self, completed_smart_routing_runs, agent):

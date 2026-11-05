@@ -7,7 +7,22 @@ from types import SimpleNamespace
 
 import pytest
 
+from ucode.agents.desktop import claude as desktop
 from ucode.agents.desktop import cowork
+
+
+@pytest.fixture(autouse=True)
+def desktop_profile(tmp_path, monkeypatch):
+    directory = tmp_path / "desktop" / "configLibrary"
+    directory.mkdir(parents=True)
+    monkeypatch.setattr(desktop, "claude_desktop_directory", lambda: directory)
+    result = desktop.configure_claude_desktop(
+        model_ids=["system.ai.claude-sonnet-5"],
+        base_url="https://workspace.example/ai-gateway/anthropic",
+        helper_command=tmp_path / "ug",
+        helper_args=["claude-desktop-auth", "--profile", "chosen"],
+    )
+    return result.profile_path
 
 
 def _cowork_root(desktop_root: Path, account: str, org: str) -> Path:
@@ -80,7 +95,9 @@ def test_discover_cowork_root_rejects_tied_candidates(tmp_path):
         cowork.discover_cowork_root(desktop_root=desktop_root)
 
 
-def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monkeypatch):
+def test_configure_generates_plugin_and_installs_in_cowork_scope(
+    tmp_path, monkeypatch, desktop_profile
+):
     app_dir = tmp_path / ".ucode"
     cowork_root = tmp_path / "Claude-3p" / "local-agent-mode-sessions" / "acct" / "org"
     cowork_root.mkdir(parents=True)
@@ -148,32 +165,32 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
     )
     entry = marketplace["plugins"][0]
     assert (entry["name"], entry["displayName"]) == ("ug", "ug")
-    assert plugin["mcpServers"] == "./.mcp.json"
-    mcp = json.loads((plugin_root / ".mcp.json").read_text())
-    assert mcp == {
-        "mcpServers": {
-            "github": {
-                "type": "stdio",
-                "command": str(ug_binary),
-                "args": [
-                    "mcp-proxy",
-                    "--url",
-                    "https://workspace.example/api/2.0/mcp/github",
-                    "--host",
-                    "https://workspace.example",
-                    "--profile",
-                    "chosen",
-                ],
-            }
+    assert "mcpServers" not in plugin
+    assert not (plugin_root / ".mcp.json").exists()
+    servers = json.loads(desktop_profile.read_text())["managedMcpServers"]
+    assert servers == [
+        {
+            "name": "github",
+            "transport": "stdio",
+            "command": str(ug_binary),
+            "args": [
+                "mcp-proxy",
+                "--url",
+                "https://workspace.example/api/2.0/mcp/github",
+                "--host",
+                "https://workspace.example",
+                "--profile",
+                "chosen",
+            ],
         }
-    }
+    ]
     assert (plugin_root / "skills" / "review" / "SKILL.md").read_text() == "managed skill"
     assert not (plugin_root / "skills" / "foreign").exists()
     connector_skill = (
         plugin_root / "skills" / cowork.CONNECTOR_SKILL_NAME / "SKILL.md"
     ).read_text()
     assert connector_skill.startswith(f'---\nname: {cowork.CONNECTOR_SKILL_NAME}\ndescription: "')
-    assert all(f"`{name}`" in connector_skill for name in mcp["mcpServers"])
+    assert all(f"`{server['name']}`" in connector_skill for server in servers)
     assert "codex-only" not in connector_skill
     description_line = connector_skill.splitlines()[2]
     description = json.loads(description_line.removeprefix("description: "))
@@ -181,8 +198,10 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
     assert "sign-in recovery" in description
     assert "`authenticate` is the recovery action" in connector_skill
     assert "task in the same turn" in connector_skill
-    assert "wait 5 seconds" in connector_skill
-    assert "wait another 5 seconds" in connector_skill
+    assert "Do not sleep or poll for startup" in connector_skill
+    assert "Seeing only `authenticate` does not establish that sign-in is needed" in connector_skill
+    assert "does not guarantee that every connector is ready" in connector_skill
+    assert "ask the user to try the request again shortly" in connector_skill
     hooks = json.loads((plugin_root / "hooks" / "hooks.json").read_text())
     assert set(hooks["hooks"]) == {"SessionStart", "UserPromptSubmit"}
     expected_command = cowork.subprocess_cross_os.shell_command(
@@ -221,7 +240,7 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
     )
 
 
-def test_configure_updates_installed_plugin(tmp_path, monkeypatch):
+def test_configure_updates_installed_plugin(tmp_path, monkeypatch, desktop_profile):
     cowork_root = tmp_path / "cowork"
     cowork_root.mkdir()
     monkeypatch.setattr(cowork.config_io, "APP_DIR", tmp_path / ".ucode")
@@ -262,7 +281,10 @@ def test_configure_updates_installed_plugin(tmp_path, monkeypatch):
                 }
             ],
         )
-        assert list(json.loads(mcp_path.read_text())["mcpServers"]) == ["github"]
+        assert not mcp_path.exists()
+        assert [
+            entry["name"] for entry in json.loads(desktop_profile.read_text())["managedMcpServers"]
+        ] == ["github"]
 
     assert calls[-1][1:3] == ["plugin", "update"]
     assert all(argv[1:3] != ["plugin", "uninstall"] for argv in calls)
@@ -442,7 +464,9 @@ def test_cowork_mcp_config_disambiguates_names_independently_of_order(tmp_path, 
         } == expected_urls
 
 
-def test_configure_records_root_before_plugin_command_failure(tmp_path, monkeypatch):
+def test_configure_records_root_before_plugin_command_failure(
+    tmp_path, monkeypatch, desktop_profile
+):
     app_dir = tmp_path / ".ucode"
     cowork_root = tmp_path / "cowork"
     cowork_root.mkdir()
@@ -460,6 +484,7 @@ def test_configure_records_root_before_plugin_command_failure(tmp_path, monkeypa
         raise RuntimeError("plugin command failed")
 
     monkeypatch.setattr(cowork, "_install_plugin", fail_install)
+    profile_before = desktop_profile.read_bytes()
 
     with pytest.raises(RuntimeError, match="plugin command failed"):
         cowork.configure_cowork(
@@ -471,6 +496,77 @@ def test_configure_records_root_before_plugin_command_failure(tmp_path, monkeypa
         "version": 1,
         "cowork_root": str(cowork_root),
     }
+    assert desktop_profile.read_bytes() == profile_before
+
+
+def test_native_connectors_do_not_require_a_cowork_session(monkeypatch, desktop_profile, tmp_path):
+    monkeypatch.setattr(cowork, "records_for_scope", lambda *args: [])
+    monkeypatch.setattr(cowork, "_cowork_sessions_root_exists", lambda: False)
+    monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
+    monkeypatch.setattr(cowork, "discover_cowork_root", lambda: pytest.fail("No Cowork session"))
+    state = {"workspace": "https://workspace.example", "profile": "chosen"}
+    servers = [{"name": "github", "url": "https://mcp.example", "clients": ["claude"]}]
+
+    assert not cowork.configure_cowork(state, servers)
+    profile = json.loads(desktop_profile.read_text())
+    assert [server["name"] for server in profile["managedMcpServers"]] == ["github"]
+    assert profile["toolSearchEnabled"] is True
+
+    assert not cowork.configure_cowork(state, [])
+    assert json.loads(desktop_profile.read_text())["managedMcpServers"] == []
+
+
+@pytest.mark.parametrize("invalid_profile", [None, "malformed", "other-workspace"])
+def test_native_connector_preflight_preserves_existing_plugin(
+    invalid_profile, monkeypatch, desktop_profile, tmp_path
+):
+    if invalid_profile is None:
+        desktop_profile.unlink()
+    elif invalid_profile == "malformed":
+        desktop_profile.write_text("{")
+    else:
+        profile = json.loads(desktop_profile.read_text())
+        profile["inferenceGatewayBaseUrl"] = "https://other.example/ai-gateway/anthropic"
+        desktop_profile.write_text(json.dumps(profile))
+    before = desktop_profile.read_bytes() if desktop_profile.exists() else None
+    monkeypatch.setattr(cowork, "records_for_scope", lambda *args: [])
+    monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
+    monkeypatch.setattr(
+        cowork, "_write_marketplace", lambda *args, **kwargs: pytest.fail("Must preserve plugin")
+    )
+
+    with pytest.raises(desktop.ClaudeDesktopError):
+        cowork.configure_cowork(
+            {"workspace": "https://workspace.example", "profile": "chosen"},
+            [{"name": "github", "url": "https://mcp.example", "clients": ["claude"]}],
+        )
+    assert (desktop_profile.read_bytes() if desktop_profile.exists() else None) == before
+
+
+def test_native_connectors_preserve_workspace_selection(monkeypatch, desktop_profile, tmp_path):
+    from ucode.workspace import pin, selector_headers
+
+    workspace = "https://workspace.example"
+    pin(workspace, "123")
+    profile = json.loads(desktop_profile.read_text())
+    profile["inferenceCustomHeaders"] = selector_headers("123")
+    desktop_profile.write_text(json.dumps(profile))
+    monkeypatch.setattr(cowork, "records_for_scope", lambda *args: [])
+    monkeypatch.setattr(cowork, "_cowork_sessions_root_exists", lambda: False)
+    monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
+    state = {"workspace": workspace, "profile": "chosen", "workspace_id": "123"}
+    servers = [{"name": "github", "url": f"{workspace}/mcp/github", "clients": ["claude"]}]
+
+    cowork.configure_cowork(state, servers)
+
+    profile = json.loads(desktop_profile.read_text())
+    args = profile["managedMcpServers"][0]["args"]
+    assert args[args.index("--workspace-id") + 1] == "123"
+    before = desktop_profile.read_bytes()
+    pin(workspace, "456")
+    with pytest.raises(desktop.ClaudeDesktopConflictError, match="another workspace"):
+        cowork.configure_cowork({**state, "workspace_id": "456"}, servers)
+    assert desktop_profile.read_bytes() == before
 
 
 def test_configure_removes_registration_from_previous_cowork_root(tmp_path, monkeypatch):
@@ -491,7 +587,7 @@ def test_configure_removes_registration_from_previous_cowork_root(tmp_path, monk
         lambda *args, **kwargs: {"mcpServers": {"github": {"type": "stdio"}}},
     )
     monkeypatch.setattr(cowork, "_remove_plugin_registration", removed_roots.append)
-    monkeypatch.setattr(cowork, "_write_marketplace", lambda *args: None)
+    monkeypatch.setattr(cowork, "_write_marketplace", lambda *args, **kwargs: None)
     monkeypatch.setattr(cowork, "_install_plugin", lambda *args: None)
 
     assert cowork.configure_cowork(
@@ -575,14 +671,14 @@ def test_empty_content_replaces_prior_plugin(tmp_path, monkeypatch):
     monkeypatch.setattr(cowork, "discover_cowork_root", lambda: cowork_root)
     writes = []
     installs = []
-    monkeypatch.setattr(cowork, "_write_marketplace", lambda *args: writes.append(args))
+    monkeypatch.setattr(cowork, "_write_marketplace", lambda *args, **kwargs: writes.append(args))
     monkeypatch.setattr(cowork, "_install_plugin", lambda *args: installs.append(args))
 
     assert cowork.configure_cowork(
         {"workspace": "https://workspace.example", "profile": "chosen"}, []
     )
 
-    assert writes[0][3] == {"mcpServers": {}}
+    assert writes[0][3] == []
     assert installs[0][0] == cowork_root
 
 
@@ -690,9 +786,21 @@ def test_revert_retains_owned_files_when_claude_cli_is_missing(tmp_path, monkeyp
     assert state_path.exists()
 
 
-def test_connector_skill_description_is_bounded_with_many_connectors(tmp_path):
+@pytest.mark.parametrize("options", [{}, {"code": False}], ids=["default", "explicit-cowork"])
+def test_cowork_connector_skill_matches_guidance_fixture(tmp_path, options):
+    """Both Cowork scopes retain discovery, sign-in recovery, and the retry-later fallback."""
+    cowork._write_connector_skill(tmp_path, ["slack", "gmail"], **options)
+    actual = (tmp_path / cowork.CONNECTOR_SKILL_NAME / "SKILL.md").read_text(encoding="utf-8")
+    expected = (Path(__file__).parent / "fixtures" / "cowork_connector_skill.md").read_text(
+        encoding="utf-8"
+    )
+    assert actual == expected
+
+
+@pytest.mark.parametrize("code", [False, True])
+def test_connector_skill_description_is_bounded_with_many_connectors(tmp_path, code):
     names = [f"connector_{i:03}_with_a_long_service_name" for i in range(100)]
-    cowork._write_connector_skill(tmp_path, names)
+    cowork._write_connector_skill(tmp_path, names, code=code)
     text = (tmp_path / cowork.CONNECTOR_SKILL_NAME / "SKILL.md").read_text()
     description = json.loads(text.splitlines()[2].removeprefix("description: "))
     assert len(description) <= 1024

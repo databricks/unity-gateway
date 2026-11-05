@@ -12,17 +12,14 @@ from urllib import request as urllib_request
 from urllib.parse import parse_qs, urlparse
 
 from ucode.ui import normalize_workspace_url, print_note
+from ucode.workspace_key import split_workspace_key as split_workspace_key
+from ucode.workspace_key import workspace_key as workspace_key
 
 UNIFIED_HOST_TYPE = "unified"
 WORKSPACE_SELECTOR_PARAMS = ("w", "o", "workspace_id")
 # A numeric id at or above 2^53 makes the server answer an empty 503.
 _MAX_WORKSPACE_ID = 2**53
 _HOST_TYPE_TIMEOUT_SECONDS = 3
-# A saved key also accepts a UUID id, so a key written by a version that supports
-# disaster-recovery stable connection ids still round-trips here.
-_KEY_PATTERN = re.compile(
-    r"^(https?://[^/?#]+)\?w=([0-9]+|[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})$"
-)
 _host_types: dict[str, str | None] = {}
 _DIGITS = re.compile(r"[0-9]+")
 
@@ -68,19 +65,6 @@ def split_workspace_url(raw: str) -> WorkspaceInput:
         workspace_id=next(iter(selectors), None),
         extra_parts=extra_parts,
     )
-
-
-def workspace_key(host: str, workspace_id: str | None) -> str:
-    """The ``state.json`` key: the bare host, plus ``?w=<id>`` on a multi-workspace host."""
-    return f"{host}?w={workspace_id}" if workspace_id else host
-
-
-def split_workspace_key(key: str) -> tuple[str, str | None]:
-    """Inverse of :func:`workspace_key`; any other string is a bare host."""
-    match = _KEY_PATTERN.match(key)
-    if match:
-        return match.group(1), match.group(2)
-    return key, None
 
 
 def state_workspace_key(state: dict) -> str | None:
