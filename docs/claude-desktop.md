@@ -215,9 +215,10 @@ When connectors are configured, the plugin includes:
 - A `unity-gateway-connectors` skill. On every connector request, including after a break,
   Claude uses current tools or discovers them with `ToolSearch` when available. Seeing only
   `authenticate` does not trigger login: service tools may be deferred. A reported sign-in
-  requirement triggers authentication. If discovery still finds no requested tools, Claude
-  explains that they may still be initializing and asks the user to retry shortly. It does
-  not sleep or poll for startup, promise recovery, or infer an authentication failure.
+  requirement or any connector error triggers one authentication attempt. If discovery still
+  finds no requested tools, Claude explains that they may still be initializing and asks the
+  user to retry shortly. It does not sleep or poll for startup, promise recovery, or infer
+  an authentication failure.
 
 Desktop manages connector startup independently of the plugin; loading the plugin does not
 guarantee every connector is ready. Idle recovery remains separate: the prompt hook refreshes
@@ -228,10 +229,12 @@ prompt for up to their 10-second budget, in addition to credential refresh.
 Native Cowork execution of these hooks still needs Desktop validation.
 
 The opt-in `tests/connector_behavior/` suite sends the generated skill to a real Claude model
-with synthetic Slack tools. It checks a stale disconnect notice with tools already available,
-deferred tools found through discovery without unnecessary login, missing tools prompting a
+with synthetic Slack and Gmail tools. It checks a stale disconnect notice with tools already
+available, deferred tools found through discovery without unnecessary login, missing tools prompting a
 retry-later response without sleeps, and a reported sign-in requirement followed by login and
-task completion. Available, deferred, and missing-tool cases run with both the skill description
+task completion. Gmail cases cover a generic tool failure with deferred authentication,
+successful recovery, persistent failure, canceled login, and an unavailable authentication tool.
+Available, deferred, and missing-tool cases run with both the skill description
 alone and the skill loaded before the break. These tests measure model compliance; they do
 not exercise Desktop's native tool exposure, sleep/resume, or proxy transport recovery. See
 `tests/README.md` for the explicit workspace, profile, and model inputs.
@@ -243,12 +246,14 @@ call, authenticating another connector, or spawning a subagent solely to make to
 After successful sign-in, Claude rediscovers tools and continues the original request in the same
 turn if its tools are available. Otherwise, it asks the user to retry shortly.
 An unavailable tool name and permission denials alone do not establish an authentication failure.
-When access is denied and an authentication tool is available, the guidance directs Claude
-to attempt sign-in once before recommending administrator or network changes. This includes
-IP-address denials: in a reported Atlassian session, the same Jira query succeeded after
-fresh sign-in despite that error. If the denial persists after sign-in and retry, Claude
-must report the original error and stop retrying authentication. This guidance does not
-reclassify upstream permission/network errors or validate their root cause.
+After any connector error, including generic failures and access/IP-address denials, the
+guidance directs Claude to discover that connector's `authenticate` tool and try it once.
+This is a recovery attempt, not a claim that credentials expired. Authentication is limited
+to one attempt per connector for the current request. Successful sign-in resumes the task;
+if the service call still fails, Claude reports the error and stops. Canceled or failed login
+also stops recovery. If discovery finds no authentication tool, Claude reports the connector
+error and any returned recovery instructions rather than treating the error as startup delay.
+This guidance does not reclassify upstream errors or validate their root cause.
 
 For OAuth U2M services, the proxy keeps a local `authenticate` tool alongside the service's
 normal tools, including after successful login. Calling it starts a fresh login even if an
