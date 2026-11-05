@@ -967,6 +967,16 @@ Responses/diff/parser/summary-rendering tests are obsolete because that implemen
 is removed. `test_polly_review.py` covers the Polly review workflow contract and its
 summary helper. `/user-journey-check` runs the user-journey gate,
 which runs automatically only for in-repo PRs.
+`/ug-latency [iterations]` (`.github/workflows/ug-latency.yml`, same authorization as
+`/integration-test`) times `ug configure`, `ug configure --user`, `ug configure --global`,
+`ug claude`, and `ug codex` on the PR's merge base and head (default 5 timed runs after 1 warmup,
+builds interleaved, `claude`/`codex` replaced by instant-exit stubs so only ug is measured) against
+the e2e workspace, and posts or updates one marked PR comment with median, min, p90, max, and the
+delta. The default `ug configure` and `--global` write machine-wide settings through sudo (the
+default scope is global), so they are skipped without passwordless sudo. `test_ug_latency.py` covers
+the statistics, comment rendering (the result file is treated as untrusted), command invocations,
+the measurement loop with a fake `ug`, and the workflow's trust boundaries; it does not time a real
+workspace or post to GitHub.
 `test_comment_command_authorization.py` evaluates integration/review job guards with synthetic
 GitHub events: members on any PR, prior contributors on their own PR, rejected first-time
 and unrelated contributors, integration commands with or without a SHA, ordinary comments,
