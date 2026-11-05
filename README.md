@@ -741,3 +741,12 @@ authentication and UC permissions, add this step to your workflow:
 The [setup guide](actions/publish-skills/README.md) includes complete OIDC and OAuth
 workflows, custom folder mappings, sharing permissions, and verification steps.
 Use `@main` for automatic updates or pin a reviewed commit for reproducible runs.
+
+## Auto picker session controls (internal)
+
+The Claude Auto picker capability is separate from routing activity. Existing
+presets explicitly disable exposure and keep their current behavior. The new
+Auto preset is not registered yet. Resolved Auto sessions use the hidden
+`claude-auto-mode auto|concrete` command for validated, atomic session writes;
+concrete opt-out requires feedback when configured. Legacy sessions retain
+`/smart-router` controls. Native picker and managed startup wiring follow separately.

@@ -8,9 +8,11 @@ from collections.abc import Mapping, MutableMapping
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    AUTO_PICKER_CONFIG_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+    EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
 )
@@ -33,33 +35,41 @@ SUBAGENT_ORCH_V1 = "subagent_orch_v1"
 # Preserve subagent_orch_v0 for Claude, with all Codex routing flags disabled.
 SUBAGENT_ORCH_V0_CLAUDE_ONLY = "subagent_orch_v0_claude_only"
 
+SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY = "subagent_orch_auto_picker_v0_claude_only"
+
 # Selected by --enable-smart-routing and managed smart routing when no known version is set.
 DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0_CLAUDE_ONLY
 
-_RESTORE_KEYS = (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
+_CONFIG_ENV_KEYS = (*SMART_ROUTING_ENV_KEYS, EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR)
+_RESTORE_KEYS = (*_CONFIG_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
 
 _BASE_VERSIONS = {
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
+        EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR: "0",
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     },
     SUBAGENT_ONLY_V0: {
+        EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR: "0",
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     },
     SUBAGENT_ONLY_V1: {
+        EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR: "0",
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     },
     SUBAGENT_ORCH_V0: {
+        EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR: "0",
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
     },
     SUBAGENT_ORCH_V1: {
+        EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR: "0",
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
@@ -92,6 +102,7 @@ _VERSIONS = {
     SUBAGENT_ORCH_V0_CLAUDE_ONLY: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
         AGENT_CODEX: {
+            EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR: "0",
             ENABLE_SMART_ROUTING_ENV_VAR: "0",
             ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
             ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
@@ -103,7 +114,7 @@ _VERSIONS = {
 def _validate_versions(versions: Mapping[str, Mapping[str, Mapping[str, str]]]) -> None:
     """Require both agents and a complete, explicit flag set for each."""
     expected_agents = {AGENT_CLAUDE, AGENT_CODEX}
-    expected = set(SMART_ROUTING_ENV_KEYS)
+    expected = set(_CONFIG_ENV_KEYS)
     for version, agents in versions.items():
         if agents.keys() != expected_agents:
             raise ValueError(
@@ -134,6 +145,10 @@ def resolve_environment(env: Mapping[str, str] | None = None, *, agent: str) -> 
     resolved = dict(os.environ if env is None else env)
     version = resolved.pop(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
     resolved.update(_VERSIONS.get(version, {}).get(agent, {}))
+    if version in _VERSIONS:
+        resolved.pop(AUTO_PICKER_CONFIG_ENV_VAR, None)
+        if version == SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY and agent == AGENT_CLAUDE:
+            resolved[AUTO_PICKER_CONFIG_ENV_VAR] = version
     return resolved
 
 
@@ -147,6 +162,11 @@ def apply_config(
     if preset is None:
         return {}
     previous = {key: target.get(key) for key in _RESTORE_KEYS}
+    if version == SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY or AUTO_PICKER_CONFIG_ENV_VAR in target:
+        previous[AUTO_PICKER_CONFIG_ENV_VAR] = target.get(AUTO_PICKER_CONFIG_ENV_VAR)
+    target.pop(AUTO_PICKER_CONFIG_ENV_VAR, None)
+    if version == SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY and agent == AGENT_CLAUDE:
+        target[AUTO_PICKER_CONFIG_ENV_VAR] = version
     target.update(preset)
     target.pop(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, None)
     return previous
@@ -161,15 +181,19 @@ def known_version(env: Mapping[str, str] | None = None) -> bool:
 def enabled_version_routes(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
     """Whether the version ``apply_enabled_version`` would select routes this agent at all.
 
-    Orchestration alone does not route, so only the V2 and subagent-only flags count. An agent
-    the versions do not cover is never routed.
+    The Auto preset starts off but supports explicit enablement. Orchestration alone does
+    not route. An agent the versions do not cover is never routed.
     """
     source = os.environ if env is None else env
     version = source.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
     preset = _VERSIONS.get(version, _VERSIONS[DEFAULT_ENABLED_VERSION]).get(agent)
     if preset is None:
         return False
-    return "1" in (preset[ENABLE_SMART_ROUTING_ENV_VAR], preset[ENABLE_SUBAGENT_ROUTING_ENV_VAR])
+    return "1" in (
+        preset[ENABLE_SMART_ROUTING_ENV_VAR],
+        preset[ENABLE_SUBAGENT_ROUTING_ENV_VAR],
+        preset[EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR],
+    )
 
 
 def apply_enabled_version(
@@ -183,6 +207,27 @@ def apply_enabled_version(
     target = os.environ if env is None else env
     previous = {key: target.get(key) for key in _RESTORE_KEYS}
     if not known_version(target):
-        target[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = DEFAULT_ENABLED_VERSION
-    apply_config(target, agent=agent)
+        target[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = (
+            SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY
+            if not target.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
+            and auto_picker_enabled(target, agent=agent)
+            else DEFAULT_ENABLED_VERSION
+        )
+    applied = apply_config(target, agent=agent)
+    if auto_picker_enabled(target, agent=agent):
+        # Managed or explicit launch enablement opts in; exposure alone starts off.
+        target[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
+        target[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = "1"
+    if AUTO_PICKER_CONFIG_ENV_VAR in applied:
+        previous[AUTO_PICKER_CONFIG_ENV_VAR] = applied[AUTO_PICKER_CONFIG_ENV_VAR]
     return previous
+
+
+def auto_picker_enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
+    """Use the resolved preset capability, independently of mutable activity flags."""
+    source = resolve_environment(env, agent=agent)
+    return (
+        agent == AGENT_CLAUDE
+        and source.get(AUTO_PICKER_CONFIG_ENV_VAR) == SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY
+        and source.get(EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR) == "1"
+    )

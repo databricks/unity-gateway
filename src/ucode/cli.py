@@ -3289,6 +3289,35 @@ def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[bool
         smart_routing_v2.restore_smart_routing_env(previous)
 
 
+@app.command("claude-auto-mode", hidden=True)
+def claude_auto_mode(
+    mode: str,
+    smart_router_feedback: Annotated[str | None, typer.Option("--smart-router-feedback")] = None,
+) -> None:
+    """Apply a confirmed native picker choice through the validated session writer."""
+    if not smart_routing_config.auto_picker_enabled(agent=AGENT_CLAUDE):
+        print_err("Auto controls require the Claude Auto picker configuration.")
+        raise typer.Exit(2)
+    if mode not in {"auto", "concrete"}:
+        print_err("Expected auto or concrete.")
+        raise typer.Exit(2)
+    if (
+        mode == "concrete"
+        and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
+        and len((smart_router_feedback or "").strip()) < 16
+    ):
+        print_err("Leaving Auto requires feedback of at least 16 characters; use /model.")
+        raise typer.Exit(2)
+    values = dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+    if mode == "auto":
+        values.update(ENABLE_SMART_ROUTING_SUBAGENT_ONLY="1", ENABLE_SMART_ROUTER_ORCHESTRATOR="1")
+    try:
+        set_session_environment(values)
+    except RuntimeError as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+
+
 def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | None = None) -> bool:
     if enabled is None:
         return False
@@ -3296,6 +3325,9 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
         session_env_path()
     except RuntimeError:
         return False
+    if smart_routing_config.auto_picker_enabled(agent=AGENT_CLAUDE):
+        print_err("Use /model to change Auto in this session.")
+        raise typer.Exit(2)
     if (
         not enabled
         and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)

@@ -1283,3 +1283,11 @@ installed plugin to contain no duplicate servers. Reconfigure comparisons includ
 added through `ug mcp add`, while retaining the original model/authentication-field assertions.
 These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
+
+## Auto session controls
+
+`test_smart_routing_config.py` covers explicit exposure values, legacy precedence,
+unknown-version no-op behavior, restoration, and capability/activity separation.
+`test_claude_auto_picker.py` exercises validated session writes, feedback checks,
+and rejection of legacy controls in resolved Auto sessions. The Auto preset is not
+registered; native picker behavior and live routing are not covered by this layer.
