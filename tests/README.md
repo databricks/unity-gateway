@@ -4,8 +4,8 @@
 directories and install identities. It checks intra-batch ownership changes,
 duplicate historical owners, metastore separation,
 malformed-directory collision recovery, and orphan cleanup both within and across
-batches using real temporary files. The private-helper call-count test was removed;
-these component checks establish reconciliation behavior, not normalization complexity
+batches using real temporary files. These component checks establish reconciliation
+behavior, not normalization complexity
 or live download latency.
 
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
