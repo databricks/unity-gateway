@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
-# The `[1m]` hint makes Claude Code size GPT sessions at 1M, but the gateway rejects them near 920K
-# input tokens with an error Claude Code's reactive compaction doesn't recognize. Claude Code
-# compacts ~33K below this window and only between turns, so 800K leaves room for a large turn.
-GPT_AUTO_COMPACT_WINDOW = 800_000
+import re
+
+# The `[1m]` hint makes Claude Code size a non-Claude session at 1M, but the gateway rejects them
+# earlier (GPT near 920K; GLM and Kimi accept ~850K), with an error Claude Code's reactive
+# compaction doesn't recognize. Claude Code compacts ~33K below the window and only between turns,
+# so it can overshoot by one large turn; hence 800K.
+AUTO_COMPACT_CAP = 800_000
+
+_MODEL_ID_PREFIX_RE = re.compile(
+    r"^(?:anthropic-aigw-[0-9a-fA-F]{8}-)?(?:system\.ai\.)?(?:databricks-)?"
+)
+
+
+def strip_model_id_prefixes(model: str) -> str:
+    """``model`` without its `[1m]` hint and the gateway wrapper, `system.ai.`, and `databricks-`."""
+    return _MODEL_ID_PREFIX_RE.sub("", model.removesuffix("[1m]"), count=1)
+
 
 # Claude Code's accepted `autoCompactWindow` range; values outside it are not a usable choice.
 CLAUDE_AUTO_COMPACT_WINDOW_MIN = 100_000

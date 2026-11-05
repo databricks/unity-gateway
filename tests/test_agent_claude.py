@@ -1196,7 +1196,7 @@ class TestWriteToolConfigManagedSettings:
             "claude_static_models": ["system.ai.claude-opus-4-8", "system.ai.gpt-6-luna"],
         }
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
-        window = {"autoCompactWindow": db_mod.GPT_AUTO_COMPACT_WINDOW}
+        window = {"autoCompactWindow": db_mod.AUTO_COMPACT_CAP}
         _, text = managed_writes[0]
         assert json.loads(text)["modelSettings"] == admin_model_settings
         _, private = private_writes[0]
@@ -1225,7 +1225,7 @@ class TestWriteToolConfigManagedSettings:
             monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
         state = {"workspace": WS, "claude_static_models": ["system.ai.claude-opus-4-8"]}
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
-        window = {"autoCompactWindow": db_mod.GPT_AUTO_COMPACT_WINDOW}
+        window = {"autoCompactWindow": db_mod.AUTO_COMPACT_CAP}
         private = [p for path, p in private_writes if path == str(claude.CLAUDE_SETTINGS_PATH)][-1]
         assert private["modelSettings"] == {
             "system.ai.gpt-6-luna": window,
@@ -1267,7 +1267,7 @@ class TestWriteToolConfigManagedSettings:
         }
         if managed_model_settings is not None:
             managed_doc["modelSettings"] = managed_model_settings
-        window = {"autoCompactWindow": db_mod.GPT_AUTO_COMPACT_WINDOW}
+        window = {"autoCompactWindow": db_mod.AUTO_COMPACT_CAP}
         assert window["autoCompactWindow"] == 800_000
         private_path = str(claude.CLAUDE_SETTINGS_PATH)
 
@@ -3952,11 +3952,11 @@ class TestWriteToolConfigPrunesStaleModelEnv:
         assert "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME" not in env
 
 
-GPT_WINDOW = {"autoCompactWindow": db_mod.GPT_AUTO_COMPACT_WINDOW}
+GPT_WINDOW = {"autoCompactWindow": db_mod.AUTO_COMPACT_CAP}
 
 
-class TestGptAutoCompactModelSettings:
-    """GPT ids get the `[1m]` hint, so ug caps their auto-compact below the gateway's real limit."""
+class TestAutoCompactModelSettings:
+    """Non-Claude `[1m]` ids get an auto-compact cap below the gateway's real limit."""
 
     def test_static_picker_caps_only_gpt_models(self, monkeypatch):
         static = ["system.ai.claude-opus-4-8", "system.ai.gpt-6-luna", "system.ai.gpt-oss-120b"]
@@ -4139,7 +4139,7 @@ class TestGptAutoCompactModelSettings:
                 "system.ai.gpt-6-luna[1m]": {"autoCompactWindow": 600_000},
             }
         )
-        assert claude.gpt_model_settings(["system.ai.gpt-6-luna[1m]"]) == {
+        assert claude.auto_compact_model_settings(["system.ai.gpt-6-luna[1m]"]) == {
             "system.ai.gpt-6-luna": {"autoCompactWindow": 600_000}
         }
 
@@ -4159,14 +4159,75 @@ class TestGptAutoCompactModelSettings:
         warnings: list[str] = []
         monkeypatch.setattr(claude, "print_warning", warnings.append)
         self._write_user_settings({"system.ai.gpt-6-luna": entry})
-        assert claude.gpt_model_settings(["system.ai.gpt-6-luna"]) == {
+        assert claude.auto_compact_model_settings(["system.ai.gpt-6-luna"]) == {
             "system.ai.gpt-6-luna": GPT_WINDOW
         }
         assert warnings == []
 
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "system.ai.glm-5-3[1m]",
+            "system.ai.kimi-k3[1m]",
+            "system.ai.glm-5-3-flash[1m]",
+            "anthropic-aigw-12e8d1ee-system.ai.glm-5-2[1m]",
+        ],
+    )
+    def test_routed_non_gpt_one_m_ids_are_capped(self, model):
+        canonical = model.removesuffix("[1m]")
+        assert claude.auto_compact_model_settings([model]) == {canonical: GPT_WINDOW}
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "system.ai.glm-5-3",
+            "databricks-kimi-k3",
+            "system.ai.gpt-oss-120b",
+            "system.ai.claude-opus-4-8[1m]",
+            "system.ai.claude-fable-5-1[1m]",
+            "databricks-claude-sonnet-5-5[1m]",
+        ],
+    )
+    def test_ids_without_a_non_claude_one_m_hint_are_not_capped(self, model):
+        assert claude.auto_compact_model_settings([model]) == {}
+
+    def test_user_window_is_honored_or_capped(self, monkeypatch):
+        self._write_user_settings(
+            {
+                "system.ai.glm-5-3": {"autoCompactWindow": 300_000},
+                "system.ai.kimi-k3": {"autoCompactWindow": 900_000},
+                "system.ai.gpt-6-luna": {"autoCompactWindow": 900_000},
+            }
+        )
+        monkeypatch.setattr(claude, "print_warning", lambda _message: None)
+        assert claude.auto_compact_model_settings(
+            ["system.ai.glm-5-3[1m]", "system.ai.kimi-k3[1m]", "system.ai.gpt-6-luna[1m]"]
+        ) == {
+            "system.ai.glm-5-3": {"autoCompactWindow": 300_000},
+            "system.ai.kimi-k3": GPT_WINDOW,
+            "system.ai.gpt-6-luna": GPT_WINDOW,
+        }
+
+    def test_stale_leaf_cleanup_covers_non_gpt_and_spares_claude_and_gpt_oss(self):
+        merged = {
+            "env": {"ANTHROPIC_MODEL": "system.ai.kimi-k3[1m]"},
+            "modelSettings": {
+                "system.ai.glm-5-3": {"autoCompactWindow": 800_000},
+                "system.ai.kimi-k3": {"autoCompactWindow": 1},
+                "system.ai.claude-opus-4-8": {"autoCompactWindow": 400_000},
+                "system.ai.gpt-oss-120b": {"autoCompactWindow": 300_000},
+            },
+        }
+        claude._sync_auto_compact_model_settings(merged)
+        assert merged["modelSettings"] == {
+            "system.ai.kimi-k3": GPT_WINDOW,
+            "system.ai.claude-opus-4-8": {"autoCompactWindow": 400_000},
+            "system.ai.gpt-oss-120b": {"autoCompactWindow": 300_000},
+        }
+
     def test_non_gpt_user_window_is_not_applied(self):
         self._write_user_settings({"system.ai.claude-opus-4-8": {"autoCompactWindow": 500_000}})
-        assert claude.gpt_model_settings(["system.ai.claude-opus-4-8[1m]"]) == {}
+        assert claude.auto_compact_model_settings(["system.ai.claude-opus-4-8[1m]"]) == {}
 
     def test_higher_user_window_is_capped_and_warns_once_per_launch(self, monkeypatch, tmp_path):
         warnings: list[str] = []
@@ -4186,7 +4247,7 @@ class TestGptAutoCompactModelSettings:
 
         # Several writers in one launch: the settings file and the launch override.
         merged = {"env": {"ANTHROPIC_MODEL": "system.ai.gpt-6-luna[1m]"}}
-        claude._sync_gpt_model_settings(merged)
+        claude._sync_auto_compact_model_settings(merged)
         claude.launch(
             {"workspace": WS}, [], options=LaunchOptions(user_pinned_model="system.ai.gpt-6-luna")
         )
@@ -4195,7 +4256,7 @@ class TestGptAutoCompactModelSettings:
         assert json.loads(calls[0][2])["modelSettings"] == {"system.ai.gpt-6-luna": GPT_WINDOW}
         assert warnings == [
             "autoCompactWindow 1000000 for system.ai.gpt-6-luna is capped at 800000: "
-            "the gateway rejects requests above ~920K tokens."
+            "the gateway rejects longer requests for this model."
         ]
         assert claude.CLAUDE_USER_SETTINGS_PATH.read_bytes() == original
 

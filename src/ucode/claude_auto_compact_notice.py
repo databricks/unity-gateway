@@ -1,6 +1,6 @@
 """Claude Code ``UserPromptSubmit`` hook: tell the user when `/autocompact` needs a restart.
 
-ug's ``--settings`` entry for a GPT model outranks the user's ``~/.claude/settings.json`` and is not
+ug's ``--settings`` entry for a capped model outranks the user's ``~/.claude/settings.json`` and is not
 hot-reloaded, so a mid-session `/autocompact` only applies on the next ``ug claude``. Run as
 ``python -m ucode.claude_auto_compact_notice`` so it imports no more than the standard library and
 ``ucode.auto_compact_window``. It reads the user file and never writes it.
@@ -15,12 +15,12 @@ import sys
 import time
 from pathlib import Path
 
-from ucode.auto_compact_window import GPT_AUTO_COMPACT_WINDOW, valid_auto_compact_window
+from ucode.auto_compact_window import AUTO_COMPACT_CAP, valid_auto_compact_window
 
 HOOK_COMMAND_MARKER = "ucode.claude_auto_compact_notice"
 # Set on the Claude process at launch: {"<id without [1m]>": {"effective": int, "user": int|null}},
 # where "user" is the valid value in the user's settings at launch.
-SESSION_WINDOWS_ENV_VAR = "UCODE_GPT_AUTO_COMPACT_SESSION"
+SESSION_WINDOWS_ENV_VAR = "UCODE_AUTO_COMPACT_SESSION"
 NOTICE_STATE_DIR_NAME = "auto-compact-notices"
 _STALE_STATE_SECONDS = 7 * 24 * 3600
 _SAFE_SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -50,11 +50,11 @@ def notice_for(model: str, effective: int, launch_user: int | None, user: int | 
     """
     if user is None or user == effective or user == launch_user:
         return None
-    capped = min(user, GPT_AUTO_COMPACT_WINDOW)
-    if user > GPT_AUTO_COMPACT_WINDOW:
+    capped = min(user, AUTO_COMPACT_CAP)
+    if user > AUTO_COMPACT_CAP:
         message = (
             f"Auto-compact for {model} stays at {capped // 1000}k: ug caps it because the "
-            "gateway rejects requests above ~920K tokens."
+            "gateway rejects longer requests for this model."
         )
         if capped != effective:
             message += " Restart ug claude to apply the cap."

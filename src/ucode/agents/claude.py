@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from ucode.auto_compact_window import AUTO_COMPACT_CAP
 from ucode.claude_auto_compact_notice import (
     HOOK_COMMAND_MARKER as AUTO_COMPACT_NOTICE_HOOK_MARKER,
 )
@@ -55,16 +56,15 @@ from ucode.custom_oauth import (
     custom_oauth_cli_enabled,
 )
 from ucode.databricks import (
-    GPT_AUTO_COMPACT_WINDOW,
     AnthropicModelCatalog,
     _debug,
+    auto_compact_cap_model_settings,
     build_auth_shell_command,
     build_otel_headers_shell_command,
     build_otel_traces_endpoint,
     build_tool_base_url,
     get_databricks_token,
-    gpt_auto_compact_model_settings,
-    is_gpt_auto_compact_model_key,
+    is_auto_compact_model_key,
     maybe_add_gpt_1m_suffix,
     ug_binary,
 )
@@ -763,26 +763,26 @@ def _user_auto_compact_windows(user_settings_path: Path) -> dict[str, int]:
     return user_auto_compact_windows(read_json_safe(user_settings_path))
 
 
-def gpt_model_settings(
+def auto_compact_model_settings(
     models: Iterable[object], user_settings_path: Path | None = None
 ) -> dict[str, dict[str, int]]:
-    """GPT ``modelSettings`` entries for ug's ``--settings`` files, honoring a lower user window.
+    """``modelSettings`` entries capping auto-compact for ug's ``--settings`` files.
 
     ``--settings`` outranks the user's file and would otherwise replace their `/autocompact`
-    choice, so ug writes min(user value, ``GPT_AUTO_COMPACT_WINDOW``) and warns once when it
-    lowers the user's value.
+    choice, so ug writes min(user value, ``AUTO_COMPACT_CAP``) and warns once when it lowers the
+    user's value.
     """
     user_windows = _user_auto_compact_windows(user_settings_path or CLAUDE_USER_SETTINGS_PATH)
-    entries = gpt_auto_compact_model_settings(models, user_windows)
+    entries = auto_compact_cap_model_settings(models, user_windows)
     for model in entries:
         window = user_windows.get(model)
-        if window is None or window <= GPT_AUTO_COMPACT_WINDOW:
+        if window is None or window <= AUTO_COMPACT_CAP:
             continue
         if (model, window) not in _warned_auto_compact_caps:
             _warned_auto_compact_caps.add((model, window))
             print_warning(
-                f"autoCompactWindow {window} for {model} is capped at {GPT_AUTO_COMPACT_WINDOW}: "
-                "the gateway rejects requests above ~920K tokens."
+                f"autoCompactWindow {window} for {model} is capped at {AUTO_COMPACT_CAP}: "
+                "the gateway rejects longer requests for this model."
             )
     return entries
 
@@ -805,18 +805,21 @@ def _managed_settings_named_model_ids() -> list[object]:
         return []
 
 
-def _sync_gpt_model_settings(settings: dict, also_named_model_ids: Iterable[object] = ()) -> None:
-    """Write ug's GPT ``modelSettings`` leaves for the models ``settings`` names.
+def _sync_auto_compact_model_settings(
+    settings: dict, also_named_model_ids: Iterable[object] = ()
+) -> None:
+    """Write ug's auto-compact ``modelSettings`` leaves for the models ``settings`` names.
 
     ``also_named_model_ids`` are ids another settings source offers that this document must cap
     too; they count as named, so stale-entry cleanup keeps them.
 
-    The ``autoCompactWindow`` leaf of a GPT id is ug's in the file this edits: it is set
-    for every GPT model the document names (see ``gpt_model_settings`` for the value) and dropped
-    for GPT ids it no longer names. Sibling fields and non-GPT entries are left alone, and only
-    entries emptied by a removal are dropped.
+    The ``autoCompactWindow`` leaf of a capped non-Claude id is ug's in the file this edits: it is
+    set for every such model the document names with a `[1m]` hint (see
+    ``auto_compact_model_settings`` for the value) and dropped for ids it no longer names.
+    Sibling fields and other entries are left alone, and only entries emptied by a removal are
+    dropped.
     """
-    entries = gpt_model_settings([*_settings_model_ids(settings), *also_named_model_ids])
+    entries = auto_compact_model_settings([*_settings_model_ids(settings), *also_named_model_ids])
     model_settings = settings.get(CLAUDE_MODEL_SETTINGS_KEY)
     if not isinstance(model_settings, dict):
         if entries:
@@ -824,7 +827,7 @@ def _sync_gpt_model_settings(settings: dict, also_named_model_ids: Iterable[obje
         return
     removed = False
     for model, entry in list(model_settings.items()):
-        if model in entries or not is_gpt_auto_compact_model_key(model):
+        if model in entries or not is_auto_compact_model_key(model):
             continue
         if isinstance(entry, dict) and CLAUDE_AUTO_COMPACT_WINDOW_KEY in entry:
             del entry[CLAUDE_AUTO_COMPACT_WINDOW_KEY]
@@ -843,13 +846,13 @@ def sync_auto_compact_notice_hook(doc: dict) -> None:
     sync_managed_hooks(doc, AUTO_COMPACT_NOTICE_HOOK_MARKER, groups)
 
 
-def record_session_gpt_auto_compact(*overlays: dict) -> None:
-    """Record the GPT ``autoCompactWindow`` this launch applies, for the restart-notice hook.
+def record_session_auto_compact(*overlays: dict) -> None:
+    """Record the ``autoCompactWindow`` caps this launch applies, for the restart-notice hook.
 
     Sets ``SESSION_WINDOWS_ENV_VAR`` on this process so the Claude it starts, and that Claude's
     hooks, inherit it. Claude Code's precedence is the OS-managed file over ``--settings``, so the
     sources are ug's settings file, then ``overlays`` (the launch's own settings), then the
-    managed file, which only an administrator writes a window into. A launch with no GPT window
+    managed file, which only an administrator writes a window into. A launch with no cap window
     clears an inherited value.
     """
     managed_path = managed_settings_path()
@@ -861,7 +864,7 @@ def record_session_gpt_auto_compact(*overlays: dict) -> None:
     effective: dict[str, int] = {}
     for source in sources:
         for model, window in user_auto_compact_windows(source).items():
-            if is_gpt_auto_compact_model_key(model):
+            if is_auto_compact_model_key(model):
                 effective[model] = window
     user_windows = _user_auto_compact_windows(CLAUDE_USER_SETTINGS_PATH)
     if not effective:
@@ -1914,7 +1917,7 @@ def write_tool_config(
             # Only the --settings file carries the cap: an admin's managed `modelSettings` is
             # theirs, and the --settings layer outranks the user's file, which the cap must beat.
             # Derived from the final file, so family defaults and pickers ug preserved are covered.
-            _sync_gpt_model_settings(merged, _managed_settings_named_model_ids())
+            _sync_auto_compact_model_settings(merged, _managed_settings_named_model_ids())
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
@@ -2629,7 +2632,7 @@ def _compose_v2_settings(
 
 def _start_model_settings(start_model: str | None) -> dict:
     """Launch-only settings for a start model the settings file may not name (e.g. ``--model``)."""
-    model_settings = gpt_model_settings([start_model])
+    model_settings = auto_compact_model_settings([start_model])
     return {CLAUDE_MODEL_SETTINGS_KEY: model_settings} if model_settings else {}
 
 
@@ -2918,7 +2921,7 @@ def launch(
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-    record_session_gpt_auto_compact()
+    record_session_auto_compact()
     if state.get("claude_relayed"):
         _launch_relayed(state, binary, tool_args)
         return
@@ -3007,7 +3010,7 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
-    record_session_gpt_auto_compact(settings_override or {})
+    record_session_auto_compact(settings_override or {})
     with _claude_launch_argv(binary, launch_args, settings_override=settings_override) as argv:
         exec_or_spawn(argv)
 

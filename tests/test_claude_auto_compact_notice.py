@@ -11,7 +11,7 @@ import pytest
 
 from ucode import claude_auto_compact_notice as notice
 from ucode.agents import claude
-from ucode.auto_compact_window import GPT_AUTO_COMPACT_WINDOW
+from ucode.auto_compact_window import AUTO_COMPACT_CAP
 
 MODEL = "system.ai.gpt-6-luna"
 
@@ -57,10 +57,10 @@ class TestNoticeFor:
         )
 
     def test_over_cap_with_unchanged_effective_does_not_mention_restart(self):
-        message = notice.notice_for(MODEL, GPT_AUTO_COMPACT_WINDOW, None, 900_000)
+        message = notice.notice_for(MODEL, AUTO_COMPACT_CAP, None, 900_000)
         assert message == (
             f"Auto-compact for {MODEL} stays at 800k: ug caps it because the gateway rejects "
-            "requests above ~920K tokens."
+            "longer requests for this model."
         )
 
     def test_over_cap_that_changes_effective_mentions_restart(self):
@@ -200,7 +200,7 @@ class TestLaunchRecord:
             json.dumps({"modelSettings": {MODEL: {"autoCompactWindow": 500_000}}})
         )
         original = _user_file(_isolated, {f"{MODEL}[1m]": 900_000})
-        claude.record_session_gpt_auto_compact()
+        claude.record_session_auto_compact()
         assert self._recorded(monkeypatch) == {MODEL: {"effective": 500_000, "user": 900_000}}
         assert claude.CLAUDE_USER_SETTINGS_PATH.read_bytes() == original
 
@@ -211,10 +211,10 @@ class TestLaunchRecord:
             json.dumps({"modelSettings": {MODEL: {"autoCompactWindow": 500_000}}})
         )
         overlay = {"modelSettings": {MODEL: {"autoCompactWindow": 700_000}}}
-        claude.record_session_gpt_auto_compact(overlay)
+        claude.record_session_auto_compact(overlay)
         assert self._recorded(monkeypatch)[MODEL]["effective"] == 700_000
         monkeypatch.setattr(claude, "managed_settings_path", lambda: managed)
-        claude.record_session_gpt_auto_compact(overlay)
+        claude.record_session_auto_compact(overlay)
         assert self._recorded(monkeypatch)[MODEL]["effective"] == 300_000
 
     def test_non_gpt_windows_are_not_recorded_and_stale_env_is_cleared(
@@ -224,7 +224,7 @@ class TestLaunchRecord:
         claude.CLAUDE_SETTINGS_PATH.write_text(
             json.dumps({"modelSettings": {"system.ai.claude-opus-4-8": {"autoCompactWindow": 4e5}}})
         )
-        claude.record_session_gpt_auto_compact()
+        claude.record_session_auto_compact()
         assert self._recorded(monkeypatch) is None
 
 
