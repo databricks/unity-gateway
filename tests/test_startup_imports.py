@@ -134,7 +134,8 @@ def test_noninteractive_commands_skip_picker_imports(
     monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
     monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
     output, loaded = _modules_loaded_after(
-        "import sys\n"
+        "import sys\nfrom io import BytesIO, TextIOWrapper\n"
+        'sys.stdin = TextIOWrapper(BytesIO(b\'{"session_id": "startup-import-test"}\'))\n'
         f"sys.argv = {['ug', *arguments]!r}\n"
         "from ucode.entrypoint import main\n"
         "try:\n"
@@ -149,6 +150,10 @@ def test_noninteractive_commands_skip_picker_imports(
         assert "Usage:" in output
     else:
         assert output == ""
+        if routing_enabled:
+            agent = arguments[0].removesuffix("-router-hook")
+            canary = tmp_path / ".ucode" / f"{agent}-smart-routing-canary.json"
+            assert json.loads(canary.read_text())["session_id"] == "startup-import-test"
 
 
 def test_public_picker_exports_preserve_identity_and_parameters():
