@@ -1,5 +1,9 @@
 # Test suites and user journeys
 
+The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
+including exact service URLs, native OAuth metadata, and real `codex mcp get`
+readback. The per-user configuration remains separate.
+
 `test_launch_model_catalog.py` exercises launch-scoped Claude catalog reuse against a local HTTP
 server. It checks family/picker results, authentication and source isolation, failed-read recovery,
 and a fresh catalog on the next launch. This is component coverage, not live agent startup.
