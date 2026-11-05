@@ -957,6 +957,15 @@ class TestCodexAppCatalog:
         assert "model_catalog_json" not in read_toml_safe(shared_path)
         assert not codex.CODEX_MODEL_CATALOG_PATH.exists()
 
+    def test_global_flag_keeps_app_catalog_reference(self, monkeypatch):
+        monkeypatch.setattr(
+            codex,
+            "_read_app_config",
+            lambda: pytest.fail("`ug configure --global` must not touch the app settings"),
+        )
+        managed_files.set_machine_wide_only(True)
+        assert codex.detach_app_model_catalog() is False
+
     def test_failed_static_validation_detaches_previous_app_catalog(self, monkeypatch):
         codex.sync_app_model_catalog({"models": [{"slug": "old-model"}]})
         original_catalog = codex.CODEX_MODEL_CATALOG_PATH.read_bytes()
@@ -1059,6 +1068,13 @@ class TestCodexLaunch:
         # These launch tests isolate the real-binary validation boundary; its
         # subprocess contract is covered in test_codex_catalog.py.
         monkeypatch.setattr(codex, "validate_codex_catalog", lambda binary, catalog: None)
+        monkeypatch.setattr(codex, "user_mcp_config_path", lambda: tmp_path / "user.config.toml")
+        monkeypatch.setattr(codex, "read_managed_mcp_urls", lambda: {})
+        monkeypatch.setattr(
+            codex,
+            "get_model_provider_service",
+            lambda name, workspace, token: ({"name": name, "provider_type": "openai"}, None),
+        )
         return launches
 
     @pytest.mark.parametrize(
@@ -1464,6 +1480,96 @@ class TestCodexLaunch:
             arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
         )
         assert 'Databricks-Model-Provider-Service = "main.default.openai"' in provider_arg
+
+    def _launch_with_provider_type(self, tmp_path, monkeypatch, provider_type, state=None):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "app-catalog.json")
+        monkeypatch.setattr(
+            codex, "_model_catalog_path", lambda workspace, scope: tmp_path / "m.json"
+        )
+        monkeypatch.setattr(
+            codex, "_fetch_codex_model_catalog", lambda *a, **k: {"models": [{"slug": "m"}]}
+        )
+        monkeypatch.setattr(
+            codex,
+            "get_model_provider_service",
+            lambda name, workspace, token: ({"name": name, "provider_type": provider_type}, None),
+        )
+        codex.launch(
+            {"workspace": WS, "_codex_launch_provider": "main.default.svc", **(state or {})},
+            [],
+            options=LaunchOptions(),
+        )
+        return launches[0]
+
+    def test_bedrock_runtime_swaps_builtin_web_search_for_mcp(self, tmp_path, monkeypatch):
+        args = self._launch_with_provider_type(tmp_path, monkeypatch, "amazon_bedrock")
+
+        assert 'web_search="disabled"' in args
+        entry = next(a for a in args if a.startswith("mcp_servers.system-ai-web_search="))
+        assert "/ai-gateway/mcp-services/system.ai.web_search" in entry
+        assert "mcp-proxy" in entry
+        assert not any(a == "mcp_servers={}" or a.startswith("mcp_servers=") for a in args)
+
+    @pytest.mark.parametrize(
+        "provider_type", ["bedrock_mantle", "openai", "azure_openai", "microsoft_foundry"]
+    )
+    def test_other_providers_keep_builtin_web_search(self, tmp_path, monkeypatch, provider_type):
+        args = self._launch_with_provider_type(tmp_path, monkeypatch, provider_type)
+
+        assert not any(a.startswith("web_search=") for a in args)
+        assert not any(a.startswith("mcp_servers") for a in args)
+
+    def test_bedrock_runtime_does_not_duplicate_user_mcp(self, tmp_path, monkeypatch):
+        (tmp_path / "user.config.toml").write_text(
+            '[mcp_servers.my-search]\ncommand = "ug"\n'
+            f'args = ["mcp-proxy", "--url", "{WS}/ai-gateway/mcp-services/system.ai.web_search"]\n',
+            encoding="utf-8",
+        )
+        args = self._launch_with_provider_type(tmp_path, monkeypatch, "amazon_bedrock")
+
+        assert 'web_search="disabled"' in args
+        assert not any(a.startswith("mcp_servers") for a in args)
+
+    def test_bedrock_runtime_does_not_duplicate_managed_mcp(self, tmp_path, monkeypatch):
+        args = self._launch_with_provider_type(
+            tmp_path,
+            monkeypatch,
+            "amazon_bedrock",
+            {
+                "managed_mcp_servers": [
+                    {
+                        "name": "system-ai-web_search",
+                        "url": f"{WS}/ai-gateway/mcp-services/system.ai.web_search",
+                        "clients": ["codex"],
+                    }
+                ]
+            },
+        )
+
+        assert 'web_search="disabled"' in args
+        assert not any(a.startswith("mcp_servers") for a in args)
+
+    def test_unknown_provider_type_leaves_launch_unchanged(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "app-catalog.json")
+        monkeypatch.setattr(
+            codex, "_model_catalog_path", lambda workspace, scope: tmp_path / "m.json"
+        )
+        monkeypatch.setattr(
+            codex, "_fetch_codex_model_catalog", lambda *a, **k: {"models": [{"slug": "m"}]}
+        )
+        monkeypatch.setattr(
+            codex, "get_model_provider_service", lambda name, workspace, token: (None, "HTTP 500")
+        )
+
+        codex.launch(
+            {"workspace": WS, "_codex_launch_provider": "main.default.svc"},
+            [],
+            options=LaunchOptions(),
+        )
+
+        assert not any(a.startswith(("web_search=", "mcp_servers")) for a in launches[0])
 
     def test_provider_keeps_other_discovery_failures_fatal(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
@@ -1887,6 +1993,42 @@ class TestCodexManagedConfig:
         assert "model" not in doc
         assert "Databricks" in doc["model_providers"]
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+
+    def test_global_flag_writes_only_managed_config(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        desktop: list = []
+        monkeypatch.setattr(codex, "_sync_desktop_tracing", lambda *a: desktop.append(a))
+        monkeypatch.setattr(codex, "_sync_desktop_relay", lambda *a, **k: desktop.append(a))
+        monkeypatch.setattr(
+            codex, "prepare_codex_catalog", lambda *a: pytest.fail("catalog is per-user")
+        )
+        managed_files.set_machine_wide_only(True)
+        state = {"workspace": WS, "codex_models": ["gpt-5"], "codex_static_models": ["gpt-5"]}
+
+        codex.write_tool_config(state)
+
+        assert read_toml_safe(managed_path)["model_provider"] == "Databricks"
+        assert "model_catalog_json" not in read_toml_safe(managed_path)
+        assert not config_path.exists()
+        assert not codex.CODEX_MODEL_CATALOG_PATH.exists()
+        assert desktop == []
+        assert codex.configured_paths(state) == []
+
+    def test_global_flag_rejects_relay_legacy_and_missing_managed_file(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_files.set_machine_wide_only(True)
+
+        with pytest.raises(RuntimeError, match="ChatGPT subscription relay"):
+            codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+        monkeypatch.setattr(codex, "_use_legacy_layout", lambda: True)
+        with pytest.raises(RuntimeError, match="read only per-user settings"):
+            codex.write_tool_config({"workspace": WS})
+        monkeypatch.setattr(codex, "_use_legacy_layout", lambda: False)
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+        with pytest.raises(RuntimeError, match="no machine-wide Codex settings"):
+            codex.write_tool_config({"workspace": WS})
+        assert not config_path.exists()
+        assert not managed_path.exists()
 
     def test_relayed_writes_proxyless_provider_and_skips_managed_file(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
@@ -2810,6 +2952,44 @@ class TestCodexReconcileManagedMcp:
         http = codex.managed_mcp_http_entry("u", "client")
         codex.reconcile_managed_mcp({}, {"stdio-now-http": http, "same": http})
         assert set(read_toml_safe(user_path)["mcp_servers"]) == {"same", "mine"}
+
+    def test_global_flag_keeps_user_entry_and_skips_the_conflicting_server(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        import tomllib
+
+        user_path = tmp_path / "config.toml"
+        original = '[mcp_servers.stdio-now-http]\ncommand = "/opt/ug"\nargs = []\n'
+        user_path.write_text(original, encoding="utf-8")
+        monkeypatch.setattr(codex, "user_mcp_config_path", lambda: user_path)
+        captured: dict = {}
+        self._wire(monkeypatch, None, captured)
+        managed_files.set_machine_wide_only(True)
+        http = codex.managed_mcp_http_entry("u", "client")
+
+        codex.reconcile_managed_mcp({}, {"stdio-now-http": http, "other": http})
+
+        assert user_path.read_text(encoding="utf-8") == original
+        assert set(tomllib.loads(captured["text"])["mcp_servers"]) == {"other"}
+        assert "stdio-now-http" in " ".join(capsys.readouterr().err.split())
+
+    @pytest.mark.parametrize("machine_wide_only", [False, True])
+    def test_denied_write_fails_only_a_global_run(self, monkeypatch, machine_wide_only):
+        # Without --global the caller falls back to user scope; `--global` has none, so it fails.
+        self._wire(monkeypatch, None, {})
+
+        def deny(*a, **k):
+            raise managed_files.ManagedFileWriteUnavailable("sudo denied")
+
+        monkeypatch.setattr(codex, "reconcile_managed_file", deny)
+        managed_files.set_machine_wide_only(machine_wide_only)
+        servers = {"system-ai-github": codex.managed_mcp_entry(self.ARGV)}
+
+        if machine_wide_only:
+            with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="sudo denied"):
+                codex.reconcile_managed_mcp({}, servers)
+        else:
+            assert codex.reconcile_managed_mcp({}, servers) is False
 
     def test_empty_map_clears_table_preserving_model_keys(self, monkeypatch):
         import tomllib
