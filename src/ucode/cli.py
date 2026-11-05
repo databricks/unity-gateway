@@ -1447,8 +1447,9 @@ def _configure_workspace_command(
     state = states[0]
     save_state(state)
 
-    # Configure reads current policy and defaults to all enabled agents. An explicit --agents
-    # limits installation and setup to the requested agents that policy enables.
+    # A published managed config means the admin dictates the setup: apply it to every enabled agent
+    # now rather than prompting the developer to pick. Configure always reads fresh so it never
+    # applies a config the admin has since changed.
     managed, _ = _refresh_configured_policy(state)
     refuse_user_scope_over_managed_config(state.get("workspace"), managed)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
@@ -1458,39 +1459,6 @@ def _configure_workspace_command(
                 "--provider and --model-location can't be used on a workspace with a managed "
                 "configuration; its admin chooses the models."
             )
-        summary_managed = managed
-        selected_self_managed: list[str] = []
-        if selected_tools is not None:
-            selected_self_managed = [
-                name
-                for name in selected_tools
-                if name not in managed_tools and is_self_managed(state, name)
-            ]
-            excluded = [
-                name
-                for name in selected_tools
-                if name not in managed_tools and name not in selected_self_managed
-            ]
-            managed_tools = [name for name in managed_tools if name in selected_tools] + (
-                selected_self_managed
-            )
-            if not managed_tools:
-                if selected_tools:
-                    _reject_disabled_agent(managed, selected_tools[0])
-                print_note("No coding agents selected — nothing to configure.")
-                return 0
-            if excluded:
-                displays = ", ".join(TOOL_SPECS[name]["display"] for name in excluded)
-                print_warning(
-                    f"Skipping agent(s) not enabled by your workspace configuration: {displays}."
-                )
-            # Unrequested agents were not attempted, so the summary must not call them failures.
-            summary_managed = {
-                **managed,
-                "enabled_agents": {
-                    name: managed["enabled_agents"].get(name, {}) for name in managed_tools
-                },
-            }
         refuse_user_scope_over_managed_files(managed_tools)
         managed_tools = _machine_wide_tools(managed_tools)
         if not managed_tools:
@@ -1499,16 +1467,10 @@ def _configure_workspace_command(
         configured_tools: list[str] = []
         failed_tools: list[str] = []
         for tool_name in managed_tools:
-            # A developer's existing opt-in keeps its own model/provider settings.
-            resolved = (
-                state
-                if tool_name in selected_self_managed
-                else resolve_state(managed, state, tool_name)
-            )
+            resolved = resolve_state(managed, state, tool_name)
             parent_schema = (
                 managed_unity_catalog_location(managed, tool_name)
                 if tool_name in MODEL_LOCATION_TOOLS
-                and tool_name not in selected_self_managed
                 and not managed_provider_service(managed, tool_name)
                 else None
             )
@@ -1560,7 +1522,7 @@ def _configure_workspace_command(
                 _sync_claude_cowork_plugin(
                     state, managed_mcp_servers=resolved_mcps, sync_cowork=skills_configured
                 )
-        _summarize_managed_config(summary_managed, configured_tools, registered_mcps)
+        _summarize_managed_config(managed, configured_tools, registered_mcps)
         _fail_machine_wide_run(failed_tools)
         return 0
 

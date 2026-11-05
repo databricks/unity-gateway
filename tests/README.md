@@ -1,9 +1,5 @@
 # Test suites and user journeys
 
-The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
-including exact service URLs, native OAuth metadata, and real `codex mcp get`
-readback. The per-user configuration remains separate.
-
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
@@ -763,14 +759,6 @@ Agent-picker regression coverage in `test_ui.py` and `test_cli.py` drives actual
 keyboard selection: nothing is selected by default, selecting Codex installs only
 Codex, and submitting an empty selection installs nothing. Rendering checks cover
 the selected and empty checkboxes. These are local component checks, not live gateway tests.
-Managed-config selection cases in `test_cli.py` check that a plain configure still installs all
-enabled agents, while explicit `--agents` installs only the requested enabled subset and existing
-self-managed opt-ins without applying admin model/provider overrides to those opt-ins. Disabled
-requests warn when an enabled subset remains and fail before installation when none remains;
-unrequested agents are not reported as configuration failures. These are component checks.
-`integration/test_ug_configure_selected_managed_agents.py` exercises the managed-fixture input
-enabling Claude, Codex, and Pi against the real workspace. Selecting only Claude must leave
-Codex's generated config and Pi's binary/files absent and complete a real TUI file-reading task.
 
 `test_claude_smart_routing_v2.py` checks plugin-qualified names, exact model
 definitions, and temporary plugin loading in both routing modes. The GLM-to-Haiku

@@ -874,15 +874,7 @@ journeys pass it). Tests disable optional Databricks AI Tools and retain
 `--skip-upgrade` as a deprecated no-op for compatibility. UG only upgrades
 agents below its required minimum; before/after version checks still enforce the
 selected versions. Fable, subset selection, and required-update policy are covered
-by unit/component tests, not dedicated live journeys. The managed-config subset cases in
-`../test_cli.py` preserve default all-enabled setup, limit explicit `--agents` to enabled
-requests and existing self-managed opt-ins (without admin model/provider overrides), and reject
-an entirely disabled selection before installing agents. Mixed managed/self-managed setup has
-component coverage only.
-`test_ug_configure_selected_managed_agents.py` uses the checked-in
-`selected_agents_startup` admin input, which enables Claude/Codex/Pi without model pins, to
-configure only Claude, check that Codex config and Pi's binary/files remain absent, and complete
-a real Claude TUI file-reading task. No remote policy is changed. Live journeys use real onboarding
+by unit/component tests, not dedicated live journeys. Tests use real onboarding
 and trust choices, without seeded acceptance or disabled agent sandboxing. If a
 routed child asks to locate the random fixture beneath the disposable project,
 the terminal driver accepts that exact read-only command through Claude's real

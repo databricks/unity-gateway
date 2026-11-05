@@ -5619,36 +5619,17 @@ class TestConfigureAgentsSelection:
         cli_mod.configure_workspace_command()
         assert picked_for == ["claude"]
 
-    @pytest.mark.parametrize(
-        ("selected", "expected", "excluded", "self_managed"),
-        [
-            (None, ["claude", "codex", "pi"], None, []),
-            (["claude"], ["claude"], None, []),
-            (["codex", "claude"], ["claude", "codex"], None, []),
-            (["claude", "gemini"], ["claude"], "Gemini", []),
-            (["gemini"], ["gemini"], None, ["gemini"]),
-            (["claude", "gemini"], ["claude", "gemini"], None, ["gemini"]),
-        ],
-        ids=[
-            "all-enabled",
-            "claude-only",
-            "requested-subset",
-            "disabled-request-excluded",
-            "self-managed",
-            "mixed-management",
-        ],
-    )
-    def test_managed_config_applies_selected_enabled_agents_without_picker(
-        self, monkeypatch, capsys, selected, expected, excluded, self_managed
-    ):
+    def test_managed_config_applies_all_enabled_and_skips_selection(self, monkeypatch):
+        # A managed config means the admin dictates the agents, so `ug configure` applies it to every
+        # enabled+available agent and does NOT prompt the developer to pick.
         import ucode.cli as cli_mod
 
-        state = {**MINIMAL_STATE, "available_tools": [], "self_managed_agents": self_managed}
+        state = {**MINIMAL_STATE, "available_tools": []}
         monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
         monkeypatch.setattr(
             cli_mod,
             "refresh_managed_config",
-            lambda s, **_k: ({"enabled_agents": {"claude": {}, "codex": {}, "pi": {}}}, False),
+            lambda s, **_k: ({"enabled_agents": {"claude": {}, "codex": {}}}, False),
         )
         monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: True)
         installed: list[str] = []
@@ -5657,14 +5638,8 @@ class TestConfigureAgentsSelection:
             "install_tool_binary",
             lambda tool, **kwargs: installed.append(tool) or True,
         )
-        resolve = MagicMock(side_effect=lambda managed, s, tool: s)
-        monkeypatch.setattr(cli_mod, "resolve_state", resolve)
-        summaries: list[list[str]] = []
-        monkeypatch.setattr(
-            cli_mod,
-            "_print_managed_summary",
-            lambda managed, *args, **kwargs: summaries.append(list(managed["enabled_agents"])),
-        )
+        monkeypatch.setattr(cli_mod, "resolve_state", lambda managed, s, tool: s)
+        monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
         configured: list[str] = []
         monkeypatch.setattr(
             cli_mod,
@@ -5677,47 +5652,9 @@ class TestConfigureAgentsSelection:
             lambda options: pytest.fail("must not prompt for tools when a managed config exists"),
         )
 
-        assert (
-            cli_mod.configure_workspace_command(
-                selected_tools=selected, workspaces=[("https://w.com", None)]
-            )
-            == 0
-        )
-        assert installed == expected
-        assert configured == expected
-        assert [call.args[2] for call in resolve.call_args_list] == [
-            tool for tool in expected if tool not in self_managed
-        ]
-        assert summaries == [expected]
-        output = " ".join(_strip_ansi(capsys.readouterr().out).split())
-        if excluded:
-            assert (
-                f"Skipping agent(s) not enabled by your workspace configuration: {excluded}"
-                in output
-            )
-        else:
-            assert "Skipping agent(s)" not in output
-
-    def test_managed_config_rejects_selection_without_enabled_agents(self, monkeypatch):
-        state = {**MINIMAL_STATE, "available_tools": []}
-        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
-        monkeypatch.setattr(
-            cli_mod,
-            "refresh_managed_config",
-            lambda s, **kwargs: ({"enabled_agents": {"claude": {}, "codex": {}}}, False),
-        )
-        install = MagicMock()
-        configure = MagicMock()
-        monkeypatch.setattr(cli_mod, "install_tool_binary", install)
-        monkeypatch.setattr(cli_mod, "configure_selected_tools", configure)
-
-        with pytest.raises(RuntimeError, match="doesn't enable Gemini"):
-            cli_mod.configure_workspace_command(
-                selected_tools=["gemini"], workspaces=[("https://w.com", None)]
-            )
-
-        install.assert_not_called()
-        configure.assert_not_called()
+        assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
+        assert installed == ["claude", "codex"]
+        assert configured == ["claude", "codex"]
 
     def test_managed_summary_separates_configured_and_failed_agents(self, capsys, monkeypatch):
         # An enabled agent that failed to configure is listed under "Failed to configure",

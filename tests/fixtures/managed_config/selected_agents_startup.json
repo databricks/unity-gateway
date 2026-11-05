@@ -1,9 +1,0 @@
-{
-  "spec_version": 1,
-  "default_agent": "CODING_AGENT_CLAUDE_CODE",
-  "enabled_agents": [
-    {"agent": "CODING_AGENT_CLAUDE_CODE", "config": {}},
-    {"agent": "CODING_AGENT_CODEX", "config": {}},
-    {"agent": "CODING_AGENT_PI", "config": {}}
-  ]
-}
