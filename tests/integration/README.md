@@ -1,10 +1,11 @@
 # Integration tests
 
-The managed Codex MCP journey requires the managed workspace's connection-backed
-GitHub service to use native HTTP/OAuth, with its exact URL, resource and client ID.
-Real `codex mcp get` readback must preserve the HTTP transport and URL; a fallback
-to stdio fails this journey. User-scope registrations remain separate. Proxy fallback
-selection is covered by component tests in `../test_mcp.py`.
+Fresh-process helper checks exercise both explicit-host credentials and saved user scope,
+workspace/profile selection, and a real temporary PAT profile without loading agent builders.
+
+The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
+service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
+It replaces the obsolete stdio-only expectation; this checks configuration, not live login.
 
 Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
 before numbered reuse, stable names during routing and in parallel cards, and unchanged

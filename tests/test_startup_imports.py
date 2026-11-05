@@ -117,15 +117,39 @@ def test_cli_import_defers_subcommand_specific_modules() -> None:
         ("otel-headers", '{"Authorization": "Bearer helper-bearer"}'),
     ],
 )
-def test_agent_helper_entrypoint_skips_the_cli(tmp_path, command, expected) -> None:
+@pytest.mark.parametrize("saved", [False, True], ids=["explicit-host", "saved-pat"])
+def test_agent_helper_entrypoint_skips_the_cli(tmp_path, command, expected, saved) -> None:
+    workspace = "https://ws.example"
+    environment = {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
+    arguments = ["--host", workspace]
+    if saved:
+        app_dir = tmp_path / ".ucode"
+        app_dir.mkdir(exist_ok=True)
+        app_dir.joinpath("state.json").write_text(
+            json.dumps(
+                {
+                    "state_version": 3,
+                    "config_scope": "user",
+                    "current_workspace": workspace,
+                    "workspaces": {workspace: {"profile": "SAVED", "use_pat": True}},
+                }
+            )
+        )
+        profile = tmp_path / ".databrickscfg"
+        profile.write_text(f"[SAVED]\nhost = {workspace}\ntoken = helper-bearer\n")
+        environment.update(DATABRICKS_CONFIG_FILE=str(profile), DATABRICKS_BEARER="")
+        arguments = []
+    else:
+        environment["DATABRICKS_BEARER"] = "helper-bearer"
     probe = (
         "import os, sys\n"
-        f"os.environ.update(HOME={str(tmp_path)!r}, USERPROFILE={str(tmp_path)!r}, "
-        "DATABRICKS_BEARER='helper-bearer')\n"
-        f"sys.argv = ['ug', {command!r}, '--host', 'https://ws.example']\n"
+        f"os.environ.update({environment!r})\n"
+        f"sys.argv = {['ug', command, *arguments]!r}\n"
         "from ucode.entrypoint import main\n"
-        "try:\n    main()\nexcept SystemExit as exc:\n    assert not exc.code, exc.code"
+        "try:\n    main()\nexcept SystemExit as exc:\n    assert not exc.code, exc.code\n"
     )
+    if saved:
+        probe += "from ucode.managed_files import config_scope\nassert config_scope() == 'user'\n"
 
     output, loaded = _modules_loaded_after(probe, ("ucode.cli", "ucode.agents", *_LAZY_MODULES))
 
