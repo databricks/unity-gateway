@@ -4931,7 +4931,7 @@ class TestConfigureAgentFlag:
         mock_mcp.assert_called_once_with()
         mock_configure_code.assert_called_once_with(configured_state["mcp_servers"])
         mock_configure_cowork.assert_called_once_with(
-            configured_state, configured_state["mcp_servers"]
+            configured_state, configured_state["mcp_servers"], sync_plugin=True
         )
 
     def test_cowork_sync_merges_user_and_managed_mcp_servers(self):
@@ -4963,7 +4963,9 @@ class TestConfigureAgentFlag:
             cli_mod._sync_claude_cowork_plugin(state, managed_mcp_servers=managed)
 
         mock_code.assert_called_once_with([*state["mcp_servers"], *managed])
-        mock_configure.assert_called_once_with(state, [*state["mcp_servers"], *managed])
+        mock_configure.assert_called_once_with(
+            state, [*state["mcp_servers"], *managed], sync_plugin=True
+        )
 
     def test_cowork_sync_loads_managed_mcp_servers_when_not_supplied(self):
         import ucode.cli as cli_mod
@@ -4990,7 +4992,7 @@ class TestConfigureAgentFlag:
 
         mock_managed.assert_called_once_with(state, {"claude"})
         mock_code.assert_called_once_with(managed)
-        mock_configure.assert_called_once_with(state, managed)
+        mock_configure.assert_called_once_with(state, managed, sync_plugin=True)
 
     def test_cowork_sync_preserves_explicit_empty_managed_mcp_state(self):
         import ucode.cli as cli_mod
@@ -5011,7 +5013,7 @@ class TestConfigureAgentFlag:
             cli_mod._sync_claude_cowork_plugin(state, managed_mcp_servers=[])
 
         mock_code.assert_called_once_with([])
-        mock_configure.assert_called_once_with(state, [])
+        mock_configure.assert_called_once_with(state, [], sync_plugin=True)
 
     @pytest.mark.parametrize("mcp_clients", [[], ["codex"], ["claude"]])
     def test_cowork_sync_skips_when_claude_is_not_configured(self, mcp_clients):
