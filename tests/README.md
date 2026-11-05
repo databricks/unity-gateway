@@ -300,7 +300,8 @@ preconfigured workspace is assigned.
 and checks their version output against the `unity-gateway` distribution metadata.
 `test_startup_imports.py` guards the bare `--version` / `-V` fast path and deferred
 command-specific imports in fresh interpreters. Component tests cover metadata lookup,
-help, token-only auth output, and disabled routing hooks avoiding the interactive picker stack,
+help, token-only auth output, and enabled/disabled routing hooks avoiding the interactive picker stack,
+plus parameter/default parity between the typed lazy picker wrapper and its implementation,
 version suffixes, fallback, and unchanged dispatch for other arguments; they do not
 claim a live agent launch or end-to-end startup timing. An isolated interpreter
 without site packages also proves that intact metadata can produce version output

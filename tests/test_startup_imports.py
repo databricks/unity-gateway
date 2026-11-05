@@ -151,13 +151,20 @@ def test_noninteractive_commands_skip_picker_imports(
         assert output == ""
 
 
-def test_public_picker_exports_preserve_identity():
+def test_public_picker_exports_preserve_identity_and_parameters():
+    from inspect import signature
+
     from ucode import ui
     from ucode.ui import interactive_picker
 
     assert ui._BACK is interactive_picker._BACK
     assert ui._Back is interactive_picker._Back
     assert ui.StreamingInquirerControl is interactive_picker.StreamingInquirerControl
+    # Keep the lazy wrapper typed without letting its parameters or defaults drift.
+    assert (
+        signature(ui.scrolling_checkbox).parameters
+        == signature(interactive_picker.scrolling_checkbox).parameters
+    )
 
 
 def test_auth_token_helper_skips_picker_imports(tmp_path, monkeypatch) -> None:
