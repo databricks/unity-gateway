@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from ucode.constants import AGENT_CLAUDE, SMART_ROUTING_ENV_KEYS
-from ucode.smart_routing import config, orchestrator, v2
+from ucode.smart_routing import config, v2
 
 
 def test_plugin_contains_mod_entry_point(tmp_path):
@@ -139,11 +139,7 @@ def test_launch_options_resolve_versions_without_mutating_input(version):
         "unset": [],
         "recipe": "custom_recipe",
         "routeCommand": [],
-        "orchestratorInstructions": (
-            orchestrator.CLAUDE_AGENT_DESCRIPTION
-            if config.auto_picker_enabled(env, agent=AGENT_CLAUDE)
-            else ""
-        ),
+        "orchestratorInstructions": "",
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
     }

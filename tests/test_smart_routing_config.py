@@ -294,9 +294,6 @@ def test_enabled_version_keeps_a_known_version(agent, version):
     previous = config.apply_enabled_version(applied, agent=agent)
 
     expected = config.resolve_environment(inherited, agent=agent)
-    if agent == AGENT_CLAUDE and version == config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY:
-        expected[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
-        expected[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = "1"
     assert applied == expected
     v2.restore_smart_routing_env(previous, applied)
     assert applied == inherited
@@ -308,16 +305,9 @@ def test_enabled_version_keeps_a_known_version(agent, version):
         (None, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
         ("unsupported_version", {AGENT_CLAUDE: True, AGENT_CODEX: False}),
         (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
-        (config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
         *(
             (version, {AGENT_CLAUDE: True, AGENT_CODEX: True})
-            for version in sorted(
-                set(config._VERSIONS)
-                - {
-                    config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-                    config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY,
-                }
-            )
+            for version in sorted(set(config._VERSIONS) - {config.SUBAGENT_ORCH_V0_CLAUDE_ONLY})
         ),
     ],
 )
