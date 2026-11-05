@@ -53,6 +53,7 @@ from ucode.agents import antigravity as antigravity_agent
 from ucode.agents import claude as claude_agent
 from ucode.agents import codex as codex_agent
 from ucode.agents import copilot as copilot_agent
+from ucode.agents import gemini as gemini_agent
 from ucode.agents import (
     launch as launch_agent,
 )
@@ -4062,7 +4063,11 @@ def _launch_tool(
             # An explicit `--model` is the user's own choice and outranks everything above (managed
             # default, smart-routing pick). Non-claude agents take it as the resolved model, which
             # Codex keeps an explicit --model in ctx.args and passes it to its CLI verbatim.
-            if model and tool != "claude":
+            if model and tool == "gemini":
+                # Checked before configure persists it (as the provider branch checks a target), so a
+                # typo fails here rather than at the gateway or in a later provider launch's env file.
+                resolved_model = gemini_agent.resolve_explicit_model(model, state)
+            elif model and tool != "claude":
                 resolved_model = model
         if model and tool == "claude" and not provider and not claude_inputs_from_configure:
             route_root_model = None
