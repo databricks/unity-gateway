@@ -24,13 +24,6 @@ SHARED = "https://acme.cloud.databricks.com"
 CLASSIC = "https://dbc-1234.cloud.databricks.com"
 
 
-@pytest.fixture(autouse=True)
-def clear_host_types():
-    workspace_mod._host_types.clear()
-    yield
-    workspace_mod._host_types.clear()
-
-
 def _host_types(**types: str | None):
     return patch.object(workspace_mod, "host_type", side_effect=lambda host: types.get(host))
 
@@ -135,6 +128,7 @@ class TestHostType:
         ):
             with pytest.raises(workspace_mod.HostUnreachableError, match="down"):
                 host_type(CLASSIC)
+            assert not workspace_mod.is_unified_host(CLASSIC)
         assert CLASSIC not in workspace_mod._host_types
 
     def test_bad_response_is_unreachable(self):

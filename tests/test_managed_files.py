@@ -454,6 +454,29 @@ class TestSudoReplace:
         assert kwargs == {"capture_output": True, "text": True, "check": True, "stdin": None}
         assert source_path is not None and not source_path.exists()
 
+    def test_noninteractive_new_file_is_created_with_sudo_n(self, tmp_path, monkeypatch):
+        # The header mod's files are new files; a headless configure creates them with sudo -n.
+        path = tmp_path / "register.ts"
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        monkeypatch.setitem(
+            managed_files._SUDO_REPLACE_TARGETS, managed_files.OS.LINUX, frozenset({path})
+        )
+        monkeypatch.setattr(managed_files, "_sudo_replace", _REAL_SUDO_REPLACE)
+        calls: list = []
+        monkeypatch.setattr(
+            managed_files.subprocess_cross_os,
+            "run",
+            lambda command, **kwargs: calls.append((command, kwargs)),
+        )
+
+        managed_files.reconcile_privileged_files({path: "mod"}, display="Claude Code")
+
+        assert len(calls) == 1
+        command, kwargs = calls[0]
+        assert "-n" in command
+        assert kwargs["stdin"] is subprocess.DEVNULL
+
     @pytest.mark.parametrize("denied", [False, True])
     def test_noninteractive_repair_uses_sudo_n_without_session_or_stdin(
         self, tmp_path, monkeypatch, denied
@@ -2091,3 +2114,50 @@ class TestPasswordNote:
         assert managed_files._sudo_needs_password() is True
 
         assert commands == []
+
+
+class TestPerUserPaths:
+    def _roots(self, monkeypatch, tmp_path):
+        home = tmp_path / "profiles" / "me"
+        home.mkdir(parents=True)
+        monkeypatch.setattr(managed_files.Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setattr(
+            managed_files.system_cross_os, "user_profiles_dir", lambda: tmp_path / "profiles"
+        )
+        shared = tmp_path / "usr" / "local" / "bin"
+        shared.mkdir(parents=True)
+        return home, shared
+
+    def test_reports_paths_in_any_users_home(self, monkeypatch, tmp_path):
+        home, shared = self._roots(monkeypatch, tmp_path)
+        mine = str(home / ".local" / "bin" / "ug")
+        theirs = str(tmp_path / "profiles" / "other" / "bin" / "python")
+        ok = str(shared / "ug")
+
+        assert managed_files.per_user_paths([mine, theirs, ok]) == [mine, theirs]
+
+    def test_follows_a_shared_symlink_into_a_home(self, monkeypatch, tmp_path):
+        home, shared = self._roots(monkeypatch, tmp_path)
+        target = home / ".local" / "share" / "ug"
+        target.parent.mkdir(parents=True)
+        target.write_text("", encoding="utf-8")
+        link = shared / "ug"
+        link.symlink_to(target)
+
+        assert managed_files.per_user_paths([str(link)]) == [str(link)]
+
+    def test_ignores_a_home_of_the_filesystem_root(self, monkeypatch, tmp_path):
+        # Some MDM and system jobs run with HOME=/, which would otherwise contain every path.
+        _, shared = self._roots(monkeypatch, tmp_path)
+        root = Path(tmp_path.anchor)
+        monkeypatch.setattr(managed_files.Path, "home", classmethod(lambda cls: root))
+        theirs = str(tmp_path / "profiles" / "other" / "ug")
+
+        assert managed_files.per_user_paths([str(shared / "ug"), theirs]) == [theirs]
+
+    def test_without_a_profiles_folder_checks_only_home(self, monkeypatch, tmp_path):
+        home, _ = self._roots(monkeypatch, tmp_path)
+        monkeypatch.setattr(managed_files.system_cross_os, "user_profiles_dir", lambda: None)
+        other = str(tmp_path / "profiles" / "other" / "ug")
+
+        assert managed_files.per_user_paths([str(home / "ug"), other]) == [str(home / "ug")]

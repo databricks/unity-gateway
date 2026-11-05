@@ -7,10 +7,24 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from ucode.constants import UG_HEADERS_ENV_VAR
 
 _HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+_SESSION_HEADERS: ContextVar[str | None] = ContextVar("ug_session_headers", default=None)
+
+
+@contextmanager
+def scoped_ug_headers(value: str) -> Iterator[None]:
+    """Carry a shared backend session's headers into its auth worker threads."""
+    token = _SESSION_HEADERS.set(value)
+    try:
+        yield
+    finally:
+        _SESSION_HEADERS.reset(token)
 
 
 def _is_sendable_value(value: str) -> bool:
@@ -27,7 +41,7 @@ def parse_header_line(line: str) -> tuple[str, str] | None:
     return (name, value) if _is_sendable_value(value) else None
 
 
-def ug_headers() -> dict[str, str]:
+def ug_headers(value: str | None = None) -> dict[str, str]:
     """``UG_HEADERS`` as ``{name: value}``, one ``Name: value`` per line.
 
     Invalid lines are skipped, so a bad inherited value never blocks a command. A later line
@@ -35,7 +49,11 @@ def ug_headers() -> dict[str, str]:
     value. Spread it first into a urllib header dict: urllib capitalizes names and keeps the last
     value, so ug's own headers listed after it win in any case."""
     headers: dict[str, tuple[str, str]] = {}
-    for line in os.environ.get(UG_HEADERS_ENV_VAR, "").splitlines():
+    if value is None:
+        value = _SESSION_HEADERS.get()
+    if value is None:
+        value = os.environ.get(UG_HEADERS_ENV_VAR, "")
+    for line in value.splitlines():
         parsed = parse_header_line(line)
         if parsed:
             headers[parsed[0].casefold()] = parsed

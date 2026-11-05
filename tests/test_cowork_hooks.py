@@ -243,3 +243,24 @@ def test_cli_writes_only_hook_json_to_stdout(probes):
 
     assert result.exit_code == 0, result.output
     assert "`github`" in _context(json.loads(result.stdout), "SessionStart")
+
+
+def test_cli_pins_the_workspace_selection(probes, monkeypatch):
+    pinned = []
+    monkeypatch.setattr(cli, "pin", lambda host, workspace_id: pinned.append((host, workspace_id)))
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "cowork-hook",
+            "--host",
+            "https://workspace.example",
+            "--workspace-id",
+            "111",
+            "--server",
+            f"github={SERVERS['github']}",
+        ],
+        input=json.dumps({"hook_event_name": "SessionStart", "source": "startup"}),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert pinned == [("https://workspace.example", "111")]

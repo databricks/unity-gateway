@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import os
 import re
@@ -33,12 +34,14 @@ from ucode.config_io import (
 )
 from ucode.constants import (
     AI_GATEWAY_REQUEST_TAGS_HEADER,
+    CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
     MCP_USER_SCOPE,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     SMART_ROUTER_RECIPE_HEADER,
+    UG_CLAUDE_SERVER_SIDE_WEB_SEARCH_ENV_VAR,
     UG_HEADERS_ENV_VAR,
 )
 from ucode.custom_oauth import (
@@ -57,6 +60,7 @@ from ucode.databricks import (
     maybe_add_gpt_1m_suffix,
     ug_binary,
 )
+from ucode.env import env_bool
 from ucode.launcher import exec_or_spawn
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import (
@@ -68,6 +72,7 @@ from ucode.managed_files import (
     claude_header_mod_root,
     current_os,
     explicit_managed_writes,
+    machine_wide_only,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -119,6 +124,12 @@ from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed,
 from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_note, print_success, print_warning
+from ucode.workspace import (
+    SELECTOR_HEADER_NAMES,
+    WORKSPACE_ID_ENV_VAR,
+    workspace_headers,
+    workspace_id_args,
+)
 
 from .args import LaunchOptions, has_explicit_model_arg
 from .request_tags import request_tags_header_value
@@ -188,6 +199,7 @@ def _resolve_web_search_model(state: dict) -> str | None:
 
 
 WEB_SEARCH_MCP_NAME = "web_search"
+DENIED_MCP_SERVERS_KEY = "deniedMcpServers"
 # Matches both the AI Gateway form (`databricks-claude-opus-4-8`) and the UC
 # model-services form (`system.ai.claude-opus-4-8`).
 _CLAUDE_MODEL_RE = re.compile(
@@ -271,6 +283,7 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
         MODEL_PROVIDER_SERVICE_HEADER.casefold(),
         MODEL_SERVICE_PARENT_SCHEMA_HEADER.casefold(),
         SMART_ROUTER_RECIPE_HEADER.casefold(),  # Remove recipe headers written by older ug versions.
+        *(name.casefold() for name in SELECTOR_HEADER_NAMES),
     }
 )
 # ug replaces these only when it emits them (e.g. AI_GATEWAY_REQUEST_TAGS is set); otherwise an
@@ -298,9 +311,19 @@ def _apply_managed_header_lines(
     return list(lines_by_name.values())
 
 
+def _with_workspace_selector(lines: list[str], workspace: str) -> list[str]:
+    """``lines`` with the workspace selection last, so an admin header can't replace it."""
+    selector = workspace_headers(workspace)
+    if not selector:
+        return lines
+    names = {name.casefold() for name in selector}
+    kept = [line for line in lines if line.partition(":")[0].strip().casefold() not in names]
+    return kept + [f"{name}: {value}" for name, value in selector.items()]
+
+
 def configured_paths(state: dict) -> list[str]:
     """The Claude config file ug writes; the OS-managed file is added by the dispatcher."""
-    return [str(CLAUDE_SETTINGS_PATH)]
+    return [] if machine_wide_only() else [str(CLAUDE_SETTINGS_PATH)]
 
 
 def managed_settings_path() -> Path | None:
@@ -504,6 +527,9 @@ def _web_search_mcp_entry(
     }
     if profile:
         env["DATABRICKS_CONFIG_PROFILE"] = profile
+    workspace_args = workspace_id_args(workspace)
+    if workspace_args:
+        env[WORKSPACE_ID_ENV_VAR] = workspace_args[1]
     return {
         "type": "stdio",
         "command": ug_binary(),
@@ -576,7 +602,11 @@ def render_overlay(
         header_lines.append(f"{AI_GATEWAY_REQUEST_TAGS_HEADER}: {request_tags}")
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
-    custom_headers = "\n".join(_apply_managed_header_lines(header_lines, managed_http_headers))
+    custom_headers = "\n".join(
+        _with_workspace_selector(
+            _apply_managed_header_lines(header_lines, managed_http_headers), workspace
+        )
+    )
     env: dict[str, str] = {
         "ANTHROPIC_BASE_URL": base_url,
         "ANTHROPIC_CUSTOM_HEADERS": custom_headers,
@@ -653,7 +683,8 @@ def render_overlay(
     # mechanism for built-in tools; a bare tool name in `deny` drops it, whereas
     # a scoped rule like `WebSearch(*)` would leave it advertised.) The
     # replacement `web_search` MCP server is registered separately via the
-    # claude CLI.
+    # claude CLI. A launch can opt out of this deny for its own session
+    # (see `_enable_server_side_web_search`).
     if disable_web_search:
         overlay["permissions"] = {"deny": ["WebSearch"]}
         keys.append(["permissions", "deny"])
@@ -1059,8 +1090,8 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     developer's own servers and every other key in the file are preserved. Returns the subset of
     ``remove`` names that were actually present (so callers can report only real removals).
 
-    If the file exists but can't be parsed as a JSON object, we must not clobber it, so we defer to
-    the per-server ``claude`` CLI (which edits the file in place) for exactly the changed entries."""
+    If the file exists but can't be parsed as a JSON object, we must not clobber it. Defer to the
+    CLI when available; otherwise report the invalid config."""
     removed: set[str] = set()
 
     def mutate(config: dict) -> bool:
@@ -1074,7 +1105,12 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
         config["mcpServers"] = servers
         return True
 
-    if not _update_claude_config(claude_code_config_path(), mutate):
+    path = claude_code_config_path()
+    if not _update_claude_config(path, mutate):
+        if shutil.which("claude") is None:
+            raise RuntimeError(
+                f"Claude Code config at {path} is invalid. Fix it or install the CLI."
+            )
         for name in remove:
             # Clean every scope (not short-circuited), recording the name if any scope had it.
             if [scope for scope in MCP_CLEANUP_SCOPES if remove_claude_mcp_server(name, scope)]:
@@ -1100,12 +1136,14 @@ def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
     servers) but Claude Code reads it only from a real managed source, and only as a remote HTTP
     server it can drive OAuth against itself. So it fits only when the platform supports the sudo
     reconcile, the run may write it (``ug configure``, or an interactive run), the developer is not
-    on PAT auth (which needs the stdio proxy), and the workspace publishes the pinned CIMD client.
-    Other cases use user scope."""
+    on PAT auth (which needs the stdio proxy), no workspace selection applies (a host that serves
+    several workspaces drops it from its OAuth metadata, so Claude's own OAuth can't reach the
+    workspace), and the workspace publishes the pinned CIMD client. Other cases use user scope."""
     return (
         managed_files_supported()
         and managed_writes_allowed()
         and not use_pat
+        and not workspace_headers(workspace)
         and workspace_supports_cimd(workspace)
         and oauth_client_available(workspace, CLAUDE_CODE_CIMD_CLIENT_ID)
     )
@@ -1187,6 +1225,10 @@ def reconcile_managed_mcp(
             parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
+        # Without --global the caller falls back to user scope; `--global` has no fallback, so a
+        # denied write must fail the run rather than leave the servers silently undelivered.
+        if machine_wide_only():
+            raise
         return False
     # Preserve the scope the model reconcile recorded (e.g. relay-compatible); an MCP-only write only
     # refreshes the fingerprint, it does not change how the file relates to the model settings.
@@ -1311,6 +1353,7 @@ def _generated_search_entry(entry: object) -> bool:
             "DATABRICKS_HOST",
             "UCODE_WEB_SEARCH_MODEL",
             "DATABRICKS_CONFIG_PROFILE",
+            WORKSPACE_ID_ENV_VAR,
         }
     )
 
@@ -1512,6 +1555,11 @@ def write_tool_config(
     passes them explicitly (see ``managed_model_inputs``).
     """
     external_search = external_provider_selected()
+    if relayed and machine_wide_only():
+        raise RuntimeError(
+            "`ug configure --global` can't configure a Claude subscription relay: it runs only "
+            "through per-user settings. Run `ug configure` without --global."
+        )
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
     # revert would restore that snapshot instead of deleting the file.
@@ -1530,6 +1578,14 @@ def write_tool_config(
         picker_catalog = derived.picker_catalog
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
+    if web_search_model is not None and machine_wide_only():
+        # The web_search MCP server is registered in per-user settings, so keep Claude's own
+        # WebSearch rather than denying it without a replacement.
+        print_note(
+            "Skipped the web_search MCP server: `ug configure --global` writes only machine-wide "
+            "settings. Claude Code keeps its built-in WebSearch."
+        )
+        web_search_model = None
     should_write_tracing_settings = (
         bool(state.get("claude_otel_tracing")) and managed_config_present
     )
@@ -1608,6 +1664,10 @@ def write_tool_config(
         # Otherwise omit these paths from the overlay so the live managed values pass through.
         if should_preserve_managed_tracing:
             prune_key_paths(overlay_for_merge, [list(path) for path in CLAUDE_OTEL_TRACE_PATHS])
+        if managed_settings_snapshots is not None:
+            # The managed file outranks every launch scope, so a deny there could never be lifted
+            # by a launch that opts into server-side web search; only ucode-settings.json has it.
+            overlay_for_merge.pop("permissions", None)
         if enforce_model_default_hierarchy:
             settings_file_env = base_env if isinstance(base_env, dict) else {}
             target_env = overlay_for_merge["env"]
@@ -1725,14 +1785,16 @@ def write_tool_config(
         return merged
 
     managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
-    write_json_file(
-        CLAUDE_SETTINGS_PATH,
-        _compose(
-            read_json_safe(CLAUDE_SETTINGS_PATH),
-            enforce_model_default_hierarchy=source_scoped_defaults,
-            managed_settings_snapshots=None,
-        ),
-    )
+    # `ug configure --global` writes only the machine-wide file below.
+    if not machine_wide_only():
+        write_json_file(
+            CLAUDE_SETTINGS_PATH,
+            _compose(
+                read_json_safe(CLAUDE_SETTINGS_PATH),
+                enforce_model_default_hierarchy=source_scoped_defaults,
+                managed_settings_snapshots=None,
+            ),
+        )
 
     # The admin's settings may not displace anything ug writes, except the hooks and deny lists ug
     # only merges its own entries into.
@@ -1753,6 +1815,14 @@ def write_tool_config(
     )
     previous_leaves = (managed_snapshots.settings_passthrough if managed_snapshots else None) or []
     _warn_if_settings_disable_smart_routing(passthrough, previous_leaves)
+    # Only an explicit configure removes a deny already in the managed file. A relayed session
+    # can't reach the gateway's server-side search, so the setting doesn't apply to it.
+    withdraws_web_search = (
+        state.get(CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY) is True
+        and not relayed
+        and explicit_managed_writes()
+        and "WebSearch" not in passthrough.items_at(CLAUDE_PERMISSIONS_DENY_PATH)
+    )
     _reconcile_managed_settings(
         state,
         lambda base: _allow_ug_mcp_servers(
@@ -1776,15 +1846,23 @@ def write_tool_config(
             _ug_registered_mcp_names(
                 state,
                 base.get(MANAGED_MCP_SETTINGS_KEY),
-                web_search=bool(web_search_model and not external_search),
+                # Under --global, keep allowing a web_search server an earlier run registered.
+                web_search=bool(web_search_model and not external_search)
+                or (machine_wide_only() and bool(state.get(WEB_SEARCH_MCP_STATE_KEY))),
             ),
         ),
-        [*managed_file_keys, *passthrough.paths],
+        [
+            *managed_file_keys,
+            *passthrough.paths,
+            # Owned while withdrawing, so a revert can restore the baseline's deny.
+            *([CLAUDE_PERMISSIONS_DENY_PATH] if withdraws_web_search else []),
+        ],
         relayed,
         [key for key in CLAUDE_MANAGED_PICKER_KEYS if key in overlay],
-        withdrawn_denies=withdrawn_list_items(
-            CLAUDE_PERMISSIONS_DENY_PATH, passthrough, previous_leaves
-        ),
+        withdrawn_denies=[
+            *withdrawn_list_items(CLAUDE_PERMISSIONS_DENY_PATH, passthrough, previous_leaves),
+            *(["WebSearch"] if withdraws_web_search else []),
+        ],
         passthrough_leaves=passthrough.record(),
     )
 
@@ -1976,7 +2054,8 @@ def _allow_ug_mcp_servers(settings: dict, admin_allowlist: list | None, names: s
 
 
 CLAUDE_HEADER_MOD_MARKETPLACE = "ucode-managed"
-CLAUDE_HEADER_MOD_ID = f"ug-headers@{CLAUDE_HEADER_MOD_MARKETPLACE}"
+_HEADER_MOD_PREFIX = "ug-headers@"
+CLAUDE_HEADER_MOD_ID = f"{_HEADER_MOD_PREFIX}{CLAUDE_HEADER_MOD_MARKETPLACE}"
 _CLAUDE_GUARD_MOD_ID = "sec-default@builtin"
 # The header mod's managed-file entries. Revert removes them; they never count as conflicts, since
 # nothing in ug's own settings file can be overridden by them.
@@ -2043,16 +2122,25 @@ def request_explicit_configure(requested: bool = True) -> None:
     _explicit_configure = requested
 
 
-def _install_header_mod(root: Path | None) -> bool:
+def _install_header_mod(root: Path | None, *, managed_file_exists: bool) -> bool:
     """Install or update the header mod's files, returning whether this run did.
 
-    A failure only costs ``ug --header`` for Claude; the caller then doesn't enable the mod."""
-    if root is None or is_dry_run() or not managed_writes_allowed():
+    They are installed only where the managed file can be written, since the mod is enabled in
+    that file. A failure only costs ``ug --header`` for Claude; the caller then doesn't enable
+    the mod."""
+    if root is None or is_dry_run():
+        return False
+    if not managed_writes_allowed(repair_existing=managed_file_exists):
         return False
     try:
         reconcile_privileged_files(_header_mod_files(root), display="Claude Code")
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-        print_warning(f"Couldn't install ug's Claude header mod at {root}: {exc}")
+        hint = (
+            ""
+            if managed_writes_allowed()
+            else " (run `ug configure` from a terminal to install it)"
+        )
+        print_warning(f"Couldn't install ug's Claude header mod at {root}: {exc}{hint}")
         return False
     return True
 
@@ -2069,20 +2157,33 @@ def _remove_header_mod() -> None:
 
 
 def header_mod_active() -> bool:
-    """Whether ug's header mod is installed and enabled, so ``UG_HEADERS`` reaches Claude."""
+    """Whether a header mod is installed and enabled, so ``UG_HEADERS`` reaches Claude.
+
+    That is ug's own mod, or another installer's copy enabled in the managed settings.
+    """
     root = claude_header_mod_root()
     path = _managed_settings_path()
-    if root is None or path is None:
+    if path is None:
         return False
     try:
+        settings = _parse_managed_settings(read_managed_file(path) or "{}")
+        plugins = settings.get("enabledPlugins")
+        if not isinstance(plugins, dict):
+            return False
+        # TODO: remove once other installers use ug to update managed settings.
+        if any(
+            key.startswith(_HEADER_MOD_PREFIX) and key != CLAUDE_HEADER_MOD_ID and value is True
+            for key, value in plugins.items()
+        ):
+            return True
+        if root is None or plugins.get(CLAUDE_HEADER_MOD_ID) is not True:
+            return False
         for file, content in _header_mod_files(root).items():
             if not file.is_file() or file.read_text(encoding="utf-8") != content:
                 return False
-        settings = _parse_managed_settings(read_managed_file(path) or "{}")
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
         return False
-    plugins = settings.get("enabledPlugins")
-    return isinstance(plugins, dict) and plugins.get(CLAUDE_HEADER_MOD_ID) is True
+    return True
 
 
 def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> None:
@@ -2178,6 +2279,11 @@ def _reconcile_managed_settings(
         # Opted out: trust whatever OS-managed file exists and leave it untouched.
         return
     path = _managed_settings_path()
+    if path is None and machine_wide_only():
+        raise RuntimeError(
+            "`ug configure --global` can't configure Claude Code here: this platform has no "
+            "machine-wide Claude Code settings. Run `ug configure` without --global."
+        )
     if path is None:
         print_warning(
             "Machine-wide Claude settings aren't supported on this platform; skipped the managed "
@@ -2216,7 +2322,9 @@ def _reconcile_managed_settings(
     wants_mod = _explicit_configure
     # Install the files before the settings name them, so a failed install never enables a
     # plugin that isn't there; a run that can't write as root leaves any earlier entries as is.
-    installed = wants_mod and _install_header_mod(header_mod_root)
+    installed = wants_mod and _install_header_mod(
+        header_mod_root, managed_file_exists=current_text is not None
+    )
     desired_settings = _enable_header_mod(compose(existing), header_mod_root if installed else None)
     # Only the explicit `ug configure` path adds the blanks.
     _settle_credential_blanks(desired_settings, managed_before, add=_explicit_configure)
@@ -2227,6 +2335,22 @@ def _reconcile_managed_settings(
     if not managed_writes_allowed() and not conflicts:
         warn_managed_write_skipped(path, managed_before, desired_settings)
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
+        # A headless configure enables only the mod it installed, repairing the file in place.
+        mod_only = _enable_header_mod(
+            copy.deepcopy(managed_before), header_mod_root if installed else None
+        )
+        if mod_only != managed_before:
+            try:
+                reconcile_managed_file(
+                    path,
+                    _dump_managed_settings(mod_only),
+                    tool="claude",
+                    display="Claude Code",
+                    owned_paths=owned_paths,
+                    parser=_parse_managed_settings,
+                )
+            except ManagedFileWriteUnavailable as exc:
+                print_warning(str(exc))
         return
     try:
         reconcile_managed_file(
@@ -2269,7 +2393,10 @@ def _preserve_permission_denies(
     if not isinstance(existing_denies, list) or not isinstance(desired_denies, list):
         return
     kept = [rule for rule in existing_denies if rule not in withdrawn]
-    desired_permissions["deny"] = [*kept, *(rule for rule in desired_denies if rule not in kept)]
+    desired_permissions["deny"] = [
+        *kept,
+        *(rule for rule in desired_denies if rule not in kept and rule not in withdrawn),
+    ]
 
 
 def default_model(state: dict) -> str | None:
@@ -2364,6 +2491,92 @@ def _union_claude_hooks(base: dict, overlay: dict) -> dict:
     return result
 
 
+def server_side_web_search_enabled(state: dict) -> bool:
+    """Whether this launch asks for the gateway's server-side search.
+
+    The env var turns it on for one launch; ``ug configure`` saves the standing choice.
+    """
+    return (
+        env_bool(UG_CLAUDE_SERVER_SIDE_WEB_SEARCH_ENV_VAR)
+        or state.get(CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY) is True
+    )
+
+
+def _enable_server_side_web_search(settings: dict) -> None:
+    """Let Claude's native WebSearch reach the gateway for this launch, hiding ug's GPT search.
+
+    Applied after every merge because the merges re-add denies from either side. Scoped rules
+    such as ``WebSearch(...)`` stay: they restrict, not remove, the tool.
+    """
+    permissions = settings.get("permissions")
+    if isinstance(permissions, dict) and isinstance(permissions.get("deny"), list):
+        permissions["deny"] = [rule for rule in permissions["deny"] if rule != "WebSearch"]
+    denied = settings.get(DENIED_MCP_SERVERS_KEY)
+    denied = denied if isinstance(denied, list) else []
+    entry = {"serverName": WEB_SEARCH_MCP_NAME}
+    if entry not in denied:
+        denied.append(entry)
+    settings[DENIED_MCP_SERVERS_KEY] = denied
+
+
+def _denies_web_search_or_unreadable(path: Path) -> bool:
+    """Whether ``path`` denies WebSearch; a file that exists but can't be parsed counts as denying.
+
+    Reads BOM-tolerantly like Claude Code, so a BOM-prefixed policy file is not mistaken for empty.
+    """
+    try:
+        text = read_managed_file(path)
+        settings = _parse_managed_settings(text) if text is not None else {}
+    except (RuntimeError, OSError, ValueError):
+        return True
+    permissions = settings.get("permissions")
+    deny = permissions.get("deny") if isinstance(permissions, dict) else None
+    return isinstance(deny, list) and "WebSearch" in deny
+
+
+def _use_server_side_web_search(state: dict) -> bool:
+    """Whether this launch swaps ug's search MCP for Claude's native WebSearch.
+
+    A deny in a scope the launch can't override (managed, user, or project settings) would leave
+    no search tool at all, so the launch then keeps ug's MCP instead.
+    """
+    if not server_side_web_search_enabled(state):
+        return False
+    managed_path = _managed_settings_path()
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    directories = [Path.cwd(), *Path.cwd().parents]
+    for blocker in (
+        *(
+            [
+                managed_path,
+                # Claude Code loads regular-file or symlink drop-ins named *.json, not dotfiles.
+                *sorted(
+                    f
+                    for f in managed_path.with_name("managed-settings.d").glob("*.json")
+                    if not f.name.startswith(".") and (f.is_file() or f.is_symlink())
+                ),
+            ]
+            if managed_path
+            else []
+        ),
+        Path(config_dir) / "settings.json" if config_dir else CLAUDE_USER_SETTINGS_PATH,
+        *(
+            d / ".claude" / name
+            for d in directories
+            for name in ("settings.json", "settings.local.json")
+        ),
+    ):
+        if _denies_web_search_or_unreadable(blocker):
+            print_warning(
+                f"Server-side web search is enabled, but {blocker} denies WebSearch (or can't be "
+                "read to confirm it does not) and a launch cannot override it, so this launch "
+                'keeps ug\'s web_search MCP. Remove "WebSearch" from its permissions.deny to use '
+                "server-side search (the managed file needs admin or sudo)."
+            )
+            return False
+    return True
+
+
 def _merge_claude_settings(base: dict, overlay: dict) -> dict:
     """Deep-merge *overlay* onto *base* (overlay wins on conflicting leaves),
     preserving both sources' hooks and permission denies. Inputs are not mutated.
@@ -2380,13 +2593,18 @@ def _merge_claude_settings(base: dict, overlay: dict) -> dict:
     return merged
 
 
-def _compose_v2_settings(tool_args: list[str]) -> tuple[dict, list[str]]:
+def _compose_v2_settings(
+    tool_args: list[str], *, server_side_web_search: bool = False
+) -> tuple[dict, list[str]]:
     """Compose caller settings with ucode's Claude settings for a v2 launch."""
     caller_values, remaining = _extract_caller_settings(tool_args)
     settings: dict = {}
     for value in caller_values:
         settings = _merge_claude_settings(settings, _load_caller_settings(value))
-    return _merge_claude_settings(settings, read_json_safe(CLAUDE_SETTINGS_PATH)), remaining
+    settings = _merge_claude_settings(settings, read_json_safe(CLAUDE_SETTINGS_PATH))
+    if server_side_web_search:
+        _enable_server_side_web_search(settings)
+    return settings, remaining
 
 
 def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[str]:
@@ -2468,6 +2686,7 @@ def _build_claude_argv(
     tool_args: list[str],
     relayed: bool = False,
     settings_override: dict | None = None,
+    server_side_web_search: bool = False,
 ) -> list[str]:
     """Build the ``claude`` argv, composing any caller ``--settings`` with
     ucode's managed settings.
@@ -2497,7 +2716,7 @@ def _build_claude_argv(
         else []
     )
     caller_values, remaining = _extract_caller_settings(tool_args)
-    if not caller_values and settings_override is None:
+    if not caller_values and settings_override is None and not server_side_web_search:
         # No caller --settings: hand Claude ucode's settings file directly (the
         # common path; behavior unchanged).
         return [binary, *source_args, "--settings", str(CLAUDE_SETTINGS_PATH), *tool_args]
@@ -2509,6 +2728,8 @@ def _build_claude_argv(
     merged = _merge_claude_settings(caller_settings, read_json_safe(CLAUDE_SETTINGS_PATH))
     if settings_override is not None:
         merged = _merge_claude_settings(merged, settings_override)
+    if server_side_web_search:
+        _enable_server_side_web_search(merged)
     merged_env = merged.get("env")
     if isinstance(merged_env, dict):
         merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
@@ -2528,9 +2749,10 @@ def _claude_launch_argv(
     *,
     relayed: bool = False,
     settings_override: dict | None = None,
+    server_side_web_search: bool = False,
 ) -> Iterator[list[str]]:
     """Keep oversized Windows settings off the command line for the child's lifetime."""
-    argv = _build_claude_argv(binary, tool_args, relayed, settings_override)
+    argv = _build_claude_argv(binary, tool_args, relayed, settings_override, server_side_web_search)
     settings_index = argv.index("--settings") + 1
     if current_os() != OS.WINDOWS or not argv[settings_index].startswith("{"):
         yield argv
@@ -2666,10 +2888,9 @@ def launch(
     ensure_hooks_modules_gate()
     if os.environ.get(UG_HEADERS_ENV_VAR, "").strip() and not header_mod_active():
         print_warning(
-            "Claude Code won't send your `ug --header` / UG_HEADERS headers: ug's header mod isn't "
-            "installed or is out of date, and a launch never changes machine-wide files. Run "
-            "`ug configure` from an interactive terminal on Linux or macOS, without "
-            "UG_SKIP_OS_SETTINGS."
+            "Claude Code won't send your `ug --header` / UG_HEADERS headers: no header mod is enabled "
+            "or ug's is out of date, and a launch never changes machine-wide files. Run `ug configure` "
+            "without UG_SKIP_OS_SETTINGS or `--user`."
         )
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
         # Discovery is launch-scoped. Pass it in the process environment rather
@@ -2678,6 +2899,7 @@ def launch(
     if state.get("claude_relayed"):
         _launch_relayed(state, binary, tool_args)
         return
+    server_side_search = _use_server_side_web_search(state)
     launch_default_model = state.get("_claude_launch_default_model")
     if isinstance(launch_default_model, str) and launch_default_model:
         os.environ["ANTHROPIC_DEFAULT_MODEL"] = launch_default_model
@@ -2704,7 +2926,9 @@ def launch(
                 user_settings_path=CLAUDE_USER_SETTINGS_PATH,
                 # With no user pin, let Claude resolve its starting model from its own settings.
                 launch_model=pinned_model,
-                compose_settings=_compose_v2_settings,
+                compose_settings=functools.partial(
+                    _compose_v2_settings, server_side_web_search=server_side_search
+                ),
                 launch_model_args=(
                     _launch_model_args
                     if not session_model
@@ -2756,7 +2980,12 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
-    with _claude_launch_argv(binary, launch_args, settings_override=settings_override) as argv:
+    with _claude_launch_argv(
+        binary,
+        launch_args,
+        settings_override=settings_override,
+        server_side_web_search=server_side_search,
+    ) as argv:
         exec_or_spawn(argv)
 
 
