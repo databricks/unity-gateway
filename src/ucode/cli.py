@@ -89,6 +89,7 @@ from ucode.databricks import (
     external_bearer_configured,
     find_profile_name_for_host,
     find_profile_name_for_workspace,
+    finish_model_discovery,
     get_databricks_token,
     install_databricks_cli,
     is_model_provider_feature_unavailable,
@@ -96,6 +97,7 @@ from ucode.databricks import (
     list_profile_entries,
     list_tool_provider_services,
     map_claude_family_models,
+    model_discovery_session,
     normalize_workspace_url,
     probe_unity_gateway_capabilities,
     profile_choices,
@@ -3665,6 +3667,7 @@ def _get_catalog_profile(state: dict) -> str | None:
     return state.get("profile")
 
 
+@model_discovery_session()
 def _launch_tool(
     tool_name: str,
     ctx: typer.Context,
@@ -4183,6 +4186,7 @@ def _launch_tool(
             # session_model is set for claude only.
             launch_model=managed_model if tool == "copilot" else session_model,
         )
+        finish_model_discovery()
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):
             launch_agent(tool, state, ctx.args, options=launch_options)
