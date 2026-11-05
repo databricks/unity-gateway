@@ -24,20 +24,18 @@ from ucode.managed_resolve import (
     resolve_state,
 )
 from ucode.mcp import _resolve_managed_mcp_servers
-from ucode.os_compatibility import subprocess_cross_os, system_cross_os
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_download import _fetch_bundles, _resolve_managed_skills, _write_bundle
 from ucode.ui import print_note
 from ucode.workspace import split_workspace_key, workspace_id_args
 
-MDM_ROOT = Path("/Library/Application Support/UnityGateway/claude-desktop-mdm")
-POLICY_PATH = Path("/Library/Managed Preferences/com.anthropic.claudefordesktop.plist")
+MDM_ROOT = managed_files.CLAUDE_DESKTOP_MDM_ROOT
+POLICY_PATH = managed_files.CLAUDE_DESKTOP_POLICY_PATH
 
 
 def validate_mdm_execution() -> None:
     if sys.platform != "darwin":
         raise RuntimeError("Desktop MDM currently supports macOS only.")
-    if not system_cross_os.is_admin():
-        raise RuntimeError("Run Desktop MDM provisioning as root from your MDM script.")
 
 
 def _check_machine_path(path: Path, *, required: bool = False) -> None:
@@ -53,6 +51,8 @@ def _check_machine_path(path: Path, *, required: bool = False) -> None:
             raise RuntimeError(
                 f"Machine configuration must be root-owned and not writable by other users: {part}"
             )
+        if stat.S_ISDIR(info.st_mode) and not info.st_mode & stat.S_IXOTH:
+            raise RuntimeError(f"Machine directory must be accessible to device users: {part}")
         if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
             raise RuntimeError(f"Not a regular machine configuration path: {part}")
 
@@ -105,7 +105,7 @@ def _shared_path(value: str, name: str, *, executable: bool = False) -> Path:
 
 
 def validate_cli_discovery() -> None:
-    """Validate root command lookup before CLI installation or version probes."""
+    """Validate shared command lookup before CLI installation or version probes."""
     for directory in os.get_exec_path():
         _shared_path(directory, "MDM command PATH")
     for candidate in databricks._iter_databricks_executables():
@@ -177,39 +177,32 @@ def _policy_values(profile: dict) -> dict[str, str]:
     }
 
 
-def _machine_directory(path: Path) -> None:
-    _check_machine_path(path)
-    if path.exists():
-        if not path.is_dir() or not path.stat().st_mode & stat.S_IXOTH:
-            raise RuntimeError(f"Machine directory must be accessible to device users: {path}")
-        return
-    _machine_directory(path.parent)
-    path.mkdir(mode=0o755)
-    path.chmod(0o755)  # MDM scripts may run with a restrictive umask.
-
-
-def _publish(source: Path | None, files: dict[Path, tuple[bytes | None, int]]) -> None:
+def _publish(source: Path | None, files: dict[Path, bytes | None]) -> None:
     for path in files:
         _check_machine_path(path)
-    if POLICY_PATH.exists():
+    if POLICY_PATH in files and POLICY_PATH.exists():
         policy = plistlib.loads(POLICY_PATH.read_bytes())
         if policy.get("inferenceCredentialHelper") != str(MDM_ROOT / "ug"):
             raise RuntimeError(
                 "Existing Desktop policy is not this UG deployment; remove it through its MDM owner first."
             )
-    for path in files:
-        _machine_directory(path.parent)
     system_path = managed_files.claude_desktop_org_plugin_path()
     if system_path is None:
         raise RuntimeError("Desktop MDM publication requires macOS.")
     _check_machine_path(system_path)
-    managed_files.replace_privileged_bundle(system_path, source)
-    claude_config.write_configuration(
-        [
-            (path, claude_config.read_optional_bytes(path), data, mode)
-            for path, (data, mode) in files.items()
-        ]
-    )
+    try:
+        with managed_files.managed_write_session():
+            managed_files.replace_privileged_bundle(system_path, source)
+            managed_files.reconcile_privileged_files(
+                {
+                    path: data.decode("utf-8") if data is not None else None
+                    for path, data in files.items()
+                },
+                display="Claude Desktop",
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = str(getattr(exc, "stderr", None) or exc).strip()
+        raise RuntimeError(f"Could not update Desktop MDM files: {detail}") from exc
 
 
 def _validate_selector(selector: dict) -> None:
@@ -357,29 +350,25 @@ def configure(workspace: str, profile: str | None) -> None:
         _publish(
             plugin_root,
             {
-                helper: (_runtime_script(runtime), 0o755),
-                MDM_ROOT / "otel-headers.sh": (otel, 0o755),
-                POLICY_PATH: (policy, 0o644),
+                helper: _runtime_script(runtime),
+                MDM_ROOT / "otel-headers.sh": otel,
+                POLICY_PATH: policy,
             },
         )
 
 
-def remove() -> None:
-    validate_mdm_execution()
+def remove() -> bool:
     plugin = managed_files.claude_desktop_org_plugin_path()
-    if (
-        not MDM_ROOT.exists()
-        and not POLICY_PATH.exists()
-        and (plugin is None or not plugin.exists())
-    ):
-        return
-    _publish(
-        None,
-        {
-            POLICY_PATH: (None, 0o644),
-            MDM_ROOT / "ug": (None, 0o755),
-            MDM_ROOT / "otel-headers.sh": (None, 0o755),
-        },
-    )
+    files: dict[Path, bytes | None] = {}
+    if POLICY_PATH.exists():
+        policy = plistlib.loads(POLICY_PATH.read_bytes())
+        if policy.get("inferenceCredentialHelper") == str(MDM_ROOT / "ug"):
+            files[POLICY_PATH] = None
+    if not files and not MDM_ROOT.exists() and (plugin is None or not plugin.exists()):
+        return False
+    validate_mdm_execution()
+    files.update({MDM_ROOT / "ug": None, MDM_ROOT / "otel-headers.sh": None})
+    _publish(None, files)
     if MDM_ROOT.exists() and not any(MDM_ROOT.iterdir()):
-        MDM_ROOT.rmdir()
+        managed_files.remove_privileged_tree(MDM_ROOT, empty_only=True)
+    return True

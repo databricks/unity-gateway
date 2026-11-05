@@ -38,6 +38,9 @@ target_is_allowed() {
         "linux:/etc/claude-code/ucode-plugins/ug-headers/hooks/hooks.json"|\
         "linux:/etc/claude-code/ucode-plugins/ug-headers/hooks/register.ts"|\
         "macos:/Library/Application Support/ClaudeCode/managed-settings.json"|\
+        "macos:/Library/Managed Preferences/com.anthropic.claudefordesktop.plist"|\
+        "macos:/Library/Application Support/UnityGateway/claude-desktop-mdm/ug"|\
+        "macos:/Library/Application Support/UnityGateway/claude-desktop-mdm/otel-headers.sh"|\
         "macos:/etc/codex/managed_config.toml"|\
         "macos:/etc/unitygateway/managed-settings.json"|\
         "macos:/Library/Application Support/ClaudeCode/ucode-plugins/.claude-plugin/marketplace.json"|\
@@ -212,6 +215,18 @@ replace_one() (
         run_step chmod 0644 "$staging"
     fi
 
+    case "$platform:$target" in
+        "macos:/Library/Application Support/UnityGateway/claude-desktop-mdm/ug"|\
+        "macos:/Library/Application Support/UnityGateway/claude-desktop-mdm/otel-headers.sh")
+            run_step chown 0:0 "$staging"
+            run_step chmod 0755 "$staging"
+            ;;
+        "macos:/Library/Managed Preferences/com.anthropic.claudefordesktop.plist")
+            run_step chown 0:0 "$staging"
+            run_step chmod 0644 "$staging"
+            ;;
+    esac
+
     if [ -L "$parent" ] || [ -L "$target" ] || { [ -e "$target" ] && [ ! -f "$target" ]; }; then
         printf '%s\n' "Refusing to replace symlinked managed settings: $target" >&2
         exit 1
@@ -262,11 +277,6 @@ remove_one() (
 
 replace_bundle() (
     set -eu
-    root_uid=0
-    if [ "${SUDO_UID:-}" != "$root_uid" ]; then
-        printf '%s\n' "Desktop MDM publication requires a root caller" >&2
-        exit 1
-    fi
     source_path=$1
     target=$2
     if [ "$platform:$target" != "macos:/Library/Application Support/Claude/org-plugins/ug" ]; then
@@ -289,7 +299,7 @@ replace_bundle() (
         exit 1
     fi
     source_owner=$(/usr/bin/stat -f %u "$source_path") || exit 1
-    if [ "$source_owner" != "$root_uid" ]; then
+    if [ -z "${SUDO_UID:-}" ] || [ "$source_owner" != "$SUDO_UID" ]; then
         printf '%s\n' "Invalid Desktop plugin source owner" >&2
         exit 1
     fi

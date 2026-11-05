@@ -1343,9 +1343,6 @@ def _configure_workspace_command(
         if not managed_tools:
             # The workspace enables only agents with per-user settings: nothing to write.
             return 0
-        from ucode.agents.desktop.setup import validate_global_desktop
-
-        validate_global_desktop(state, managed_tools)
         configured_tools: list[str] = []
         failed_tools: list[str] = []
         for tool_name in managed_tools:
@@ -1439,9 +1436,6 @@ def _configure_workspace_command(
         print_note("No coding agents selected — nothing to configure.")
         return 0
     refuse_user_scope_over_managed_files(picked)
-    from ucode.agents.desktop.setup import validate_global_desktop
-
-    validate_global_desktop(state, picked)
 
     for tool_name in picked:
         install_tool_binary(
@@ -4999,23 +4993,6 @@ def configure(
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
-        provisions_desktop = False
-        if global_scope and sys.platform == "darwin":
-            requested = [
-                normalize_tool(name)
-                for name in (agent or agents or "").split(",")
-                if name.strip() and name.strip().lower() not in ("cursor", "vscode")
-            ]
-            provisions_desktop = "claude" in requested
-        if provisions_desktop:
-            if use_pat or custom_oauth:
-                raise RuntimeError(
-                    "Desktop MDM provisioning does not support PAT/custom OAuth profiles."
-                )
-            from ucode.agents.desktop import mdm
-
-            mdm.validate_mdm_execution()
-            mdm.validate_cli_discovery()
         install_databricks_cli()
         if agent is not None and agents is not None:
             raise RuntimeError("Use either --agent or --agents, not both.")
@@ -5053,9 +5030,6 @@ def configure(
         workspace_entries = _parse_workspace_option(workspace) if workspace is not None else None
         if profile is not None:
             workspace_entries = _parse_profile_option(profile)
-        if provisions_desktop:
-            for target_workspace, _ in workspace_entries or []:
-                mdm.require_dedicated_workspace(target_workspace)
         flag_driven_workspace = workspace_entries is not None
         # Only forward the opt-in flags when set so existing call expectations
         # (and defaults) stay unchanged for the common interactive path.
@@ -5360,27 +5334,10 @@ def status_cmd() -> None:
 
 
 @app.command("revert", rich_help_panel="Manage")
-def revert_cmd(
-    global_scope: Annotated[
-        bool,
-        typer.Option(
-            "--global",
-            help="Remove machine-scope Claude Desktop files (macOS, root); restart Desktop afterward.",
-        ),
-    ] = False,
-) -> None:
+def revert_cmd() -> None:
     """Clear ug state and restore backed-up agent config files."""
     request_explicit_managed_writes("ug revert")
     try:
-        if global_scope:
-            from ucode.agents.desktop import mdm
-
-            try:
-                mdm.remove()
-            except (OSError, ValueError, subprocess.SubprocessError) as exc:
-                raise RuntimeError(f"Desktop MDM removal failed: {exc}") from exc
-            print_success("Desktop MDM machine files removed. Quit and reopen Claude Desktop.")
-            return
         result = revert()
     except RuntimeError as exc:
         print_err(str(exc))

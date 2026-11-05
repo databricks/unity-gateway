@@ -19,12 +19,8 @@ from ucode.mcp import McpServiceListingRateLimited
 @pytest.mark.parametrize("flags", [[], ["--user"], ["--global"]])
 @pytest.mark.parametrize("failed", [False, True])
 def test_explicit_global_desktop_scope_is_command_local(monkeypatch, flags, failed):
-    from ucode.agents.desktop import mdm
-
     selections = []
     monkeypatch.setattr(cli.sys, "platform", "darwin")
-    monkeypatch.setattr(mdm, "validate_mdm_execution", lambda **kwargs: None)
-    monkeypatch.setattr(mdm, "validate_cli_discovery", lambda: None)
     monkeypatch.setattr(cli, "install_databricks_cli", lambda: None)
 
     def configure_workspace(*args, **kwargs):
@@ -78,8 +74,8 @@ def test_global_skips_desktop_mdm_on_other_platforms(monkeypatch, platform):
     profile_write.assert_not_called()
 
 
-def test_global_desktop_provisioning_failure_is_reported(monkeypatch):
-    message = "Run Desktop MDM provisioning as root"
+def test_global_desktop_provisioning_failure_warns(monkeypatch, capsys):
+    message = "Could not update Desktop plugin: sudo authentication failed"
     from ucode.agents.desktop import mdm
 
     managed_files.set_machine_wide_only(True)
@@ -87,8 +83,11 @@ def test_global_desktop_provisioning_failure_is_reported(monkeypatch):
     monkeypatch.setattr(mdm, "configure", Mock(side_effect=RuntimeError(message)))
     profile_write = Mock()
     monkeypatch.setattr(desktop_setup, "write_claude_desktop_profile", profile_write)
-    with pytest.raises(RuntimeError, match=message):
-        desktop_setup.configure_claude_desktop({"workspace": "https://workspace.example"})
+    desktop_setup.configure_claude_desktop({"workspace": "https://workspace.example"})
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Could not configure Claude Desktop" in output
+    assert message in output
+    assert "Claude Code setup is unchanged" in output
     profile_write.assert_not_called()
 
 

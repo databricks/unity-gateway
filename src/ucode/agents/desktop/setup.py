@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import subprocess
 import sys
 
 from ucode.agents.desktop.claude import (
@@ -27,46 +26,31 @@ from ucode.workspace import workspace_headers, workspace_id_args
 _CLAUDE_MODEL_PATTERN = re.compile(r"\bclaude-", re.IGNORECASE)
 
 
-def validate_global_desktop(state: dict, tools: list[str]) -> None:
-    if not machine_wide_only() or sys.platform != "darwin" or "claude" not in tools:
-        return
-    from ucode.agents.desktop import mdm
-
-    if state.get("use_pat") or state.get("custom_oauth"):
-        raise RuntimeError("Desktop MDM provisioning does not support PAT/custom OAuth profiles.")
-    mdm.validate_mdm_execution()
-    mdm.require_dedicated_workspace(state["workspace"])
-    mdm.validate_cli_discovery()
-
-
 def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -> None:
     if sys.platform not in ("darwin", "win32", "linux"):
         return
-    if machine_wide_only():
-        if sys.platform != "darwin":
-            print_note(
-                "Skipped Claude Desktop: --global MDM provisioning currently supports macOS only."
-            )
-            return
-        from ucode.agents.desktop import mdm
-
-        if state.get("use_pat") or state.get("custom_oauth"):
-            raise RuntimeError(
-                "Desktop MDM provisioning does not support PAT/custom OAuth profiles."
-            )
-        try:
-            mdm.configure(state["workspace"], state.get("profile"))
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            raise RuntimeError(f"Desktop MDM provisioning failed: {exc}") from exc
-        if not is_dry_run():
-            print_success(
-                "Claude Desktop MDM deployment configured. Users authenticate when they open Desktop."
-            )
-        return
-    if is_dry_run():
-        print_note("Would configure Claude Desktop alongside Claude Code.")
-        return
     try:
+        if machine_wide_only():
+            if sys.platform != "darwin":
+                print_note(
+                    "Skipped Claude Desktop: --global MDM provisioning currently supports macOS only."
+                )
+                return
+            from ucode.agents.desktop import mdm
+
+            if state.get("use_pat") or state.get("custom_oauth"):
+                raise RuntimeError(
+                    "Desktop MDM provisioning does not support PAT/custom OAuth profiles."
+                )
+            mdm.configure(state["workspace"], state.get("profile"))
+            if not is_dry_run():
+                print_success(
+                    "Claude Desktop MDM deployment configured. Users authenticate when they open Desktop."
+                )
+            return
+        if is_dry_run():
+            print_note("Would configure Claude Desktop alongside Claude Code.")
+            return
         _configure_claude_desktop_user_level(state, parent_schema=parent_schema)
     except Exception as exc:  # noqa: BLE001 -- Desktop must not block Claude Code setup
         print_warning(f"Could not configure Claude Desktop: {exc}. Claude Code setup is unchanged.")
@@ -237,10 +221,24 @@ def resolve_gateway_profile(
     }
 
 
+def revert_claude_desktop_mdm() -> str:
+    if sys.platform != "darwin":
+        return "unchanged"
+    from ucode.agents.desktop import mdm
+
+    try:
+        return "removed" if mdm.remove() else "unchanged"
+    except Exception as exc:  # noqa: BLE001 -- Preserve other revert operations on failure
+        print_warning(
+            f"Could not revert Claude Desktop MDM: {exc}. Fix it, then run ug revert again."
+        )
+        return "failed"
+
+
 def revert_desktop() -> str:
     if sys.platform not in ("darwin", "win32", "linux") or is_dry_run():
         return "unchanged"
-    results = [revert_claude_code_plugin(), revert_claude_cowork()]
+    results = [revert_claude_code_plugin(), revert_claude_cowork(), revert_claude_desktop_mdm()]
     if claude_desktop_directory() is None:
         if "failed" in results:
             return "failed"

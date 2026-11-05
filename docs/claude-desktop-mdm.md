@@ -1,11 +1,14 @@
 # Claude Desktop deployment through MDM on macOS
 
-Run as root from your MDM script:
+Run from your MDM script or a terminal:
 
 ```sh
 /opt/unitygateway/venv/bin/ug configure --agents claude --global \
   --workspace https://workspace.databricks.com
 ```
+
+Machine writes use the existing elevation behavior: root writes directly, a terminal lets
+sudo prompt, and unattended runs use `sudo -n`. No upfront root check is required.
 
 This writes Desktop's managed plist and a root-owned organization plugin. The plist
 contains inference settings, connectors, tool search, and optional tracing. The plugin
@@ -23,7 +26,7 @@ Desktop profile, marketplace, plugin registration, and credentials untouched.
 
 `--global` also configures the requested CLI agents under their existing scope rules.
 Windows/Linux skip Desktop under `--global`. Saved `global` scope does not change a
-later default/user configure. Ordinary revert leaves MDM files intact.
+later default/user configure. Ordinary `ug revert` attempts both user and MDM cleanup.
 
 ## Prerequisites and authentication
 
@@ -43,9 +46,10 @@ An explicit enabled-agent list excluding Claude prevents provisioning.
 Supply an existing provisioning credential through `DATABRICKS_BEARER`,
 `DATABRICKS_BEARER_COMMAND`, or cached Databricks OAuth with `--profile <name>` instead
 of `--workspace`. With explicit Claude selection (`--agents claude` / `--agent claude`),
-`--global` validates shared CLI paths before profile lookup/version probes and does not
-force browser login. Omitted-agent configure retains normal authentication/discovery
-before policy or the picker selects agents. Use explicit agents for MDM.
+`--global` does not force browser login. CLI configuration follows its normal discovery
+path; Desktop validates shared runtimes before its own authentication and publication.
+Omitted-agent configure retains normal authentication/discovery before policy or the
+picker selects agents. Use explicit agents for MDM.
 
 Provisioning reuses one token for discovery/download and never stores it in machine
 files. Shared helpers discard provisioning credential overrides and use each user's
@@ -56,7 +60,9 @@ coexistence with a saved user PAT configuration is outside this release.
 
 `--global` rejects `--mcp`, which registers user-level servers. Desktop receives
 workspace-managed MCPs through the plist. `UG_SKIP_OS_SETTINGS` is incompatible with
-MDM. Explicit Desktop provisioning errors fail configure. Desktop dry runs report
+MDM. Desktop provisioning errors warn and leave successful CLI configuration intact,
+including unsupported Desktop authentication/workspaces, runtime prerequisites, failed
+downloads, and unavailable elevation. Check warnings to confirm Desktop was provisioned. Desktop dry runs report
 destinations without publishing files; other agents retain their dry-run behavior.
 
 ## Machine files and loading
@@ -119,14 +125,18 @@ also applies when migrating from ordinary user configure. UG does not visit user
 or remove cached user plugins during root provisioning. Keeping an earlier UG plugin
 installed can duplicate skills/hooks and, for older versions, connectors.
 
-To remove this deployment as root:
+To revert UG configuration, including this deployment:
 
 ```sh
-/opt/unitygateway/venv/bin/ug revert --global
+/opt/unitygateway/venv/bin/ug revert
 ```
 
-This removes the managed plist, organization plugin, and shared helpers. User credentials,
-profiles, and unrelated plugins remain. Restart Desktop after removal. MDM configuration
+This attempts to remove the managed plist, organization plugin, and shared helpers,
+alongside the invoking user's UG profiles and plugin registrations and other agent cleanup.
+User credentials and unrelated plugins remain. There are no revert scope flags. If MDM
+cleanup cannot obtain elevation, UG warns, continues other cleanup, retains state for
+retry, and exits with code 1. Run `ug revert` again with sudo available.
+Restart Desktop after removal. MDM configuration
 profiles can restore competing policies; remove those through their MDM owner.
 
 ## Native rollout checks
@@ -140,8 +150,8 @@ profiles can restore competing policies; remove those through their MDM owner.
 3. Publish a changed skill and connector set through MDM. Restart Desktop, start a new
    task, and verify the new skill, new connectors, and removed entries. Repeat after reboot
    and an MDM check-in to check managed-plist persistence and precedence.
-4. Revert as root, restart Desktop, and verify machine-file removal and preservation of
-   user data and unrelated plugins. Check that MDM does not republish a competing policy.
+4. Run `ug revert`, approve elevation if needed, restart Desktop, and verify user/machine
+   UG configuration removal and preservation of unrelated data and plugins. Check that MDM does not republish a competing policy.
 
 Automated component checks replace external APIs and ownership boundaries. Earlier Mac
 tests established shared runtime/authentication and a Gmail call using the marketplace

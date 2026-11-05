@@ -16,8 +16,8 @@ import pytest
 from typer.testing import CliRunner
 
 from tests.test_desktop_bundle import system_source as system_source
-from ucode import cli, config_io, managed_config, mcp, skills_download, workspace
-from ucode.agents.desktop import claude_config, cowork, mdm, setup
+from ucode import cli, config_io, managed_config, managed_files, mcp, skills_download, workspace
+from ucode.agents.desktop import cowork, mdm, setup
 from ucode.databricks import AnthropicModelCatalog
 from ucode.skills_api import SkillRef
 
@@ -46,7 +46,6 @@ def device(system_source, monkeypatch, tmp_path):
     monkeypatch.setattr(mdm, "_runtime", lambda: dict(RUNTIME))
     monkeypatch.setattr(mdm, "validate_cli_discovery", lambda: None)
     state = SimpleNamespace(
-        admin=True,
         source=system_source,
         home=home,
         manifest={
@@ -58,7 +57,6 @@ def device(system_source, monkeypatch, tmp_path):
         },
         skill=b"---\nname: review\ndescription: Review code\n---\nCheck tests.\n",
     )
-    monkeypatch.setattr(mdm.system_cross_os, "is_admin", lambda: state.admin)
     state.auth = Mock(return_value="provisioning-secret")
     monkeypatch.setattr(mdm.databricks, "get_databricks_token", state.auth)
     monkeypatch.setattr(
@@ -137,6 +135,8 @@ def test_provision_without_account_has_no_admin_credentials_or_user_writes(devic
     assert not (mdm.MDM_ROOT / "deployment.json").exists()
     if os.name != "nt":
         assert (mdm.MDM_ROOT / "ug").stat().st_mode & 0o777 == 0o755
+        assert (mdm.MDM_ROOT / "otel-headers.sh").stat().st_mode & 0o777 == 0o755
+        assert mdm.POLICY_PATH.stat().st_mode & 0o777 == 0o644
     device.auth.assert_called_once_with(WORKSPACE, "ADMIN_PROFILE", browser_login=False)
 
 
@@ -264,25 +264,32 @@ def test_failed_discovery_or_download_preserves_previous_deployment(device, monk
     assert _snapshot(device) == before
 
 
-def test_failed_publication_is_reported_and_reconfigure_repairs_it(device, monkeypatch):
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError("test publication failure"),
+        subprocess.CalledProcessError(1, "privileged-writer", stderr="test publication failure"),
+    ],
+)
+def test_failed_publication_is_reported_and_reconfigure_repairs_it(device, monkeypatch, error):
     mdm.configure(WORKSPACE, "admin")
     policy_before = mdm.POLICY_PATH.read_bytes()
     device.skill += b"New version.\n"
     device.manifest["enabled_agents"][0]["config"]["tracing"]["enabled"] = False
-    write = claude_config._write_or_remove
+    write = managed_files._sudo_replace
 
-    def fail_policy(path, contents, *, mode):
+    def fail_policy(path, contents):
         if path == mdm.POLICY_PATH:
-            raise OSError("test publication failure")
-        return write(path, contents, mode=mode)
+            raise error
+        return write(path, contents)
 
-    monkeypatch.setattr(claude_config, "_write_or_remove", fail_policy)
+    monkeypatch.setattr(managed_files, "_sudo_replace", fail_policy)
     with pytest.raises(RuntimeError, match="test publication failure"):
         mdm.configure(WORKSPACE, "admin")
     assert mdm.POLICY_PATH.read_bytes() == policy_before
     assert (device.source / "skills/review/SKILL.md").read_bytes() == device.skill
 
-    monkeypatch.setattr(claude_config, "_write_or_remove", write)
+    monkeypatch.setattr(managed_files, "_sudo_replace", write)
     mdm.configure(WORKSPACE, "admin")
     assert "otlpEndpoint" not in plistlib.loads(mdm.POLICY_PATH.read_bytes())
     assert not (mdm.MDM_ROOT / "otel-headers.sh").exists()
@@ -363,17 +370,16 @@ def test_reconfigure_replaces_edited_generated_policy(device):
     assert mdm.POLICY_PATH.read_bytes() == original
 
 
-def test_dry_run_has_no_auth_discovery_or_writes(device):
-    config_io.set_dry_run(True)
+def test_dry_run_has_no_auth_discovery_or_writes(device, monkeypatch):
+    monkeypatch.setattr(config_io, "_dry_run", True)
     mdm.configure(WORKSPACE, "admin")
     device.auth.assert_not_called()
     assert not device.source.exists() and not mdm.MDM_ROOT.exists()
 
 
-@pytest.mark.parametrize("platform,admin", [("linux", True), ("win32", True), ("darwin", False)])
-def test_platform_and_identity_guards(monkeypatch, platform, admin):
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_platform_guard(monkeypatch, platform):
     monkeypatch.setattr(mdm, "sys", SimpleNamespace(platform=platform))
-    monkeypatch.setattr(mdm.system_cross_os, "is_admin", lambda: admin)
     with pytest.raises(RuntimeError):
         mdm.validate_mdm_execution()
 
@@ -510,20 +516,10 @@ def test_runtime_rejects_untrusted_cli_before_version_discovery(monkeypatch, tmp
     subprocess_run.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    ("flags", "profile"),
-    [
-        (["--global"], "CACHED"),
-        (["--global"], ""),
-        (["--global", "--dry-run"], None),
-    ],
-)
 @pytest.mark.parametrize("cli_name", ["Databricks CLI", "Claude CLI"])
-def test_profile_lookup_rejects_untrusted_cli_before_execution(
-    monkeypatch, tmp_path, flags, profile, cli_name
-):
+def test_mdm_rejects_untrusted_cli_before_auth_or_publication(monkeypatch, tmp_path, cli_name):
     command = "databricks" if cli_name == "Databricks CLI" else "claude"
-    candidate = tmp_path / (f"{command}.exe" if os.name == "nt" else command)
+    candidate = tmp_path / command
     candidate.write_text("untrusted test file")
     candidate.chmod(0o777)
     shared_path = mdm._shared_path
@@ -533,25 +529,17 @@ def test_profile_lookup_rejects_untrusted_cli_before_execution(
             return shared_path(value, name, **kwargs)
         return Path(value)
 
+    monkeypatch.setattr(mdm, "sys", SimpleNamespace(platform="darwin"))
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(cli.sys, "platform", "darwin")
-    monkeypatch.setattr(mdm.system_cross_os, "is_admin", lambda: True)
     monkeypatch.setattr(mdm, "_shared_path", validate)
     if cli_name == "Claude CLI":
         monkeypatch.setattr(mdm.shutil, "which", lambda name: str(candidate))
-    forbidden = Mock(side_effect=AssertionError("Untrusted CLI must not be executed"))
-    monkeypatch.setattr(mdm.databricks, "run", forbidden)
+    forbidden = Mock(side_effect=AssertionError("Invalid MDM runtime must not be used"))
+    monkeypatch.setattr(mdm.databricks, "get_databricks_token", forbidden)
     monkeypatch.setattr(mdm.subprocess_cross_os, "run", forbidden)
-    monkeypatch.setattr(cli, "install_databricks_cli", forbidden)
-    monkeypatch.setattr(cli, "install_tool_binary", forbidden)
-    target = (
-        ["--workspace", "https://workspace.example.com"]
-        if profile is None
-        else ["--profile", profile]
-    )
-    result = CliRunner().invoke(cli.app, ["configure", "--agents", "claude", *target, *flags])
-    assert result.exit_code == 1, result.output
-    assert "root-owned" in " ".join(result.output.split())
+    monkeypatch.setattr(mdm, "_publish", forbidden)
+    with pytest.raises(RuntimeError, match="root-owned"):
+        mdm.configure(WORKSPACE, "CACHED")
     forbidden.assert_not_called()
 
 
@@ -643,25 +631,57 @@ def test_global_with_cached_oauth_does_not_force_browser_login(device, monkeypat
     )
     assert result.exit_code == 1
     assert "stop before gateway discovery" in result.output
-    assert events == ["validated", "installed"]
+    assert events == ["installed"]
     assert token.call_args_list[0].args == (WORKSPACE, "CACHED")
     assert token.call_args_list[0].kwargs == {"browser_login": False}
     assert token.call_count == 2
     login.assert_not_called()
 
 
-def test_cli_removes_mdm_machine_files(device, monkeypatch):
+@pytest.mark.parametrize("flag", ["--global", "--user", "--mdm", "--mdm-desktop"])
+def test_cli_revert_has_no_scope_flags(device, monkeypatch, flag):
     remove = Mock()
     monkeypatch.setattr(mdm, "remove", remove)
-    monkeypatch.setattr(cli, "revert", Mock(side_effect=AssertionError("normal revert")))
-    assert CliRunner().invoke(cli.app, ["revert", "--global"]).exit_code == 0
-    remove.assert_called_once()
-
-
-def test_cli_revert_rejects_removed_mdm_desktop_flag(device, monkeypatch):
-    remove = Mock()
-    monkeypatch.setattr(mdm, "remove", remove)
-    monkeypatch.setattr(cli, "revert", Mock(side_effect=AssertionError("normal revert")))
-    result = CliRunner().invoke(cli.app, ["revert", "--mdm-desktop"])
+    revert = Mock()
+    monkeypatch.setattr(cli, "revert", revert)
+    result = CliRunner().invoke(cli.app, ["revert", flag])
     assert result.exit_code == 2
     remove.assert_not_called()
+    revert.assert_not_called()
+
+
+def test_mdm_removal_without_deployment_never_requests_elevation(device, monkeypatch):
+    command = Mock(side_effect=AssertionError("Nothing to remove"))
+    monkeypatch.setattr(managed_files, "_sudo_replace_command", command)
+    assert mdm.remove() is False
+    command.assert_not_called()
+
+
+@pytest.mark.parametrize("deployed", [False, True])
+def test_remove_preserves_foreign_policy_without_blocking_ug_cleanup(device, deployed):
+    if deployed:
+        mdm.configure(WORKSPACE, "admin")
+    mdm.POLICY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    foreign = plistlib.dumps({"inferenceCredentialHelper": "/other/helper"})
+    mdm.POLICY_PATH.write_bytes(foreign)
+    assert mdm.remove() is deployed
+    assert mdm.POLICY_PATH.read_bytes() == foreign
+    assert not device.source.exists()
+    assert not mdm.MDM_ROOT.exists()
+    assert mdm.remove() is False
+
+
+@pytest.mark.parametrize("operation", ["configure", "remove"])
+def test_owned_binary_policy_can_be_updated_or_removed(device, operation):
+    mdm.configure(WORKSPACE, "admin")
+    policy = plistlib.loads(mdm.POLICY_PATH.read_bytes())
+    mdm.POLICY_PATH.write_bytes(plistlib.dumps(policy, fmt=plistlib.FMT_BINARY))
+    if operation == "configure":
+        mdm.configure(WORKSPACE, "admin")
+        assert plistlib.loads(mdm.POLICY_PATH.read_bytes()) == policy
+        assert device.source.exists()
+    else:
+        assert mdm.remove() is True
+        assert not mdm.POLICY_PATH.exists()
+        assert not device.source.exists()
+        assert not mdm.MDM_ROOT.exists()

@@ -197,12 +197,12 @@ generated user marketplace, including manual edits. Its writer retains staged re
 and rollback. Native refresh failures retain the source/state for retry/revert. A failed source switch
 restores the previous marketplace/plugin through native commands when possible, and
 reports a failed recovery with configure retry instructions. Ordinary
-revert removes user source/registration only. Explicit MCP/skill changes resync this source;
+revert removes user source/registration and attempts macOS MDM cleanup. Explicit MCP/skill changes resync this source;
 launches do not. The privileged bundle writer is used only for MDM publication; its
-macOS worker accepts only root callers, validates root ownership, and rejects links/special
-files before copying. Staged replacement restores the previous bundle if publication fails.
-Unprivileged callers cannot elevate to publish a Desktop organization plugin.
-The macOS Desktop MDM mode requires root and preinstalled, root-owned shared UG/Python,
+macOS worker uses the existing on-demand sudo path, validates caller ownership of staged
+files, and rejects links/special files before copying into a root-owned destination.
+Staged replacement restores the previous bundle if publication fails.
+The macOS Desktop MDM mode requires preinstalled, root-owned shared UG/Python,
 Databricks CLI, and Claude CLI runtimes. It publishes the managed plist with
 `managedMcpServers` and `toolSearchEnabled`, shared helpers, and a required organization
 plugin at `/Library/Application Support/Claude/org-plugins/ug`. That plugin contains
@@ -214,7 +214,9 @@ profile, skills, or credentials are copied. Provisioning reuses one token and ex
 bundle/atomic writers; rerun configure after partial publication failure. Existing auth,
 MCP proxy and tracing commands are unchanged; users authenticate with their own OAuth profiles.
 A foreign policy is recognized by its credential helper and preserved. Generated root files
-belong to UG and are replaced. Revert removes machine files only. Earlier marketplace/LaunchAgent
+belong to UG and are replaced. Desktop provisioning failures warn without failing CLI setup.
+Ordinary `ug revert` attempts user and machine cleanup; failed MDM cleanup warns,
+continues other cleanup, and retains UG state for retry. Revert has no scope flags. Earlier marketplace/LaunchAgent
 builds require manual migration; remove prior UG marketplace registrations to avoid duplicate
 skills/hooks. Restart Desktop after updates. Native organization-plugin delivery remains a
 validation gap. See the deployment guide before migration or rollout.

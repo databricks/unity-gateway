@@ -14,6 +14,7 @@ from tests.test_desktop_bundle import system_source as system_source
 from tests.test_desktop_mdm import WORKSPACE
 from tests.test_desktop_mdm import device as device
 from ucode import cli, config_io, managed_files, workspace
+from ucode import state as state_store
 from ucode.agents.desktop import claude, cowork, mdm, setup
 
 
@@ -159,12 +160,12 @@ def test_global_rejects_extra_user_mcp_selection(desktop_configuration, device, 
 
 
 @pytest.mark.parametrize("stage", ["preflight", "publication"])
-def test_global_provisioning_failure_fails_configure(
+def test_global_provisioning_failure_warns_and_keeps_cli_configuration(
     desktop_configuration, device, monkeypatch, stage
 ):
     if stage == "preflight":
-        device.admin = False
-        message = "root from your MDM script"
+        message = "Install Claude CLI in a shared machine location"
+        monkeypatch.setattr(mdm, "_runtime", Mock(side_effect=RuntimeError(message)))
     else:
         message = "MDM publication failed"
 
@@ -174,8 +175,12 @@ def test_global_provisioning_failure_fails_configure(
 
         monkeypatch.setattr(mdm, "_publish", publish)
 
+    configured = Mock(return_value=desktop_configuration)
+    monkeypatch.setattr(cli, "configure_selected_tools", configured)
     result = _configure("--global")
-    assert result.exit_code == 1
+    assert result.exit_code == 0, result.output
+    assert configured.called
+    assert "Could not configure Claude Desktop" in result.output
     assert message in " ".join(result.output.split())
     assert not mdm.POLICY_PATH.exists()
     assert not claude.claude_desktop_directory().exists()
@@ -186,10 +191,11 @@ def test_global_provisioning_failure_fails_configure(
 
 @pytest.mark.parametrize("selection", ["managed", "picker"])
 @pytest.mark.parametrize("tool", ["codex", "claude"])
-def test_omitted_agents_validate_desktop_only_after_selection(
+def test_omitted_agents_keep_configuring_when_desktop_prerequisites_fail(
     desktop_configuration, device, monkeypatch, selection, tool
 ):
-    device.admin = False
+    message = "Install Claude CLI in a shared machine location"
+    monkeypatch.setattr(mdm, "_runtime", Mock(side_effect=RuntimeError(message)))
     desktop_configuration.update(available_tools=[tool], last_configured_tools=[tool])
     managed = {"enabled_agents": {tool: {}}} if selection == "managed" else None
     monkeypatch.setattr(cli, "refresh_managed_config", lambda *a, **kw: (managed, False))
@@ -202,14 +208,14 @@ def test_omitted_agents_validate_desktop_only_after_selection(
 
     result = CliRunner().invoke(cli.app, ["configure", "--global", "--workspace", WORKSPACE])
 
-    assert result.exit_code == (1 if tool == "claude" else 0), result.output
+    assert result.exit_code == 0, result.output
     if tool == "claude":
-        assert "root from your MDM script" in " ".join(result.output.split())
-        install.assert_not_called()
-        configure.assert_not_called()
+        assert message in " ".join(result.output.split())
+        assert "Could not configure Claude Desktop" in result.output
     else:
-        install.assert_called_once_with("codex", strict=False)
-        assert configure.call_args.args[1] == ["codex"]
+        assert "Could not configure Claude Desktop" not in result.output
+    install.assert_called_once_with(tool, strict=False)
+    assert configure.call_args.args[1] == [tool]
     assert not mdm.MDM_ROOT.exists()
     assert not device.source.exists()
     assert not claude.claude_desktop_directory().exists()
@@ -218,10 +224,10 @@ def test_omitted_agents_validate_desktop_only_after_selection(
 
 
 @pytest.mark.parametrize("field", ["use_pat", "custom_oauth"])
-def test_global_rejects_unsupported_desktop_auth(desktop_configuration, device, field):
+def test_global_skips_unsupported_desktop_auth(desktop_configuration, device, field):
     desktop_configuration[field] = True
     result = _configure("--global")
-    assert result.exit_code == 1
+    assert result.exit_code == 0, result.output
     assert "PAT/custom OAuth" in " ".join(result.output.split())
     device.auth.assert_not_called()
     assert not mdm.MDM_ROOT.exists()
@@ -247,26 +253,26 @@ def test_global_rejects_unsupported_desktop_auth(desktop_configuration, device, 
         (["--workspace", f"{WORKSPACE}?w=111"], "dedicated workspace hostname"),
     ],
 )
-def test_global_rejects_incompatible_requests_before_auth_or_agent_writes(
-    device, monkeypatch, options, diagnostic
+def test_global_keeps_cli_configuration_for_unsupported_desktop_options(
+    desktop_configuration, device, monkeypatch, options, diagnostic
 ):
     monkeypatch.setattr(cli.sys, "platform", "darwin")
     monkeypatch.setattr(workspace, "host_type", lambda host: "unified")
-    forbidden = Mock(
-        side_effect=AssertionError("Invalid MDM requests must not authenticate or write")
-    )
-    monkeypatch.setattr(cli, "get_databricks_token", forbidden)
-    monkeypatch.setattr(cli, "ensure_databricks_auth", forbidden)
-    monkeypatch.setattr(cli, "run_databricks_login", forbidden)
-    monkeypatch.setattr(cli, "configure_workspace_command", forbidden)
-    monkeypatch.setattr(cli, "save_state", forbidden)
-    monkeypatch.setattr(cli, "install_databricks_cli", lambda: None)
+    if "--use-pat" in options:
+        desktop_configuration["use_pat"] = True
+        monkeypatch.setattr(cli, "_parse_profile_option", lambda *args: [(WORKSPACE, "PAT")])
+    elif "--client-id" in options:
+        desktop_configuration["custom_oauth"] = {"client_id": "custom-client"}
+    else:
+        desktop_configuration["workspace"] = f"{WORKSPACE}?w=111"
+    configured = Mock(return_value=desktop_configuration)
+    monkeypatch.setattr(cli, "configure_selected_tools", configured)
     result = CliRunner().invoke(cli.app, ["configure", "--global", "--agents", "claude", *options])
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == 0, result.output
     assert diagnostic in " ".join(result.output.split())
-    forbidden.assert_not_called()
+    assert "Could not configure Claude Desktop" in result.output
+    configured.assert_called_once()
     device.auth.assert_not_called()
-    assert not list(device.home.iterdir())
     assert not device.source.exists()
     assert not mdm.MDM_ROOT.exists()
 
@@ -294,4 +300,67 @@ def test_global_leaves_unsupported_desktop_platforms_unchanged(
     assert not mdm.MDM_ROOT.exists()
     assert not device.source.exists()
     assert not claude.claude_desktop_directory().exists()
+    assert not cowork._marketplace_root().exists()
+
+
+@pytest.mark.parametrize("user_setup", [True, False], ids=["user-and-mdm", "mdm-only"])
+@pytest.mark.parametrize("deny_elevation", [True, False], ids=["sudo-denied", "sudo-allowed"])
+def test_plain_revert_cleans_available_scopes_and_retries_mdm(
+    desktop_configuration, device, monkeypatch, user_setup, deny_elevation
+):
+    if user_setup:
+        configured = _configure()
+        assert configured.exit_code == 0, configured.output
+    configured = _configure("--global")
+    assert configured.exit_code == 0, configured.output
+    policy_before = mdm.POLICY_PATH.read_bytes()
+    if not user_setup:
+        monkeypatch.setattr(claude, "_claude_desktop_installed", lambda: False)
+    monkeypatch.setattr(state_store, "APP_DIR", state_store.STATE_PATH.parent)
+    state_store.save_state(desktop_configuration)
+    # Keep other agents' cleanup off host settings while checking they still run.
+    restore = Mock(return_value=False)
+    monkeypatch.setattr(cli, "restore_file", restore)
+    monkeypatch.setattr(cli, "revert_mcp_configs", lambda state: {})
+    monkeypatch.setattr(cli, "revert_legacy_shared_config", lambda: False)
+    monkeypatch.setattr(cli.claude_agent, "revert_managed_settings", lambda: "unchanged")
+    monkeypatch.setattr(cli.codex_agent, "revert_managed_config", lambda: "unchanged")
+
+    with monkeypatch.context() as elevation:
+        if deny_elevation:
+            elevation.setattr(
+                managed_files.subprocess_cross_os,
+                "popen",
+                Mock(side_effect=PermissionError("sudo authentication denied")),
+            )
+        result = CliRunner().invoke(cli.app, ["revert"])
+    assert result.exit_code == (1 if deny_elevation else 0), result.output
+    assert restore.called
+    assert not cowork._marketplace_root().exists()
+    assert not (claude.claude_desktop_directory() / f"{claude.PROFILE_ID}.json").exists()
+    if deny_elevation:
+        assert "Could not revert Claude Desktop MDM" in result.output
+        assert "sudo authentication denied" in result.output
+        assert mdm.POLICY_PATH.read_bytes() == policy_before
+        assert device.source.exists()
+        assert state_store.load_state()["workspace"] == WORKSPACE
+        retry = CliRunner().invoke(cli.app, ["revert"])
+        assert retry.exit_code == 0, retry.output
+    assert state_store.load_state() == {}
+    assert not mdm.POLICY_PATH.exists()
+    assert not mdm.MDM_ROOT.exists()
+    assert not device.source.exists()
+    repeated = CliRunner().invoke(cli.app, ["revert"])
+    assert repeated.exit_code == 0, repeated.output
+
+
+def test_global_configure_can_request_elevation_when_not_root(
+    desktop_configuration, device, monkeypatch
+):
+    monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
+    monkeypatch.setattr(managed_files, "_running_as_root", lambda: False)
+    result = _configure("--global")
+    assert result.exit_code == 0, result.output
+    assert mdm.POLICY_PATH.is_file()
+    assert device.source.is_dir()
     assert not cowork._marketplace_root().exists()

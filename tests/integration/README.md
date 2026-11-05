@@ -153,21 +153,25 @@ Standalone Desktop-only provisioning and its argument tests were removed in favo
 `configure --global`. Existing auth/MCP/tracing commands are unchanged; MDM-specific
 saved-PAT coexistence tests were removed with that separate behavior change.
 CLI-agent scope unit coverage isolates Desktop prerequisites; Desktop scope components
-exercise the macOS CLI preflight. Shared Claude PAT handling is tested against the global
+exercise macOS Desktop validation. Shared Claude PAT handling is tested against the global
 Desktop OAuth branch. Command-local scope checks isolate machine prerequisites on macOS;
-failure checks cover preflight and publication without writing user Desktop files.
+failure checks cover runtime prerequisites and publication, warning while CLI setup succeeds.
 These checks replace external authentication and do not exercise native macOS failures.
 Other component regressions cover MCP-only requests bypassing Desktop provisioning,
-intermediate runtime symlink trust, and early Databricks/Claude CLI validation before
-installer or version probes. Six representative unsafe-CLI cases cover the global path,
-dry run, and named/empty/omitted profiles. Omitted-agent selection and the
+intermediate runtime symlink trust, and Databricks/Claude CLI validation before MDM
+authentication or publication. Desktop checks no longer block ordinary CLI setup. Omitted-agent selection and the
 rejection of `--global --mcp` before Desktop publication also have component
 coverage; these are not native macOS integration checks.
 
 MDM component checks assert connectors/tool search in the managed plist and skills/hooks
-in a required root organization plugin with matching version metadata. Provision/update/
-removal leave user profiles and plugin registrations untouched. The earlier LaunchAgent
-and per-user cache-sync behavior and its tests were removed; ordinary user-cache tests remain.
+in a required root organization plugin with matching version metadata. Provisioning and
+updates leave user profiles and plugin registrations untouched. Plain `ug revert`
+attempts both user and machine cleanup. Component checks cover sudo denial without
+blocking user cleanup, retained state, retry, MDM-only installations, and no elevation
+when nothing is installed. Foreign-policy preservation and binary-plist update/removal
+also have component coverage. Root-start rejection tests were replaced with on-demand
+elevation and caller-owned staging checks; actual sudo prompts still need native Mac validation.
+The earlier LaunchAgent and per-user cache-sync behavior and its tests were removed; ordinary user-cache tests remain.
 Native organization-plugin loading, restart-based updates, fresh-user timing, plist precedence,
 and GUI skill/tool invocation remain unverified by these Linux/Windows journeys.
 Follow the [MDM rollout checklist](../../docs/claude-desktop-mdm.md) before fleet rollout.

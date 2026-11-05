@@ -195,11 +195,13 @@ skips plugin setup until that directory exists. See
 [Desktop plugin installation](docs/claude-desktop.md#cowork-workspace-skills-and-mcp-servers).
 
 For macOS MDM deployment, run `ug configure --agents claude --global --workspace <url>`
-as root with a preinstalled shared runtime. This publishes Desktop's managed plist with
+with a preinstalled shared runtime. Machine writes request sudo when needed. This publishes Desktop's managed plist with
 connectors/tool search and an organization plugin containing skills/hooks. Desktop loads
 the plugin directly; no LaunchAgent or per-user marketplace refresh is installed.
 It leaves Desktop's user profile and marketplace source unchanged. Windows and Linux skip
 Desktop under `--global`.
+Desktop provisioning failures warn without failing CLI setup. Ordinary `ug revert` attempts
+user and MDM cleanup, requesting sudo for machine files when needed.
 Provisioning credentials stay separate from users' Desktop authentication.
 See [MDM prerequisites, deployment, and validation](docs/claude-desktop-mdm.md).
 

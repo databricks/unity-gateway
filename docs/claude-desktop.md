@@ -1,6 +1,6 @@
 # Claude Desktop through Unity Gateway
 
-For macOS fleet provisioning as root, use
+For macOS fleet provisioning, use
 [`ug configure --agents claude --global`](claude-desktop-mdm.md).
 The behavior below describes configure without a scope flag or with `--user`.
 Explicit `--global` uses the macOS MDM path and leaves Desktop's user files unchanged;
@@ -453,7 +453,9 @@ otherwise it clears the selection. A later selection of another profile is prese
 Only this previous-selection ID is saved in `~/.ucode/claude-desktop.json`.
 Repeated configure retains it while UG remains selected.
 
-Ordinary revert leaves root Desktop files untouched. It uninstalls
+Ordinary revert also attempts macOS MDM cleanup through the existing sudo path. If it
+cannot remove machine files, it warns and continues user cleanup; retry with sudo available.
+It uninstalls
 `ug@unity-gateway-cowork` and any legacy
 `unity-gateway@unity-gateway-cowork` registration, removes their marketplace
 registration, and deletes UG's generated marketplace. Deleting the reserved Desktop profile
@@ -473,7 +475,7 @@ previous bytes on write failure. This is not a crash-atomic transaction across f
 Workspace and Cowork cleanup state is retained if Desktop revert fails, so cleanup can be
 retried with `ug revert`. The generated Cowork marketplace is also retained until its plugin
 and marketplace registrations are removed successfully. A Desktop cleanup failure produces
-one warning and exit code 1; the summary reports the failed cleanup.
+a warning and exit code 1; the summary reports the failed cleanup.
 Profile configure/revert waits at most five seconds for its file lock. A timeout
 does not interrupt the holder or change profile, metadata, or selection-state files.
 

@@ -2,7 +2,6 @@
 
 import json
 import os
-from unittest.mock import Mock
 
 import pytest
 
@@ -10,13 +9,24 @@ from tests.test_desktop_marketplace import desktop_environment
 from ucode import managed_files
 from ucode.agents.desktop import cowork
 
+_REAL_SUDO_REPLACE = managed_files._sudo_replace
+
 
 @pytest.fixture
 def system_source(tmp_path, monkeypatch):
     if os.name == "nt":
         pytest.skip("macOS MDM publication uses a POSIX shell")
+    run = managed_files.subprocess_cross_os.run
     path = desktop_environment(tmp_path, monkeypatch, "macos").parent / "org-plugins/ug"
     monkeypatch.setattr(managed_files, "claude_desktop_org_plugin_path", lambda: path)
+    native_cli = managed_files.subprocess_cross_os.run
+
+    def run_command(argv, **kwargs):
+        if argv[1:2] == ["plugin"]:
+            return native_cli(argv, **kwargs)
+        return run(argv, **kwargs)
+
+    monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run_command)
     # Run the packaged shell on Linux/macOS without sudo, with only target/OS adapters changed.
     platform = "macos" if os.uname().sysname == "Darwin" else "linux"
     script = managed_files._SUDO_REPLACE_SCRIPT.replace(
@@ -25,7 +35,19 @@ def system_source(tmp_path, monkeypatch):
     )
     if platform == "linux":
         script = script.replace("/usr/bin/stat -f %u", "stat -c %u")
-    script = script.replace("root_uid=0", f"root_uid={os.getuid()}")
+    files = {
+        managed_files.CLAUDE_DESKTOP_POLICY_PATH: tmp_path / "machine/policy.plist",
+        managed_files.CLAUDE_DESKTOP_MDM_ROOT / "ug": tmp_path / "machine/mdm/ug",
+        managed_files.CLAUDE_DESKTOP_MDM_ROOT / "otel-headers.sh": tmp_path
+        / "machine/mdm/otel-headers.sh",
+    }
+    for original, temporary in files.items():
+        script = script.replace(f"macos:{original}", f"{platform}:{temporary}")
+    monkeypatch.setitem(
+        managed_files._SUDO_REPLACE_TARGETS, managed_files.OS.MACOS, frozenset(files.values())
+    )
+    monkeypatch.setattr(managed_files, "_sudo_command", lambda *args: list(args))
+    monkeypatch.setattr(managed_files, "_sudo_replace", _REAL_SUDO_REPLACE)
     script = script.replace('\ncase "$mode" in', '\nchown() { :; }\ncase "$mode" in')
     script = script.replace(
         '\ncase "$mode" in',
@@ -43,7 +65,7 @@ case "$mode" in""",
     monkeypatch.setattr(
         managed_files,
         "_sudo_replace_command",
-        lambda mode: [
+        lambda mode, *args, **kwargs: [
             "/usr/bin/env",
             f"SUDO_UID={os.getuid()}",
             "/bin/sh",
@@ -52,6 +74,7 @@ case "$mode" in""",
             "bundle-test",
             mode,
             platform,
+            *args,
         ],
     )
     return path
@@ -143,26 +166,27 @@ def test_macos_root_copy_rejects_linked_and_special_source_files(
     assert not list(system_source.parent.glob(".ug-install*"))
 
 
-def test_macos_publication_requires_root_without_starting_sudo(system_source, monkeypatch):
+def test_macos_publication_accepts_non_root_caller(system_source, tmp_path, monkeypatch):
     monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
-    worker = Mock(side_effect=AssertionError("MDM publication must not start sudo"))
-    monkeypatch.setattr(managed_files, "_session_worker", worker)
-    with pytest.raises(RuntimeError, match="as root"):
-        managed_files.replace_privileged_bundle(system_source, None)
-    worker.assert_not_called()
+    monkeypatch.setattr(managed_files, "_running_as_root", lambda: False)
+    source = _source(tmp_path)
+    managed_files.replace_privileged_bundle(system_source, source)
+    assert cowork._marketplace_files(system_source) == cowork._marketplace_files(source)
+    managed_files.replace_privileged_bundle(system_source, None)
+    assert not system_source.exists()
 
 
-def test_macos_worker_rejects_non_root_bundle_requests(system_source, monkeypatch):
+def test_macos_worker_rejects_another_users_bundle(system_source, tmp_path, monkeypatch):
     command = managed_files._sudo_replace_command
 
-    def non_root_command(mode):
+    def another_user_command(mode):
         argv = command(mode)
         argv[1] = f"SUDO_UID={os.getuid() + 1}"
         return argv
 
-    monkeypatch.setattr(managed_files, "_sudo_replace_command", non_root_command)
-    with pytest.raises(RuntimeError, match="requires a root caller"):
-        managed_files.replace_privileged_bundle(system_source, None)
+    monkeypatch.setattr(managed_files, "_sudo_replace_command", another_user_command)
+    with pytest.raises(RuntimeError, match="Invalid Desktop plugin source owner"):
+        managed_files.replace_privileged_bundle(system_source, _source(tmp_path))
     assert not system_source.exists()
 
 

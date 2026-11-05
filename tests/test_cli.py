@@ -6698,8 +6698,6 @@ class TestConfigureScopeFlags:
         with (
             self._single_agent_env({"enabled_agents": {}}),
             patch("ucode.agents.desktop.mdm.configure"),
-            patch("ucode.agents.desktop.mdm.validate_mdm_execution"),
-            patch("ucode.agents.desktop.mdm.validate_cli_discovery"),
             patch(
                 "ucode.cli.configure_single_tool", side_effect=lambda _tool, state, **_kw: state
             ) as mock_single,
@@ -6932,8 +6930,6 @@ class TestConfigureScopeFlags:
                 "ucode.agents.desktop.setup._configure_claude_desktop_user_level"
             ) as mock_desktop,
             patch("ucode.agents.desktop.mdm.configure"),
-            patch("ucode.agents.desktop.mdm.validate_mdm_execution"),
-            patch("ucode.agents.desktop.mdm.validate_cli_discovery"),
             patch("ucode.agents.desktop.setup.configure_cowork") as mock_cowork,
         ):
             cli_mod._configure_workspace_command(
