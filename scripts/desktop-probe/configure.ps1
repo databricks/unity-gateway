@@ -6,7 +6,8 @@ $config = Join-Path $env:USERPROFILE '.databrickscfg'
 @('[desktop-ci]', "host = $env:UCODE_TEST_WORKSPACE", 'auth_type = databricks-cli') |
     Set-Content -LiteralPath $config
 $root = Join-Path $env:LOCALAPPDATA 'Claude-3p'
-@{ claude3pRootExists = (Test-Path $root); profile = 'desktop-ci' } | ConvertTo-Json |
+$report = [ordered]@{ claude3pRootExistsBeforeConfigure = (Test-Path $root); profile = 'desktop-ci' }
+$report | ConvertTo-Json |
     Set-Content "$env:RUNNER_TEMP/claude-desktop-probe/configuration.json"
 & $env:UG_DESKTOP_PROBE_BINARY configure --profile desktop-ci `
     --agents claude --user --disable-databricks-ai-tools --skip-validate --skip-upgrade
@@ -15,6 +16,13 @@ $profilePath = Join-Path $env:LOCALAPPDATA 'Claude-3p/configLibrary/5b36a0b9-b56
 if (-not (Test-Path $profilePath)) { throw 'UG did not create its Desktop profile' }
 $profile = Get-Content -Raw $profilePath | ConvertFrom-Json
 if ($profile.inferenceProvider -ne 'gateway') { throw 'Desktop profile is not using gateway inference' }
+if ($profile.inferenceCustomHeaders.'Databricks-Model-Provider-Service') {
+    throw 'This test requires system.ai model services, not a model provider service'
+}
+$parentSchema = $profile.inferenceCustomHeaders.'Databricks-Model-Service-Parent-Schema'
+if ($parentSchema -and $parentSchema -ne 'system.ai') {
+    throw 'This test requires the system.ai model-service schema'
+}
 $targetModel = 'system.ai.claude-haiku-4-5'
 $models = @($profile.inferenceModels | Where-Object { $_.name -eq $targetModel })
 if ($models.Count -ne 1) { throw 'Expected system.ai Claude model is missing from the configured profile' }
@@ -22,5 +30,9 @@ $label = $models[0].labelOverride
 if (-not $label) { $label = $targetModel }
 $matchingLabels = @($profile.inferenceModels | Where-Object { $_.labelOverride -eq $label -or $_.name -eq $label })
 if ($matchingLabels.Count -ne 1) { throw 'Configured target model label is ambiguous' }
-@{ configured = $true; provider = $profile.inferenceProvider; targetModel = $targetModel; targetModelLabel = $label } | ConvertTo-Json |
+$report.configured = $true
+$report.provider = $profile.inferenceProvider
+$report.targetModel = $targetModel
+$report.targetModelLabel = $label
+$report | ConvertTo-Json |
     Set-Content "$env:RUNNER_TEMP/claude-desktop-probe/configuration.json"
