@@ -7399,47 +7399,66 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
     # Bounds every wait so a regression fails the test instead of hanging the suite.
     WAIT_SECONDS = 5
 
-    def test_listing_runs_while_probe_is_in_flight(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("skip_model_discovery", "discovery_function"),
+        [(False, "discover_model_services"), (True, "discover_codex_models")],
+    )
+    def test_discovery_runs_while_probe_is_in_flight(
+        self, monkeypatch, skip_model_discovery, discovery_function
+    ):
         cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
-        listing_started = threading.Event()
+        discovery_started = threading.Event()
 
         def discover(workspace, token):
             assert (workspace, token) == (self.WS, "token")
-            listing_started.set()
+            discovery_started.set()
+            if skip_model_discovery:
+                return ["system.ai.gpt-5"], None
             return {"opus": "system.ai.claude-opus-4-8"}, ["system.ai.gpt-5"], [], [], None
 
         def probe(workspace, token):
-            # Returns only once the listing has started, so a sequential implementation fails.
-            assert listing_started.wait(self.WAIT_SECONDS), "listing did not overlap the probe"
+            # Returns only once discovery has started, so a sequential implementation fails.
+            assert discovery_started.wait(self.WAIT_SECONDS), "discovery did not overlap the probe"
             return MODEL_SERVICE_PROBE
 
-        monkeypatch.setattr(cli_mod, "discover_model_services", discover)
+        monkeypatch.setattr(cli_mod, discovery_function, discover)
         monkeypatch.setattr(cli_mod, "probe_unity_gateway_capabilities", probe)
 
-        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+        state = cli_mod.configure_shared_state(
+            self.WS, profile="DEFAULT", tools=["claude"], skip_model_discovery=skip_model_discovery
+        )
 
-        assert state["claude_models"] == {"opus": "system.ai.claude-opus-4-8"}
-        assert state["codex_models"] == ["system.ai.gpt-5"]
+        if skip_model_discovery:
+            assert state["web_search_model"] == "system.ai.gpt-5"
+        else:
+            assert state["claude_models"] == {"opus": "system.ai.claude-opus-4-8"}
+            assert state["codex_models"] == ["system.ai.gpt-5"]
 
-    def test_probe_failure_raises_without_waiting_for_listing(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("skip_model_discovery", "discovery_function"),
+        [(False, "discover_model_services"), (True, "discover_codex_models")],
+    )
+    def test_probe_failure_raises_without_waiting_for_discovery(
+        self, monkeypatch, skip_model_discovery, discovery_function
+    ):
         cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
-        listing_started = threading.Event()
-        release_listing = threading.Event()
-        listing_finished = threading.Event()
-        listing_threads: list[threading.Thread] = []
+        discovery_started = threading.Event()
+        release_discovery = threading.Event()
+        discovery_finished = threading.Event()
+        discovery_threads: list[threading.Thread] = []
 
         def discover(workspace, token):
-            listing_threads.append(threading.current_thread())
-            listing_started.set()
-            release_listing.wait(self.WAIT_SECONDS)
-            listing_finished.set()
-            return {}, [], [], [], None
+            discovery_threads.append(threading.current_thread())
+            discovery_started.set()
+            release_discovery.wait(self.WAIT_SECONDS)
+            discovery_finished.set()
+            return ([], None) if skip_model_discovery else ({}, [], [], [], None)
 
         def probe_get(url, token, **kwargs):
-            assert listing_started.wait(self.WAIT_SECONDS), "listing did not overlap the probe"
+            assert discovery_started.wait(self.WAIT_SECONDS), "discovery did not overlap the probe"
             return None, "HTTP 404 Not Found: model service unavailable"
 
-        monkeypatch.setattr(cli_mod, "discover_model_services", discover)
+        monkeypatch.setattr(cli_mod, discovery_function, discover)
         monkeypatch.setattr(db_mod, "_http_get_json", probe_get)
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
@@ -7447,14 +7466,19 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
 
         try:
             with pytest.raises(RuntimeError, match="not enabled"):
-                cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
-            # The listing is still blocked, so the probe's error did not wait for it.
-            assert not listing_finished.is_set()
+                cli_mod.configure_shared_state(
+                    self.WS,
+                    profile="DEFAULT",
+                    tools=["claude"],
+                    skip_model_discovery=skip_model_discovery,
+                )
+            # Discovery is still blocked, so the probe's error did not wait for it.
+            assert not discovery_finished.is_set()
             # Interpreter exit does not wait for a daemon thread either.
-            assert [thread.daemon for thread in listing_threads] == [True]
+            assert [thread.daemon for thread in discovery_threads] == [True]
         finally:
-            release_listing.set()
-            for thread in listing_threads:
+            release_discovery.set()
+            for thread in discovery_threads:
                 thread.join(self.WAIT_SECONDS)
 
     def test_listing_error_propagates_after_successful_probe(self, monkeypatch):
@@ -7505,67 +7529,6 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
         assert started == [web_search_lookup]
         assert listings == []
         assert state["web_search_model"] == "system.ai.gpt-5"
-
-    def test_skipped_discovery_looks_up_web_search_model_while_probe_is_in_flight(
-        self, monkeypatch
-    ):
-        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
-        lookup_started = threading.Event()
-
-        def web_search_lookup(workspace, token):
-            assert (workspace, token) == (self.WS, "token")
-            lookup_started.set()
-            return ["system.ai.gpt-5"], None
-
-        def probe(workspace, token):
-            # Returns only once the lookup has started, so a sequential implementation fails.
-            assert lookup_started.wait(self.WAIT_SECONDS), "lookup did not overlap the probe"
-            return MODEL_SERVICE_PROBE
-
-        monkeypatch.setattr(cli_mod, "discover_codex_models", web_search_lookup)
-        monkeypatch.setattr(cli_mod, "probe_unity_gateway_capabilities", probe)
-
-        state = cli_mod.configure_shared_state(
-            self.WS, profile="DEFAULT", tools=["claude"], skip_model_discovery=True
-        )
-
-        assert state["web_search_model"] == "system.ai.gpt-5"
-
-    def test_skipped_discovery_probe_failure_raises_without_waiting_for_lookup(self, monkeypatch):
-        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
-        lookup_started = threading.Event()
-        release_lookup = threading.Event()
-        lookup_finished = threading.Event()
-        lookup_threads: list[threading.Thread] = []
-
-        def web_search_lookup(workspace, token):
-            lookup_threads.append(threading.current_thread())
-            lookup_started.set()
-            release_lookup.wait(self.WAIT_SECONDS)
-            lookup_finished.set()
-            return ["system.ai.gpt-5"], None
-
-        def probe_get(url, token, **kwargs):
-            assert lookup_started.wait(self.WAIT_SECONDS), "lookup did not overlap the probe"
-            return None, "HTTP 404 Not Found: model service unavailable"
-
-        monkeypatch.setattr(cli_mod, "discover_codex_models", web_search_lookup)
-        monkeypatch.setattr(db_mod, "_http_get_json", probe_get)
-        monkeypatch.setattr(
-            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
-        )
-
-        try:
-            with pytest.raises(RuntimeError, match="not enabled"):
-                cli_mod.configure_shared_state(
-                    self.WS, profile="DEFAULT", tools=["claude"], skip_model_discovery=True
-                )
-            assert not lookup_finished.is_set()
-            assert [thread.daemon for thread in lookup_threads] == [True]
-        finally:
-            release_lookup.set()
-            for thread in lookup_threads:
-                thread.join(self.WAIT_SECONDS)
 
     def test_skipped_discovery_without_claude_starts_no_lookup(self, monkeypatch):
         cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
