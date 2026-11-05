@@ -25,6 +25,7 @@ def ui(*args):
     result = process.run(
         ["/usr/bin/osascript", str(TEMP / "desktop-ui.scpt"), *args],
         capture_output=True,
+        text=True,
         timeout=45,
     )
     if result.returncode:
@@ -68,6 +69,7 @@ def configure():
             "--skip-upgrade",
         ],
         capture_output=True,
+        text=True,
         timeout=180,
     )
     save("configure.txt", result.stdout + result.stderr)
