@@ -193,7 +193,7 @@ requires an initialized Cowork account.
 When connectors are configured, the plugin includes:
 
 - Hooks running `ug cowork-hook`. They cannot make Cowork connect its own MCP servers
-  sooner, and they never open a browser or block the prompt.
+  sooner, and they never open a browser.
   - On `SessionStart`, the hook refreshes the profile's Databricks token, sends each upstream
     MCP server an `initialize` and `tools/list` (15 seconds total), and tells Claude which
     connectors exist. It does not report which ones answered, because that goes stale after
@@ -208,8 +208,15 @@ When connectors are configured, the plugin includes:
   Claude checks the tools exposed now and calls a relevant one. If only `authenticate`
   appears, it signs in. If tools are missing or `pending`, it actually waits 5 seconds
   (shell `sleep 5` or an exposed wait tool) and rechecks, at most twice, then reports that
-  the tools are not exposed without guessing a cause. It acts in the same turn instead of
-  asking whether to check or promising to retry.
+  the tools are not exposed. It explains that they may still be initializing and asks the
+  user to try the request again shortly, without promising recovery or guessing a cause.
+  Available tools are used immediately, without waiting for every connector to load.
+
+Desktop manages connector startup independently of the plugin; loading the plugin does not
+guarantee every connector is ready. Idle recovery remains separate: the prompt hook refreshes
+credentials and probes upstream servers, while the stdio proxy starts the local shared
+backend if it has exited when Desktop reconnects. The prompt hook's probes can delay the
+prompt for up to their 10-second budget, in addition to credential refresh.
 
 Native Cowork execution of these hooks still needs Desktop validation.
 
@@ -217,8 +224,8 @@ Connection-status notices can become stale. The skill directs Claude to rediscov
 try a relevant discovered tool before reporting a configured connector disconnected or unavailable.
 It must base availability claims on observed discovery results or tool errors, rather than a
 status reminder alone. If no callable tools are exposed after these checks, it reports that
-the connector's tools are not exposed in this session, without inventing a disconnect,
-reconnection, or authentication diagnosis.
+the connector's tools are not exposed in this session and asks the user to try again shortly,
+without inventing a disconnect, reconnection, or authentication diagnosis.
 
 The opt-in `tests/connector_behavior/` suite sends the generated skill to a real Claude model
 with synthetic Slack tools. It checks a stale disconnect notice with tools already available,
@@ -233,9 +240,10 @@ Claude to check exposed tools and use supported discovery actions before calling
 only the exact names exposed or returned. It forbids guessing tool names, repeating an unavailable
 call, authenticating another connector, or spawning a subagent solely to make tools appear.
 If no supported wait action exists, or tools remain absent after the bounded wait, Claude
-reports that limitation without inventing its cause.
+reports that limitation and asks the user to retry shortly, without inventing its cause.
 If discovery exposes only `authenticate`, Claude should call that discovered tool, rediscover after
-sign-in, and retry the original request in the same turn without asking for another message.
+sign-in, and retry the original request in the same turn if its tools are available. Otherwise,
+the same bounded waits and retry guidance apply.
 An unavailable tool name and permission denials alone do not establish an authentication failure.
 When access is denied and an authentication tool is available, the guidance directs Claude
 to attempt sign-in once before recommending administrator or network changes. This includes

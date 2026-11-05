@@ -472,8 +472,10 @@ cover managed setup after successful skill/MCP reconciliation, preservation afte
 reconciliation failures, and cleanup for unmanaged or non-Claude configurations. These tests
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
 late MCP connection, tool discovery, or inference behavior. A frozen fixture verifies that
-Cowork's skill text, including its description, stays identical to the version before the
-Code authentication changes, with either the default scope or explicit `code=False`.
+Cowork's skill text, including its description, retains bounded recovery and asks the user
+to retry shortly if tools remain unavailable, with either the default scope or explicit
+`code=False`. Generated-skill assertions also require the startup-readiness caveat and retry
+guidance. These prompt checks do not establish model compliance with that fallback.
 
 `test_desktop_marketplace.py` covers ordinary default/`--user` configuration writing
 only the user source, no elevation, preservation of the registered legacy root source,

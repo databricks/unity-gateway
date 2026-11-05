@@ -200,6 +200,8 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(
     assert "task in the same turn" in connector_skill
     assert "wait 5 seconds" in connector_skill
     assert "wait another 5 seconds" in connector_skill
+    assert "does not guarantee that every connector is ready" in connector_skill
+    assert "ask the user to try the request again shortly" in connector_skill
     hooks = json.loads((plugin_root / "hooks" / "hooks.json").read_text())
     assert set(hooks["hooks"]) == {"SessionStart", "UserPromptSubmit"}
     expected_command = cowork.subprocess_cross_os.shell_command(
@@ -785,8 +787,8 @@ def test_revert_retains_owned_files_when_claude_cli_is_missing(tmp_path, monkeyp
 
 
 @pytest.mark.parametrize("options", [{}, {"code": False}], ids=["default", "explicit-cowork"])
-def test_cowork_connector_skill_preserves_previous_guidance(tmp_path, options):
-    """Code authentication changes must not alter Cowork's existing prompt."""
+def test_cowork_connector_skill_matches_guidance_fixture(tmp_path, options):
+    """Both Cowork scopes retain bounded recovery and the delayed-startup fallback."""
     cowork._write_connector_skill(tmp_path, ["slack", "gmail"], **options)
     actual = (tmp_path / cowork.CONNECTOR_SKILL_NAME / "SKILL.md").read_text(encoding="utf-8")
     expected = (Path(__file__).parent / "fixtures" / "cowork_connector_skill.md").read_text(
