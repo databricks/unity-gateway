@@ -223,6 +223,7 @@ from ucode.ui import (
     print_section,
     print_success,
     print_warning,
+    print_warning_err,
     prompt_for_selection,
     prompt_for_text,
     prompt_for_tools,
@@ -2824,8 +2825,8 @@ def auth_token_cmd(
             # ug's own helpers pass the bare host even when the saved key selects a workspace.
             saved_workspace = key in (state_workspace_key(state), state.get("workspace"))
         except RuntimeError as exc:
-            print_err(str(exc))
-            raise typer.Exit(1) from None
+            # An unknown host type shouldn't block the token; just skip the saved profile.
+            print_warning_err(str(exc))
     if profile is None and saved_workspace:
         profile = _get_catalog_profile(state)
     if client_id is None and (use_pat or state.get("use_pat")):

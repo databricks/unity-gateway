@@ -2777,21 +2777,20 @@ class TestAuthTokenCommand:
             ),
         ],
     )
-    def test_host_matching_saved_workspace_uses_saved_profile(self, saved, expected_profile):
+    @pytest.mark.parametrize("host", ["https://saved.example/", None])
+    def test_host_matching_saved_workspace_uses_saved_profile(self, saved, expected_profile, host):
         # The Codex MDM auth command passes only --host; the saved choices supply the profile.
         state = {"workspace": "https://saved.example", **saved}
+        host_args = ["--host", host] if host else []
         with (
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli.get_databricks_token", return_value="tok") as fetch,
         ):
-            result = runner.invoke(
-                app, ["auth-token", "--host", "https://saved.example/", "--browser-login"]
-            )
+            result = runner.invoke(app, ["auth-token", *host_args, "--browser-login"])
         assert result.exit_code == 0
         assert result.stdout == "tok\n"
-        fetch.assert_called_once_with(
-            "https://saved.example/", expected_profile, force_refresh=False, browser_login=True
-        )
+        assert fetch.call_args.args == (host or "https://saved.example", expected_profile)
+        assert fetch.call_args.kwargs["browser_login"] is True
 
     @pytest.mark.parametrize(
         ("host", "expected_profile"),
@@ -2830,17 +2829,18 @@ class TestAuthTokenCommand:
         assert result.stdout == "tok\n"
         assert "a note" in result.stderr
 
-    def test_host_resolution_failure_exits_without_a_token(self):
+    def test_host_resolution_failure_warns_and_skips_saved_profile(self):
+        state = {"workspace": "https://saved.example", "profile": "saved-prof"}
         with (
-            patch("ucode.cli.load_state", return_value={"workspace": "https://saved.example"}),
+            patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli.resolve_workspace", side_effect=RuntimeError("Check your network")),
-            patch("ucode.cli.get_databricks_token") as fetch,
+            patch("ucode.cli.get_databricks_token", return_value="tok") as fetch,
         ):
-            result = runner.invoke(app, ["auth-token", "--host", "https://h.example?w=1"])
-        assert result.exit_code == 1
-        assert result.stdout == ""
+            result = runner.invoke(app, ["auth-token", "--host", "https://saved.example?w=1"])
+        assert result.exit_code == 0
+        assert result.stdout == "tok\n"
         assert "Check your network" in result.stderr
-        fetch.assert_not_called()
+        assert fetch.call_args.args == ("https://saved.example?w=1", None)
 
     def test_host_matching_saved_workspace_keeps_explicit_client_id_profile_free(self):
         state = {"workspace": "https://saved.example", "profile": "workspace-prof"}
