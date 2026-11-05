@@ -1395,6 +1395,11 @@ CodingAgentConfig. The test then seeds `/etc/claude-code/managed-settings.json`,
 `ug configure`, and requires every pre-existing family default to survive exactly. It checks
 settings reconciliation and makes no model-inference claim.
 
+`test_managed_fixture_codex_mcp_written_to_managed_file` checks the managed GitHub service's
+exact URL, OAuth resource, and Codex CIMD client in `/etc/codex/managed_config.toml`. It rejects
+stdio fields in that native HTTP entry and a duplicate user-scope registration. This is
+configuration coverage; it does not perform an OAuth sign-in or an MCP tool call.
+
 The expected model ids in `test_ug_configure_managed.py` mirror `managed_workspace_default.json`;
 update both together. The fixtures reference real securables on the managed workspace (MPS
 `main.default.ci_e2e_anthropic_mps` / `ci_e2e_openai_mps`, MCP service `system.ai.github`, skill

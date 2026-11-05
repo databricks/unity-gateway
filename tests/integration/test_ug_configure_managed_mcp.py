@@ -6,7 +6,8 @@ the config writers, the OS-managed reconcile, and the agent binary stay real). S
 tests/AGENTS.md rule 4.
 
 An interactive `ug configure` (a PTY, so ug performs its sudo OS-managed reconcile) writes the
-managed servers into Codex's `[mcp_servers]` in managed_config.toml, additive to and separate from
+managed servers into Codex's `[mcp_servers]` in managed_config.toml. Connection-backed services
+use native HTTP OAuth with Codex's published CIMD client, additive to and separate from
 the developer's own ~/.codex/config.toml servers. A non-interactive configure has no sudo reconcile,
 so it falls back to the user-scope registration, which the real /mcp view still lists. Claude's
 `managedMcpServers` path is covered by unit tests; its integration coverage needs the managed
@@ -52,8 +53,8 @@ def test_managed_fixture_claude_mcp_lists_configured_server(live_session, worksp
 def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspace):
     """Scenario: an interactive configure with a managed MCP server writes Codex's managed file.
 
-    Expected: the server lands in the `[mcp_servers]` table of the OS-managed config as the ug
-    mcp-proxy stdio command, and the developer's own ~/.codex/config.toml is not touched.
+    Expected: the GitHub service lands in the OS-managed `[mcp_servers]` table as native HTTP
+    OAuth with Codex's published CIMD client, without a user-scope copy or stdio transport fields.
     """
     session = live_session
     use_managed_config_fixture(session, "codex_mcp")
@@ -67,10 +68,13 @@ def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspa
     servers = managed.get("mcp_servers") or {}
     entries = {name: entry for name, entry in servers.items() if "github" in name.lower()}
     assert entries, managed
+    assert len(entries) == 1, entries
     entry = next(iter(entries.values()))
-    assert entry["command"].endswith("ug"), entry
-    assert "--url" in entry["args"], entry
-    assert "mcp-services" in entry["args"][entry["args"].index("--url") + 1], entry
+    service_url = f"{workspace.rstrip('/')}/ai-gateway/mcp-services/system.ai.github"
+    assert entry["url"] == service_url, entry
+    assert entry["oauth_resource"] == service_url, entry
+    assert entry["oauth"]["client_id"] == "https://chatgpt.com/oauth/codex/client.json", entry
+    assert "command" not in entry and "args" not in entry, entry
 
     personal_path = session.home / ".codex" / "config.toml"
     personal = tomllib.loads(personal_path.read_text()) if personal_path.exists() else {}
