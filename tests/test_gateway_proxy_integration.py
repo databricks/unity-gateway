@@ -239,7 +239,7 @@ class TestRelayedProxyEndToEnd:
                     assert resp.status_code == 200
                     body = b"".join(resp.iter_raw())
         assert body == b"".join(chunks)
-        assert nodelay_options == [1]
+        assert len(nodelay_options) == 1 and nodelay_options[0] != 0
 
     def test_upstream_401_triggers_refresh_and_relays_over_socket(self, make_gateway):
         # A 401 may be a stale swap token, so the proxy force-refreshes and retries

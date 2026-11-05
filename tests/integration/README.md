@@ -5,7 +5,7 @@ including exact service URLs, native OAuth metadata, and real `codex mcp get`
 readback. The per-user configuration remains separate.
 
 `../test_gateway_proxy_integration.py` checks local proxy SSE response order and
-TCP_NODELAY on the accepted socket. These component checks avoid timing thresholds
+nonzero TCP_NODELAY on the accepted socket, including BSD/macOS flag values. These component checks avoid timing thresholds
 and do not establish live gateway or agent streaming latency.
 
 Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names

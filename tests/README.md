@@ -5,8 +5,8 @@ including exact service URLs, native OAuth metadata, and real `codex mcp get`
 readback. The per-user configuration remains separate.
 
 `test_gateway_proxy_integration.py` exercises the loopback proxy over local sockets.
-Its SSE scenario checks response order and verifies TCP_NODELAY on the accepted
-proxy socket, avoiding timing thresholds while preventing Nagle buffering of small
+Its SSE scenario checks response order and verifies a nonzero TCP_NODELAY flag on the accepted
+proxy socket across Linux and BSD/macOS, avoiding timing thresholds while preventing Nagle buffering of small
 frames when a client delays acknowledgements. This is component coverage; it does
 not establish live gateway or agent streaming latency.
 
