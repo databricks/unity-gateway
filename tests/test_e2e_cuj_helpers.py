@@ -794,6 +794,53 @@ def test_mcp_completion_accepts_a_fenced_reply(monkeypatch):
     assert task.completed(None, "claude")
 
 
+@pytest.mark.parametrize(
+    "native_apis, accepted",
+    [
+        (["openai/v1/responses"], False),
+        (["openai/v1/chat/completions", "openai/v1/responses"], True),
+        (["openai/v1/responses", "openai/v1/chat/completions"], True),
+        (["openai/v1/chat/completions"], False),
+        (["openai/v1/chat/completions", "openai/v1/responses", "openai/v1/embeddings"], False),
+        ([], False),
+        (None, False),
+    ],
+)
+def test_cuj2_mps_catalog_requires_fixture_apis(native_apis, accepted):
+    services = {}
+    for agent, (name, model) in constants.MODEL_PROVIDER_SERVICE_FIXTURES.items():
+        name = f"model-provider-services/{name}"
+        services[name] = SimpleNamespace(
+            name=name,
+            config=SimpleNamespace(
+                allow_all_targets=False,
+                provider_type=(
+                    "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC"
+                    if agent == CLAUDE
+                    else "EXTERNAL_MODEL_PROVIDER_TYPE_OPENAI"
+                ),
+                targets=[
+                    SimpleNamespace(
+                        model=model,
+                        native_api_types=["anthropic/v1/messages"]
+                        if agent == CLAUDE
+                        else native_apis,
+                    )
+                ],
+            ),
+        )
+    gateway = SimpleNamespace(
+        list_model_provider_services=lambda **kwargs: services.values(),
+        get_model_provider_service=services.__getitem__,
+    )
+    workspace = SimpleNamespace(client=SimpleNamespace(ai_gateway=gateway))
+    if accepted:
+        cuj2._assert_mps_catalog(workspace)
+    else:
+        with pytest.raises(AssertionError):
+            cuj2._assert_mps_catalog(workspace)
+
+
 def test_cuj2_mcp_listing_retries_a_banner_only_claude_listing(tmp_path, monkeypatch):
     suffix = ".EXE" if sys.platform == "win32" else ""
     for agent in (CLAUDE, CODEX):

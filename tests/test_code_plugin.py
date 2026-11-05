@@ -63,6 +63,7 @@ def test_code_plugin_uses_native_names_without_duplicate_servers_or_hooks(code_p
     root = _plugin_root()
     plugin = json.loads((root / ".claude-plugin" / "plugin.json").read_text())
     assert plugin["name"] == "ug"
+    assert "version" not in plugin
     assert "mcpServers" not in plugin
     assert not (root / ".mcp.json").exists()
     assert not (root / "hooks").exists()
@@ -262,7 +263,7 @@ def test_code_plugin_revert_runs_without_desktop_or_cowork(code_plugins, monkeyp
 def test_cowork_failure_does_not_prevent_code_plugin_setup(code_plugins, monkeypatch, capsys):
     from ucode import cli
 
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise RuntimeError("Cowork has not started")
 
     monkeypatch.setattr(desktop_setup, "configure_cowork", fail)

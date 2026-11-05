@@ -40,6 +40,9 @@ SKIP_OS_SETTINGS_ENV = "UG_SKIP_OS_SETTINGS"
 CONFIG_SCOPES = ("global", "user")
 DEFAULT_CONFIG_SCOPE = "global"
 _config_scope = DEFAULT_CONFIG_SCOPE
+# Set by an explicit `ug configure --global`: that run writes machine-wide settings and no per-user
+# agent settings. Not saved; launches and other commands are unaffected.
+_machine_wide_only = False
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
@@ -127,6 +130,39 @@ def config_scope() -> str:
     return _config_scope
 
 
+def set_machine_wide_only(enabled: bool) -> None:
+    """Mark this run as an explicit ``ug configure --global``, which writes no per-user settings."""
+    global _machine_wide_only
+    _machine_wide_only = enabled
+
+
+def machine_wide_only() -> bool:
+    """Whether this run writes only machine-wide settings and leaves per-user agent settings alone.
+
+    True only during an explicit ``ug configure --global``. ug's own state under ``~/.ucode`` and the
+    Databricks login are still written, since the machine-wide settings rely on them.
+    """
+    return _machine_wide_only
+
+
+def per_user_paths(paths: list[str]) -> list[str]:
+    """The ``paths`` inside a user's home folder, where other users may not be able to run them.
+
+    Checks each path both as given and with symlinks resolved, since a shared ``/usr/local/bin/ug``
+    can still point into one user's home."""
+    home = Path.home()
+    # A home of the filesystem root (HOME=/, as some MDM and system jobs run) holds every path.
+    roots = [home] if home.parent != home else []
+    if (profiles := system_cross_os.user_profiles_dir()) is not None:
+        roots.append(profiles)
+    found = []
+    for path in paths:
+        candidates = {Path(path).absolute(), Path(path).resolve()}
+        if any(c.is_relative_to(root) for c in candidates for root in roots):
+            found.append(path)
+    return found
+
+
 def managed_settings_skipped() -> bool:
     """Whether OS-managed settings are opted out via ``UG_SKIP_OS_SETTINGS`` or the ``user`` scope.
 
@@ -168,6 +204,14 @@ def claude_header_mod_root() -> Path | None:
 def _windows_claude_header_mod_root() -> Path:
     # Beside the managed file, so it inherits Program Files' administrator-only write access.
     return windows_claude_managed_settings_path().parent / "ucode-plugins"
+
+
+def claude_desktop_org_plugin_path() -> Path | None:
+    if current_os() is OS.MACOS:
+        return Path("/Library/Application Support/Claude/org-plugins/ug")
+    if current_os() is OS.WINDOWS:
+        return system_cross_os.windows_program_files_dir() / "Claude" / "org-plugins" / "ug"
+    return None
 
 
 def reconcile_privileged_files(files: dict[Path, str], *, display: str) -> None:
