@@ -32,6 +32,31 @@ try {
         $report.getStartedInvoked = $true
         Start-Sleep -Seconds 8
     }
+    if ($Configured) {
+        $continueCondition = [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::NameProperty, 'Continue')
+        $continueButton = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $continueCondition)
+        if (-not $continueButton) { throw 'Configured gateway welcome screen has no Continue button' }
+        $continueButton.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+        $report.gatewayContinueInvoked = $true
+        Start-Sleep -Seconds 15
+        $coworkCondition = [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::NameProperty, 'Cowork')
+        $cowork = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $coworkCondition)
+        $report.coworkControlFound = $null -ne $cowork
+        if ($cowork) {
+            $pattern = $null
+            if ($cowork.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+                $pattern.Invoke()
+            } elseif ($cowork.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
+                $pattern.Select()
+            } else {
+                throw 'Cowork control has no supported native activation pattern'
+            }
+            $report.coworkActivated = $true
+            Start-Sleep -Seconds 10
+        }
+    }
     $report.processExited = $process.HasExited
     if ($process.HasExited) { $report.exitCode = $process.ExitCode }
     $report.processes = @(Get-Process -Name Claude -ErrorAction SilentlyContinue |
