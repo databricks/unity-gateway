@@ -41,7 +41,7 @@ SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY = "subagent_orch_auto_picker_v0_claude_
 DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0_CLAUDE_ONLY
 
 _CONFIG_ENV_KEYS = (*SMART_ROUTING_ENV_KEYS, EXPOSE_AUTO_IN_MODEL_PICKER_ENV_VAR)
-_RESTORE_KEYS = (*_CONFIG_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
+_RESTORE_KEYS = (*_CONFIG_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR, AUTO_PICKER_CONFIG_ENV_VAR)
 
 _BASE_VERSIONS = {
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
@@ -162,8 +162,6 @@ def apply_config(
     if preset is None:
         return {}
     previous = {key: target.get(key) for key in _RESTORE_KEYS}
-    if version == SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY or AUTO_PICKER_CONFIG_ENV_VAR in target:
-        previous[AUTO_PICKER_CONFIG_ENV_VAR] = target.get(AUTO_PICKER_CONFIG_ENV_VAR)
     target.pop(AUTO_PICKER_CONFIG_ENV_VAR, None)
     if version == SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY and agent == AGENT_CLAUDE:
         target[AUTO_PICKER_CONFIG_ENV_VAR] = version
@@ -209,17 +207,16 @@ def apply_enabled_version(
     if not known_version(target):
         target[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = (
             SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY
-            if not target.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
+            if SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY in _VERSIONS
+            and not target.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
             and auto_picker_enabled(target, agent=agent)
             else DEFAULT_ENABLED_VERSION
         )
-    applied = apply_config(target, agent=agent)
+    apply_config(target, agent=agent)
     if auto_picker_enabled(target, agent=agent):
         # Managed or explicit launch enablement opts in; exposure alone starts off.
         target[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
         target[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = "1"
-    if AUTO_PICKER_CONFIG_ENV_VAR in applied:
-        previous[AUTO_PICKER_CONFIG_ENV_VAR] = applied[AUTO_PICKER_CONFIG_ENV_VAR]
     return previous
 
 

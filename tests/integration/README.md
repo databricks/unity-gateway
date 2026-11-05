@@ -1789,4 +1789,5 @@ installed plugin to contain no duplicate servers. These checks do not prove Desk
 tool search, reduced context usage, or native connector consent.
 
 Auto session-control component checks are listed in [the test overview](../README.md#auto-session-controls).
-They do not establish native picker or live gateway coverage.
+They include Codex toggle isolation, feedback boundaries, and inactive picker options;
+they do not establish native picker or live gateway coverage.

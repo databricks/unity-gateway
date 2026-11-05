@@ -1,6 +1,7 @@
 """Auto capability, inactive provisioning and validated session transitions."""
 
 import json
+from unittest.mock import Mock
 
 import pytest
 from typer.testing import CliRunner
@@ -21,6 +22,8 @@ def test_internal_picker_writer_and_legacy_toggle_guard(monkeypatch, tmp_path, m
     monkeypatch.setenv("UCODE_AUTO_PICKER_CONFIG", AUTO)
     monkeypatch.setenv("EXPOSE_AUTO_IN_MODEL_PICKER", "1")
     monkeypatch.delenv("ISAAC_SMART_ROUTER_FEEDBACK", raising=False)
+    launch = Mock(side_effect=AssertionError("Session controls must not launch an agent"))
+    monkeypatch.setattr(cli, "launch_agent", launch)
     runner = CliRunner()
     result = runner.invoke(cli.app, ["claude-auto-mode", mode])
     assert result.exit_code == 0, result.output
@@ -33,8 +36,17 @@ def test_internal_picker_writer_and_legacy_toggle_guard(monkeypatch, tmp_path, m
     before = controls.read_text()
     for flag in ("--enable-smart-routing", "--disable-smart-routing"):
         result = runner.invoke(cli.app, ["claude", flag])
+        assert result.exit_code == 2, result.output
         assert "/model" in result.output
         assert controls.read_text() == before
+    for flag in ("--enable-smart-routing", "--disable-smart-routing"):
+        result = runner.invoke(cli.app, ["codex", flag])
+        assert result.exit_code == 0, result.output
+        assert "/model" not in result.output
+        assert json.loads(controls.read_text()) == (
+            {} if flag == "--enable-smart-routing" else dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+        )
+    launch.assert_not_called()
 
 
 def test_internal_writer_requires_capability_and_feedback(monkeypatch, tmp_path):
@@ -52,3 +64,25 @@ def test_internal_writer_requires_capability_and_feedback(monkeypatch, tmp_path)
     monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", "1")
     assert runner.invoke(cli.app, ["claude-auto-mode", "concrete"]).exit_code != 0
     assert controls.read_text() == "{}"
+
+
+@pytest.mark.parametrize(
+    "feedback,accepted", [("  " + "x" * 15 + "  ", False), ("  " + "x" * 16 + "  ", True)]
+)
+def test_required_feedback_uses_trimmed_boundary(monkeypatch, tmp_path, feedback, accepted):
+    controls = tmp_path / "env.json"
+    controls.write_text("{}")
+    monkeypatch.setenv(session_env.SESSION_ENV_VAR, str(controls))
+    monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+    monkeypatch.setenv("UCODE_AUTO_PICKER_CONFIG", AUTO)
+    monkeypatch.setenv("EXPOSE_AUTO_IN_MODEL_PICKER", "1")
+    monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", "1")
+    result = CliRunner().invoke(
+        cli.app, ["claude-auto-mode", "concrete", "--smart-router-feedback", feedback]
+    )
+    assert result.exit_code == (0 if accepted else 2), result.output
+    if accepted:
+        assert json.loads(controls.read_text()) == dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+        assert "/isaac-feedback --category smart-routing" in " ".join(result.output.split())
+    else:
+        assert controls.read_text() == "{}"

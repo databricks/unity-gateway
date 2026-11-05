@@ -11,6 +11,7 @@ from ucode.constants import (
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
+    SMART_ROUTING_ENV_KEYS,
 )
 from ucode.smart_routing import config, orchestrator, session_env, v2
 
@@ -55,11 +56,7 @@ def test_picker_exposure_overrides_shell_and_is_not_an_activity_flag(version, ag
         SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version,
         "EXPOSE_AUTO_IN_MODEL_PICKER": "1",
     }
-    expected = (
-        "1"
-        if (version == config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY and agent == AGENT_CLAUDE)
-        else "0"
-    )
+    expected = "0"
     assert (
         config.resolve_environment(source, agent=agent)["EXPOSE_AUTO_IN_MODEL_PICKER"] == expected
     )
@@ -413,3 +410,16 @@ def test_enabled_version_routes_ignores_uncovered_agent():
 
     assert config.enabled_version_routes(env, agent="opencode") is False
     assert config.enabled_version_routes({}, agent="opencode") is False
+
+
+def test_enabled_version_with_inherited_auto_capability():
+    inherited = {
+        "UCODE_AUTO_PICKER_CONFIG": config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY,
+        "EXPOSE_AUTO_IN_MODEL_PICKER": "1",
+        **dict.fromkeys(SMART_ROUTING_ENV_KEYS, "1"),
+    }
+    applied = inherited.copy()
+    previous = config.apply_enabled_version(applied, agent=AGENT_CLAUDE)
+    assert applied == _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0]
+    v2.restore_smart_routing_env(previous, applied)
+    assert applied == inherited

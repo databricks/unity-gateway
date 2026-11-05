@@ -53,7 +53,12 @@ Restore the inherited environment on every exit.
 `--enable-smart-routing` and managed smart routing turn routing on only through
 `apply_enabled_version` in `config.py`: keep a known version, otherwise select
 `DEFAULT_ENABLED_VERSION` (an unknown selector is replaced for that launch). Neither may rewrite
-already-resolved version flags.
+already-resolved version flags, except for Auto launch enablement: the Auto preset
+exposes the picker with activity off, and explicit/managed enablement activates subagent
+routing and orchestration together. Do not enable main-request routing for Auto.
+Only select Auto from a consumed capability marker when its preset is registered.
+The marker carries the launch capability into helper subprocesses; it is not a separate
+user-facing feature flag. Session controls must check the calling agent.
 
 Every new smart-routing activity environment variable must be registered in
 `SMART_ROUTING_ENV_KEYS` in the same change, including orchestration controls.

@@ -1289,5 +1289,8 @@ tool search, reduced context usage, or native connector consent.
 `test_smart_routing_config.py` covers explicit exposure values, legacy precedence,
 unknown-version no-op behavior, restoration, and capability/activity separation.
 `test_claude_auto_picker.py` exercises validated session writes, feedback checks,
-and rejection of legacy controls in resolved Auto sessions. The Auto preset is not
+trimmed 15/16-character feedback boundaries, safe launch guards, and Claude-only
+rejection of legacy controls while Codex session toggles remain usable. Native options
+cover exposure with activity disabled. Inherited Auto capability cannot select an
+unregistered preset. The Auto preset is not
 registered; native picker behavior and live routing are not covered by this layer.

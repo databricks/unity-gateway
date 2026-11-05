@@ -161,3 +161,17 @@ def test_launch_options_preserve_empty_and_absent_values():
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
     }
+
+
+def test_launch_options_expose_auto_with_activity_disabled():
+    env = {
+        "UCODE_AUTO_PICKER_CONFIG": config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY,
+        "EXPOSE_AUTO_IN_MODEL_PICKER": "1",
+        **dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"),
+    }
+    before = env.copy()
+    options = v2._claude_mod_launch_options(env)
+    assert options["EXPOSE_AUTO_IN_MODEL_PICKER"] == "1"
+    assert all(options[key] == "0" for key in SMART_ROUTING_ENV_KEYS)
+    assert options["orchestratorInstructions"] == ""
+    assert env == before

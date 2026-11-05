@@ -65,6 +65,8 @@ from ucode.constants import (
     AGENT_CODEX,
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
+    ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
+    ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -3310,22 +3312,31 @@ def claude_auto_mode(
         raise typer.Exit(2)
     values = dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
     if mode == "auto":
-        values.update(ENABLE_SMART_ROUTING_SUBAGENT_ONLY="1", ENABLE_SMART_ROUTER_ORCHESTRATOR="1")
+        values.update(
+            {ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1", ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1"}
+        )
     try:
         set_session_environment(values)
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
+    if mode == "concrete" and smart_router_feedback:
+        print_warning(
+            "This command does not submit feedback. Submit it through "
+            "/isaac-feedback --category smart-routing; /model handles this automatically."
+        )
 
 
-def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | None = None) -> bool:
+def _toggle_current_smart_routing_session(
+    enabled: bool | None, reason: str | None = None, *, agent: str
+) -> bool:
     if enabled is None:
         return False
     try:
         session_env_path()
     except RuntimeError:
         return False
-    if smart_routing_config.auto_picker_enabled(agent=AGENT_CLAUDE):
+    if smart_routing_config.auto_picker_enabled(agent=agent):
         print_err("Use /model to change Auto in this session.")
         raise typer.Exit(2)
     if (
@@ -4473,7 +4484,9 @@ def codex_cmd(
     enable_smart_routing_flag = (
         None if enable_smart_routing == disable_smart_routing else enable_smart_routing
     )
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
+    if _toggle_current_smart_routing_session(
+        enable_smart_routing_flag, smart_router_feedback, agent=AGENT_CODEX
+    ):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
@@ -4575,7 +4588,9 @@ def claude_cmd(
     ] = None,
 ) -> None:
     """Launch Claude Code via Databricks."""
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
+    if _toggle_current_smart_routing_session(
+        enable_smart_routing_flag, smart_router_feedback, agent=AGENT_CLAUDE
+    ):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
