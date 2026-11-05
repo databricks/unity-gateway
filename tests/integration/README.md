@@ -349,8 +349,8 @@ request gating are covered by unit/component tests listed in `../README.md`. Thi
 does not yet assert live `recommendModel` request counts for configs with and without tiers.
 `../test_cli.py::TestBudgetRecommendationAtLaunch` also covers one budget read per bare
 or explicit launch after empty/error responses, one warning,
-and preserving the selected fallback or recommended model. Its controlled-delay benchmark
-does not establish live timeout or end-to-end p90 improvements.
+and preserving the selected fallback or recommended model. These component checks
+do not establish live timeout or end-to-end p90 improvements.
 
 ## Dedicated-workspace CUJ5
 

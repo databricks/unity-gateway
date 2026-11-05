@@ -5,8 +5,7 @@ an empty, unavailable, or failed budget recommendation within the launch. Explic
 `ug claude` still reads once, warnings appear once,
 and the configured fallback model and successful agent/model recommendations are
 preserved. These component tests replace authentication and network boundaries;
-they do not measure live startup latency. `scripts/benchmark_startup_budget.py`
-retains raw samples and nearest-rank p90 for a controlled unavailable-budget request.
+they do not measure live startup latency.
 
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
