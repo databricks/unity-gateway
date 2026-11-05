@@ -70,48 +70,28 @@ def codex_state_and_agent_files(session):
     }
 
 
-def _select_routing_fixture(
-    label: str, workspace: str, override_env: str, fixtures: dict[str, str]
-) -> str:
-    override = os.environ.get(override_env, "").strip()
-    hostname = urlparse(workspace).hostname
-    name = override or fixtures.get(hostname)
-    assert name, (
-        f"No {label} routing fixture assigned to {hostname}; set "
-        f"{override_env} to a fixture basename validated for that workspace"
-    )
-    return name
-
-
 def use_smart_routing_fixture(
     session, agent: str, workspace: str, *, smart_routing: bool = True
 ) -> Path:
     """Select the checked-in scenario input for the two configured CI workspaces.
 
-    Each agent's regions publish different model generations, so the fixture is chosen by
-    workspace hostname (overridable per agent). This chooses no workspace and retries no
-    request; unsupported workspaces need an explicit fixture assignment.
+    The regions publish different GPT generations. This chooses no workspace and
+    retries no request; unsupported workspaces need an explicit fixture assignment.
     ``smart_routing=False`` selects the same models without ``smart_routing.enabled``.
     """
     if agent == "claude":
-        name = _select_routing_fixture(
-            "Claude",
-            workspace,
-            "UCODE_TEST_CLAUDE_ROUTING_FIXTURE",
-            {
-                "eng-ml-inference-team-us-east-1.cloud.databricks.com": "claude_smart_routing",
-                "eng-ml-inference-team-ca-central-1.cloud.databricks.com": "claude_smart_routing_ca",
-            },
-        )
+        name = "claude_smart_routing"
     elif agent == "codex":
-        name = _select_routing_fixture(
-            "Codex",
-            workspace,
-            "UCODE_TEST_CODEX_ROUTING_FIXTURE",
-            {
-                "eng-ml-inference-team-us-east-1.cloud.databricks.com": "codex_smart_routing",
-                "eng-ml-inference-team-ca-central-1.cloud.databricks.com": "codex_smart_routing_ca",
-            },
+        override = os.environ.get("UCODE_TEST_CODEX_ROUTING_FIXTURE", "").strip()
+        fixtures = {
+            "eng-ml-inference-team-us-east-1.cloud.databricks.com": "codex_smart_routing",
+            "eng-ml-inference-team-ca-central-1.cloud.databricks.com": "codex_smart_routing_ca",
+        }
+        hostname = urlparse(workspace).hostname
+        name = override or fixtures.get(hostname)
+        assert name, (
+            f"No Codex routing fixture assigned to {hostname}; set "
+            "UCODE_TEST_CODEX_ROUTING_FIXTURE to a fixture basename validated for that workspace"
         )
     else:
         raise AssertionError(f"No routing fixture for {agent}")

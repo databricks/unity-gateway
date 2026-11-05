@@ -861,8 +861,8 @@ first-prompt wrapper starts. Codex's managed default is covered by its launch-on
 `test_smart_router_managed_default_leaves_codex_unrouted_at_launch`, which requires the
 workspace smart-routing warning ("enabled for Codex in this workspace, but it is currently
 only supported for Claude Code") in the launch output and neither Smart Router skill installed. The skill toggles' legacy-env cases load the `_off` copy of the
-workspace's routing fixture (`claude_smart_routing_off.json`, `claude_smart_routing_ca_off.json`,
-`codex_smart_routing_off.json`, or `codex_smart_routing_ca_off.json`): the same models without `smart_routing`, because managed
+workspace's routing fixture (`claude_smart_routing_off.json`, `codex_smart_routing_off.json`, or
+`codex_smart_routing_ca_off.json`): the same models without `smart_routing`, because managed
 smart routing overrides individual routing env vars.
 Claude's toggle variants are temporarily non-blocking on both CI platforms; see
 [Soft-fail tests](#soft-fail-tests). Their assertions and local
@@ -1668,10 +1668,11 @@ the live hook journeys retain their routing assertions and include stderr when n
 decision is returned. This diagnostic coverage does not prove routing service health.
 
 Smart-routing scenarios use checked-in model menus assigned to the explicit CI
-workspace, selected by hostname for each agent. US `task_v3` uses GPT-6 Sol / Luna; the Canadian managed workspace uses
-GPT-5.6 Sol / Terra / Luna, since it has no GPT-6 services. Claude US uses DeepSeek V4.1 Flash / Sonnet 5.5 / GLM 5.3 Flash; the Canadian workspace keeps
-Opus 4.8 / Sonnet 4.6 / Haiku 4.5 (`claude_smart_routing_ca`). Unknown Claude or Codex
-workspaces fail until a fixture is assigned.
+workspace. US `task_v3` uses GPT-6 Sol / Luna; the Canadian managed workspace uses
+GPT-5.6 Sol / Terra / Luna, since it has no GPT-6 services. Unknown Codex workspaces
+fail until a fixture is assigned. Claude uses one fixture (`claude_smart_routing`) in both
+workspaces: DeepSeek V4.1 Flash / Sonnet 5.5 / GLM 5.3 Flash plus Sonnet 4.6, which stays
+in the menu for `task_v3` compatibility.
 Direct hook inputs share the US fixture; managed TUI inputs use their workspace's
 fixture. No workspace is auto-selected or modified. All real routing, native notice,
 audit correlation, and child completion assertions remain required.
@@ -1689,9 +1690,9 @@ native Spawned row immediately following the routing box. Unit checks reject lat
 answer text, intervening prompts, and nonadjacent or unrelated spawn rows.
 
 For a managed workspace other than the two CI workspaces, set
-`UCODE_TEST_CLAUDE_ROUTING_FIXTURE` or `UCODE_TEST_CODEX_ROUTING_FIXTURE` to the basename of a
-checked-in fixture whose model menu has been validated in that workspace. The suite never
-guesses a model menu or silently changes the workspace.
+`UCODE_TEST_CODEX_ROUTING_FIXTURE` to the basename of a checked-in fixture whose model menu has
+been validated in that workspace. The suite never guesses a model menu or silently changes the
+workspace.
 
 Browser MCP review regressions check stale ACTIVE credentials wait for a changed credential
 or an observed non-ACTIVE state, pending provisioning continues, and missing services fail

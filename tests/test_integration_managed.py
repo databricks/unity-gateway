@@ -84,8 +84,8 @@ CA_WORKSPACE = "https://eng-ml-inference-team-ca-central-1.cloud.databricks.com"
     [
         ("claude", US_WORKSPACE, True, "claude_smart_routing"),
         ("claude", US_WORKSPACE, False, "claude_smart_routing_off"),
-        ("claude", CA_WORKSPACE, True, "claude_smart_routing_ca"),
-        ("claude", CA_WORKSPACE, False, "claude_smart_routing_ca_off"),
+        ("claude", CA_WORKSPACE, True, "claude_smart_routing"),
+        ("claude", CA_WORKSPACE, False, "claude_smart_routing_off"),
         ("codex", US_WORKSPACE, True, "codex_smart_routing"),
         ("codex", CA_WORKSPACE, False, "codex_smart_routing_ca_off"),
     ],
@@ -93,7 +93,6 @@ CA_WORKSPACE = "https://eng-ml-inference-team-ca-central-1.cloud.databricks.com"
 def test_smart_routing_fixture_resolves_basename_per_workspace(
     monkeypatch, agent, workspace, smart_routing, basename
 ):
-    monkeypatch.delenv("UCODE_TEST_CLAUDE_ROUTING_FIXTURE", raising=False)
     monkeypatch.delenv("UCODE_TEST_CODEX_ROUTING_FIXTURE", raising=False)
     session = SimpleNamespace(env={})
 
@@ -102,20 +101,3 @@ def test_smart_routing_fixture_resolves_basename_per_workspace(
     assert path == MANAGED_CONFIG_FIXTURES / f"{basename}.json"
     assert path.is_file()
     assert session.env["UCODE_MANAGED_CONFIG_STUB"] == str(path)
-
-
-def test_claude_routing_fixture_override_wins_over_hostname(monkeypatch):
-    monkeypatch.setenv("UCODE_TEST_CLAUDE_ROUTING_FIXTURE", "claude_smart_routing_ca")
-    session = SimpleNamespace(env={})
-
-    path = use_smart_routing_fixture(session, "claude", US_WORKSPACE)
-
-    assert path.name == "claude_smart_routing_ca.json"
-
-
-def test_claude_routing_fixture_rejects_unmapped_workspace(monkeypatch):
-    monkeypatch.delenv("UCODE_TEST_CLAUDE_ROUTING_FIXTURE", raising=False)
-    session = SimpleNamespace(env={})
-
-    with pytest.raises(AssertionError, match="UCODE_TEST_CLAUDE_ROUTING_FIXTURE"):
-        use_smart_routing_fixture(session, "claude", "https://example.cloud.databricks.com")
