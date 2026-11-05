@@ -542,7 +542,7 @@ def route_claude_subagent(
     audit_decision: bool = False,
     hook_output: bool = False,
 ) -> dict | None:
-    """Return a routed Agent input and UI details using the shared Python client.
+    """Return the spawn-ready model and UI details using the shared Python client.
 
     ``hook_output`` returns the legacy PreToolUse hook response instead, with its plain-text
     notice, for hooks that earlier UG versions persisted in settings files.
@@ -566,11 +566,11 @@ def route_claude_subagent(
             route.decision,
             route.routed_model,
         )
-    updated_input = {
-        **{key: value for key, value in route.tool_input.items() if key != "model"},
-        "subagent_type": _routed_claude_agent_name(route.routed_model),
-    }
     if hook_output:
+        updated_input = {
+            **{key: value for key, value in route.tool_input.items() if key != "model"},
+            "subagent_type": _routed_claude_agent_name(route.routed_model),
+        }
         agent_name = updated_input["subagent_type"]
         if orchestrator.enabled(agent=AGENT_CLAUDE):
             agent_name += " [orchestrator on]"
@@ -589,8 +589,7 @@ def route_claude_subagent(
             },
         }
     return {
-        "updatedInput": updated_input,
-        "model": route.routed_model,
+        "model": maybe_add_gpt_1m_suffix(route.routed_model),
         "rationale": route.decision.rationale,
     }
 

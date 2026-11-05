@@ -748,11 +748,7 @@ class TestSubagentRouting:
                 ("system.ai.claude-sonnet-5", "claude"),
             ],
         }
-        updated_input = output["updatedInput"]
-        assert "model" not in updated_input
-        assert updated_input["subagent_type"] == v2._routed_claude_agent_name(
-            "system.ai.claude-opus-4-8"
-        )
+        assert output == {"model": "system.ai.claude-opus-4-8", "rationale": ""}
         decision_record = json.loads(decisions_path.read_text())
         assert decision_record["requested_model"] == "system.ai.claude-opus-4-8"
         assert decision_record["original_model"] == "sonnet"
@@ -821,14 +817,28 @@ class TestSubagentRouting:
 
         assert "Selected Model : system.ai.glm-5-3 " in output["systemMessage"]
 
-    def test_returns_routing_details_to_mod_without_writing_files(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        ("selected_model", "spawn_model"),
+        [
+            ("system.ai.claude-opus-4-8", "system.ai.claude-opus-4-8"),
+            ("system.ai.gpt-5-6-sol", "system.ai.gpt-5-6-sol[1m]"),
+            (
+                "anthropic-aigw-77df06ea-system.ai.gpt-5-6-sol",
+                "anthropic-aigw-77df06ea-system.ai.gpt-5-6-sol[1m]",
+            ),
+            ("system.ai.gpt-oss-120b", "system.ai.gpt-oss-120b"),
+        ],
+    )
+    def test_returns_routing_details_to_mod_without_writing_files(
+        self, tmp_path, monkeypatch, selected_model, spawn_model
+    ):
         monkeypatch.setenv(v2.SESSION_ENV_VAR, str(tmp_path / "env.json"))
         monkeypatch.setattr(
             routing,
             "select_route",
             lambda *a, **k: (
                 routing.RoutingDecision(
-                    model="system.ai.claude-opus-4-8",
+                    model=selected_model,
                     rationale="A focused task with an explicit target",
                 ),
                 None,
@@ -842,16 +852,12 @@ class TestSubagentRouting:
             },
             workspace="https://example.com",
             token="token",
-            available_models=["system.ai.claude-opus-4-8", "databricks-claude-sonnet-5"],
+            available_models=[selected_model, "databricks-claude-sonnet-5"],
         )
 
         assert output == {
-            "model": "system.ai.claude-opus-4-8",
+            "model": spawn_model,
             "rationale": "A focused task with an explicit target",
-            "updatedInput": {
-                "prompt": "inspect the parser",
-                "subagent_type": v2._routed_claude_agent_name("system.ai.claude-opus-4-8"),
-            },
         }
         assert not any(path.is_file() for path in tmp_path.rglob("*"))
 
@@ -910,16 +916,18 @@ class TestSubagentRouting:
                 **kwargs,
             )
 
-        # The mod labels the row from updatedInput, so it names the dispatched agent.
         output = route()
-        assert output["updatedInput"]["subagent_type"] == routed_agent
+        assert output == {"model": selected_model, "rationale": ""}
         assert requested_agent not in json.dumps(output)
 
         # Hooks persisted by earlier UG versions keep their PreToolUse response and notice.
         legacy = route(hook_output=True)
         hook = legacy["hookSpecificOutput"]
         assert hook["permissionDecision"] == "allow"
-        assert hook["updatedInput"] == output["updatedInput"]
+        assert hook["updatedInput"] == {
+            **payload["tool_input"],
+            "subagent_type": routed_agent,
+        }
         for notice in (legacy["systemMessage"], hook["permissionDecisionReason"]):
             assert f"Subagent:{routed_agent}" in "".join(notice.split())
             assert requested_agent not in notice
