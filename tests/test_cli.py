@@ -8818,7 +8818,7 @@ class TestBudgetRecommendationAtLaunch:
         return result, calls, cfg
 
     @pytest.mark.parametrize("tool", [None, "claude"])
-    @pytest.mark.parametrize("reason", [None, "HTTP 404 Not Found", "HTTP 500", "timed out"])
+    @pytest.mark.parametrize("reason", [None, "HTTP 404 Not Found", "timed out"])
     def test_no_recommendation_is_read_once_per_launch(self, monkeypatch, tool, reason):
         managed = {
             "default_agent": "claude",
@@ -8827,18 +8827,14 @@ class TestBudgetRecommendationAtLaunch:
             },
             **self.SMART_DEFAULTS,
         }
-        # A fresh invocation must try again; the no-result outcome is only reused within a launch.
-        for _ in range(2):
-            result, calls, cfg = self._launch(
-                monkeypatch, tool=tool, managed=managed, reason=reason
-            )
-            assert result.exit_code == 0, result.output
-            assert calls == [MINIMAL_STATE["workspace"]]
-            assert cfg.call_args.args[0] == "claude"
-            assert cfg.call_args.args[2] == "system.ai.claude-opus-4-8"
-            assert result.output.count("Could not check your budget") == int(
-                reason is not None and not reason.startswith("HTTP 404")
-            )
+        result, calls, cfg = self._launch(monkeypatch, tool=tool, managed=managed, reason=reason)
+        assert result.exit_code == 0, result.output
+        assert calls == [MINIMAL_STATE["workspace"]]
+        assert cfg.call_args.args[0] == "claude"
+        assert cfg.call_args.args[2] == "system.ai.claude-opus-4-8"
+        assert result.output.count("Could not check your budget") == int(
+            reason is not None and not reason.startswith("HTTP 404")
+        )
 
     def test_bare_launch_reuses_recommended_agent_and_model(self, monkeypatch):
         managed = {

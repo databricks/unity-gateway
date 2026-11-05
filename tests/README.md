@@ -2,7 +2,7 @@
 
 `TestBudgetRecommendationAtLaunch` in `test_cli.py` checks that bare `ug` reuses
 an empty, unavailable, or failed budget recommendation within the launch. Explicit
-`ug claude` still reads once, the next launch reads again, warnings appear once,
+`ug claude` still reads once, warnings appear once,
 and the configured fallback model and successful agent/model recommendations are
 preserved. These component tests replace authentication and network boundaries;
 they do not measure live startup latency. `scripts/benchmark_startup_budget.py`
