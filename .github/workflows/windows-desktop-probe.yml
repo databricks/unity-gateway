@@ -1,0 +1,31 @@
+name: Windows desktop capability probe
+
+on:
+  push:
+    branches: [masonc08/windows-desktop-probe]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Inspect desktop and virtualization prerequisites
+        shell: pwsh
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/windows_desktop_probe.ps1 `
+            -OutputPath "$env:RUNNER_TEMP/windows-desktop-probe.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload capability report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: windows-desktop-capabilities
+          path: ${{ runner.temp }}/windows-desktop-probe.json
+          if-no-files-found: error
