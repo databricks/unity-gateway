@@ -1,5 +1,3 @@
-param([switch]$InstallUg)
-
 $ErrorActionPreference = 'Stop'
 $registry = 'https://databricks.jfrog.io/artifactory/api/npm/db-npm/'
 try {
@@ -20,18 +18,12 @@ try {
     throw 'Could not obtain JFrog credentials through the existing github-actions OIDC provider'
 }
 Write-Output "::add-mask::$token"
-$config = Join-Path $env:RUNNER_TEMP 'desktop-probe.npmrc'
+$config = Join-Path $env:RUNNER_TEMP 'cowork-inference.npmrc'
 try {
-    $env:UG_PROBE_NPM_TOKEN = $token
-    @("registry=$registry", '//databricks.jfrog.io/artifactory/api/npm/db-npm/:_authToken=${UG_PROBE_NPM_TOKEN}') |
+    $env:UG_COWORK_NPM_TOKEN = $token
+    @("registry=$registry", '//databricks.jfrog.io/artifactory/api/npm/db-npm/:_authToken=${UG_COWORK_NPM_TOKEN}') |
         Set-Content -LiteralPath $config -Encoding utf8
     $npm = (Get-Command npm.cmd -ErrorAction Stop).Source
-    if (-not $InstallUg) {
-        & $npm ci --prefix $PSScriptRoot --ignore-scripts --no-audit --fund=false `
-            --userconfig $config --fetch-retries=0 --fetch-timeout=30000
-        if ($LASTEXITCODE -ne 0) { throw 'Playwright installation through JFrog failed' }
-        return
-    }
     & $npm install -g '@anthropic-ai/claude-code@2.1.290' --no-audit --fund=false `
         --userconfig $config --fetch-retries=0 --fetch-timeout=30000
     if ($LASTEXITCODE -ne 0) { throw 'Claude CLI installation through JFrog failed' }
@@ -52,9 +44,9 @@ try {
     $python = Join-Path $runtime 'Scripts/python.exe'
     & $python -m pip install --disable-pip-version-check .
     if ($LASTEXITCODE -ne 0) { throw 'UG installation through JFrog failed' }
-    "UG_DESKTOP_PROBE_BINARY=$(Join-Path $runtime 'Scripts/ug.exe')" | Add-Content $env:GITHUB_ENV
+    "UG_COWORK_TEST_BINARY=$(Join-Path $runtime 'Scripts/ug.exe')" | Add-Content $env:GITHUB_ENV
 } finally {
     Remove-Item -LiteralPath $config -Force -ErrorAction SilentlyContinue
-    Remove-Item Env:UG_PROBE_NPM_TOKEN -ErrorAction SilentlyContinue
+    Remove-Item Env:UG_COWORK_NPM_TOKEN -ErrorAction SilentlyContinue
     Remove-Item Env:PIP_INDEX_URL -ErrorAction SilentlyContinue
 }

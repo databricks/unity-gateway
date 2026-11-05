@@ -3,9 +3,11 @@
 Windows first-launch configuration has component coverage in
 `test_desktop_setup.py`: an installed MSIX creates the missing Desktop profile
 store; absent installations, package-query failures, and timeouts leave it absent.
-The native Windows Cowork probe in `.github/workflows/windows-desktop-probe.yml`
+The native Windows Cowork inference job in `.github/workflows/ci.yml`
 exercises real installation, UG configuration before first launch, and completed
-`system.ai.claude-haiku-4-5` inference through the desktop UI.
+`system.ai.claude-haiku-4-5` inference through the desktop UI. CI contract checks
+verify credential-job event guards and that failed, cancelled, or unexpectedly
+skipped Cowork runs fail the existing required `e2e` check.
 
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including

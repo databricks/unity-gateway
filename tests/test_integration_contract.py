@@ -918,3 +918,51 @@ def test_live_suites_use_fresh_id_for_random_ids():
         if path != helper and "uuid4(" in path.read_text(encoding="utf-8")
     ]
     assert not offenders, f"Use fresh_id() from integration/utils/evidence.py: {offenders}"
+
+
+def test_cowork_ci_job_requires_credentials_only_on_trusted_events():
+    workflow = _workflow("ci.yml")
+    job = workflow.split("\n  cowork-inference-windows:\n", 1)[1].split("\n  e2e:\n", 1)[0]
+    condition = re.search(r"(?m)^    if: (.*)$", job)
+    assert condition is not None
+    assert FORK_GUARD in condition.group(1)
+    assert "github.event_name != 'merge_group'" in condition.group(1)
+    assert "id-token: write" in job
+    assert "secrets.DATABRICKS_BEARER" in job
+    required = workflow.split("\n  required-e2e:\n", 1)[1]
+    assert "needs: [e2e, integration, cowork-inference-windows]" in required
+    assert FORK_GUARD in required.split("COWORK_EXPECTED:", 1)[1].splitlines()[0]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="required-e2e runs on Linux")
+@pytest.mark.parametrize(
+    ("event", "cowork_result", "cowork_expected", "passes"),
+    [
+        ("pull_request", "success", "success", True),
+        ("pull_request", "failure", "success", False),
+        ("pull_request", "cancelled", "success", False),
+        ("pull_request", "skipped", "success", False),
+        ("pull_request", "skipped", "skipped", True),
+        ("push", "failure", "success", False),
+        ("merge_group", "skipped", "success", True),
+    ],
+)
+def test_required_e2e_enforces_cowork_result(event, cowork_result, cowork_expected, passes):
+    required = _workflow("ci.yml").split("\n  required-e2e:\n", 1)[1]
+    script = textwrap.dedent(required.split("        run: |\n", 1)[1])
+    result = subprocess.run(
+        ["/bin/bash", "-c", script],
+        env={
+            **os.environ,
+            "EVENT_NAME": event,
+            "RESULT": "success",
+            "INTEGRATION_RESULT": "success",
+            "COWORK_RESULT": cowork_result,
+            "COWORK_EXPECTED": cowork_expected,
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert (result.returncode == 0) is passes, result.stderr
