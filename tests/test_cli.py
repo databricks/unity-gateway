@@ -7531,6 +7531,172 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
         assert len(requests) == 2
 
 
+class TestConfigureSharedStateOverlapsFamilyFallbacks:
+    """Missing model families are independent reads; all results are applied by the caller."""
+
+    WS = "https://example.databricks.com"
+    WAIT_SECONDS = 5
+    MODELS = {
+        "claude": {"sonnet": "databricks-claude-sonnet-4-6"},
+        "gemini": ["databricks-gemini-3-flash"],
+        "codex": ["databricks-gpt-5"],
+    }
+
+    def test_missing_families_overlap_and_keep_each_result_and_reason(self, monkeypatch):
+        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+        rendezvous = threading.Barrier(3, timeout=self.WAIT_SECONDS)
+        caller = threading.current_thread()
+        saved = []
+
+        def discover(family, workspace, token):
+            assert (workspace, token) == (self.WS, "token")
+            rendezvous.wait()
+            return self.MODELS[family], f"{family} diagnostic"
+
+        for family in self.MODELS:
+            monkeypatch.setattr(
+                cli_mod,
+                f"discover_{family}_models",
+                lambda w, t, family=family: discover(family, w, t),
+            )
+
+        def save(state):
+            assert threading.current_thread() is caller
+            saved.append(dict(state))
+
+        monkeypatch.setattr(cli_mod, "save_state", save)
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["pi"])
+
+        assert len(saved) == 1
+        for family, models in self.MODELS.items():
+            assert state[f"{family}_models"] == saved[0][f"{family}_models"] == models
+            assert state["_discovery_reasons"][family] == f"{family} diagnostic"
+        assert "_discovery_reasons" not in saved[0]
+
+    @pytest.mark.parametrize(
+        ("tool", "expected"),
+        [
+            ("claude", {"claude", "codex"}),
+            ("codex", {"codex"}),
+            ("gemini", {"gemini"}),
+            ("antigravity", {"gemini"}),
+            ("opencode", {"claude", "gemini"}),
+            ("kilo", {"claude", "gemini"}),
+            ("pi", {"claude", "gemini", "codex"}),
+        ],
+    )
+    def test_only_requested_families_are_fetched(self, monkeypatch, tool, expected):
+        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+        calls = []
+        for family in self.MODELS:
+            monkeypatch.setattr(
+                cli_mod,
+                f"discover_{family}_models",
+                lambda w, t, family=family: calls.append(family) or (self.MODELS[family], None),
+            )
+
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=[tool])
+
+        assert sorted(calls) == sorted(expected)
+        for family in expected:
+            assert state[f"{family}_models"] == self.MODELS[family]
+
+    @pytest.mark.parametrize("populated", [set(), {"claude"}, {"gemini", "codex"}, set(MODELS)])
+    def test_fallbacks_only_fetch_families_missing_from_uc(self, monkeypatch, populated):
+        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: (
+                self.MODELS["claude"] if "claude" in populated else {},
+                self.MODELS["codex"] if "codex" in populated else [],
+                self.MODELS["gemini"] if "gemini" in populated else [],
+                [],
+                "UC diagnostic",
+            ),
+        )
+        calls = []
+        for family in self.MODELS:
+            monkeypatch.setattr(
+                cli_mod,
+                f"discover_{family}_models",
+                lambda w, t, family=family: calls.append(family) or (self.MODELS[family], None),
+            )
+
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["pi"])
+
+        assert sorted(calls) == sorted(self.MODELS.keys() - populated)
+        for family in self.MODELS:
+            assert state[f"{family}_models"] == self.MODELS[family]
+            assert state["_discovery_reasons"][family] == (
+                "UC diagnostic" if family in populated else None
+            )
+
+    def test_fallback_failure_does_not_wait_for_other_family_or_save_state(self, monkeypatch):
+        cli_mod, _, _, saved = TestConfigureSharedStateUsePat._stub_deps(
+            monkeypatch, pat_token=None
+        )
+        codex_started = threading.Event()
+        release_codex = threading.Event()
+        codex_finished = threading.Event()
+        workers = []
+
+        def claude_failure(workspace, token):
+            assert codex_started.wait(self.WAIT_SECONDS), "fallbacks ran serially"
+            raise RuntimeError("Claude discovery failed")
+
+        def codex_slow(workspace, token):
+            workers.append(threading.current_thread())
+            codex_started.set()
+            release_codex.wait(self.WAIT_SECONDS)
+            codex_finished.set()
+            return self.MODELS["codex"], None
+
+        monkeypatch.setattr(cli_mod, "discover_claude_models", claude_failure)
+        monkeypatch.setattr(cli_mod, "discover_codex_models", codex_slow)
+        try:
+            with pytest.raises(RuntimeError, match="Claude discovery failed"):
+                cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+            assert saved == []
+            assert not codex_finished.is_set()
+            assert [worker.daemon for worker in workers] == [True]
+        finally:
+            release_codex.set()
+            for worker in workers:
+                worker.join(self.WAIT_SECONDS)
+
+    def test_fallback_workers_keep_the_selected_workspace(self, monkeypatch):
+        from ucode import workspace as workspace_mod
+
+        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(
+            monkeypatch,
+            pat_token=None,
+            existing_state={"workspace": self.WS, "workspace_id": "123"},
+        )
+        monkeypatch.setattr(cli_mod, "ensure_databricks_auth", lambda *a, **kw: None)
+        monkeypatch.setitem(workspace_mod._host_types, self.WS, "unified")
+        headers = []
+
+        def discover(family, workspace, token):
+            assert (workspace, token) == (self.WS, "token")
+            headers.append(workspace_mod.workspace_headers(workspace))
+            return self.MODELS[family], None
+
+        for family in self.MODELS:
+            monkeypatch.setattr(
+                cli_mod,
+                f"discover_{family}_models",
+                lambda w, t, family=family: discover(family, w, t),
+            )
+
+        state = cli_mod.configure_shared_state(
+            workspace_mod.workspace_key(self.WS, "123"), profile="DEFAULT", tools=["pi"]
+        )
+
+        assert state["workspace_id"] == "123"
+        assert headers == [workspace_mod.selector_headers("123")] * 3
+
+
 class TestConfigureNoLongerValidates:
     @pytest.fixture(autouse=True)
     def _no_managed_config(self, monkeypatch):
