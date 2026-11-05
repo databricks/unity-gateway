@@ -70,7 +70,7 @@ def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspa
     assert entries, managed
     assert len(entries) == 1, entries
     name, entry = next(iter(entries.items()))
-    expected_url = f"{workspace.rstrip('/')}/api/2.0/mcp/mcp-services/system.ai.github"
+    expected_url = f"{workspace.rstrip('/')}/ai-gateway/mcp-services/system.ai.github"
     if "url" in entry:
         assert entry["url"] == expected_url, entry
         assert entry["oauth_resource"] == expected_url, entry
