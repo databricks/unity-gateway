@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 
 import pytest
-from utils.agents.claude import assert_agent_resumed
+from utils.agents.claude import assert_follow_ups_resumed
 from utils.evidence import (
     FileTask,
     SubagentCalculation,
@@ -665,8 +665,7 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
         if part.get("type") == "tool_use" and part.get("name") == "SendMessage"
     }
     assert followups, calls
-    for call in followups.values():
-        assert_agent_resumed(call, parent_records, child_id)
+    assert_follow_ups_resumed(list(followups.values()), parent_records, child_id)
     for task in (first, second):
         task.assert_completed(session, "claude")
         assert any(

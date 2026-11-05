@@ -1,5 +1,14 @@
 # Integration tests
 
+Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
+before numbered reuse, stable names during routing and in parallel cards, and unchanged
+execution inputs and row controls. They cover a lone call's decision under its Agent row,
+parallel calls as cards above the parent's next reply in call order, calls
+`../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
+behavior with controlled authentication and transport boundaries. The local-socket
+proxy suite also covers refresh/retry wiring; these checks do not establish live
+provider latency or token renewal behavior.
+
 `../test_configure_managed_writes.py` covers `ug revert` output after Claude/Codex managed-file
 deletion fails, its nonzero exit, and retention of the file, backup, and ug state. These component
 tests simulate privileged deletion failure; native OS permissions and live sudo are not exercised.
@@ -13,6 +22,9 @@ its Agent row, parallel calls as cards above the parent's next reply in call ord
 still routing waiting for a later reply, distinct
 IDs for identical tasks, pending row and turn-spinner routing timers, and disabled/failed routing. These are not live
 parallel-agent TUI or gateway checks.
+The native component suite also covers child-ID-to-animal-name recording without changing
+spawn inputs. `../test_claude_mod.py` checks the generated bottom-bar command and its
+fallback to native rows. Neither is a live interactive bottom-bar check.
 
 Native hint-row component tests also cover ` · N subagents running` from Claude's agent
 list, excluding inactive statuses, singular wording, preservation of other hint text,
@@ -20,6 +32,11 @@ background work after the parent turn ends, routing toggles, and hiding the coun
 The one-second refresh updates a mounted row without another prompt and avoids redraws
 when the count is unchanged.
 The running count has no live TUI coverage.
+
+`../test_claude_routing.py` and `../test_claude_smart_routing_v2.py` cover preserving
+the original model selector, agent type and tool-call ID in local routing records,
+including null omitted selectors. They do not verify inherited model resolution,
+actual execution or a remote metrics export.
 
 `test_ug_smart_routing_hooks.py::test_smart_router_claude_resumes_same_subagent_with_send_message`
 checks live continuation with orchestration enabled on Claude 2.1.314+: one initial
@@ -70,7 +87,7 @@ and capability-hook activation are not covered here; interactive selection is un
 `../test_code_plugin.py` covers the Code-scoped UG connector plugin with real
 files and controlled native CLI boundaries: original registration names, Claude-only
 filtering, Code-only discovery/authentication instructions, no duplicate MCP servers or
-downloaded skills, no Cowork hooks,
+downloaded skills, no Cowork hooks or version metadata,
 refresh after workspace changes and last-connector removal, scoped cleanup,
 repeat cleanup, saved-root cleanup even after source deletion, config-root changes that
 retain the old registration and saved root on installation failure, successful retry,
@@ -104,7 +121,9 @@ helper. Non-relay MPS Desktop configuration is asserted in CUJ2's existing MPS c
 journey; no dedicated Desktop MPS integration test is needed.
 
 Each of these two journeys supplies pre-existing Desktop account directories as inputs and
-requires real Claude CLI installation of the Cowork plugin. It registers system.ai.web_search through
+requires real Claude CLI installation of the Cowork plugin on both Linux and Windows.
+Both platforms require the user marketplace source and registration,
+one installed UG entry, and a matching cached version. It registers system.ai.web_search through
 `ug mcp add --names system.ai.web_search`, then runs the command from the installed plugin with the
 MCP SDK. The check initializes the protocol, discovers web_search, and searches for Databricks'
 official website. A successful result must contain a URL on databricks.com or www.databricks.com;
@@ -113,7 +132,32 @@ Both journeys verify reconfiguration preserves the profile/plugin and revert rem
 while retaining unrelated profiles and metadata. A separate local personal plugin is installed
 through the real Claude CLI before configuration; its registry entry and installed manifest must
 survive installation, reconfiguration, and revert unchanged. Revert also removes UG's marketplace
-registration and generated source directory.
+registration and generated user source. Root-file preservation is covered by component tests;
+the integration journeys do not inspect OS-managed directories.
+`test_desktop_marketplace.py` covers ordinary default/`--user` configuration writing
+only the user source, no elevation, preservation of the registered legacy root source,
+one registration when switching an earlier root source to user scope, explicit cache
+refresh, content versions (including asset-only skill updates), downloaded workspace
+skills/assets, previous-account cleanup,
+malformed marketplace metadata (including missing or nonstring directory paths),
+equivalent path aliases, source-switch failure recovery
+for both current and legacy-only plugin identities, preserved nonlocal registrations,
+and retained user source/state after refresh failures. Explicit global skips ordinary
+Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
+Overlapping installer/state checks and duplicate simulated-OS cases are consolidated;
+user installation, persisted account state and registered-source preservation remain covered.
+Unreferenced root-path sentinels and an ineffective temporary-directory alias test were
+removed; content updates and empty-payload cache refresh now share one lifecycle test.
+Equivalent registered-directory aliases remain covered separately.
+Dry-run preservation covers both fresh and already-configured installations.
+Root bundle writer checks belong to the separate MDM follow-up.
+The [component inventory](../README.md) records the isolated native CLI marketplace-add
+spot check; it does not establish Desktop GUI behavior or failure recovery.
+Temporary filesystem destinations are real; external Claude registry/cache operations
+and platform privilege boundaries are simulated. These checks do not establish native
+Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
+`test_desktop_configure_cli.py` also checks explicit-global selection versus default and
+`--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.web_search and allow
@@ -140,7 +184,10 @@ Its Claude/Codex evidence helpers keep scenario-specific assertions separate fro
 Workspace config/catalog reads use its base class's Databricks SDK client. Configuration
 is read-only and checked for changes at teardown; concurrent readers need no reservation.
 CUJ2 adds three separately collected cases for exact published MPS/MCP configuration, Codex
-inference, and Claude inference. Both inference cases ask for a short greeting and require a
+inference, and Claude inference. Its catalog checks require the fixture's exact native APIs,
+model, provider type and target restrictions. Offline checks accept Responses alongside Chat
+Completions in either order and reject missing or additional APIs. Both inference cases ask
+for a short greeting and require a
 completed parent turn matching the submitted prompt with a nonempty answer, plus the expected
 provider/model and paired HTTP 200. Random IDs correlate requests; answers need not repeat them.
 File, skill, MCP and subagent tasks retain their expected-value checks.
@@ -198,10 +245,13 @@ Claude's decoy catalog includes both decoys while the scoped picker excludes bot
 CI collects it through the shared `dedicated-cuj` job. Its request checks accept the known
 Claude thinking-display 400 only with a successful, otherwise identical native retry.
 
-The two Claude Bedrock journeys use `us.anthropic.claude-sonnet-4-6`. The configure
-journey selects it from the restricted `main.ucode.ci_bedrock_mason_filtered_models`
-service, while the headless journey pins it through
-`main.ucode.ci_bedrock_mason_all_models`.
+The Claude Bedrock journeys use Unity Catalog service-credential auth
+(`eng-ml-inference-bedrock-inference`) and frontier models. The configure journey selects
+`us.anthropic.claude-sonnet-5-5` from the restricted
+`main.ucode.ci_bedrock_runtime_svc_cred_filtered_models` service (Sonnet 5.5 + Opus 5.5, us-west-2).
+The headless journeys pin Sonnet 5.5 through the allow-all
+`main.ucode.ci_bedrock_runtime_svc_cred_all_models`, Opus 5.5 through the filtered service. The Codex journeys pin `us.openai.gpt-5.6-terra` through the allow-all runtime service and
+`openai.gpt-5.6-terra` through `main.ucode.ci_bedrock_mantle_svc_cred_gpt` (us-west-2).
 
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
@@ -408,6 +458,9 @@ model-discovery schema and completes a file task on its Claude-compatible model 
 `test_ug_copilot_providers.py` runs Copilot through the MPS fixtures below: a file task on the
 Anthropic service's model, on the OpenAI, Azure OpenAI and Microsoft Foundry services' `gpt-5-nano`, and
 on a named model of the Bedrock allow-all service; launching on the relayed service fails before Copilot starts.
+`test_ug_copilot_mcp.py` adds `system.ai.web_search` with `ug mcp add --agents copilot` over a
+developer's own disabled server, checks Copilot's `copilot mcp list --json` and `ug mcp list`, runs
+a headless task whose tool call Copilot's session events record as successful, and reverts.
 
 Antigravity CLI has five live headless journeys in `test_ug_antigravity_headless.py` and three in
 `test_ug_configure_antigravity.py`. Headless runs use `agy -p --output-format stream-json`; the
@@ -742,6 +795,7 @@ test_ug_copilot_lifecycle.py            # Copilot refresh after revocation, sign
 test_ug_copilot_models.py               # Copilot model registry: Claude then GPT, unknown model, TUI /model switch
 test_ug_copilot_providers.py            # Copilot via Model Provider Services: Anthropic, OpenAI, Azure OpenAI, Foundry, Bedrock allow-all; relayed refused
 test_ug_copilot_model_location.py       # Copilot on a Unity Catalog model location: fresh --model-location file task
+test_ug_copilot_mcp.py                  # Copilot MCP: ug mcp add, tool call, ug mcp list, revert keeps the user's server
 test_ug_antigravity_headless.py         # Antigravity via ug's proxy: file task, --model (ug agy), Gemini MPS targets, MCP SQL tool, skill dir
 test_ug_configure_antigravity.py        # Antigravity: configure picker + TUI task + reopen; External Models picker; revert keeps user files
 test_ug_codex_tracing.py                # Codex OTLP export reaches the configured trace table
@@ -979,7 +1033,7 @@ cases instead complete real file tasks through `--workspace` and `--model-locati
 journeys check setup and launch with existing services, without inference.
 
 There are **88 live cases** (including 12 marked TUI journeys) and **8 installation
-checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds seventeen live cases; selecting Antigravity adds eight live cases (one TUI). One
+checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds eighteen live cases; selecting Antigravity adds eight live cases (one TUI). One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
 Claude task. A further **44 `managed_fixture` cases** (twelve of them also `live`) run on the
 managed workspace with a checked-in JSON CodingAgentConfig from `tests/fixtures/managed_config/`
@@ -1228,7 +1282,7 @@ A second non-blocking job, **Managed OpenCode self-managed** (`managed_fixture a
 in `test_ug_agents_self_managed.py`), installs Claude, Codex and OpenCode and runs against the
 managed e2e workspace (`E2E_ADMIN_WORKSPACE`) with the injected `managed_workspace_default` config,
 which enables Claude/Codex but not OpenCode. It is likewise outside `cujs`.
-A non-blocking **Copilot** job (`live and copilot`, sixteen cases) runs on Linux and Windows the
+A non-blocking **Copilot** job (`live and copilot`, seventeen cases) runs on Linux and Windows the
 same way and is likewise outside `cujs` until it is stable.
 A blocking **Antigravity** job (`live and antigravity`, eight cases) runs on Linux only with
 the pinned `ANTIGRAVITY_BUILD`; it is part of the `cujs` gate.
