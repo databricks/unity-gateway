@@ -1358,14 +1358,18 @@ def _configure_workspace_command(
                 return 0
             if excluded:
                 displays = ", ".join(TOOL_SPECS[name]["display"] for name in excluded)
+                opt_ins = ", ".join(f"`ug agents add {name}`" for name in excluded)
                 print_warning(
-                    f"Skipping agent(s) not enabled by your workspace configuration: {displays}."
+                    f"Skipping agent(s) not enabled by your workspace configuration: {displays}. "
+                    f"Run {opt_ins} to use them self-managed."
                 )
             # Unrequested agents were not attempted, so the summary must not call them failures.
             summary_managed = {
                 **managed,
                 "enabled_agents": {
-                    name: managed["enabled_agents"].get(name, {}) for name in managed_tools
+                    name: managed["enabled_agents"][name]
+                    for name in managed_tools
+                    if name not in selected_self_managed
                 },
             }
         refuse_user_scope_over_managed_files(managed_tools)

@@ -5688,13 +5688,14 @@ class TestConfigureAgentsSelection:
         assert [call.args[2] for call in resolve.call_args_list] == [
             tool for tool in expected if tool not in self_managed
         ]
-        assert summaries == [expected]
+        assert summaries == [[tool for tool in expected if tool not in self_managed]]
         output = " ".join(_strip_ansi(capsys.readouterr().out).split())
         if excluded:
             assert (
                 f"Skipping agent(s) not enabled by your workspace configuration: {excluded}"
                 in output
             )
+            assert "Run `ug agents add gemini` to use them self-managed." in output
         else:
             assert "Skipping agent(s)" not in output
 

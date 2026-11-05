@@ -2,7 +2,8 @@
 
 Managed-config selection cases in `tests/test_cli.py` check default all-enabled setup,
 explicit enabled subsets, existing self-managed opt-ins without admin model/provider overrides,
-disabled-request warnings, and rejection before installation when no requested agent is allowed.
+actionable disabled-request warnings, and rejection before installation when no requested agent
+is allowed. The admin summary excludes self-managed opt-ins from its enabled-agent list.
 `tests/integration/test_ug_configure_selected_managed_agents.py` uses the checked-in
 `selected_managed_agents` admin fixture enabling Claude/Codex/Pi to configure only Claude,
 check that Codex's generated config and Pi's binary/files remain absent, and complete a real
@@ -877,7 +878,7 @@ journey still requires its own completed interactive task or command assertions
 journeys pass it). Tests disable optional Databricks AI Tools and retain
 `--skip-upgrade` as a deprecated no-op for compatibility. UG only upgrades
 agents below its required minimum; before/after version checks still enforce the
-selected versions. Fable, subset selection, and required-update policy are covered
+selected versions. Fable and required-update policy are covered
 by unit/component tests, not dedicated live journeys. Tests use real onboarding
 and trust choices, without seeded acceptance or disabled agent sandboxing. If a
 routed child asks to locate the random fixture beneath the disposable project,

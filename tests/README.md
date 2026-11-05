@@ -2,7 +2,8 @@
 
 Managed-config selection cases in `tests/test_cli.py` check default all-enabled setup,
 explicit enabled subsets, existing self-managed opt-ins without admin model/provider overrides,
-disabled-request warnings, and rejection before installation when no requested agent is allowed.
+actionable disabled-request warnings, and rejection before installation when no requested agent
+is allowed. The admin summary excludes self-managed opt-ins from its enabled-agent list.
 `tests/integration/test_ug_configure_selected_managed_agents.py` uses the checked-in
 `selected_managed_agents` admin fixture enabling Claude/Codex/Pi to configure only Claude,
 check that Codex's generated config and Pi's binary/files remain absent, and complete a real
