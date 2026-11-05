@@ -576,6 +576,10 @@ The native concrete restrictions stay in place; the synthetic `auto` value is al
 admitted to `availableModels` so Claude does not filter its row out. It is excluded
 from routing candidates. The downloaded policy is unchanged.
 Auto uses the existing ON/routing-subagents indicator and smart-router footer.
+Choosing a concrete model disables routing and orchestration and sets
+`smart_router_recipe_name` to `DISABLED_AUTO`. Feedback-enabled sessions ask for a
+reason before opening the native picker or applying `/model M` while Auto is on.
+Cancelling keeps Auto on; later concrete-to-concrete choices need no feedback.
 Durable resume remains unfinished; keep production assignments on existing versions.
 Use the Auto config version for both configure and launch; managed smart routing
 alone still selects the unchanged legacy default.

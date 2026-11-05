@@ -9,8 +9,11 @@ Auto is excluded from routing candidates. See [configuration](../README.md#smart
 `register.ts` handles `/model auto` and saved/session-only Auto rows with the same
 transition. Saved rows are intercepted before assigning the virtual model; their
 status survives redraws and reflects the actual result. Concrete selections disable
-future Auto behavior without cancelling existing children. Missing defaults and failed
-transitions report actionable errors; failed writes pause dispatch. Native component
+future Auto behavior without cancelling existing children and set the body recipe to
+`DISABLED_AUTO`; legacy off controls retain `DISABLED`. Already-concrete picks do not
+require opt-out feedback. With feedback enabled, `/model` asks for the reason before
+opening the native picker; cancelling the picker keeps Auto on. Missing defaults and
+failed transitions report actionable errors; failed writes pause dispatch. Native component
 coverage is listed in [the test overview](../tests/README.md#auto-model-picker).
 Durable resume and live gateway coverage remain open.
 

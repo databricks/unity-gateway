@@ -10,12 +10,14 @@ environment restoration, inactive provisioning, command cleanup, and session con
 admin-default plumbing, and exclusion of Auto from router candidates.
 
 `native_claude/mod_tests/auto-picker.test.ts` verifies native commands, saved and
-session-only selections, redraws, failed transitions, and stale spawn routes while
-existing children resume. `native_claude/test_mod.py` also characterizes native
+session-only selections, redraws, failed transitions, already-concrete selections with
+feedback enabled, `DISABLED_AUTO` attribution, and stale spawn routes while existing
+children resume. `native_claude/test_mod.py` also characterizes native
 command interception and forwarding. `native_claude/test_auto_picker.py` drives the
-real picker; its fixture requires a machine policy permitting its models.
-These component checks do not establish live gateway inference, durable resume,
-or the planned `DISABLED_AUTO` attribution.
+real picker and feedback opt-out through direct commands and saved rows; its fixture
+requires a machine policy permitting its models. Feedback transport is isolated; native
+selection and session controls stay real. These component checks do not establish
+live gateway inference, real feedback delivery, or durable resume.
 
 ## Other test coverage
 

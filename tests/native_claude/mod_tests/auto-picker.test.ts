@@ -71,6 +71,7 @@ test('/model keeps the normal native picker and opens no custom pane', {options:
 
 test('Auto uses the existing smart-router footer without an Auto label', {options: AUTO}, async ($, on) => {
   mock.clock(on);
+  on('session.model', () => ({value: 'admin-sonnet'}));
   on('env.get', ($, e) => ({value: e.name === 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY' ? '1' : undefined}));
   on('agent.list', () => ({value: []}));
   let tail;
@@ -148,6 +149,7 @@ test('a concrete selection after Auto disables both activities without touching 
   expect(state.env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
   expect(state.env.ENABLE_SMART_ROUTER_ORCHESTRATOR).toBe('0');
   expect(state.commands).toEqual(['admin-sonnet', 'admin-sonnet']);
+  expect(JSON.parse(state.env.CLAUDE_CODE_EXTRA_BODY!).smart_router_recipe_name).toBe('DISABLED_AUTO');
 });
 
 test('a native message reference cannot confirm an unchanged main model', {options: AUTO}, async ($, on) => {
@@ -199,4 +201,17 @@ test('Auto changes invalidate pending spawn routes while existing children can r
   expect((await $.agent.spawn(spawn)).deny).toContain('Auto changed');
   await $.tool.call({...call, tool_use_id: 'fresh'});
   expect((await $.agent.spawn({...spawn, tool_use_id: 'fresh'})).model).toBe('routed-sonnet');
+});
+
+test('concrete selections while Auto is off do not need feedback or block prompts', {options: AUTO}, async ($, on) => {
+  const state = engine(on, {failControls: true});
+  state.env.ISAAC_SMART_ROUTER_FEEDBACK = '1';
+  on('prompt.submit', ($, e) => ({text: e.text}));
+  for (const model of ['admin-sonnet', 'user-pinned-opus']) {
+    await $.command.run({command: 'model', args: model});
+    expect(state.model()).toBe(model);
+    expect(state.env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
+    expect(state.env.ENABLE_SMART_ROUTER_ORCHESTRATOR).toBe('0');
+    expect((await $.prompt.submit({text: 'Continue working'})).text).toBe('Continue working');
+  }
 });

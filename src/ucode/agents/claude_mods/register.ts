@@ -35,8 +35,7 @@ async function readEnvironment($: EngineInterface): Promise<Environment> {
   };
 }
 
-async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
-  if (!options.orchestratorInstructions) return false;
+async function readEffectiveEnvironment($: EngineInterface): Promise<Environment> {
   const current = await readEnvironment($);
   const sessionFile = await $.env.get('UCODE_SESSION_ENV_FILE');
   if (sessionFile) {
@@ -53,6 +52,12 @@ async function readOrchestratorState($: EngineInterface, options: PluginOptions)
       // Match the routing hooks' inherited-environment fallback for unreadable controls.
     }
   }
+  return current;
+}
+
+async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
+  if (!options.orchestratorInstructions) return false;
+  const current = await readEffectiveEnvironment($);
   return isRoutingEnabled(current) && current.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1';
 }
 
@@ -98,11 +103,13 @@ async function setRouting(
   const original = (key: string): string | undefined =>
     (options.unset as readonly string[]).includes(key) ? undefined : options[key] as string;
   const previous = await readEnvironment($);
-  const recipe = enabled ? options.recipe : DISABLED_RECIPE;
+  const auto = options.EXPOSE_AUTO_IN_MODEL_PICKER === '1';
+  // Saving a model can reload launch env; session controls keep the current mode.
+  const wasEnabled = isRoutingEnabled(auto ? await readEffectiveEnvironment($) : previous);
+  const recipe = enabled ? options.recipe : auto ? 'DISABLED_AUTO' : DISABLED_RECIPE;
   if (typeof recipe !== 'string' || /[\r\n]/.test(recipe)) {
     throw new Error('Smart Router recipe must be a single-line string.');
   }
-  const auto = options.EXPOSE_AUTO_IN_MODEL_PICKER === '1';
   const environment = {
     ENABLE_SMART_ROUTING_V2: enabled && !auto ? original('ENABLE_SMART_ROUTING_V2') : '0',
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: enabled ? auto ? '1' : original('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') : '0',
@@ -115,7 +122,7 @@ async function setRouting(
     await writeEnvironment($, environment);
     // An explicit toggle must also replace the CLI/skill's saved session overrides,
     // which the routing hooks apply on top of the environment and would otherwise win.
-    if (syncSessionControls) {
+    if (syncSessionControls && (!auto || enabled || wasEnabled)) {
       await writeSessionControls($, enabled, sessionControlArgs, auto);
     }
     $.ui.invalidate('tool.describe');
@@ -229,7 +236,7 @@ async function applyAutoPolicy($: EngineInterface, enabled: boolean, args: reado
 }
 
 async function leaveAuto($: EngineInterface, options: PluginOptions, feedback: FeedbackState, proceed: (args: readonly string[]) => Promise<void>): Promise<boolean> {
-  if (!isRoutingEnabled(await readEnvironment($))) return false;
+  if (!isRoutingEnabled(await readEffectiveEnvironment($))) return false;
   return requestAutoFeedback($, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string, proceed);
 }
 
@@ -258,6 +265,7 @@ function registerAutoPicker(
   on: On, options: PluginOptions, policy: AutoPolicy, feedback: FeedbackState,
 ): void {
   let pending: readonly string[] | undefined;
+  let approved: readonly string[] | undefined;
   let interactive = true;
   let applyAuto = false;
   // Native redraws reuse the original command text, including our intentional save denial.
@@ -270,6 +278,8 @@ function registerAutoPicker(
 
   on('command.run', {command: 'model'}, async ($, e, next) => {
     const args = e.args.trim();
+    // Feedback callbacks carry the accepted reason through the native save.
+    if (!feedback.submitted) approved = undefined;
     pending = undefined;
     applyAuto = false;
     policy.picking = false;
@@ -277,15 +287,17 @@ function registerAutoPicker(
     if (args.toLowerCase() === 'auto') {
       return selectAuto($, options, policy, (model) => next({...e, args: model}));
     }
-    if (args) {
-      const handled = await leaveAuto($, options, feedback, async (feedbackArgs) => {
-        pending = feedbackArgs;
-        policy.picking = true;
-        await $.command.run({command: 'model', args});
-      });
-      if (handled) return {};
-    }
-    pending = [];
+    // Ask before the native picker: its closing callback cannot place a feedback pane.
+    if (!approved && await leaveAuto($, options, feedback, async (feedbackArgs) => {
+      approved = pending = feedbackArgs;
+      policy.picking = true;
+      const result = await $.command.run({command: 'model', args});
+      if (typeof result.text === 'string') {
+        approved = undefined;
+        await applyAutoPolicy($, false, feedbackArgs, options, policy, modelSelected(result.text));
+      }
+    })) return {};
+    pending = approved ?? [];
     policy.picking = true;
     const result = await next(e);
     // Headless commands return text directly; interactive picker results arrive later.
@@ -303,22 +315,26 @@ function registerAutoPicker(
       applyAuto = true;
       return {deny: 'Applying Auto with the admin default main model.'};
     }
-    if (pending) {
-      const model = String(e.value);
-      const handled = await leaveAuto($, options, feedback, async (args) => {
-        pending = args;
-        const result = await $.command.run({command: 'model', args: model});
-        const choice = pending; pending = undefined;
-        if (typeof result.text === 'string') await applyAutoPolicy($, false, choice, options, policy, modelSelected(result.text));
-      });
-      if (handled) { pending = undefined; return {deny: 'Complete Leave Auto feedback to change models.'}; }
-    }
     const result = await next(e);
-    if (pending && result.deny === undefined) {
-      const choice = pending; pending = undefined;
+    const choice = approved ?? pending;
+    if (choice && result.deny === undefined) {
+      approved = pending = undefined;
       await applyAutoPolicy($, false, choice, options, policy);
     }
     return result;
+  });
+
+  on('ui.render', {component: 'PromptHint'}, async ($, e, next) => {
+    // Session-only picks do not save config or always emit a CommandOutput event.
+    if (!policy.blocked && await $.session.model() === 'auto') {
+      policy.blocked = true;
+      $.clock.after(1, async () => {
+        const result = await selectAuto($, options, policy);
+        $.ui.log(result.text);
+        $.ui.invalidate('ui.render');
+      });
+    }
+    return next(e);
   });
 
   on('ui.render', {component: 'CommandOutput'}, async ($, e, next) => {
@@ -331,6 +347,7 @@ function registerAutoPicker(
     if (/^\/?model$/.test(String(e.props.command))) {
       // Native session-only picks bypass config.set.
       if (await $.session.model() === 'auto') {
+        if (policy.blocked) return next(e);
         pending = undefined;
         const result = await selectAuto($, options, policy);
         completedOutputs.set(e.requestId, result.text);
@@ -348,7 +365,8 @@ function registerAutoPicker(
         completedOutputs.set(e.requestId, text);
         return next({...e, props: {...e.props, text}});
       }
-      const choice = pending; pending = undefined;
+      const choice = approved ?? pending; pending = undefined;
+      if (modelSelected(e.props.text)) approved = undefined;
       await applyAutoPolicy($, false, choice, options, policy, modelSelected(e.props.text));
     }
     return next(e);

@@ -12,11 +12,23 @@ from ucode.smart_routing import config, session_env, v2
 
 
 @pytest.mark.parametrize(
-    ("session_only", "managed_picker"),
-    [(False, False), (True, True), (False, True)],
-    ids=["native-saved", "native-session-only", "managed-picker"],
+    ("session_only", "managed_picker", "feedback"),
+    [
+        (False, False, False),
+        (True, True, False),
+        (False, True, False),
+        (False, False, True),
+        (False, True, True),
+    ],
+    ids=[
+        "native-saved",
+        "native-session-only",
+        "managed-picker",
+        "feedback-command",
+        "feedback-picker",
+    ],
 )
-def test_auto_picker_tui(native_binary, tmp_path, session_only, managed_picker):
+def test_auto_picker_tui(native_binary, tmp_path, session_only, managed_picker, feedback):
     """Scenario: start off, cancel entry, enter Auto, then return to concrete mode.
 
     Expected: actual native picks change live and saved activity; Escape does not.
@@ -47,7 +59,21 @@ export const register = (on, options) => {
     )
     controls = session_env.start_session(source)
     source["PYTHONPATH"] = str(Path(__file__).parents[2] / "src")
-    options = {**v2._claude_mod_launch_options(source), "autoMainModel": "claude-sonnet-4-6"}
+    options = {
+        **v2._claude_mod_launch_options(source),
+        "autoMainModel": "system.ai.claude-sonnet-5-5",
+    }
+    if feedback:
+        source["ISAAC_SMART_ROUTER_FEEDBACK"] = "1"
+        # Isolate feedback transport; model selection and the session writer stay real.
+        executable = tmp_path / "feedback-fixture"
+        executable.write_text("""#!/bin/sh
+printf '{"message_id":null}\\n'
+""")
+        executable.chmod(0o700)
+        options.update(
+            isaacExecutable=str(executable), isaacFeedbackDirectory=str(tmp_path / "feedback")
+        )
     env = {key: os.environ[key] for key in ("PATH", "TMP", "TEMP") if key in os.environ}
     env.update(
         HOME=str(tmp_path),
@@ -68,11 +94,15 @@ export const register = (on, options) => {
             "replaceBuiltInOptions": True,
             "options": [
                 {"model": "auto", "label": "Auto"},
-                {"model": "claude-sonnet-4-6", "label": "Managed Sonnet"},
-                {"model": "haiku", "label": "Managed Haiku"},
+                {"model": "system.ai.claude-sonnet-5-5", "label": "Managed Sonnet"},
+                {"model": "system.ai.claude-haiku-5-5", "label": "Managed Haiku"},
             ],
         }
-        settings["availableModels"] = ["auto", "claude-sonnet-4-6", "haiku"]
+        settings["availableModels"] = [
+            "auto",
+            "system.ai.claude-sonnet-5-5",
+            "system.ai.claude-haiku-5-5",
+        ]
         settings["enforceAvailableModels"] = True
     session = SimpleNamespace(
         env=env,
@@ -85,7 +115,7 @@ export const register = (on, options) => {
         "--setting-sources",
         "user",
         "--model",
-        "claude-sonnet-4-6",
+        "system.ai.claude-sonnet-5-5",
         "--plugin-dir",
         str(plugin),
         "--settings",
@@ -94,9 +124,19 @@ export const register = (on, options) => {
     ]
     try:
         with AgentTerminal(session, "claude", command, "auto-picker") as tui:
+
+            def selected_model():
+                menu = tui.visible.split("Select model")[-1]
+                return next(
+                    (line.strip() for line in menu.splitlines() if line.lstrip().startswith("❯")),
+                    "",
+                )
+
             tui.boot(timeout=45)
             tui.wait_for(
-                lambda text: "Do you want to use this API key?" in text or "for shortcuts" in text,
+                lambda text: (
+                    "Do you want to use this API key?" in text or "smart router OFF" in text
+                ),
                 "API key approval",
                 timeout=15,
             )
@@ -111,16 +151,18 @@ export const register = (on, options) => {
                 lambda text: '"subagent":"0","orchestrator":"0"' in text,
                 "fresh session activity is off",
             )
-            tui.submit("/model haiku")
+            tui.submit("/model system.ai.claude-haiku-5-5")
             tui.wait_for(
                 lambda _: (
-                    json.loads(controls.read_text()).get("ENABLE_SMART_ROUTING_SUBAGENT_ONLY")
+                    json.loads(controls.read_text()).get("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
                     == "0"
                 ),
                 "concrete selection disables routing",
                 timeout=15,
             )
-            assert json.loads(controls.read_text())["ENABLE_SMART_ROUTER_ORCHESTRATOR"] == "0"
+            assert (
+                json.loads(controls.read_text()).get("ENABLE_SMART_ROUTER_ORCHESTRATOR", "0") == "0"
+            )
             off = controls.read_text()
             tui.submit("/model")
             tui.wait_for(lambda text: "Select model" in text, "normal native model picker")
@@ -133,19 +175,19 @@ export const register = (on, options) => {
             if managed_picker:
                 tui.wait_for(lambda text: "Select model" in text, "normal picker again")
                 visited = set()
-                while "Auto" not in tui.selected_line():
-                    current = tui.selected_line()
+                while "Auto" not in selected_model():
+                    current = selected_model()
                     assert current not in visited, f"Auto row unavailable:\n{tui.visible}"
                     visited.add(current)
                     tui.send("\x1b[B", "move towards Auto")
                     tui.wait_for(
-                        lambda _, before=current: tui.selected_line() != before,
+                        lambda _, before=current: selected_model() != before,
                         "next model option",
                     )
                 tui.send("s" if session_only else "\r", "choose Auto")
             tui.wait_for(
                 lambda _: (
-                    json.loads(controls.read_text()).get("ENABLE_SMART_ROUTING_SUBAGENT_ONLY")
+                    json.loads(controls.read_text()).get("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
                     == "1"
                 ),
                 "Auto reenabled",
@@ -155,29 +197,62 @@ export const register = (on, options) => {
             assert "Select model" not in tui.visible
             tui.submit("/auto-probe")
             tui.wait_for(
-                lambda text: '"model":"claude-sonnet-4-6"' in text,
+                lambda text: '"model":"system.ai.claude-sonnet-5-5"' in text,
                 "Auto uses admin default instead of previous Haiku",
             )
             tui.wait_for(
                 lambda text: "unity gateway smart router" in text and "routing subagents" in text,
                 "Auto routing banner restored",
             )
-            tui.submit("/model haiku")
+            tui.submit(
+                "/model" if feedback and managed_picker else "/model system.ai.claude-haiku-5-5"
+            )
+            if feedback:
+                tui.wait_for(
+                    lambda text: "Why are you leaving Auto?" in text, "Leave Auto feedback"
+                )
+                assert json.loads(controls.read_text())["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "1"
+                tui.send("short", "enter insufficient feedback")
+                tui.send("\r", "submit insufficient feedback")
+                tui.wait_for(
+                    lambda text: "at least 16 characters" in text, "minimum feedback length"
+                )
+                assert json.loads(controls.read_text())["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "1"
+                tui.send("\x15", "clear short feedback")
+                tui.send("I want to choose my own model", "enter feedback")
+                tui.send("\r", "submit feedback")
+            if feedback and managed_picker:
+                tui.wait_for(lambda text: "Select model" in text, "picker for leaving Auto")
+                visited = set()
+                while "haiku" not in selected_model().lower():
+                    current = selected_model()
+                    assert current not in visited, tui.visible
+                    visited.add(current)
+                    tui.send("\x1b[B", "move towards concrete model")
+                    tui.wait_for(
+                        lambda _, before=current: selected_model() != before, "next option"
+                    )
+                tui.send("\r", "choose concrete model")
             tui.wait_for(
                 lambda _: (
-                    json.loads(controls.read_text()).get("ENABLE_SMART_ROUTING_SUBAGENT_ONLY")
+                    json.loads(controls.read_text()).get("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
                     == "0"
                 ),
                 "native concrete choice disables Auto",
                 timeout=15,
             )
-            if managed_picker:
-                tui.submit("/auto-probe")
-                tui.wait_for(
-                    lambda text: '"subagent":"0","orchestrator":"0"' in text,
-                    "concrete mode after managed selection",
-                )
-                assert '"model":"auto"' not in tui.visible
+            tui.submit("/auto-probe")
+            tui.wait_for(
+                lambda text: (
+                    '"model":"system.ai.claude-haiku-5-5","subagent":"0","orchestrator":"0"' in text
+                    and "DISABLED_AUTO" in text
+                ),
+                "concrete model, disabled activity, and Auto opt-out attribution",
+            )
+            assert '"model":"auto"' not in tui.visible
+            tui.wait_for(lambda text: "smart router OFF" in text, "concrete routing state")
+            assert "Feedback is being prepared" not in tui.visible
+            assert "Dispatch is paused" not in tui.visible
             tui.submit("/exit")
             tui.finish(timeout=10)
     finally:

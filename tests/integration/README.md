@@ -1,6 +1,6 @@
 # Integration tests
 
-Auto picker coverage and limitations are documented in [the test overview](../README.md#auto-model-picker).
+Auto picker and feedback-transition component coverage and limitations are documented in [the test overview](../README.md#auto-model-picker).
 
 `../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
 behavior with controlled authentication and transport boundaries. The local-socket
