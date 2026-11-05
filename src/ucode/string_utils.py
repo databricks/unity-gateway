@@ -30,14 +30,14 @@ _MODEL_LABEL_WORDS = {"deepseek": "DeepSeek"}
 def model_picker_label(model: str) -> str:
     """A human-friendly picker label for a model id (e.g. ``system.ai.claude-haiku-4-5`` ->
     ``Claude Haiku 4.5``): keep the vendor and name words title-cased, uppercase known acronyms,
-    and join a run of numeric segments into a dotted version, also after a word that ends in one
-    (``kimi-k3-1-pro`` -> ``Kimi K3.1 Pro``)."""
+    and join a run of numeric segments into a dotted version, also a short one after a word that
+    ends in a digit (``kimi-k3-1-pro`` -> ``Kimi K3.1 Pro``)."""
     stem = model.removeprefix("system.ai.")
     parts: list[str] = []
     version: list[str] = []
     for token in stem.split("-"):
         if token.isdigit():
-            if not version and parts and parts[-1][-1].isdigit():
+            if not version and len(token) <= 2 and parts and parts[-1][-1:].isdigit():
                 parts[-1] = f"{parts[-1]}.{token}"
             else:
                 version.append(token)

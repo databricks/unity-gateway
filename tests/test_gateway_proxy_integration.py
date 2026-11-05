@@ -17,6 +17,7 @@ Fully hermetic: no agent binary, no network, no workspace credentials.
 from __future__ import annotations
 
 import contextlib
+import gzip
 import json
 import threading
 import time
@@ -53,6 +54,7 @@ class _FakeGateway:
         chunks: list[bytes] | None = None,
         sse_delay: float = 0.0,
         statuses: list[int] | None = None,
+        headers: dict[str, str] | None = None,
     ):
         self.requests: list[_CapturedRequest] = []
         self._status = status
@@ -60,6 +62,7 @@ class _FakeGateway:
         self._statuses = list(statuses or [])
         self._chunks = chunks if chunks is not None else [b'{"ok":true}']
         self._sse_delay = sse_delay
+        self._headers = headers or {}
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -71,6 +74,7 @@ class _FakeGateway:
     def start(self) -> None:
         captured = self.requests
         status, chunks, sse_delay = self._status, self._chunks, self._sse_delay
+        extra_headers = self._headers
         statuses = self._statuses
 
         class Handler(BaseHTTPRequestHandler):
@@ -87,6 +91,8 @@ class _FakeGateway:
                 )
                 self.send_response(statuses.pop(0) if statuses else status)
                 self.send_header("Content-Type", "text/event-stream")
+                for name, value in extra_headers.items():
+                    self.send_header(name, value)
                 self.end_headers()
                 for chunk in chunks:
                     self.wfile.write(chunk)
@@ -371,6 +377,46 @@ class TestGatewayAuthProxyEndToEnd:
         assert resp.status_code == 400
         assert resp.content == overflow.replace(b"Input", b"prompt is too long: Input")
         assert resp.headers["Content-Length"] == str(len(resp.content))
+
+    def test_copilot_session_rewords_a_compressed_context_overflow(self, make_gateway):
+        from ucode.agents import copilot
+
+        overflow = b'{"message":"Input exceeds the model\'s maximum context length."}'
+        gw = make_gateway(
+            status=400, chunks=[gzip.compress(overflow)], headers={"Content-Encoding": "gzip"}
+        )
+        with _running_gateway_auth_proxy(
+            gw, bad_request_rewriter=copilot.recognizable_context_overflow
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/mlflow/v1/chat/completions",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b"{}",
+                timeout=10,
+            )
+        assert resp.status_code == 400
+        assert "Content-Encoding" not in resp.headers
+        assert resp.content == overflow.replace(b"Input", b"prompt is too long: Input")
+
+    def test_copilot_session_relays_a_body_it_cannot_decode_as_it_is(self, make_gateway):
+        from ucode.agents import copilot
+
+        body = b"\x8b\x05\x80not-really-brotli"
+        gw = make_gateway(status=400, chunks=[body], headers={"Content-Encoding": "br"})
+        with _running_gateway_auth_proxy(
+            gw, bad_request_rewriter=copilot.recognizable_context_overflow
+        ) as proxy_url:
+            with httpx.stream(
+                "POST",
+                f"{proxy_url}/ai-gateway/mlflow/v1/chat/completions",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b"{}",
+                timeout=10,
+            ) as resp:
+                raw = b"".join(resp.iter_raw())
+        assert resp.status_code == 400
+        assert resp.headers["Content-Encoding"] == "br"
+        assert raw == body
 
     @pytest.mark.parametrize(
         ("status", "chunks"),

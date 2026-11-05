@@ -529,11 +529,16 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
         diagnostic_id: str | None = None,
         started: float | None = None,
     ) -> None:
-        if self.bad_request_rewriter is None or resp.status_code != 400:
+        # `read` decodes only these encodings; the body then goes out without Content-Encoding.
+        encoding = resp.headers.get("content-encoding", "identity").strip().lower()
+        if (
+            self.bad_request_rewriter is None
+            or resp.status_code != 400
+            or encoding not in ("identity", "gzip", "deflate")
+        ):
             super()._relay_response(resp, diagnostic_id=diagnostic_id, started=started)
             return
         started = started if started is not None else time.monotonic()
-        # `read` decodes the body, so it goes out without the upstream Content-Encoding.
         body = resp.read()
         rewritten = self.bad_request_rewriter(body)
         content = body if rewritten is None else rewritten

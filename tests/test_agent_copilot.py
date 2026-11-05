@@ -216,6 +216,22 @@ class TestCatalogFromListings:
             ("system.ai.glm-5-2", "completions"),
         ]
 
+    def test_open_models_dont_stand_in_for_a_missing_gpt_family(self):
+        entries = [ModelServiceEntry(SONNET), ModelServiceEntry("system.ai.glm-5-2")]
+
+        models = copilot.catalog_from_listings(entries, [SONNET, GPT, "system.ai.kimi-k3"])
+
+        assert [m.id for m in models] == [SONNET, GPT, "system.ai.glm-5-2"]
+
+    def test_an_anthropic_route_listing_of_only_open_models_falls_back(self):
+        gateway = AnthropicModelCatalog(
+            model_ids=["anthropic-aigw-ba377e31-system.ai.kimi-k3"], model_id_to_display_name={}
+        )
+
+        models = copilot.catalog_from_listings([ModelServiceEntry(GPT)], [SONNET], gateway)
+
+        assert models == catalog(SONNET, GPT)
+
     def test_an_anthropic_route_listing_without_usable_models_falls_back(self):
         gateway = AnthropicModelCatalog(
             model_ids=[], model_id_to_display_name={}, error_msg="HTTP 404"

@@ -54,6 +54,8 @@ def test_invalid_catalog_schema_name(value):
         ("system.ai.kimi-k3-1-pro", "Kimi K3.1 Pro"),
         ("system.ai.deepseek-v4-1-flash-1017", "DeepSeek V4.1 Flash 1017"),
         ("system.ai.qwen3-next-80b", "Qwen3 Next 80B"),
+        ("o1-2024-12-17", "O1 2024.12.17"),
+        ("a--1", "A  1"),
     ],
 )
 def test_model_picker_label(model, label):

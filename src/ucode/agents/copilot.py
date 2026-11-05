@@ -14,8 +14,9 @@ all serve. Gemini and other open models are excluded: Databricks' Gemini transla
 `ug copilot --provider` registers a Model Provider Service's models instead: its Claude models on
 the Anthropic endpoint, its other chat models on the gateway's native OpenAI route, with every
 registry provider sending the service's routing header. `ug copilot --model-location` registers
-the model services of one Unity Catalog schema: those named like Claude or GPT models on their
-usual wire, the rest on the Anthropic endpoint like Claude Code, which the gateway translates.
+the model services of one Unity Catalog schema: those named like Claude, GPT or validated open
+models on their usual wire, the rest on the Anthropic endpoint like Claude Code, which the gateway
+translates.
 
 Copilot holds its provider credential for the whole session, so every provider points at a
 per-session loopback proxy (`gateway_proxy.start_gateway_auth_proxy`): Copilot authenticates to
@@ -180,9 +181,9 @@ _OPEN_MODELS = frozenset(
     }
 )
 _OPEN_MODEL_PATTERN = re.compile(r"^(?:glm|kimi|deepseek)-")
-# Their window is 1,048,576 tokens, but Copilot counts tokens like GPT and their tokenizers may
-# count up to a third more, so the prompt Copilot builds stays at 687K of its tokens.
-_OPEN_MODEL_TOKENS = (719_000, 32_000)
+# (max_input_tokens, max_tokens), so Copilot's prompt is 687K: their window is 1,048,576 tokens,
+# but Copilot counts tokens like GPT, and how far that under-counts their tokenizers is unmeasured.
+_OPEN_MODEL_TOKENS = (687_000 + 32_000, 32_000)
 
 # Copilot compacts its history and retries only when an error calls the prompt too long in words it
 # knows; the gateway's context-overflow errors for open models use others.
@@ -494,24 +495,26 @@ def catalog_from_listings(
     """The Copilot catalog from this run's model listings.
 
     ``gateway`` is AI Gateway's Anthropic-route listing, which also reports the models' limits; it
-    wins whenever it lists a model Copilot can use. Otherwise ``entries`` is the UC model-services
-    listing (None when it failed) and ``fallback`` holds the ids the per-family gateway listings
-    found instead. None when none answered, so the caller keeps the saved catalog; an empty catalog
-    when they answered with nothing Copilot can use."""
+    wins whenever it lists a Claude or GPT model Copilot can use. Otherwise ``entries`` is the UC
+    model-services listing (None when it failed) and ``fallback`` holds the ids the per-family
+    gateway listings found instead. Open models come only from ``entries``, which leaves out the
+    ones this caller can't call; the Anthropic route doesn't list every open model (not DeepSeek).
+    None when none answered, so the caller keeps the saved catalog; an empty catalog when they
+    answered with nothing Copilot can use."""
     listed = list(entries or ())
-    # Open models come from the model-services listing, which leaves out the ones this caller
-    # can't call; the Anthropic route doesn't list those it doesn't serve, such as DeepSeek.
-    open_models = [model for model in build_copilot_catalog(listed) if is_open_model(model.id)]
+    catalog = build_copilot_catalog(listed)
+    open_models = [model for model in catalog if is_open_model(model.id)]
     if gateway is not None and (
         gateway_models := [m for m in gateway_catalog(gateway) if not is_open_model(m.id)]
     ):
         return sorted([*gateway_models, *open_models], key=_catalog_sort_key)
-    fallback_catalog = build_copilot_catalog(list(fallback))
+    fallback_catalog = [
+        model for model in build_copilot_catalog(list(fallback)) if not is_open_model(model.id)
+    ]
     if not listed:
         return fallback_catalog or None
-    catalog = build_copilot_catalog(listed)
     # A family the UC listing lacks keeps the models its gateway listing found.
-    families = {model.wire == WIRE_ANTHROPIC for model in catalog}
+    families = {model.wire == WIRE_ANTHROPIC for model in catalog if not is_open_model(model.id)}
     missing = [
         model for model in fallback_catalog if (model.wire == WIRE_ANTHROPIC) not in families
     ]
@@ -1146,9 +1149,9 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         added_headers=proxy_headers(state),
         sign_in_hint=f"Run `databricks auth login --host {workspace}`, then restart `ug copilot`.",
         on_refresh_failure=_log_proxy_failure,
-        # Copilot sends `reasoning_effort` on Chat Completions, but only models that aren't GPT 5+
-        # or o-series use that wire: OpenAI and Azure reject the field for them, GLM 5.3 rejects
-        # `none`, and GLM and Kimi think less at `high` than without it.
+        # Every model on Chat Completions mishandles Copilot's `reasoning_effort`: OpenAI and Azure
+        # reject it for GPT before 5, GLM 5.3 rejects `none`, and GLM and Kimi think less at `high`
+        # than without it.
         dropped_chat_completions_fields=("reasoning_effort",),
         bad_request_rewriter=recognizable_context_overflow,
     )
