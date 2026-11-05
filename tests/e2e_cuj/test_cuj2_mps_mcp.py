@@ -92,13 +92,18 @@ def _assert_mps_catalog(workspace) -> None:
         )
         provider_type = getattr(config.provider_type, "value", config.provider_type)
         assert provider_type == expected_type, config
-        expected_api = "anthropic/v1/messages" if agent == CLAUDE else "openai/v1/responses"
+        expected_apis = (
+            ["anthropic/v1/messages"]
+            if agent == CLAUDE
+            else ["openai/v1/chat/completions", "openai/v1/responses"]
+        )
         native_apis = [
             getattr(api, "value", api)
             for target in targets
             for api in (target.native_api_types or [])
         ]
-        assert native_apis == [expected_api], targets
+        # The backend's ordering isn't a contract.
+        assert sorted(native_apis) == sorted(expected_apis), targets
 
         matching = listed_by_name.get(mps_name)
         assert matching is not None, [item.name for item in listed]
@@ -238,6 +243,7 @@ class TestCuj2Configuration(_Cuj2Base):
             config_library,
             workspace.url,
             models=[{"name": claude_model, "labelOverride": claude_model}],
+            mcp_services=(SANDBOX_MCP_SERVICE_NAME,),
             custom_headers={
                 "x-databricks-use-coding-agent-mode": "true",
                 PROVIDER_HEADER: claude_mps,

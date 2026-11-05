@@ -34,7 +34,7 @@ prevention, unrelated-profile preservation, deletion, and prior-selection restor
 It executes the exact generated helper and validates its credential against the live models API.
 Both the system.ai and subscription-relay journeys use the generated helper credentials and
 profile headers for real Messages inference. Each installs Cowork through the real Claude CLI,
-adds system.ai.web_search through public ug commands, and uses the installed plugin's command to
+adds system.ai.web_search through public ug commands, and uses the Desktop profile's stdio command to
 discover tools and find Databricks' official website. Both require HTTP 200 and nonempty assistant
 text for inference, without matching generated wording. Both check repeat
 configure, preservation of unrelated settings, and profile/plugin cleanup on revert, within
@@ -158,3 +158,9 @@ plan and its component-test branch do not depend on either implementation.
 - [Integration workflow](../.github/workflows/integration.yml)
 - [Headless integration runner](../scripts/run_integration.py)
 - [Desktop profile tests](../tests/test_claude_desktop.py)
+
+For native connector migration, rerun configure over an existing UG plugin, restart Desktop,
+and start a new task. Verify connectors appear once, tool search discovers and executes a real
+connector operation, and downloaded skills and session hooks still work. Compare initial tool
+context with tool search disabled using the same model and connector set. Component tests
+verify the configuration fields only; they do not measure native context savings.
