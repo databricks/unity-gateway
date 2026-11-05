@@ -4,6 +4,15 @@ on:
   push:
     branches: [masonc08/windows-desktop-probe]
   workflow_dispatch:
+    inputs:
+      installer_url:
+        description: Approved internal URL for the Claude x64 MSIX
+        type: string
+        default: ''
+      installer_sha256:
+        description: SHA256 of the approved installer
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -16,6 +25,17 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
+      - name: Validate app probe scripts
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          $script = Join-Path $PWD 'scripts/desktop-probe/install.ps1'
+          [void][System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$tokens, [ref]$errors)
+          if ($errors.Count) { throw ($errors | Out-String) }
+          $node = (Get-Command node.exe -ErrorAction Stop).Source
+          & $node --check scripts/desktop-probe/attach.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Inspect desktop and virtualization prerequisites
         shell: pwsh
         run: |
@@ -29,3 +49,56 @@ jobs:
           name: windows-desktop-capabilities
           path: ${{ runner.temp }}/windows-desktop-probe.json
           if-no-files-found: error
+
+  app-probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.installer_url != ''
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Download and verify the approved Claude installer
+        shell: pwsh
+        env:
+          INSTALLER_URL: ${{ inputs.installer_url }}
+          INSTALLER_SHA256: ${{ inputs.installer_sha256 }}
+        run: |
+          $uri = [Uri]$env:INSTALLER_URL
+          if ($uri.Scheme -ne 'https' -or
+              ($uri.Host -ne 'databricks.jfrog.io' -and -not $uri.Host.EndsWith('.cloud.databricks.com'))) {
+            throw 'Installer must come from an approved internal source'
+          }
+          if ($env:INSTALLER_SHA256 -notmatch '^[a-fA-F0-9]{64}$') {
+            throw 'An installer SHA256 is required'
+          }
+          $installer = Join-Path $env:RUNNER_TEMP 'Claude.msix'
+          Invoke-WebRequest -Uri $uri -OutFile $installer -TimeoutSec 180 -MaximumRedirection 0
+          & ./scripts/desktop-probe/install.ps1 -InstallerPath $installer `
+            -ExpectedSha256 $env:INSTALLER_SHA256 `
+            -OutputDirectory "$env:RUNNER_TEMP/claude-desktop-probe"
+      - name: Install pinned Playwright through the internal npm proxy
+        shell: pwsh
+        run: |
+          $npm = (Get-Command npm.cmd -ErrorAction Stop).Source
+          & $npm ci --prefix scripts/desktop-probe --ignore-scripts --no-audit --fund=false `
+            --registry https://npm-proxy.cloud.databricks.com/
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Launch Claude and inspect Cowork
+        shell: pwsh
+        run: |
+          $node = (Get-Command node.exe -ErrorAction Stop).Source
+          & $node scripts/desktop-probe/attach.mjs $env:CLAUDE_DESKTOP_EXECUTABLE `
+            "$env:RUNNER_TEMP/claude-desktop-probe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload app probe evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: claude-desktop-probe
+          retention-days: 3
+          path: |
+            ${{ runner.temp }}/claude-desktop-probe/*.json
+            ${{ runner.temp }}/claude-desktop-probe/*.png
+            ${{ runner.temp }}/claude-desktop-probe/*-ui.txt
+          if-no-files-found: warn
