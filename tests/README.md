@@ -679,6 +679,13 @@ output without colors, and the hint when more limits exist.
 These are unit/component tests; CUJ5 checks live `ug usage --all` output against budget
 figures before and after the command.
 
+`test_routing_models_cache.py` checks the per-workspace, per-provider routing-models
+cache in `~/.ucode/routing-models.json`: round trips keep order and raw model IDs,
+entries stay separate by workspace key and by provider (including no provider), a
+missing, corrupt, or other-version file reads as no cache, and concurrent writers for
+different providers keep both entries under the file lock. Nothing calls the cache yet;
+these are unit checks only.
+
 `test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
 gateway provider on Windows while Unix launch arguments stay unchanged and routing
 hooks stay with the app-server. This is component coverage, not a live Windows
