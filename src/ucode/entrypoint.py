@@ -74,6 +74,10 @@ def main() -> None:
         proxy_main()
         return
 
-    from ucode.cli import main as cli_main
+    from ucode.startup_timing import startup_mark, startup_phase
+
+    startup_mark("entrypoint")
+    with startup_phase("cli_import"):
+        from ucode.cli import main as cli_main
 
     cli_main()

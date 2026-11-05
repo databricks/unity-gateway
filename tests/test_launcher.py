@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -93,3 +94,27 @@ class TestExecOrSpawn:
 
         assert exc.value.code == 0
         popen.assert_called_once_with([shim, "--model", "m"])
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_handoff_is_recorded_before_exec_and_failure_is_preserved(monkeypatch, capsys, failed):
+    monkeypatch.setenv("UG_STARTUP_TIMING", "1")
+
+    def execvp(binary, argv):
+        records = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+        assert [(row["stage"], row["outcome"]) for row in records] == [
+            ("harness_handoff", "started")
+        ]
+        assert "private-prompt" not in str(records)
+        if failed:
+            raise OSError("exec failed")
+
+    monkeypatch.setattr(launcher.os, "name", "posix")
+    monkeypatch.setattr(launcher.os, "execvp", execvp)
+    if failed:
+        with pytest.raises(OSError, match="exec failed"):
+            launcher.exec_or_spawn(["claude", "private-prompt"])
+    else:
+        launcher.exec_or_spawn(["claude", "private-prompt"])
+    completion = json.loads(capsys.readouterr().err)
+    assert completion["outcome"] == ("error" if failed else "ok")

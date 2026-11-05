@@ -1,5 +1,19 @@
 # Test suites and user journeys
 
+The Claude headless prompt journey enables `UG_STARTUP_TIMING`, completes its
+real file task, and checks fixed-schema stderr timing records through handoff
+while requiring JSON-only agent stdout.
+
+The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
+including exact service URLs, native OAuth metadata, and real `codex mcp get`
+readback. The per-user configuration remains separate.
+
+Opt-in startup timing has offline component coverage in `test_startup_timing.py`,
+`test_startup_imports.py`, `test_cli.py`, and `test_launcher.py` (all under `tests/`).
+It checks silence when disabled, real CLI import timing, phase boundaries and failures,
+stdout preservation, and handoff ordering. Gateway calls and agent execution are mocked;
+these checks do not establish live startup latency or successful inference.
+
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.

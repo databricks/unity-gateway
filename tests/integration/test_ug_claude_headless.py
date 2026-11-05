@@ -18,8 +18,8 @@ BEDROCK_OPUS_RESPONSE_MODEL = "claude-opus-5-5"
 def test_ug_claude_headless_prompt_argument(live_session, workspace):
     """Scenario: configure claude and submit a headless prompt via argument.
 
-    Expected: the real agent reads the fixture and returns its unknown value in
-    its structured completed answer, with exit code zero and JSON-only stdout.
+    Expected: the real agent completes the file task with JSON-only stdout while
+    opt-in UG timing records reach stderr through process handoff.
     """
     session = live_session
     task = FileTask(session)
@@ -34,6 +34,7 @@ def test_ug_claude_headless_prompt_argument(live_session, workspace):
         "--disable-databricks-ai-tools",
     )
 
+    session.env["UG_STARTUP_TIMING"] = "1"
     result = session.run(
         "claude",
         "--",
@@ -48,6 +49,17 @@ def test_ug_claude_headless_prompt_argument(live_session, workspace):
     assert json.loads(result.stdout)["type"] == "result"
     task.assert_headless_answer("claude", result)
     session.assert_not_routed()
+    timings = [
+        json.loads(line)
+        for line in result.stderr.splitlines()
+        if line.startswith('{"event":"ug_startup_timing"')
+    ]
+    assert {"entrypoint", "cli_import", "bootstrap", "harness_handoff"} <= {
+        record["stage"] for record in timings
+    }, result.stderr
+    for record in timings:
+        assert set(record) == {"event", "stage", "outcome", "pid", "elapsed_ms", "duration_ms"}
+        assert record["elapsed_ms"] >= 0 and record["duration_ms"] >= 0
 
 
 def test_ug_claude_headless_prompt_stdin(live_session, workspace):

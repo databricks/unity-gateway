@@ -54,7 +54,14 @@ def _write_metadata(root: Path, reported_version: str, distribution: str = "unit
 def test_version_entrypoint_skips_cli_imports(command: str, flag: str) -> None:
     output, loaded = _modules_loaded_after(
         f"import sys\nsys.argv = [{command!r}, {flag!r}]\nfrom ucode.entrypoint import main\nmain()",
-        ("ucode.cli", "typer", "ucode.telemetry", "importlib.metadata", *_LAZY_MODULES),
+        (
+            "ucode.cli",
+            "ucode.startup_timing",
+            "typer",
+            "ucode.telemetry",
+            "importlib.metadata",
+            *_LAZY_MODULES,
+        ),
     )
 
     assert output == version("unity-gateway")
@@ -242,3 +249,24 @@ def test_other_arguments_delegate_to_cli_unchanged(monkeypatch, argv) -> None:
     entrypoint.main()
 
     assert calls == [["ug", *argv]]
+
+
+def test_entrypoint_times_real_cli_import_without_changing_help(monkeypatch):
+    monkeypatch.setenv("UG_STARTUP_TIMING", "1")
+    result = subprocess.run(
+        [sys.executable, "-c", "from ucode.entrypoint import main; main()", "--help"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Usage" in result.stdout
+    records = [json.loads(line) for line in result.stderr.splitlines()]
+    assert [(row["stage"], row["outcome"]) for row in records] == [
+        ("entrypoint", "mark"),
+        ("cli_import", "started"),
+        ("cli_import", "ok"),
+    ]
+    assert records[-1]["duration_ms"] >= 0
