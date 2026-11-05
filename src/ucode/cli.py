@@ -2215,8 +2215,8 @@ def _sync_claude_cowork_plugin(
 
     mcp_servers = [*user_mcp_servers, *managed_mcp_servers]
     configure_claude_code_plugin(mcp_servers)
-    if sync_cowork and "claude" in configured_tools:
-        configure_claude_cowork(current_state, mcp_servers)
+    if "claude" in configured_tools:
+        configure_claude_cowork(current_state, mcp_servers, sync_plugin=sync_cowork)
 
 
 def _configure_optional_setup(state: dict, tools: list[str]) -> None:
