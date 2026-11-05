@@ -78,3 +78,23 @@ def test_windows_system32_dir(monkeypatch, system_root, expected):
         monkeypatch.setenv("SystemRoot", system_root)
 
     assert system_cross_os.windows_system32_dir() == expected
+
+
+@pytest.mark.parametrize(
+    ("platform", "system_drive", "expected"),
+    [
+        ("linux", None, Path("/home")),
+        ("darwin", None, Path("/Users")),
+        ("win32", "D:", Path("D:\\") / "Users"),
+        ("win32", None, Path("C:\\") / "Users"),
+        ("freebsd14", None, None),
+    ],
+)
+def test_user_profiles_dir(monkeypatch, platform, system_drive, expected):
+    monkeypatch.setattr(system_cross_os.sys, "platform", platform)
+    if system_drive is None:
+        monkeypatch.delenv("SystemDrive", raising=False)
+    else:
+        monkeypatch.setenv("SystemDrive", system_drive)
+
+    assert system_cross_os.user_profiles_dir() == expected

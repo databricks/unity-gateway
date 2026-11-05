@@ -1,5 +1,5 @@
-import type { On } from 'claude-code';
-import { expect, test } from 'claude-code/testing';
+import type { AgentInfo, On } from 'claude-code';
+import { expect, mock, test } from 'claude-code/testing';
 import { RECIPE_FIELD } from '../hooks/constants.ts';
 import { mergeExtraBody } from '../hooks/extra-body.ts';
 
@@ -99,20 +99,22 @@ const hasBand = (tree: unknown): boolean => JSON.stringify(tree).includes('unity
 
 // The engine's own process, drawing, prompt, and turn answers sit beneath the mod, and
 // session controls are available so toggles succeed.
-function engine(on: On, env: Record<string, string | undefined>) {
+function engine(on: On, env: Record<string, string | undefined>, agents: AgentInfo[] = []) {
+  const clock = mock.clock(on);
   env.UCODE_SMART_ROUTER_PYTHON = '/ug/python';
   env.UCODE_SESSION_ENV_FILE = '/session/env.json';
   on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }));
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: ['theirs'] }));
   on('prompt.submit', ($, e) => ({ text: e.text }));
   on('turn.complete', () => ({ text: '' }));
+  on('agent.list', () => ({ value: agents }));
   // The engine draws the prompt hint row from the tail the mod passes down.
   const tails: unknown[] = [];
   on('ui.render', { component: 'PromptHint' }, ($, e) => {
     tails.push(e.props.tail);
     return $.ui.resolve(e).Text({ children: ['hint'] });
   });
-  return { tails };
+  return { tails, clock };
 }
 
 // The tail the mod hands the engine for the prompt hint row under the input.
@@ -176,6 +178,41 @@ test('the hint row keeps a tail another hook already set', { options: ROUTED }, 
   expect(tails.at(-1)).toBe('theirs · smart router ON');
 });
 
+test('the hint row counts running subagents across parent turns and routing toggles', { options: ROUTED }, async ($, on) => {
+  const { env } = setup(on);
+  const agents: AgentInfo[] = ['pending', 'waiting', 'idle', 'completed', 'failed', 'killed'].map((status) => ({
+    id: status, description: status, type: 'general-purpose', status,
+  }));
+  const { tails, clock } = engine(on, env, agents);
+  const row = await $.ui.mount({ ...ABOVE_PROMPT, component: 'PromptHint', props: { tail: 'theirs' } });
+  const hint = async () => {
+    await clock.advance(1000);
+    await row.drawn();
+    return tails.at(-1);
+  };
+  expect(await hint()).toBe('theirs · smart router ON');
+  const renders = tails.length;
+  await hint();
+  expect(tails.length).toBe(renders);
+
+  agents.push({ id: 'a', description: 'First', type: 'Explore', status: 'running' });
+  expect(await hint()).toBe('theirs · smart router ON · 1 subagent running');
+  agents.push({ id: 'b', description: 'Second', type: 'general-purpose', status: 'running' });
+  expect(await hint()).toBe('theirs · smart router ON · 2 subagents running');
+
+  await $.prompt.submit({ text: 'Wait for the background agents.' });
+  await $.turn.complete({ answer: 'Waiting.' });
+  expect(await hint()).toBe('theirs · smart router ON · 2 subagents running');
+  await $.command.run({ command: 'smart-router', args: 'off' });
+  expect(await hint()).toBe('theirs · smart router OFF · 2 subagents running');
+
+  agents[agents.length - 1].status = 'completed';
+  expect(await hint()).toBe('theirs · smart router OFF · 1 subagent running');
+  agents[agents.length - 2].status = 'killed';
+  expect(await hint()).toBe('theirs · smart router OFF');
+  await row.unmount();
+});
+
 test('the band is gone by the second turn after either toggle', { options: ROUTED }, async ($, on) => {
   const { env } = setup(on);
   const { tails } = engine(on, env);
@@ -205,4 +242,43 @@ test('the band is gone by the second turn after either toggle', { options: ROUTE
     await $.turn.complete({ answer: 'done' });
     expect(hasBand(await band.drawn())).toBe(false);
   }
+});
+
+const ORCHESTRATED = { ...ROUTED, orchestratorInstructions: 'Delegate under the orchestrator.' };
+const CONTINUE = 'To continue a previously spawned agent, use SendMessage';
+
+// The orchestrator replaces the host's Agent advice but keeps its Usage notes section.
+function agentDescriber($: any, on: On) {
+  setup(on);
+  on('tool.describe', ($, e) => ({ description: e.description }));
+  return async (host: string): Promise<string> =>
+    (await $.tool.describe({ tool: 'Agent', description: host })).description;
+}
+
+test('the host Usage notes survive the orchestrator description', { options: ORCHESTRATED }, async ($, on) => {
+  const describe = agentDescriber($, on);
+  const host = 'When in doubt, don\'t spawn.\n## Usage notes\n- Runs in the background.\n- Resume with SendMessage.\n## When to fork\nPolicy.';
+  expect(await describe(host))
+    .toBe('Delegate under the orchestrator.\n\n## Usage notes\n\n- Runs in the background.\n- Resume with SendMessage.');
+});
+
+test('a host description without Usage notes keeps the continuation note', { options: ORCHESTRATED }, async ($, on) => {
+  const describe = agentDescriber($, on);
+  // Neither a missing section nor an empty one may drop the continuation mechanics.
+  for (const host of ['Policy only.', 'Policy.\n## Usage notes\n\n## When to fork\nPolicy.']) {
+    const description = await describe(host);
+    expect(description.startsWith('Delegate under the orchestrator.\n\n## Usage notes\n\n- ')).toBe(true);
+    expect(description).toContain(CONTINUE);
+    expect(description).toContain('starts a fresh agent with no memory of prior runs');
+    expect(description).not.toContain('Policy');
+    expect(description).not.toContain('fork');
+  }
+});
+
+test('the continuation note keeps the fork exception when the host offers forks', { options: ORCHESTRATED }, async ($, on) => {
+  const describe = agentDescriber($, on);
+  const host = 'Policy.\n- Use SendMessage; a new call starts fresh (except subagent_type: "fork", which inherits your context).';
+  const description = await describe(host);
+  expect(description).toContain('starts a fresh agent with no memory of prior runs (except subagent_type: "fork"), so the prompt');
+  expect(description).not.toContain('Policy');
 });

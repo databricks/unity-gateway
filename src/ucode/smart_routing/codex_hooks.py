@@ -8,6 +8,7 @@ import subprocess
 
 from ucode.databricks import build_auth_token_argv
 from ucode.smart_routing import hooks
+from ucode.workspace import workspace_id_args
 
 ROUTING_HOOK_COMMAND_MARKER = "codex-router-hook"
 
@@ -90,7 +91,7 @@ def _routing_hook_argv(
     ]
     if event != "route-subagent":
         return argv
-    argv += ["--host", workspace]
+    argv += ["--host", workspace, *workspace_id_args(workspace)]
     profile = state.get("profile")
     if isinstance(profile, str) and profile:
         argv += ["--profile", profile]

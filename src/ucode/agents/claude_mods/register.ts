@@ -1,6 +1,6 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
-import { registerStatusBand, showStatusBand } from './smart-routing-status.ts';
-import { registerSubagentRouting } from './subagent-routing.ts';
+import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
+import { endSubagentRoutingTurn, registerSubagentRouting } from './subagent-routing.ts';
 import {
   CLI_AGENT,
   CLI_MODULE,
@@ -15,6 +15,16 @@ import { isRoutingEnabled } from './routing-state.ts';
 
 type Environment = Record<string, string | undefined>;
 
+// Kept when a host description has no Usage notes section, so continuation stays native.
+// Copied from Claude Code 2.1.314's Agent Usage notes; its compact layout (no such section)
+// words this differently. Update with tests/integration/test_ug_smart_routing_hooks.py.
+// Like the host, add the fork exception only when the host offers fork subagents.
+const FORK = 'subagent_type: "fork"';
+function continuationNote(host: string): string {
+  const fork = host.includes(FORK) ? ` (except ${FORK})` : '';
+  return `- To continue a previously spawned agent, use SendMessage with the agent's ID or name as the \`to\` field — that resumes it with full context. A new Agent call starts a fresh agent with no memory of prior runs${fork}, so the prompt must be self-contained.`;
+}
+
 async function readEnvironment($: EngineInterface): Promise<Environment> {
   return {
     ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
@@ -22,6 +32,27 @@ async function readEnvironment($: EngineInterface): Promise<Environment> {
     ENABLE_SMART_ROUTER_ORCHESTRATOR: await $.env.get('ENABLE_SMART_ROUTER_ORCHESTRATOR'),
     CLAUDE_CODE_EXTRA_BODY: await $.env.get('CLAUDE_CODE_EXTRA_BODY'),
   };
+}
+
+async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
+  if (!options.orchestratorInstructions) return false;
+  const current = await readEnvironment($);
+  const sessionFile = await $.env.get('UCODE_SESSION_ENV_FILE');
+  if (sessionFile) {
+    try {
+      const overrides = JSON.parse(await $.fs.read(sessionFile));
+      for (const key of [
+        'ENABLE_SMART_ROUTING_V2',
+        'ENABLE_SMART_ROUTING_SUBAGENT_ONLY',
+        'ENABLE_SMART_ROUTER_ORCHESTRATOR',
+      ]) {
+        if (typeof overrides?.[key] === 'string') current[key] = overrides[key];
+      }
+    } catch {
+      // Match the routing hooks' inherited-environment fallback for unreadable controls.
+    }
+  }
+  return isRoutingEnabled(current) && current.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1';
 }
 
 async function writeEnvironment($: EngineInterface, env: Environment): Promise<void> {
@@ -82,6 +113,7 @@ async function setRouting(
     if (syncSessionControls) {
       await writeSessionControls($, enabled, sessionControlArgs);
     }
+    $.ui.invalidate('tool.describe');
   } catch (error) {
     // Restore earlier successful writes if a later environment write is denied.
     await writeEnvironment($, previous);
@@ -92,6 +124,7 @@ async function setRouting(
 export function register(on: On, options: PluginOptions): void {
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
+  let orchestratorActive = Boolean(options.orchestratorInstructions);
 
   on('session.start', async ($, e, next) => {
     if (launchedEnabled) {
@@ -99,6 +132,24 @@ export function register(on: On, options: PluginOptions): void {
       await setRouting($, options, isRoutingEnabled(current), false);
     }
     return next(e);
+  });
+
+  on('turn.step', async function* ($, e, next) {
+    const active = await readOrchestratorState($, options);
+    if (active !== orchestratorActive) {
+      orchestratorActive = active;
+      // A CLI/skill toggle changes the session file without notifying this process.
+      $.ui.invalidate('tool.describe');
+    }
+    return yield* next(e);
+  });
+
+  on('tool.describe', {tool: ['Agent', 'Task']}, async ($, e, next) => {
+    const instructions = options.orchestratorInstructions as string;
+    if (!await readOrchestratorState($, options)) return next(e);
+    // Preserve the host's waiting and follow-up mechanics without its ownership policy.
+    const notes = e.description.split('\n## Usage notes\n')[1]?.split('\n## ')[0].trim() || continuationNote(e.description);
+    return next({...e, description: `${instructions}\n\n## Usage notes\n\n${notes}`});
   });
 
   // The installed smart-router skill already supplies the slash command.
@@ -131,4 +182,10 @@ export function register(on: On, options: PluginOptions): void {
   });
   registerStatusBand(on);
   registerSubagentRouting(on, options);
+  // Claude allows one unmatched turn.complete handler per plugin, so both modules share it.
+  on('turn.complete', ($, e, next) => {
+    endSubagentRoutingTurn(e.isAborted);
+    if (endStatusBandTurn()) $.ui.invalidate('ui.render');
+    return next(e);
+  });
 }
