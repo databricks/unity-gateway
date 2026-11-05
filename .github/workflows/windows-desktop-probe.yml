@@ -13,6 +13,10 @@ on:
         description: SHA256 of the approved installer
         type: string
         default: ''
+      try_playwright:
+        description: Recheck Electron attachment; Claude 2.42304.2 rejects debug switches
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -83,6 +87,7 @@ jobs:
             -ExpectedSha256 $digest `
             -OutputDirectory "$env:RUNNER_TEMP/claude-desktop-probe"
       - name: Install pinned Playwright through JFrog
+        if: inputs.try_playwright == true
         shell: pwsh
         run: ./scripts/desktop-probe/install-playwright.ps1
       - name: Check native Claude launch
@@ -92,6 +97,7 @@ jobs:
             -OutputDirectory "$env:RUNNER_TEMP/claude-desktop-probe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Launch Claude and inspect Cowork
+        if: inputs.try_playwright == true
         shell: pwsh
         env:
           DEBUG: pw:browser
