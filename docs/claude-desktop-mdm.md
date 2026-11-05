@@ -43,13 +43,13 @@ The workspace's managed configuration supplies models, headers/tracing, skills, 
 Without a managed config, UG discovers Claude models without managed skills/connectors.
 An explicit enabled-agent list excluding Claude prevents provisioning.
 
-Supply an existing provisioning credential through `DATABRICKS_BEARER`,
-`DATABRICKS_BEARER_COMMAND`, or cached Databricks OAuth with `--profile <name>` instead
-of `--workspace`. With explicit Claude selection (`--agents claude` / `--agent claude`),
-`--global` does not force browser login. CLI configuration follows its normal discovery
-path; Desktop validates shared runtimes before its own authentication and publication.
-Omitted-agent configure retains normal authentication/discovery before policy or the
-picker selects agents. Use explicit agents for MDM.
+Provisioning uses the existing `ug configure --global` authentication flow. For unattended
+deployment, supply credentials through the same `DATABRICKS_BEARER` or
+`DATABRICKS_BEARER_COMMAND` mechanism used by CLI configuration. Those mechanisms bypass
+forced browser login; other authentication follows the existing configure behavior.
+Desktop adds no service-principal credential handling or login rules. It validates shared
+runtimes before using the common token helper for discovery and publication.
+Use explicit agents (`--agents claude` / `--agent claude`) for MDM.
 
 Provisioning reuses one token for discovery/download and never stores it in machine
 files. Shared helpers discard provisioning credential overrides and use each user's

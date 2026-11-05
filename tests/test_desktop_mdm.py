@@ -137,7 +137,7 @@ def test_provision_without_account_has_no_admin_credentials_or_user_writes(devic
         assert (mdm.MDM_ROOT / "ug").stat().st_mode & 0o777 == 0o755
         assert (mdm.MDM_ROOT / "otel-headers.sh").stat().st_mode & 0o777 == 0o755
         assert mdm.POLICY_PATH.stat().st_mode & 0o777 == 0o644
-    device.auth.assert_called_once_with(WORKSPACE, "ADMIN_PROFILE", browser_login=False)
+    device.auth.assert_called_once_with(WORKSPACE, "ADMIN_PROFILE")
 
 
 def test_provision_update_and_remove_root_files(device):
@@ -182,9 +182,9 @@ def test_provision_rejects_workspace_without_claude(device):
 
 def test_missing_provisioning_auth_fails_before_machine_writes(device):
     device.auth.side_effect = RuntimeError("OAuth session expired")
-    with pytest.raises(RuntimeError, match="authenticate before.*OAuth session expired"):
+    with pytest.raises(RuntimeError, match="OAuth session expired"):
         mdm.configure(WORKSPACE, "ADMIN_PROFILE")
-    device.auth.assert_called_once_with(WORKSPACE, "ADMIN_PROFILE", browser_login=False)
+    device.auth.assert_called_once_with(WORKSPACE, "ADMIN_PROFILE")
     assert not mdm.MDM_ROOT.exists()
     assert not device.source.exists()
     assert not mdm.POLICY_PATH.exists()
@@ -613,29 +613,35 @@ def test_machine_path_validation(monkeypatch, problem):
         mdm._check_machine_path(path, required=True)
 
 
-def test_global_with_cached_oauth_does_not_force_browser_login(device, monkeypatch):
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize("external_auth", [None, "DATABRICKS_BEARER", "DATABRICKS_BEARER_COMMAND"])
+def test_global_preserves_existing_auth_flow(device, monkeypatch, agent, external_auth):
     monkeypatch.setattr(cli.sys, "platform", "darwin")
     monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
     monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+    if external_auth:
+        monkeypatch.setenv(external_auth, "external-credential-input")
     monkeypatch.setattr(cli, "_parse_profile_option", lambda value: [(WORKSPACE, value)])
-    events = []
-    monkeypatch.setattr(mdm, "validate_cli_discovery", lambda: events.append("validated"))
-    monkeypatch.setattr(cli, "install_databricks_cli", lambda: events.append("installed"))
-    login = Mock(side_effect=AssertionError("MDM must not start browser login"))
+    monkeypatch.setattr(cli, "install_databricks_cli", lambda: None)
+    login = Mock()
+    ensure_auth = Mock()
     monkeypatch.setattr(cli, "run_databricks_login", login)
-    monkeypatch.setattr(cli, "ensure_databricks_auth", login)
-    token = Mock(side_effect=["cached-oauth", RuntimeError("stop before gateway discovery")])
+    monkeypatch.setattr(cli, "ensure_databricks_auth", ensure_auth)
+    # Stop after authentication routing; no gateway access or agent configuration is needed.
+    token = Mock(side_effect=RuntimeError("stop before gateway discovery"))
     monkeypatch.setattr(cli, "get_databricks_token", token)
     result = CliRunner().invoke(
-        cli.app, ["configure", "--global", "--agents", "claude", "--profile", "CACHED"]
+        cli.app, ["configure", "--global", "--agents", agent, "--profile", "PROVISIONING"]
     )
     assert result.exit_code == 1
     assert "stop before gateway discovery" in result.output
-    assert events == ["installed"]
-    assert token.call_args_list[0].args == (WORKSPACE, "CACHED")
-    assert token.call_args_list[0].kwargs == {"browser_login": False}
-    assert token.call_count == 2
-    login.assert_not_called()
+    token.assert_called_once_with(WORKSPACE, "PROVISIONING")
+    if external_auth:
+        ensure_auth.assert_called_once_with(WORKSPACE, "PROVISIONING")
+        login.assert_not_called()
+    else:
+        login.assert_called_once_with(WORKSPACE, "PROVISIONING")
+        ensure_auth.assert_not_called()
 
 
 @pytest.mark.parametrize("flag", ["--global", "--user", "--mdm", "--mdm-desktop"])

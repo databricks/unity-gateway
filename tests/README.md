@@ -537,7 +537,10 @@ Runtime checks retain isolated Python import probing, shared virtualenv paths, e
 Databricks/Claude CLI trust validation within MDM, and provisioning-credential scrubbing. Global
 Desktop skips unsupported PAT/custom OAuth and shared-host selections with warnings,
 while CLI configuration continues.
-Existing auth/MCP/tracing command behavior is unchanged.
+Existing auth/MCP/tracing command behavior is unchanged. Global configure authentication
+routing matches Claude and Codex for external bearers, bearer commands, and the normal
+login path. MDM calls the common token helper and preserves its errors. These checks
+substitute authentication boundaries; they do not validate live service-principal credentials.
 LaunchAgent scheduling, cached-marketplace synchronization, and account-cleanup tests were
 replaced with organization-plugin publication and user-file preservation checks because
 those MDM mechanisms were removed. Ordinary user-plugin/cache coverage remains.

@@ -734,8 +734,6 @@ def configure_shared_state(
         # token to avoid re-reading ~/.databrickscfg.
         ensure_pat_bearer(profile, pat)
         ensure_databricks_auth(workspace, profile, **login_kwargs)
-    elif machine_wide_only() and sys.platform == "darwin" and "claude" in (tools or []):
-        get_databricks_token(workspace, profile, browser_login=False)
     elif force_login and not external_bearer_configured():
         run_databricks_login(workspace, profile, **login_kwargs)
     else:
@@ -4942,8 +4940,8 @@ def configure(
         typer.Option(
             "--global",
             help="Write only machine-wide Claude Code/Codex settings and, on macOS, provision Claude "
-            "Desktop through MDM. Leave per-user agent settings alone. Desktop MDM requires root and "
-            "a shared runtime; without --global, Desktop writes only user-level files.",
+            "Desktop through MDM, requesting sudo when needed. Leave per-user agent settings alone. "
+            "Desktop MDM requires a shared runtime; without --global, Desktop writes only user-level files.",
         ),
     ] = False,
     user_scope: Annotated[

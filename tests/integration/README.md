@@ -156,6 +156,9 @@ CLI-agent scope unit coverage isolates Desktop prerequisites; Desktop scope comp
 exercise macOS Desktop validation. Shared Claude PAT handling is tested against the global
 Desktop OAuth branch. Command-local scope checks isolate machine prerequisites on macOS;
 failure checks cover runtime prerequisites and publication, warning while CLI setup succeeds.
+Global Claude/Codex auth-routing components cover external bearers, bearer commands, and
+normal login. MDM delegates token retrieval to the existing helper; no live service-principal
+authentication is exercised by these component checks.
 These checks replace external authentication and do not exercise native macOS failures.
 Other component regressions cover MCP-only requests bypassing Desktop provisioning,
 intermediate runtime symlink trust, and Databricks/Claude CLI validation before MDM

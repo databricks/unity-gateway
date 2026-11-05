@@ -270,13 +270,7 @@ def configure(workspace: str, profile: str | None) -> None:
         print_note(f"Would publish Desktop policy to {POLICY_PATH} and a root organization plugin.")
         return
     runtime = _runtime()
-    try:
-        token = databricks.get_databricks_token(workspace, profile, browser_login=False)
-    except RuntimeError as exc:
-        raise RuntimeError(
-            f"Desktop MDM provisioning needs an existing Databricks credential; "
-            f"authenticate before running the MDM command: {exc}"
-        ) from exc
+    token = databricks.get_databricks_token(workspace, profile)
     fetched = get_managed_config(workspace, token)
     if fetched.reason and "feature_disabled" not in fetched.reason.lower():
         raise RuntimeError(f"Could not read workspace configuration: {fetched.reason}")
