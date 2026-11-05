@@ -1,5 +1,7 @@
 # Test suites and user journeys
 
+The managed MCP integration journey accepts native Codex HTTP/OAuth and stdio proxy registrations, checks the exact GitHub endpoint and OAuth client where applicable, and requires the real Codex CLI to read the entry from managed settings.
+
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.

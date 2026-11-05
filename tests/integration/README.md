@@ -1,5 +1,7 @@
 # Integration tests
 
+`test_ug_configure_managed_mcp.py` checks both supported Codex managed transports: native HTTP/OAuth on a capable workspace, or the stdio proxy. The exact endpoint, native resource/client, exclusive transport fields, and real `codex mcp get` readback are asserted; user-scope registrations remain separate.
+
 Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
 before numbered reuse, stable names during routing and in parallel cards, and unchanged
 execution inputs and row controls. They cover a lone call's decision under its Agent row,
