@@ -3,9 +3,9 @@ streamable-HTTP MCP endpoint, injecting a freshly-minted OAuth bearer.
 
 Every coding agent ucode configures points its Databricks MCP servers at this
 one command (``ug mcp-proxy --url <endpoint> --profile <profile>``) as a
-local **stdio** server. The agent spawns and reaps the proxy as a child process
-— ucode owns no long-lived process and no background refresh thread. The proxy
-speaks stdio to the agent and streamable-HTTP to Databricks, and mints a fresh
+local **stdio** server. A lightweight relay (``mcp_proxy_runtime``) connects its
+private pipes to a shared local backend (``mcp_proxy_daemon``), which runs the
+bridge below independently for each agent connection. The proxy mints a fresh
 token from the Databricks CLI profile on **every** upstream HTTP request via an
 httpx ``Auth`` hook, so the bearer never goes stale mid-session.
 
@@ -36,10 +36,10 @@ from __future__ import annotations
 import json
 import re
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from threading import Lock
 from types import ModuleType, TracebackType
-from typing import Protocol, Self
+from typing import Protocol, Self, TextIO
 from urllib.parse import parse_qs, urlsplit
 
 import anyio
@@ -56,6 +56,7 @@ from ucode.databricks import (
     workspace_origin,
 )
 from ucode.mcp_connection_login import connection_from_url, run_connection_login
+from ucode.telemetry import ucode_user_agent, ug_version
 from ucode.ug_headers import ug_headers
 from ucode.workspace import workspace_headers
 
@@ -66,6 +67,28 @@ CONNECTION_AUTH_REQUIRED_ERROR_CODE = -32006
 URL_ELICITATION_REQUIRED_ERROR_CODE = -32042
 AUTHENTICATE_TOOL_NAME = "authenticate"
 TOOLS_REFRESH_TIMEOUT_SECONDS = 5.0
+MCP_CLIENT_USER_AGENT_HEADER = "User-Agent"
+_HTTP_PRODUCT_CHARACTER = re.compile(r"[^!#$%&'*+.^_`|~0-9A-Za-z-]")
+_MAX_CLIENT_PRODUCT_LENGTH = 64
+
+
+def _client_user_agent(payload: JSONRPCRequest) -> str | None:
+    """Return a safe HTTP product for an MCP initialize request's clientInfo."""
+    if payload.method != "initialize" or not isinstance(payload.params, dict):
+        return None
+    client_info = payload.params.get("clientInfo")
+    if not isinstance(client_info, dict):
+        return None
+    name = client_info.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    product = _HTTP_PRODUCT_CHARACTER.sub("_", name.strip()[:_MAX_CLIENT_PRODUCT_LENGTH])
+    version = client_info.get("version")
+    if isinstance(version, str) and version.strip():
+        product += "/" + _HTTP_PRODUCT_CHARACTER.sub(
+            "_", version.strip()[:_MAX_CLIENT_PRODUCT_LENGTH]
+        )
+    return ucode_user_agent(ug_version(), product)
 
 
 def _httpx() -> ModuleType:
@@ -140,6 +163,8 @@ class _ConnectionLogin:
         profile: str | None,
         *,
         use_pat: bool = False,
+        token_provider: Callable[[], str] | None = None,
+        login_output: TextIO | None = None,
     ) -> None:
         self.url = url
         self.workspace = workspace
@@ -148,13 +173,15 @@ class _ConnectionLogin:
         self._login_attempted = False
         self._completed = False
         self._lock = Lock()
+        self._token_provider = token_provider or (lambda: get_databricks_token(workspace, profile))
+        self._login_output = login_output
 
     def supports_login(self) -> bool:
         """Check connection metadata without opening a browser."""
         if self.connection is None:
             return False
         try:
-            token = get_databricks_token(self.workspace, self.profile)
+            token = self._token_provider()
         except RuntimeError:
             return False
         return mcp_service_needs_connection_login(self.workspace, token, self.connection)
@@ -195,7 +222,10 @@ class _ConnectionLogin:
                 return False
             self._login_attempted = True
             self._completed = False
-            ok, detail = run_connection_login(self.url, self.workspace, profile=self.profile)
+            options = {"stderr": self._login_output} if self._login_output is not None else {}
+            ok, detail = run_connection_login(
+                self.url, self.workspace, profile=self.profile, **options
+            )
             if not ok:
                 raise ProxyAuthError(f"connection login for '{self.connection}' failed: {detail}")
             self._completed = True
@@ -209,6 +239,7 @@ def _build_token_auth(
     *,
     use_pat: bool = False,
     connection_login: _ConnectionLogin | None = None,
+    token_provider: Callable[[], str] | None = None,
 ):
     """Inject workspace auth; tool-call 401s may trigger connection login.
 
@@ -217,19 +248,24 @@ def _build_token_auth(
     JSON-RPC authentication errors are handled by the bridge below.
     """
     httpx = _httpx()
+    mint_token: Callable[[], str] = (
+        token_provider
+        if token_provider is not None
+        else lambda: get_databricks_token(workspace, profile)
+    )
     # PAT auth has no interactive OAuth to drive, so never treat it as connection-backed.
     connection_login = connection_login or _ConnectionLogin(
-        url, workspace, profile, use_pat=use_pat
+        url, workspace, profile, use_pat=use_pat, token_provider=mint_token
     )
 
-    def _mint(request):
+    async def _mint(request):
         # get_databricks_token honors the DATABRICKS_BEARER short-circuit and PAT
         # profiles internally. A RuntimeError means the session is dead (expired
         # refresh token, logged-out profile); raising from inside auth_flow would
         # tear through the transport's task group and stall the process, so
         # translate it into a terminal ProxyAuthError.
         try:
-            token = get_databricks_token(workspace, profile)
+            token = await to_thread.run_sync(mint_token)
         except RuntimeError as exc:
             raise ProxyAuthError(str(exc)) from exc
         request.headers["Authorization"] = f"Bearer {token}"
@@ -248,7 +284,7 @@ def _build_token_auth(
 
         async def async_auth_flow(self, request):
             await request.aread()
-            _mint(request)
+            await _mint(request)
             response = yield request
             if not _is_unauthorized(response) or use_pat or request.method != "POST":
                 return
@@ -266,7 +302,7 @@ def _build_token_auth(
             # other pumps aren't starved while the user completes the sign-in.
             if not await to_thread.run_sync(connection_login.run_if_needed):
                 return
-            _mint(request)
+            await _mint(request)
             yield request
 
     return _DatabricksTokenAuth()
@@ -275,8 +311,13 @@ def _build_token_auth(
 class _McpBridge:
     """Bridge MCP messages and recover connection authentication failures."""
 
-    def __init__(self, connection_login: _ConnectionLogin) -> None:
+    def __init__(
+        self,
+        connection_login: _ConnectionLogin,
+        set_client_user_agent: Callable[[str], None] | None = None,
+    ) -> None:
         self.connection_login = connection_login
+        self.set_client_user_agent = set_client_user_agent or (lambda _value: None)
         self.pending_requests: dict[int | str, SessionMessage] = {}
         self.retried_requests: set[int | str] = set()
         self.authentication_required = False
@@ -553,6 +594,9 @@ class _McpBridge:
                         ) from message
                     payload = message.message
                     if isinstance(payload, JSONRPCRequest):
+                        client_user_agent = _client_user_agent(payload)
+                        if client_user_agent is not None:
+                            self.set_client_user_agent(client_user_agent)
                         if (
                             client is not None
                             and (self.authentication_required or self.authentication_tool_available)
@@ -629,22 +673,42 @@ class _McpBridge:
         raise ProxyTransportError("upstream MCP transport closed unexpectedly")
 
 
-async def _run(url: str, workspace: str, profile: str | None, use_pat: bool = False) -> None:
+async def _run(
+    url: str,
+    workspace: str,
+    profile: str | None,
+    use_pat: bool = False,
+    *,
+    stdin: anyio.AsyncFile[str] | None = None,
+    stdout: anyio.AsyncFile[str] | None = None,
+    token_provider: Callable[[], str] | None = None,
+    login_output: TextIO | None = None,
+) -> None:
     httpx = _httpx()
-    connection_login = _ConnectionLogin(url, workspace, profile, use_pat=use_pat)
+    connection_login = _ConnectionLogin(
+        url,
+        workspace,
+        profile,
+        use_pat=use_pat,
+        token_provider=token_provider,
+        login_output=login_output,
+    )
     auth = _build_token_auth(
         url,
         workspace,
         profile,
         use_pat=use_pat,
         connection_login=connection_login,
+        token_provider=token_provider,
     )
     # 2.x-native shape: hand the transport a pre-built AsyncClient carrying our
     # per-request auth. Works on mcp 1.28+ and 2.x; `streamable_http_client`
     # yields a (read, write) pair in both.
+    extra_headers = ug_headers()
+    explicit_user_agent = any(key.casefold() == "user-agent" for key in extra_headers)
     async with httpx.AsyncClient(
         auth=auth,
-        headers={**ug_headers(), **workspace_headers(url)},
+        headers={**extra_headers, **workspace_headers(url)},
         timeout=httpx.Timeout(
             connect=30.0,
             read=300.0,
@@ -657,9 +721,16 @@ async def _run(url: str, workspace: str, profile: str | None, use_pat: bool = Fa
             # trailing callback and yields (read, write). Take the first two
             # positionally so both arities work — we don't use get_session_id.
             http_read, http_write = streams[0], streams[1]
-            async with stdio_server() as (stdio_read, stdio_write):
+            async with stdio_server(stdin=stdin, stdout=stdout) as (stdio_read, stdio_write):
                 # Bidirectional bridge: client stdin -> Databricks, Databricks -> client stdout.
-                bridge = _McpBridge(connection_login)
+                bridge = _McpBridge(
+                    connection_login,
+                    None
+                    if explicit_user_agent
+                    else lambda value: http_client.headers.__setitem__(
+                        MCP_CLIENT_USER_AGENT_HEADER, value
+                    ),
+                )
                 async with anyio.create_task_group() as tg:
                     tg.start_soon(bridge.pump_upstream, http_read, stdio_write, http_write)
                     await bridge.pump_client(stdio_read, http_write, stdio_write)

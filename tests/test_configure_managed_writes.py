@@ -6,6 +6,8 @@ terminal or a file to repair. Codex's side is in `test_agent_codex.py`.
 """
 
 import json
+import tomllib
+from pathlib import Path
 from subprocess import CalledProcessError
 
 import pytest
@@ -14,7 +16,8 @@ from typer.testing import CliRunner
 from tests.test_claude_header_mod import WS, _managed_env
 from ucode import cli as cli_mod
 from ucode import managed_files
-from ucode.agents import claude
+from ucode.agents import claude, codex
+from ucode.agents.desktop import setup as desktop_setup
 
 MODEL = "databricks-claude-sonnet-4"
 
@@ -177,6 +180,210 @@ def test_denied_headless_revert_keeps_the_backup_and_says_so(tmp_path, monkeypat
     with pytest.raises(RuntimeError, match="The backup was retained"):
         _revert()
     assert path.exists()
+
+
+@pytest.fixture
+def isolated_revert(monkeypatch):
+    """Exclude unrelated agent cleanup from managed-file reporting scenarios."""
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+    monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+    monkeypatch.setattr(desktop_setup, "revert_desktop", lambda: "unchanged")
+    monkeypatch.setattr(cli_mod, "revert_mcp_configs", lambda state: {})
+    monkeypatch.setattr(cli_mod, "restore_file", lambda *args: False)
+    monkeypatch.setattr(cli_mod, "revert_legacy_shared_config", lambda: False)
+    monkeypatch.setattr(cli_mod.copilot_agent, "scrub_stored_credentials", lambda: None)
+    monkeypatch.setattr(cli_mod.copilot_agent, "sweep_session_registries", lambda: None)
+
+
+@pytest.mark.parametrize("tool, display", [("claude", "Claude Code"), ("codex", "Codex")])
+def test_revert_cli_reports_managed_file_deletion_failure(
+    tmp_path, monkeypatch, isolated_revert, tool, display
+):
+    path = _write_policy_env(tmp_path, monkeypatch).with_suffix(
+        ".json" if tool == "claude" else ".toml"
+    )
+    monkeypatch.setattr(
+        claude if tool == "claude" else codex,
+        "_managed_settings_path" if tool == "claude" else "codex_managed_config_path",
+        lambda: path,
+    )
+    managed_files.request_explicit_managed_writes()
+    contents = '{"a": 1}' if tool == "claude" else "a = 1\n"
+    managed_files.reconcile_managed_file(
+        path,
+        contents,
+        tool=tool,
+        display=display,
+        owned_paths=[],
+        parser=json.loads if tool == "claude" else tomllib.loads,
+    )
+    backup_dir = managed_files.MANAGED_BACKUP_DIR
+    backup = {file.name: file.read_bytes() for file in backup_dir.iterdir()}
+    cli_mod.save_state({"workspace": "https://workspace.example"})
+    state_before = cli_mod.load_state()
+
+    def denied(_target):
+        raise CalledProcessError(1, ["sudo", "-n", "rm"], stderr="sudo: a password is required")
+
+    def reject_write(_target, _text):
+        pytest.fail("A failed deletion must not rewrite the managed settings")
+
+    monkeypatch.setattr(managed_files, "_sudo_remove", denied)
+    monkeypatch.setattr(managed_files, "_sudo_replace", reject_write)
+
+    result = CliRunner().invoke(cli_mod.app, ["revert"], env={"COLUMNS": "240"})
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 1, result.output
+    assert f"Could not restore {display} managed settings" in output
+    assert str(path) in output
+    assert "The backup was retained" in output
+    assert "run `ug revert` again" in output
+    assert path.read_text(encoding="utf-8") == contents
+    assert {file.name: file.read_bytes() for file in backup_dir.iterdir()} == backup
+    assert cli_mod.load_state() == state_before
+
+
+@pytest.mark.parametrize("tool, display", [("claude", "Claude Code"), ("codex", "Codex")])
+@pytest.mark.parametrize("manifest_present", [False, True], ids=["no-manifest", "no-agent-record"])
+def test_revert_cli_explains_untracked_managed_file(
+    tmp_path, monkeypatch, isolated_revert, tool, display, manifest_present
+):
+    path = tmp_path / ("managed-settings.json" if tool == "claude" else "managed_config.toml")
+    contents = b'{"apiKeyHelper": "existing-helper"}\n' if tool == "claude" else b'a = "existing"\n'
+    path.write_bytes(contents)
+    monkeypatch.setattr(
+        claude if tool == "claude" else codex,
+        "_managed_settings_path" if tool == "claude" else "codex_managed_config_path",
+        lambda: path,
+    )
+    manifest = managed_files.MANAGED_BACKUP_MANIFEST_PATH
+    if manifest_present:
+        manifest.parent.mkdir()
+        manifest.write_text('{"version": 1, "files": {}}', encoding="utf-8")
+    cli_mod.save_state({"workspace": WS})
+
+    result = CliRunner().invoke(cli_mod.app, ["revert"], env={"COLUMNS": "240"})
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 0, result.output
+    assert f"{display} managed settings at {path} were left unchanged" in output
+    assert "no UG backup record was found" in output
+    assert "If no longer needed, remove the file manually or ask your administrator" in output
+    assert path.read_bytes() == contents
+    assert manifest.exists() == manifest_present
+    if manifest_present:
+        assert json.loads(manifest.read_text()) == {"version": 1, "files": {}}
+    assert cli_mod.load_state() == {}
+
+
+@pytest.mark.parametrize("tool", ["claude", "codex", None], ids=["claude", "codex", "unsupported"])
+def test_revert_cli_omits_manual_cleanup_guidance_when_no_managed_file_exists(
+    tmp_path, monkeypatch, isolated_revert, tool
+):
+    if tool is not None:
+        monkeypatch.setattr(
+            claude if tool == "claude" else codex,
+            "_managed_settings_path" if tool == "claude" else "codex_managed_config_path",
+            lambda: tmp_path / "absent-managed-settings",
+        )
+
+    result = CliRunner().invoke(cli_mod.app, ["revert"])
+
+    assert result.exit_code == 0, result.output
+    assert "no UG backup record" not in result.output
+    assert "remove the file manually" not in result.output
+    assert "Claude Code OS-managed settings: unchanged" in result.output
+    assert "Codex OS-managed settings: unchanged" in result.output
+
+
+@pytest.mark.parametrize("tool, display", [("claude", "Claude Code"), ("codex", "Codex")])
+def test_revert_cli_reports_an_uninspectable_managed_path_without_failing_cleanup(
+    tmp_path, monkeypatch, isolated_revert, tool, display
+):
+    path = tmp_path / "locked-directory" / "managed-settings.json"
+    monkeypatch.setattr(
+        claude if tool == "claude" else codex,
+        "_managed_settings_path" if tool == "claude" else "codex_managed_config_path",
+        lambda: path,
+    )
+    real_exists = Path.exists
+
+    def exists(target):
+        if target == path:
+            raise PermissionError("Permission denied")
+        return real_exists(target)
+
+    monkeypatch.setattr(Path, "exists", exists)
+    cli_mod.save_state({"workspace": WS})
+
+    result = CliRunner().invoke(cli_mod.app, ["revert"], env={"COLUMNS": "240"})
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 0, result.output
+    assert f"Could not inspect {display} managed settings at {path}" in output
+    assert "Check this file manually or ask your administrator" in output
+    assert cli_mod.load_state() == {}
+
+
+@pytest.mark.parametrize("tool, display", [("claude", "Claude Code"), ("codex", "Codex")])
+def test_revert_cli_does_not_warn_for_a_restored_managed_file(
+    tmp_path, monkeypatch, isolated_revert, tool, display
+):
+    path = _write_policy_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        claude if tool == "claude" else codex,
+        "_managed_settings_path" if tool == "claude" else "codex_managed_config_path",
+        lambda: path,
+    )
+    original = '{"a": 1}\n' if tool == "claude" else "a = 1\n"
+    changed = '{"a": 2}\n' if tool == "claude" else "a = 2\n"
+    path.write_text(original, encoding="utf-8")
+    managed_files.request_explicit_managed_writes()
+    managed_files.reconcile_managed_file(
+        path,
+        changed,
+        tool=tool,
+        display=display,
+        owned_paths=[],
+        parser=json.loads if tool == "claude" else tomllib.loads,
+    )
+
+    result = CliRunner().invoke(cli_mod.app, ["revert"])
+
+    assert result.exit_code == 0, result.output
+    assert f"{display} OS-managed settings: restored" in result.output
+    assert "no UG backup record" not in result.output
+    assert "remove the file manually" not in result.output
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_revert_cli_explains_untracked_settings_after_relay_conflict(
+    tmp_path, monkeypatch, isolated_revert
+):
+    path, _root, _writes = _managed_env(
+        tmp_path,
+        monkeypatch,
+        {"apiKeyHelper": "existing-helper", "permissions": {"deny": ["WebSearch"]}},
+    )
+    contents = path.read_bytes()
+    state = {"workspace": WS, "codex_models": [], "relayed_proxy_port": 9999}
+    with pytest.raises(RuntimeError, match="Claude subscription relay cannot start"):
+        claude.write_tool_config(state, MODEL, relayed=True)
+    assert not managed_files.MANAGED_BACKUP_MANIFEST_PATH.exists()
+    monkeypatch.setattr(claude, "claude_header_mod_root", lambda: None)
+    cli_mod.save_state(state)
+
+    result = CliRunner().invoke(cli_mod.app, ["revert"], env={"COLUMNS": "240"})
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 0, result.output
+    assert str(path) in output
+    assert "no UG backup record was found" in output
+    assert "remove the file manually" in output
+    assert path.read_bytes() == contents
+    assert not managed_files.MANAGED_BACKUP_MANIFEST_PATH.exists()
+    assert cli_mod.load_state() == {}
 
 
 def test_missing_sudo_is_reported_like_a_denied_write(tmp_path, monkeypatch):
