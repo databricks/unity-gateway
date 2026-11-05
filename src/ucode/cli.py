@@ -2808,7 +2808,6 @@ def claude_desktop_auth_cmd(
         str | None, typer.Option("--claude-binary", help="Absolute Claude Code executable path.")
     ] = None,
     mdm_desktop: Annotated[bool, typer.Option("--mdm-desktop", hidden=True)] = False,
-    workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
     """Print a Desktop credential, allowing browser login only for interactive requests."""
     import sys
@@ -2820,8 +2819,6 @@ def claude_desktop_auth_cmd(
 
     try:
         with redirect_stdout(sys.stderr):
-            if workspace_id:
-                pin(host, workspace_id)
             if mdm_desktop:
                 from ucode.agents.desktop import mdm
 

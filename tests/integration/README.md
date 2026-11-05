@@ -162,11 +162,6 @@ entry points, global dry run, and named/empty/omitted profiles. Omitted-agent se
 managed-only Desktop connector policy under `--global --mcp` also have component
 coverage; these are not native macOS integration checks.
 
-`../test_workspace_selection.py::TestHelperArgv` also generates ordinary Desktop auth
-argv in temporary macOS/Windows/Linux profiles and parses it through the real CLI,
-checking the selected workspace reaches credential lookup. External authentication is
-replaced; this does not exercise native Desktop authentication.
-
 macOS MDM provisioning and its per-user LaunchAgent are outside these Linux/Windows
 journeys. Native launchd activation, first-user timing, managed-plist precedence,
 GUI skill/tool invocation, and current flag routing on macOS remain unverified here.

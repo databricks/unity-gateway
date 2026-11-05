@@ -534,9 +534,6 @@ A real isolated Python child verifies the runtime probe can read the installed p
 this catches binary stdout being passed to `Path` during provisioning. Runtime paths are compared in the host OS format.
 Provisioning rejects selected shared-workspace hosts before authentication and missing
 credentials before publication; browser login is disabled.
-`test_workspace_selection.py::TestHelperArgv` checks generated ordinary Desktop auth
-argv from real temporary profiles on all three platforms. The real CLI parses the argv
-and pins its workspace ID before requesting credentials; external authentication is replaced.
 MDM compatibility cases cover unrestricted empty agent lists and feature-disabled config
 discovery. MCP/tracing helper checks keep explicit OAuth profiles independent of unrelated
 saved PAT mode while retaining saved PAT mode for matching host, profile, and workspace ID.

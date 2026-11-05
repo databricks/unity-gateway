@@ -163,7 +163,6 @@ def _configure_claude_desktop_user_level(state: dict, *, parent_schema: str | No
             "claude-desktop-auth",
             "--host",
             workspace,
-            *workspace_id_args(workspace),
             "--profile",
             profile,
             *(["--relay", "--claude-binary", claude_binary] if claude_binary else []),
