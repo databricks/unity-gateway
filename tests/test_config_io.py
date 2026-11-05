@@ -255,6 +255,11 @@ class TestReadHelpers:
         doc = read_toml_safe(p)
         assert dict(doc) == {}
 
+    def test_read_toml_safe_non_utf8(self, tmp_path):
+        p = tmp_path / "latin1.toml"
+        p.write_bytes(b'model_provider = "caf\xe9"\n')
+        assert dict(read_toml_safe(p)) == {}
+
 
 # ---------------------------------------------------------------------------
 # parse_dotenv

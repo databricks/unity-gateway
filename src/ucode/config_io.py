@@ -210,7 +210,7 @@ def read_toml_safe(path: Path) -> tomlkit.TOMLDocument:
         if not path.exists():
             return tomlkit.document()
         return tomlkit.parse(path.read_text(encoding="utf-8"))
-    except (OSError, tomlkit.exceptions.TOMLKitError):
+    except (OSError, UnicodeError, tomlkit.exceptions.TOMLKitError):
         return tomlkit.document()
 
 

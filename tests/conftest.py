@@ -123,6 +123,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # launch-like run.
     monkeypatch.setattr(managed_files_mod, "_explicit_managed_command", None)
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
+    # `ug configure` sets this for the rest of the process, like `_explicit_managed_command`.
+    monkeypatch.setattr(codex_mod, "_explicit_configure", False)
     monkeypatch.setattr(
         codex_mod,
         "CODEX_SYSTEM_REQUIREMENTS_PATH",
