@@ -85,8 +85,16 @@ jobs:
       - name: Install pinned Playwright through JFrog
         shell: pwsh
         run: ./scripts/desktop-probe/install-playwright.ps1
+      - name: Check native Claude launch
+        shell: pwsh
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/desktop-probe/native-launch.ps1 `
+            -OutputDirectory "$env:RUNNER_TEMP/claude-desktop-probe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Launch Claude and inspect Cowork
         shell: pwsh
+        env:
+          DEBUG: pw:browser
         run: |
           $node = (Get-Command node.exe -ErrorAction Stop).Source
           & $node scripts/desktop-probe/attach.mjs $env:CLAUDE_DESKTOP_EXECUTABLE `
@@ -102,4 +110,5 @@ jobs:
             ${{ runner.temp }}/claude-desktop-probe/*.json
             ${{ runner.temp }}/claude-desktop-probe/*.png
             ${{ runner.temp }}/claude-desktop-probe/*-ui.txt
+            ${{ runner.temp }}/claude-desktop-probe/native-*.log
           if-no-files-found: warn
