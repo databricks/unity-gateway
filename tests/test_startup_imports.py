@@ -117,15 +117,39 @@ def test_cli_import_defers_subcommand_specific_modules() -> None:
         ("otel-headers", '{"Authorization": "Bearer helper-bearer"}'),
     ],
 )
-def test_agent_helper_entrypoint_skips_the_cli(tmp_path, command, expected) -> None:
+@pytest.mark.parametrize("saved", [False, True], ids=["explicit-host", "saved-pat"])
+def test_agent_helper_entrypoint_skips_the_cli(tmp_path, command, expected, saved) -> None:
+    workspace = "https://ws.example"
+    environment = {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
+    arguments = ["--host", workspace]
+    if saved:
+        app_dir = tmp_path / ".ucode"
+        app_dir.mkdir(exist_ok=True)
+        app_dir.joinpath("state.json").write_text(
+            json.dumps(
+                {
+                    "state_version": 3,
+                    "config_scope": "user",
+                    "current_workspace": workspace,
+                    "workspaces": {workspace: {"profile": "SAVED", "use_pat": True}},
+                }
+            )
+        )
+        profile = tmp_path / ".databrickscfg"
+        profile.write_text(f"[SAVED]\nhost = {workspace}\ntoken = helper-bearer\n")
+        environment.update(DATABRICKS_CONFIG_FILE=str(profile), DATABRICKS_BEARER="")
+        arguments = []
+    else:
+        environment["DATABRICKS_BEARER"] = "helper-bearer"
     probe = (
         "import os, sys\n"
-        f"os.environ.update(HOME={str(tmp_path)!r}, USERPROFILE={str(tmp_path)!r}, "
-        "DATABRICKS_BEARER='helper-bearer')\n"
-        f"sys.argv = ['ug', {command!r}, '--host', 'https://ws.example']\n"
+        f"os.environ.update({environment!r})\n"
+        f"sys.argv = {['ug', command, *arguments]!r}\n"
         "from ucode.entrypoint import main\n"
-        "try:\n    main()\nexcept SystemExit as exc:\n    assert not exc.code, exc.code"
+        "try:\n    main()\nexcept SystemExit as exc:\n    assert not exc.code, exc.code\n"
     )
+    if saved:
+        probe += "from ucode.managed_files import config_scope\nassert config_scope() == 'user'\n"
 
     output, loaded = _modules_loaded_after(probe, ("ucode.cli", "ucode.agents", *_LAZY_MODULES))
 
@@ -184,6 +208,44 @@ def test_router_hook_records_skip_the_cli(tmp_path, command, event, payload, art
     assert '"session_id": "s1"' in (tmp_path / ".ucode" / artifact).read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_router_helper_entrypoint_applies_saved_user_scope(tmp_path, monkeypatch, agent):
+    from io import BytesIO, TextIOWrapper
+
+    from ucode import managed_files, state
+    from ucode.smart_routing import codex_routing, hook_commands, v2
+
+    state.save_config_scope("user")
+    managed_files.set_config_scope("global")
+    session = tmp_path / "session.json"
+    session.write_text("{}")
+    monkeypatch.setenv("UCODE_SESSION_ENV_FILE", str(session))
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+    monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+    monkeypatch.setattr(hook_commands, "_router_hook_token", lambda *_args: "token")
+    observed = []
+
+    def route(*args, **kwargs):
+        observed.append(managed_files.config_scope())
+
+    if agent == "claude":
+        monkeypatch.setattr(v2, "route_claude_subagent", route)
+    else:
+        monkeypatch.setattr(codex_routing, "route_pre_tool_use", route)
+    monkeypatch.setattr(sys, "stdin", TextIOWrapper(BytesIO(b"{}")))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ug", f"{agent}-router-hook", "route-subagent", "--host", "https://ws.example"],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        entrypoint.main()
+
+    assert exc.value.code == 0
+    assert observed == ["user"]
+
+
 def test_agent_helpers_are_the_cli_hidden_helper_commands() -> None:
     from importlib import import_module
 
@@ -199,15 +261,21 @@ def test_agent_helpers_are_the_cli_hidden_helper_commands() -> None:
 
 
 @pytest.mark.parametrize(
-    "command", ["auth-token", "otel-headers", "claude-router-hook", "codex-router-hook"]
+    ("command", "arguments", "expected_exit"),
+    [
+        (command, arguments, expected_exit)
+        for command in ["auth-token", "otel-headers", "claude-router-hook", "codex-router-hook"]
+        for arguments, expected_exit in [(["--help"], 0), (["--unknown-option"], 2)]
+    ]
+    + [(command, [], 2) for command in ["claude-router-hook", "codex-router-hook"]],
 )
-def test_agent_helper_help_matches_the_cli(command) -> None:
-    def help_text(module: str) -> str:
+def test_agent_helper_usage_matches_the_cli(command, arguments, expected_exit) -> None:
+    def command_output(module: str) -> tuple[str, str]:
         result = subprocess.run(
             [
                 sys.executable,
                 "-c",
-                f"import sys\nsys.argv = ['ug', {command!r}, '--help']\n"
+                f"import sys\nsys.argv = {['ug', command, *arguments]!r}\n"
                 f"from {module} import main\nmain()",
             ],
             stdin=subprocess.DEVNULL,
@@ -217,10 +285,10 @@ def test_agent_helper_help_matches_the_cli(command) -> None:
             timeout=60,
             env={**os.environ, "COLUMNS": "100", "NO_COLOR": "1"},
         )
-        assert result.returncode == 0, result.stderr
-        return result.stdout
+        assert result.returncode == expected_exit, result.stderr
+        return result.stdout, result.stderr
 
-    assert help_text("ucode.entrypoint") == help_text("ucode.cli")
+    assert command_output("ucode.entrypoint") == command_output("ucode.cli")
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])

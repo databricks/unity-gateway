@@ -19,6 +19,23 @@ def _write_skill(root: Path, name: str, content: str = "version one") -> Path:
     return skill
 
 
+@pytest.mark.parametrize("installed", [False, True], ids=["checkout", "wheel"])
+def test_skills_source_resolves_package_and_checkout_layouts(tmp_path, monkeypatch, installed):
+    package_parent = tmp_path / ("site-packages" if installed else "src")
+    module = package_parent / "ucode" / "skills.py"
+    module.parent.mkdir(parents=True)
+    module.touch()
+    source = package_parent / "skills" if installed else tmp_path / "skills"
+    _write_skill(source, skills.SMART_ROUTER_ORCHESTRATOR_SKILL)
+    monkeypatch.setattr(skills, "__file__", str(module))
+
+    assert skills._skills_source() == source
+    installed_skill = skills.install_skill(
+        skills.SMART_ROUTER_ORCHESTRATOR_SKILL, "claude", tmp_path / "home"
+    )
+    assert installed_skill.joinpath("SKILL.md").read_text() == "version one"
+
+
 @pytest.fixture
 def bundled_skill(tmp_path, monkeypatch):
     source = tmp_path / "source"

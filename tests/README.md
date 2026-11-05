@@ -1,8 +1,13 @@
 # Test suites and user journeys
 
-The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
-including exact service URLs, native OAuth metadata, and real `codex mcp get`
-readback. The per-user configuration remains separate.
+Router-entrypoint component checks apply saved user scope before Claude/Codex routing.
+Helper usage parity covers help, missing hook events, and unknown-option errors.
+
+Fresh-process helper checks exercise both explicit-host credentials and saved user scope,
+workspace/profile selection, and a real temporary PAT profile without loading agent builders.
+
+`test_skills.py` exercises bundled skill discovery and installation from both
+wheel and checkout directory layouts using real temporary files. This is component coverage.
 
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
