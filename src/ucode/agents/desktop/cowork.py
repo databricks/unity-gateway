@@ -118,14 +118,14 @@ def _code_config_root() -> Path:
     )
 
 
-def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
-    """Generate and install UG's Cowork plugin for the active workspace."""
+def configure_cowork(state: dict, mcp_servers: list[dict], *, sync_plugin: bool = True) -> bool:
+    """Register native connectors and optionally refresh the workspace plugin."""
     workspace = state.get("workspace")
     if not isinstance(workspace, str) or not workspace:
         raise RuntimeError("No Databricks workspace is configured for Cowork.")
 
     previous_state = config_io.read_json_safe(_state_path())
-    skill_records = _workspace_skill_records(workspace)
+    skill_records = _workspace_skill_records(workspace) if sync_plugin else []
     org_plugin = managed_files.claude_desktop_org_plugin_path()
     if org_plugin is not None and (org_plugin.exists() or org_plugin.is_symlink()):
         raise RuntimeError(
@@ -147,6 +147,8 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
         custom_oauth=bool(state.get("custom_oauth")),
     )
     with desktop_mcp_configuration(workspace, mcp_config):
+        if not sync_plugin:
+            return False
         if not previous_state and not skill_records and not mcp_config["mcpServers"]:
             return False
         if not previous_state and not _cowork_sessions_root_exists():

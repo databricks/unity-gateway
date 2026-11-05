@@ -212,8 +212,9 @@ downloaded skill files stay in their native locations; Cowork hooks are not inst
 Code setup is independent of Cowork account discovery and best-effort; explicit `--global`
 skips this user-scope plugin too. Model-configured Claude and
 explicit Claude MCP clients are eligible. Managed configure refreshes Code after successful
-MCP reconciliation even if skill downloads fail; Cowork keeps its existing model and skill
-requirements. MCP updates refresh eligible plugins, and revert removes both while preserving
+MCP reconciliation even if skill downloads fail. Model-configured Claude also syncs native
+Desktop connectors on skill failure, while leaving the existing Cowork skill plugin intact.
+MCP updates refresh eligible plugins, and revert removes both while preserving
 unrelated plugins.
 Code and Cowork skill templates live in `src/ucode/agents/desktop/connector_skills/`;
 the generator inserts connector names and bounds each description.

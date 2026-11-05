@@ -339,7 +339,9 @@ interactive login. Metadata-helper cases return `False` for failed lookups and a
 connection kinds; later operations look up metadata again.
 A stream scenario covers tool failure, explicit login, tool refresh, task retry, and later
 reauthentication; explicit retry also works after cancellation. Discovery auth errors and
-service-scoped login-URL challenges expose recovery after earlier success. Gmail/Calendar
+service-scoped login-URL challenges expose recovery after earlier success. The authentication
+tool explicitly reports known sign-in requirements; successful discovery or login clears that
+message while leaving recovery available. Gmail/Calendar
 tool-error and login-elicitation regressions check automatic sign-in and one request replay,
 cancel/persistent-error pass-through, PAT/non-U2M exclusions, and nonblocking discovery.
 Direct URL-matcher tests reject other services/hosts and malformed URLs; representative
@@ -447,9 +449,11 @@ tests and Cowork's frozen prompt fixture.
 `test_cli.py` and `test_desktop_configure_cli.py` cover Code eligibility for MCP-only
 Claude setup, merged server inputs for both plugins, and Code refresh after successful MCP
 reconciliation despite skill-download failures in both single-agent and managed configure.
-MCP failures preserve both plugins; Cowork retains its model and skill-success gates.
-These component tests mock both plugin setup boundaries to avoid invoking an installed
-Claude CLI; they do not establish native Desktop or live connector behavior.
+MCP failures preserve both plugins. Skill failures preserve the Cowork plugin while still
+updating native Desktop connectors after model setup. Reconfigure regressions use real
+profile writers to verify connector replacement/removal and unchanged plugin files after
+a failed download in both flows. Authentication, model discovery, downloads, and native CLI
+boundaries are controlled; these are component checks, not native Desktop or live connector coverage.
 
 CUJ6 compares parsed Claude user settings across repeated configure calls. Its
 preservation check requires the exact UG Code plugin and marketplace entries

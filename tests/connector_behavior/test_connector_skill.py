@@ -41,6 +41,13 @@ AUTH_TOOL = {
     "description": "Sign in to Slack when the connector reports that sign-in is required.",
     "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
 }
+AUTH_REQUIRED_TOOL = {
+    **AUTH_TOOL,
+    "description": (
+        "Sign-in is required to discover this connector's tools. "
+        "Call this tool to sign in before retrying discovery."
+    ),
+}
 WAIT_TOOL = {
     "name": "wait",
     "description": "Wait for the specified number of seconds before continuing.",
@@ -120,7 +127,8 @@ def _run_resumed_request(tmp_path, claude_messages, *, availability, skill_loade
     ready = availability == "available"
     sign_in_reported = False
     for _ in range(16):
-        tools = [skill_tool, DISCOVERY_TOOL, AUTH_TOOL, WAIT_TOOL]
+        auth_tool = AUTH_REQUIRED_TOOL if sign_in_reported and not ready else AUTH_TOOL
+        tools = [skill_tool, DISCOVERY_TOOL, auth_tool, WAIT_TOOL]
         if ready:
             tools.append(SLACK_TOOL)
         can_authenticate = sign_in_reported
@@ -147,7 +155,7 @@ def _run_resumed_request(tmp_path, claude_messages, *, availability, skill_loade
                     result = json.dumps([SLACK_TOOL, AUTH_TOOL])
                 elif availability == "sign-in-required":
                     sign_in_reported = True
-                    result = "Slack requires sign-in. Use its authenticate tool to sign in."
+                    result = json.dumps([AUTH_REQUIRED_TOOL])
                 else:
                     result = "No matching service tools. Status: pending."
             elif name == AUTH_TOOL_NAME:
@@ -237,7 +245,7 @@ def test_reports_missing_tools_and_asks_user_to_retry(tmp_path, claude_messages,
 
 
 def test_authenticates_when_discovery_reports_sign_in_required(tmp_path, claude_messages):
-    """Scenario: discovery explicitly reports that Slack requires sign-in.
+    """Scenario: discovery returns only authenticate, whose description says sign-in is required.
 
     Expected: Claude signs in once, discovers Slack tools, and completes the task.
     """

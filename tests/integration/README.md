@@ -99,8 +99,10 @@ Cowork's frozen prompt fixture protects discovery without startup sleeps and ret
 
 `../test_cli.py` and `../test_desktop_configure_cli.py` cover MCP-only Claude eligibility
 for Code guidance and Code refresh despite skill-download failures in single-agent and
-managed configure. Failed MCP reconciliation preserves both plugins, and Cowork retains
-its model and skill-success gates. Both plugin setup boundaries are mocked; these are
+managed configure. Failed MCP reconciliation preserves both plugins. Failed skill downloads
+preserve the Cowork plugin while native Desktop connectors still sync after model setup.
+Reconfigure regressions use real profile writers to check connector replacement/removal and
+unchanged plugin files, with external setup/download boundaries controlled. These are
 component checks, not native Desktop or live connector coverage.
 
 CUJ6 compares parsed Claude user settings across repeated configure calls. Its
@@ -701,7 +703,9 @@ connect a plugin MCP server, discover its deferred tool, or run a task through i
 
 `../test_mcp_proxy.py` covers persistent OAuth U2M authentication-tool discovery, explicit
 reauthentication after success/cancellation, refresh and task retry over in-memory MCP
-streams, and renewed discovery-auth failures. Failed metadata lookups remain retryable, and
+streams, and renewed discovery-auth failures. Authentication-error responses explicitly require
+sign-in in the tool description; successful discovery or login clears that requirement while
+keeping the recovery tool available. Failed metadata lookups remain retryable, and
 discovery and unrelated replies continue during interactive login. Metadata/pagination and
 upstream tool names are preserved. A fresh listing that removes upstream `authenticate`
 restores local recovery, while continuation pages preserve ownership from earlier pages.

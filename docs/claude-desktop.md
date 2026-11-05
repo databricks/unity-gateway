@@ -78,8 +78,9 @@ keeps the old registration and saved root available for cleanup or retry.
 
 MCP-only Claude setup (`ug mcp add --agents claude`) is also eligible for Code
 guidance without model setup. During managed configure, successful MCP reconciliation
-refreshes Code even if skill downloads fail. Cowork keeps its existing model-setup
-and skill-success requirements. Failed MCP reconciliation preserves both plugins.
+refreshes Code even if skill downloads fail. Native Desktop connectors also sync independently
+of skill-download success after model setup; failed downloads leave the existing Cowork skill
+plugin intact. Failed MCP reconciliation preserves both plugins.
 
 Code and Cowork plugin installation are independent and best-effort. A Cowork
 setup failure does not block the Code plugin or native MCP configuration. The
@@ -244,7 +245,10 @@ reclassify upstream permission/network errors or validate their root cause.
 
 For OAuth U2M services, the proxy keeps a local `authenticate` tool alongside the service's
 normal tools, including after successful login. Calling it starts a fresh login even if an
-earlier login succeeded in the same session. Discovery checks service metadata without
+earlier login succeeded in the same session. When discovery reports an authentication error,
+the proxy explicitly says "Sign-in is required" in that tool's description. A successful tool
+listing or sign-in clears that requirement, so the persistent recovery tool alone does not
+imply a need to log in. Discovery checks service metadata without
 opening a browser or waiting for an interactive login already in progress. Service metadata
 is looked up again on each discovery or authentication error, so failed requests can recover
 on the next operation.
