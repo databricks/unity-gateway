@@ -1,11 +1,12 @@
 """Real Claude decisions with generated guidance and synthetic connector tools.
 
-Synthetic Slack results isolate skill compliance from Slack credentials and client
-reconnection. They do not establish native Cowork discovery or resume behavior.
+Synthetic connector results isolate skill compliance from credentials and client
+reconnection. They do not establish native Desktop discovery, OAuth, or resume behavior.
 """
 
 import json
 import secrets
+import shlex
 import time
 from datetime import UTC, datetime
 
@@ -228,3 +229,159 @@ def test_idle_hook_note_overrides_stale_notice_before_skill_loads(tmp_path, clau
     assert "wait" in names, (calls, answer)
     assert SLACK_TOOL_NAME in names, answer
     assert marker in answer, answer
+
+
+@pytest.mark.parametrize("transport", ["native-http", "proxy"])
+@pytest.mark.parametrize("login_success", [True, False], ids=["success", "canceled"])
+def test_code_authenticates_before_calling_cached_gmail_tools(
+    tmp_path, claude_messages, transport, login_success
+):
+    """Scenario: a first Code request sees cached Gmail tools before sign-in.
+
+    Expected: Claude checks auth and signs in to the requested registration, then
+    summarizes the tool result; cancellation ends without a Gmail service call.
+    """
+    server = "system-ai-gmail"
+    search_name = "mcp__system_ai_gmail__gmail_search"
+    auth_name = "mcp__system_ai_gmail__authenticate"
+    _write_connector_skill(tmp_path, [server], code=True)
+    text = (tmp_path / CONNECTOR_SKILL_NAME / "SKILL.md").read_text()
+    description = json.loads(text.splitlines()[2].removeprefix("description: "))
+    body = text.split("---\n", 2)[2]
+    system = (
+        "You are Claude in the Desktop Code tab. Use tools to obtain external data. "
+        "The installed Claude CLI executable is /opt/claude. No current MCP connection "
+        "status has been provided; tool definitions may be cached.\n"
+        f"Available skills:\n{CONNECTOR_SKILL_NAME}: {description}"
+    )
+    search = {
+        "name": search_name,
+        "description": "Search the user's Gmail through Unity Gateway.",
+        "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}},
+    }
+    tools = [
+        search,
+        DISCOVERY_TOOL,
+        {
+            "name": "Skill",
+            "description": "Load an available skill's full instructions.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"skill": {"type": "string"}},
+                "required": ["skill"],
+            },
+        },
+        {
+            "name": "Bash",
+            "description": "Run a shell command in the current session environment.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "required": ["command"],
+            },
+        },
+    ]
+    if transport == "proxy":
+        tools.append(
+            {
+                "name": auth_name,
+                "description": "Authenticate the requested Gmail connection before using it.",
+                "input_schema": {"type": "object", "properties": {}},
+            }
+        )
+    conversation = [{"role": "user", "content": "Please summarize my Gmail from today."}]
+    authenticated = False
+    login_calls = 0
+    service_calls = 0
+    marker = "MAIL-" + secrets.token_hex(3)
+    for _ in range(12):
+        authenticated_before_response = authenticated
+        response = claude_messages(system, conversation, tools)
+        content = response["content"]
+        conversation.append({"role": "assistant", "content": content})
+        actions = [block for block in content if block["type"] == "tool_use"]
+        if not actions:
+            answer = "\n".join(block["text"] for block in content if block["type"] == "text")
+            assert response["stop_reason"] == "end_turn", response
+            assert login_calls == 1, (conversation, answer)
+            assert bool(service_calls) == login_success, (conversation, answer)
+            if login_success:
+                assert marker in answer, answer
+            else:
+                assert answer and marker not in answer, answer
+            return
+        assert response["stop_reason"] == "tool_use", response
+        results = []
+        for action in actions:
+            name, arguments = action["name"], action["input"]
+            failed = False
+            if name == "Skill":
+                assert arguments["skill"] == CONNECTOR_SKILL_NAME
+                result = body
+            elif name == "ToolSearch":
+                result = (
+                    json.dumps([search])
+                    if authenticated
+                    else f"{server}: Sign-in is required. Cached tools: {search_name}."
+                )
+            elif name == "Bash":
+                lexer = shlex.shlex(arguments["command"], posix=True, punctuation_chars=";&")
+                lexer.whitespace_split = True
+                commands = [[]]
+                for word in lexer:
+                    if word in (";", "&&"):
+                        commands.append([])
+                    else:
+                        commands[-1].append(word)
+                output = []
+                for words in commands:
+                    if not words:
+                        continue
+                    if words in (["command", "-v", "claude"], ["which", "claude"]):
+                        output.append("/opt/claude")
+                    else:
+                        assert words[0] == "/opt/claude", words
+                        command = words[1:]
+                        if command == ["mcp", "list"]:
+                            status = "Connected" if authenticated else "Needs authentication"
+                            kind = "HTTP" if transport == "native-http" else "stdio"
+                            output.append(f"{server}: ({kind}) - {status}")
+                        elif command == ["mcp", "login", "--help"]:
+                            output.append("Usage: claude mcp login <name>")
+                        else:
+                            assert transport == "native-http", command
+                            assert command == ["mcp", "login", server], command
+                            login_calls += 1
+                            assert login_calls == 1
+                            authenticated = login_success
+                            failed = not login_success
+                            output.append(
+                                "Authentication successful." if login_success else "Login canceled."
+                            )
+                    if failed:
+                        break
+                result = "\n".join(output)
+            elif name == auth_name and transport == "proxy":
+                login_calls += 1
+                assert login_calls == 1
+                authenticated = login_success
+                failed = not login_success
+                result = "Authentication complete." if login_success else "Login canceled."
+            elif name == search_name:
+                assert authenticated_before_response, (
+                    "Claude called Gmail before receiving a successful sign-in result"
+                )
+                service_calls += 1
+                result = f"Today's Gmail: documentation task {marker} is due today."
+            else:
+                pytest.fail(f"Claude called an unexposed tool: {name}")
+            results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": action["id"],
+                    "content": result,
+                    "is_error": failed,
+                }
+            )
+        conversation.append({"role": "user", "content": results})
+    pytest.fail(f"Claude did not finish within 12 model turns: {conversation}")

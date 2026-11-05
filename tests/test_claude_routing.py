@@ -17,6 +17,32 @@ def test_spawn_tool_detector_matches_agent_and_legacy_task(tool_name, expected):
     assert claude_routing.is_spawn_agent_tool(tool_name) is expected
 
 
+@pytest.mark.parametrize(
+    ("tool_input", "original_model", "original_subagent_type"),
+    [
+        ({"model": "sonnet", "subagent_type": "Explore"}, "sonnet", "Explore"),
+        ({"subagent_type": "ug-smart-router:sonnet"}, None, "ug-smart-router:sonnet"),
+        ({}, None, None),
+        (None, None, None),
+    ],
+)
+def test_decision_keeps_original_choice_and_tool_identity(
+    tmp_path, tool_input, original_model, original_subagent_type
+):
+    decisions = tmp_path / "decisions.jsonl"
+    payload = {"session_id": "session-1", "tool_use_id": "call-1", "tool_input": tool_input}
+    decision = routing.RoutingDecision(model="system.ai.claude-haiku-5-5")
+
+    routing.write_decision_record(decisions, payload, "inspect parser", decision, decision.model)
+
+    record = json.loads(decisions.read_text())
+    assert record["tool_use_id"] == "call-1"
+    assert record["original_model"] == original_model
+    assert record["original_subagent_type"] == original_subagent_type
+    assert record["requested_model"] == record["router_model"] == decision.model
+    assert payload["tool_input"] == tool_input
+
+
 def test_canary_and_audit_are_written(tmp_path, monkeypatch):
     canary = tmp_path / "canary.json"
     audit = tmp_path / "audit.jsonl"
@@ -42,8 +68,15 @@ def test_decision_is_reconciled_with_actual_subagent_model(tmp_path, monkeypatch
     audit = tmp_path / "audit.jsonl"
     monkeypatch.setattr(claude_routing, "DECISIONS_PATH", decisions)
     monkeypatch.setattr(claude_routing, "AUDIT_PATH", audit)
-    decision = routing.RoutingDecision(model="system.ai.claude-opus-4-8")
-    routing.write_decision_record(decisions, {"session_id": "s1"}, "x", decision, decision.model)
+    task = "Review this code: " + "x" * 10000
+    decision = routing.RoutingDecision(
+        model="system.ai.claude-opus-4-8", rationale="why " * 1000, raw_rationale="raw " * 1000
+    )
+    routing.write_decision_record(decisions, {"session_id": "s1"}, task, decision, decision.model)
+    saved = json.loads(decisions.read_text())
+    assert saved["task_name"] == task
+    assert saved["rationale"] == decision.rationale
+    assert saved["raw_rationale"] == decision.raw_rationale
 
     record = claude_routing.record_subagent_start(
         {"session_id": "s1", "agent_id": "a1", "model": "system.ai.claude-opus-4-8"}

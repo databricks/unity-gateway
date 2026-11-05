@@ -24,6 +24,7 @@ _REAL_SUDO_REPLACE = managed_files._sudo_replace
 _REAL_MANAGED_FILES_SUPPORTED = managed_files.managed_files_supported
 _REAL_WINDOWS_REPLACE = managed_files._windows_replace
 _REAL_SUBPROCESS_RUN = managed_files.subprocess_cross_os.run
+_REAL_SUDO_NEEDS_PASSWORD = managed_files._sudo_needs_password
 
 
 @pytest.fixture(autouse=True)
@@ -452,6 +453,29 @@ class TestSudoReplace:
         assert "$(not-a-command)\n" not in command[3]
         assert kwargs == {"capture_output": True, "text": True, "check": True, "stdin": None}
         assert source_path is not None and not source_path.exists()
+
+    def test_noninteractive_new_file_is_created_with_sudo_n(self, tmp_path, monkeypatch):
+        # The header mod's files are new files; a headless configure creates them with sudo -n.
+        path = tmp_path / "register.ts"
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        monkeypatch.setitem(
+            managed_files._SUDO_REPLACE_TARGETS, managed_files.OS.LINUX, frozenset({path})
+        )
+        monkeypatch.setattr(managed_files, "_sudo_replace", _REAL_SUDO_REPLACE)
+        calls: list = []
+        monkeypatch.setattr(
+            managed_files.subprocess_cross_os,
+            "run",
+            lambda command, **kwargs: calls.append((command, kwargs)),
+        )
+
+        managed_files.reconcile_privileged_files({path: "mod"}, display="Claude Code")
+
+        assert len(calls) == 1
+        command, kwargs = calls[0]
+        assert "-n" in command
+        assert kwargs["stdin"] is subprocess.DEVNULL
 
     @pytest.mark.parametrize("denied", [False, True])
     def test_noninteractive_repair_uses_sudo_n_without_session_or_stdin(
@@ -2028,3 +2052,112 @@ def test_sudo_command_derives_prompt_policy(monkeypatch, interactive):
 
     expected = ["/usr/bin/sudo", *([] if interactive else ["-n"]), "cp", "a", "b"]
     assert managed_files._sudo_command("cp", "a", "b") == expected
+
+
+class TestPasswordNote:
+    @pytest.fixture(autouse=True)
+    def _real_check(self, monkeypatch):
+        monkeypatch.setattr(managed_files, "_sudo_needs_password", _REAL_SUDO_NEEDS_PASSWORD)
+        monkeypatch.setattr(managed_files, "_sudo_needs_password_cache", None)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+
+    @staticmethod
+    def _fake_sudo(monkeypatch, returncode):
+        commands: list[list[str]] = []
+
+        def run(command, **kwargs):
+            commands.append(command)
+            return subprocess.CompletedProcess(command, returncode)
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run)
+        return commands
+
+    def test_passwordless_sudo_suppresses_the_note_and_is_checked_once(self, monkeypatch):
+        notes: list[str] = []
+        commands = self._fake_sudo(monkeypatch, 0)
+        monkeypatch.setattr(managed_files, "print_note", notes.append)
+
+        managed_files._print_managed_write_permission("Claude Code")
+        managed_files._print_managed_write_permission("Codex")
+
+        assert notes == []
+        assert commands == [["/usr/bin/sudo", "-n", "true"]]
+
+    def test_sudo_needing_a_password_still_prints_the_note(self, monkeypatch):
+        notes: list[str] = []
+        self._fake_sudo(monkeypatch, 1)
+        monkeypatch.setattr(managed_files, "print_note", notes.append)
+
+        managed_files._print_managed_write_permission("Codex")
+
+        assert notes == ["Enter password to configure settings for Codex."]
+
+    def test_passwordless_batch_still_reports_success(self, monkeypatch):
+        successes: list[str] = []
+        self._fake_sudo(monkeypatch, 0)
+        monkeypatch.setattr(managed_files, "print_note", lambda _message: None)
+        monkeypatch.setattr(managed_files, "print_success", successes.append)
+
+        with managed_files.managed_write_batch(["Codex"]):
+            managed_files._print_managed_write_permission("Codex")
+
+        assert successes == ["Settings configured for Codex"]
+
+    def test_no_sudo_call_on_windows_or_in_dry_run(self, monkeypatch):
+        commands = self._fake_sudo(monkeypatch, 0)
+
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
+        assert managed_files._sudo_needs_password() is True
+
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        config_io.set_dry_run(True)
+        assert managed_files._sudo_needs_password() is True
+
+        assert commands == []
+
+
+class TestPerUserPaths:
+    def _roots(self, monkeypatch, tmp_path):
+        home = tmp_path / "profiles" / "me"
+        home.mkdir(parents=True)
+        monkeypatch.setattr(managed_files.Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setattr(
+            managed_files.system_cross_os, "user_profiles_dir", lambda: tmp_path / "profiles"
+        )
+        shared = tmp_path / "usr" / "local" / "bin"
+        shared.mkdir(parents=True)
+        return home, shared
+
+    def test_reports_paths_in_any_users_home(self, monkeypatch, tmp_path):
+        home, shared = self._roots(monkeypatch, tmp_path)
+        mine = str(home / ".local" / "bin" / "ug")
+        theirs = str(tmp_path / "profiles" / "other" / "bin" / "python")
+        ok = str(shared / "ug")
+
+        assert managed_files.per_user_paths([mine, theirs, ok]) == [mine, theirs]
+
+    def test_follows_a_shared_symlink_into_a_home(self, monkeypatch, tmp_path):
+        home, shared = self._roots(monkeypatch, tmp_path)
+        target = home / ".local" / "share" / "ug"
+        target.parent.mkdir(parents=True)
+        target.write_text("", encoding="utf-8")
+        link = shared / "ug"
+        link.symlink_to(target)
+
+        assert managed_files.per_user_paths([str(link)]) == [str(link)]
+
+    def test_ignores_a_home_of_the_filesystem_root(self, monkeypatch, tmp_path):
+        # Some MDM and system jobs run with HOME=/, which would otherwise contain every path.
+        _, shared = self._roots(monkeypatch, tmp_path)
+        root = Path(tmp_path.anchor)
+        monkeypatch.setattr(managed_files.Path, "home", classmethod(lambda cls: root))
+        theirs = str(tmp_path / "profiles" / "other" / "ug")
+
+        assert managed_files.per_user_paths([str(shared / "ug"), theirs]) == [theirs]
+
+    def test_without_a_profiles_folder_checks_only_home(self, monkeypatch, tmp_path):
+        home, _ = self._roots(monkeypatch, tmp_path)
+        monkeypatch.setattr(managed_files.system_cross_os, "user_profiles_dir", lambda: None)
+        other = str(tmp_path / "profiles" / "other" / "ug")
+
+        assert managed_files.per_user_paths([str(home / "ug"), other]) == [str(home / "ug")]

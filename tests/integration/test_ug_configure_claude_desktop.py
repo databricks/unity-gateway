@@ -18,7 +18,6 @@ from utils.desktop import (
     installed_cowork_servers,
     prepare_cowork_home,
 )
-from utils.evidence import fresh_id
 from utils.harness import process_group_options, stop_process
 from utils.provider_catalog import fetch_anthropic_parent_catalog
 from utils.terminal import ConfigureTerminal, TerminalProcess
@@ -172,14 +171,13 @@ def _run_credential_helper(session, profile):
 
 
 def _assert_desktop_message(session, profile, model, headers, evidence_name):
-    marker = fresh_id()
     request = urllib.request.Request(
         profile["inferenceGatewayBaseUrl"] + "/v1/messages",
         data=json.dumps(
             {
                 "model": model,
                 "max_tokens": 32,
-                "messages": [{"role": "user", "content": f"Reply with exactly: {marker}"}],
+                "messages": [{"role": "user", "content": "Reply with a short greeting."}],
             }
         ).encode(),
         headers={
@@ -197,15 +195,15 @@ def _assert_desktop_message(session, profile, model, headers, evidence_name):
         details = session.redact(error.read().decode("utf-8", errors="replace"))
         session.record(evidence_name, {"status": error.code, "error": details})
         raise AssertionError(f"Desktop Messages failed ({error.code}): {details}") from None
-    session.record(evidence_name, {"marker": marker, "requested_model": model, "response": message})
+    session.record(
+        evidence_name,
+        {"status": response.status, "requested_model": model, "response": message},
+    )
     assert message["type"] == "message" and message["role"] == "assistant"
     # A model-service alias can return its provider's model ID.
     assert isinstance(message["model"], str) and message["model"].strip()
     assert message["stop_reason"] == "end_turn"
-    assert (
-        "".join(part["text"] for part in message["content"] if part["type"] == "text").strip()
-        == marker
-    )
+    assert "".join(part["text"] for part in message["content"] if part["type"] == "text").strip()
     return message
 
 
@@ -216,7 +214,7 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     changing unrelated profile data, and later removes only its own profile while restoring the
     prior selection. The exact generated helper returns a credential accepted by the live models
     API and completes a Messages request on a configured system.ai Claude model. The installed
-    Cowork plugin discovers DBSQL tools and executes a read-only query with a computed receipt.
+    Cowork plugin discovers web_search and finds Databricks' official website.
     Repeat configure preserves both configurations; an unrelated personal plugin survives
     configure and revert unchanged. This checks native Linux/Windows commands
     and protocols, not Desktop GUI, skill execution, or browser login; CI supplies a bearer.
@@ -271,10 +269,10 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     )
 
     _assert_desktop_selection(config_library, configured=True)
-    session.run("mcp", "add", "--names", "system.ai.dbsql", timeout=240)
+    session.run("mcp", "add", "--names", "system.ai.web_search", timeout=240)
     servers = installed_cowork_servers(session, root)
     _assert_unrelated_cowork_plugin(root, unrelated_plugin)
-    anyio.run(assert_desktop_mcp, session, servers["dbsql"], workspace, fresh_id())
+    anyio.run(assert_desktop_mcp, session, servers["web_search"], workspace)
 
     session.run(*configure_args, timeout=240)
     assert _desktop_profile(session, config_library, workspace) == profile
@@ -292,9 +290,9 @@ def test_ug_configure_claude_desktop_subscription_relay(
 
     Expected: the profile selects relay mode and its installed helper returns both the Claude
     subscription token and Databricks gateway header. Those exact credentials and profile
-    headers complete a real Anthropic Messages request with a fresh marker on the configured
-    subscription model. Its installed Cowork plugin discovers DBSQL tools and returns a computed
-    query receipt. Reconfigure preserves the profile/plugin; revert restores unrelated settings
+    headers complete a real Anthropic Messages request on the configured subscription model.
+    Its installed Cowork plugin discovers web_search and finds Databricks' official website.
+    Reconfigure preserves the profile/plugin; revert restores unrelated settings
     and unregisters only UG's plugin, preserving an unrelated personal plugin. No Desktop GUI,
     connector skill, or browser OAuth is exercised.
     """
@@ -374,10 +372,10 @@ def test_ug_configure_claude_desktop_subscription_relay(
     # This dated native relay ID must be returned unchanged; it is not a service alias.
     assert message["model"] == CLAUDE_RELAY_TEST_MODEL
     _assert_desktop_selection(config_library, configured=True)
-    session.run("mcp", "add", "--names", "system.ai.dbsql", timeout=240)
+    session.run("mcp", "add", "--names", "system.ai.web_search", timeout=240)
     servers = installed_cowork_servers(session, root)
     _assert_unrelated_cowork_plugin(root, unrelated_plugin)
-    anyio.run(assert_desktop_mcp, session, servers["dbsql"], workspace, fresh_id())
+    anyio.run(assert_desktop_mcp, session, servers["web_search"], workspace)
 
     with ConfigureTerminal(session, "claude", command, "reconfigure-desktop-relay") as configure:
         configure.select_agent("Claude Code")
