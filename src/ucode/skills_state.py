@@ -148,51 +148,63 @@ def _to_record(install: SkillInstall) -> dict:
     return {key: value for key, value in record.items() if value is not None}
 
 
-def record_downloads(installs: list[SkillInstall]) -> None:
-    """Record each freshly downloaded install, reconciling superseded records."""
-    if not installs:
-        return
-    records = dict(enumerate(_load()))
-    by_key: dict[tuple[str | None, str | None, str], set[int]] = {}
-    by_dir: dict[str, set[int]] = {}
+class _AttributionIndex:
+    """Track surviving records and their owners throughout one download batch."""
 
-    def indexed_key(record: dict) -> tuple[str | None, str | None, str] | None:
+    def __init__(self, records: list[dict]) -> None:
+        self.records: dict[int, dict] = {}
+        self.by_key: dict[tuple[str | None, str | None, str], set[int]] = {}
+        self.by_dir: dict[str, set[int]] = {}
+        self._next_id = 0
+        for record in records:
+            self.add(record)
+
+    @staticmethod
+    def _key(record: dict) -> tuple[str | None, str | None, str] | None:
         if not isinstance(record.get("base", ""), str):
             return None
         key = _record_key(record)
         # Malformed identities cannot match a typed install, but may still claim a directory.
         return key if all(part is None or isinstance(part, str) for part in key) else None
 
-    def index(record_id: int, record: dict) -> None:
-        if (key := indexed_key(record)) is not None:
-            by_key.setdefault(key, set()).add(record_id)
+    def add(self, record: dict) -> None:
+        record_id = self._next_id
+        self._next_id += 1
+        self.records[record_id] = record
+        if (key := self._key(record)) is not None:
+            self.by_key.setdefault(key, set()).add(record_id)
         for directory in record.get("dirs") or []:
-            by_dir.setdefault(_norm(directory), set()).add(record_id)
+            if isinstance(directory, str):
+                self.by_dir.setdefault(_norm(directory), set()).add(record_id)
 
-    def remove(record_id: int) -> dict:
-        record = records.pop(record_id)
-        if (key := indexed_key(record)) is not None:
-            by_key[key].discard(record_id)
+    def remove(self, record_id: int) -> dict:
+        record = self.records.pop(record_id)
+        if (key := self._key(record)) is not None:
+            self.by_key[key].discard(record_id)
         for directory in record.get("dirs") or []:
-            by_dir[_norm(directory)].discard(record_id)
+            if isinstance(directory, str):
+                self.by_dir[_norm(directory)].discard(record_id)
         return record
 
-    for record_id, record in records.items():
-        index(record_id, record)
-    for record_id, install in enumerate(installs, start=len(records)):
+
+def record_downloads(installs: list[SkillInstall]) -> None:
+    """Record each freshly downloaded install, reconciling superseded records."""
+    if not installs:
+        return
+    index = _AttributionIndex(_load())
+    for install in installs:
         record = _to_record(install)
         overwritten: set[int] = set()
         for directory in install.dirs:
-            overwritten.update(by_dir.get(_norm(directory), ()))
-        superseded = overwritten | by_key.get(_record_key(record), set())
+            overwritten.update(index.by_dir.get(_norm(directory), ()))
+        superseded = overwritten | index.by_key.get(_record_key(record), set())
         for old_id in sorted(superseded):
-            old = remove(old_id)
+            old = index.remove(old_id)
             # Overwritten directories belong to the new install; only renames leave orphans.
             if old_id not in overwritten:
                 _delete_dirs(old.get("dirs") or [])
-        records[record_id] = record
-        index(record_id, record)
-    _save(list(records.values()))
+        index.add(record)
+    _save(list(index.records.values()))
 
 
 def list_downloaded() -> list[dict]:

@@ -1,9 +1,10 @@
 # Test suites and user journeys
 
 `test_skills_state.py` covers batch attribution reconciliation with indexed
-directories and install identities. It guards linear path-normalization work,
+directories and install identities. It compares path-normalization growth as batches double,
 intra-batch ownership changes, duplicate historical owners, metastore separation,
-and orphan cleanup using real temporary files. These are local component checks.
+malformed-directory collision recovery, and orphan cleanup both within and across
+batches using real temporary files. These are local component checks.
 
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including

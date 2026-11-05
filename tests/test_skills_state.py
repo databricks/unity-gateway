@@ -163,8 +163,6 @@ class TestQueries:
 
 class TestReconciliation:
     def test_batch_does_not_rescan_paths_for_each_install(self, tmp_path, monkeypatch):
-        installs = [_install(tmp_path, f"main.default.skill_{i}", f"skill-{i}") for i in range(200)]
-        skills_state.record_downloads(installs)
         calls = 0
         normalize = skills_state._norm
 
@@ -174,9 +172,19 @@ class TestReconciliation:
             return normalize(path)
 
         monkeypatch.setattr(skills_state, "_norm", counted)
-        skills_state.record_downloads(installs)
-        assert len(skills_state.list_downloaded()) == len(installs)
-        assert calls < 20 * (len(installs) + len(installs))
+        counts = []
+        for size in (100, 200):
+            installs = [
+                _install(tmp_path, f"main.default.skill_{i}", f"skill-{i}") for i in range(size)
+            ]
+            skills_state.record_downloads(installs)
+            calls = 0
+            skills_state.record_downloads(installs)
+            counts.append(calls)
+            assert len(skills_state.list_downloaded()) == size
+        # Doubling both the manifest and batch must not quadruple normalization work.
+        assert counts[0] > 0
+        assert counts[1] <= 2 * counts[0]
 
     def test_batch_collision_then_rename_preserves_new_owner(self, tmp_path):
         first = _install(tmp_path, "main.default.first", "shared")
@@ -215,7 +223,11 @@ class TestReconciliation:
     )
     def test_unhashable_identity_keeps_directory_collision_behavior(self, tmp_path, invalid):
         current = _install(tmp_path, "main.default.current", "shared")
-        malformed = {**skills_state._to_record(current), **invalid}
+        malformed = {
+            **skills_state._to_record(current),
+            **invalid,
+            "dirs": [*current.dirs, None],
+        }
         unrelated = {**malformed, "dirs": [str(tmp_path / "unrelated")]}
         skills_state._save([malformed, unrelated])
         _write_dirs(current)
@@ -234,15 +246,19 @@ class TestReconciliation:
 
         assert len(skills_state.list_downloaded()) == 1
 
-    def test_re_download_renamed_bundle_deletes_orphan(self, tmp_path):
+    @pytest.mark.parametrize("same_batch", [False, True])
+    def test_re_download_renamed_bundle_deletes_orphan(self, tmp_path, same_batch):
         base = tmp_path / "proj"
         old = _install(base, "main.default.triage", "triage")
         new = _install(base, "main.default.triage", "triage-renamed")
         _write_dirs(old)
         _write_dirs(new)
 
-        skills_state.record_downloads([old])
-        skills_state.record_downloads([new])
+        if same_batch:
+            skills_state.record_downloads([old, new])
+        else:
+            skills_state.record_downloads([old])
+            skills_state.record_downloads([new])
 
         records = skills_state.list_downloaded()
         assert len(records) == 1
