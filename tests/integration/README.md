@@ -1,5 +1,9 @@
 # Integration tests
 
+The Claude headless prompt journey enables `UG_STARTUP_TIMING`, completes its
+real file task, and checks fixed-schema stderr timing records through handoff
+while requiring JSON-only agent stdout.
+
 The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
 including exact service URLs, native OAuth metadata, and real `codex mcp get`
 readback. The per-user configuration remains separate.
