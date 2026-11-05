@@ -32,13 +32,6 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
-from ucode.auto_compact_window import (  # noqa: F401  (re-exported for callers and tests)
-    AUTO_COMPACT_CAP,
-    CLAUDE_AUTO_COMPACT_WINDOW_MAX,
-    CLAUDE_AUTO_COMPACT_WINDOW_MIN,
-    strip_model_id_prefixes,
-    valid_auto_compact_window,
-)
 from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
@@ -3319,53 +3312,51 @@ def maybe_add_gpt_1m_suffix(model: str) -> str:
     return f"{model}[1m]" if _GPT_1M_MODEL_RE.match(model) else model
 
 
-def _is_claude_model_id(model: str) -> bool:
-    return strip_model_id_prefixes(model).startswith("claude-")
+# The `[1m]` hint makes Claude Code size GPT sessions at 1M, but the gateway rejects them near 920K
+# input tokens with an error Claude Code's reactive compaction doesn't recognize. Claude Code
+# compacts ~33K below this window and only between turns, so 800K leaves room for a large turn.
+GPT_AUTO_COMPACT_WINDOW = 800_000
+
+# Claude Code's accepted `autoCompactWindow` range; values outside it are not a usable choice.
+CLAUDE_AUTO_COMPACT_WINDOW_MIN = 100_000
+CLAUDE_AUTO_COMPACT_WINDOW_MAX = 1_000_000
 
 
-def is_auto_compact_capped_model(model: str) -> bool:
-    """Whether Claude Code sees ``model`` with a `[1m]` hint on a non-Claude model.
-
-    Claude models really have 1M. A non-Claude id qualifies when it already carries `[1m]` (smart
-    routing's catalog) or ug adds the hint (``maybe_add_gpt_1m_suffix``); a plain GLM picker id
-    has no hint, so Claude Code sizes it from its own table and needs no cap.
-    """
-    if _is_claude_model_id(model):
-        return False
-    return model.endswith("[1m]") or bool(_GPT_1M_MODEL_RE.match(model))
-
-
-def is_auto_compact_model_key(key: str) -> bool:
-    """Whether ``key`` is a ``modelSettings`` id whose ``autoCompactWindow`` leaf ug may own.
-
-    A stored key has no `[1m]`, so it cannot show whether the hint applied; any non-Claude id
-    except gpt-oss (which ug never suffixes) may have been capped by an earlier launch.
-    """
-    return not (
-        key.endswith("[1m]")
-        or _is_claude_model_id(key)
-        or strip_model_id_prefixes(key).startswith("gpt-oss")
+def valid_auto_compact_window(value: object) -> int | None:
+    """``value`` as an ``autoCompactWindow`` Claude Code accepts, or None."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return (
+        value if CLAUDE_AUTO_COMPACT_WINDOW_MIN <= value <= CLAUDE_AUTO_COMPACT_WINDOW_MAX else None
     )
 
 
-def auto_compact_cap_model_settings(
+def is_gpt_auto_compact_model_key(key: str) -> bool:
+    """Whether ``key`` is a ``modelSettings`` id ug writes ``GPT_AUTO_COMPACT_WINDOW`` for."""
+    return bool(_GPT_1M_MODEL_RE.match(key))
+
+
+def gpt_auto_compact_model_settings(
     models: Iterable[object], user_windows: Mapping[str, int] | None = None
 ) -> dict[str, dict[str, int]]:
-    """Claude Code ``modelSettings`` entries capping auto-compact for non-Claude `[1m]` models.
+    """Claude Code ``modelSettings`` entries capping auto-compact for ids that get the `[1m]` hint.
 
     Keys are the ids without `[1m]`; Claude Code applies such a key to the suffixed spelling too.
-    Non-string ids and ids without the hint (see ``is_auto_compact_capped_model``) are skipped.
-    Each window is the user's own choice from ``user_windows`` (keyed by the same ids), capped at
-    ``AUTO_COMPACT_CAP``.
+    Non-string and non-GPT ids (including gpt-oss and Claude) are skipped. Each window is the
+    user's own choice from ``user_windows`` (keyed by the same ids), capped at
+    ``GPT_AUTO_COMPACT_WINDOW``.
     """
     user_windows = user_windows or {}
-    entries: dict[str, dict[str, int]] = {}
-    for model in models:
-        if isinstance(model, str) and is_auto_compact_capped_model(model):
-            canonical = model.removesuffix("[1m]")
-            window = min(user_windows.get(canonical, AUTO_COMPACT_CAP), AUTO_COMPACT_CAP)
-            entries[canonical] = {"autoCompactWindow": window}
-    return entries
+    return {
+        canonical: {
+            "autoCompactWindow": min(
+                user_windows.get(canonical, GPT_AUTO_COMPACT_WINDOW), GPT_AUTO_COMPACT_WINDOW
+            )
+        }
+        for model in models
+        if isinstance(model, str)
+        and is_gpt_auto_compact_model_key(canonical := model.removesuffix("[1m]"))
+    }
 
 
 # A bare launch pins the first tier the service offers, so it never dead-ends on a model the

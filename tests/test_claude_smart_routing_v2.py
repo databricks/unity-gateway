@@ -15,7 +15,7 @@ import pytest
 from ucode import custom_oauth
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
-from ucode.databricks import AUTO_COMPACT_CAP, AnthropicModelCatalog
+from ucode.databricks import GPT_AUTO_COMPACT_WINDOW, AnthropicModelCatalog
 from ucode.smart_routing import claude_hooks, routing, v2
 
 if sys.platform != "win32":
@@ -607,11 +607,9 @@ class TestV2Launch:
                     "system.ai.gpt-6-luna",
                     "system.ai.gpt-oss-120b",
                     "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol",
-                    # Server catalog ids already carry `[1m]`; plain GLM has no hint.
+                    # GLM and Kimi reach ~1.03-1.05M at the gateway, so `[1m]` needs no cap.
                     "system.ai.glm-5-3[1m]",
                     "system.ai.kimi-k3[1m]",
-                    "system.ai.claude-fable-5-1[1m]",
-                    "system.ai.glm-4-6",
                 ],
                 model_id_to_display_name={},
             ),
@@ -666,7 +664,7 @@ class TestV2Launch:
                 model_name=claude._maybe_add_1m_suffix,
             )
 
-        window = {"autoCompactWindow": AUTO_COMPACT_CAP}
+        window = {"autoCompactWindow": GPT_AUTO_COMPACT_WINDOW}
         # Keys are the ids routed agents and first-prompt switches use, without the `[1m]` hint.
         assert captured["settings"]["modelSettings"] == {
             "system.ai.claude-opus-4-8": {"userField": 1},
@@ -674,8 +672,6 @@ class TestV2Launch:
             "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol": window,
             # The user's lower `/autocompact` window, keyed with `[1m]`, applies to the routed id.
             "system.ai.gpt-5-6-sol": {"autoCompactWindow": 300_000},
-            "system.ai.glm-5-3": window,
-            "system.ai.kimi-k3": window,
         }
         assert "system.ai.gpt-6-luna[1m]" in captured["plugin_models"]
         assert user_settings.read_bytes() == original_user_settings

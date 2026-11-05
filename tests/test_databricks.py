@@ -1045,31 +1045,24 @@ class TestMaybeAddGpt1mSuffix:
         assert db_mod.maybe_add_gpt_1m_suffix(model) == expected
 
 
-class TestAutoCompactModelSettings:
+class TestGptAutoCompactModelSettings:
     def test_caps_gpt_ids_under_their_canonical_key(self):
-        window = {"autoCompactWindow": db_mod.AUTO_COMPACT_CAP}
-        assert db_mod.auto_compact_cap_model_settings(
+        cap = db_mod.GPT_AUTO_COMPACT_WINDOW
+        assert db_mod.gpt_auto_compact_model_settings(
             [
                 "system.ai.gpt-6-luna[1m]",
-                "system.ai.gpt-6-luna",
+                "system.ai.gpt-5-5",
                 "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol",
                 "system.ai.gpt-oss-120b",
                 "system.ai.claude-opus-4-8[1m]",
+                "system.ai.kimi-k3[1m]",
                 None,
-            ]
-        ) == {
-            "system.ai.gpt-6-luna": window,
-            "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol": window,
-        }
-
-    def test_user_windows_are_capped(self):
-        assert db_mod.auto_compact_cap_model_settings(
-            ["system.ai.gpt-6-luna", "system.ai.gpt-5-5[1m]", "system.ai.gpt-5-4"],
+            ],
             {"system.ai.gpt-6-luna": 500_000, "system.ai.gpt-5-5": 1_000_000},
         ) == {
             "system.ai.gpt-6-luna": {"autoCompactWindow": 500_000},
-            "system.ai.gpt-5-5": {"autoCompactWindow": db_mod.AUTO_COMPACT_CAP},
-            "system.ai.gpt-5-4": {"autoCompactWindow": db_mod.AUTO_COMPACT_CAP},
+            "system.ai.gpt-5-5": {"autoCompactWindow": cap},
+            "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol": {"autoCompactWindow": cap},
         }
 
     @pytest.mark.parametrize(
@@ -1082,46 +1075,30 @@ class TestAutoCompactModelSettings:
             (True, None),
             (500_000.0, None),
             ("500000", None),
-            (None, None),
         ],
     )
     def test_valid_auto_compact_window(self, value, expected):
         assert db_mod.valid_auto_compact_window(value) == expected
 
-    def test_user_windows_for_any_capped_model_are_capped(self):
-        assert db_mod.auto_compact_cap_model_settings(
-            ["system.ai.kimi-k3[1m]", "system.ai.glm-5-3[1m]", "system.ai.gpt-6-luna"],
-            {"system.ai.kimi-k3": 900_000, "system.ai.glm-5-3": 300_000},
-        ) == {
-            "system.ai.kimi-k3": {"autoCompactWindow": db_mod.AUTO_COMPACT_CAP},
-            "system.ai.glm-5-3": {"autoCompactWindow": 300_000},
-            "system.ai.gpt-6-luna": {"autoCompactWindow": db_mod.AUTO_COMPACT_CAP},
-        }
-
-    def test_gate_needs_a_non_claude_one_m_hint(self):
-        assert db_mod.is_auto_compact_capped_model("system.ai.kimi-k3[1m]")
-        assert db_mod.is_auto_compact_capped_model("system.ai.gpt-oss-120b[1m]")
-        assert not db_mod.is_auto_compact_capped_model("system.ai.glm-5-3")
-        assert not db_mod.is_auto_compact_capped_model("system.ai.gpt-oss-120b")
-        assert not db_mod.is_auto_compact_capped_model("databricks-claude-opus-4-8[1m]")
-        assert not db_mod.is_auto_compact_capped_model("system.ai.claude-fable-5-1[1m]")
-
     def test_window_is_within_claude_code_range_and_below_gateway_cap(self):
-        assert 100_000 <= db_mod.AUTO_COMPACT_CAP <= 900_000
+        assert 100_000 <= db_mod.GPT_AUTO_COMPACT_WINDOW <= 900_000
 
     @pytest.mark.parametrize(
-        "model",
-        ["system.ai.gpt-6-luna", "databricks-gpt-6-astra", "gpt-4.1"],
+        ("model", "expected"),
+        [
+            ("system.ai.gpt-6-luna", True),
+            ("databricks-gpt-6-astra", True),
+            ("gpt-4.1", True),
+            ("system.ai.gpt-oss-120b", False),
+            ("system.ai.claude-opus-4-8", False),
+            ("system.ai.glm-5-3", False),
+            ("system.ai.gpt-6-luna[1m]", False),
+        ],
     )
-    def test_matches_the_ids_that_get_the_1m_hint(self, model):
-        assert db_mod.is_auto_compact_model_key(model)
-        assert db_mod.maybe_add_gpt_1m_suffix(model) == f"{model}[1m]"
-
-    @pytest.mark.parametrize(
-        "model", ["system.ai.gpt-oss-120b", "system.ai.claude-opus-4-8", "system.ai.gpt-6-luna[1m]"]
-    )
-    def test_rejects_ids_without_the_hint(self, model):
-        assert not db_mod.is_auto_compact_model_key(model)
+    def test_key_matches_the_ids_that_get_the_1m_hint(self, model, expected):
+        assert db_mod.is_gpt_auto_compact_model_key(model) is expected
+        if expected:
+            assert db_mod.maybe_add_gpt_1m_suffix(model) == f"{model}[1m]"
 
 
 class TestResolveProviderLaunchModel:

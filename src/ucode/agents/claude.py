@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from ucode.auto_compact_window import AUTO_COMPACT_CAP, user_auto_compact_windows
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -48,17 +47,19 @@ from ucode.custom_oauth import (
     custom_oauth_cli_enabled,
 )
 from ucode.databricks import (
+    GPT_AUTO_COMPACT_WINDOW,
     AnthropicModelCatalog,
     _debug,
-    auto_compact_cap_model_settings,
     build_auth_shell_command,
     build_otel_headers_shell_command,
     build_otel_traces_endpoint,
     build_tool_base_url,
     get_databricks_token,
-    is_auto_compact_model_key,
+    gpt_auto_compact_model_settings,
+    is_gpt_auto_compact_model_key,
     maybe_add_gpt_1m_suffix,
     ug_binary,
+    valid_auto_compact_window,
 )
 from ucode.launcher import exec_or_spawn
 from ucode.managed_config import refresh_managed_config
@@ -751,29 +752,40 @@ def _user_auto_compact_windows(user_settings_path: Path) -> dict[str, int]:
     Read-only: `/autocompact` writes this file, and ug never does. If both spellings of an id carry
     a value, the lower wins.
     """
-    return user_auto_compact_windows(read_json_safe(user_settings_path))
+    model_settings = read_json_safe(user_settings_path).get(CLAUDE_MODEL_SETTINGS_KEY)
+    if not isinstance(model_settings, dict):
+        return {}
+    windows: dict[str, int] = {}
+    for model, entry in model_settings.items():
+        if not isinstance(model, str) or not isinstance(entry, dict):
+            continue
+        window = valid_auto_compact_window(entry.get(CLAUDE_AUTO_COMPACT_WINDOW_KEY))
+        if window is not None:
+            canonical = model.removesuffix("[1m]")
+            windows[canonical] = min(windows.get(canonical, window), window)
+    return windows
 
 
-def auto_compact_model_settings(
+def gpt_model_settings(
     models: Iterable[object], user_settings_path: Path | None = None
 ) -> dict[str, dict[str, int]]:
-    """``modelSettings`` entries capping auto-compact for ug's ``--settings`` files.
+    """GPT ``modelSettings`` entries for ug's ``--settings`` files, honoring a lower user window.
 
     ``--settings`` outranks the user's file and would otherwise replace their `/autocompact`
-    choice, so ug writes min(user value, ``AUTO_COMPACT_CAP``) and warns once when it lowers the
-    user's value.
+    choice, so ug writes min(user value, ``GPT_AUTO_COMPACT_WINDOW``) and warns once when it
+    lowers the user's value.
     """
     user_windows = _user_auto_compact_windows(user_settings_path or CLAUDE_USER_SETTINGS_PATH)
-    entries = auto_compact_cap_model_settings(models, user_windows)
+    entries = gpt_auto_compact_model_settings(models, user_windows)
     for model in entries:
         window = user_windows.get(model)
-        if window is None or window <= AUTO_COMPACT_CAP:
+        if window is None or window <= GPT_AUTO_COMPACT_WINDOW:
             continue
         if (model, window) not in _warned_auto_compact_caps:
             _warned_auto_compact_caps.add((model, window))
             print_warning(
-                f"autoCompactWindow {window} for {model} is capped at {AUTO_COMPACT_CAP}: "
-                "the gateway rejects longer requests for this model."
+                f"autoCompactWindow {window} for {model} is capped at {GPT_AUTO_COMPACT_WINDOW}: "
+                "the gateway rejects requests above ~920K tokens."
             )
     return entries
 
@@ -796,21 +808,18 @@ def _managed_settings_named_model_ids() -> list[object]:
         return []
 
 
-def _sync_auto_compact_model_settings(
-    settings: dict, also_named_model_ids: Iterable[object] = ()
-) -> None:
-    """Write ug's auto-compact ``modelSettings`` leaves for the models ``settings`` names.
+def _sync_gpt_model_settings(settings: dict, also_named_model_ids: Iterable[object] = ()) -> None:
+    """Write ug's GPT ``modelSettings`` leaves for the models ``settings`` names.
 
     ``also_named_model_ids`` are ids another settings source offers that this document must cap
     too; they count as named, so stale-entry cleanup keeps them.
 
-    The ``autoCompactWindow`` leaf of a capped non-Claude id is ug's in the file this edits: it is
-    set for every such model the document names with a `[1m]` hint (see
-    ``auto_compact_model_settings`` for the value) and dropped for ids it no longer names.
-    Sibling fields and other entries are left alone, and only entries emptied by a removal are
-    dropped.
+    The ``autoCompactWindow`` leaf of a GPT id is ug's in the file this edits: it is set
+    for every GPT model the document names (see ``gpt_model_settings`` for the value) and dropped
+    for GPT ids it no longer names. Sibling fields and non-GPT entries are left alone, and only
+    entries emptied by a removal are dropped.
     """
-    entries = auto_compact_model_settings([*_settings_model_ids(settings), *also_named_model_ids])
+    entries = gpt_model_settings([*_settings_model_ids(settings), *also_named_model_ids])
     model_settings = settings.get(CLAUDE_MODEL_SETTINGS_KEY)
     if not isinstance(model_settings, dict):
         if entries:
@@ -818,7 +827,7 @@ def _sync_auto_compact_model_settings(
         return
     removed = False
     for model, entry in list(model_settings.items()):
-        if model in entries or not is_auto_compact_model_key(model):
+        if model in entries or not is_gpt_auto_compact_model_key(model):
             continue
         if isinstance(entry, dict) and CLAUDE_AUTO_COMPACT_WINDOW_KEY in entry:
             del entry[CLAUDE_AUTO_COMPACT_WINDOW_KEY]
@@ -1869,18 +1878,19 @@ def write_tool_config(
             # Only the --settings file carries the cap: an admin's managed `modelSettings` is
             # theirs, and the --settings layer outranks the user's file, which the cap must beat.
             # Derived from the final file, so family defaults and pickers ug preserved are covered.
-            _sync_auto_compact_model_settings(merged, _managed_settings_named_model_ids())
+            _sync_gpt_model_settings(merged, _managed_settings_named_model_ids())
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
     managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
-    private_settings = _compose(
-        read_json_safe(CLAUDE_SETTINGS_PATH),
-        enforce_model_default_hierarchy=source_scoped_defaults,
-        managed_settings_snapshots=None,
+    write_json_file(
+        CLAUDE_SETTINGS_PATH,
+        _compose(
+            read_json_safe(CLAUDE_SETTINGS_PATH),
+            enforce_model_default_hierarchy=source_scoped_defaults,
+            managed_settings_snapshots=None,
+        ),
     )
-    # Only the --settings file carries the hook: Claude Code merges hooks across sources.
-    write_json_file(CLAUDE_SETTINGS_PATH, private_settings)
 
     # The admin's settings may not displace anything ug writes, except the hooks and deny lists ug
     # only merges its own entries into.
@@ -2583,7 +2593,7 @@ def _compose_v2_settings(
 
 def _start_model_settings(start_model: str | None) -> dict:
     """Launch-only settings for a start model the settings file may not name (e.g. ``--model``)."""
-    model_settings = auto_compact_model_settings([start_model])
+    model_settings = gpt_model_settings([start_model])
     return {CLAUDE_MODEL_SETTINGS_KEY: model_settings} if model_settings else {}
 
 
