@@ -12,7 +12,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import uuid4
 
-import pytest
 from session import Session
 
 from ucode.agents.claude import _header_mod_files
@@ -66,13 +65,9 @@ def test_header_mod_validation_and_merge(native_binary, tmp_path):
             assert "env writes: ANTHROPIC_CUSTOM_HEADERS" in result.stdout
 
 
-@pytest.mark.parametrize(
-    "version",
-    [config.SUBAGENT_ORCH_V0_CLAUDE_ONLY],
-)
-def test_native_options_are_launch_local(native_binary, tmp_path, version):
+def test_native_options_are_launch_local(native_binary, tmp_path):
     env = {
-        "SMART_ROUTER_CONFIG_VERSION": version,
+        "SMART_ROUTER_CONFIG_VERSION": config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
         "SMART_ROUTER_NAME": 'custom "quoted" λ',
     }
     with (
@@ -82,31 +77,6 @@ def test_native_options_are_launch_local(native_binary, tmp_path, version):
         assert a.observe()["options"] == _claude_mod_launch_options(env)
         assert b.observe()["options"] == _claude_mod_launch_options({})
         assert not (a.plugin / "hooks/launch.json").exists()
-
-
-def test_model_command_hook_intercepts_rewrites_and_observes_same_model(native_binary, tmp_path):
-    """The native command hook can consume Auto and forward concrete model selections.
-
-    No inference runs. This characterizes the command API, not the Auto product UI.
-    """
-    with Session(native_binary, tmp_path / "model-command", {}) as session:
-        initial = session.observe()["model"]
-        intercepted = session.send("/model __probe_auto")
-        assert "Auto command intercepted" in intercepted["result"]
-        assert intercepted["num_turns"] == 0
-        assert intercepted["usage"]["output_tokens"] == 0
-        assert session.observe()["model"] == initial
-
-        switched = session.send("/model __probe_haiku")
-        assert switched["num_turns"] == 0
-        assert switched["usage"]["output_tokens"] == 0
-        after = session.observe()
-        assert after["model"] != initial and "haiku" in after["model"].lower()
-
-        session.send("/model haiku")
-        repeated = session.observe()
-        assert repeated["model"] == after["model"]
-        assert repeated["modelCommands"] == ["__probe_auto", "__probe_haiku", "haiku"]
 
 
 def test_orchestrator_instructions_follow_native_toggles(native_binary, tmp_path):

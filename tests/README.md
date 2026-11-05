@@ -1293,5 +1293,6 @@ guards, and Codex session isolation. Native options cover exposure with activity
 `DISABLED_AUTO`, pending routes and continuing children. `native_claude/test_auto_picker.py`
 drives the real picker with resolved options and a fixture admin default, including
 saved/session-only choices and cancellation. Feedback transport is isolated.
+The native suite validates the plugin with the CI-pinned Claude 2.1.290 binary.
 The Auto config version is still unregistered; managed injection/startup, live
 gateway routing, real feedback delivery and durable resume are not covered here.

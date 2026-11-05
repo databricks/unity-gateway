@@ -15,6 +15,7 @@ require opt-out feedback. With feedback enabled, `/model` asks for the reason be
 opening the native picker; cancelling the picker keeps Auto on. Missing defaults and
 failed transitions report actionable errors; failed writes pause dispatch. Native component
 coverage is listed in [the test overview](../tests/README.md#auto-model-picker).
+Native compatibility is validated on Claude Code 2.1.290, the version pinned in CI.
 Durable resume and live gateway coverage remain open.
 
 UG's Claude launcher loads `hooks/register.ts` through the existing launch-scoped

@@ -10,7 +10,7 @@ import {
   RECIPE_FIELD,
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
-import { createIsaacFeedbackState, registerIsaacFeedback, requestAutoFeedback, type FeedbackState } from './isaac-feedback.ts';
+import { createIsaacFeedbackState, registerIsaacFeedback, type FeedbackState } from './isaac-feedback.ts';
 import { isRoutingEnabled } from './routing-state.ts';
 
 type Environment = Record<string, string | undefined>;
@@ -167,11 +167,6 @@ export function register(on: On, options: PluginOptions): void {
     return next({...e, description: `${instructions}\n\n## Usage notes\n\n${notes}`});
   });
 
-  if (auto) {
-    registerAutoPicker(on, options, policy, feedback);
-    on('command.describe', {command: 'smart-router'}, () => ({isHidden: true}));
-  }
-
   // The installed smart-router skill already supplies the slash command.
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
     if (auto) return {text: 'Use /model to choose Auto or a concrete model.'};
@@ -190,6 +185,11 @@ export function register(on: On, options: PluginOptions): void {
     return next(e);
   });
   registerIsaacFeedback(on, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string);
+  if (auto) {
+    registerAutoPicker(on, options, policy, feedback);
+    on('command.describe', {command: 'smart-router'}, () => ({isHidden: true}));
+  }
+
   on('command.run', {command: 'smart-router'}, async ($, e) => {
     const action = e.args.trim();
     try {
@@ -284,7 +284,7 @@ function registerAutoPicker(
     }
     // Ask before the native picker: its closing callback cannot place a feedback pane.
     if (!approved && isRoutingEnabled(await readEffectiveEnvironment($))
-        && await requestAutoFeedback($, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string, async (feedbackArgs) => {
+        && await feedback.requestAutoFeedback!(async (feedbackArgs) => {
       approved = pending = feedbackArgs;
       policy.picking = true;
       const result = await $.command.run({command: 'model', args});

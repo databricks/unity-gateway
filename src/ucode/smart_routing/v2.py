@@ -373,6 +373,7 @@ def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
         else "0",
         "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
         "routeCommand": [],
+        "autoMainModel": "",
         "orchestratorInstructions": (
             orchestrator.CLAUDE_AGENT_DESCRIPTION
             if auto_picker_enabled(source, agent=AGENT_CLAUDE)

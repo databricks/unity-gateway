@@ -26,6 +26,7 @@ function showResult($: EngineInterface, feedbackId: string, sent: boolean): void
 export type FeedbackState = {
   submitted: boolean;
   autoPicker?: boolean;
+  requestAutoFeedback?: (proceed: (args: readonly string[]) => Promise<void>) => Promise<boolean>;
   reason: string;
   lastPromptId?: string | null;
   category?: FeedbackCategory;
@@ -167,6 +168,13 @@ async function openFeedbackForm(
 export function registerIsaacFeedback(
   on: On, state: FeedbackState, isaacExecutable: string, isaacFeedbackDirectory: string,
 ): void {
+  if (state.autoPicker) {
+    on('command.run', {command: 'model'}, ($, e, next) => {
+      // Claude 2.1.290 follows $ only within the module that receives it.
+      state.requestAutoFeedback = (proceed) => requestAutoFeedback($, state, isaacExecutable, isaacFeedbackDirectory, proceed);
+      return next(e);
+    });
+  }
   on('session.append', { door: 'prompt' }, ($, e, next) => {
     if (!e.agentId && !e.message.isMeta) state.lastPromptId = e.uuid;
     return next(e);
@@ -291,7 +299,7 @@ export function registerIsaacFeedback(
   });
 }
 
-export async function requestAutoFeedback(
+async function requestAutoFeedback(
   $: EngineInterface, state: FeedbackState, executable: string, directory: string,
   proceed: (args: readonly string[]) => Promise<void>,
 ): Promise<boolean> {

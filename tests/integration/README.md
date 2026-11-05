@@ -1,6 +1,6 @@
 # Integration tests
 
-Auto picker and feedback-transition component coverage and limitations are documented in [the test overview](../README.md#auto-model-picker).
+Auto picker and feedback-transition component coverage and limitations are documented in [the test overview](../README.md#auto-model-picker). Native plugin validation covers the CI-pinned Claude 2.1.290 binary.
 
 The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
 service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
