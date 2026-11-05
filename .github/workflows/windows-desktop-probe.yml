@@ -30,9 +30,10 @@ jobs:
         run: |
           $tokens = $null
           $errors = $null
-          $script = Join-Path $PWD 'scripts/desktop-probe/install.ps1'
-          [void][System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$tokens, [ref]$errors)
-          if ($errors.Count) { throw ($errors | Out-String) }
+          foreach ($script in Get-ChildItem scripts/desktop-probe/*.ps1) {
+            [void][System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
           $node = (Get-Command node.exe -ErrorAction Stop).Source
           & $node --check scripts/desktop-probe/attach.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -53,6 +54,9 @@ jobs:
   app-probe:
     runs-on: windows-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -78,13 +82,9 @@ jobs:
           & ./scripts/desktop-probe/install.ps1 -InstallerPath $installer `
             -ExpectedSha256 $digest `
             -OutputDirectory "$env:RUNNER_TEMP/claude-desktop-probe"
-      - name: Install pinned Playwright through the internal npm proxy
+      - name: Install pinned Playwright through JFrog
         shell: pwsh
-        run: |
-          $npm = (Get-Command npm.cmd -ErrorAction Stop).Source
-          & $npm ci --prefix scripts/desktop-probe --ignore-scripts --no-audit --fund=false `
-            --registry https://npm-proxy.cloud.databricks.com/
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: ./scripts/desktop-probe/install-playwright.ps1
       - name: Launch Claude and inspect Cowork
         shell: pwsh
         run: |

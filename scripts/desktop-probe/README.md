@@ -15,9 +15,13 @@ The versioned URL and SHA256 come from Microsoft's winget-pkgs catalog:
 `manifests/a/Anthropic/Claude/2.42304.2/Anthropic.Claude.installer.yaml`.
 An internal installer URL and independently pinned SHA256 can also be supplied.
 
-Playwright Core 1.62.1 is pinned through the internal npm proxy, with its integrity
+Playwright Core 1.62.1 is pinned through the internal JFrog npm registry, with its integrity
 digest in package-lock.json. It is Microsoft's Apache-2.0-licensed package and
 does not download a browser: the installed Claude executable provides Electron.
+The job exchanges its GitHub OIDC identity using the same `github-actions` JFrog
+provider as the existing Windows terminal-bench workflow. Temporary npm
+credentials are removed after installation. The general npm proxy timed out
+from this Windows runner.
 
 Artifacts include installer version/signature/digest, attachment results, and
 screenshots and visible text from the fresh app. The job receives no inference
