@@ -444,6 +444,39 @@ def test_shared_runtime_checks_intermediate_link_parents(monkeypatch, tmp_path, 
             mdm._shared_path(str(executable), "Python", executable=True)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="macOS runtime validation uses POSIX symlinks")
+@pytest.mark.parametrize("version_link_owner", [0, 501])
+def test_shared_runtime_accepts_root_owned_uv_python_version_link(
+    monkeypatch, tmp_path, version_link_owner
+):
+    install = tmp_path / "unity-gateway/python"
+    runtime = install / "cpython-3.12.12-macos-aarch64-none/bin/python3.12"
+    version_link = install / "cpython-3.12-macos-aarch64-none"
+    executable = tmp_path / "unity-gateway/tools/unity-gateway/bin/python"
+    for entry in (runtime, executable):
+        entry.parent.mkdir(parents=True)
+    runtime.write_text("runtime sentinel; never executed")
+    runtime.chmod(0o755)
+    version_link.symlink_to(runtime.parents[1].name)
+    executable.symlink_to(version_link / "bin/python3.12")
+    original_stat = Path.stat
+
+    def machine_stat(path, *args, follow_symlinks=True, **kwargs):
+        info = list(original_stat(path, *args, follow_symlinks=follow_symlinks, **kwargs))
+        info[0] &= ~0o022
+        if stat.S_ISDIR(info[0]):
+            info[0] |= 0o005
+        info[4] = version_link_owner if path == version_link and not follow_symlinks else 0
+        return os.stat_result(info)
+
+    monkeypatch.setattr(Path, "stat", machine_stat)
+    if version_link_owner == 0:
+        assert mdm._shared_path(str(executable), "Python", executable=True) == executable
+    else:
+        with pytest.raises(RuntimeError, match="symlink must be root-owned"):
+            mdm._shared_path(str(executable), "Python", executable=True)
+
+
 def test_runtime_probe_reads_installed_package_path(monkeypatch):
     # Exercise the real isolated interpreter without requiring root-owned test files or CLIs.
     monkeypatch.setattr(mdm, "_shared_path", lambda value, *a, **kw: Path(value))

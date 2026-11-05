@@ -57,6 +57,15 @@ def _check_machine_path(path: Path, *, required: bool = False) -> None:
             raise RuntimeError(f"Not a regular machine configuration path: {part}")
 
 
+def _check_machine_links(path: Path) -> None:
+    for part in (path, *path.parents):
+        if not part.is_symlink():
+            continue
+        if part.lstat().st_uid != 0:
+            raise RuntimeError(f"Runtime symlink must be root-owned: {part}")
+        _check_machine_path(part.parent.resolve(), required=True)
+
+
 def _shared_path(value: str, name: str, *, executable: bool = False) -> Path:
     path = Path(value)
     if not path.is_absolute() or not path.exists():
@@ -75,12 +84,12 @@ def _shared_path(value: str, name: str, *, executable: bool = False) -> Path:
     _check_machine_path(resolved, required=True)
     link = path
     for _ in range(40):
-        _check_machine_path(link.parent, required=True)
+        _check_machine_links(link)
+        _check_machine_path(link.parent.resolve(), required=True)
         for parent in link.parents:
             if not parent.stat().st_mode & stat.S_IXOTH:
                 raise RuntimeError(f"{name} must be accessible to device users: {parent}")
         if not link.is_symlink():
-            _check_machine_path(link, required=True)
             break
         target = link.readlink()
         link = target if target.is_absolute() else link.parent / target
