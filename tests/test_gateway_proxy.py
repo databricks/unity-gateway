@@ -9,8 +9,11 @@ import os
 import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import Mock
 
 import httpx
+import pytest
 
 from ucode import gateway_proxy
 
@@ -41,6 +44,15 @@ class TestForwardedRequestHeaders:
         handler = _FakeHandler({"Authorization": "Bearer anthropic-oauth"})
         out = gateway_proxy.forwarded_request_headers(handler, "dbx-token")
         assert out["Authorization"] == "Bearer anthropic-oauth"
+
+    def test_requests_identity_encoding_unless_client_asks(self):
+        # Codex sends no Accept-Encoding and can't decode gzip; httpx would otherwise ask for it.
+        out = gateway_proxy.forwarded_request_headers(_FakeHandler({}), "t")
+        assert out["Accept-Encoding"] == "identity"
+        handler = _FakeHandler({"accept-encoding": "gzip, br"})
+        out = gateway_proxy.forwarded_request_headers(handler, "t")
+        assert out["accept-encoding"] == "gzip, br"
+        assert "Accept-Encoding" not in out
 
     def test_overwrites_client_supplied_swap_header(self):
         # A stale settings.json value must not survive; the proxy replaces it.
@@ -364,6 +376,19 @@ class TestTokenCache:
         cache.run_refresher()  # must RETURN, not propagate — else the thread dies
         assert ticks == [1]
 
+    def test_failed_rejection_refresh_remains_retryable(self):
+        state, provider = _fake_token_provider([5000])
+        cache = gateway_proxy.TokenCache(provider)
+        original = cache.token_snapshot()
+        state["raise"] = True
+        with pytest.raises(RuntimeError, match="mint failed"):
+            cache.refresh(rejected_generation=original[1])
+        assert cache.token_snapshot() == original
+        state["raise"] = False
+        cache.refresh(rejected_generation=original[1])
+        assert cache.token_snapshot()[1] == original[1] + 1
+        assert state["forces"] == [False, True]
+
 
 class _FakeResp:
     def __init__(self, status: int, body: bytes = b"", headers: dict | None = None):
@@ -407,7 +432,10 @@ class _FakeCache:
     def token(self):
         return self._t.replace("Bearer-", "")
 
-    def refresh(self):
+    def token_snapshot(self):
+        return self.token, self.refreshed
+
+    def refresh(self, *, rejected_generation=None):
         self.refreshed += 1
         self._t = "Bearer-tok2"
 
@@ -423,7 +451,10 @@ class _RefreshFailsCache:
     def token(self):
         return "tok1"
 
-    def refresh(self):
+    def token_snapshot(self):
+        return self.token, self.refreshed
+
+    def refresh(self, *, rejected_generation=None):
         self.refreshed += 1
         raise RuntimeError("mint failed")
 
@@ -456,6 +487,92 @@ class _Collect(io.RawIOBase):
 
 
 class TestRetryOn401:
+    @pytest.mark.parametrize("status", [401, 403])
+    @pytest.mark.parametrize("same_token", [False, True])
+    def test_concurrent_rejections_share_one_refresh(self, status, same_token):
+        forces = []
+
+        def provider(force):
+            forces.append(force)
+            return "tok1" if same_token or not force else "tok2"
+
+        cache = gateway_proxy.TokenCache(provider)
+        barrier = threading.Barrier(8, timeout=10)
+
+        class RejectedClient(_FakeClient):
+            def stream(self, *args, **kwargs):
+                response = super().stream(*args, **kwargs)
+                if len(self.sent_tokens) == 1:
+                    barrier.wait()
+                return response
+
+        clients = [RejectedClient([_FakeResp(status), _FakeResp(200, b"ok")]) for _ in range(8)]
+        outputs = [_Collect() for _ in clients]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [
+                pool.submit(_handle_handler(client, cache, output)._handle)
+                for client, output in zip(clients, outputs, strict=True)
+            ]
+            for future in futures:
+                future.result(timeout=10)
+        assert forces == [False, True]
+        for client, output in zip(clients, outputs, strict=True):
+            assert client.sent_tokens == [
+                "Bearer tok1",
+                "Bearer tok1" if same_token else "Bearer tok2",
+            ]
+            assert bytes(output.data).endswith(b"ok")
+
+    def test_delayed_rejection_uses_already_refreshed_token(self):
+        forces = []
+
+        def provider(force):
+            forces.append(force)
+            return "tok2" if force else "tok1"
+
+        cache = gateway_proxy.TokenCache(provider)
+
+        class DelayedRejection(_FakeClient):
+            def stream(self, *args, **kwargs):
+                response = super().stream(*args, **kwargs)
+                if len(self.sent_tokens) == 1:
+                    cache.refresh()
+                return response
+
+        client = DelayedRejection([_FakeResp(401), _FakeResp(200, b"ok")])
+        output = _Collect()
+        _handle_handler(client, cache, output)._handle()
+        assert forces == [False, True]
+        assert client.sent_tokens == ["Bearer tok1", "Bearer tok2"]
+        assert bytes(output.data).endswith(b"ok")
+
+    @pytest.mark.parametrize("background_rotates", [False, True])
+    def test_nonforced_lookup_only_supersedes_a_rejection_if_token_changes(
+        self, background_rotates
+    ):
+        forces = []
+
+        def provider(force):
+            forces.append(force)
+            return "tok2" if force or (background_rotates and len(forces) > 1) else "tok1"
+
+        cache = gateway_proxy.TokenCache(provider)
+
+        class BackgroundRefreshClient(_FakeClient):
+            def stream(self, *args, **kwargs):
+                response = super().stream(*args, **kwargs)
+                if len(self.sent_tokens) == 1:
+                    cache._expiry = 0
+                    assert cache.token == ("tok2" if background_rotates else "tok1")
+                return response
+
+        client = BackgroundRefreshClient([_FakeResp(401), _FakeResp(200, b"ok")])
+        output = _Collect()
+        _handle_handler(client, cache, output)._handle()
+        assert forces == ([False, False] if background_rotates else [False, False, True])
+        assert client.sent_tokens == ["Bearer tok1", "Bearer tok2"]
+        assert bytes(output.data).endswith(b"ok")
+
     def test_401_forces_refresh_and_retries(self):
         # A stale swap token yields 401; the proxy force-refreshes and retries,
         # this time succeeding, so Claude Code never sees the 401.
@@ -531,6 +648,11 @@ class TestStartProxyPortFallback:
         occupied.listen(1)
         busy_port = occupied.getsockname()[1]
         try:
+            # Desktop's exporter cannot follow a fallback to a different port.
+            with pytest.raises(OSError):
+                gateway_proxy.start_otel_proxy(
+                    "https://workspace.example", lambda _: "token", port=busy_port
+                )
             server, _cache, client = gateway_proxy.start_relay_proxy(
                 "https://x.staging.cloud.databricks.com",
                 lambda _force: "tok",
@@ -602,3 +724,38 @@ class TestRelayedOssRouting:
         assert sent["Authorization"] == "Bearer anthropic-oauth"
         assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
         assert sent["Databricks-Model-Provider-Service"] == "cat.s.relayed_mps"
+
+
+class TestCodexRelayProxy:
+    def test_relays_chatgpt_login_to_codex_upstream(self, monkeypatch):
+        cache = Mock(token="tok1")
+        cache.token_snapshot.return_value = ("tok1", 1)
+        monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: cache)
+        server, _cache, upstream = gateway_proxy.start_relay_proxy(
+            "https://w", lambda _f: "t", 0, agent="codex"
+        )
+        server.server_close()
+        upstream.close()
+        # The handler requests the client's path minus its leading slash.
+        url = upstream.build_request("POST", "v1/responses").url
+        assert str(url) == "https://w/ai-gateway/codex/v1/responses"
+
+        client = _FakeClient([_FakeResp(200, b"ok")])
+        h = object.__new__(server.RequestHandlerClass)
+        h.client = client  # the bound class keeps the real cache, token header, and handler
+        h.wfile, h.request_version, h._headers_buffer = _Collect(), "HTTP/1.1", []
+        body = b'{"model": "claude-opus-4-1"}'  # not rerouted: no Anthropic hybrid logic
+        h.headers = {
+            "Authorization": "Bearer chatgpt-token",
+            "ChatGPT-Account-ID": "acct",
+            "Databricks-Model-Provider-Service": "cat.s.mps",
+            "Content-Length": str(len(body)),
+        }
+        h.rfile = io.BytesIO(body)
+        h.path, h.command, h.requestline = "/v1/responses", "POST", "POST /v1/responses HTTP/1.1"
+        h._handle()
+        sent = client.sent_headers[0]
+        assert sent["Authorization"] == "Bearer chatgpt-token"
+        assert sent["ChatGPT-Account-ID"] == "acct"
+        assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
+        assert sent["Databricks-Model-Provider-Service"] == "cat.s.mps"

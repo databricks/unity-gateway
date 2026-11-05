@@ -61,6 +61,9 @@ tests. Keep work scoped to the behavior requested by the user.
     seed onboarding completion, intercept model traffic, or replace a TUI with
     print/exec mode while claiming interactive coverage. Require an interactive
     prompt and observable input/exit behavior. Boot is not first-prompt inference.
+12. **Short random ids.** Generate run ids, markers and file values with
+    `fresh_id()` from `integration/utils/evidence.py`. Models drop characters
+    when copying longer ids into tool calls.
 
 `configure` no longer runs a post-configure agent probe (the deprecated
 `--skip-validate` flag is accepted as a no-op); task tests still require a real
@@ -89,7 +92,11 @@ exercise.
   and Docker build files belong in `integration/utils/`; keep pytest entry points
   and run documentation at the suite root.
 - Current scope is basic Claude/Codex configuration, routing, script usage,
-  command forwarding, and configure/revert CUJs. Do not add MCP/skills functionality,
+  command forwarding, and configure/revert CUJs, plus Copilot CLI headless
+  model tasks, one TUI model-switch journey, and one MCP add, tool-call and revert journey
+  (non-blocking lane), plus Antigravity CLI configure, TUI, headless, External Models,
+  MCP-tool, skill-directory, and revert journeys (blocking Linux lane). Do not add other
+  MCP/skills functionality,
   tracing, or the broad configure-option matrix without a new scope request.
   Existing `mcp --help` checks cover dispatch only.
 
@@ -120,3 +127,15 @@ subset. Live checks require the e2e workspace and bearer/profile. Model override
 are optional inputs for reproducing an explicit-model failure.
 Report passes, failures and what was not run. Collection/lint/package checks
 are not evidence of a live integration pass.
+
+## Diagnosing flaky tests
+
+CI failures land in `main.eng_unity_ai_gateway.ug_cli_test_failures` (one row per
+failed test, with `branch`, `ts`, `error` and `job_url`). Before changing a test:
+
+- Group failures by error, branch and time. Failures that stop when a fix merges are
+  fixed, and failures on one branch are usually that branch's bug.
+- If every test in a file fails in the same run with a backend error, it is workspace
+  state (for example a FAILED UC connection), not the test.
+- Read the job's evidence artifact. Compare the agent's stdout with its transcript
+  before blaming the prompt or the model.

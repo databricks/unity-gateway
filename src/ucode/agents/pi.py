@@ -52,7 +52,8 @@ from ucode.databricks import (
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import mark_tool_managed, save_state
-from ucode.telemetry import agent_version, ug_version
+from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.workspace import workspace_headers
 
 from .args import LaunchOptions
 from .request_tags import request_tags_header_value
@@ -120,12 +121,15 @@ def render_overlay(
     keys: list[list[str]] = [["model"]]
     # Pi expands header values that match an env var name. Our UA contains
     # `/` and a space so it can never collide — safe to pass as a literal.
-    ua_headers = {"User-Agent": f"ucode/{ug_version()} pi/{agent_version('pi')}"}
+    ua_headers = {"User-Agent": ucode_user_agent(ug_version(), f"pi/{agent_version('pi')}")}
     request_tags = request_tags_header_value()
     if request_tags:
         # Similarly to UA, request_tags is a JSON object (validated in `request_tags_header_value()`)
         # so it can never collide with an env var name
         ua_headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
+    gateway_url = next(iter(pi_base_urls.values()), None)
+    if gateway_url:
+        ua_headers.update(workspace_headers(gateway_url))
 
     claude_ids = sorted(set(claude_models.values()))
     if claude_ids:

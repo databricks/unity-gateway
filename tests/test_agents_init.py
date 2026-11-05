@@ -13,6 +13,7 @@ import pytest
 
 import ucode.agents as agents_mod
 import ucode.databricks as db_mod
+from ucode import managed_files
 from ucode.agents import (
     DEFAULT_TOOL,
     TOOL_SPECS,
@@ -56,7 +57,16 @@ class TestModelArgumentParsing:
 
 class TestToolSpecs:
     def test_all_tools_present(self):
-        assert set(TOOL_SPECS) == {"codex", "claude", "gemini", "opencode", "kilo", "copilot", "pi"}
+        assert set(TOOL_SPECS) == {
+            "codex",
+            "claude",
+            "gemini",
+            "opencode",
+            "kilo",
+            "copilot",
+            "pi",
+            "antigravity",
+        }
 
     def test_each_spec_has_required_keys(self):
         required = {"binary", "package", "display", "config_path", "backup_path"}
@@ -168,7 +178,9 @@ class TestConfigureWiresAiToolsInstall:
 
     def _stub_configure(self, monkeypatch):
         captured = {}
-        monkeypatch.setattr(agents_mod, "configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            agents_mod, "configure_tool", lambda tool, state, model=None, **_kw: state
+        )
         monkeypatch.setattr(agents_mod, "save_state", lambda state: None)
         monkeypatch.setattr(
             agents_mod,
@@ -223,6 +235,25 @@ class TestConfigureWiresAiToolsInstall:
         configure.assert_called_once_with(
             "claude", state, None, provider="main.default.relay", provider_models=None, relayed=True
         )
+
+    def test_configure_selected_tools_records_failures_without_raising(self, monkeypatch):
+        # The CLI fails a `--global` run once every agent and the MCP/skills setup have run, so the
+        # dispatcher reports failures through `last_configured_tools` instead of raising.
+        from ucode import managed_files
+
+        def configure_one(tool, state, provider, **_kw):
+            if tool == "claude":
+                raise RuntimeError("needs a managed file")
+            return state
+
+        monkeypatch.setattr(agents_mod, "_configure_one", configure_one)
+        monkeypatch.setattr(agents_mod, "save_state", lambda _state: None)
+        managed_files.set_machine_wide_only(True)
+
+        state = agents_mod.configure_selected_tools({}, ["claude", "codex"])
+
+        assert state["last_configured_tools"] == ["codex"]
+        assert state["available_tools"] == ["codex"]
 
     def test_configure_selected_tools_triggers_install(self, monkeypatch):
         captured = self._stub_configure(monkeypatch)
@@ -287,10 +318,11 @@ class TestCheckGatewayEndpoint:
         assert check_gateway_endpoint(state, "opencode") is True
 
     def test_copilot_available_with_claude(self):
-        assert check_gateway_endpoint({"claude_models": {"sonnet": "s4"}}, "copilot") is True
+        state = {"claude_models": {"sonnet": "system.ai.claude-sonnet-4-6"}}
+        assert check_gateway_endpoint(state, "copilot") is True
 
     def test_copilot_available_with_codex(self):
-        assert check_gateway_endpoint({"codex_models": ["m"]}, "copilot") is True
+        assert check_gateway_endpoint({"codex_models": ["system.ai.gpt-5-4"]}, "copilot") is True
 
     def test_copilot_unavailable_with_only_gemini(self):
         # Gemini is intentionally excluded from Copilot.
@@ -519,7 +551,10 @@ class TestConfigureOneGeminiProvider:
         monkeypatch.setattr(
             agents_mod,
             "resolve_gemini_provider_model",
-            lambda state, provider, model, **kw: ("gemini-3.5-flash", None),
+            lambda state, provider, model, **kw: (
+                (captured.setdefault("pick_newest", kw.get("pick_newest")) and None)
+                or ("gemini-3.5-flash", None)
+            ),
         )
         captured = {}
 
@@ -531,7 +566,12 @@ class TestConfigureOneGeminiProvider:
 
         monkeypatch.setattr(agents_mod, "configure_tool", _fake_configure_tool)
         agents_mod._configure_one("gemini", self._STATE, "c.s.g")
-        assert captured == {"tool": "gemini", "model": "gemini-3.5-flash", "provider": "c.s.g"}
+        assert captured == {
+            "pick_newest": True,
+            "tool": "gemini",
+            "model": "gemini-3.5-flash",
+            "provider": "c.s.g",
+        }
 
     def test_gemini_provider_resolution_error_raises(self, monkeypatch):
         monkeypatch.setattr(
@@ -541,6 +581,50 @@ class TestConfigureOneGeminiProvider:
         )
         with pytest.raises(RuntimeError, match="pick a model"):
             agents_mod._configure_one("gemini", self._STATE, "c.s.g")
+
+
+class TestPersistedModelLocation:
+    _STATE = {"workspace": "https://ws.databricks.com", "profile": None}
+
+    def _capture(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            agents_mod,
+            "configure_tool",
+            lambda tool, state, model=None, **kw: calls.append((tool, kw)) or state,
+        )
+        monkeypatch.setattr(agents_mod, "save_state", lambda state: None)
+        monkeypatch.setattr(agents_mod, "managed_write_batch", lambda *_a: nullcontext())
+        return calls
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_configure_selected_tools_uses_saved_location(self, monkeypatch, tool):
+        calls = self._capture(monkeypatch)
+        state = {**self._STATE, "model_locations": {tool: "main.models"}}
+
+        agents_mod.configure_selected_tools(state, [tool], install_ai_tools=False)
+
+        assert calls == [(tool, {"parent_schema": "main.models"})]
+
+    def test_saved_provider_wins_over_location(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        monkeypatch.setattr(
+            agents_mod, "resolve_provider_models", lambda *_a: ({"opus": "x"}, None, False)
+        )
+        state = {
+            **self._STATE,
+            "provider_services": {"claude": "main.default.mps"},
+            "model_locations": {"claude": "main.models"},
+        }
+
+        agents_mod.configure_selected_tools(state, ["claude"], install_ai_tools=False)
+
+        assert calls[0][1]["provider"] == "main.default.mps"
+        assert "parent_schema" not in calls[0][1]
+
+    def test_gemini_ignores_saved_location(self):
+        state = {**self._STATE, "model_locations": {"gemini": "main.models"}}
+        assert agents_mod._persisted_model_location("gemini", state, None) is None
 
 
 class TestResolveGeminiProviderModel:
@@ -574,6 +658,58 @@ class TestResolveGeminiProviderModel:
         )
         model, error = agents_mod.resolve_gemini_provider_model(self._STATE, "c.s.g", None)
         assert (model, error) == ("gemini-3.5-pro", None)
+
+    def test_allow_all_service_accepts_any_named_model(self, monkeypatch):
+        # An allow-all service declares few targets but serves its provider's whole catalog.
+        self._patch(
+            monkeypatch,
+            {"name": "c.s.g", "targets": ["gemini-4-carbon"], "allow_all_targets": True},
+        )
+        model, error = agents_mod.resolve_gemini_provider_model(
+            self._STATE, "c.s.g", "gemini-4-argon"
+        )
+        assert (model, error) == ("gemini-4-argon", None)
+
+    def test_allow_all_service_reuses_a_pinned_model_it_does_not_declare(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {"name": "c.s.g", "targets": ["gemini-4-carbon"], "allow_all_targets": True},
+            persisted="gemini-3.8-flash",
+        )
+        model, _ = agents_mod.resolve_gemini_provider_model(self._STATE, "c.s.g", None)
+        assert model == "gemini-3.8-flash"
+
+    def test_allow_all_service_without_targets_asks_for_a_model(self, monkeypatch):
+        self._patch(monkeypatch, {"name": "c.s.g", "targets": [], "allow_all_targets": True})
+        model, error = agents_mod.resolve_gemini_provider_model(self._STATE, "c.s.g", None)
+        assert model is None
+        assert "pass --model" in error
+
+    def test_configure_pins_the_newest_of_several_targets(self, monkeypatch):
+        # Configure has no --model; a launch would still ask for one (below).
+        self._patch(
+            monkeypatch,
+            {
+                "name": "c.s.g",
+                "targets": ["gemini-3.7-flash", "gemini-3.1-pro-preview", "gemini-4-argon"],
+            },
+            persisted=None,
+        )
+        model, error = agents_mod.resolve_gemini_provider_model(
+            self._STATE, "c.s.g", None, pick_newest=True
+        )
+        assert (model, error) == ("gemini-4-argon", None)
+
+    def test_configure_keeps_a_previously_pinned_target(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {"name": "c.s.g", "targets": ["gemini-4-argon", "gemini-3.8-flash"]},
+            persisted="gemini-3.8-flash",
+        )
+        model, _ = agents_mod.resolve_gemini_provider_model(
+            self._STATE, "c.s.g", None, pick_newest=True
+        )
+        assert model == "gemini-3.8-flash"
 
     def test_multi_target_without_choice_errors(self, monkeypatch):
         # Multiple targets, nothing pinned, no --model → ask the user to choose.
@@ -645,9 +781,8 @@ class TestBootstrapStdout:
                     available[binary] = True
                     updated.add(binary)
             kwargs["timeout"] = 10
-            return subprocess.run(
-                [sys.executable, "-c", script], stdin=subprocess.DEVNULL, **kwargs
-            )
+            kwargs.setdefault("stdin", subprocess.DEVNULL)
+            return subprocess.run([sys.executable, "-c", script], **kwargs)
 
         monkeypatch.setattr(agents_mod.shutil, "which", which)
         monkeypatch.setattr(
@@ -803,6 +938,45 @@ class TestInstallToolBinary:
         assert install_tool_binary(tool) is True
         assert calls == [command]
         assert prompts == [(f"Upgrade {TOOL_SPECS[tool]['display']} if available?", True)]
+
+    @pytest.mark.parametrize(
+        ("tool", "command"),
+        [
+            ("claude", ["claude", "upgrade"]),
+            ("codex", ["codex", "update"]),
+        ],
+    )
+    def test_required_update_skips_prompt_when_auto_upgrade_set(self, monkeypatch, tool, command):
+        calls = []
+        monkeypatch.setenv("UG_AUTO_UPGRADE_AGENT", "1")
+        monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
+        monkeypatch.setattr(
+            "ucode.agents.subprocess.run",
+            lambda args, **kwargs: calls.append(args) or subprocess.CompletedProcess(args, 0),
+        )
+        monkeypatch.setattr(
+            "ucode.agents.prompt_yes_no_default",
+            lambda prompt, *, default: (_ for _ in ()).throw(AssertionError("should not prompt")),
+        )
+        errors = iter(["must upgrade", None])
+        monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: next(errors))
+
+        assert install_tool_binary(tool) is True
+        assert calls == [command]
+
+    def test_auto_upgrade_still_fails_when_upgrade_leaves_tool_below_floor(self, monkeypatch):
+        monkeypatch.setenv("UG_AUTO_UPGRADE_AGENT", "1")
+        monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
+        monkeypatch.setattr(
+            "ucode.agents.subprocess.run",
+            lambda args, **kwargs: subprocess.CompletedProcess(args, 0),
+        )
+        monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: "must upgrade")
+
+        with pytest.raises(RuntimeError, match="must upgrade"):
+            install_tool_binary("claude")
 
     @pytest.mark.parametrize(
         "catalog_ref",
@@ -1008,9 +1182,9 @@ def test_fable_only_workspace_has_a_default(tool):
 def test_fable_does_not_displace_existing_default(tool):
     state = {
         "claude_models": {"fable": "system.ai.claude-fable-5"},
-        "codex_models": ["existing-gpt"],
+        "codex_models": ["system.ai.gpt-5-4"],
     }
-    assert default_model_for_tool(tool, state) == "existing-gpt"
+    assert default_model_for_tool(tool, state) == "system.ai.gpt-5-4"
 
 
 class TestConfigureSelectedTools:
@@ -1036,7 +1210,9 @@ class TestConfigureSelectedTools:
     def test_merges_with_existing_available_tools(self, monkeypatch):
         """Configuring a new tool should not drop previously-configured tools
         from state['available_tools']."""
-        monkeypatch.setattr("ucode.agents.configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            "ucode.agents.configure_tool", lambda tool, state, model=None, **_kw: state
+        )
         monkeypatch.setattr("ucode.agents.save_state", lambda s: None)
 
         state = {
@@ -1048,7 +1224,9 @@ class TestConfigureSelectedTools:
         assert set(result["available_tools"]) == {"codex", "claude"}
 
     def test_adds_new_tool_to_available_tools(self, monkeypatch):
-        monkeypatch.setattr("ucode.agents.configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            "ucode.agents.configure_tool", lambda tool, state, model=None, **_kw: state
+        )
         monkeypatch.setattr("ucode.agents.save_state", lambda s: None)
 
         state = {
@@ -1060,7 +1238,9 @@ class TestConfigureSelectedTools:
         assert set(result["available_tools"]) == {"codex", "claude"}
 
     def test_empty_selection_preserves_existing(self, monkeypatch):
-        monkeypatch.setattr("ucode.agents.configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            "ucode.agents.configure_tool", lambda tool, state, model=None, **_kw: state
+        )
         monkeypatch.setattr("ucode.agents.save_state", lambda s: None)
 
         state = {"workspace": "https://x.databricks.com", "available_tools": ["codex"]}
@@ -1129,3 +1309,220 @@ class TestConfiguredPaths:
         paths = configured_paths("codex", state)
         assert str(CODEX_CONFIG_PATH).replace(str(CODEX_CONFIG_PATH.home()), "~", 1) in paths
         assert "/etc/codex/managed_config.toml" in paths
+
+
+class TestConfigureToolUserScope:
+    @pytest.mark.parametrize(
+        "tool,path_attr",
+        [("claude", "_managed_settings_path"), ("codex", "codex_managed_config_path")],
+    )
+    @pytest.mark.parametrize("exists", [True, False])
+    def test_managed_file_blocks_user_scope(self, monkeypatch, tmp_path, tool, path_attr, exists):
+        managed = tmp_path / "managed"
+        if exists:
+            managed.write_text("x", encoding="utf-8")
+        module = getattr(agents_mod, tool)
+        monkeypatch.setattr(module, path_attr, lambda: managed)
+        managed_files.set_config_scope("user")
+
+        if exists:
+            with pytest.raises(
+                RuntimeError, match=r"--user.*managed settings exist.*without --user"
+            ):
+                agents_mod.refuse_user_scope_over_managed_files([tool])
+        else:
+            agents_mod.refuse_user_scope_over_managed_files([tool])
+
+    def test_windows_codex_requirements_blocks_user_scope(self, monkeypatch, tmp_path):
+        import ucode.codex_config as codex_config
+        from ucode.os_compatibility import system_cross_os
+
+        requirements = tmp_path / "OpenAI" / "Codex" / managed_files.CODEX_REQUIREMENTS_FILE
+        requirements.parent.mkdir(parents=True)
+        requirements.write_text('model_provider = "Databricks"\n', encoding="utf-8")
+        monkeypatch.setattr(codex_config, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(system_cross_os, "windows_program_data_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            agents_mod.codex, "codex_managed_config_path", codex_config.codex_managed_config_path
+        )
+        managed_files.set_config_scope("user")
+        with pytest.raises(RuntimeError, match="requirements.toml"):
+            agents_mod.refuse_user_scope_over_managed_files(["codex"])
+
+    def test_managed_config_blocks_user_scope(self):
+        managed_files.set_config_scope("user")
+        with pytest.raises(
+            RuntimeError,
+            match=r"--user.*publishes a managed config.*without --user.*administrator.*--global",
+        ) as excinfo:
+            agents_mod.refuse_user_scope_over_managed_config("https://ws.example.com", {"x": 1})
+        # `--global` writes only machine-wide settings now, so it is no longer the default.
+        assert "the default" not in str(excinfo.value)
+
+    @pytest.mark.parametrize("scope", ["user", "global"])
+    def test_no_managed_config_does_not_block(self, scope):
+        managed_files.set_config_scope(scope)
+        agents_mod.refuse_user_scope_over_managed_config("https://ws.example.com", None)
+
+    def test_global_scope_does_not_block_managed_config(self):
+        managed_files.set_config_scope("global")
+        agents_mod.refuse_user_scope_over_managed_config("https://ws.example.com", {"x": 1})
+
+    def test_no_managed_path_is_not_checked(self, monkeypatch):
+        monkeypatch.setattr(agents_mod.codex, "codex_managed_config_path", lambda: None)
+        managed_files.set_config_scope("user")
+        agents_mod.refuse_user_scope_over_managed_files(["codex"])
+
+    def test_launch_does_not_refuse_over_managed_file(self, monkeypatch, tmp_path):
+        managed = tmp_path / "managed"
+        managed.write_text("x", encoding="utf-8")
+        monkeypatch.setattr(agents_mod.claude, "_managed_settings_path", lambda: managed)
+        written: list = []
+        monkeypatch.setattr(
+            agents_mod.claude,
+            "write_tool_config",
+            lambda state, *a, **kw: written.append(1) or state,
+        )
+        managed_files.set_config_scope("user")
+        agents_mod.configure_tool("claude", {}, "m")
+        assert written == [1]
+
+
+class TestAntigravityDispatch:
+    _STATE = {"workspace": "https://ws.databricks.com", "profile": None}
+
+    @pytest.mark.parametrize("alias", ["antigravity", "agy", "Antigravity-CLI"])
+    def test_aliases_normalize(self, alias):
+        assert agents_mod.normalize_tool(alias) == "antigravity"
+
+    def test_available_only_with_agent_capable_gemini_models(self):
+        assert agents_mod.check_gateway_endpoint(
+            {"gemini_models": ["system.ai.gemini-3-8-flash"]}, "antigravity"
+        )
+        assert not agents_mod.check_gateway_endpoint(
+            {"gemini_models": ["system.ai.gemini-3-pro-image"]}, "antigravity"
+        )
+
+    def test_provider_configure_resolves_target_for_antigravity(self, monkeypatch):
+        seen = {}
+
+        def _resolve(state, provider, model, **kwargs):
+            seen["tool"] = kwargs.get("tool")
+            return "gemini-3.1-pro-preview", None
+
+        monkeypatch.setattr(agents_mod, "resolve_gemini_provider_model", _resolve)
+        captured = {}
+        monkeypatch.setattr(
+            agents_mod,
+            "configure_tool",
+            lambda tool, state, model=None, **kw: (
+                captured.update(tool=tool, model=model, provider=kw.get("provider")) or state
+            ),
+        )
+
+        agents_mod._configure_one("antigravity", dict(self._STATE), "c.s.g")
+
+        assert seen["tool"] == "antigravity"
+        assert captured == {
+            "tool": "antigravity",
+            "model": "gemini-3.1-pro-preview",
+            "provider": "c.s.g",
+        }
+
+    def test_provider_model_reuses_antigravity_pinned_target(self, monkeypatch):
+        monkeypatch.setattr(agents_mod, "get_databricks_token", lambda w, p: "token")
+        looked_up = {}
+
+        def _service(tool, name, workspace, token):
+            looked_up["tool"] = tool
+            return {"name": name, "targets": ["gemini-3.8-flash", "gemini-3.1-pro-preview"]}, None
+
+        monkeypatch.setattr(agents_mod, "resolve_provider_service", _service)
+        state = {**self._STATE, "antigravity_provider_model": "gemini-3.1-pro-preview"}
+
+        model, error = agents_mod.resolve_gemini_provider_model(
+            state, "c.s.g", None, tool="antigravity"
+        )
+
+        assert (model, error) == ("gemini-3.1-pro-preview", None)
+        assert looked_up["tool"] == "antigravity"
+
+    def test_configure_tool_writes_antigravity_config(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            agents_mod.antigravity,
+            "write_tool_config",
+            lambda state, model, provider=None: (
+                captured.update(model=model, provider=provider) or state
+            ),
+        )
+
+        agents_mod.configure_tool("antigravity", dict(self._STATE), "system.ai.gemini-3-8-flash")
+
+        assert captured == {"model": "system.ai.gemini-3-8-flash", "provider": None}
+
+    def test_missing_binary_uses_native_installer_not_npm(self, monkeypatch):
+        installed = []
+        monkeypatch.setattr(agents_mod.shutil, "which", lambda b: None)
+        monkeypatch.setattr(agents_mod.antigravity, "resolve_binary", lambda: None)
+
+        def _install():
+            installed.append(True)
+            monkeypatch.setattr(
+                agents_mod.antigravity, "resolve_binary", lambda: "/h/.local/bin/agy"
+            )
+
+        monkeypatch.setattr(agents_mod.antigravity, "install_binary", _install)
+        run = MagicMock()
+        monkeypatch.setattr(agents_mod.subprocess_cross_os, "run", run)
+
+        assert agents_mod.install_tool_binary("antigravity") is True
+        assert installed == [True]
+        run.assert_not_called()
+
+    def test_old_off_path_install_is_caught_and_upgraded_in_place(self, monkeypatch):
+        # `~/.local/bin` is not on PATH: probing bare `agy` would read "unknown" and pass.
+        installed = "/home/u/.local/bin/agy"
+        versions = iter(["1.2.14", "1.4.9"])
+        probed = []
+        monkeypatch.setattr(agents_mod.shutil, "which", lambda b: None)
+        monkeypatch.setattr(agents_mod.antigravity, "resolve_binary", lambda: installed)
+        monkeypatch.setattr(
+            agents_mod.antigravity,
+            "agent_version",
+            lambda binary: probed.append(binary) or next(versions),
+        )
+        monkeypatch.setenv(agents_mod.AUTO_UPGRADE_AGENT_ENV, "1")
+        run = MagicMock()
+        monkeypatch.setattr(agents_mod.subprocess_cross_os, "run", run)
+
+        assert agents_mod.install_tool_binary("antigravity") is True
+
+        assert run.call_args.args[0] == [installed, "update"]
+        assert probed == [installed, installed]
+
+    def test_native_installer_failure_is_actionable(self, monkeypatch):
+        monkeypatch.setattr(agents_mod.shutil, "which", lambda b: None)
+        monkeypatch.setattr(agents_mod.antigravity, "resolve_binary", lambda: None)
+
+        def _fail():
+            raise RuntimeError("no network")
+
+        monkeypatch.setattr(agents_mod.antigravity, "install_binary", _fail)
+
+        with pytest.raises(RuntimeError, match="Failed to install Antigravity CLI.*no network"):
+            agents_mod.install_tool_binary("antigravity")
+        assert agents_mod.install_tool_binary("antigravity", strict=False) is False
+
+    def test_pinned_version_is_reported_as_unsupported(self, monkeypatch, capsys):
+        monkeypatch.setattr(agents_mod.shutil, "which", lambda b: "/usr/bin/agy")
+
+        assert agents_mod._update_installed_tool_binary("antigravity", version="1.2.15") is False
+        assert "can't be installed at a specific version (1.2.15)" in capsys.readouterr().out
+
+    def test_missing_binary_hint_names_installer(self, monkeypatch):
+        monkeypatch.setattr(agents_mod.shutil, "which", lambda b: None)
+        monkeypatch.setattr(agents_mod.antigravity, "resolve_binary", lambda: None)
+
+        with pytest.raises(RuntimeError, match="antigravity.google/cli/install.sh"):
+            agents_mod.ensure_tool_binary_available("antigravity")

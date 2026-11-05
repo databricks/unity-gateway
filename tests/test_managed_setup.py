@@ -333,12 +333,19 @@ class TestModelOptions:
         ]
 
     def test_multi_provider_agents_see_everything(self):
-        for tool in ("opencode", "pi", "copilot"):
+        for tool in ("opencode", "pi"):
             options = model_options_for_agent(tool, STATE)
             assert "system.ai.claude-opus-4-8" in options, tool
             assert "system.ai.gpt-5-6" in options, tool
             assert "system.ai.gemini-3-flash" in options, tool
             assert "system.ai.kimi-k2-6" in options, tool
+
+    def test_copilot_sees_only_claude_and_gpt(self):
+        options = model_options_for_agent("copilot", STATE)
+        assert "system.ai.claude-opus-4-8" in options
+        assert "system.ai.gpt-5-6" in options
+        assert "system.ai.gemini-3-flash" not in options
+        assert "system.ai.kimi-k2-6" not in options
 
     def test_empty_state_yields_no_options(self):
         assert model_options_for_agent("claude", {}) == []
@@ -374,8 +381,19 @@ class TestProviderServiceSupport:
     def test_claude_does_not_support_openai(self):
         assert not supports_provider_service("claude", "openai")
 
+    def test_copilot_supports_anthropic_openai_bedrock_and_foundry(self):
+        for provider_type in (
+            "anthropic",
+            "amazon_bedrock",
+            "openai",
+            "azure_openai",
+            "microsoft_foundry",
+        ):
+            assert supports_provider_service("copilot", provider_type), provider_type
+        assert not supports_provider_service("copilot", "gemini_enterprise")
+
     def test_other_agents_have_no_provider_support(self):
-        for tool in ("gemini", "opencode", "pi", "copilot"):
+        for tool in ("gemini", "opencode", "pi"):
             assert not supports_provider_service(tool, "anthropic"), tool
 
 

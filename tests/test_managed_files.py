@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,11 @@ import ucode.config_io as config_io
 from ucode import managed_files
 
 _REAL_SUDO_REPLACE = managed_files._sudo_replace
+# Captured before the autouse ``_supported`` fixture pins the module attribute to True.
+_REAL_MANAGED_FILES_SUPPORTED = managed_files.managed_files_supported
+_REAL_WINDOWS_REPLACE = managed_files._windows_replace
+_REAL_SUBPROCESS_RUN = managed_files.subprocess_cross_os.run
+_REAL_SUDO_NEEDS_PASSWORD = managed_files._sudo_needs_password
 
 
 @pytest.fixture(autouse=True)
@@ -33,6 +39,10 @@ def _supported(monkeypatch):
     # Pin platform support on so tests are deterministic on any host.
     monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
     monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
+    # These tests cover the sudo writer; on a Windows host the elevated-write path would run
+    # instead. Not pinned elsewhere: the real worker shell picks cp flags from the host OS.
+    if managed_files.current_os() is managed_files.OS.WINDOWS:
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
 
 
 @pytest.fixture
@@ -444,6 +454,29 @@ class TestSudoReplace:
         assert kwargs == {"capture_output": True, "text": True, "check": True, "stdin": None}
         assert source_path is not None and not source_path.exists()
 
+    def test_noninteractive_new_file_is_created_with_sudo_n(self, tmp_path, monkeypatch):
+        # The header mod's files are new files; a headless configure creates them with sudo -n.
+        path = tmp_path / "register.ts"
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        monkeypatch.setitem(
+            managed_files._SUDO_REPLACE_TARGETS, managed_files.OS.LINUX, frozenset({path})
+        )
+        monkeypatch.setattr(managed_files, "_sudo_replace", _REAL_SUDO_REPLACE)
+        calls: list = []
+        monkeypatch.setattr(
+            managed_files.subprocess_cross_os,
+            "run",
+            lambda command, **kwargs: calls.append((command, kwargs)),
+        )
+
+        managed_files.reconcile_privileged_files({path: "mod"}, display="Claude Code")
+
+        assert len(calls) == 1
+        command, kwargs = calls[0]
+        assert "-n" in command
+        assert kwargs["stdin"] is subprocess.DEVNULL
+
     @pytest.mark.parametrize("denied", [False, True])
     def test_noninteractive_repair_uses_sudo_n_without_session_or_stdin(
         self, tmp_path, monkeypatch, denied
@@ -562,8 +595,365 @@ class TestSudoReplace:
         assert codex_config.codex_managed_config_path() in allowed
 
 
+class TestWorkspacePolicyWriter:
+    @pytest.fixture
+    def policy_path(self, tmp_path, monkeypatch):
+        path = tmp_path / "unitygateway" / "managed-settings.json"
+        path.parent.mkdir()
+        monkeypatch.setattr(managed_files, "UNITY_GATEWAY_MANAGED_SETTINGS_PATH", path)
+        monkeypatch.setitem(
+            managed_files._SUDO_REPLACE_TARGETS,
+            managed_files.current_os(),
+            frozenset({path}),
+        )
+        monkeypatch.setattr(managed_files.os, "geteuid", lambda: 1000, raising=False)
+        return path
+
+    def test_identical_policy_does_not_invoke_sudo(self, policy_path, monkeypatch):
+        policy_path.write_text("installed")
+        monkeypatch.setattr(
+            managed_files.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("unchanged policy must not invoke sudo"),
+        )
+        managed_files.update_workspace_policy(policy_path, "installed", interactive=True)
+
+    @pytest.mark.parametrize("desired_text", ["new", None])
+    @pytest.mark.parametrize("interactive", [False, True])
+    def test_nonroot_launch_never_probes_or_invokes_sudo(
+        self, policy_path, monkeypatch, desired_text, interactive
+    ):
+        policy_path.write_text("old")
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(
+            managed_files.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("non-root launch must never invoke sudo"),
+        )
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda *args, **kwargs: pytest.fail("non-root launch must never start a sudo worker"),
+        )
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="administrator"):
+            managed_files.update_workspace_policy(
+                policy_path, desired_text, interactive=interactive, allow_sudo=False
+            )
+        assert policy_path.read_text() == "old"
+
+    def test_nonroot_launch_cannot_install_initial_policy(self, policy_path, monkeypatch):
+        monkeypatch.setattr(
+            managed_files.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("initial launch install must not invoke sudo"),
+        )
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="administrator"):
+            managed_files.update_workspace_policy(policy_path, "new", allow_sudo=False)
+        assert not policy_path.exists()
+
+    def test_changed_interactive_policy_uses_existing_prompting_writer(
+        self, policy_path, monkeypatch
+    ):
+        policy_path.write_text("old")
+        calls = []
+
+        def write(path, desired_text):
+            calls.append((path, desired_text))
+            path.write_text(desired_text)
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", write)
+        managed_files.update_workspace_policy(policy_path, "new", interactive=True, allow_sudo=True)
+        assert calls == [(policy_path, "new")]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="The workspace-policy writer is Unix-only")
+    def test_noninteractive_policy_update_uses_sudo_n(self, policy_path, monkeypatch):
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            policy_path.write_text(Path(command[-2]).read_text())
+            assert kwargs["timeout"] == 30
+            return subprocess.CompletedProcess(command, 0)
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run)
+        managed_files.update_workspace_policy(policy_path, "new", interactive=True, allow_sudo=True)
+        assert calls[0][:2] == [managed_files._SUDO, "-n"]
+        assert policy_path.read_text() == "new"
+        assert not Path(calls[0][-2]).exists()
+
+    def test_failed_privileged_update_leaves_original_file(self, policy_path, monkeypatch):
+        policy_path.write_text("old")
+
+        def denied(command, **kwargs):
+            raise subprocess.CalledProcessError(1, command, stderr="a password is required")
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", denied)
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="password"):
+            managed_files.update_workspace_policy(policy_path, "new", allow_sudo=True)
+        assert policy_path.read_text() == "old"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="The workspace-policy writer is Unix-only")
+    def test_interactive_policy_removal_may_prompt(self, policy_path, monkeypatch):
+        policy_path.write_text("old")
+        calls = []
+
+        def remove(command, **kwargs):
+            calls.append(command)
+            assert Path(command[-2]).read_text() == "old"
+            policy_path.unlink()
+            return subprocess.CompletedProcess(command, 0)
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", remove)
+        managed_files.update_workspace_policy(policy_path, None, interactive=True, allow_sudo=True)
+        assert calls[0][0:2] == [managed_files._SUDO, "/bin/sh"]
+        assert "remove" in calls[0]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="The workspace-policy writer is Unix-only")
+    @pytest.mark.parametrize(("interactive", "timeout"), [(True, None), (False, 30)])
+    def test_policy_removal_waits_for_a_password_prompt(
+        self, policy_path, monkeypatch, interactive, timeout
+    ):
+        """Only an unattended removal times out; a person typing a sudo password is not rushed."""
+        policy_path.write_text("old")
+        seen = {}
+
+        def remove(command, **kwargs):
+            seen.update(kwargs)
+            policy_path.unlink()
+            return subprocess.CompletedProcess(command, 0)
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", remove)
+        managed_files.update_workspace_policy(
+            policy_path, None, interactive=interactive, allow_sudo=True
+        )
+        assert seen["timeout"] == timeout
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="The workspace-policy writer is Unix-only")
+    def test_failed_policy_update_reports_why_sudo_failed(self, policy_path, monkeypatch):
+        policy_path.write_text("old")
+
+        def denied(command, **kwargs):
+            raise subprocess.CalledProcessError(1, command, stderr="sudo: a password is required\n")
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", denied)
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable) as error:
+            managed_files.update_workspace_policy(
+                policy_path, None, interactive=False, allow_sudo=True
+            )
+        assert "sudo: a password is required" in str(error.value)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="The workspace-policy writer is Unix-only")
+    def test_timed_out_policy_update_decodes_sudo_output(self, policy_path, monkeypatch):
+        policy_path.write_text("old")
+
+        def slow(command, **kwargs):
+            raise subprocess.TimeoutExpired(command, 30, stderr=b"sudo: still waiting\n")
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", slow)
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable) as error:
+            managed_files.update_workspace_policy(policy_path, None, allow_sudo=True)
+        assert "sudo: still waiting" in str(error.value)
+        assert "b'" not in str(error.value)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="The workspace-policy writer is Unix-only")
+    def test_policy_removal_compares_the_raw_bytes(self, policy_path, monkeypatch):
+        """A BOM or CRLF endings must survive into the copy the script compares before deleting."""
+        raw = b'\xef\xbb\xbf{"workspace": "x",\r\n "config": {}}\r\n'
+        policy_path.write_bytes(raw)
+        seen = {}
+
+        def remove(command, **kwargs):
+            seen["source"] = Path(command[-2]).read_bytes()
+            policy_path.unlink()
+            return subprocess.CompletedProcess(command, 0)
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", remove)
+        managed_files.update_workspace_policy(policy_path, None, allow_sudo=True)
+        assert seen["source"] == raw
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="The workspace-policy writer is Unix-only")
+    def test_root_policy_update_does_not_need_sudo(self, policy_path, monkeypatch):
+        monkeypatch.setattr(managed_files.os, "geteuid", lambda: 0)
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            policy_path.write_text(Path(command[-2]).read_text())
+            return subprocess.CompletedProcess(command, 0)
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run)
+        managed_files.update_workspace_policy(
+            policy_path, "new", interactive=True, allow_sudo=False
+        )
+        assert calls[0][0:4] == ["/usr/bin/env", "SUDO_UID=0", "/bin/sh", "-c"]
+
+    def test_policy_dry_run_never_invokes_sudo(self, policy_path, monkeypatch):
+        config_io.set_dry_run(True)
+        monkeypatch.setattr(
+            managed_files.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("dry run must not invoke sudo"),
+        )
+        managed_files.update_workspace_policy(policy_path, "new", interactive=True, allow_sudo=True)
+        assert not policy_path.exists()
+
+    def test_policy_symlink_is_rejected_before_sudo(self, policy_path, tmp_path, monkeypatch):
+        target = tmp_path / "user-file.json"
+        target.write_text("user settings")
+        policy_path.symlink_to(target)
+        monkeypatch.setattr(
+            managed_files.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("symlink must not invoke sudo"),
+        )
+        with pytest.raises(RuntimeError, match="symlink"):
+            managed_files.update_workspace_policy(policy_path, "new")
+        assert target.read_text() == "user settings"
+
+
+class TestWorkspacePolicyAsRoot:
+    _real_replace = staticmethod(managed_files._sudo_replace)
+
+    def test_direct_root_run_points_sudo_uid_at_root(self, tmp_path, monkeypatch):
+        """Under `sudo ug configure` SUDO_UID names the caller, but root owns the temp source."""
+        path = tmp_path / "unitygateway" / "managed-settings.json"
+        monkeypatch.setattr(managed_files, "UNITY_GATEWAY_MANAGED_SETTINGS_PATH", path)
+        monkeypatch.setitem(managed_files._SUDO_REPLACE_TARGETS, managed_files.OS.LINUX, {path})
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        monkeypatch.setattr(managed_files.os, "geteuid", lambda: 0, raising=False)
+        monkeypatch.setenv("SUDO_UID", "1000")
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append((command, kwargs))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('{"a": 1}\n', encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run)
+
+        managed_files.update_workspace_policy(path, '{"a": 1}\n', interactive=True)
+
+        command, _kwargs = calls[0]
+        assert command[0:3] == ["/usr/bin/env", "SUDO_UID=0", "/bin/sh"]
+
+    @pytest.mark.parametrize("interactive", [False, True], ids=["headless", "interactive"])
+    def test_agent_settings_writes_point_sudo_uid_at_root_too(
+        self, tmp_path, monkeypatch, interactive
+    ):
+        """The same direct-root rule for Claude/Codex managed settings, one-shot or not."""
+        path = tmp_path / "managed-settings.json"
+        monkeypatch.setattr(managed_files, "_validate_sudo_replace_target", lambda _path: None)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        monkeypatch.setattr(managed_files.os, "geteuid", lambda: 0, raising=False)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: interactive)
+        monkeypatch.setenv("SUDO_UID", "1000")
+        managed_files.request_explicit_managed_writes()
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run)
+        # Undo conftest's guard to reach the real one-shot writer.
+        monkeypatch.setattr(managed_files, "_sudo_replace", TestWorkspacePolicyAsRoot._real_replace)
+
+        managed_files._sudo_replace(path, "{}")
+
+        assert calls[0][0:3] == ["/usr/bin/env", "SUDO_UID=0", "/bin/sh"]
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="The managed writer is Unix-only")
 class TestManagedWorkerShell:
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_real_shell_enforces_workspace_policy_permissions(self, tmp_path, existing):
+        source = tmp_path / "source.json"
+        source.write_text('{"workspace":"https://ws","config":{"spec_version":1}}\n')
+        parent = tmp_path / "unitygateway"
+        parent.mkdir(mode=0o700)
+        target = parent / "managed-settings.json"
+        if existing:
+            target.write_text("old policy")
+            target.chmod(0o600)
+        ownership_log = tmp_path / "ownership.log"
+        script = managed_files._SUDO_REPLACE_SCRIPT.replace(
+            "/etc/unitygateway/managed-settings.json", str(target)
+        )
+        shim = """
+chown() {
+    printf '%s\\n' "$*" >> "$UG_TEST_CHOWN_LOG"
+}
+"""
+        script = script.replace('\ncase "$mode" in', shim + '\ncase "$mode" in')
+        result = subprocess.run(
+            [
+                "/bin/sh",
+                "-c",
+                script,
+                "policy-test",
+                "once",
+                managed_files.current_os().value,
+                str(source),
+                str(target),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={
+                **os.environ,
+                "SUDO_UID": str(os.getuid()),
+                "UG_TEST_CHOWN_LOG": str(ownership_log),
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        assert target.read_text() == source.read_text()
+        assert target.stat().st_mode & 0o777 == 0o644
+        assert parent.stat().st_mode & 0o777 == 0o755
+        assert f"0:0 {parent}" in ownership_log.read_text()
+        assert len(ownership_log.read_text().splitlines()) >= 2
+
+    @pytest.mark.parametrize(
+        ("changed", "neighbor"), [(False, False), (True, False), (False, True)]
+    )
+    def test_real_shell_removes_only_matching_workspace_policy(self, tmp_path, changed, neighbor):
+        source = tmp_path / "expected.json"
+        source.write_text("old policy")
+        policy_dir = tmp_path / "unitygateway"
+        policy_dir.mkdir()
+        target = policy_dir / "managed-settings.json"
+        target.write_text("new policy" if changed else "old policy")
+        if neighbor:
+            (policy_dir / "other").write_text("not ours")
+        script = managed_files._SUDO_REPLACE_SCRIPT.replace(
+            "/etc/unitygateway/managed-settings.json", str(target)
+        )
+        result = subprocess.run(
+            [
+                "/bin/sh",
+                "-c",
+                script,
+                "policy-test",
+                "remove",
+                managed_files.current_os().value,
+                str(source),
+                str(target),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={**os.environ, "SUDO_UID": str(os.getuid())},
+        )
+        if changed:
+            assert result.returncode != 0
+            assert target.read_text() == "new policy"
+        else:
+            assert result.returncode == 0, result.stderr
+            assert not target.exists()
+            # The emptied folder goes too; one holding anything else stays.
+            assert policy_dir.exists() == neighbor
+
     @pytest.mark.parametrize("failed_step", ["", "metadata", "content", "rename"])
     def test_real_shell_preserves_file_on_failed_step(self, tmp_path, failed_step):
         """Exercise the actual shell protocol without sudo, using only temporary files."""
@@ -619,12 +1009,13 @@ mv() {
         assert target.stat().st_mode & 0o777 == 0o640
         assert not list(tmp_path.glob(".managed_config.toml.ucode.*"))
 
-    @pytest.mark.parametrize("parent_exists", [True, False])
-    def test_real_shell_creates_missing_file(self, tmp_path, parent_exists):
+    @pytest.mark.parametrize("missing_parents", [0, 1, 2])
+    def test_real_shell_creates_missing_file(self, tmp_path, missing_parents):
         """The new-file branch installs content, mode, and (root) ownership from scratch."""
         source = tmp_path / "source.json"
         source.write_text("managed settings\n", encoding="utf-8")
-        parent = tmp_path if parent_exists else tmp_path / "codex"
+        created = [tmp_path / "codex", tmp_path / "codex" / "nested"][:missing_parents]
+        parent = created[-1] if created else tmp_path
         target = parent / "managed_config.toml"
         chown_log = tmp_path / "chown.log"
         # Unit-only relocation: production still accepts only its fixed machine-wide targets.
@@ -639,6 +1030,8 @@ chown() {
 }
 """
         script = script.replace('\ncase "$mode" in', shim_chown + '\ncase "$mode" in')
+        # A restrictive umask must not leave any created folder unreadable to the agents.
+        script = "umask 027\n" + script
         request = " ".join(
             [
                 "REPLACE",
@@ -663,10 +1056,9 @@ chown() {
         assert result.stdout == "OK 1\n"
         assert target.read_text(encoding="utf-8") == "managed settings\n"
         assert target.stat().st_mode & 0o777 == 0o644
-        expected_chown_calls = []
-        if not parent_exists:
-            assert parent.stat().st_mode & 0o777 == 0o755
-            expected_chown_calls.append(f"0:0 {parent}")
+        for folder in created:
+            assert folder.stat().st_mode & 0o777 == 0o755
+        expected_chown_calls = [f"0:0 {parent}"] if created else []
         chown_calls = chown_log.read_text(encoding="utf-8").splitlines()
         assert chown_calls[: len(expected_chown_calls)] == expected_chown_calls
         assert len(chown_calls) == len(expected_chown_calls) + 1
@@ -676,6 +1068,294 @@ chown() {
         assert staging_path.parent == parent
         assert staging_path.name.startswith(".managed_config.toml.ucode.")
         assert not list(parent.glob(".managed_config.toml.ucode.*"))
+
+
+class TestManagedSettingsSkipped:
+    """``UG_SKIP_OS_SETTINGS`` opts out of every OS-managed-file operation."""
+
+    def test_absent_env_does_not_skip(self, monkeypatch):
+        monkeypatch.delenv(managed_files.SKIP_OS_SETTINGS_ENV, raising=False)
+        assert managed_files.managed_settings_skipped() is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "Yes", "on", " on "])
+    def test_truthy_values_skip(self, monkeypatch, value):
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, value)
+        assert managed_files.managed_settings_skipped() is True
+        # Skipping also reports the platform as unsupported so managed MCP falls back to user scope
+        # (the real gate; the autouse fixture otherwise pins support on).
+        assert _REAL_MANAGED_FILES_SUPPORTED() is False
+
+    @pytest.mark.parametrize("value", ["0", "false", "off", "no", ""])
+    def test_falsey_values_do_not_skip(self, monkeypatch, value):
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, value)
+        assert managed_files.managed_settings_skipped() is False
+
+    def test_skip_prevents_privileged_write(self, monkeypatch):
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        # Use the real gate so skipping short-circuits before sudo (fixture otherwise pins it on).
+        monkeypatch.setattr(managed_files, "managed_files_supported", _REAL_MANAGED_FILES_SUPPORTED)
+        monkeypatch.setattr(
+            managed_files, "_sudo_replace", lambda *args: pytest.fail("must not write")
+        )
+        result = managed_files.reconcile_managed_file(
+            Path("/tmp/ucode-test/managed.json"),
+            '{"ucode": true}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["ucode"]],
+            parser=json.loads,
+        )
+        assert result == "unsupported"
+
+
+class TestWindowsManagedWrites:
+    """Windows has no sudo: an elevated process writes Program Files directly, others can't."""
+
+    @pytest.fixture
+    def windows(self, tmp_path, backup_dir, monkeypatch):
+        monkeypatch.setenv("ProgramW6432", str(tmp_path / "Program Files"))
+        monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files (x86)"))
+        monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(managed_files, "_windows_replace", _REAL_WINDOWS_REPLACE)
+        monkeypatch.setattr(
+            managed_files.subprocess_cross_os,
+            "run",
+            lambda *a, **k: pytest.fail("Windows writes must not shell out to sudo"),
+        )
+        return managed_files.windows_claude_managed_settings_path()
+
+    def _reconcile(self, path, text):
+        return managed_files.reconcile_managed_file(
+            path,
+            text,
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["apiKeyHelper"]],
+            parser=json.loads,
+        )
+
+    def _reconcile_codex(self, path, text):
+        return managed_files.reconcile_managed_file(
+            path,
+            text,
+            tool="codex",
+            display="Codex",
+            owned_paths=[["model_provider"]],
+            parser=tomllib.loads,
+        )
+
+    def test_path_is_under_64_bit_program_files(self, windows, tmp_path):
+        assert windows == tmp_path / "Program Files" / "ClaudeCode" / "managed-settings.json"
+
+    def test_reads_file_written_with_a_bom(self, windows):
+        # Windows PowerShell 5.1's `Set-Content -Encoding UTF8` prefixes a BOM.
+        windows.parent.mkdir(parents=True)
+        windows.write_bytes(b'\xef\xbb\xbf{"apiKeyHelper": "it"}\n')
+
+        assert json.loads(managed_files.read_managed_file(windows)) == {"apiKeyHelper": "it"}
+
+    @pytest.mark.parametrize("admin", [True, False])
+    def test_writes_follow_elevation_not_the_terminal(self, windows, monkeypatch, admin):
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: admin)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: not admin)
+
+        assert managed_files.managed_writes_allowed() is admin
+        assert managed_files.managed_writes_allowed(repair_existing=True) is admin
+        assert managed_files._sudo_may_prompt() is False
+
+    def test_elevated_headless_run_creates_file(self, windows, monkeypatch):
+        # Device provisioning runs `ug configure` elevated and without a terminal.
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
+
+        assert self._reconcile(windows, '{"apiKeyHelper": "ug"}\n') == "created"
+
+        assert windows.read_text(encoding="utf-8") == '{"apiKeyHelper": "ug"}\n'
+        assert [entry.name for entry in windows.parent.iterdir()] == [windows.name]
+
+    def test_non_admin_update_quits_with_admin_hint(self, windows, monkeypatch):
+        windows.parent.mkdir(parents=True)
+        windows.write_text('{"apiKeyHelper": "old"}\n', encoding="utf-8")
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
+
+        with pytest.raises(RuntimeError, match="requires administrator rights.*ug configure"):
+            self._reconcile(windows, '{"apiKeyHelper": "ug"}\n')
+
+        assert windows.read_text(encoding="utf-8") == '{"apiKeyHelper": "old"}\n'
+
+    def test_elevated_revert_removes_created_file(self, windows, monkeypatch):
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        self._reconcile(windows, '{"apiKeyHelper": "ug"}\n')
+
+        result = managed_files.revert_managed_file(
+            "claude", display="Claude Code", parser=json.loads, dumper=json.dumps
+        )
+
+        assert result == "removed"
+        assert not windows.exists()
+
+    def test_non_admin_revert_quits_with_admin_hint(self, windows, monkeypatch):
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        self._reconcile(windows, '{"apiKeyHelper": "ug"}\n')
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
+
+        with pytest.raises(RuntimeError, match="requires administrator rights.*ug revert"):
+            managed_files.revert_managed_file(
+                "claude", display="Claude Code", parser=json.loads, dumper=json.dumps
+            )
+
+        assert windows.exists()
+
+    def test_refuses_unexpected_target(self, windows, tmp_path, monkeypatch):
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+
+        with pytest.raises(RuntimeError, match="unexpected managed-settings target"):
+            managed_files._windows_replace(tmp_path / "elsewhere.json", "{}")
+
+    def test_agent_paths(self, windows, monkeypatch):
+        monkeypatch.setattr(claude_agent, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(codex_config, "current_os", lambda: managed_files.OS.WINDOWS)
+
+        assert claude_agent._managed_settings_path() == windows
+        assert codex_config.codex_managed_config_path() == (
+            managed_files.windows_codex_managed_settings_path()
+        )
+
+    def _record_icacls(self, monkeypatch, returncode=0):
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, returncode, "Access is denied.", "")
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run)
+        return calls
+
+    def test_elevated_run_writes_codex_requirements(self, windows, tmp_path, monkeypatch):
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+        calls = self._record_icacls(monkeypatch)
+        path = managed_files.windows_codex_managed_settings_path()
+
+        assert path == tmp_path / "ProgramData" / "OpenAI" / "Codex" / "requirements.toml"
+        assert self._reconcile_codex(path, 'model_provider = "Databricks"\n') == "created"
+        assert path.read_text(encoding="utf-8") == 'model_provider = "Databricks"\n'
+        # A standard user may have created these folders; both end up owned by Administrators.
+        icacls = str(tmp_path / "Windows" / "System32" / "icacls.exe")
+        codex, openai = str(path.parent), str(path.parent.parent)
+        assert calls == [
+            [icacls, openai, "/setowner", "*S-1-5-32-544", "/L"],
+            [icacls, openai, "/reset", "/L"],
+            [icacls, codex, "/setowner", "*S-1-5-32-544", "/L"],
+            [
+                icacls,
+                codex,
+                "/inheritance:r",
+                "/grant:r",
+                "*S-1-5-18:(OI)(CI)F",
+                "*S-1-5-32-544:(OI)(CI)F",
+                "*S-1-5-32-545:(OI)(CI)RX",
+                "/L",
+            ],
+        ]
+
+    def test_unsecured_codex_folder_blocks_the_write(self, windows, monkeypatch):
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        self._record_icacls(monkeypatch, returncode=5)
+        path = managed_files.windows_codex_managed_settings_path()
+
+        with pytest.raises(RuntimeError, match="could not secure .*Access is denied"):
+            self._reconcile_codex(path, 'model_provider = "Databricks"\n')
+
+        assert not path.exists()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="needs the real icacls")
+    def test_standard_users_can_only_read_secured_codex_folder(self, windows, monkeypatch):
+        # The Windows CI lane is elevated, so this runs the real icacls on a temporary ProgramData.
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", _REAL_SUBPROCESS_RUN)
+        path = managed_files.windows_codex_managed_settings_path()
+
+        assert self._reconcile_codex(path, 'model_provider = "Databricks"\n') == "created"
+
+        for folder in (path.parent.parent, path.parent):
+            owner = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    f"(Get-Acl -LiteralPath '{folder}').Owner",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            assert owner == "BUILTIN\\Administrators"
+        acl = subprocess.run(
+            ["icacls", str(path)], capture_output=True, text=True, check=True
+        ).stdout
+        assert "BUILTIN\\Users:(I)(RX)" in acl
+        assert not re.search(r"\\Users:.*\((F|M|W)\)", acl)
+
+    def test_refuses_linked_codex_folder(self, windows, tmp_path, monkeypatch):
+        # Standard users can create folders under ProgramData, including links elsewhere.
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        path = managed_files.windows_codex_managed_settings_path()
+        elsewhere = tmp_path / "user-folder"
+        elsewhere.mkdir()
+        path.parent.parent.parent.mkdir()
+        try:
+            path.parent.parent.symlink_to(elsewhere, target_is_directory=True)
+        except OSError:
+            pytest.skip("creating a directory link needs extra privileges here")
+
+        with pytest.raises(RuntimeError, match="through link"):
+            self._reconcile_codex(path, 'model_provider = "Databricks"\n')
+
+        assert not any(elsewhere.iterdir())
+
+
+class TestManagedWriteSkippedWarning:
+    @pytest.fixture
+    def warnings(self, monkeypatch):
+        captured: list[str] = []
+        monkeypatch.setattr(managed_files, "print_warning", captured.append)
+        return captured
+
+    def test_batched_setup_names_the_file_it_could_not_write(self, warnings, tmp_path):
+        path = tmp_path / "requirements.toml"
+
+        with managed_files.managed_write_batch(["Codex"]):
+            managed_files.warn_managed_write_skipped(path, {}, {"model_provider": "Databricks"})
+
+        assert warnings == [
+            f"{path} wasn't updated: this run has no terminal to approve sudo. Run `ug configure` to update it."
+        ]
+
+    def test_dry_run_stays_quiet(self, warnings, monkeypatch, tmp_path):
+        monkeypatch.setattr(managed_files, "is_dry_run", lambda: True)
+
+        with managed_files.managed_write_batch(["Codex"]):
+            managed_files.warn_managed_write_skipped(tmp_path, {}, {"model_provider": "Databricks"})
+
+        assert warnings == []
+
+    def test_launches_stay_quiet(self, warnings, tmp_path):
+        # Launches reconfigure on every run, outside configure's batch.
+        managed_files.warn_managed_write_skipped(tmp_path, {}, {"model_provider": "Databricks"})
+
+        assert warnings == []
+
+    def test_up_to_date_file_needs_no_warning(self, warnings, tmp_path):
+        # Only ug's own User-Agent versions differ, which doesn't change the file's meaning.
+        current = {"http_headers": {"User-Agent": "ucode/1.0 codex/0.154.0"}}
+        desired = {"http_headers": {"User-Agent": "ucode/1.1 codex/0.160.0"}}
+
+        with managed_files.managed_write_batch(["Codex"]):
+            managed_files.warn_managed_write_skipped(tmp_path, current, desired)
+
+        assert warnings == []
 
 
 class TestManagedFileLifecycle:
@@ -1082,6 +1762,47 @@ class TestManagedFileLifecycle:
     def test_mask_user_agent_versions_masks_only_ug_version_tokens(self, value, masked):
         assert managed_files.mask_user_agent_versions(value) == masked
 
+    @pytest.mark.parametrize(
+        ("user_agent", "token"),
+        [
+            ("ucode/1.0 claude/2.1", "claude/2.1"),
+            ("ucode/1.0 claude/2.1 (macos; arm64)", "claude/2.1"),
+            ("ucode/1.0 claude/2.1 (windows; x86_64)", "claude/2.1"),
+            ("ucode/1.0 claude/2.1 (macos 15.1; arm64)", "claude/2.1"),
+            ("ucode/1.0 claude/2.1 (linux ubuntu-24.04; x86_64)", "claude/2.1"),
+            ("ucode/1.0 claude/2.1 (anything, new: fields; v2)", "claude/2.1"),
+            ("ucode/1.0 claude/2.1 (a (nested))", None),
+            ("ucode/1.0 claude/2.1 (macos; arm64) extra", None),
+            ("ucode/1.0 codex/2.1 (macos; arm64)", None),
+        ],
+    )
+    def test_ug_agent_token_accepts_optional_platform_suffix(self, user_agent, token):
+        assert managed_files.ug_agent_token(user_agent, "claude") == token
+
+    @pytest.mark.parametrize(
+        "user_agent",
+        [
+            "ucode/0.9 claude/2.1",
+            "ucode/1.0 claude/2.2 (macos; arm64)",
+            "ucode/1.0 claude/2.2 (linux; x86_64)",
+            "ucode/1.0 claude/2.2 (macos 15.1; arm64)",
+        ],
+    )
+    def test_platform_suffix_is_masked_with_the_versions(self, user_agent):
+        masked = managed_files.mask_user_agent_versions({"User-Agent": user_agent})
+        assert masked == {"User-Agent": "ucode/* claude/*"}
+        header = managed_files.mask_user_agent_versions({"h": f"a: 1\nUser-Agent: {user_agent}"})
+        assert header == {"h": "a: 1\nUser-Agent: ucode/* claude/*"}
+
+    def test_ug_upgrade_adding_platform_suffix_is_not_a_conflict(self):
+        # A file written by an older ug (no suffix) must not force a sudo rewrite on upgrade.
+        existing = {"h": {"User-Agent": "ucode/1.0 codex/0.1"}, "a": 1}
+        desired = {"h": {"User-Agent": "ucode/1.1 codex/0.1 (macos; arm64)"}, "a": 1}
+
+        assert managed_files.managed_file_conflicts(existing, desired, [["h"], ["a"]]) == []
+        assert managed_files.managed_file_conflicts(desired, existing, [["h"], ["a"]]) == []
+        assert managed_files.managed_file_conflicts(existing, {**desired, "a": 2}, [["a"]]) == ["a"]
+
     def test_verified_check_uses_fingerprint(self, tmp_path):
         path = tmp_path / "managed.json"
         path.write_text("current", encoding="utf-8")
@@ -1302,15 +2023,27 @@ def test_revert_semantic_noop_preserves_bytes_without_sudo(tmp_path, backup_dir,
     assert path.read_text() == admin_text  # exact bytes preserved
 
 
+@pytest.mark.parametrize("command", [None, "ug configure", "ug revert"])
+@pytest.mark.parametrize("os_name", ["LINUX", "WINDOWS"])
 @pytest.mark.parametrize(
     ("interactive", "repair_existing", "expected"),
     [(False, False, False), (False, True, True), (True, False, True)],
 )
-def test_managed_writes_policy(monkeypatch, interactive, repair_existing, expected):
+def test_managed_writes_policy(
+    monkeypatch, command, os_name, interactive, repair_existing, expected
+):
+    # `ug configure` and `ug revert` always attempt the write; the write settles privilege.
+    monkeypatch.setattr(managed_files, "current_os", lambda: getattr(managed_files.OS, os_name))
     monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: interactive)
+    managed_files.request_explicit_managed_writes(command)
+    # Windows has no sudo to prompt with: only an elevated process (not this one) may write.
+    other_run = interactive and os_name == "LINUX"
+    repair = expected and os_name == "LINUX"
 
-    assert managed_files.managed_writes_allowed() is interactive
-    assert managed_files.managed_writes_allowed(repair_existing=repair_existing) is expected
+    assert managed_files.managed_writes_allowed() is (command is not None or other_run)
+    assert managed_files.managed_writes_allowed(repair_existing=repair_existing) is (
+        command is not None or repair
+    )
 
 
 @pytest.mark.parametrize("interactive", [False, True])
@@ -1319,3 +2052,112 @@ def test_sudo_command_derives_prompt_policy(monkeypatch, interactive):
 
     expected = ["/usr/bin/sudo", *([] if interactive else ["-n"]), "cp", "a", "b"]
     assert managed_files._sudo_command("cp", "a", "b") == expected
+
+
+class TestPasswordNote:
+    @pytest.fixture(autouse=True)
+    def _real_check(self, monkeypatch):
+        monkeypatch.setattr(managed_files, "_sudo_needs_password", _REAL_SUDO_NEEDS_PASSWORD)
+        monkeypatch.setattr(managed_files, "_sudo_needs_password_cache", None)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+
+    @staticmethod
+    def _fake_sudo(monkeypatch, returncode):
+        commands: list[list[str]] = []
+
+        def run(command, **kwargs):
+            commands.append(command)
+            return subprocess.CompletedProcess(command, returncode)
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run)
+        return commands
+
+    def test_passwordless_sudo_suppresses_the_note_and_is_checked_once(self, monkeypatch):
+        notes: list[str] = []
+        commands = self._fake_sudo(monkeypatch, 0)
+        monkeypatch.setattr(managed_files, "print_note", notes.append)
+
+        managed_files._print_managed_write_permission("Claude Code")
+        managed_files._print_managed_write_permission("Codex")
+
+        assert notes == []
+        assert commands == [["/usr/bin/sudo", "-n", "true"]]
+
+    def test_sudo_needing_a_password_still_prints_the_note(self, monkeypatch):
+        notes: list[str] = []
+        self._fake_sudo(monkeypatch, 1)
+        monkeypatch.setattr(managed_files, "print_note", notes.append)
+
+        managed_files._print_managed_write_permission("Codex")
+
+        assert notes == ["Enter password to configure settings for Codex."]
+
+    def test_passwordless_batch_still_reports_success(self, monkeypatch):
+        successes: list[str] = []
+        self._fake_sudo(monkeypatch, 0)
+        monkeypatch.setattr(managed_files, "print_note", lambda _message: None)
+        monkeypatch.setattr(managed_files, "print_success", successes.append)
+
+        with managed_files.managed_write_batch(["Codex"]):
+            managed_files._print_managed_write_permission("Codex")
+
+        assert successes == ["Settings configured for Codex"]
+
+    def test_no_sudo_call_on_windows_or_in_dry_run(self, monkeypatch):
+        commands = self._fake_sudo(monkeypatch, 0)
+
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
+        assert managed_files._sudo_needs_password() is True
+
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        config_io.set_dry_run(True)
+        assert managed_files._sudo_needs_password() is True
+
+        assert commands == []
+
+
+class TestPerUserPaths:
+    def _roots(self, monkeypatch, tmp_path):
+        home = tmp_path / "profiles" / "me"
+        home.mkdir(parents=True)
+        monkeypatch.setattr(managed_files.Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setattr(
+            managed_files.system_cross_os, "user_profiles_dir", lambda: tmp_path / "profiles"
+        )
+        shared = tmp_path / "usr" / "local" / "bin"
+        shared.mkdir(parents=True)
+        return home, shared
+
+    def test_reports_paths_in_any_users_home(self, monkeypatch, tmp_path):
+        home, shared = self._roots(monkeypatch, tmp_path)
+        mine = str(home / ".local" / "bin" / "ug")
+        theirs = str(tmp_path / "profiles" / "other" / "bin" / "python")
+        ok = str(shared / "ug")
+
+        assert managed_files.per_user_paths([mine, theirs, ok]) == [mine, theirs]
+
+    def test_follows_a_shared_symlink_into_a_home(self, monkeypatch, tmp_path):
+        home, shared = self._roots(monkeypatch, tmp_path)
+        target = home / ".local" / "share" / "ug"
+        target.parent.mkdir(parents=True)
+        target.write_text("", encoding="utf-8")
+        link = shared / "ug"
+        link.symlink_to(target)
+
+        assert managed_files.per_user_paths([str(link)]) == [str(link)]
+
+    def test_ignores_a_home_of_the_filesystem_root(self, monkeypatch, tmp_path):
+        # Some MDM and system jobs run with HOME=/, which would otherwise contain every path.
+        _, shared = self._roots(monkeypatch, tmp_path)
+        root = Path(tmp_path.anchor)
+        monkeypatch.setattr(managed_files.Path, "home", classmethod(lambda cls: root))
+        theirs = str(tmp_path / "profiles" / "other" / "ug")
+
+        assert managed_files.per_user_paths([str(shared / "ug"), theirs]) == [theirs]
+
+    def test_without_a_profiles_folder_checks_only_home(self, monkeypatch, tmp_path):
+        home, _ = self._roots(monkeypatch, tmp_path)
+        monkeypatch.setattr(managed_files.system_cross_os, "user_profiles_dir", lambda: None)
+        other = str(tmp_path / "profiles" / "other" / "ug")
+
+        assert managed_files.per_user_paths([str(home / "ug"), other]) == [str(home / "ug")]

@@ -2,13 +2,12 @@
 
 import os
 import time
-import uuid
 
 import pytest
 from utils.constants import CLAUDE_TEST_MODEL
-from utils.evidence import FileTask
+from utils.evidence import FileTask, fresh_id
 from utils.managed import use_managed_config_fixture
-from utils.sql import query_count, resolve_trace_table, resolve_warehouse_id
+from utils.sql import resolve_trace_table, resolve_warehouse_id, wait_for_count
 
 pytestmark = [pytest.mark.live, pytest.mark.claude]
 
@@ -24,7 +23,7 @@ def test_ug_claude_exports_trace_to_configured_table(live_session, workspace):
     table = resolve_trace_table(workspace, bearer)
     warehouse_id = os.environ.get("UG_INTEGRATION_WAREHOUSE_ID", "").strip()
     warehouse_id = warehouse_id or resolve_warehouse_id(workspace, bearer)
-    marker = f"ug-claude-trace-{uuid.uuid4().hex}"
+    marker = f"ug-claude-trace-{fresh_id()}"
     task = FileTask(session)
     use_managed_config_fixture(session, "claude_tracing")
     session.run(
@@ -57,14 +56,14 @@ def test_ug_claude_exports_trace_to_configured_table(live_session, workspace):
         "WHERE time > current_timestamp() - INTERVAL 10 MINUTES "
         "AND variant_get(resource.attributes, '$[\"ug_integration_marker\"]', 'STRING') = :marker"
     )
-    count = query_count(
+    count = wait_for_count(
         workspace,
         bearer,
         warehouse_id,
         marker_query,
         [{"name": "marker", "value": marker, "type": "STRING"}],
     )
-    model_count = query_count(
+    model_count = wait_for_count(
         workspace,
         bearer,
         warehouse_id,

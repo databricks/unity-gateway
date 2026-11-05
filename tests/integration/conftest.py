@@ -10,13 +10,15 @@ import shutil
 import tempfile
 import urllib.error
 import urllib.request
-import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
+from utils.evidence import fresh_id
 from utils.harness import UserSession
 from utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
+
+AGENT_BINARIES = {"antigravity": "agy"}
 
 
 def pytest_collection_modifyitems(config, items):
@@ -27,7 +29,8 @@ def pytest_collection_modifyitems(config, items):
         if "monkeypatch" in item.fixturenames:
             raise pytest.UsageError("Use the integration runner; unit fixtures were inherited.")
         if any(
-            item.get_closest_marker(a) and a not in agents for a in ("claude", "codex", "opencode")
+            item.get_closest_marker(a) and a not in agents
+            for a in ("claude", "codex", "opencode", "copilot", "antigravity")
         ):
             deselected.append(item)
         else:
@@ -97,7 +100,7 @@ def case_directory(prefix: str, parent: Path | None):
             yield path
         return
     # mkdtemp's 0o700 becomes an owner-only ACL on Windows, which Codex's sandbox can't read.
-    path = Path(parent or tempfile.gettempdir()) / f"{prefix}{uuid.uuid4().hex[:8]}"
+    path = Path(parent or tempfile.gettempdir()) / f"{prefix}{fresh_id()}"
     path.mkdir()
     try:
         yield str(path)
@@ -143,30 +146,40 @@ def session(request, installed_binary):
         try:
             yield user
         finally:
-            # Restore machine-level settings through the same public CLI that
-            # created them. A later fresh-home test must not inherit this setup.
-            if any(
-                (user.home / ".ucode" / name).is_file()
-                for name in ("state.json", "managed-backups/manifest.json")
-            ):
-                if os.name == "posix":
-                    # Import PTY support only when a live-capable run actually
-                    # created state that teardown must revert.
-                    from utils.terminal import TerminalProcess
+            try:
+                # Restore machine-level settings through the same public CLI that
+                # created them. A later fresh-home test must not inherit this setup.
+                if any(
+                    (user.home / ".ucode" / name).is_file()
+                    for name in ("state.json", "managed-backups/manifest.json")
+                ):
+                    if os.name == "posix":
+                        # Import PTY support only when a live-capable run actually
+                        # created state that teardown must revert.
+                        from utils.terminal import TerminalProcess
 
-                    with TerminalProcess(
-                        user, "ug", [str(user.binary), "revert"], "cleanup-revert"
-                    ) as terminal:
-                        terminal.finish()
-                else:
-                    # Installation checks are noninteractive; if a regression
-                    # creates state, still clean it through the installed CLI.
-                    user.run("revert", timeout=120)
+                        with TerminalProcess(
+                            user, "ug", [str(user.binary), "revert"], "cleanup-revert"
+                        ) as terminal:
+                            terminal.finish()
+                    else:
+                        # Installation checks are noninteractive; if a regression
+                        # creates state, still clean it through the installed CLI.
+                        user.run("revert", timeout=120)
+            finally:
+                # Backstop: `ug revert` removes the workspace policy, but it can fail or be
+                # skipped, and a later fresh-home case or the next run's preflight must start clean.
+                policy = Path("/etc/unitygateway/managed-settings.json")
+                sudo = shutil.which("sudo")
+                if os.name == "posix" and policy.exists() and sudo:
+                    user.run("-n", "rm", "-f", str(policy), binary=Path(sudo), timeout=30, ok=False)
 
 
 @pytest.fixture
 def live_session(session, workspace):
-    for binary in ["databricks", *os.environ["UG_INTEGRATION_AGENTS"].split(",")]:
+    agents = os.environ["UG_INTEGRATION_AGENTS"].split(",")
+    # Agents run under their own binary names (`ug antigravity` launches `agy`).
+    for binary in ["databricks", *(AGENT_BINARIES.get(agent, agent) for agent in agents)]:
         if not shutil.which(binary, path=session.env["PATH"]):
             pytest.fail(f"Required integration binary is missing: {binary}")
     session.env["DATABRICKS_BEARER"] = os.environ["DATABRICKS_BEARER"]
@@ -181,6 +194,12 @@ def claude_provider():
 @pytest.fixture(scope="session")
 def claude_relayed_provider():
     return os.environ["UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def claude_bedrock_provider():
+    # A Bedrock MPS that restricts its allowed models to an explicit set (Sonnet + Opus).
+    return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_PROVIDER"]
 
 
 @pytest.fixture(scope="session")
@@ -215,6 +234,40 @@ def claude_bedrock_allow_all_model():
 
 
 @pytest.fixture(scope="session")
+def codex_bedrock_runtime_provider():
+    # A Bedrock runtime MPS (allow_all, UC service credential) that serves GPT over Responses.
+    return os.environ["UG_INTEGRATION_CODEX_BEDROCK_RUNTIME_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_bedrock_runtime_model():
+    return os.environ["UG_INTEGRATION_CODEX_BEDROCK_RUNTIME_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def codex_bedrock_mantle_provider():
+    # A Bedrock Mantle MPS (allow_all, UC service credential) that serves GPT over Responses.
+    return os.environ["UG_INTEGRATION_CODEX_BEDROCK_MANTLE_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_bedrock_mantle_model():
+    return os.environ["UG_INTEGRATION_CODEX_BEDROCK_MANTLE_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def antigravity_provider():
+    return os.environ["UG_INTEGRATION_ANTIGRAVITY_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def antigravity_provider_models():
+    # Targets of the Gemini MPS, newest first: `ug configure` pins the first.
+    models = os.environ["UG_INTEGRATION_ANTIGRAVITY_PROVIDER_MODELS"].split(",")
+    return [model.strip() for model in models if model.strip()]
+
+
+@pytest.fixture(scope="session")
 def codex_provider():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER"]
 
@@ -222,6 +275,26 @@ def codex_provider():
 @pytest.fixture(scope="session")
 def codex_provider_model():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def codex_azure_provider():
+    return os.environ["UG_INTEGRATION_CODEX_AZURE_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_azure_provider_model():
+    return os.environ["UG_INTEGRATION_CODEX_AZURE_PROVIDER_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def codex_foundry_provider():
+    return os.environ["UG_INTEGRATION_CODEX_FOUNDRY_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_foundry_provider_model():
+    return os.environ["UG_INTEGRATION_CODEX_FOUNDRY_PROVIDER_MODEL"]
 
 
 @pytest.fixture(scope="session")

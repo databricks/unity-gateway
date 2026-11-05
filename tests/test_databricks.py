@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import configparser
 import json
 import os
 import subprocess
@@ -17,7 +18,6 @@ import pytest
 import ucode.custom_oauth as custom_oauth_mod
 import ucode.databricks as db_mod
 from ucode.databricks import (
-    CODING_AGENT_RECOMMEND_MODEL_PATH,
     _format_subprocess_result,
     _parse_databricks_cli_version,
     _run_databricks_cli_installer,
@@ -47,7 +47,6 @@ from ucode.databricks import (
     install_databricks_cli,
     list_databricks_apps,
     list_workspace_budgets,
-    resolve_current_budget_spend,
     upgrade_databricks_cli,
     workspace_hostname,
     workspace_origin,
@@ -59,6 +58,8 @@ WS_HOST = "example.databricks.com"
 
 class _FakeResponse:
     """Minimal urlopen context manager returning a JSON body, or raw bytes as given."""
+
+    status = 200
 
     def __init__(self, payload: dict | bytes):
         self._body = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
@@ -436,6 +437,37 @@ class TestDiscoverClaudeModels:
             )
         ]
 
+    def test_keeps_the_listed_token_limits(self, monkeypatch):
+        payload = {
+            "data": [
+                {
+                    "id": "system.ai.claude-opus-4-8",
+                    "max_input_tokens": 1000000,
+                    "max_tokens": 128000,
+                },
+                {
+                    "id": "anthropic-aigw-481f0baa-system.ai.gpt-6-luna",
+                    "max_input_tokens": 922000,
+                    "max_tokens": 128000,
+                },
+                {
+                    "id": "anthropic-aigw-73ea02b2-system.ai.glm-5-2",
+                    "max_input_tokens": 0,
+                    "max_tokens": 0,
+                },
+                {"id": "system.ai.claude-odd", "max_input_tokens": True, "max_tokens": 64000},
+                {"id": "system.ai.claude-unlisted"},
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *_args, **_kwargs: (payload, None))
+
+        catalog = db_mod.list_anthropic_model_catalog(WS, "token")
+
+        assert catalog.model_id_to_limits == {
+            "system.ai.claude-opus-4-8": (1000000, 128000),
+            "anthropic-aigw-481f0baa-system.ai.gpt-6-luna": (922000, 128000),
+        }
+
     def test_selects_opus_4_8_when_advertised(self, monkeypatch):
         payload = {
             "data": [
@@ -707,6 +739,34 @@ class TestDiscoverModelServices:
         assert ids == ["system.ai.gpt-5"]
         assert calls["n"] == 3  # two failures, third succeeds
 
+    def test_entries_keep_the_advertised_api_types(self, monkeypatch):
+        service = {
+            **_model_service("system.ai.gte-large-en"),
+            "supported_api_types": ["mlflow/v1/embeddings", 3],
+        }
+
+        monkeypatch.setattr(
+            db_mod,
+            "_get_model_services_page",
+            lambda url, token: ({"model_services": [service]}, None),
+        )
+
+        entries, reason = db_mod.list_model_service_entries(WS, "token")
+
+        assert reason is None
+        assert entries == [
+            db_mod.ModelServiceEntry("system.ai.gte-large-en", ("mlflow/v1/embeddings",))
+        ]
+        assert db_mod.cached_model_service_entries(WS) == entries
+
+    def test_failed_listing_is_not_cached(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "_get_model_services_page", lambda url, token: (None, "HTTP 503")
+        )
+
+        assert db_mod.list_model_service_entries(WS, "token") == ([], "HTTP 503")
+        assert db_mod.cached_model_service_entries(WS) is None
+
 
 class TestModelServiceExists:
     def test_true_when_listed_in_its_schema(self, monkeypatch):
@@ -839,6 +899,7 @@ class TestListModelProviderServices:
             "name": "main.schema1.anthropic-svc",
             "provider_type": "anthropic",
             "targets": [],
+            "target_api_types": {},
             "allow_all_targets": False,
             "relayed": False,
         }
@@ -857,6 +918,19 @@ class TestListModelProviderServices:
         assert by_name["main.schema1.claude-max-svc"]["relayed"] is True
         assert by_name["main.schema1.anthropic-svc"]["relayed"] is False
 
+    def test_flags_relayed_openai(self):
+        entry = db_mod._provider_service_entry(
+            {
+                "name": "model-provider-services/main.s.chatgpt",
+                "config": {
+                    "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_OPENAI",
+                    "openai": {"relayed": {}},
+                },
+            }
+        )
+        assert entry["relayed"] is True
+        assert entry["provider_type"] == "openai"
+
     def test_extracts_targets(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_http_get_json", lambda url, token, timeout=30: (self._PAYLOAD, None)
@@ -867,6 +941,33 @@ class TestListModelProviderServices:
             "us.anthropic.claude-sonnet-4-6",
             "global.anthropic.claude-opus-4-8",
         ]
+
+    def test_keeps_each_targets_declared_api_types(self, monkeypatch):
+        payload = {
+            "model_provider_services": [
+                {
+                    "name": "model-provider-services/main.schema1.foundry-svc",
+                    "config": {
+                        "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_MICROSOFT_FOUNDRY",
+                        "targets": [
+                            {"model": "gpt-5.4-nano", "native_api_types": ["openai/v1/responses"]},
+                            {"model": "embed-v-4-0", "native_api_types": ["openai/v1/embeddings"]},
+                            {"model": "plain"},
+                        ],
+                    },
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=30: (payload, None)
+        )
+
+        services, _ = db_mod.list_model_provider_services(WS, "token")
+
+        assert services[0]["target_api_types"] == {
+            "gpt-5.4-nano": ("openai/v1/responses",),
+            "embed-v-4-0": ("openai/v1/embeddings",),
+        }
 
     def test_returns_reason_on_failure(self, monkeypatch):
         monkeypatch.setattr(
@@ -950,6 +1051,29 @@ class TestMapClaudeFamilyModels:
 
     def test_empty_when_no_claude(self):
         assert db_mod.map_claude_family_models(["amazon.titan-text-express-v1"]) == {}
+
+
+class TestMaybeAddGpt1mSuffix:
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("system.ai.gpt-5-6-sol", "system.ai.gpt-5-6-sol[1m]"),
+            ("databricks-gpt-6-astra", "databricks-gpt-6-astra[1m]"),
+            (
+                "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol",
+                "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol[1m]",
+            ),
+            ("system.ai.gpt-5-6-sol[1m]", "system.ai.gpt-5-6-sol[1m]"),
+            ("system.ai.gpt-5-6-sol[200k]", "system.ai.gpt-5-6-sol[200k]"),
+            ("system.ai.gpt-5-5", "system.ai.gpt-5-5[1m]"),
+            ("system.ai.gpt-5-4-nano", "system.ai.gpt-5-4-nano[1m]"),
+            ("gpt-4.1", "gpt-4.1[1m]"),
+            ("system.ai.gpt-oss-120b", "system.ai.gpt-oss-120b"),
+            ("system.ai.claude-opus-4-8", "system.ai.claude-opus-4-8"),
+        ],
+    )
+    def test_adds_hint_to_versioned_gpt_ids_only(self, model, expected):
+        assert db_mod.maybe_add_gpt_1m_suffix(model) == expected
 
 
 class TestResolveProviderLaunchModel:
@@ -1188,6 +1312,43 @@ class TestResolveProviderService:
         assert service is None
         assert "can't route to" in error
 
+    def test_copilot_accepts_openai(self, monkeypatch):
+        self._patch(monkeypatch)
+        service, error = db_mod.resolve_provider_service(
+            "copilot", "main.schema1.openai-svc", WS, "token"
+        )
+        assert error is None
+        assert service["provider_type"] == "openai"
+
+    def test_copilot_rejects_bedrock_without_claude(self, monkeypatch):
+        self._patch(monkeypatch)
+        service, error = db_mod.resolve_provider_service(
+            "copilot", "main.schema2.bedrock-titan-svc", WS, "token"
+        )
+        assert service is None
+        assert "no Claude models" in error
+
+    def test_copilot_rejects_a_subscription_relay(self, monkeypatch):
+        payload = {
+            "model_provider_services": [
+                {
+                    "name": "model-provider-services/main.schema1.relay-svc",
+                    "config": {
+                        "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC",
+                        "anthropic": {"relayed": {}},
+                    },
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=30: (payload, None)
+        )
+        service, error = db_mod.resolve_provider_service(
+            "copilot", "main.schema1.relay-svc", WS, "token"
+        )
+        assert service is None
+        assert "only Claude Code can use" in error
+
     def test_bedrock_without_claude_rejected(self, monkeypatch):
         self._patch(monkeypatch)
         service, error = db_mod.resolve_provider_service(
@@ -1310,6 +1471,66 @@ class TestResolveProviderService:
         assert service["targets"] == ["gemini-3.5-flash"]
 
 
+class TestListProviderServiceModels:
+    @pytest.mark.parametrize(
+        ("provider_type", "response", "expected"),
+        [
+            (
+                "amazon_bedrock",
+                ({"data": [{"id": "us.anthropic.claude-sonnet-4-6"}]}, None),
+                (["us.anthropic.claude-sonnet-4-6"], None),
+            ),
+            ("anthropic", ({"data": []}, None), ([], None)),
+            ("anthropic", (None, "HTTP 403 Forbidden"), ([], "HTTP 403 Forbidden")),
+            ("openai", ({"models": [{"slug": "gpt-5.5"}]}, None), (["gpt-5.5"], None)),
+            ("openai", ({"models": []}, None), ([], None)),
+        ],
+    )
+    def test_reports_failures_but_not_empty_listings(
+        self, monkeypatch, provider_type, response, expected
+    ):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token, **kw: response)
+
+        assert (
+            db_mod.list_provider_service_models(WS, "token", "main.a.b", provider_type) == expected
+        )
+
+    def test_reports_a_codex_listing_failure(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kw: (None, "HTTP 503 Service Unavailable"),
+        )
+
+        ids, reason = db_mod.list_provider_service_models(WS, "token", "main.a.b", "openai")
+
+        assert ids == []
+        assert "HTTP 503" in reason
+
+
+@pytest.mark.parametrize(
+    ("model", "name"),
+    [
+        ("system.ai.claude-sonnet-4-6", "claude-sonnet-4-6"),
+        ("System.AI.Claude-Opus-4-7[1m]", "claude-opus-4-7"),
+        ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4-5-20250929-v1:0"),
+        ("anthropic.claude-opus-4-8", "claude-opus-4-8"),
+        ("databricks-claude-sonnet-4-6", "claude-sonnet-4-6"),
+        ("main.ucode.claude_haiku", "claude_haiku"),
+        ("gpt-5.5", "gpt-5.5"),
+        ("main.default.gpt-5.5", "gpt-5.5"),
+        # An Azure deployment names its region with a slash.
+        ("eu/gpt-5.6-luna", "gpt-5.6-luna"),
+        ("us/gpt-4o-mini-2024-07-18", "gpt-4o-mini-2024-07-18"),
+        ("mistralai/Mistral-7B", "mistral-7b"),
+        # Only the leading segment is a region; anything deeper is left alone.
+        ("publishers/google/models/gemini-4", "google/models/gemini-4"),
+    ],
+)
+def test_bare_model_name(model, name):
+    assert db_mod.bare_model_name(model) == name
+
+
 class TestServiceUsableForTool:
     def test_bedrock_allow_all_targets_usable_without_targets(self):
         service = {"provider_type": "amazon_bedrock", "targets": [], "allow_all_targets": True}
@@ -1332,6 +1553,40 @@ class TestServiceUsableForTool:
         }
         assert not db_mod.service_usable_for_tool("claude", service)
         assert db_mod.service_usable_for_tool("codex", service)
+        assert not db_mod.service_usable_for_tool("copilot", service)
+
+    @pytest.mark.parametrize(
+        "provider_type",
+        [
+            "anthropic",
+            "amazon_bedrock",
+            "bedrock_mantle",
+            "openai",
+            "azure_openai",
+            "microsoft_foundry",
+        ],
+    )
+    def test_copilot_routes_anthropic_and_openai_services(self, provider_type):
+        service = {"provider_type": provider_type, "targets": [], "allow_all_targets": True}
+        assert db_mod.service_usable_for_tool("copilot", service)
+
+    @pytest.mark.parametrize("provider_type", ["gemini_enterprise", "custom"])
+    def test_copilot_skips_other_provider_types(self, provider_type):
+        service = {"provider_type": provider_type, "targets": [], "allow_all_targets": True}
+        assert not db_mod.service_usable_for_tool("copilot", service)
+
+    def test_openai_relay_is_codex_only(self):
+        service = {"provider_type": "openai", "targets": [], "relayed": True}
+        assert db_mod.service_usable_for_tool("codex", service)
+        assert not db_mod.service_usable_for_tool("copilot", service)
+        assert "ChatGPT" in db_mod._provider_service_unusable_reason("copilot", service, "svc")
+        anthropic = {"provider_type": "anthropic", "targets": [], "relayed": True}
+        assert not db_mod.service_usable_for_tool("codex", anthropic)
+
+    def test_copilot_skips_a_subscription_relay(self):
+        service = {"provider_type": "anthropic", "targets": [], "relayed": True}
+        assert not db_mod.service_usable_for_tool("copilot", service)
+        assert db_mod.service_usable_for_tool("claude", service)
 
 
 class TestModelProviderFeatureUnavailable:
@@ -2314,6 +2569,21 @@ class TestGetDatabricksToken:
 
         assert db_mod.check_databricks_auth(WS) is False
 
+    def test_timeout_does_not_suggest_logging_out(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "sys.exit(0)")
+        monkeypatch.setattr("os.environ", env)
+
+        def hung(args, **kwargs):
+            if "token" in args:
+                raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+            return subprocess.CompletedProcess(args, 1, "", "")
+
+        monkeypatch.setattr(db_mod, "run", hung)
+
+        with pytest.raises(RuntimeError, match="no access token") as exc_info:
+            get_databricks_token(WS, "my-profile")
+        assert "logout" not in str(exc_info.value)
+
     def test_reauths_and_retries_when_token_empty(self, tmp_path, monkeypatch):
         call_count = tmp_path / "calls"
         call_count.write_text("0")
@@ -2334,6 +2604,86 @@ class TestGetDatabricksToken:
         monkeypatch.setattr("os.environ", env)
         token = get_databricks_token(WS)
         assert token == "refreshed-token"
+
+    @pytest.mark.parametrize(
+        "auth_error",
+        [
+            'print(json.dumps({"message": "refresh token is invalid"}))',
+            "print('Error: cache: no cached credentials', file=sys.stderr)",
+        ],
+    )
+    def test_browser_login_signs_in_when_login_is_required(
+        self, tmp_path, monkeypatch, capfd, auth_error
+    ):
+        # A desktop app's helper has no terminal, so missing or expired credentials
+        # open a browser login, not `--no-browser`.
+        signed_in = tmp_path / "signed-in"
+        login_argv = tmp_path / "login-argv"
+        env = self._fake_databricks(
+            tmp_path,
+            "if sys.argv[1:3] == ['auth', 'login'] and '--help' not in sys.argv:\n"
+            f"    Path({str(login_argv)!r}).write_text('\\n'.join(sys.argv[1:]))\n"
+            "    print('opening browser', file=sys.stderr)\n"
+            f"    Path({str(signed_in)!r}).touch()\n"
+            "    sys.exit(0)\n"
+            f"if Path({str(signed_in)!r}).exists():\n"
+            '    print(json.dumps({"access_token": "signed-in-token"}))\n'
+            "    sys.exit(0)\n"
+            f"{auth_error}\n"
+            "sys.exit(1)",
+        )
+        monkeypatch.setattr("os.environ", env)
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
+        token = get_databricks_token(WS, browser_login=True)
+        assert token == "signed-in-token"
+        assert "--no-browser" not in login_argv.read_text().splitlines()
+        # The login's output must not reach stdout, which carries the token.
+        out, err = capfd.readouterr()
+        assert "opening browser" not in out
+        assert "opening browser" in err
+
+    def test_browser_login_skips_browser_when_workspace_unreachable(self, tmp_path, monkeypatch):
+        # The CLI appends its generic `auth login` trailer to network failures
+        # too; those must fail fast instead of opening a browser.
+        login_called = tmp_path / "login-called"
+        env = self._fake_databricks(
+            tmp_path,
+            "if sys.argv[1:3] == ['auth', 'login'] and '--help' not in sys.argv:\n"
+            f"    Path({str(login_called)!r}).touch()\n"
+            "    sys.exit(0)\n"
+            "print('Error: token refresh: dial tcp: lookup example.com: no such host. "
+            "Try logging in again with `databricks auth login --profile p` before "
+            "retrying.', file=sys.stderr)\n"
+            "sys.exit(1)",
+        )
+        monkeypatch.setattr("os.environ", env)
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
+        with pytest.raises(RuntimeError, match="no access token"):
+            get_databricks_token(WS, browser_login=True)
+        assert not login_called.exists()
+
+    def test_browser_login_reuses_token_from_concurrent_sign_in(self, tmp_path, monkeypatch):
+        # A helper that waited on the lock fetches first: the holder may have signed in.
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
+        monkeypatch.setattr(
+            db_mod.subprocess_cross_os, "run", lambda *_a, **_k: pytest.fail("login ran")
+        )
+        assert db_mod._browser_login(WS, None, {}, lambda: ("fresh-token", None)) == (
+            "fresh-token",
+            None,
+        )
+
+    def test_browser_login_skips_login_once_lock_wait_spends_the_budget(
+        self, tmp_path, monkeypatch
+    ):
+        # A login started this late would outlive the agent's helper timeout and
+        # be orphaned holding the callback port.
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_TIMEOUT_SECONDS", 0)
+        monkeypatch.setattr(
+            db_mod.subprocess_cross_os, "run", lambda *_a, **_k: pytest.fail("login ran")
+        )
+        assert db_mod._browser_login(WS, None, {}, lambda: ("", None)) == ("", None)
 
     def test_retries_on_cache_lock_contention(self, tmp_path, monkeypatch):
         # Concurrent `databricks auth token` calls racing on the shared token
@@ -3123,6 +3473,40 @@ class TestGetDatabricksToken:
         assert len(login_calls) == 1
         assert len(token_calls) == 1
 
+    @pytest.mark.parametrize(("workspace_id", "login_host"), [("111", f"{WS}?w=111"), (None, WS)])
+    def test_custom_oauth_cli_login_selects_the_workspace(
+        self, monkeypatch, workspace_id, login_host
+    ):
+        config = {
+            "client_id": "custom-client",
+            "redirect_url": "http://localhost:8020/callback",
+            "scopes": ["all-apis"],
+        }
+        login_calls = []
+        monkeypatch.setattr(custom_oauth_mod, "ensure_databricks_cli_version", lambda *_: None)
+        monkeypatch.setattr(custom_oauth_mod, "external_bearer_configured", lambda: False)
+        monkeypatch.setattr(custom_oauth_mod, "has_valid_databricks_auth", lambda *_: False)
+        monkeypatch.setattr(custom_oauth_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(
+            custom_oauth_mod, "run", lambda command, **kwargs: login_calls.append(command)
+        )
+        monkeypatch.setattr(custom_oauth_mod, "get_databricks_token", lambda *_: "token")
+
+        custom_oauth_mod.ensure_custom_oauth_cli_token(WS, config, workspace_id)
+
+        command = login_calls[0]
+        assert command[command.index("--host") + 1] == login_host
+
+    def test_saved_custom_oauth_profile_records_the_workspace(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "databrickscfg"
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg))
+        db_mod.save_databricks_cli_oauth_profile(WS, "ug-oauth", "client", workspace_id="111")
+        db_mod.save_databricks_cli_oauth_profile(WS, "plain", "client")
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read(cfg)
+        assert parser["ug-oauth"]["workspace_id"] == "111"
+        assert "workspace_id" not in parser["plain"]
+
 
 class TestGetDatabricksProfiles:
     def _patched_run(self, monkeypatch, payload: dict, returncode: int = 0) -> None:
@@ -3281,7 +3665,7 @@ class TestProbeUnityGatewayCapabilities:
     def test_probe_preserves_workspace_scheme_and_port(self, monkeypatch):
         calls = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
 
@@ -3294,7 +3678,7 @@ class TestProbeUnityGatewayCapabilities:
     def test_model_service_resource_returns_success(self, monkeypatch):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
 
@@ -3318,7 +3702,7 @@ class TestProbeUnityGatewayCapabilities:
             ]
         )
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return next(responses)
 
@@ -3344,7 +3728,7 @@ class TestProbeUnityGatewayCapabilities:
             ]
         )
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return next(responses)
 
@@ -3367,7 +3751,7 @@ class TestProbeUnityGatewayCapabilities:
         monkeypatch.setattr(
             db_mod,
             "_http_get_json",
-            lambda url, token: ({}, None),
+            lambda url, token, **kwargs: ({}, None),
         )
 
         model_service_probe = db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
@@ -3381,7 +3765,7 @@ class TestProbeUnityGatewayCapabilities:
     def test_model_service_unavailable_raises(self, monkeypatch):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return None, "HTTP 404: model services unavailable"
 
@@ -3398,10 +3782,74 @@ class TestProbeUnityGatewayCapabilities:
         assert "legacy" not in message.lower()
         assert calls == [f"https://{WS_HOST}/api/2.1/unity-catalog/model-services?page_size=50"]
 
+    def test_non_404_non_transient_failure_does_not_claim_not_enabled(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kwargs: (None, "HTTP 400 Bad Request: malformed"),
+        )
+
+        with pytest.raises(RuntimeError, match="Could not verify") as excinfo:
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
+        message = str(excinfo.value)
+        assert "HTTP 400 Bad Request: malformed" in message
+        assert "not enabled" not in message
+        assert "transient" not in message
+
+    def test_successful_probe_is_memoized_per_workspace_and_failures_are_not(self, monkeypatch):
+        calls: list[str] = []
+        outcomes = iter(
+            [
+                (None, "HTTP 400 Bad Request: malformed"),
+                ({"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None),
+            ]
+        )
+
+        def fake_get(url, token, **kwargs):
+            calls.append(url)
+            return next(outcomes)
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        with pytest.raises(RuntimeError):
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+        first = db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+        second = db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
+        assert first.resource_available
+        assert second == first
+        assert len(calls) == 2
+
+    def test_probe_cache_is_keyed_by_token_and_skips_empty_listings(self, monkeypatch):
+        calls: list[str] = []
+        outcomes = iter(
+            [
+                ({"model_services": []}, None),
+                ({"model_services": []}, None),
+                ({"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None),
+                ({"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None),
+            ]
+        )
+
+        def fake_get(url, token, **kwargs):
+            calls.append(token)
+            return next(outcomes)
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        assert not db_mod.probe_unity_gateway_capabilities(WS, "token-a").resource_available
+        assert not db_mod.probe_unity_gateway_capabilities(WS, "token-a").resource_available
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token-a").resource_available
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token-a").resource_available
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token-b").resource_available
+
+        assert calls == ["token-a", "token-a", "token-a", "token-b"]
+
     def test_model_service_auth_failure_raises(self, monkeypatch):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return None, "HTTP 401: Unauthorized"
 
@@ -3415,7 +3863,7 @@ class TestProbeUnityGatewayCapabilities:
     def test_missing_scope_403_routes_to_reauth_not_grants(self, monkeypatch):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return None, (
                 "HTTP 403 Forbidden: Provided OAuth token does not have required "
@@ -3440,7 +3888,7 @@ class TestProbeUnityGatewayCapabilities:
                 (None, "HTTP 500: Internal Server Error"),
             ]
         )
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token: next(responses))
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token, **kwargs: next(responses))
 
         assert db_mod._probe_model_services(WS, "fake-token") == db_mod.GatewayProbe(
             True, "reachable", conclusive=False
@@ -3451,7 +3899,7 @@ class TestProbeUnityGatewayCapabilities:
     ):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return {"next_page_token": "more"}, None
 
@@ -3470,7 +3918,7 @@ class TestProbeUnityGatewayCapabilities:
             ]
         )
 
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token: next(responses))
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token, **kwargs: next(responses))
 
         assert db_mod.probe_unity_gateway_capabilities(WS, "fake-token") == db_mod.GatewayProbe(
             True, "reachable", conclusive=False
@@ -3512,7 +3960,7 @@ class TestProbeUnityGatewayCapabilities:
         monkeypatch.setattr(
             db_mod,
             "_http_get_json",
-            lambda url, token: (None, "HTTP 403 Forbidden: Invalid access token."),
+            lambda url, token, **kwargs: (None, "HTTP 403 Forbidden: Invalid access token."),
         )
         with pytest.raises(RuntimeError, match="rejected the access token"):
             db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
@@ -3520,7 +3968,7 @@ class TestProbeUnityGatewayCapabilities:
     def test_model_service_forbidden_reports_permission_error(self, monkeypatch):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return None, "HTTP 403: Missing Unity Catalog grants"
 
@@ -3538,6 +3986,96 @@ class TestProbeUnityGatewayCapabilities:
         assert "rejected the access token" not in message
         assert "not enabled" not in message
         assert calls == [f"https://{WS_HOST}/api/2.1/unity-catalog/model-services?page_size=50"]
+
+    def test_probe_retries_transient_499_then_succeeds(self, monkeypatch):
+        sleeps: list[float] = []
+        outcomes = iter(
+            [
+                TestHttpGetJsonRetries._http_error(499, "Unknown"),
+                _FakeResponse({"model_services": [{"name": "model-services/system.ai.gpt-5"}]}),
+            ]
+        )
+
+        def fake_urlopen(request, timeout=None):
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+
+        assert db_mod.probe_unity_gateway_capabilities(WS, "fake-token") == db_mod.GatewayProbe(
+            True, "reachable, accessible model service returned", True
+        )
+        assert len(sleeps) == 1
+
+    def test_probe_requests_bounded_retries(self, monkeypatch):
+        seen: list[int] = []
+
+        def fake_get(url, token, **kwargs):
+            seen.append(kwargs.get("max_retries"))
+            return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+        assert seen == [db_mod._MODEL_SERVICE_PROBE_MAX_RETRIES]
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            "HTTP 429 Too Many Requests",
+            "HTTP 499 Unknown",
+            "HTTP 502 Bad Gateway",
+            "HTTP 503 Service Unavailable: try later",
+            "HTTP 504 Gateway Timeout",
+            "network error: timed out",
+        ],
+    )
+    def test_persistent_transient_failure_is_not_reported_as_not_enabled(self, monkeypatch, reason):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token, **kwargs: (None, reason))
+
+        with pytest.raises(RuntimeError) as excinfo:
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
+        message = str(excinfo.value)
+        assert "is not enabled on this workspace" not in message
+        assert reason in message
+        assert "retry" in message
+        assert "--skip-preflight" in message
+
+    def test_persistent_499_after_retries_is_transient_error(self, monkeypatch):
+        calls: list[object] = []
+
+        def fake_urlopen(request, timeout=None):
+            calls.append(request)
+            raise TestHttpGetJsonRetries._http_error(499, "Unknown")
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda s: None)
+
+        with pytest.raises(RuntimeError, match="Could not verify") as excinfo:
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
+        assert "HTTP 499 Unknown" in str(excinfo.value)
+        assert len(calls) == db_mod._MODEL_SERVICE_PROBE_MAX_RETRIES + 1
+
+    def test_transient_classification_matches_retryable_statuses(self):
+        for code in db_mod._HTTP_GET_RETRYABLE_STATUS_CODES:
+            assert db_mod._looks_like_transient_failure(f"HTTP {code} Whatever")
+        assert db_mod._looks_like_transient_failure("network error: connection reset")
+        for code in (400, 404, 500, 501):
+            assert not db_mod._looks_like_transient_failure(f"HTTP {code} Whatever")
+
+    def test_404_still_reports_not_enabled(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kwargs: (None, "HTTP 404 Not Found: NOT_FOUND"),
+        )
+
+        with pytest.raises(RuntimeError, match="is not enabled on this workspace"):
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
 
 
 class TestHttpGetJsonReason:
@@ -3635,6 +4173,46 @@ class TestHttpGetJsonRetries:
         assert reason is None
         assert sleeps == [1.25]
 
+    @pytest.mark.parametrize("code", [499, 502, 503, 504])
+    def test_retries_transient_gateway_status_then_succeeds(self, monkeypatch, code):
+        outcomes = iter([self._http_error(code, "Unknown"), _FakeResponse({"ok": True})])
+        sleeps = []
+
+        def fake_urlopen(request, timeout=None):
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+
+        payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=2)
+
+        assert payload == {"ok": True}
+        assert reason is None
+        assert sleeps == [1.25]
+
+    @pytest.mark.parametrize("code", [400, 404, 500, 501])
+    def test_does_not_retry_other_statuses(self, monkeypatch, code):
+        calls = []
+        sleeps = []
+
+        def fake_urlopen(request, timeout=None):
+            calls.append(request)
+            raise self._http_error(code, "Nope")
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+
+        payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=2)
+
+        assert payload is None
+        assert reason == f"HTTP {code} Nope"
+        assert len(calls) == 1
+        assert sleeps == []
+
     def test_stops_after_configured_retries(self, monkeypatch):
         calls = []
         sleeps = []
@@ -3659,7 +4237,7 @@ class TestHttpGetJsonRetries:
 
         def fake_urlopen(request, timeout=None):
             calls.append(request)
-            raise self._http_error(503, "Service Unavailable")
+            raise self._http_error(500, "Internal Server Error")
 
         monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
         monkeypatch.setattr(
@@ -3671,7 +4249,7 @@ class TestHttpGetJsonRetries:
         payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=2)
 
         assert payload is None
-        assert reason == "HTTP 503 Service Unavailable"
+        assert reason == "HTTP 500 Internal Server Error"
         assert len(calls) == 1
 
     def test_bytes_retries_429_and_returns_undecoded_body(self, monkeypatch):
@@ -3690,6 +4268,45 @@ class TestHttpGetJsonRetries:
 
         assert body == b"\x89PNG\x00"
         assert reason is None
+
+
+class TestHttpUgHeaders:
+    def test_get_and_send_carry_ug_headers(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/abc")
+        requests = []
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            return _FakeResponse({})
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+
+        db_mod._http_get_json(f"{WS}/get", "tok")
+        db_mod._http_post_json(f"{WS}/post", "tok", {})
+
+        assert [request.get_header("X-databricks-traffic-id") for request in requests] == [
+            "testenv://liteswap/abc",
+            "testenv://liteswap/abc",
+        ]
+
+    def test_ug_headers_never_replace_auth_or_content_type(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "authorization: other\ncontent-type: text/plain")
+        requests = []
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            return _FakeResponse({})
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+
+        db_mod._http_get_json(f"{WS}/get", "tok")
+        db_mod._http_post_json(f"{WS}/post", "tok", {})
+
+        assert [request.get_header("Authorization") for request in requests] == [
+            "Bearer tok",
+            "Bearer tok",
+        ]
+        assert requests[1].get_header("Content-type") == "application/json"
 
 
 class TestParseDatabricksCliVersion:
@@ -3992,6 +4609,63 @@ class TestEnsureDatabricksCliVersion:
         monkeypatch.setattr("os.environ", env)
         ensure_databricks_cli_version()  # should not raise
 
+    def test_launch_checks_probe_a_sufficient_cli_once(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
+        monkeypatch.setattr("os.environ", env)
+        probes = []
+        original_run = db_mod.run
+
+        def record_probe(args, **kwargs):
+            probes.append(args)
+            return original_run(args, **kwargs)
+
+        monkeypatch.setattr(db_mod, "run", record_probe)
+
+        assert databricks_cli_installed() is True
+        ensure_databricks_cli_version()
+        ensure_databricks_cli_version(db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        assert db_mod.databricks_cli_version() == (1, 20, 0)
+        assert Path(db_mod.databricks_cli_path()).parent == tmp_path
+        assert len(probes) == 1
+
+    def test_insufficient_cached_version_rechecks_before_upgrading(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.0.0")
+        monkeypatch.setattr("os.environ", env)
+        ensure_databricks_cli_version()
+
+        # Another process upgraded the same executable after the first check.
+        self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
+        monkeypatch.setattr(
+            db_mod,
+            "_run_databricks_cli_installer",
+            lambda **kwargs: pytest.fail("the installed CLI already meets the higher floor"),
+        )
+        ensure_databricks_cli_version(db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        assert db_mod.databricks_cli_version() == (1, 20, 0)
+
+    def test_installer_invalidates_cached_version(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.0.0")
+        monkeypatch.setattr("os.environ", env)
+        ensure_databricks_cli_version()
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: "/usr/bin/brew")
+        installer_calls = []
+
+        def install(args, **kwargs):
+            installer_calls.append(args)
+            self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
+
+        # Replace only the external installer process; exercise its cache invalidation.
+        with monkeypatch.context() as installer_patch:
+            installer_patch.setattr(db_mod, "run", install)
+            db_mod._run_databricks_cli_installer(brew_subcommand="upgrade")
+
+        # Check before ensure's higher-floor refresh can hide stale installer state.
+        assert db_mod.databricks_cli_version() == (1, 20, 0)
+        ensure_databricks_cli_version(db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        assert db_mod.databricks_cli_version() == (1, 20, 0)
+        assert installer_calls == [["brew", "upgrade", "databricks/tap/databricks"]]
+
     def test_auto_upgrades_when_version_too_old(self, tmp_path, monkeypatch):
         import ucode.databricks as db_mod
 
@@ -4019,8 +4693,19 @@ class TestEnsureDatabricksCliVersion:
     def test_raises_when_version_unparseable(self, tmp_path, monkeypatch):
         env = self._fake_databricks(tmp_path, "completely broken output")
         monkeypatch.setattr("os.environ", env)
+        probes = []
+        original_run = db_mod.run
+
+        def record_probe(args, **kwargs):
+            probes.append(args)
+            return original_run(args, **kwargs)
+
+        monkeypatch.setattr(db_mod, "run", record_probe)
         with pytest.raises(RuntimeError, match="Could not parse"):
             ensure_databricks_cli_version()
+
+        # One discovery probe plus the existing raw-output read for the error message.
+        assert len(probes) == 2
 
     def test_custom_minimum_upgrades_version_below_it(self, tmp_path, monkeypatch):
         import ucode.databricks as db_mod
@@ -4221,6 +4906,23 @@ class TestRunDatabricksCliInstaller:
         db_mod._refresh_windows_path()
 
         assert os.environ["PATH"].split(os.pathsep).count(links_dir) == 1
+
+    def test_windows_leaves_path_untouched_when_nothing_is_new(self, monkeypatch, tmp_path):
+        links_dir = str(tmp_path / "Microsoft" / "WinGet" / "Links")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("PATH", os.pathsep.join([links_dir, "/windows/system32"]))
+        monkeypatch.setattr(db_mod, "_windows_user_path", lambda: links_dir)
+        writes = []
+        real_setitem = type(os.environ).__setitem__
+        monkeypatch.setattr(
+            type(os.environ),
+            "__setitem__",
+            lambda env, key, value: (writes.append(key), real_setitem(env, key, value)),
+        )
+
+        db_mod._refresh_windows_path()
+
+        assert writes == []
 
     def test_windows_without_winget_is_actionable(self, monkeypatch):
         monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
@@ -4843,129 +5545,6 @@ class TestCodingAgentConfigCrudClients:
         assert reason == "HTTP 404 Not Found"
 
 
-class TestResolveCurrentBudgetSpend:
-    def test_parses_spend_and_threshold(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: (
-                {"current_spend": "12.34", "effective_threshold": "100"},
-                None,
-            ),
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend == (Decimal("12.34"), Decimal("100"))
-        assert reason is None
-
-    def test_posts_to_recommend_model_with_no_available_models(self, monkeypatch):
-        captured = {}
-
-        def fake_post(url, token, payload, timeout=10):
-            captured["url"] = url
-            captured["payload"] = payload
-            return {"current_spend": "1", "effective_threshold": "2"}, None
-
-        monkeypatch.setattr(db_mod, "_http_post_json", fake_post)
-        resolve_current_budget_spend("https://ws.example.com", "token")
-        assert captured["url"] == (f"https://ws.example.com{CODING_AGENT_RECOMMEND_MODEL_PATH}")
-        # Empty list applies no availability filter; we want the spend only.
-        assert captured["payload"] == {"available_models": []}
-
-    def test_ignores_recommended_models(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: (
-                {
-                    "recommended_models": ["system.ai.claude-sonnet-4-5"],
-                    "current_spend": "12.34",
-                    "effective_threshold": "100",
-                },
-                None,
-            ),
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend == (Decimal("12.34"), Decimal("100"))
-        assert reason is None
-
-    def test_recommendation_without_spend_is_no_spend(self, monkeypatch):
-        # A config with no matching budget still recommends models, but both
-        # spend fields come back unset.
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: (
-                {"recommended_models": ["system.ai.claude-sonnet-4-5"]},
-                None,
-            ),
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-        assert "no coding-agent budget spend" in reason
-
-    def test_feature_disabled_returns_reason(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: (
-                None,
-                "HTTP 400 Bad Request: FEATURE_DISABLED",
-            ),
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-        assert "FEATURE_DISABLED" in reason
-
-    def test_unset_fields_treated_as_no_spend(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod, "_http_post_json", lambda url, token, payload, timeout=10: ({}, None)
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-        assert "no coding-agent budget spend" in reason
-
-    def test_spend_without_threshold_is_no_spend(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: ({"current_spend": "12.34"}, None),
-        )
-        spend, _ = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-
-    def test_threshold_without_spend_is_zero_spend(self, monkeypatch):
-        # A per-user threshold with no spend yet this period is $0 spent, not "no budget" — the
-        # developer should still see their budget rather than a blank.
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: ({"effective_threshold": "100"}, None),
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend == (Decimal(0), Decimal("100"))
-        assert reason is None
-
-    def test_malformed_decimal_is_no_spend(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: (
-                {"current_spend": "not-a-number", "effective_threshold": "100"},
-                None,
-            ),
-        )
-        spend, _ = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-
-    def test_non_object_payload_is_no_spend(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod, "_http_post_json", lambda url, token, payload, timeout=10: ([], None)
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-        assert "not a JSON object" in reason
-
-
 class TestListWorkspaceBudgets:
     PER_USER = "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER"
     SHARED = "ALERT_CONFIGURATION_SCOPE_TYPE_SHARED"
@@ -5453,3 +6032,96 @@ class TestRunDecodesUtf8:
         script = r"import sys; sys.stdout.buffer.write(b'\xff')"
         result = db_mod.run([sys.executable, "-c", script], capture_output=True)
         assert result.stdout == b"\xff"
+
+
+class TestRunStdin:
+    def _capture_kwargs(self, monkeypatch) -> dict:
+        seen: dict = {}
+
+        def fake_run(args, **kwargs):
+            seen.update(kwargs)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        monkeypatch.setattr(db_mod.subprocess_cross_os, "run", fake_run)
+        return seen
+
+    def test_captured_commands_do_not_inherit_stdin(self, monkeypatch):
+        # A child sharing a stdin pipe that another thread is reading hangs on Windows.
+        seen = self._capture_kwargs(monkeypatch)
+        db_mod.run(["databricks", "auth", "token"], capture_output=True, text=True)
+        assert seen["stdin"] is subprocess.DEVNULL
+
+    def test_interactive_commands_keep_stdin(self, monkeypatch):
+        seen = self._capture_kwargs(monkeypatch)
+        db_mod.run(["databricks", "auth", "login"])
+        assert "stdin" not in seen
+
+
+def test_importing_the_cli_does_not_load_the_databricks_sdk():
+    # The SDK costs ~1 s to import, and every `ug` command (including each auth-token refresh)
+    # imports the CLI.
+    result = subprocess.run(
+        [sys.executable, "-c", "import sys, ucode.cli; print('databricks.sdk' in sys.modules)"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "False"
+
+
+class TestSharedHostProfiles:
+    SHARED = "https://acme.cloud.databricks.com"
+    ENTRIES = [
+        {"name": "other", "host": "https://acme.cloud.databricks.com", "workspace_id": "222"},
+        {"name": "mine", "host": "https://acme.cloud.databricks.com/", "workspace_id": "111"},
+        {"name": "pat", "host": "https://acme.cloud.databricks.com", "auth_type": "pat"},
+    ]
+
+    def test_prefers_the_workspace_profile(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "list_profile_entries", lambda: self.ENTRIES)
+        assert db_mod.find_profile_name_for_workspace(self.SHARED, "111") == "mine"
+
+    def test_falls_back_to_another_profile_on_the_host(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "list_profile_entries", lambda: self.ENTRIES)
+        assert db_mod.find_profile_name_for_workspace(self.SHARED, "333") == "other"
+
+    def test_without_an_id_matches_by_host(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "find_profile_name_for_host", lambda ws: "first")
+        assert db_mod.find_profile_name_for_workspace(self.SHARED, None) == "first"
+
+    def _capture_login(self, monkeypatch, entries):
+        calls = []
+        monkeypatch.setattr(db_mod, "list_profile_entries", lambda: entries)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "run", lambda cmd, **kwargs: calls.append(cmd))
+        return calls
+
+    def test_first_login_names_a_profile_and_selects_the_workspace(self, monkeypatch):
+        calls = self._capture_login(monkeypatch, [{"name": "ug-acme", "host": "https://x.com"}])
+        db_mod.run_databricks_login(self.SHARED, workspace_id="111")
+        assert calls == [
+            [
+                "databricks",
+                "auth",
+                "login",
+                "--host",
+                f"{self.SHARED}?w=111",
+                "--profile",
+                "ug-acme-2",
+            ]
+        ]
+
+    def test_login_reuses_a_profile_on_the_host(self, monkeypatch):
+        calls = self._capture_login(monkeypatch, self.ENTRIES)
+        db_mod.run_databricks_login(self.SHARED, workspace_id="111")
+        assert calls == [
+            ["databricks", "auth", "login", "--host", self.SHARED, "--profile", "mine"]
+        ]
+
+    def test_classic_login_argv_is_unchanged(self, monkeypatch):
+        calls = self._capture_login(monkeypatch, [])
+        monkeypatch.setattr(db_mod, "find_profile_name_for_host", lambda ws: None)
+        db_mod.run_databricks_login("https://dbc-1.cloud.databricks.com")
+        assert calls == [
+            ["databricks", "auth", "login", "--host", "https://dbc-1.cloud.databricks.com"]
+        ]

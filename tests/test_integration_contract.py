@@ -1,16 +1,21 @@
 """Keep the black-box suite independent of application internals and test doubles."""
 
 import ast
+import io
 import json
 import os
 import re
+import runpy
 import subprocess
 import sys
 import textwrap
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
 
+from tests.integration.utils.harness import clean_environment
 from tests.integration.utils.managed import assert_no_managed_config
 
 
@@ -25,6 +30,12 @@ def _markers(nodes):
         and node.value.value.id == "pytest"
         and node.value.attr == "mark"
     }
+
+
+def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
+
+    assert clean_environment(tmp_path)["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
 
 
 def test_integration_ci_pins_a_skills_capable_databricks_cli():
@@ -53,14 +64,203 @@ def test_managed_integration_ci_is_blocking():
         "if: ${{ always() && (github.event_name != 'pull_request' || "
         "github.event.pull_request.head.repo.full_name == github.repository) }}"
     ) in gate
+    baseline = _collect_integration_cases(_ci_marker_expression(managed, "codex"))
+    routing = _collect_integration_cases(
+        _ci_marker_expression(managed, "codex", smart_routing=True)
+    )
+    assert not baseline & routing
+    assert baseline | routing == _collect_integration_cases(
+        "(managed_fixture or workspace_switch) and codex and not soft_fail"
+    )
+    fallback = (
+        "test_ug_configure_managed_models.py::test_ug_configure_managed_codex_catalog_fallback"
+    )
+    assert f"{fallback}[routing-off]" in baseline
+    assert f"{fallback}[routing-on]" in routing
+    assert (
+        "test_ug_configure_managed_models.py::test_managed_fixture_codex_smart_routing_banner"
+        in routing
+    )
 
 
 WORKFLOW = Path(__file__).parent.parent / ".github/workflows/integration.yml"
+# The quarantined Claude Smart Router toggle journey, split into one test per toggle state.
+CLAUDE_TOGGLE_TESTS = (
+    "test_smart_router_routes_claude_subagent_at_launch",
+    "test_smart_router_skill_turns_claude_subagent_routing_off",
+    "test_smart_router_skill_turns_claude_subagent_routing_back_on",
+)
 
 
 def _workflow_job(name, next_name):
     workflow = WORKFLOW.read_text()
     return workflow.split(f"\n  {name}:\n", 1)[1].split(f"\n  {next_name}:\n", 1)[0]
+
+
+def _ci_marker_expression(job, agent, *, smart_routing=False):
+    marker = re.search(r"(?m)^      TEST_MARKER: (.+)$", job) or re.search(r'-- -m "([^"]+)"', job)
+    assert marker is not None
+    return (
+        marker.group(1)
+        .replace("${{ matrix.agent }}", agent)
+        .replace("$AGENT", agent)
+        .replace(
+            "${{ matrix.smart_routing && 'codex_smart_routing' || 'not codex_smart_routing' }}",
+            "codex_smart_routing" if smart_routing else "not codex_smart_routing",
+        )
+    )
+
+
+def test_soft_fail_ci_is_non_blocking_on_both_platforms():
+    jobs = _integration_jobs()
+    job = jobs["soft-fail"]
+    assert "continue-on-error: true" in job
+    assert "os: [ubuntu-22.04, windows-latest]" in job
+    assert "runs-on: ${{ matrix.os }}" in job
+    assert "needs: [workspace, full, managed]" in job
+    assert "!cancelled() && needs.workspace.result == 'success'" in job
+    assert "fail-fast: false" in job
+    assert "max-parallel: 1" in job
+    assert "agent: [claude]" in job
+    assert "AGENT: ${{ matrix.agent }}" in job
+    assert "ARTIFACT_NAME: integration-soft-fail-${{ matrix.agent }}-${{ matrix.os }}" in job
+    assert "steps: *live-steps" in job
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert needs is not None
+    assert "soft-fail" not in {name.strip() for name in needs.group(1).split(",")}
+    for name in ("smoke", "full", "managed"):
+        assert "continue-on-error:" not in jobs[name]
+        assert "and not soft_fail" in jobs[name]
+
+
+def test_soft_fail_marks_only_the_affected_claude_journey():
+    marked = []
+    for path in (Path(__file__).parent / "integration").glob("test_*.py"):
+        for node in ast.parse(path.read_text()).body:
+            if isinstance(node, ast.FunctionDef) and "soft_fail" in _markers(node.decorator_list):
+                marked.append((path.name, node.name))
+    assert marked == [("test_ug_smart_routing_hooks.py", name) for name in CLAUDE_TOGGLE_TESTS]
+
+
+def _collect_integration_cases(expression):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--confcutdir=tests/integration",
+            "tests/integration",
+            "--collect-only",
+            "-q",
+            "-m",
+            expression,
+        ],
+        cwd=WORKFLOW.parent.parent.parent,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    cases = {line for line in result.stdout.splitlines() if line.startswith("test_")}
+    assert cases, result.stdout
+    return cases
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_smoke_and_full_together_cover_every_blocking_live_case(agent):
+    if agent == "codex":
+        workflow = WORKFLOW.read_text()
+        assert re.search(r"codex_version:\n\s+description: [^\n]+\n\s+default: 0\.154\.0", workflow)
+        assert "  CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}" in workflow
+    jobs = _integration_jobs()
+    selected = []
+    for name in ("smoke", "full"):
+        selected.append(_collect_integration_cases(_ci_marker_expression(jobs[name], agent)))
+    smoke, full = selected
+    if agent == "codex":
+        routing = _collect_integration_cases(
+            _ci_marker_expression(jobs["full"], agent, smart_routing=True)
+        )
+        assert not (smoke | full) & routing
+        assert (
+            "test_ug_codex_v2_routing.py::test_ug_codex_native_v2_plain_assignment_routing"
+            in routing
+        )
+        assert any("::test_smart_routing_codex_route_subagent_hook[" in case for case in full)
+        for name in ("full", "managed"):
+            assert "smart_routing: [false]" in jobs[name]
+            assert (
+                "CODEX_VERSION: ${{ matrix.smart_routing && '0.165.0' || "
+                "inputs.codex_version || '0.154.0' }}"
+            ) in jobs[name]
+            assert "matrix.smart_routing && '-smart-routing' || ''" in jobs[name]
+        for platform in ("ubuntu-22.04", "windows-latest"):
+            assert (
+                f"- os: {platform}\n            agent: codex\n            smart_routing: true"
+                in jobs["full"]
+            )
+        assert "- agent: codex\n            smart_routing: true" in jobs["managed"]
+        full |= routing
+    # Full skips smoke cases only because smoke runs them on the same OS matrix.
+    assert "os: [ubuntu-22.04, windows-latest]" in jobs["smoke"]
+    assert "os: [ubuntu-22.04, windows-latest]" in jobs["full"]
+    assert not smoke & full
+    assert smoke | full == _collect_integration_cases(f"live and {agent} and not soft_fail")
+
+
+def test_smoke_and_full_journeys_run_every_agent_and_os_in_parallel():
+    jobs = _integration_jobs()
+    assert "concurrency:" not in jobs["smoke"]
+    assert "concurrency:" not in jobs["full"]
+    assert "max-parallel: 4" in jobs["full"]
+
+
+def test_full_claude_lane_includes_both_desktop_journeys():
+    full = _integration_jobs()["full"]
+    cases = _collect_integration_cases(_ci_marker_expression(full, "claude"))
+    assert {
+        "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_profile_lifecycle",
+        "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_subscription_relay",
+    } <= cases
+    assert "os: [ubuntu-22.04, windows-latest]" in full
+    assert "CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" in full
+
+
+@pytest.mark.parametrize(
+    ("job_name", "agent", "smart_routing", "retained_test"),
+    [
+        ("smoke", "claude", False, "test_ug_claude_headless_prompt_argument"),
+        ("smoke", "codex", False, "test_ug_codex_headless_prompt_argument"),
+        ("full", "claude", False, "test_smart_routing_claude_route_subagent_hook"),
+        ("full", "codex", False, "test_smart_routing_codex_route_subagent_hook"),
+        ("full", "codex", True, "test_smart_router_skill_turns_codex_subagent_routing_back_on"),
+        ("managed", "claude", False, "test_ug_configure_managed_claude"),
+        ("managed", "codex", False, "test_ug_configure_managed_codex"),
+        ("managed", "codex", True, "test_smart_router_skill_turns_codex_subagent_routing_back_on"),
+        ("soft-fail", "claude", False, None),
+    ],
+)
+def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, smart_routing, retained_test):
+    job = _integration_jobs()[job_name]
+    cases = _collect_integration_cases(
+        _ci_marker_expression(job, agent, smart_routing=smart_routing)
+    )
+    if retained_test is not None:
+        assert any(f"::{retained_test}" in case for case in cases), cases
+        assert not any(f"::{toggle}[" in case for case in cases for toggle in CLAUDE_TOGGLE_TESTS)
+        return
+    assert cases == {
+        f"test_ug_smart_routing_hooks.py::{toggle}[{variant}]"
+        for toggle in CLAUDE_TOGGLE_TESTS
+        for variant in (
+            "routing-only",
+            "orchestration",
+            "managed-default",
+            "subagent_only_v0",
+            "subagent_only_v1",
+            "subagent_orch_v0",
+        )
+    }
 
 
 def _discover_cujs(root, output):
@@ -89,7 +289,142 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert 'pytest --confcutdir=tests/e2e_cuj "tests/e2e_cuj/${{ matrix.test }}"' in job
     assert 'UV_HTTP_TIMEOUT: "120"' in job and 'UV_HTTP_RETRIES: "6"' in job
     assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
-    assert "test_cuj" not in job
+    assert (
+        "CODEX_VERSION: ${{ matrix.test == 'test_cuj4_smart_routing.py' && '0.165.0' || "
+        "inputs.codex_version || '0.154.0' }}"
+    ) in job
+
+
+def test_latest_harness_is_scheduled_and_opt_in():
+    workflow = _workflow("harness-latest.yml")
+    trigger = workflow.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
+    assert "cron: '0 22 * * 1-5'" in trigger
+    assert "workflow_dispatch:" in trigger
+    assert "pull_request" not in trigger and "push:" not in trigger
+    assert "harness-latest" not in _integration_jobs()
+
+    for package in ("@anthropic-ai/claude-code", "@openai/codex"):
+        assert f"npm view {package}@latest version" in workflow
+    assert "-m harness_latest" in workflow
+    assert "harness_latest and managed_fixture" in workflow
+    assert "harness_latest and not managed_fixture" in workflow
+    assert '-m "$TEST_MARKER"' in workflow
+    assert "-k " not in workflow
+    assert "continue-on-error:" not in workflow
+
+
+SLACK_NOTIFY = Path(__file__).parent.parent / ".github/scripts/slack-notify/notify.py"
+
+
+def _assert_slack_notify_wiring(notify):
+    assert "actions: read" in notify and "contents: read" in notify
+    assert "sparse-checkout: .github/scripts/slack-notify/notify.py" in notify
+    assert "secrets.SLACK_WEBHOOK_UG_CODING_AGENTS_POD" in notify
+    assert "run: python3 .github/scripts/slack-notify/notify.py" in notify
+
+
+def test_terminal_bench_runs_twice_daily_and_notifies_slack():
+    workflow = _workflow("terminal-bench.yml")
+    assert "cron: '0 7,19 * * *'" in workflow
+    notify = workflow.split("\n  notify:\n", 1)[1]
+    assert "needs: [harbor, native]" in notify
+    assert "if: ${{ !cancelled() }}" in notify
+    assert "NOTIFY_NAME: Terminal Bench" in notify
+    assert (
+        "NOTIFY_RESULT: ${{ contains(needs.*.result, 'failure') && 'failure' || 'success' }}"
+        in notify
+    )
+    _assert_slack_notify_wiring(notify)
+
+
+@pytest.mark.parametrize(
+    ("result", "claude_version", "job_conclusion", "api_error", "slack_error"),
+    [
+        ("success", "2.1.290", "success", False, False),
+        ("failure", "2.1.290", "failure", False, False),
+        ("failure", "2.1.290", "timed_out", False, False),
+        ("skipped", "", "failure", False, False),
+        ("failure", "2.1.290", "failure", True, False),
+        ("success", "2.1.290", "success", False, True),
+    ],
+)
+def test_latest_harness_slack_notification(
+    monkeypatch, capsys, result, claude_version, job_conclusion, api_error, slack_error
+):
+    workflow = _workflow("harness-latest.yml")
+    resolver, harness = workflow.split("\n  harness-latest:\n", 1)
+    harness, notify = harness.split("\n  notify:\n", 1)
+    assert "outputs:" in resolver
+    assert "needs: resolve-versions" in harness
+    for agent in ("claude", "codex"):
+        assert f"needs.resolve-versions.outputs.{agent}" in harness
+    assert "needs: [resolve-versions, harness-latest]" in notify
+    assert "always()" in notify
+    assert "needs.harness-latest.result == 'success'" in notify
+    assert "needs.harness-latest.result == 'failure'" in notify
+    assert "needs.resolve-versions.result == 'failure'" in notify
+    assert "NOTIFY_NAME: Latest harness test" in notify
+    assert "NOTIFY_RESULT: ${{ needs.harness-latest.result }}" in notify
+    _assert_slack_notify_wiring(notify)
+
+    env = {
+        "NOTIFY_NAME": "Latest harness test",
+        "NOTIFY_RESULT": result,
+        "CLAUDE_VERSION": claude_version,
+        "CODEX_VERSION": "0.154.0",
+        "GITHUB_REPOSITORY": "databricks/unity-gateway",
+        "GITHUB_RUN_ID": "123",
+        "GITHUB_API_URL": "https://api.github.com",
+        "GITHUB_SERVER_URL": "https://github.com",
+        "GH_TOKEN": "test-token",
+        "SLACK_WEBHOOK": "https://example.invalid/slack",
+    }
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    job_url = "https://github.com/databricks/unity-gateway/actions/runs/123/job/456"
+    posted = []
+
+    def urlopen(request, timeout):
+        assert timeout == 30
+        if request.full_url == env["SLACK_WEBHOOK"]:
+            assert request.method == "POST"
+            assert request.get_header("Content-type") == "application/json"
+            if slack_error:
+                raise urllib.error.URLError("Slack unavailable")
+            posted.append(json.loads(request.data))
+            return io.BytesIO(b"ok")
+        assert request.full_url == (
+            "https://api.github.com/repos/databricks/unity-gateway/actions/runs/123/jobs"
+            "?filter=latest&per_page=100"
+        )
+        assert request.get_header("Authorization") == "Bearer test-token"
+        if api_error:
+            raise urllib.error.URLError("GitHub unavailable")
+        jobs = [
+            {"conclusion": "success", "html_url": "other-job"},
+            {"conclusion": job_conclusion, "html_url": job_url},
+        ]
+        return io.BytesIO(json.dumps({"jobs": jobs}).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    if slack_error:
+        with pytest.raises(urllib.error.URLError, match="Slack unavailable"):
+            runpy.run_path(str(SLACK_NOTIFY), run_name="__main__")
+        assert not posted
+        return
+    runpy.run_path(str(SLACK_NOTIFY), run_name="__main__")
+    versions = f"Versions used: Claude Code {claude_version or 'unknown'}, Codex: 0.154.0"
+    run_url = f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/123"
+    if result == "success":
+        expected = f"✅ Latest harness test succeeded. {versions}. Link to run {run_url}"
+    else:
+        link = job_url if not api_error else run_url
+        expected = (
+            f"❌ ALERT! Latest harness test failed. {versions}. Link to failed job: {link} "
+            "<@U09DPGC3DFY> <@U09EFHFRT24>"
+        )
+    assert posted == [{"text": expected}]
+    assert expected in capsys.readouterr().out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="dedicated-cuj-plan runs on Linux")
@@ -132,7 +467,10 @@ SKIPPED_ON_FORK_PRS = {
     "smoke",
     "headless-windows",
     "full",
+    "soft-fail",
     "opencode",
+    "copilot",
+    "antigravity",
     "managed",
     "managed-opencode",
     "dedicated-cuj-plan",
@@ -180,7 +518,7 @@ def _workflow(name):
     return (Path(__file__).parent.parent / ".github/workflows" / name).read_text()
 
 
-def test_fork_integration_runs_only_member_requested_pr_heads():
+def test_fork_integration_runs_only_authorized_pr_heads():
     workflow = _workflow("fork-integration.yml")
     authorize = workflow.split("\n  authorize:\n", 1)[1].split("\n  reject:\n", 1)[0]
     reject = workflow.split("\n  reject:\n", 1)[1].split("\n  integration:\n", 1)[0]
@@ -193,8 +531,8 @@ def test_fork_integration_runs_only_member_requested_pr_heads():
     command = "startsWith(github.event.comment.body, '/integration-test ')"
     assert command in authorize and command in reject
     assert MEMBER_ONLY in authorize
-    assert f"!{MEMBER_ONLY}" in reject
-    assert "only Databricks org members can run integration tests" in reject
+    assert f"!({MEMBER_ONLY} ||" in reject
+    assert "Prior contributors can run integration tests on their own PR" in reject
     assert "set -euo pipefail" in authorize
     assert '[[ "$sha" =~ ^[0-9a-f]{40}$ ]]' in authorize
     assert "state=pending" in authorize
@@ -313,15 +651,23 @@ def test_user_journey_fork_report_uses_the_evaluated_commit():
     assert "/pulls/" not in report and ".head.sha" not in report
 
 
-def test_ug_review_runs_only_on_member_command_from_the_default_branch():
+def test_ug_review_accepts_member_comments_and_in_repo_labels_with_trusted_checkout():
     workflow = _workflow("ug-review.yml")
 
-    assert re.search(r"(?m)^on:\n  issue_comment:\n    types: \[created\]\n", workflow)
+    assert re.search(r"(?m)^  issue_comment:\n    types: \[created\]\n", workflow)
+    assert re.search(r"(?m)^on:\n  pull_request:\n    types: \[labeled\]\n", workflow)
+    assert (
+        'contains(fromJSON(\'["ug-review", "code-review"]\'), github.event.label.name)' in workflow
+    )
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in workflow
     assert "pull_request_target" not in workflow
     assert "github.event.comment.body == '/ug-review'" in workflow
     assert MEMBER_ONLY in workflow
     assert "ref: ${{ github.event.repository.default_branch }}" in workflow
-    assert "PR_NUMBER: ${{ github.event.issue.number }}" in workflow
+    assert (
+        "PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}"
+        in workflow
+    )
     assert "concurrency:" not in workflow.split("\njobs:\n", 1)[0]
 
 
@@ -355,6 +701,7 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "workspace",
         "smoke",
         "full",
+        "antigravity",
         "managed",
         "dedicated-cuj-plan",
         "dedicated-cuj",
@@ -375,6 +722,7 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "workspace",
             "smoke",
             "full",
+            "antigravity",
             "managed",
             "dedicated-cuj-plan",
             "dedicated-cuj",
@@ -447,7 +795,9 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 marks = module_marks | _markers(node.decorator_list)
                 if marks & {"live", "managed_fixture", "workspace_switch"}:
-                    assert len(marks & {"claude", "codex", "opencode"}) == 1, node.name
+                    assert (
+                        len(marks & {"claude", "codex", "opencode", "copilot", "antigravity"}) == 1
+                    ), node.name
 
 
 def test_model_discovery_cases_match_current_launch_contract():
@@ -556,3 +906,15 @@ def test_integration_tests_describe_the_scenario_and_expected_result():
             if any(arg.arg == "configured" for arg in node.args.args):
                 violations.append(f"{path.name}:{node.lineno}: setup must be visible in the test")
     assert not violations, "\n".join(violations)
+
+
+def test_live_suites_use_fresh_id_for_random_ids():
+    root = Path(__file__).parent
+    helper = root / "integration/utils/evidence.py"
+    offenders = [
+        str(path.relative_to(root))
+        for suite in ("integration", "e2e_cuj")
+        for path in (root / suite).rglob("*.py")
+        if path != helper and "uuid4(" in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, f"Use fresh_id() from integration/utils/evidence.py: {offenders}"

@@ -8,11 +8,12 @@ Normalization, config writers, the gateway, and Codex remain real.
 import json
 import os
 import tomllib
+from pathlib import Path
 
 import pytest
 from utils.constants import MANAGED_CODEX_PROVIDER_SERVICE
 from utils.managed import (
-    is_managed_config_control_plane_cache,
+    codex_state_and_agent_files,
     use_managed_config_fixture,
 )
 from utils.provider_catalog import (
@@ -39,33 +40,18 @@ def _managed_codex_config(live_session):
     use_managed_config_fixture(live_session, "codex_mps")
 
 
-def _codex_state_and_agent_files(session):
-    paths = []
-    for directory in (session.home / ".ucode", session.home / ".codex"):
-        if directory.exists():
-            paths.extend(path for path in directory.rglob("*") if path.is_file())
-    return {
-        str(path.relative_to(session.home)): path.read_bytes()
-        for path in paths
-        if path.is_file()
-        # A fresh launch must retrieve and cache the control-plane input before it can reject an
-        # override. Exclude that expected cache and Codex's disposable arg0 executable links,
-        # which even a version check recreates; persistent agent-owned files stay compared.
-        and not is_managed_config_control_plane_cache(session.home, path)
-        and not path.is_relative_to(session.home / ".codex" / "tmp" / "arg0")
-    }
-
-
 def _assert_rejected_before_codex_started(session, result, before=None):
     output = (result.stdout + result.stderr).lower()
     assert result.returncode == 1
     assert "`--provider` or `--model-location` is not allowed" in output
     assert "managed config exists for the workspace" in output
     if before is not None:
-        assert _codex_state_and_agent_files(session) == before
+        assert codex_state_and_agent_files(session) == before
 
 
-def _assert_managed_provider_catalog(session, models, expected: CodexProviderCatalog):
+def _assert_managed_provider_catalog(
+    session, models, expected: CodexProviderCatalog, *, installed: bool = True
+):
     config = tomllib.loads((session.home / ".codex" / "ucode.config.toml").read_text())
     # The provider header is a launch-only overlay; neither it nor the scoped catalog is persisted
     # in Codex's generated profile.
@@ -75,22 +61,31 @@ def _assert_managed_provider_catalog(session, models, expected: CodexProviderCat
     app_catalog_path = session.home / ".ucode" / "codex-model-catalog.json"
     assert shared_config.get("model_catalog_json") == str(app_catalog_path), shared_config
 
-    managed_cache = json.loads((session.home / ".ucode/managed-config.json").read_text())
-    raw_config = managed_cache.get("config")
-    enabled_agents = raw_config.get("enabled_agents") if isinstance(raw_config, dict) else None
-    assert isinstance(enabled_agents, list), "persisted managed config had no enabled_agents list"
-    codex_entries = [
-        entry
-        for entry in enabled_agents
-        if isinstance(entry, dict) and entry.get("agent") == "CODING_AGENT_CODEX"
-    ]
-    assert len(codex_entries) == 1, "persisted managed config did not contain one Codex entry"
-    managed_codex = codex_entries[0].get("config")
-    assert isinstance(managed_codex, dict), "persisted managed Codex config was not an object"
-    assert managed_codex.get("models") == {
-        "model_provider_service": MANAGED_CODEX_PROVIDER_SERVICE
-    }, "persisted managed Codex config did not select the dedicated MPS"
-    assert "default_models" not in managed_codex, "static Codex defaults survived the MPS variant"
+    policy = Path("/etc/unitygateway/managed-settings.json")
+    if installed:
+        managed_cache = json.loads(policy.read_text())
+        raw_config = managed_cache.get("config")
+        enabled_agents = raw_config.get("enabled_agents") if isinstance(raw_config, dict) else None
+        assert isinstance(enabled_agents, list), (
+            "persisted managed config had no enabled_agents list"
+        )
+        codex_entries = [
+            entry
+            for entry in enabled_agents
+            if isinstance(entry, dict) and entry.get("agent") == "CODING_AGENT_CODEX"
+        ]
+        assert len(codex_entries) == 1, "persisted managed config did not contain one Codex entry"
+        managed_codex = codex_entries[0].get("config")
+        assert isinstance(managed_codex, dict), "persisted managed Codex config was not an object"
+        assert managed_codex.get("models") == {
+            "model_provider_service": MANAGED_CODEX_PROVIDER_SERVICE
+        }, "persisted managed Codex config did not select the dedicated MPS"
+        assert "default_models" not in managed_codex, (
+            "static Codex defaults survived the MPS variant"
+        )
+    else:
+        # A non-root launch applies the fetched policy for that run; only `ug configure` installs.
+        assert not policy.exists(), "a launch installed the machine policy"
 
     catalog_paths = list((session.home / ".ucode").glob("codex-model-catalog-*.json"))
     assert len(catalog_paths) == 1, catalog_paths
@@ -175,7 +170,9 @@ def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(
         ["--workspace", workspace, "--", "app-server", "--listen", "stdio://"]
     )
 
-    _assert_managed_provider_catalog(session, models, _managed_codex_provider_catalog)
+    _assert_managed_provider_catalog(
+        session, models, _managed_codex_provider_catalog, installed=False
+    )
     app_models = session.codex_model_ids(
         ["app-server", "--listen", "stdio://"],
         name="bare-codex-models",
@@ -201,7 +198,7 @@ def test_case_04_managed_codex_rejects_provider_override_after_configure(
         timeout=240,
     )
     assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
-    before = _codex_state_and_agent_files(session)
+    before = codex_state_and_agent_files(session)
 
     result = session.run(
         "codex",
@@ -257,7 +254,7 @@ def test_case_06_managed_codex_rejects_model_location_override_after_configure(
         timeout=240,
     )
     assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
-    before = _codex_state_and_agent_files(session)
+    before = codex_state_and_agent_files(session)
 
     result = session.run(
         "codex",

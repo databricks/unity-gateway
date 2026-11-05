@@ -1,9 +1,11 @@
-"""Subprocess helpers for cross-platform command resolution and text encoding."""
+"""Subprocess helpers for cross-platform command resolution, quoting, and text encoding."""
 
 from __future__ import annotations
 
 import os
+import platform
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -58,6 +60,13 @@ def resolve_command(argv: list[str]) -> list[str]:
     if resolved.lower().endswith(".cmd") and (program := _unwrap_npm_shim(resolved)):
         return [*program, *argv[1:]]
     return [resolved, *argv[1:]]
+
+
+def shell_command(argv: list[str]) -> str:
+    """Quote ``argv`` as one command string for the platform's shell."""
+    if platform.system() == "Windows":
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
 
 
 def _resolved_args(

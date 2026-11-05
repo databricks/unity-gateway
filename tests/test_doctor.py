@@ -143,6 +143,53 @@ class TestAgentCliChecks:
             assert _check_agent_clis() == []
 
 
+class TestCopilotModelsCheck:
+    def test_skipped_when_copilot_is_not_configured(self):
+        with patch.object(doctor_mod, "load_state", return_value={"available_tools": ["claude"]}):
+            assert doctor_mod._check_copilot_models() is None
+
+    def test_counts_models_per_provider(self):
+        state = {
+            "available_tools": ["copilot"],
+            "copilot_catalog": {"models": ["system.ai.claude-sonnet-4-6", "system.ai.gpt-5-4"]},
+        }
+        with patch.object(doctor_mod, "load_state", return_value=state):
+            check = doctor_mod._check_copilot_models()
+
+        assert check is not None
+        assert check.status == "ok"
+        assert check.detail == "2 models (1 dbx-anthropic, 1 dbx-responses)"
+
+    def test_counts_the_managed_list_launch_registers(self):
+        state = {
+            "workspace": "https://ws.databricks.com",
+            "available_tools": ["copilot"],
+            "copilot_catalog": {"models": ["system.ai.claude-sonnet-4-6", "system.ai.gpt-5-4"]},
+        }
+        managed = {
+            "enabled_agents": {
+                "copilot": {"model_config": {"model_services": ["system.ai.gpt-5-4-mini"]}}
+            }
+        }
+        with (
+            patch.object(doctor_mod, "load_state", return_value=state),
+            patch.object(doctor_mod, "load_managed_state", return_value=managed),
+        ):
+            check = doctor_mod._check_copilot_models()
+
+        assert check is not None
+        assert check.detail == "1 models (1 dbx-responses)"
+
+    def test_warns_when_nothing_is_usable(self):
+        state = {"available_tools": ["copilot"], "copilot_catalog": {"models": []}}
+        with patch.object(doctor_mod, "load_state", return_value=state):
+            check = doctor_mod._check_copilot_models()
+
+        assert check is not None
+        assert check.status == "warn"
+        assert "ug configure --agents copilot" in check.detail
+
+
 class TestDatabricksAuthCheck:
     def test_none_when_no_workspace(self):
         with patch.object(doctor_mod, "load_state", return_value={}):
@@ -205,13 +252,17 @@ class TestAnthropicEnvCollision:
             monkeypatch.delenv(var, raising=False)
         assert _check_anthropic_env_collision() is None
 
-    def test_warns_when_set(self, monkeypatch):
+    def test_notes_when_set(self, monkeypatch):
         for var in doctor_mod._CLAUDE_TOKEN_ENV_VARS:
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "secret")
         check = _check_anthropic_env_collision()
-        assert check.status == "warn"
-        assert "ANTHROPIC_AUTH_TOKEN" in check.detail
+        assert check.status == "info"  # advisory: ug blanks it for Claude Code
+        assert check.detail == (
+            "ANTHROPIC_AUTH_TOKEN is set; Claude Code launched via ug ignores it. To use your own "
+            "Databricks token, set DATABRICKS_BEARER or run `ug configure --profile <name> "
+            "--use-pat` (re-run `ug configure` if bare `claude` still fails with a 401)"
+        )
         # Advisory only — no auto-fix for a parent shell's env.
         assert check.suggestion is None
 

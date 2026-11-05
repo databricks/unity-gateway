@@ -92,13 +92,13 @@ def restore_file(config_path: Path, backup_path: Path, managed: bool) -> bool:
         raise RuntimeError(f"Failed to restore config at {config_path}") from exc
 
 
-def write_text_file(path: Path, content: str) -> None:
+def write_text_file(path: Path, content: str, *, encoding: str = "utf-8") -> None:
     if _dry_run:
         console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
         return
     ensure_parent_dir(path)
     try:
-        path.write_text(content, encoding="utf-8")
+        path.write_text(content, encoding=encoding)
     except OSError as exc:
         raise RuntimeError(f"Failed to write config file: {path}") from exc
 
@@ -185,7 +185,7 @@ def apply_json_mcp_diff(
 ) -> set[str]:
     """Apply an ``add``/``remove`` MCP-server diff to the ``key`` map in a JSON config, in one
     read-modify-write. Shared by the agents whose MCP servers live in a JSON object keyed by name
-    (copilot/cursor/gemini/opencode); the developer's own entries and every other key are kept.
+    (cursor/gemini/kilo/opencode); the developer's own entries and every other key are kept.
     ``backup_path`` snapshots the file first when the agent keeps a revert backup. Returns the subset
     of ``remove`` names that were actually present (so callers can report only real removals)."""
     if backup_path is not None:

@@ -389,3 +389,17 @@ class TestUnwrapNpmShim:
 
     def test_unreadable_shim(self, tmp_path):
         assert subprocess_cross_os._unwrap_npm_shim(str(tmp_path / "missing.cmd")) is None
+
+
+class TestShellCommand:
+    def test_windows_uses_cmd_quoting(self, monkeypatch):
+        monkeypatch.setattr(subprocess_cross_os.platform, "system", lambda: "Windows")
+        assert subprocess_cross_os.shell_command([r"C:\Program Files\ug.EXE", "route"]) == (
+            r'"C:\Program Files\ug.EXE" route'
+        )
+
+    def test_posix_uses_shell_quoting(self, monkeypatch):
+        monkeypatch.setattr(subprocess_cross_os.platform, "system", lambda: "Linux")
+        assert subprocess_cross_os.shell_command(["/opt/my ug/ug", "route"]) == (
+            "'/opt/my ug/ug' route"
+        )

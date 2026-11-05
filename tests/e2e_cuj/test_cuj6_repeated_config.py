@@ -18,13 +18,12 @@ import subprocess
 import sys
 import time
 import tomllib
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from tests.integration.utils.evidence import FileTask
+from tests.integration.utils.evidence import FileTask, fresh_id
 from tests.integration.utils.sql import query_count, resolve_trace_table, resolve_warehouse_id
 from tests.integration.utils.terminal import TerminalProcess
 from ucode.agents.claude import CLAUDE_OTEL_TRACE_ENV_KEYS
@@ -64,6 +63,7 @@ CLAUDE_DEFAULT = CLAUDE_SONNET_MODEL
 CLAUDE_PROVIDER, CLAUDE_PROVIDER_MODEL = BEDROCK_PROVIDER_SERVICE_FIXTURE
 CODEX_MODEL_LOCATION, CODEX_UC_MODEL = UC_MODEL_LOCATION_FIXTURE
 MANAGED_MCP_ENTRY = registered_name(FIXTURE_READER_MCP_SERVICE_NAME)
+CLAUDE_OS_MANAGED_SETTINGS = MANAGED_PATHS[0]
 CODEX_OS_MANAGED_CONFIG = MANAGED_PATHS[1]
 PARENT_SCHEMA_HEADER = "databricks-model-service-parent-schema"
 CONFIGURE_ARGS = ["configure", "--skip-upgrade", "--disable-databricks-ai-tools"]
@@ -158,12 +158,15 @@ class AgentFiles:
     """ug-written agent settings and MCP registrations in the shared home."""
 
     claude_settings: dict
-    claude_user_settings: str
+    claude_user_settings: dict
     codex_config: dict
     codex_ucode_config: dict
     codex_model_catalog: dict
     claude_mcp: dict
     codex_mcp: dict
+    # ug's managed MCP servers in the OS-managed files, where `ug configure` writes them.
+    claude_managed_mcp: dict
+    codex_managed_mcp: dict
     claude_mcp_list: tuple[str, ...]
     codex_mcp_list: tuple[str, ...]
     skill_files: dict[str, str]
@@ -225,7 +228,7 @@ class PhaseC:
 
 @dataclass(frozen=True)
 class SeededUserState:
-    claude_settings: str
+    claude_settings: dict
     codex_keys: dict
     mcp_registrations: dict[str, dict]
     skill_files: dict[str, str]
@@ -239,7 +242,7 @@ class Journey:
         self.workspaces = workspaces
         self.published = published
         self.recorders = recorders
-        self.run_id = f"cuj6-{uuid.uuid4().hex[:12]}"
+        self.run_id = f"cuj6-{fresh_id()}"
         a_bearer = bearer(workspaces["a"].client)
         # All phase workspaces share one metastore and trace table, so A queries them all.
         self.trace_url = workspaces["a"].url
@@ -302,12 +305,14 @@ class Journey:
         claude_mcp = read_json(self.home / ".claude/.claude.json").get("mcpServers", {})
         return AgentFiles(
             claude_settings=read_json(self.home / ".claude/ucode-settings.json"),
-            claude_user_settings=(self.home / ".claude/settings.json").read_text(),
+            claude_user_settings=read_json(self.home / ".claude/settings.json"),
             codex_config=codex_config,
             codex_ucode_config=read_toml(self.home / ".codex/ucode.config.toml"),
             codex_model_catalog=read_json(self.home / ".ucode/codex-model-catalog.json"),
             claude_mcp=claude_mcp,
             codex_mcp=codex_config.get("mcp_servers", {}),
+            claude_managed_mcp=read_json(CLAUDE_OS_MANAGED_SETTINGS).get("managedMcpServers", {}),
+            codex_managed_mcp=read_toml(CODEX_OS_MANAGED_CONFIG).get("mcp_servers", {}),
             claude_mcp_list=self.mcp_list(CLAUDE),
             codex_mcp_list=self.mcp_list(CODEX),
             skill_files=self.skill_files(),
@@ -459,7 +464,7 @@ class Journey:
             )
         assert not (self.home / ".ucode").exists(), "Seeding must not create ug state"
         return SeededUserState(
-            claude_settings=claude_settings.read_text(),
+            claude_settings=read_json(claude_settings),
             codex_keys=self.user_codex_keys(read_toml(codex_config)),
             mcp_registrations={
                 CLAUDE: read_json(self.home / ".claude/.claude.json")["mcpServers"][USER_MCP],
@@ -607,8 +612,13 @@ class TestCujRepeatedConfig(BaseCujTest):
 
     def test_phase_a_registers_managed_and_user_mcp_once(self, phase_a):
         files = phase_a.second
-        for registrations in (files.claude_mcp, files.codex_mcp):
-            assert {MANAGED_MCP_ENTRY, USER_MCP} <= set(registrations)
+        # The developer's own server stays in user scope. Codex always takes the managed server
+        # from its OS-managed file on Linux; Claude does only when it can drive the server's OAuth
+        # from there, and otherwise in user scope.
+        assert USER_MCP in files.claude_mcp and USER_MCP in files.codex_mcp
+        assert MANAGED_MCP_ENTRY in files.codex_managed_mcp
+        assert MANAGED_MCP_ENTRY not in files.codex_mcp
+        assert MANAGED_MCP_ENTRY in {*files.claude_mcp, *files.claude_managed_mcp}
         for listed in (files.claude_mcp_list, files.codex_mcp_list):
             assert {MANAGED_MCP_ENTRY, USER_MCP} <= set(listed)
             assert len(listed) == len(set(listed)), listed
@@ -708,6 +718,8 @@ class TestCujRepeatedConfig(BaseCujTest):
             for registered in (
                 files.claude_mcp,
                 files.codex_mcp,
+                files.claude_managed_mcp,
+                files.codex_managed_mcp,
                 files.claude_mcp_list,
                 files.codex_mcp_list,
             ):
@@ -779,8 +791,20 @@ class TestCujRepeatedConfig(BaseCujTest):
 
     def test_user_state_survives_every_phase(self, journey, phase_a, phase_b, phase_c):
         seeded = journey.seeded
+        expected_claude_settings = {
+            **seeded.claude_settings,
+            "enabledPlugins": {"ug@unity-gateway-code": True},
+            "extraKnownMarketplaces": {
+                "unity-gateway-code": {
+                    "source": {
+                        "source": "directory",
+                        "path": str(journey.home / ".ucode/claude-code-marketplace"),
+                    }
+                }
+            },
+        }
         for files in (phase_a.second, phase_b.restarted, phase_c.final):
-            assert files.claude_user_settings == seeded.claude_settings
+            assert files.claude_user_settings == expected_claude_settings
             assert journey.user_codex_keys(files.codex_config) == seeded.codex_keys
             assert files.claude_mcp.get(USER_MCP) == seeded.mcp_registrations[CLAUDE]
             assert files.codex_mcp.get(USER_MCP) == seeded.mcp_registrations[CODEX]
@@ -798,7 +822,6 @@ class TestCujRepeatedConfig(BaseCujTest):
 # sets none. A denylist, not an allowlist, so the shared admin setting can't block CUJ 6's own MCPs.
 DENIED_MCP = "ug-e2e-denied"
 NATIVE_SETTINGS = {"deniedMcpServers": [{"serverName": DENIED_MCP}]}
-CLAUDE_OS_MANAGED_SETTINGS = MANAGED_PATHS[0]
 BLOCKED_BY_POLICY = "blocked by enterprise policy"
 
 

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import urllib.error
+
+import pytest
 
 from ucode.smart_routing import codex_routing
 from ucode.smart_routing.codex_hooks import routing_models
@@ -50,7 +53,9 @@ def test_routes_with_models_from_stored_state(monkeypatch):
         captured["timeout"] = timeout
         return _Response(
             {
-                "route_selection": [{"route_option": {"model": "gpt-5-6-sol", "harness": "codex"}}],
+                "route_selection": [
+                    {"route_option": {"model": "system.ai.gpt-5-6-sol", "harness": "codex"}}
+                ],
                 "rationale": "Needs the strongest coding model.",
             }
         )
@@ -67,15 +72,16 @@ def test_routes_with_models_from_stored_state(monkeypatch):
     assert error is None
     assert decision == codex_routing.RoutingDecision(
         model="system.ai.gpt-5-6-sol",
-        raw_model="gpt-5-6-sol",
         rationale="Needs the strongest coding model.",
+        route_options=(("system.ai.gpt-5-6-luna", "codex"), ("system.ai.gpt-5-6-sol", "codex")),
+        router_name=codex_routing.routing.ROUTER_NAME,
     )
     assert captured["url"] == f"{WS}/ai-gateway/routing/v1/routes:select"
     assert captured["headers"]["Authorization"] == "Bearer token"
     assert captured["body"] == {
         "route_options": [
-            {"model": "gpt-5-6-luna", "harness": "codex"},
-            {"model": "gpt-5-6-sol", "harness": "codex"},
+            {"model": "system.ai.gpt-5-6-luna", "harness": "codex"},
+            {"model": "system.ai.gpt-5-6-sol", "harness": "codex"},
         ],
         "task": {"prompt": task},
         "route_selector": {"router_name": codex_routing.routing.ROUTER_NAME},
@@ -88,7 +94,9 @@ def test_router_name_can_be_overridden_with_environment_variable(monkeypatch):
 
     def fake_urlopen(request, timeout):
         captured["body"] = json.loads(request.data)
-        return _Response({"route_selection": [{"route_option": {"model": "gpt-5-6-sol"}}]})
+        return _Response(
+            {"route_selection": [{"route_option": {"model": "system.ai.gpt-5-6-sol"}}]}
+        )
 
     monkeypatch.setattr(codex_routing.urllib.request, "urlopen", fake_urlopen)
 
@@ -107,31 +115,21 @@ def test_blank_router_name_environment_variable_uses_default(monkeypatch):
     assert codex_routing.routing.configured_router_name() == codex_routing.routing.ROUTER_NAME
 
 
-def test_router_model_is_not_substituted_when_exact_model_is_unavailable():
-    model = codex_routing.resolve_routed_model(
-        "gpt-5-6-luna",
-        ["databricks-gpt-5-4-nano", "databricks-gpt-5", "databricks-gpt-5-5"],
+def test_router_pick_that_was_not_offered_fails_open(monkeypatch):
+    monkeypatch.setattr(
+        codex_routing.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: _Response(
+            {"route_selection": [{"route_option": {"model": "gpt-5-6-sol", "harness": "codex"}}]}
+        ),
     )
 
-    assert model is None
-
-
-def test_glm_maps_to_databricks_gateway_model():
-    model = codex_routing.resolve_routed_model(
-        "glm-5-2",
-        ["system.ai.gpt-5-6-luna", "system.ai.gpt-5-6-sol", "system.ai.glm-5-2"],
+    decision, error = codex_routing.request_routing_decision(
+        WS, "token", "Refactor the parser", ["system.ai.gpt-5-6-sol"]
     )
 
-    assert model == "system.ai.glm-5-2"
-
-
-def test_exact_router_model_is_preserved():
-    model = codex_routing.resolve_routed_model(
-        "gpt-5-6-sol",
-        ["databricks-gpt-5-5", "databricks-gpt-5-6-sol"],
-    )
-
-    assert model == "databricks-gpt-5-6-sol"
+    assert decision is None
+    assert error == "router selected a model it was not offered: 'gpt-5-6-sol'"
 
 
 def test_router_failure_fails_open(monkeypatch):
@@ -169,7 +167,6 @@ def test_spawn_rewrite_preserves_original_input(monkeypatch):
         lambda *args, **kwargs: (
             codex_routing.RoutingDecision(
                 model="databricks-gpt-5-5",
-                raw_model="gpt-5-6-sol",
                 rationale="Review needs deeper reasoning.",
             ),
             None,
@@ -212,14 +209,12 @@ def test_spawn_rewrite_uses_codex_model_id_for_uc_endpoint(monkeypatch, tmp_path
     monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "1")
     monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
     monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
-    monkeypatch.delenv("ISAAC_LAUNCH_MODE", raising=False)
     monkeypatch.setattr(
         codex_routing,
         "request_routing_decision",
         lambda *args, **kwargs: (
             codex_routing.RoutingDecision(
                 model="system.ai.gpt-5-6-luna",
-                raw_model="gpt-5-6-luna",
             ),
             None,
         ),
@@ -271,7 +266,6 @@ def test_spawn_glm_decision_applies_glm_model(monkeypatch):
         lambda *args, **kwargs: (
             codex_routing.RoutingDecision(
                 model="system.ai.glm-5-2",
-                raw_model="glm-5-2",
             ),
             None,
         ),
@@ -307,33 +301,46 @@ def test_non_spawn_tool_has_no_opinion():
     )
 
 
-def test_spawn_routes_on_plaintext_message_when_present(monkeypatch):
+def test_spawn_routes_on_plaintext_message_when_present(tmp_path, monkeypatch):
     # When the spawn's `message` is a plaintext string at PreToolUse (before
     # Codex encrypts it at send-time), routing uses it as the task — giving the
     # router real signal instead of the generic fallback.
     captured = {}
+    assignment = "Review the parser's café/日本語 error handling.\n" + "x" * 10000
+    decisions = tmp_path / "decisions.jsonl"
+    monkeypatch.setattr(codex_routing, "DECISIONS_PATH", decisions)
 
     def fake_decision(*args, **kwargs):
         captured["task"] = args[2] if len(args) > 2 else kwargs.get("task")
         return (
-            codex_routing.RoutingDecision(model="databricks-gpt-5-5", raw_model="gpt-5-6-sol"),
+            codex_routing.RoutingDecision(model="databricks-gpt-5-5"),
             None,
         )
 
     monkeypatch.setattr(codex_routing, "request_routing_decision", fake_decision)
-    codex_routing.route_pre_tool_use(
+    output = codex_routing.route_pre_tool_use(
         {
+            "session_id": "s1",
             "tool_name": "collaborationspawn_agent",
             "tool_input": {
                 "task_name": "task_3",
-                "message": "Review the parser error handling and add missing null checks",
+                "message": assignment,
             },
         },
         workspace=WS,
         token="token",
         available_models=["databricks-gpt-5-5"],
+        audit_decision=True,
     )
-    assert captured["task"] == "Review the parser error handling and add missing null checks"
+    assert captured["task"] == assignment
+    assert output["hookSpecificOutput"]["updatedInput"]["message"] == assignment
+    record = json.loads(decisions.read_text())
+    assert record["task_sha256"] == hashlib.sha256(assignment.encode("utf-8")).hexdigest()
+    assert record["task_length"] == len(assignment)
+    assert "task_name" not in record
+    assert assignment not in decisions.read_text()
+    assert record["session_id"] == "s1"
+    assert record["requested_model"] == "gpt-5.5"
 
 
 def test_spawn_falls_through_encrypted_message_to_task_name(monkeypatch):
@@ -344,7 +351,7 @@ def test_spawn_falls_through_encrypted_message_to_task_name(monkeypatch):
     def fake_decision(*args, **kwargs):
         captured["task"] = args[2] if len(args) > 2 else kwargs.get("task")
         return (
-            codex_routing.RoutingDecision(model="databricks-gpt-5-5", raw_model="gpt-5-6-sol"),
+            codex_routing.RoutingDecision(model="databricks-gpt-5-5"),
             None,
         )
 
@@ -371,7 +378,7 @@ def test_spawn_falls_through_fernet_message_to_task_name(monkeypatch):
     def fake_decision(*args, **kwargs):
         captured["task"] = args[2] if len(args) > 2 else kwargs.get("task")
         return (
-            codex_routing.RoutingDecision(model="databricks-gpt-5-5", raw_model="gpt-5-6-sol"),
+            codex_routing.RoutingDecision(model="databricks-gpt-5-5"),
             None,
         )
 
@@ -398,7 +405,7 @@ def test_spawn_uses_generic_task_instead_of_fernet_message(monkeypatch):
     def fake_decision(*args, **kwargs):
         captured["task"] = args[2] if len(args) > 2 else kwargs.get("task")
         return (
-            codex_routing.RoutingDecision(model="databricks-gpt-5-5", raw_model="gpt-5-6-sol"),
+            codex_routing.RoutingDecision(model="databricks-gpt-5-5"),
             None,
         )
 
@@ -444,7 +451,6 @@ def test_decision_is_reconciled_with_actual_subagent_model(tmp_path, monkeypatch
         lambda *args, **kwargs: (
             codex_routing.RoutingDecision(
                 model="system.ai.gpt-5-6-luna",
-                raw_model="gpt-5-6-luna",
             ),
             None,
         ),
@@ -465,12 +471,17 @@ def test_decision_is_reconciled_with_actual_subagent_model(tmp_path, monkeypatch
         {"session_id": "s1", "agent_id": "a1", "model": "gpt-5.6-luna"}
     )
 
-    assert record["router_model"] == "gpt-5-6-luna"
+    assert record["router_model"] == "system.ai.gpt-5-6-luna"
     assert record["requested_model"] == "gpt-5.6-luna"
     assert record["matches_router_decision"] is True
 
 
-def test_decision_record_persists_rationale(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "rationale",
+    ["", "Cross-cutting refactor needs the strongest model.", "x" * 10000],
+    ids=["empty", "short", "long"],
+)
+def test_decision_record_persists_rationale(tmp_path, monkeypatch, rationale):
     decisions = tmp_path / "decisions.jsonl"
     monkeypatch.setattr(codex_routing, "DECISIONS_PATH", decisions)
     monkeypatch.setattr(
@@ -479,8 +490,8 @@ def test_decision_record_persists_rationale(tmp_path, monkeypatch):
         lambda *args, **kwargs: (
             codex_routing.RoutingDecision(
                 model="system.ai.gpt-5-6-sol",
-                raw_model="gpt-5-6-sol",
-                rationale="Cross-cutting refactor needs the strongest model.",
+                rationale=rationale,
+                raw_rationale="raw " + rationale,
             ),
             None,
         ),
@@ -501,4 +512,23 @@ def test_decision_record_persists_rationale(tmp_path, monkeypatch):
     # The rationale is persisted so an empty value distinguishes "gateway
     # returned none" from a display-placement bug.
     record = json.loads(decisions.read_text().strip())
-    assert record["rationale"] == "Cross-cutting refactor needs the strongest model."
+    assert record["rationale"] == rationale[:1000]
+    assert record["raw_rationale"] == ("raw " + rationale)[:1000]
+
+
+def test_failed_subagent_routing_reports_reason_without_hook_response(monkeypatch, caplog):
+    monkeypatch.setattr(
+        codex_routing,
+        "request_routing_decision",
+        lambda *args, **kwargs: (None, "router returned HTTP 400: unsupported model"),
+    )
+    output = codex_routing.route_pre_tool_use(
+        {"tool_name": "spawn_agent", "tool_input": {"message": "Review the parser"}},
+        workspace=WS,
+        token="private-bearer",
+        available_models=["system.ai.gpt-5-6-sol"],
+    )
+    assert output is None
+    assert "router returned HTTP 400: unsupported model" in caplog.text
+    assert "private-bearer" not in caplog.text
+    assert "Review the parser" not in caplog.text

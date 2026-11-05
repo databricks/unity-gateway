@@ -10,6 +10,7 @@ import pytest
 
 from ucode.agents import opencode
 from ucode.agents.args import LaunchOptions
+from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
 
@@ -80,6 +81,50 @@ class TestAuthPlugin:
 
         assert "if (!refreshPromise)" in plugin
         assert "mintToken().finally(() => { refreshPromise = undefined })" in plugin
+
+    def test_opencode_2_plugin_uses_default_definition_and_session_hooks(self):
+        plugin = opencode.render_auth_plugin({"workspace": WS}, v2=True)
+
+        assert "export default {" in plugin
+        assert 'id: "ucode.databricks-auth"' in plugin
+        assert "UcodeDatabricksAuth" not in plugin
+        assert "options.fetch" not in plugin
+        assert 'ctx.session.hook("http.request"' in plugin
+        assert "expiresAt <= Date.now() + REFRESH_SKEW_MS" in plugin
+        assert 'event.request.headers.set("Authorization", "Bearer " + accessToken)' in plugin
+        assert 'ctx.session.hook("retry"' in plugin
+        assert "event.error.status !== 401 || event.attempt > 2" in plugin
+        assert "event.decision = { retry: true, delay: 0 }" in plugin
+        assert "}, { providerID })" in plugin
+
+    def test_opencode_2_retry_refreshes_only_a_rejected_current_token(self):
+        plugin = opencode.render_auth_plugin({"workspace": WS}, v2=True)
+
+        assert 'ctx.session.hook("http.response"' in plugin
+        assert "if (event.response.status === 401)" in plugin
+        assert 'rejectedAuthorization = event.request.headers.get("Authorization")' in plugin
+        assert (
+            'if (rejectedAuthorization === "Bearer " + accessToken) await refreshToken()' in plugin
+        )
+
+    @pytest.mark.parametrize(
+        ("installed", "entrypoint"),
+        [
+            ("1.0.220", "export const UcodeDatabricksAuth"),
+            ("2.0.14", "export default {"),
+            ("unknown", "export const UcodeDatabricksAuth"),
+        ],
+    )
+    def test_writes_plugin_for_installed_opencode_major(
+        self, tmp_path, monkeypatch, installed, entrypoint
+    ):
+        monkeypatch.setattr(opencode, "OPENCODE_CONFIG_PATH", tmp_path / "opencode.json")
+        monkeypatch.setattr(opencode, "agent_version", lambda _binary: installed)
+
+        opencode.write_auth_plugin({"workspace": WS})
+
+        plugin = (tmp_path / "plugin" / opencode.OPENCODE_AUTH_PLUGIN_PATH.name).read_text()
+        assert entrypoint in plugin
 
 
 class TestRenderOverlay:
@@ -195,7 +240,7 @@ class TestRenderOverlay:
         model_headers = overlay["provider"]["databricks-anthropic"]["models"]["claude-sonnet"][
             "headers"
         ]
-        assert model_headers["User-Agent"] == "ucode/0.1.0 opencode/0.74.0"
+        assert model_headers["User-Agent"] == f"ucode/0.1.0 opencode/0.74.0 {client_platform()}"
 
     def test_user_agent_header_gemini(self, monkeypatch):
         monkeypatch.setattr(opencode, "ug_version", lambda: "0.1.0")
@@ -203,7 +248,7 @@ class TestRenderOverlay:
         models = {"gemini": ["gemini-2"]}
         overlay, _ = opencode.render_overlay("gemini-2", "tok", _base_urls(), models)
         model_headers = overlay["provider"]["databricks-google"]["models"]["gemini-2"]["headers"]
-        assert model_headers["User-Agent"] == "ucode/0.1.0 opencode/0.74.0"
+        assert model_headers["User-Agent"] == f"ucode/0.1.0 opencode/0.74.0 {client_platform()}"
 
     def test_provider_level_headers_only_authorization(self, monkeypatch):
         # Sanity: provider-level headers should NOT include User-Agent (since
@@ -566,6 +611,7 @@ class TestWriteToolConfigStaleProviderCleanup:
 
         with (
             patch("ucode.agents.opencode.get_databricks_token", return_value="tok"),
+            patch("ucode.agents.opencode.agent_version", return_value="1.0.220"),
             patch("ucode.agents.opencode.save_state"),
         ):
             oc_mod.write_tool_config(state, "claude-sonnet", token="tok")

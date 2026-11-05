@@ -32,7 +32,8 @@ from ucode.state import (
     save_state,
     set_provider_service,
 )
-from ucode.telemetry import agent_version, ug_version
+from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.workspace import workspace_headers
 
 from .args import LaunchOptions
 
@@ -141,11 +142,14 @@ def render_env_overlay(
     # `Key:Value` pairs and spreads them after the SDK's default User-Agent,
     # so a key named `User-Agent` overrides the default. Resolved via
     # upstream issue google-gemini/gemini-cli#10088.
-    custom_headers = f"User-Agent:ucode/{ug_version()} gemini/{agent_version('gemini')}"
+    user_agent = ucode_user_agent(ug_version(), f"gemini/{agent_version('gemini')}")
+    custom_headers = f"User-Agent:{user_agent}"
     if provider:
         # A Model Provider Service routes by this header; the request still names
         # the service's target model in `GEMINI_MODEL` (pinned by the launch path).
         custom_headers += f",Databricks-Model-Provider-Service:{provider}"
+    for name, value in workspace_headers(workspace).items():
+        custom_headers += f",{name}:{value}"
     # TODO: attach AI_GATEWAY_REQUEST_TAGS here like the other agents do. Not yet
     # supported for Gemini: GEMINI_CLI_CUSTOM_HEADERS is the only header hook the
     # supported CLI (< 0.45) exposes, and its parser splits on `,(?=\s*[^,:]+:)`

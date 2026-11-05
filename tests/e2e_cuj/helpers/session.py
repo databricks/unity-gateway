@@ -68,15 +68,21 @@ class UserSession(IntegrationSession):
         return re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/-]+=*", r"\1<redacted>", text)
 
     def configure(self, args):
-        """Configure without a PTY so CI uses isolated user-local settings."""
+        """Configure headlessly, as a provisioning script would.
+
+        Like an interactive run, this writes the machine-wide agent settings and workspace policy;
+        the `cuj` fixture's teardown reverts them and asserts nothing is left behind."""
         self.run(*args, timeout=240)
-        assert not any(path.exists() for path in constants.MANAGED_PATHS), (
-            "Non-interactive CUJ configure unexpectedly created machine-wide settings"
-        )
 
     def revert_machine_wide(self, name, message):
         state_dir = self.home / ".ucode"
-        if any((state_dir / file).is_file() for file in MANAGED_STATE_FILES):
-            with TerminalProcess(self, "ug", [str(self.binary), "revert"], name) as terminal:
-                terminal.finish()
+        try:
+            if any((state_dir / file).is_file() for file in MANAGED_STATE_FILES):
+                with TerminalProcess(self, "ug", [str(self.binary), "revert"], name) as terminal:
+                    terminal.finish()
+        finally:
+            # Backstop: `ug revert` removes the workspace policy, but it can fail or be skipped.
+            policy = constants.WORKSPACE_POLICY_PATH
+            if policy.exists():
+                self.run("rm", "-f", str(policy), binary=self.which("sudo"))
         assert not any(path.exists() for path in constants.MANAGED_PATHS), message

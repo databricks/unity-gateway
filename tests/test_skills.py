@@ -75,6 +75,7 @@ def test_reinstall_replaces_changed_bundle_and_skips_unchanged_bundle(
     assert installed_again == installed
 
 
+@pytest.mark.parametrize("isaac_launch_mode", [None, "omni"])
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 @pytest.mark.parametrize(
     "payload",
@@ -84,8 +85,12 @@ def test_reinstall_replaces_changed_bundle_and_skips_unchanged_bundle(
     ],
 )
 def test_orchestrator_injects_the_installed_agent_instructions(
-    bundled_skill, monkeypatch, agent, payload
+    bundled_skill, monkeypatch, agent, payload, isaac_launch_mode
 ):
+    if isaac_launch_mode is None:
+        monkeypatch.delenv("ISAAC_LAUNCH_MODE", raising=False)
+    else:
+        monkeypatch.setenv("ISAAC_LAUNCH_MODE", isaac_launch_mode)
     source_skill, home = bundled_skill
     source = _write_skill(source_skill.parent, skills.SMART_ROUTER_ORCHESTRATOR_SKILL)
     source.joinpath("SKILL.md").unlink()
@@ -106,6 +111,13 @@ def test_orchestrator_injects_the_installed_agent_instructions(
     context = output["hookSpecificOutput"]["additionalContext"]
     assert context.endswith(f"\n\n{agent} instructions")
     assert context.endswith(installed.joinpath("SKILL.md").read_text())
+
+    session_env.set_session_environment({"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0"})
+    output = orchestrator.hook_output(payload, agent=agent)
+    assert output["hookSpecificOutput"]["additionalContext"] == orchestrator.DISABLED_CONTEXT
+    session_env.set_session_environment({})
+    output = orchestrator.hook_output(payload, agent=agent)
+    assert output["hookSpecificOutput"]["additionalContext"] == context
 
 
 def test_uninstalls_one_skill_from_agent_roots(bundled_skill):

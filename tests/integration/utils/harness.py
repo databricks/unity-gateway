@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import json
 import os
 import queue
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -17,6 +19,21 @@ from pathlib import Path
 from .constants import CLAUDE_TEST_MODEL, CODEX_TEST_MODEL
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def split_command(line: str) -> list[str]:
+    """Split a command line the way the OS will when an agent runs it."""
+    if os.name != "nt":
+        return shlex.split(line)
+    # ug writes Windows commands with list2cmdline; CreateProcess splits them like this.
+    split = ctypes.windll.shell32.CommandLineToArgvW
+    split.restype = ctypes.POINTER(ctypes.c_wchar_p)
+    count = ctypes.c_int()
+    argv = split(line, ctypes.byref(count))
+    try:
+        return [argv[index] for index in range(count.value)]
+    finally:
+        ctypes.windll.kernel32.LocalFree(argv)
 
 
 def process_group_options() -> dict:
@@ -57,6 +74,8 @@ def clean_environment(home: Path) -> dict[str, str]:
             "CODEX_HOME": str(home / ".codex"),
             "DATABRICKS_CONFIG_FILE": str(home / ".databrickscfg"),
             "DISABLE_AUTOUPDATER": "1",
+            # agy requires the literal "true"; "1" leaves background updates enabled.
+            "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "NO_COLOR": "1",
             "TERM": "dumb",
@@ -109,7 +128,12 @@ class UserSession:
 
     def redact(self, text: str, *, strip_ansi: bool = True) -> str:
         # Also scrub the relayed launch's subscription OAuth token, not just the bearer.
-        for name in ("DATABRICKS_BEARER", "DATABRICKS_SECOND_BEARER", "CLAUDE_CODE_OAUTH_TOKEN"):
+        for name in (
+            "DATABRICKS_BEARER",
+            "DATABRICKS_SECOND_BEARER",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN",
+        ):
             for token in (os.environ.get(name), self.env.get(name)):
                 if token:
                     text = text.replace(token, "<redacted>")
@@ -182,7 +206,9 @@ class UserSession:
             return
         config = self.home / ".codex/config.toml"
         config.parent.mkdir(parents=True, exist_ok=True)
-        config.write_text('[windows]\nsandbox = "unelevated"\n')
+        existing = config.read_text(encoding="utf-8") if config.is_file() else ""
+        if "[windows]" not in existing:
+            config.write_text(existing + '\n[windows]\nsandbox = "unelevated"\n', encoding="utf-8")
 
     def record(self, name: str, value: object) -> None:
         (self.artifacts / name).write_text(self.redact(json.dumps(value, indent=2)))

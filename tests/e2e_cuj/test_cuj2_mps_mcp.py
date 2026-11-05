@@ -5,15 +5,12 @@ from __future__ import annotations
 import json
 import shutil
 import tomllib
-import uuid
+from dataclasses import asdict
+from types import SimpleNamespace
 
 from databricks.sdk.service.catalog import ListModelProviderServicesRequestView
 
-from tests.integration.utils.evidence import (
-    agent_sessions,
-    assistant_answers,
-    is_child_session,
-)
+from tests.integration.utils.evidence import fresh_id
 
 from .base import BaseCujTest
 from .helpers.constants import (
@@ -26,8 +23,10 @@ from .helpers.constants import (
     PROVIDER_HEADER,
     SANDBOX_MCP_SERVICE_NAME,
     WEB_SEARCH_MCP_SERVICE_NAME,
+    WORKSPACE_POLICY_PATH,
 )
-from .helpers.evidence import assert_served
+from .helpers.desktop import assert_claude_desktop_profile, enable_claude_desktop
+from .helpers.evidence import SessionEvidence, assert_served
 from .helpers.mcp import registered_name
 from .helpers.poll import poll
 from .helpers.terminal import Terminal
@@ -36,6 +35,8 @@ from .helpers.workspace import Workspace
 CUJ_NAME = "CUJ 2 · MPS and named MCP"
 
 WORKSPACE_URL = "https://dbc-0dcf95cf-e357.cloud.databricks.com"
+# One budget for the inference request to appear and for its response to complete.
+INFERENCE_WAIT_SECONDS = 240
 
 
 def expected_agent_config(agent: str) -> dict:
@@ -91,13 +92,18 @@ def _assert_mps_catalog(workspace) -> None:
         )
         provider_type = getattr(config.provider_type, "value", config.provider_type)
         assert provider_type == expected_type, config
-        expected_api = "anthropic/v1/messages" if agent == CLAUDE else "openai/v1/responses"
+        expected_apis = (
+            ["anthropic/v1/messages"]
+            if agent == CLAUDE
+            else ["openai/v1/chat/completions", "openai/v1/responses"]
+        )
         native_apis = [
             getattr(api, "value", api)
             for target in targets
             for api in (target.native_api_types or [])
         ]
-        assert native_apis == [expected_api], targets
+        # The backend's ordering isn't a contract.
+        assert sorted(native_apis) == sorted(expected_apis), targets
 
         matching = listed_by_name.get(mps_name)
         assert matching is not None, [item.name for item in listed]
@@ -112,11 +118,9 @@ def _assert_mcp_services(workspace) -> None:
 
 
 def _assert_configured_files(session, workspace_url: str) -> None:
-    managed_cache = json.loads(
-        (session.home / ".ucode" / "managed-config.json").read_text(encoding="utf-8")
-    )
-    managed_config = managed_cache.get("config")
-    assert isinstance(managed_config, dict), managed_cache
+    installed = json.loads(WORKSPACE_POLICY_PATH.read_text(encoding="utf-8"))
+    managed_config = installed.get("config")
+    assert isinstance(managed_config, dict), installed
     _assert_cuj2_config(managed_config)
 
     claude_settings = session.home / ".claude" / "ucode-settings.json"
@@ -170,37 +174,31 @@ def _assert_generated_mcp_listings(session) -> None:
         assert not _mcp_name_listed(output, WEB_SEARCH_MCP_SERVICE_NAME), output
 
 
-def _parent_transcripts(session, agent: str) -> dict[str, list[dict]]:
-    return {
-        path: records
-        for path, records in agent_sessions(session, agent).items()
-        if not is_child_session(agent, path, records)
-    }
-
-
-def _task_complete(session, agent: str, marker: str) -> bool:
-    transcripts = _parent_transcripts(session, agent)
-    return any(
-        marker in answer
-        for records in transcripts.values()
-        for answer in assistant_answers(agent, records)
-    )
-
-
-def _assert_task_evidence(session, agent: str, marker: str) -> None:
-    transcripts = _parent_transcripts(session, agent)
-    answers = [
-        answer for records in transcripts.values() for answer in assistant_answers(agent, records)
-    ]
-    assert any(marker in answer for answer in answers), answers
-    session.record(
-        f"cuj2-{agent}-evidence",
-        {"marker": marker, "answers": answers},
-    )
-
-
 def _agent_prompt(marker: str) -> str:
-    return f"Reply with the exact marker `{marker}` and no other text. Do not use tools."
+    return f"Reply with a short greeting. Do not use tools. Request ID: {marker}."
+
+
+def _served_marker_request(recorder, checkpoint: int, agent: str, marker: str):
+    """The marker-bearing inference request the gateway answered with HTTP 200.
+
+    Claude retries a request whose proxy-to-gateway connection failed (the recorder then
+    records a 502 for the first attempt), so the first marker request is not always the
+    one that was served. With no 200, return the first so its failure is asserted.
+    """
+    candidates = [
+        request
+        for request in recorder.requests_after(checkpoint)
+        if request.method == "POST"
+        and request.path == INFERENCE_PATHS[agent]
+        and marker.encode() in request.body
+    ]
+    assert candidates, f"No {agent} inference request carried marker {marker}"
+    # Stop at the first success: later requests resend the history (and so the marker),
+    # and one the agent abandoned at exit never records a response to wait for.
+    for request in candidates:
+        if recorder.response_for(request, timeout=INFERENCE_WAIT_SECONDS).status_code == 200:
+            return request
+    return candidates[0]
 
 
 def _assert_inference_request(recorder, request, *, provider: str, model: str, marker: str) -> None:
@@ -219,13 +217,16 @@ class TestCuj2Configuration(_Cuj2Base):
 
         Expected: the read-only CodingAgentConfig selects the two exact MPS resources and sandbox
         MCP; both native MPS APIs advertise their selected model, generated agent settings use
-        the exact provider/model values, and agent MCP listings exclude web_search.
+        the exact provider/model values, the complete Desktop profile/metadata match the
+        Anthropic MPS contract, and agent MCP listings exclude web_search.
         """
         session, workspace, _ = cuj
         published = workspace.config()
         _assert_cuj2_config(published)
         _assert_mps_catalog(workspace)
         _assert_mcp_services(workspace)
+        claude_mps, claude_model = MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE]
+        config_library = enable_claude_desktop(session, workspace.url)
 
         configured = session.run(
             "configure",
@@ -237,6 +238,16 @@ class TestCuj2Configuration(_Cuj2Base):
         )
         assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
         _assert_configured_files(session, workspace.url)
+        assert_claude_desktop_profile(
+            session,
+            config_library,
+            workspace.url,
+            models=[{"name": claude_model, "labelOverride": claude_model}],
+            custom_headers={
+                "x-databricks-use-coding-agent-mode": "true",
+                PROVIDER_HEADER: claude_mps,
+            },
+        )
         _assert_generated_mcp_listings(session)
 
 
@@ -246,7 +257,7 @@ class TestCuj2CodexInference(_Cuj2Base):
 
         Expected: Codex sends a Responses request for gpt-5-nano with the
         ug_e2e.providers.openai target header and receives its paired HTTP 200 response; its
-        parent transcript contains the final marker.
+        parent transcript contains a completed turn with a nonempty answer to the greeting prompt.
         """
         session, workspace, recorder = cuj
         published = workspace.config()
@@ -266,19 +277,21 @@ class TestCuj2CodexInference(_Cuj2Base):
         _assert_generated_mcp_listings(session)
 
         recorder.prepare_launch()
-        marker = f"CUJ2-CODEX-{uuid.uuid4().hex}"
+        marker = f"CUJ2-CODEX-{fresh_id()}"
+        task = SimpleNamespace(prompt=_agent_prompt(marker), value=None)
+        evidence = SessionEvidence(session.home, CODEX)
         checkpoint = recorder.checkpoint()
         with Terminal(session, "cuj2-codex", [CODEX]) as tui:
             tui.boot()
-            tui.submit(_agent_prompt(marker))
-            tui.wait_until(lambda: _task_complete(session, CODEX, marker), "completed Codex task")
+            tui.submit(task.prompt)
+            tui.wait_until(lambda: evidence.completed(task), "completed Codex task")
             tui.exit_normally()
 
         request = recorder.expect_request(
             method="POST",
             path=INFERENCE_PATHS[CODEX],
             after=checkpoint,
-            timeout=240,
+            timeout=INFERENCE_WAIT_SECONDS,
         )
         _assert_inference_request(
             recorder,
@@ -287,7 +300,9 @@ class TestCuj2CodexInference(_Cuj2Base):
             model=MODEL_PROVIDER_SERVICE_FIXTURES[CODEX][1],
             marker=marker,
         )
-        _assert_task_evidence(session, CODEX, marker)
+        turn = evidence.completed(task)
+        assert turn is not None, "No completed Codex answer matched the greeting prompt"
+        session.record("cuj2-codex-evidence", {"marker": marker, **asdict(turn)})
 
 
 class TestCuj2ClaudeInference(_Cuj2Base):
@@ -296,7 +311,7 @@ class TestCuj2ClaudeInference(_Cuj2Base):
 
         Expected: Claude sends a Messages request for claude-haiku-4-5-20251001 with the
         ug_e2e.providers.anthropic target header and receives its paired HTTP 200 response; its
-        parent transcript contains the final marker.
+        parent transcript contains a completed turn with a nonempty answer to the greeting prompt.
         """
         session, workspace, recorder = cuj
         published = workspace.config()
@@ -316,20 +331,23 @@ class TestCuj2ClaudeInference(_Cuj2Base):
         _assert_generated_mcp_listings(session)
 
         recorder.prepare_launch()
-        marker = f"CUJ2-CLAUDE-{uuid.uuid4().hex}"
+        marker = f"CUJ2-CLAUDE-{fresh_id()}"
+        task = SimpleNamespace(prompt=_agent_prompt(marker), value=None)
+        evidence = SessionEvidence(session.home, CLAUDE)
         checkpoint = recorder.checkpoint()
         with Terminal(session, "cuj2-claude", [CLAUDE]) as tui:
             tui.boot()
-            tui.submit(_agent_prompt(marker))
-            tui.wait_until(lambda: _task_complete(session, CLAUDE, marker), "completed Claude task")
+            tui.submit(task.prompt)
+            tui.wait_until(lambda: evidence.completed(task), "completed Claude task")
             tui.exit_normally()
 
-        request = recorder.expect_request(
+        recorder.expect_request(
             method="POST",
             path=INFERENCE_PATHS[CLAUDE],
             after=checkpoint,
-            timeout=240,
+            timeout=INFERENCE_WAIT_SECONDS,
         )
+        request = _served_marker_request(recorder, checkpoint, CLAUDE, marker)
         _assert_inference_request(
             recorder,
             request,
@@ -337,4 +355,6 @@ class TestCuj2ClaudeInference(_Cuj2Base):
             model=MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][1],
             marker=marker,
         )
-        _assert_task_evidence(session, CLAUDE, marker)
+        turn = evidence.completed(task)
+        assert turn is not None, "No completed Claude answer matched the greeting prompt"
+        session.record("cuj2-claude-evidence", {"marker": marker, **asdict(turn)})

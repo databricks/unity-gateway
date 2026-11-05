@@ -3,13 +3,13 @@
 import hashlib
 import json
 import re
-import uuid
 
 import pytest
 
 from tests.integration.utils.evidence import (
     agent_sessions,
     assistant_answers,
+    fresh_id,
     is_child_session,
 )
 from tests.integration.utils.mcp import open_claude_mcp_inventory, open_codex_mcp_inventory
@@ -32,7 +32,7 @@ SERVICES = {
 
 class McpFixtureTask:
     def __init__(self):
-        self.run_id = uuid.uuid4().hex
+        self.run_id = fresh_id()
         self.expected = {
             tool: hashlib.sha256(
                 b"unity-gateway-cuj-fixture\0"
@@ -51,7 +51,9 @@ class McpFixtureTask:
             f"Use these read-only MCP tools: {calls}. "
             "Do not use shell commands, files, or subagents. Reply with only a JSON object "
             f"whose keys are exactly the bare tool names {keys}, with no server name or "
-            "mcp__ prefix, each mapped to the text that tool returned, without code fences."
+            "mcp__ prefix, each mapped to the text that tool returned, copied character for "
+            "character from the tool result without retyping or abbreviating it, "
+            "and without code fences."
         )
         # Claude may key a receipt by its native tool name and echo the raw tool result.
         self.aliases = {

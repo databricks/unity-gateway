@@ -13,6 +13,7 @@ from pathlib import Path
 from ucode.codex_config import ModelVisibility
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing.codex_routing import codex_model_id
+from ucode.string_utils import model_picker_label
 from ucode.ui import print_warning
 
 _TIMEOUT_SECONDS = 30
@@ -25,6 +26,8 @@ _HOSTED_CAPABILITIES = {
     "glm-5-3": (["text"], ["low", "high", "max"]),
     "glm-5-3-flash": (["text", "image"], ["low", "high", "max"]),
     "kimi-k3": (["text", "image"], ["low", "high", "max"]),
+    "deepseek-v4-1-flash": (["text", "image"], ["low", "high", "xhigh", "max"]),
+    "deepseek-v4-1-flash-1017": (["text", "image"], ["low", "high", "xhigh", "max"]),
 }
 _HOSTED_DEFAULTS = {
     "input_modalities": ["text"],
@@ -65,8 +68,9 @@ def build_codex_catalog(
     """Copy native presets or derive generic compatibility defaults, in admin order.
 
     Preserve all native metadata (including unknown future fields), except picker
-    identity/visibility/order. Only requested slugs are visible. Hidden aliases
-    for selected GPTs support the smart router's native-ID translation.
+    slug/visibility/order. Services without native metadata get a picker label from their
+    last name segment, or the full id when labels collide. Only requested slugs are visible.
+    Hidden aliases for selected GPTs support the smart router's native-ID translation.
     """
     by_slug = {model["slug"]: model for model in bundled_models}
     by_key = {_model_key(slug): model for slug, model in by_slug.items()}
@@ -105,14 +109,19 @@ def build_codex_catalog(
                     ],
                 )
             model["description"] = f"{name} served on the Databricks AI Gateway."
+            model["display_name"] = model_picker_label(name.rsplit(".", 1)[-1])
         model.update(
             slug=name,
-            display_name=name,
             visibility=ModelVisibility.LIST,
             supported_in_api=True,
             priority=len(models),
         )
         models.append(model)
+    labels = [model["display_name"] for model in models]
+    for model in models:
+        # Readable labels may collide across catalogs/schemas; the full id is unique.
+        if labels.count(model["display_name"]) > 1:
+            model["display_name"] = model["slug"]
     requested = set(names)
     aliases = {}
     for model in models:

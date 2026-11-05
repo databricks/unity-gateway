@@ -8,6 +8,7 @@ from pathlib import Path, PosixPath
 
 import pytest
 
+from ucode import custom_oauth
 from ucode.agents import claude
 from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import session_env, v2
@@ -55,7 +56,7 @@ def test_windows_subagent_routing_uses_native_binary_without_unix_imports(tmp_pa
     monkeypatch.setattr(v2, "APP_DIR", tmp_path)
     monkeypatch.setattr(v2, "install_skill", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
-    monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+    monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
     monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
     monkeypatch.setattr(
         v2,
@@ -119,7 +120,9 @@ def test_windows_subagent_routing_uses_native_binary_without_unix_imports(tmp_pa
     assert settings["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
     assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in settings["env"]
     assert "UserPromptSubmit" not in settings["hooks"]
-    assert "route-subagent" in str(settings["hooks"]["PreToolUse"])
+    assert "PreToolUse" not in settings["hooks"]
+    command = settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]["routeCommand"]
+    assert command[1:3] == ["claude-router-hook", "route-subagent-mod"]
     assert settings["modelOverrides"] == {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
     assert not captured["settings_path"].exists()
     assert not captured["plugin_dir"].exists()

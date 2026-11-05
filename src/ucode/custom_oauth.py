@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import os
-import platform
-import shlex
-import subprocess
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -28,6 +25,7 @@ from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
     release_file_lock,
 )
+from ucode.os_compatibility.subprocess_cross_os import shell_command
 from ucode.ui import err_console, normalize_workspace_url, print_warning_err
 
 DEFAULT_REDIRECT_URL = f"http://{LOCALHOST}:8020"
@@ -114,10 +112,7 @@ def build_custom_auth_token_argv(workspace: str, config: CustomOAuthConfig) -> l
 
 
 def build_custom_auth_shell_command(workspace: str, config: CustomOAuthConfig) -> str:
-    argv = build_custom_auth_token_argv(workspace, config)
-    if platform.system() == "Windows":
-        return subprocess.list2cmdline(argv)
-    return shlex.join(argv)
+    return shell_command(build_custom_auth_token_argv(workspace, config))
 
 
 @contextmanager
@@ -144,14 +139,21 @@ def _custom_cli_profile(workspace: str, client_id: str) -> str:
 def ensure_custom_oauth_cli_token(
     workspace: str,
     config: CustomOAuthConfig,
+    workspace_id: str | None = None,
 ) -> str:
-    """Create/reuse the custom-client CLI profile and return its access token."""
+    """Create/reuse the custom-client CLI profile and return its access token.
+
+    ``workspace_id`` selects the workspace on a host that serves several, so the CLI doesn't
+    prompt for one after sign-in.
+    """
     ensure_databricks_cli_version(CUSTOM_OAUTH_CLI_MIN_VERSION)
     workspace = normalize_workspace_url(workspace)
     profile = config.get("profile") or _custom_cli_profile(workspace, config["client_id"])
     config["profile"] = profile
     if external_bearer_configured():
-        save_databricks_cli_oauth_profile(workspace, profile, config["client_id"])
+        save_databricks_cli_oauth_profile(
+            workspace, profile, config["client_id"], workspace_id=workspace_id
+        )
     if has_valid_databricks_auth(workspace, profile):
         return get_databricks_token(workspace, profile)
     login_args = [
@@ -159,7 +161,7 @@ def ensure_custom_oauth_cli_token(
         "auth",
         "login",
         "--host",
-        workspace,
+        f"{workspace}?w={workspace_id}" if workspace_id else workspace,
         "--profile",
         profile,
         "--client-id",
@@ -243,3 +245,19 @@ def get_custom_client_token(
             f"redirect URL ({config['redirect_url']}); ensure its local port is available and "
             "the SDK token cache is writable, then retry."
         ) from exc
+
+
+def launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:
+    """The token an agent launch authenticates with: the custom-OAuth client token when
+    configured, else the CLI profile's."""
+    custom_oauth = state.get("custom_oauth")
+    if isinstance(custom_oauth, dict):
+        return get_custom_client_token(
+            workspace,
+            custom_oauth["client_id"],
+            custom_oauth["redirect_url"],
+            scopes=custom_oauth["scopes"],
+            profile=custom_oauth.get("profile"),
+            force_refresh=force_refresh,
+        )
+    return get_databricks_token(workspace, state.get("profile"), force_refresh=force_refresh)

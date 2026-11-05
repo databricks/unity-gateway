@@ -1,0 +1,7 @@
+{
+  "include": [
+    ".github/**",
+    "tests/**/*.py",
+    "**/test_*.py"
+  ]
+}

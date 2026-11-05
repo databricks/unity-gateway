@@ -6,11 +6,10 @@ import json
 import os
 import re
 import tomllib
-import uuid
 
 import pytest
 
-from tests.integration.utils.evidence import FileTask
+from tests.integration.utils.evidence import FileTask, fresh_id
 from tests.integration.utils.sql import query_count, resolve_trace_table, resolve_warehouse_id
 from tests.integration.utils.terminal import AgentTerminal
 
@@ -18,6 +17,8 @@ from .base import BaseCujTest
 from .helpers.constants import (
     AGENT_HEADER,
     CLAUDE,
+    CLAUDE_GPT_LUNA_MODEL,
+    CLAUDE_GPT_SOL_MODEL,
     CLAUDE_HAIKU_MODEL,
     CLAUDE_OPUS_MODEL,
     CLAUDE_SONNET_MODEL,
@@ -26,14 +27,27 @@ from .helpers.constants import (
     CODEX_SOL_MODEL,
     INFERENCE_PATHS,
     RUN_HEADER,
+    WORKSPACE_POLICY_PATH,
 )
+from .helpers.desktop import assert_claude_desktop_profile, enable_claude_desktop
 from .helpers.evidence import SessionEvidence
 from .helpers.poll import poll
 from .helpers.tui_request_recorder import TuiRequestRecorder
 
 CUJ_NAME = "CUJ 1 · Explicit models, tracing, headers"
 
-CLAUDE_MODELS = [CLAUDE_OPUS_MODEL, CLAUDE_SONNET_MODEL, CLAUDE_HAIKU_MODEL]
+# Claude-family models: Desktop keeps only `claude-*` ids and the TUI checks look for these.
+CLAUDE_FAMILY_MODELS = [CLAUDE_OPUS_MODEL, CLAUDE_SONNET_MODEL, CLAUDE_HAIKU_MODEL]
+# The published Claude Code list also offers two GPT models after the Claude family.
+CLAUDE_MODELS = [*CLAUDE_FAMILY_MODELS, CLAUDE_GPT_LUNA_MODEL, CLAUDE_GPT_SOL_MODEL]
+# ug adds Claude Code's `[1m]` hint to GPT ids in the picker, not in `availableModels`.
+CLAUDE_PICKER_OPTIONS = [
+    {"model": CLAUDE_OPUS_MODEL, "label": "Claude Opus 4.8"},
+    {"model": CLAUDE_SONNET_MODEL, "label": "Claude Sonnet 4.6"},
+    {"model": CLAUDE_HAIKU_MODEL, "label": "Claude Haiku 4.5"},
+    {"model": CLAUDE_GPT_LUNA_MODEL + "[1m]", "label": "GPT 6 Luna"},
+    {"model": CLAUDE_GPT_SOL_MODEL + "[1m]", "label": "GPT 6.1 Sol"},
+]
 CLAUDE_DEFAULTS = {
     "default_model": CLAUDE_SONNET_MODEL,
     "default_opus_model": CLAUDE_OPUS_MODEL,
@@ -48,12 +62,13 @@ TRACE_POLL_SECONDS = 10
 
 
 def _claude_models_visible(text: str) -> bool:
-    return all(model in text for model in CLAUDE_MODELS)
+    return all(model in text for model in CLAUDE_FAMILY_MODELS)
 
 
 def _claude_picker_visible(text: str) -> bool:
     selected_model_row = any(
-        line.lstrip().startswith(("❯", "›", ">")) and any(model in line for model in CLAUDE_MODELS)
+        line.lstrip().startswith(("❯", "›", ">"))
+        and any(model in line for model in CLAUDE_FAMILY_MODELS)
         for line in text.splitlines()
     )
     return selected_model_row and _claude_models_visible(text)
@@ -103,10 +118,10 @@ def _assert_inference_requests(
 
 
 def _managed_config(session) -> dict:
-    cache_path = session.home / ".ucode" / "managed-config.json"
-    cache = json.loads(cache_path.read_text())
-    raw = cache.get("config")
-    assert isinstance(raw, dict), cache
+    """The policy `ug configure` installed for this machine."""
+    installed = json.loads(WORKSPACE_POLICY_PATH.read_text())
+    raw = installed.get("config")
+    assert isinstance(raw, dict), installed
     return raw
 
 
@@ -186,14 +201,7 @@ def _assert_generated_configs(session, claude_headers: dict[str, str], workspace
     assert claude_settings["enforceAvailableModels"] is True, claude_settings
     claude_picker = claude_settings["modelPicker"]
     assert claude_picker["replaceBuiltInOptions"] is True, claude_settings
-    assert claude_picker["options"] == [
-        {"model": model, "label": label}
-        for model, label in zip(
-            CLAUDE_MODELS,
-            ("Claude Opus 4.8", "Claude Sonnet 4.6", "Claude Haiku 4.5"),
-            strict=True,
-        )
-    ], claude_settings
+    assert claude_picker["options"] == CLAUDE_PICKER_OPTIONS, claude_settings
     claude_env = claude_settings["env"]
     assert claude_env["ANTHROPIC_BASE_URL"] == f"{workspace}/ai-gateway/anthropic", claude_settings
     assert claude_env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == CLAUDE_MODELS[0] + "[1m]", claude_settings
@@ -386,9 +394,12 @@ class TestCujManagedConfiguration(BaseCujTest):
     def test_cuj_managed_configuration(self, cuj):
         """Scenario: configure a fresh session against the published two-agent policy.
 
-        Expected: configure selects both agents without a picker and writes their managed settings.
+        Expected: configure selects both agents without a picker and writes their managed settings
+        and the complete Desktop profile/metadata for its Databricks-hosted Claude models,
+        including the expected OTLP fields.
         """
         session, workspace, _ = cuj
+        config_library = enable_claude_desktop(session, workspace.url)
         configured = session.run(
             "configure",
             "--workspace",
@@ -402,6 +413,21 @@ class TestCujManagedConfiguration(BaseCujTest):
         entries = _managed_entries(raw)
         claude_headers = _assert_published_config(raw, entries)
         _assert_generated_configs(session, claude_headers, workspace.url)
+        assert_claude_desktop_profile(
+            session,
+            config_library,
+            workspace.url,
+            models=[
+                {"name": option["model"], "labelOverride": option["label"]}
+                for option in CLAUDE_PICKER_OPTIONS
+                if option["model"] in CLAUDE_FAMILY_MODELS
+            ],
+            custom_headers={
+                "x-databricks-use-coding-agent-mode": "true",
+                **claude_headers,
+            },
+            otel_enabled=True,
+        )
         codex_models = session.codex_model_ids(
             ["app-server", "--listen", "stdio://"], name="managed-sentinel-codex-models"
         )
@@ -451,7 +477,7 @@ class TestCujManagedClaude(BaseCujTest):
         run_id = claude_headers[RUN_HEADER]
 
         root_task = FileTask(session)
-        root_marker = f"ug-managed-claude-{uuid.uuid4().hex}-root"
+        root_marker = f"ug-managed-claude-{fresh_id()}-root"
         root_task.prompt += f" Inference marker: {root_marker}"
         session.env["OTEL_RESOURCE_ATTRIBUTES"] = f"ug_integration_marker={root_marker}"
         evidence = SessionEvidence(session.home, CLAUDE)
@@ -477,7 +503,7 @@ class TestCujManagedClaude(BaseCujTest):
         )
 
         claude_opus_task = FileTask(session)
-        claude_opus_marker = f"ug-managed-claude-{uuid.uuid4().hex}-opus"
+        claude_opus_marker = f"ug-managed-claude-{fresh_id()}-opus"
         claude_opus_task.prompt += f" Inference marker: {claude_opus_marker}"
         session.env["OTEL_RESOURCE_ATTRIBUTES"] = f"ug_integration_marker={claude_opus_marker}"
         evidence = SessionEvidence(session.home, CLAUDE)
@@ -506,7 +532,7 @@ class TestCujManagedClaude(BaseCujTest):
         )
 
         claude_sonnet_task = FileTask(session)
-        claude_sonnet_marker = f"ug-managed-claude-{uuid.uuid4().hex}-sonnet"
+        claude_sonnet_marker = f"ug-managed-claude-{fresh_id()}-sonnet"
         claude_sonnet_task.prompt += f" Inference marker: {claude_sonnet_marker}"
         session.env["OTEL_RESOURCE_ATTRIBUTES"] = f"ug_integration_marker={claude_sonnet_marker}"
         evidence = SessionEvidence(session.home, CLAUDE)
@@ -535,7 +561,7 @@ class TestCujManagedClaude(BaseCujTest):
         )
 
         claude_haiku_task = FileTask(session)
-        claude_haiku_marker = f"ug-managed-claude-{uuid.uuid4().hex}-haiku"
+        claude_haiku_marker = f"ug-managed-claude-{fresh_id()}-haiku"
         claude_haiku_task.prompt += f" Inference marker: {claude_haiku_marker}"
         session.env["OTEL_RESOURCE_ATTRIBUTES"] = f"ug_integration_marker={claude_haiku_marker}"
         evidence = SessionEvidence(session.home, CLAUDE)
@@ -603,7 +629,7 @@ class TestCujManagedCodex(BaseCujTest):
         session.env.pop("OTEL_RESOURCE_ATTRIBUTES", None)
 
         codex_default_task = FileTask(session)
-        codex_default_marker = f"ug-managed-codex-{uuid.uuid4().hex}-default"
+        codex_default_marker = f"ug-managed-codex-{fresh_id()}-default"
         codex_default_task.prompt += f" Inference marker: {codex_default_marker}"
         evidence = SessionEvidence(session.home, CODEX)
         recorder.prepare_launch()
@@ -637,7 +663,7 @@ class TestCujManagedCodex(BaseCujTest):
         )
 
         codex_luna_task = FileTask(session)
-        codex_luna_marker = f"ug-managed-codex-{uuid.uuid4().hex}-luna"
+        codex_luna_marker = f"ug-managed-codex-{fresh_id()}-luna"
         codex_luna_task.prompt += f" Inference marker: {codex_luna_marker}"
         evidence = SessionEvidence(session.home, CODEX)
         recorder.prepare_launch()
@@ -703,7 +729,7 @@ class TestCujManagedTracing(BaseCujTest):
         trace_table = resolve_trace_table(workspace.url, bearer)
         warehouse_id = os.environ.get("UG_INTEGRATION_WAREHOUSE_ID", "").strip()
         warehouse_id = warehouse_id or resolve_warehouse_id(workspace.url, bearer)
-        run_id = uuid.uuid4().hex
+        run_id = fresh_id()
         trace_pairs: list[tuple[str, str, str]] = []
 
         claude_task = FileTask(session)
