@@ -61,11 +61,10 @@ export const register = (on, options) => {
 };
 """)
     (plugin / "hooks/hooks.json").write_text('{"modules":["./observe.ts"]}')
-    source = {
-        "UCODE_AUTO_PICKER_CONFIG": config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY,
-        "EXPOSE_AUTO_IN_MODEL_PICKER": "1",
-        **dict.fromkeys(config.SMART_ROUTING_ENV_KEYS, "0"),
-    }
+    source = config.resolve_environment(
+        {"SMART_ROUTER_CONFIG_VERSION": config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY},
+        agent="claude",
+    )
     controls = session_env.start_session(source)
     source["PYTHONPATH"] = str(Path(__file__).parents[2] / "src")
     options = {

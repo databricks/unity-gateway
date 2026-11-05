@@ -1,5 +1,29 @@
 # Test suites and user journeys
 
+## Auto model picker
+
+The Auto config version is covered by `test_smart_routing_config.py` and
+`test_claude_auto_picker.py`: legacy compatibility, capability/activity separation,
+environment restoration, inactive provisioning, command cleanup, trimmed feedback
+boundaries, Claude-only toggle guards, and Codex session isolation. Native options
+cover picker exposure with activity off.
+`test_agent_claude.py` verifies gated managed-row injection; `test_cli.py` and
+`test_claude_smart_routing_v2.py` verify managed startup, explicit flag/model precedence,
+admin-default plumbing, and exclusion of Auto from router candidates.
+
+`native_claude/mod_tests/auto-picker.test.ts` verifies native commands, saved and
+session-only selections, redraws, failed transitions, already-concrete selections with
+feedback enabled, `DISABLED_AUTO` attribution, and stale spawn routes while existing
+children resume. `native_claude/test_mod.py` validates the plugin and launch options
+with the CI-pinned Claude 2.1.290 binary. `native_claude/test_auto_picker.py` drives the
+real picker and feedback opt-out through direct commands, saved rows, and session-only
+rows, including the existing main model and cancellation while Auto is active; its fixture
+requires a machine policy permitting its models. Feedback transport is isolated; native
+selection and session controls stay real. These component checks do not establish
+live gateway inference, real feedback delivery, or durable resume.
+
+## Other test coverage
+
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
@@ -1284,16 +1308,3 @@ installed plugin to contain no duplicate servers. Reconfigure comparisons includ
 added through `ug mcp add`, while retaining the original model/authentication-field assertions.
 These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
-
-## Auto model picker
-
-Resolved-capability component tests in `test_claude_auto_picker.py` cover inactive
-provisioning, command cleanup, trimmed feedback boundaries, Claude-only toggle
-guards, and Codex session isolation. Native options cover exposure with activity off. Native
-`mod_tests/auto-picker.test.ts` covers model transitions, feedback, failed writes,
-`DISABLED_AUTO`, pending routes and continuing children. `native_claude/test_auto_picker.py`
-drives the real picker with resolved options and a fixture admin default, including
-saved/session-only choices and cancellation. Feedback transport is isolated.
-The native suite validates the plugin with the CI-pinned Claude 2.1.290 binary.
-The Auto config version is still unregistered; managed injection/startup, live
-gateway routing, real feedback delivery and durable resume are not covered here.

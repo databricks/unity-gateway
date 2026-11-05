@@ -140,7 +140,11 @@ def test_launch_options_resolve_versions_without_mutating_input(version):
         "recipe": "custom_recipe",
         "routeCommand": [],
         "autoMainModel": "",
-        "orchestratorInstructions": "",
+        "orchestratorInstructions": (
+            orchestrator.CLAUDE_AGENT_DESCRIPTION
+            if expected.get("EXPOSE_AUTO_IN_MODEL_PICKER") == "1"
+            else ""
+        ),
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
     }

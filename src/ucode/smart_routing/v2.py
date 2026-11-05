@@ -49,6 +49,8 @@ from ucode.databricks import (
     maybe_add_gpt_1m_suffix,
 )
 from ucode.launcher import exec_or_spawn
+from ucode.managed_config import load_managed_state
+from ucode.managed_resolve import managed_default_model
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
@@ -817,6 +819,22 @@ def launch_claude(
                 **_claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env}),
                 "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),
             }
+            if auto_picker_enabled(agent=AGENT_CLAUDE):
+                admin_model = managed_default_model(load_managed_state(workspace) or {}, "claude")
+                mod_options["autoMainModel"] = (
+                    maybe_add_gpt_1m_suffix(admin_model) if admin_model else ""
+                )
+                if (
+                    env[ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+                    and not launch_model
+                    and not has_explicit_model_arg(remaining)
+                ):
+                    if not admin_model or admin_model.lower() == "auto":
+                        raise RuntimeError(
+                            "Auto needs a concrete default_model in the managed Claude config. "
+                            "Ask your admin to set it or launch with --disable-smart-routing."
+                        )
+                    launch_model = mod_options["autoMainModel"]
             settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
                 "options"
             ] = mod_options
