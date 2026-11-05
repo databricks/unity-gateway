@@ -1,5 +1,8 @@
 # Test suites and user journeys
 
+`test_skills.py` exercises bundled skill discovery and installation from both
+wheel and checkout directory layouts using real temporary files. This is component coverage.
+
 The managed Codex MCP journey requires the managed workspace's connection-backed
 GitHub service to use native HTTP/OAuth, with its exact URL, resource and client ID.
 Real `codex mcp get` readback must preserve the HTTP transport and URL; a fallback
