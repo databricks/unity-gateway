@@ -90,6 +90,7 @@ def test_render_profile_uses_exact_owned_fields_and_full_model_ids(tmp_path: Pat
         "inferenceCredentialHelperTimeoutSec": 300,
         "inferenceCredentialHelperSilentRefreshEnabled": True,
         "modelDiscoveryEnabled": False,
+        "toolSearchEnabled": True,
         "inferenceModels": [
             {"name": "databricks/anthropic/claude-sonnet-4"},
             {"name": "openai/gpt-oss-120b"},

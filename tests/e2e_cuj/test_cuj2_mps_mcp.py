@@ -238,6 +238,7 @@ class TestCuj2Configuration(_Cuj2Base):
             config_library,
             workspace.url,
             models=[{"name": claude_model, "labelOverride": claude_model}],
+            mcp_services=(SANDBOX_MCP_SERVICE_NAME,),
             custom_headers={
                 "x-databricks-use-coding-agent-mode": "true",
                 PROVIDER_HEADER: claude_mps,

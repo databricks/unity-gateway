@@ -348,7 +348,7 @@ GUI/helper/browser behavior, and inference remain untested by these component ch
 they do not establish native Windows or Linux support.
 The installed-CLI integration suite covers two complete Desktop journeys on Linux and Windows:
 system.ai models and subscription-relay Anthropic MPS. Both verify profile configuration,
-credential-helper execution, live Messages inference, installed Cowork MCP calls, preservation,
+credential-helper execution, live Messages inference, native profile MCP calls, preservation,
 and revert. Inference requires HTTP 200 and nonempty assistant text; MCP calls use web_search
 to find Databricks' official website without SQL compute. See
 [integration coverage](integration/README.md) for prerequisites and evidence.
@@ -418,7 +418,7 @@ preservation check requires the exact UG Code plugin and marketplace entries
 alongside every seeded user setting; unexpected additions or changes still fail.
 
 `test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
-generated marketplace/plugin/MCP manifests, the generated connector skill naming Claude-only
+generated marketplace/plugin manifests and native profile MCP registrations, the generated connector skill naming Claude-only
 MCP servers with its two 5-second retries, bounded descriptions and full connector lists for
 both Code and Cowork, and one sign-in recovery attempt for access/IP
 denials with a stop on persistent denial, the generated `SessionStart` hook command,
@@ -1188,3 +1188,11 @@ idle shutdown, and live login diagnostics with native line endings. Multi-worksp
 reach authentication worker threads without changing another session's headers.
 Credential resolution is replaced only in the PAT provider component
 check. These tests do not establish live gateway or native Windows coverage.
+
+Desktop connector component checks cover `toolSearchEnabled: true`, native stdio registration,
+removal of plugin MCP declarations on repeated setup, preserved skills/hooks, registration before
+the first Cowork session, last-connector removal, and profile rollback on plugin failure.
+Missing, malformed, and other-workspace profiles leave plugin setup untouched.
+Installed-CLI Desktop journeys read MCP commands from `managedMcpServers` and require the
+installed plugin to contain no duplicate servers. These checks do not prove Desktop GUI
+tool search, reduced context usage, or native connector consent.

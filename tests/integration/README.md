@@ -110,7 +110,7 @@ journey; no dedicated Desktop MPS integration test is needed.
 
 Each of these two journeys supplies pre-existing Desktop account directories as inputs and
 requires real Claude CLI installation of the Cowork plugin. It registers system.ai.web_search through
-`ug mcp add --names system.ai.web_search`, then runs the command from the installed plugin with the
+`ug mcp add --names system.ai.web_search`, then runs the command from the Desktop profile with the
 MCP SDK. The check initializes the protocol, discovers web_search, and searches for Databricks'
 official website. A successful result must contain a URL on databricks.com or www.databricks.com;
 the response wording and search rankings are not asserted. No SQL compute is needed.
@@ -1714,3 +1714,11 @@ coverage in `../test_mcp_proxy_shared.py`. The latter runs real relay/backend pr
 against a local HTTP MCP peer, checking concurrent session isolation, credentials,
 headers, EOF/reset disconnect diagnostics, crash recovery, local authentication, idle
 shutdown, and sign-in output with native line endings. These component checks do not establish live gateway or native Windows coverage.
+
+Desktop connector component checks cover `toolSearchEnabled: true`, native stdio registration,
+removal of plugin MCP declarations on repeated setup, preserved skills/hooks, registration before
+the first Cowork session, last-connector removal, and profile rollback on plugin failure.
+Missing, malformed, and other-workspace profiles leave plugin setup untouched.
+Installed-CLI Desktop journeys read MCP commands from `managedMcpServers` and require the
+installed plugin to contain no duplicate servers. These checks do not prove Desktop GUI
+tool search, reduced context usage, or native connector consent.

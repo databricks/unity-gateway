@@ -166,8 +166,13 @@ When `claude_otel_tracing` is enabled, Desktop's reserved profile also owns
 for the existing `otel-headers` command. Native sessions rerun it as tokens rotate;
 no bearer is persisted. Disable/revert removes the wrapper, with atomic writes and
 rollback shared with the profile. Disabled tracing omits these fields on replacement.
-Claude setup also installs a generated Cowork plugin containing only the current
-workspace's managed and user-downloaded home-level skills and Claude-targeted MCP servers.
+The reserved Desktop profile enables `toolSearchEnabled` and declares Claude-targeted
+MCP servers in `managedMcpServers`, using the existing stdio proxy commands. Connector sync
+requires a profile for the same workspace, replaces the connector list, and restores the
+previous profile if plugin setup fails. It works before Cowork has started.
+Claude setup also installs a generated Cowork plugin containing the current workspace's
+managed and user-downloaded home-level skills, connector guidance, and hooks. It contains
+no MCP declarations; reconfigure removes legacy plugin MCP files.
 Downloaded skill additions and removals resync the plugin; project-local,
 user-authored, and other-workspace skills are excluded. The source lives at
 `~/.ucode/claude-cowork-marketplace`, and `~/.ucode/claude-cowork.json` records the selected
@@ -177,7 +182,7 @@ Cowork uses short service-first aliases for generated UC MCP names, with collisi
 custom registration names and full proxy URLs are preserved. Its name and display name
 are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old
 `unity-gateway@unity-gateway-cowork` registration only after installing/updating `ug`;
-revert removes both IDs. New sessions use the `mcp__plugin_ug_...` tool namespace.
+revert removes both IDs. Use Desktop's exposed native connector names, not old plugin-prefixed names.
 Claude Code also receives `ug@unity-gateway-code` in its regular user plugin scope,
 shared with the Desktop Code tab. The generated source lives at
 `~/.ucode/claude-code-marketplace`, with its config root recorded in

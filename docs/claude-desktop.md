@@ -99,21 +99,24 @@ to managed and unmanaged workspaces. Start one Cowork session before configuring
 creates its active account/organization directory. If several Cowork profiles exist and UG
 cannot identify one active profile, setup warns without changing any of them.
 
-The plugin contains the current workspace's Claude-targeted MCP servers and downloaded
-user-level skills, plus any managed MCP servers and skills. Add skills with `ug skills add`
+The UG Desktop profile declares the current workspace's Claude-targeted MCP servers
+in `managedMcpServers`. The plugin contains downloaded user-level and managed skills,
+connector guidance, and session hooks. Add skills with `ug skills add`
 (picker, `--names`, or `--location`); omit `--path` to make them available in Cowork.
 Project-level, user-authored, unmanaged Databricks AI Tools, and other-workspace skills
-are not copied. `ug configure --mcp`, `ug mcp add`, and `ug mcp remove` resync the plugin,
+are not copied. `ug configure --mcp`, `ug mcp add`, and `ug mcp remove` resync the profile and plugin,
 as do downloaded skill additions and removals. Start a new Cowork session
 to use the updated skills. MCP entries run the absolute
 `ug mcp-proxy` executable with the selected workspace and CLI profile; no bearer token is
-stored in the plugin. Saved PAT mode is supported. Custom OAuth is not yet supported for
-Cowork MCP servers.
+stored in the profile. Proxy authentication is unchanged. A UG Desktop profile for the
+same workspace must exist before connector registration; native profile setup still requires
+a Databricks CLI OAuth profile. Custom OAuth is not yet supported for Cowork MCP servers.
 
-The plugin's name and display name are `ug`, shortening the connector prefix to
-`ug plugin:`. Reconfigure installs the new plugin before uninstalling the old
-`unity-gateway@unity-gateway-cowork` registration, if present. This also changes
-the tool namespace from `mcp__plugin_unity-gateway_...` to `mcp__plugin_ug_...`.
+Reconfigure removes MCP declarations from the generated plugin and registers them in
+the profile instead. Skills and hooks remain in `ug@unity-gateway-cowork`; the old
+`unity-gateway@unity-gateway-cowork` registration is removed if present. Restart Desktop
+and start a new task after migrating. Use the tool names exposed by Desktop; old
+plugin-prefixed tool names are no longer authoritative.
 
 Cowork shortens generated UC connector names, for example `system-ai-slack` becomes
 `slack`. If service names collide, aliases include their catalog/schema, such as
@@ -126,12 +129,14 @@ UG owns these local files:
 - Generated marketplace: `~/.ucode/claude-cowork-marketplace`
 - Selected Cowork root record: `~/.ucode/claude-cowork.json`
 
-Start a new Cowork session after configure. Plugin MCP servers connect asynchronously, so
-a tool can be absent on the first model turn. Cowork may also disconnect idle sessions
-(observed after five minutes) and initialize connectors again on resume. The resulting tool
-name follows Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern.
+The profile enables [`toolSearchEnabled`](https://claude.com/docs/third-party/claude-desktop/configuration)
+so Claude loads MCP tool definitions into context on demand. This does not promise lazy
+server startup: the existing hooks still probe configured connectors. The gateway/provider
+must support Anthropic's tool-search protocol; unsupported providers can reject requests.
+Connector registration works before the first Cowork session; plugin installation still
+requires an initialized Cowork account.
 
-When the plugin has MCP servers, UG adds two things so Claude uses them on the first turn:
+When connectors are configured, the plugin includes:
 
 - Hooks running `ug cowork-hook`. They cannot make Cowork connect its own MCP servers
   sooner, and they never open a browser or block the prompt.
@@ -378,8 +383,9 @@ Repeated configure retains it while UG remains selected.
 
 Revert also uninstalls `ug@unity-gateway-cowork` and any legacy
 `unity-gateway@unity-gateway-cowork` registration, removes their marketplace
-registration, and deletes UG's generated marketplace. This removes the MCP connectors and
-skills delivered by that plugin. It also cleans up an exact UG registration left in another
+registration, and deletes UG's generated marketplace. Deleting the reserved Desktop profile
+removes its MCP registrations; plugin cleanup removes its skills and hooks.
+It also cleans up an exact UG registration left in another
 Cowork profile by an older failed revert. Unrelated Desktop plugins, connectors, and skills are
 left untouched.
 
@@ -426,9 +432,8 @@ orchestration; they do not prove GUI inference on every app version.
   not remove this client restriction. UG filters Desktop's catalog to Claude-named
   models without renaming them; that name filter does not reproduce every native
   validation rule.
-- Custom OAuth/PAT profiles, Desktop Smart Routing, and third-party connectors outside
-  UG's generated Cowork plugin are not implemented here. Cowork's MCP proxy supports saved
-  PAT mode but not custom OAuth. Native OTEL settings are generated, but native export and
+- Custom OAuth/PAT profiles, Desktop Smart Routing, and native HTTP/OAuth connectors that
+  bypass UG's MCP proxy are not implemented here. Native OTEL settings are generated, but native export and
   ingestion remain unverified; session auth limits are described above.
 - Anthropic subscription relay has native macOS proof-of-concept validation. Windows and
   Linux credential-file handling has component coverage, but native Desktop login, refresh,
@@ -457,9 +462,12 @@ Slow metadata discovery does not delay unrelated MCP responses.
 Two automated Desktop journeys run in the existing Linux/Windows Claude integration jobs:
 system.ai models and subscription-relay MPS. Each asserts the generated profile, executes its
 credential helper, completes real Messages inference, installs Cowork through the Claude CLI,
-and discovers/calls web_search through the installed plugin to find Databricks' official website.
+and discovers/calls web_search using the profile's stdio registration to find Databricks' official website.
+They also verify that the installed plugin contains no duplicate MCP declarations.
 Both check repeated configuration, preservation of unrelated settings, and revert cleanup.
 All calls use the journey's existing model workspace. CUJ1 and CUJ2 compare complete Desktop
 profile/metadata JSON for system.ai models and non-relay Anthropic MPS. CUJ3's existing configure
 journey checks that its incompatible scoped aliases preserve all Desktop profile/metadata bytes.
-These checks do not launch Desktop or validate native OAuth consent, skill use, or app reconnects.
+These checks do not launch Desktop or validate native tool search, context savings, OAuth consent,
+skill use, or app reconnects. Native validation must confirm direct connectors appear once,
+a real connector call succeeds through tool search, and skills/hooks still execute.
