@@ -313,6 +313,8 @@ It also checks that a new process reuses a saved version without probing, and pr
 again when the binary is replaced or the saved version is over a day old. An
 insufficient saved version is rechecked before any upgrade; unparseable versions and
 dry runs save nothing, a PATH refresh keeps saved versions, and `ug doctor` probes.
+An unwritable cache directory is best-effort: failed temporary-file creation never
+blocks ordinary CLI discovery or launch preflight.
 
 These component checks do not establish end-to-end launch latency.
 

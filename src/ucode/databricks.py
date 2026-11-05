@@ -894,7 +894,7 @@ def _save_cli_versions(saved: dict, probed: dict[str, dict]) -> None:
     merged.update(probed)
     try:
         atomic_write_json(SAVED_CLI_VERSIONS_PATH, merged)
-    except RuntimeError:
+    except (RuntimeError, OSError):
         pass  # Best effort: the next process probes again.
 
 
