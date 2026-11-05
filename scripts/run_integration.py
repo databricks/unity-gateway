@@ -68,7 +68,11 @@ ANTIGRAVITY_SHA512 = {
 ALL_AGENTS = (*AGENT_PACKAGES, *NATIVE_AGENT_BINARIES)
 WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
 # Claude exports no spans on Windows, where ug writes no machine-wide Claude settings.
-WINDOWS_UNSUPPORTED_MODULES = {"test_ug_claude_tracing.py"}
+WINDOWS_UNSUPPORTED_MODULES = {
+    "test_ug_claude_tracing.py",
+    # Uses sudo and the Linux/macOS OS-managed settings paths.
+    "test_ug_configure_scope.py",
+}
 WINDOWS_UNSUPPORTED_NODES = {
     # Seeds machine-wide managed settings, which ug has no Windows path for.
     "test_ug_configure_claude_lifecycle.py::test_unmanaged_claude_preserves_preexisting_family_defaults",
