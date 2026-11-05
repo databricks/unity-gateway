@@ -11,10 +11,11 @@ models are excluded: Databricks' Gemini translation rejects the `stream_options`
 sends, and open-source models are not validated with Copilot yet.
 
 `ug copilot --provider` registers a Model Provider Service's models instead: its Claude models on
-the Anthropic endpoint, its other chat models on the gateway's native OpenAI route, with every
-registry provider sending the service's routing header. `ug copilot --model-location` registers
-the model services of one Unity Catalog schema: those named like Claude or GPT models on their
-usual wire, the rest on the Anthropic endpoint like Claude Code, which the gateway translates.
+the Anthropic endpoint, its other chat models (only GPT, on Bedrock) on the gateway's native
+OpenAI route, with every registry provider sending the service's routing header.
+`ug copilot --model-location` registers the model services of one Unity Catalog schema: those
+named like Claude or GPT models on their usual wire, the rest on the Anthropic endpoint like
+Claude Code, which the gateway translates.
 
 Copilot holds its provider credential for the whole session, so every provider points at a
 per-session loopback proxy (`gateway_proxy.start_gateway_auth_proxy`): Copilot authenticates to
@@ -63,6 +64,7 @@ from ucode.custom_oauth import launch_token
 from ucode.databricks import (
     ANTHROPIC_API_PROVIDER_TYPES,
     ANTHROPIC_FAMILIES,
+    BEDROCK_PROVIDER_TYPES,
     MICROSOFT_FOUNDRY_PROVIDER_TYPE,
     AnthropicModelCatalog,
     ModelServiceEntry,
@@ -187,9 +189,9 @@ def classify_model(
     Names decide the wire, so ``api_types`` only excludes: the gateway serves some models on APIs
     they don't declare. Without ``provider_type``, ``model`` is a Databricks model service and
     ``api_types`` its advertised routes. With it, ``model`` is a Model Provider Service target and
-    ``api_types`` its declared APIs: Anthropic-API provider types serve only Claude, and other types
-    put every model that isn't GPT 5+ or o-series on Chat Completions, except Foundry's Claude
-    models, which use Anthropic."""
+    ``api_types`` its declared APIs: Anthropic services serve only Claude and Bedrock services
+    Claude and GPT; other types put every model that isn't GPT 5+ or o-series on Chat
+    Completions, except Foundry's Claude models, which use Anthropic."""
     declared = tuple(api_types)
     tail = bare_model_name(model)
     if provider_type is None:
@@ -200,6 +202,12 @@ def classify_model(
     elif declared and _CHAT_API_TYPES.isdisjoint(declared):
         return None, f"it isn't a chat model (it serves {', '.join(declared)})"
     wire = _wire_from_name(tail)
+    if provider_type in BEDROCK_PROVIDER_TYPES and wire != WIRE_ANTHROPIC:
+        if wire is None and not tail.startswith("gpt-"):
+            return None, "only the Claude and GPT models of this service can be used"
+        # Bedrock rejects GPT 5+ function tools on Chat Completions, and gpt-oss tool turns on
+        # Responses.
+        return (WIRE_RESPONSES if wire == WIRE_RESPONSES else WIRE_COMPLETIONS), None
     if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
         if wire != WIRE_ANTHROPIC:
             return None, "only the Claude models of this service can be used"

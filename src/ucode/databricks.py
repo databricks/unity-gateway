@@ -2918,7 +2918,8 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
 # OpenAI surface); gemini speaks Google's, served by a Gemini Enterprise
 # provider. copilot speaks Anthropic's for the Claude targets of anthropic, Bedrock and
 # microsoft_foundry services, and OpenAI's for the other targets of openai, azure_openai and
-# microsoft_foundry services, on the gateway's native route for each API. Tags are the short form produced by `_provider_type_tag`
+# microsoft_foundry services and the GPT targets of Bedrock services, on the gateway's native
+# route for each API. Tags are the short form produced by `_provider_type_tag`
 # (e.g. `amazon_bedrock`).
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
     "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle"),
@@ -2938,7 +2939,7 @@ _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
 _TOOL_PROVIDER_TYPES["vscode"] = _TOOL_PROVIDER_TYPES["copilot"]
 
 # Agents that can only use a Bedrock service's Claude targets.
-_CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot", "vscode")
+_CLAUDE_ONLY_BEDROCK_TOOLS = ("claude",)
 
 # Provider types that expose Bedrock-style model ids (e.g.
 # `us.anthropic.claude-sonnet-4-6`, or region-less `anthropic.claude-*` on
@@ -3175,7 +3176,7 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
     """Why ``tool`` can't route through ``service``, or None when it can.
 
     Beyond the provider-type match, only claude (Anthropic) or codex (OpenAI) can use a relayed (subscription) service, and
-    claude and copilot can use a Bedrock service only if it has a Claude target — otherwise there's
+    claude can use a Bedrock service only if it has a Claude target — otherwise there's
     no routable model id to pin — or is ``allow_all_targets``, in which case the model id comes
     from elsewhere (the managed config's default or ``--model``). (Anthropic services use canonical
     names, so any match is usable.)
@@ -3756,15 +3757,19 @@ def fetch_ai_gateway_claude_models(workspace: str, token: str) -> dict[str, str]
 #   system.ai.claude-opus-4-7[1m]   -> claude-opus-4-7
 #   main.ucode.claude_haiku         -> claude_haiku
 #   gpt-5.5                         -> gpt-5.5 (one dot is a version, not a schema)
-# A region prefix is dotted on Bedrock (`us.anthropic.`) and slashed on Azure (`eu/gpt-5.6-luna`).
+#   openai.gpt-5.6-terra            -> gpt-5.6-terra
+# A region prefix is dotted on Bedrock (`us.anthropic.`) and slashed on Azure (`eu/gpt-5.6-luna`)
+# and Bedrock Mantle (`us-gov-west-1/openai.gpt-5.4`). Bedrock's `openai.` is stripped only before
+# a GPT or o-series name, so a catalog named `openai` still reads as one.
 _BARE_MODEL_NAME_PATTERN = re.compile(
-    r"^(?:[^.\[]+\.[^.\[]+\.)?(?:[^/.\[]+/)?(?:anthropic\.)?(?:databricks-)?(?P<name>[^\[]*)"
+    r"^(?:(?:[^/.\[]+/)?openai\.(?=gpt-|o\d))?(?:[^.\[]+\.[^.\[]+\.)?(?:[^/.\[]+/)?"
+    r"(?:anthropic\.)?(?:databricks-)?(?P<name>[^\[]*)"
 )
 
 
 def bare_model_name(model: str) -> str:
-    """``model`` lowercased, without its catalog/schema or region prefix, ``anthropic.`` and
-    ``databricks-`` prefixes, or ``[...]`` hint."""
+    """``model`` lowercased, without its catalog/schema or region prefix, ``anthropic.``,
+    ``openai.`` and ``databricks-`` prefixes, or ``[...]`` hint."""
     match = _BARE_MODEL_NAME_PATTERN.match(model.lower())
     return match.group("name") if match else ""
 
@@ -4115,11 +4120,24 @@ def list_provider_service_models(
     failed. An empty listing is not a failure.
 
     Anthropic and Bedrock services list through the Anthropic models route, others through the
-    Codex model catalog."""
-    if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
-        listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
-        reason = listing.error_msg
-        return listing.model_ids, None if reason == _NO_ANTHROPIC_MODEL_IDS else reason
+    Codex model catalog. Bedrock lists its Claude models on the first and its other models on the
+    second, so it lists through both and fails only when neither answers."""
+    if provider_type not in ANTHROPIC_API_PROVIDER_TYPES:
+        return _list_codex_catalog_models(workspace, token, service_name)
+    listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
+    reason = None if listing.error_msg == _NO_ANTHROPIC_MODEL_IDS else listing.error_msg
+    if provider_type not in BEDROCK_PROVIDER_TYPES:
+        return listing.model_ids, reason
+    other_ids, other_reason = _list_codex_catalog_models(workspace, token, service_name)
+    ids = list(dict.fromkeys([*listing.model_ids, *other_ids]))
+    if reason and other_reason:
+        return ids, f"{reason}; {other_reason}"
+    return ids, None
+
+
+def _list_codex_catalog_models(
+    workspace: str, token: str, service_name: str
+) -> tuple[list[str], str | None]:
     try:
         catalog = _fetch_codex_model_catalog(
             workspace, token, source=CodexCatalogSource.PROVIDER, identifier=service_name

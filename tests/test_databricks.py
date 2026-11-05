@@ -1320,13 +1320,13 @@ class TestResolveProviderService:
         assert error is None
         assert service["provider_type"] == "openai"
 
-    def test_copilot_rejects_bedrock_without_claude(self, monkeypatch):
+    def test_copilot_accepts_bedrock_without_claude(self, monkeypatch):
         self._patch(monkeypatch)
         service, error = db_mod.resolve_provider_service(
             "copilot", "main.schema2.bedrock-titan-svc", WS, "token"
         )
-        assert service is None
-        assert "no Claude models" in error
+        assert error is None
+        assert service["provider_type"] == "amazon_bedrock"
 
     def test_copilot_rejects_a_subscription_relay(self, monkeypatch):
         payload = {
@@ -1507,6 +1507,54 @@ class TestListProviderServiceModels:
         assert ids == []
         assert "HTTP 503" in reason
 
+    @pytest.mark.parametrize("provider_type", ["amazon_bedrock", "bedrock_mantle"])
+    @pytest.mark.parametrize(
+        ("anthropic", "codex", "expected"),
+        [
+            (
+                ({"data": [{"id": "anthropic.claude-opus-5-5"}]}, None),
+                ({"models": [{"slug": "openai.gpt-5.6-terra"}]}, None),
+                ["anthropic.claude-opus-5-5", "openai.gpt-5.6-terra"],
+            ),
+            (
+                ({"data": [{"id": "anthropic.claude-opus-5-5"}]}, None),
+                (None, "HTTP 404 Not Found"),
+                ["anthropic.claude-opus-5-5"],
+            ),
+            (
+                (None, "HTTP 403 Forbidden"),
+                ({"models": [{"slug": "openai.gpt-5.6-terra"}]}, None),
+                ["openai.gpt-5.6-terra"],
+            ),
+        ],
+    )
+    def test_bedrock_lists_both_routes(
+        self, monkeypatch, provider_type, anthropic, codex, expected
+    ):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kw: codex if "/codex/" in url else anthropic,
+        )
+
+        assert db_mod.list_provider_service_models(WS, "token", "main.a.b", provider_type) == (
+            expected,
+            None,
+        )
+
+    def test_bedrock_reports_a_failure_only_when_both_routes_fail(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kw: (None, "HTTP 503" if "/codex/" in url else "HTTP 403"),
+        )
+
+        ids, reason = db_mod.list_provider_service_models(WS, "token", "main.a.b", "bedrock_mantle")
+
+        assert ids == []
+        assert "HTTP 403" in reason
+        assert "HTTP 503" in reason
+
 
 @pytest.mark.parametrize(
     ("model", "name"),
@@ -1523,6 +1571,13 @@ class TestListProviderServiceModels:
         ("eu/gpt-5.6-luna", "gpt-5.6-luna"),
         ("us/gpt-4o-mini-2024-07-18", "gpt-4o-mini-2024-07-18"),
         ("mistralai/Mistral-7B", "mistral-7b"),
+        ("openai.gpt-5.6-terra", "gpt-5.6-terra"),
+        ("us.openai.gpt-5.6-terra", "gpt-5.6-terra"),
+        ("us-gov-west-1/openai.gpt-5.4", "gpt-5.4"),
+        ("openai.gpt-oss-120b", "gpt-oss-120b"),
+        ("openai.o3", "o3"),
+        # A catalog named `openai` is still a catalog.
+        ("openai.default.gpt-5.5", "gpt-5.5"),
         # Only the leading segment is a region; anything deeper is left alone.
         ("publishers/google/models/gemini-4", "google/models/gemini-4"),
     ],
@@ -1553,7 +1608,8 @@ class TestServiceUsableForTool:
         }
         assert not db_mod.service_usable_for_tool("claude", service)
         assert db_mod.service_usable_for_tool("codex", service)
-        assert not db_mod.service_usable_for_tool("copilot", service)
+        assert db_mod.service_usable_for_tool("copilot", service)
+        assert db_mod.service_usable_for_tool("vscode", service)
 
     @pytest.mark.parametrize(
         "provider_type",
