@@ -36,12 +36,12 @@ on run argv
         end tell
     end tell
     if operation is "snapshot" then
-        set lines to {}
+        set snapshotRows to {}
         repeat with elementRef in controls
-            set end of lines to my elementText(elementRef)
+            set end of snapshotRows to my elementText(elementRef)
         end repeat
         set AppleScript's text item delimiters to linefeed
-        return lines as text
+        return snapshotRows as text
     end if
     set targetLabel to item 2 of argv
     repeat with elementRef in controls
