@@ -159,6 +159,23 @@ def test_antigravity_has_no_windows_build():
         runner.antigravity_archive_url("1.4.9-4962164969177088", "win32", "AMD64")
 
 
+def test_bedrock_defaults_use_service_credential_fixtures_and_frontier_models():
+    args = runner.arguments(["--claude-version", "2.1.290", "--installation-only"], environment={})
+
+    assert args.claude_bedrock_provider == "main.ucode.ci_bedrock_runtime_svc_cred_filtered_models"
+    assert (
+        args.claude_bedrock_allow_all_provider
+        == "main.ucode.ci_bedrock_runtime_svc_cred_all_models"
+    )
+    assert args.claude_bedrock_allow_all_model == "us.anthropic.claude-sonnet-5-5"
+    assert (
+        args.codex_bedrock_runtime_provider == "main.ucode.ci_bedrock_runtime_svc_cred_all_models"
+    )
+    assert args.codex_bedrock_runtime_model == "us.openai.gpt-5.6-terra"
+    assert args.codex_bedrock_mantle_provider == "main.ucode.ci_bedrock_mantle_svc_cred_gpt"
+    assert args.codex_bedrock_mantle_model == "openai.gpt-5.6-terra"
+
+
 def test_copilot_version_output_matches_the_pinned_version():
     output = "GitHub Copilot CLI 1.0.91.\nRun 'copilot update' to check for updates.\n"
     assert runner.agent_version_output("copilot", output) == "GitHub Copilot CLI 1.0.91"

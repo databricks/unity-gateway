@@ -81,6 +81,11 @@ aliases use names such as `ug_e2e.models.claude_haiku`, which Desktop's Claude-f
 not accept, so existing files must remain unchanged and UG must not save selection state.
 Successful Desktop profiles remain covered by CUJ1/CUJ2. No extra CUJ test or configure is added.
 
+CUJ2's Claude and Codex MPS inference cases ask for a short greeting. Each requires a completed
+native parent turn matching that prompt, a nonempty answer, the expected provider/model and
+its paired HTTP 200 response. Random request IDs correlate traffic without requiring models
+to repeat them. File, skill, MCP and subagent tasks keep their expected-value assertions.
+
 ## Smart-routing CUJ
 
 `test_cuj4_smart_routing.py` uses its own read-only workspace with managed smart routing enabled.

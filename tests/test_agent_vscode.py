@@ -1,4 +1,4 @@
-"""Tests for `ug configure --agents vscode` and its revert."""
+"""Tests for Copilot Chat in VS Code: `ug configure --agents copilot` sets it up, and revert."""
 
 from __future__ import annotations
 
@@ -10,9 +10,13 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+import ucode.agents as agents_mod
+import ucode.cli as cli_mod
 from ucode import config_io
-from ucode.agents import vscode
+from ucode import databricks as databricks_module
+from ucode.agents import copilot, vscode
 from ucode.cli import app
+from ucode.databricks import AnthropicModelCatalog
 from ucode.managed_files import OS
 
 # The conftest fixture stubs these out for every test; the ones here exercise the real lookups.
@@ -21,7 +25,12 @@ REAL_FIND_COMMAND = vscode._find_command
 REAL_RUN_CODE = vscode._run_code
 
 WS = "https://ws.cloud.databricks.com"
-STATE = {"workspace": WS, "profile": "dev"}
+# What `ug configure` saved for the Copilot CLI, which VS Code reuses.
+DISCOVERED = [
+    copilot.CopilotModel("system.ai.claude-sonnet-5-5", "anthropic"),
+    copilot.CopilotModel("system.ai.gpt-6-luna", "responses", (922_000, 128_000)),
+]
+STATE = {"workspace": WS, "profile": "dev", "copilot_catalog": copilot.catalog_state(DISCOVERED)}
 VERSION = json.loads((vscode.EXTENSION_DIR / "package.json").read_text())["version"]
 
 
@@ -64,18 +73,7 @@ def code(monkeypatch):
     monkeypatch.setattr(vscode, "find_code", lambda: Path("/fake/bin/code"))
     monkeypatch.setattr(vscode, "_find_command", lambda command: Path(f"/fake/bin/{command}"))
     monkeypatch.setattr(vscode, "_run_code", fake)
-    monkeypatch.setattr(vscode, "launch_token", lambda state, workspace: "token")
-    monkeypatch.setattr(
-        vscode,
-        "discover_model_services",
-        lambda workspace, token: (
-            {"sonnet": "system.ai.claude-sonnet-5-5"},
-            ["system.ai.gpt-6-luna", "system.ai.gpt-oss-120b"],
-            ["system.ai.gemini-4-argon"],
-            ["system.ai.gpt-oss-120b", "system.ai.deepseek-v4-1-flash"],
-            None,
-        ),
-    )
+    monkeypatch.setattr(copilot, "launch_token", lambda state, workspace: "token")
     return fake
 
 
@@ -84,9 +82,7 @@ def _printed(capsys) -> str:
 
 
 class TestConfigure:
-    def test_installs_the_extension_with_the_workspace_and_its_claude_and_gpt_models(
-        self, code, capsys
-    ):
+    def test_installs_the_extension_with_the_copilot_clis_models_and_limits(self, code, capsys):
         assert vscode.configure(STATE)
 
         assert code.calls[-1][0] == "--install-extension"
@@ -106,11 +102,19 @@ class TestConfigure:
                 {
                     "id": "system.ai.claude-sonnet-5-5",
                     "name": "Claude Sonnet 5.5",
-                    "api": "chat_completions",
+                    "family": "claude-sonnet-5-5",
+                    "api": "anthropic",
                     "maxInputTokens": 872_000,
                     "maxOutputTokens": 128_000,
                 },
-                {"id": "system.ai.gpt-6-luna", "name": "GPT 6 Luna", "api": "responses"},
+                {
+                    "id": "system.ai.gpt-6-luna",
+                    "name": "GPT 6 Luna",
+                    "family": "gpt-6-luna",
+                    "api": "responses",
+                    "maxInputTokens": 794_000,
+                    "maxOutputTokens": 128_000,
+                },
             ],
         }
         printed = _printed(capsys)
@@ -119,25 +123,147 @@ class TestConfigure:
         )
         assert "Next, in VS Code: 1. If VS Code is open," in printed
 
-    def test_models_with_the_same_label_show_their_ids(self, code, monkeypatch):
-        monkeypatch.setattr(
-            vscode,
-            "discover_model_services",
-            lambda workspace, token: (
-                {},
-                ["system.ai.gpt-6-luna", "main.models.gpt-6-luna", "system.ai.gpt-5-5"],
-                [],
-                [],
-                None,
-            ),
+    def test_models_with_the_same_label_show_their_ids(self, code):
+        discovered = copilot.build_copilot_catalog(
+            ["system.ai.gpt-6-luna", "main.models.gpt-6-luna", "system.ai.gpt-5-5"]
         )
+        state = {**STATE, "copilot_catalog": copilot.catalog_state(discovered)}
 
-        models, _ = vscode.model_entries(WS, "token")
+        models = vscode.model_entries(state)
 
         assert [model["name"] for model in models] == [
-            "system.ai.gpt-6-luna",
             "main.models.gpt-6-luna",
+            "system.ai.gpt-6-luna",
             "GPT 5.5",
+        ]
+
+    def test_a_provider_services_claude_targets_keep_their_ids_and_their_limits(
+        self, code, monkeypatch, capsys
+    ):
+        service = {
+            "name": "main.default.bedrock",
+            "provider_type": "amazon_bedrock",
+            "targets": [
+                "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                "global.anthropic.claude-opus-4-8",
+                "openai.gpt-oss-120b-1:0",
+            ],
+        }
+        monkeypatch.setattr(
+            databricks_module, "list_model_provider_services", lambda *a, **k: ([service], None)
+        )
+
+        assert vscode.configure(STATE, provider="main.default.bedrock")
+
+        assert code.config["provider"] == "main.default.bedrock"
+        assert code.config["models"] == [
+            {
+                "id": "global.anthropic.claude-opus-4-8",
+                "name": "global.anthropic.claude-opus-4-8",
+                "family": "claude-opus-4-8",
+                "api": "anthropic",
+                "maxInputTokens": 872_000,
+                "maxOutputTokens": 128_000,
+            },
+            {
+                "id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                "name": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                "family": "claude-sonnet-4-5",
+                "api": "anthropic",
+                "maxInputTokens": 168_000,
+                "maxOutputTokens": 32_000,
+            },
+        ]
+        printed = _printed(capsys)
+        assert "with 2 models from main.default.bedrock" in printed
+        assert "that VS Code can't use: openai.gpt-oss-120b-1:0" in printed
+
+    def test_a_openai_provider_services_models_on_responses_and_chat_completions(
+        self, code, monkeypatch
+    ):
+        service = {
+            "name": "main.default.openai",
+            "provider_type": "openai",
+            "allow_all_targets": True,
+            "targets": [],
+        }
+        monkeypatch.setattr(
+            databricks_module, "list_model_provider_services", lambda *a, **k: ([service], None)
+        )
+        monkeypatch.setattr(
+            copilot,
+            "list_provider_service_models",
+            lambda *args: (["gpt-5.5", "gpt-4.1"], None),
+        )
+
+        assert vscode.configure(STATE, provider="main.default.openai")
+
+        assert code.config["models"] == [
+            {"id": "gpt-5.5", "name": "gpt-5.5", "family": "gpt-5.5", "api": "responses"},
+            {"id": "gpt-4.1", "name": "gpt-4.1", "family": "gpt-4.1", "api": "completions"},
+        ]
+
+    @pytest.mark.parametrize(
+        ("service", "error"),
+        [
+            ({"provider_type": "gemini_enterprise"}, "which vscode can't route to"),
+            ({"provider_type": "anthropic", "relayed": True}, "only Claude Code can use"),
+            (
+                {"provider_type": "openai", "allow_all_targets": True},
+                "Could not list the models of 'main.default.mps': forbidden.",
+            ),
+        ],
+    )
+    def test_keeps_the_installed_setup_for_a_provider_service_it_cant_use(
+        self, code, monkeypatch, capsys, service, error
+    ):
+        service = {"name": "main.default.mps", "targets": [], **service}
+        monkeypatch.setattr(
+            databricks_module, "list_model_provider_services", lambda *a, **k: ([service], None)
+        )
+        monkeypatch.setattr(
+            copilot, "list_provider_service_models", lambda *args: ([], "forbidden")
+        )
+
+        assert not vscode.configure(STATE, provider="main.default.mps")
+
+        assert code.calls == []
+        printed = _printed(capsys)
+        assert error in printed
+        assert "VS Code was left unchanged." in printed
+
+    def test_a_model_locations_services_with_their_listed_limits(self, code, monkeypatch):
+        listed: list[str | None] = []
+
+        def listing(workspace, token, *, parent_schema=None):
+            listed.append(parent_schema)
+            return AnthropicModelCatalog(
+                model_ids=["main.models.claude-opus-5-5", "main.models.team-assistant"],
+                model_id_to_display_name={},
+                model_id_to_limits={"main.models.claude-opus-5-5": (200_000, 64_000)},
+            )
+
+        monkeypatch.setattr(copilot, "list_anthropic_model_catalog", listing)
+
+        assert vscode.configure(STATE, location="main.models")
+
+        assert listed == ["main.models"]
+        assert "provider" not in code.config
+        assert code.config["models"] == [
+            {
+                "id": "main.models.claude-opus-5-5",
+                "name": "Claude Opus 5.5",
+                "family": "claude-opus-5-5",
+                "api": "anthropic",
+                "maxInputTokens": 136_000,
+                "maxOutputTokens": 64_000,
+            },
+            {
+                "id": "main.models.team-assistant",
+                "name": "Team Assistant",
+                "family": "team-assistant",
+                "api": "anthropic",
+            },
         ]
 
     def test_reruns_reinstall_with_the_new_setup(self, code):
@@ -161,11 +287,13 @@ class TestConfigure:
         vscode.configure(STATE)
         installed = code.config
         code.calls.clear()
-        monkeypatch.setattr(
-            vscode, "discover_model_services", lambda workspace, token: ({}, [], [], [], reason)
-        )
+        state = {
+            "workspace": "https://other.cloud.databricks.com",
+            "copilot_catalog": copilot.catalog_state([]),
+            "_discovery_reasons": {"copilot": reason} if reason else {},
+        }
 
-        assert not vscode.configure({**STATE, "workspace": "https://other.cloud.databricks.com"})
+        assert not vscode.configure(state)
 
         assert code.calls == []
         assert code.config == installed
@@ -190,6 +318,52 @@ class TestConfigure:
         assert not vscode.configure(STATE)
 
         assert "--install-extension` failed: boom" in _printed(capsys)
+
+
+class TestCopilotModels:
+    """With the Copilot CLI's catalog in state, VS Code gets the same models and the managed setup."""
+
+    SONNET = "system.ai.claude-sonnet-5-5"
+    GPT = "system.ai.gpt-6-luna"
+
+    def _state(self, **managed) -> dict:
+        saved = {"models": [self.SONNET, self.GPT], "limits": {self.GPT: [922_000, 128_000]}}
+        return {**STATE, copilot.CATALOG_STATE_KEY: saved, **managed}
+
+    def test_uses_the_catalog_configure_saved_with_its_limits(self, code):
+        assert vscode.configure(self._state())
+
+        assert [model["id"] for model in code.config["models"]] == [self.SONNET, self.GPT]
+        assert code.config["models"][1]["maxInputTokens"] == 794_000
+        assert code.config["models"][1]["maxOutputTokens"] == 128_000
+        assert "headers" not in code.config
+
+    def test_uses_only_the_managed_list_and_says_what_it_skips(self, code, capsys):
+        state = self._state(copilot_static_models=[self.GPT, "system.ai.gemini-4-argon"])
+
+        assert vscode.configure(state)
+
+        assert [model["id"] for model in code.config["models"]] == [self.GPT]
+        assert "Skipping system.ai.gemini-4-argon from your workspace's managed config" in (
+            _printed(capsys)
+        )
+
+    def test_writes_the_managed_headers_without_the_ones_ug_sets(self, code):
+        state = self._state(
+            copilot_http_headers={
+                " X-Team ": "ml",
+                "Authorization": "Bearer x",
+                "content-type": "text/plain",
+                "databricks-model-provider-service": "main.default.other",
+                "X-Bad": 3,
+            },
+            copilot_default_model="claude-sonnet-5-5",
+        )
+
+        assert vscode.configure(state)
+
+        assert code.config["headers"] == {"X-Team": "ml"}
+        assert "defaultModel" not in code.config
 
 
 class TestRevert:
@@ -312,56 +486,195 @@ class TestAuthCommand:
         assert "--profile custom" in vscode.auth_command({"workspace": WS, "custom_oauth": custom})
 
 
-def test_configure_agents_vscode_refuses_a_workspace_the_machine_isnt_managed_for(monkeypatch):
-    selected: list[str] = []
+def _stub_copilot_setup(monkeypatch) -> list[dict]:
+    """Make the Copilot CLI setup a no-op and record each VS Code setup's model source."""
+    configured: list[dict] = []
+    monkeypatch.setattr(agents_mod, "_configure_one", lambda tool, state, *a, **k: state)
     monkeypatch.setattr(
-        "ucode.cli._configure_shared_workspace_states", lambda *args, **kwargs: [STATE]
+        vscode, "configure", lambda state, **source: configured.append(source) or True
     )
-    monkeypatch.setattr("ucode.cli.load_state", lambda: STATE)
+    return configured
+
+
+@pytest.mark.parametrize(
+    ("saved", "source"),
+    [
+        ({}, {"provider": None, "location": None}),
+        (
+            {"provider_services": {"copilot": "main.default.mps"}},
+            {"provider": "main.default.mps", "location": None},
+        ),
+        (
+            {"model_locations": {"copilot": "main.models"}},
+            {"provider": None, "location": "main.models"},
+        ),
+    ],
+)
+def test_configuring_copilot_sets_up_vscode_with_the_same_models(monkeypatch, saved, source):
+    configured = _stub_copilot_setup(monkeypatch)
+
+    agents_mod.configure_selected_tools({**STATE, **saved}, ["claude", "copilot"])
+
+    assert configured == [source]
+
+
+def test_a_failed_copilot_setup_leaves_vscode_alone(monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(agents_mod, "_configure_one", fail)
+    monkeypatch.setattr(vscode, "configure", lambda *a, **k: pytest.fail("VS Code was set up"))
+
+    state = agents_mod.configure_selected_tools(dict(STATE), ["copilot"])
+
+    assert state["last_configured_tools"] == []
+
+
+def test_configuring_copilot_alone_sets_up_vscode_only_from_configure(monkeypatch):
+    configured = _stub_copilot_setup(monkeypatch)
+    monkeypatch.setattr(agents_mod, "check_gateway_endpoint", lambda *args: True)
+
+    # A launch that configures copilot first leaves VS Code alone; `ug configure --agent` doesn't.
+    agents_mod.configure_single_tool("copilot", dict(STATE))
+    agents_mod.configure_single_tool("copilot", dict(STATE), with_vscode=True)
+
+    assert configured == [{"provider": None, "location": None}]
+
+
+@pytest.mark.parametrize("skip", ["no_vscode", "dry_run"])
+def test_no_vscode_and_a_dry_run_leave_vscode_alone(monkeypatch, capsys, skip):
+    # `--dry-run` sets a module-wide flag; this puts it back so later tests write files again.
+    monkeypatch.setattr(config_io, "_dry_run", skip == "dry_run")
+    agents_mod.request_vscode_with_copilot(skip != "no_vscode")
+    monkeypatch.setattr(vscode, "configure", lambda *a, **k: pytest.fail("VS Code was set up"))
+
+    agents_mod.configure_vscode(STATE, provider=None, parent_schema=None)
+
+    assert ("VS Code isn't changed" in capsys.readouterr().out) == (skip == "dry_run")
+
+
+def test_configure_passes_copilot_its_model_source_and_no_vscode(monkeypatch):
+    calls: list[dict] = []
+    monkeypatch.setattr("ucode.cli.install_databricks_cli", lambda: None)
     monkeypatch.setattr(
-        "ucode.cli.managed_state_workspace", lambda: "https://managed.cloud.databricks.com"
+        "ucode.cli.configure_workspace_command", lambda **kwargs: calls.append(kwargs) or 0
     )
-    monkeypatch.setattr("ucode.cli.set_current_workspace", selected.append)
-    monkeypatch.setattr(vscode, "configure", lambda state: pytest.fail("VS Code was set up"))
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "configure",
+            "--agents",
+            "copilot",
+            "--workspace",
+            WS,
+            "--provider",
+            "main.default.mps",
+            "--no-vscode",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls[0]["selected_tools"] == ["copilot"]
+    assert calls[0]["copilot_source"] == ("main.default.mps", None)
+    assert agents_mod._vscode_with_copilot is False
+
+
+def _stub_workspace_setup(monkeypatch, state: dict, managed: dict | None) -> list[dict]:
+    seen: list[dict] = []
+    monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+    monkeypatch.setattr(cli_mod, "_refresh_configured_policy", lambda s: (managed, False))
+    monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *args: True)
+    monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+    monkeypatch.setattr(
+        cli_mod, "configure_selected_tools", lambda s, tools, **k: seen.append(dict(s)) or s
+    )
+    return seen
+
+
+def test_configure_saves_copilots_model_source_for_its_launches(monkeypatch):
+    state = {**STATE, "provider_services": {"copilot": "old.default.mps"}}
+    seen = _stub_workspace_setup(monkeypatch, state, None)
+    monkeypatch.setattr(copilot, "location_catalog", lambda state, schema: ["a model"])
+
+    cli_mod.configure_workspace_command(
+        selected_tools=["copilot"], workspaces=[(WS, None)], copilot_source=(None, "main.models")
+    )
+
+    assert "provider_services" not in seen[0]
+    assert seen[0]["model_locations"] == {"copilot": "main.models"}
+
+
+@pytest.mark.parametrize(
+    "source", [("main.default.typo", None), (None, "main.empty")], ids=["provider", "location"]
+)
+def test_configure_keeps_copilots_source_when_the_new_one_fails(monkeypatch, source):
+    def unusable(*args, **kwargs):
+        raise RuntimeError("not usable")
+
+    state = {**STATE, "provider_services": {"copilot": "old.default.mps"}}
+    seen = _stub_workspace_setup(monkeypatch, state, None)
+    monkeypatch.setattr(copilot, "provider_service_catalog", unusable)
+    monkeypatch.setattr(copilot, "location_catalog", unusable)
+
+    with pytest.raises(RuntimeError, match="not usable"):
+        cli_mod.configure_workspace_command(
+            selected_tools=["copilot"], workspaces=[(WS, None)], copilot_source=source
+        )
+
+    assert seen == []
+    assert state["provider_services"] == {"copilot": "old.default.mps"}
+    assert "model_locations" not in state
+
+
+def test_configure_refuses_a_copilot_model_source_on_a_managed_workspace(monkeypatch):
+    seen = _stub_workspace_setup(
+        monkeypatch, dict(STATE), {"enabled_agents": {"copilot": {"model_config": {}}}}
+    )
+
+    with pytest.raises(RuntimeError, match="managed configuration"):
+        cli_mod.configure_workspace_command(
+            selected_tools=["copilot"],
+            workspaces=[(WS, None)],
+            copilot_source=("main.default.mps", None),
+        )
+
+    assert seen == []
+
+
+@pytest.mark.parametrize(
+    ("args", "error"),
+    [
+        (["--provider", "a.b.c"], "--provider requires --agent or --agents"),
+        # Another model agent alongside Copilot would silently keep the workspace's own models.
+        (
+            ["--agents", "claude,copilot", "--provider", "a.b.c"],
+            "isn't supported for GitHub Copilot CLI",
+        ),
+        (
+            ["--agents", "copilot", "--provider", "a.b.c", "--model-location", "a.b"],
+            "cannot be combined",
+        ),
+        (["--agents", "copilot", "--model-location", "a.b.c"], "must be <catalog>.<schema>"),
+    ],
+)
+def test_configure_refuses_a_model_source_copilot_cant_take(monkeypatch, args, error):
+    monkeypatch.setattr("ucode.cli.install_databricks_cli", lambda: None)
+    monkeypatch.setattr(
+        "ucode.cli._configure_shared_workspace_states",
+        lambda *a, **k: pytest.fail("the workspace was configured"),
+    )
+
+    result = CliRunner().invoke(app, ["configure", "--workspace", WS, *args])
+
+    assert result.exit_code != 0
+    assert error in " ".join(result.output.split())
+
+
+def test_vscode_is_not_an_agent_of_its_own(monkeypatch):
+    monkeypatch.setattr("ucode.cli.install_databricks_cli", lambda: None)
 
     result = CliRunner().invoke(app, ["configure", "--agents", "vscode", "--workspace", WS])
 
-    assert result.exit_code == 1
-    assert "This machine is managed for https://managed.cloud.databricks.com" in " ".join(
-        result.output.split()
-    )
-    assert selected == ["https://managed.cloud.databricks.com"]
-
-
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_configure_agents_vscode_sets_up_the_workspace_then_vscode(monkeypatch, dry_run):
-    # `--dry-run` sets a module-wide flag; this puts it back so later tests write files again.
-    monkeypatch.setattr(config_io, "_dry_run", False)
-    configured: list[dict] = []
-    shared: list[dict] = []
-    monkeypatch.setattr(
-        "ucode.cli._configure_shared_workspace_states",
-        lambda *args, **kwargs: shared.append(kwargs) or [],
-    )
-    monkeypatch.setattr(
-        "ucode.cli.configure_workspace_command",
-        lambda **kwargs: pytest.fail("no model agents to configure"),
-    )
-    monkeypatch.setattr("ucode.cli.load_state", lambda: STATE)
-    monkeypatch.setattr(vscode, "configure", lambda state: configured.append(state) or True)
-
-    args = [
-        "configure",
-        "--agents",
-        "vscode",
-        "--workspace",
-        WS,
-        *(["--dry-run"] if dry_run else []),
-    ]
-    result = CliRunner().invoke(app, args)
-
-    assert result.exit_code == 0, result.output
-    assert shared[0]["tools"] == []
-    # A dry run saves no workspace, so VS Code would be set up from stale or missing state.
-    assert configured == ([] if dry_run else [STATE])
-    assert ("VS Code isn't changed" in result.output) == dry_run
+    assert result.exit_code != 0
+    assert "Unsupported tool 'vscode'" in " ".join(result.output.split())

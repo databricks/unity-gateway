@@ -419,18 +419,38 @@ def arguments(
     )
     parser.add_argument(
         "--claude-bedrock-allow-all-provider",
-        default="main.ucode.e2e_bedrock_all_models_enabled",
-        help="Bedrock MPS with allow_all_targets and no declared targets, for the #811 CUJ.",
+        default="main.ucode.ci_bedrock_runtime_svc_cred_all_models",
+        help="Bedrock runtime MPS (UC service credential) with allow_all_targets and no declared targets, for the #811 CUJ.",
     )
     parser.add_argument(
         "--claude-bedrock-allow-all-model",
-        default="global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        default="us.anthropic.claude-sonnet-5-5",
         help="Explicit Bedrock model id the allow_all CUJ pins (the service declares no targets).",
     )
     parser.add_argument(
         "--claude-bedrock-provider",
-        default="main.ucode.bedrock_e2e",
-        help="AWS Bedrock Anthropic MPS with a restricted allowed-models set (Sonnet + Haiku, no Opus), selected in the configure CUJ.",
+        default="main.ucode.ci_bedrock_runtime_svc_cred_filtered_models",
+        help="AWS Bedrock runtime MPS (UC service credential) with a restricted allowed-models set (Sonnet 5.5 + Opus 5.5), selected in the configure CUJ.",
+    )
+    parser.add_argument(
+        "--codex-bedrock-runtime-provider",
+        default="main.ucode.ci_bedrock_runtime_svc_cred_all_models",
+        help="Bedrock runtime MPS (UC service credential) with allow_all_targets, serving GPT-5.6 over Responses.",
+    )
+    parser.add_argument(
+        "--codex-bedrock-runtime-model",
+        default="us.openai.gpt-5.6-terra",
+        help="Bedrock inference-profile id the Codex runtime CUJ pins.",
+    )
+    parser.add_argument(
+        "--codex-bedrock-mantle-provider",
+        default="main.ucode.ci_bedrock_mantle_svc_cred_gpt",
+        help="Bedrock Mantle MPS (UC service credential, us-west-2) with allow_all_targets, serving GPT-5.6 over Responses.",
+    )
+    parser.add_argument(
+        "--codex-bedrock-mantle-model",
+        default="openai.gpt-5.6-terra",
+        help="Mantle model id the Codex Mantle CUJ pins.",
     )
     parser.add_argument(
         "--antigravity-provider",
@@ -439,7 +459,8 @@ def arguments(
     )
     parser.add_argument(
         "--antigravity-provider-models",
-        default="gemini-4-argon,gemini-3.8-flash",
+        # gemini-4-argon is left out: it keeps timing out before response headers in CI.
+        default="gemini-3.8-flash",
         help="Comma-separated targets of --antigravity-provider, newest first, each run as a "
         "task with --model; the first is the one `ug configure` pins.",
     )
@@ -721,6 +742,10 @@ def main() -> int:
             "claude_bedrock_allow_all_provider": args.claude_bedrock_allow_all_provider,
             "claude_bedrock_allow_all_model": args.claude_bedrock_allow_all_model,
             "claude_bedrock_provider": args.claude_bedrock_provider,
+            "codex_bedrock_runtime_provider": args.codex_bedrock_runtime_provider,
+            "codex_bedrock_runtime_model": args.codex_bedrock_runtime_model,
+            "codex_bedrock_mantle_provider": args.codex_bedrock_mantle_provider,
+            "codex_bedrock_mantle_model": args.codex_bedrock_mantle_model,
             "antigravity_provider": args.antigravity_provider,
             "antigravity_provider_models": args.antigravity_provider_models,
             "codex_provider": args.codex_provider,
@@ -1035,6 +1060,10 @@ def main() -> int:
                 "UG_INTEGRATION_CLAUDE_PROVIDER_MODEL": args.claude_provider_model,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_PROVIDER": args.claude_bedrock_allow_all_provider,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL": args.claude_bedrock_allow_all_model,
+                "UG_INTEGRATION_CODEX_BEDROCK_RUNTIME_PROVIDER": args.codex_bedrock_runtime_provider,
+                "UG_INTEGRATION_CODEX_BEDROCK_RUNTIME_MODEL": args.codex_bedrock_runtime_model,
+                "UG_INTEGRATION_CODEX_BEDROCK_MANTLE_PROVIDER": args.codex_bedrock_mantle_provider,
+                "UG_INTEGRATION_CODEX_BEDROCK_MANTLE_MODEL": args.codex_bedrock_mantle_model,
                 "UG_INTEGRATION_ANTIGRAVITY_PROVIDER": args.antigravity_provider,
                 "UG_INTEGRATION_ANTIGRAVITY_PROVIDER_MODELS": args.antigravity_provider_models,
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,

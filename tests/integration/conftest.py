@@ -198,7 +198,7 @@ def claude_relayed_provider():
 
 @pytest.fixture(scope="session")
 def claude_bedrock_provider():
-    # A Bedrock MPS that restricts its allowed models to an explicit set (Sonnet + Haiku, no Opus).
+    # A Bedrock MPS that restricts its allowed models to an explicit set (Sonnet + Opus).
     return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_PROVIDER"]
 
 
@@ -231,6 +231,28 @@ def claude_bedrock_allow_all_provider():
 def claude_bedrock_allow_all_model():
     # An allow_all service declares no targets, so a launch must name the Bedrock model id itself.
     return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def codex_bedrock_runtime_provider():
+    # A Bedrock runtime MPS (allow_all, UC service credential) that serves GPT over Responses.
+    return os.environ["UG_INTEGRATION_CODEX_BEDROCK_RUNTIME_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_bedrock_runtime_model():
+    return os.environ["UG_INTEGRATION_CODEX_BEDROCK_RUNTIME_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def codex_bedrock_mantle_provider():
+    # A Bedrock Mantle MPS (allow_all, UC service credential) that serves GPT over Responses.
+    return os.environ["UG_INTEGRATION_CODEX_BEDROCK_MANTLE_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_bedrock_mantle_model():
+    return os.environ["UG_INTEGRATION_CODEX_BEDROCK_MANTLE_MODEL"]
 
 
 @pytest.fixture(scope="session")

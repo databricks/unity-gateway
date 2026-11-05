@@ -1,6 +1,7 @@
 """Antigravity CLI evidence, read from its own stream-json output, conversation store, and log."""
 
 import json
+import random
 import re
 import sqlite3
 from pathlib import Path
@@ -14,6 +15,9 @@ AGENT_RESPONSE_STEP = 15
 DONE_STATUS = 3
 # Antigravity logs every model request's URL; in gateway mode it names the gateway it was given.
 _REQUEST = re.compile(r"Making Gateway streaming request to: (\S+)")
+RESOURCE_EXHAUSTED_MAX_ATTEMPTS = 3
+_RESOURCE_EXHAUSTED_BACKOFF_BASE_SECONDS = 5.0
+_RESOURCE_EXHAUSTED_BACKOFF_MAX_SECONDS = 20.0
 
 
 def stream_events(stdout: str) -> list[dict]:
@@ -27,6 +31,32 @@ def stream_events(stdout: str) -> list[dict]:
         if isinstance(value, dict) and "event" in value:
             events.append(value)
     return events
+
+
+def resource_exhausted(stdout: str) -> bool:
+    """Whether the final Antigravity result is a retryable provider-side 429."""
+    results = [
+        event.get("result") or {}
+        for event in stream_events(stdout)
+        if event.get("event") == "result"
+    ]
+    if not results or results[-1].get("status") != "ERROR":
+        return False
+    error = results[-1].get("error")
+    return (
+        isinstance(error, str)
+        and "code 429" in error
+        and ("RESOURCE_EXHAUSTED" in error or "REQUEST_LIMIT_EXCEEDED" in error)
+    )
+
+
+def resource_exhausted_retry_delay(retry_index: int) -> float:
+    """Truncated exponential backoff with bounded jitter for provider 429s."""
+    backoff = min(
+        _RESOURCE_EXHAUSTED_BACKOFF_BASE_SECONDS * (2**retry_index),
+        _RESOURCE_EXHAUSTED_BACKOFF_MAX_SECONDS,
+    )
+    return backoff + random.uniform(0, min(backoff * 0.25, 2.0))
 
 
 def completed_tools(events: list[dict], name: str) -> list[dict]:

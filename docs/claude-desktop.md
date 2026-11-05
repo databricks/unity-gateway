@@ -27,13 +27,130 @@ the customer's MDM process. Explicit-agent, selected-agent, and managed configur
 flows all set up Desktop after successful Claude Code configuration. Ordinary agent
 launches and `ug agents add` do not configure Desktop.
 
+## Code tab connector guidance
+
+`ug configure` also installs `ug@unity-gateway-code` in the regular Claude Code
+plugin scope. The Code tab and terminal Claude Code load its
+`unity-gateway-connectors` skill, with Code-specific discovery and authentication
+instructions. Cowork's generated skill text is unchanged. Start a new Code session
+after configuring.
+
+Both variants use the skill name `unity-gateway-connectors`. Their descriptions and
+instructions live in packaged Markdown templates under
+`src/ucode/agents/desktop/connector_skills/`: `code.md` and `cowork.md`.
+Generation inserts the current connector names and bounds the discovery description.
+
+Before the first connector call, the skill checks current connection/authentication
+status; loaded tool definitions do not establish that sign-in is complete. If the
+client exposes no status, it uses the installed Claude CLI's `mcp list`, keeping the
+session's working directory and `CLAUDE_CONFIG_DIR`. A current sign-in requirement
+takes priority even when service tools are already visible.
+
+For proxy connections, Claude uses the discovered `authenticate` tool. Native HTTP
+OAuth may expose no authentication tool: the skill checks CLI support, then uses
+`claude mcp login <registered-name>` with the exact native server name and relays
+browser/callback instructions. After confirmed success it rediscovers tools and
+resumes the request. Failed or canceled sign-in stops service calls. If login is
+unavailable or needs user interaction, Claude explains the blocker and points to
+that server's Authenticate button when Code displays one. The button is a client
+action, not an MCP tool. The terminal Claude Code fallback is
+`/mcp` → select the server → Authenticate. That is an interactive client command,
+not a shell command or an assumed Desktop menu.
+An operation stuck at “Waiting for the result” alone does not establish an auth
+failure and must not trigger duplicate calls or repeated login attempts.
+
+Code already reads the MCP servers registered by UG in its native configuration,
+and downloaded skills from its own skill directory. Its UG plugin contains only
+the generated connector guidance, using the original MCP registration names such
+as `system-ai-slack`. It does not add another copy of the servers, downloaded
+skills, or Cowork's session hooks.
+
+The generated marketplace lives at `~/.ucode/claude-code-marketplace`;
+`~/.ucode/claude-code-plugin.json` records its installation scope for cleanup.
+Installation uses `CLAUDE_CONFIG_DIR` when set, otherwise `~/.claude`; it does not require a
+Cowork session or account directory. Configure and MCP additions/removals refresh
+the guidance. Removing the last MCP leaves an empty plugin so stale connector names
+are no longer advertised. `ug revert` removes this plugin, its marketplace
+registration, and generated source while preserving unrelated plugins.
+When the Code config directory changes, installation in the new directory must succeed
+before UG removes the old registration or updates the saved root. A failed installation
+keeps the old registration and saved root available for cleanup or retry.
+
+MCP-only Claude setup (`ug mcp add --agents claude`) is also eligible for Code
+guidance without model setup. During managed configure, successful MCP reconciliation
+refreshes Code even if skill downloads fail. Cowork keeps its existing model-setup
+and skill-success requirements. Failed MCP reconciliation preserves both plugins.
+
+Code and Cowork plugin installation are independent and best-effort. A Cowork
+setup failure does not block the Code plugin or native MCP configuration. The
+component checks do not establish Desktop GUI discovery or successful connector
+calls; validate those in a fresh Code session.
+
+The opt-in `tests/connector_behavior/` suite includes Code requests with cached Gmail
+tools and native HTTP/proxy authentication success or cancellation. It uses a real
+Claude model with synthetic connector tools and CLI results; this measures adherence
+to the generated guidance, not Desktop browser sign-in or live Gmail access.
+
 ## Cowork workspace skills and MCP servers
 
-Whenever Claude is configured, `ug configure` also installs a generated
-`ug@unity-gateway-cowork` plugin into that account's Cowork scope. This applies
-to managed and unmanaged workspaces. Start one Cowork session before configuring so Desktop
-creates its active account/organization directory. If several Cowork profiles exist and UG
-cannot identify one active profile, setup warns without changing any of them.
+Default `ug configure` and `ug configure --user` both write only user-level Desktop
+files: the 3P JSON profile, generated marketplace at `~/.ucode/claude-cowork-marketplace`,
+and the normal Cowork registration/cache. This applies even when UG's saved configuration
+scope is `global`. Neither path publishes or removes a root marketplace or managed plist.
+Claude Code and other CLI agents retain their own scope handling.
+
+Explicit `--global` skips these per-user Desktop writers. Machine policy, shared-runtime
+bindings, the root marketplace, and automatic per-user refresh are supplied by the separate
+macOS MDM deployment change. It uses these machine locations:
+
+- Policy: `/Library/Managed Preferences/com.anthropic.claudefordesktop.plist`
+- Marketplace: `/Library/Application Support/UnityGateway/claude-cowork-marketplace`
+
+Ordinary configure uses `claude plugin ... --cowork --json` with one
+`ug@unity-gateway-cowork` registration for the selected account/org. If an earlier UG
+installation registered a root source, configure switches that registration to the user
+source without deleting the root files or creating a second plugin. Other plugins are preserved.
+
+Start one Cowork task before configuring so Desktop creates its account/org directory.
+If Cowork has not created its sessions directory, first-time ordinary configure skips the
+plugin. Run configure again once the account directory exists.
+Quit Desktop, run configure as your normal user, then reopen it and start a new task.
+Ambiguous profiles warn without changes. Desktop's user-level writers need no elevation;
+other requested agents may still require it.
+
+The source contains `.claude-plugin/marketplace.json`, and under `plugins/ug` the
+plugin manifest, `.mcp.json`, `hooks/hooks.json`, and included `skills/` assets.
+The plugin version changes with its contents. Configure explicitly updates the marketplace
+and installs or updates the user-cached plugin: changing source files alone is insufficient.
+The 3P connection profile, telemetry helper, runtime authentication, and UG state remain
+user-local. A pre-existing `Claude/org-plugins/ug` installation must be removed by its owner
+before configuration, so the organization loader cannot expose a duplicate UG plugin.
+
+UG records the account/org in `~/.ucode/claude-cowork.json`.
+UG owns the generated user marketplace: configure replaces its contents, including manual
+edits, and ordinary `ug revert` removes it and UG's user registration. Root files are left
+alone. The existing user-source writer retains staged replacement and rollback.
+A native refresh failure leaves the user source and tracking state for retry or revert.
+If a source switch fails, UG attempts to restore the previous marketplace/plugin through
+native Claude commands. A failed restoration reports instructions to repair the installation.
+Malformed directory paths are ignored during UG's source inspection. The native
+Claude CLI still validates its registry. If it reports corruption, restore the
+account's `cowork_plugins/known_marketplaces.json` from a backup before retrying;
+UG does not rewrite a corrupted native registry automatically.
+
+Run configure and revert one at a time. Account changes use the existing cleanup flow
+before installing for the new account; no pending-cleanup queue or state migration is added.
+
+Root bundle publication and its privileged writer belong to the
+[MDM follow-up](https://github.com/databricks/unity-gateway/pull/1374).
+Ordinary Desktop configuration writes only the user source.
+
+Manual testing on macOS with Claude Desktop 4.4212.0 previously verified configure and
+reconfigure, skill invocation, connector calls, matching source/cache contents, and one UG
+registration without duplicates. Those tests used the earlier user/root publication flow.
+Skills and connector calls also worked with the user marketplace source temporarily moved
+aside; the installed cache and authentication remained in place. The new default user-only
+scope has component coverage but has not been rerun in native Desktop.
 
 The plugin contains the current workspace's Claude-targeted MCP servers and downloaded
 user-level skills, plus any managed MCP servers and skills. Add skills with `ug skills add`
@@ -59,8 +176,8 @@ start a new Cowork session to refresh connector and tool names.
 
 UG owns these local files:
 
-- Generated marketplace: `~/.ucode/claude-cowork-marketplace`
-- Selected Cowork root record: `~/.ucode/claude-cowork.json`
+- User-scope generated marketplace: `~/.ucode/claude-cowork-marketplace`
+- Installation/cleanup record: `~/.ucode/claude-cowork.json`
 
 Start a new Cowork session after configure. Plugin MCP servers connect asynchronously, so
 a tool can be absent on the first model turn. Cowork may also disconnect idle sessions
@@ -178,10 +295,11 @@ Cowork plugin support can still be disabled by Anthropic account feature flags o
 Desktop policy. UG treats installation as best-effort: failure warns but does not fail Claude
 Code setup. If the current workspace has no Claude-targeted MCP servers or managed skills, UG
 keeps the plugin installed but replaces its contents with an empty plugin so a prior workspace's
-tools and skills do not remain active. If Cowork has never been started and UG has no prior plugin
-state, setup skips silently. Only `ug revert` removes the plugin registration and generated
-marketplace. The native Desktop gateway profile is separate and remains under the cleanup rules
-below.
+tools and skills do not remain active. User-scope setup skips silently if Cowork has never been
+started and UG has no prior plugin state. `ug revert` removes UG's registration and owned
+marketplace sources through the cleanup described below. Quit and reopen Desktop after
+revert. The native gateway profile has separate cleanup rules. This plugin is registered
+in Cowork scope; Claude Code's existing configuration is unchanged.
 
 ## Models and authentication
 
@@ -312,7 +430,8 @@ otherwise it clears the selection. A later selection of another profile is prese
 Only this previous-selection ID is saved in `~/.ucode/claude-desktop.json`.
 Repeated configure retains it while UG remains selected.
 
-Revert also uninstalls `ug@unity-gateway-cowork` and any legacy
+Ordinary revert leaves root Desktop files untouched. It uninstalls
+`ug@unity-gateway-cowork` and any legacy
 `unity-gateway@unity-gateway-cowork` registration, removes their marketplace
 registration, and deletes UG's generated marketplace. This removes the MCP connectors and
 skills delivered by that plugin. It also cleans up an exact UG registration left in another
@@ -392,9 +511,11 @@ Slow metadata discovery does not delay unrelated MCP responses.
 
 Two automated Desktop journeys run in the existing Linux/Windows Claude integration jobs:
 system.ai models and subscription-relay MPS. Each asserts the generated profile, executes its
-credential helper, completes real Messages inference, installs Cowork through the Claude CLI,
-and discovers/calls DBSQL through the installed plugin using a read-only computed query.
+credential helper, completes real Messages inference, and discovers/calls web_search through
+the installed plugin to find Databricks' official website.
 Both check repeated configuration, preservation of unrelated settings, and revert cleanup.
+Both platforms invoke the Claude CLI's installed Cowork plugin and check registration against
+the user source, a matching cached manifest, and no generated root marketplace.
 All calls use the journey's existing model workspace. CUJ1 and CUJ2 compare complete Desktop
 profile/metadata JSON for system.ai models and non-relay Anthropic MPS. CUJ3's existing configure
 journey checks that its incompatible scoped aliases preserve all Desktop profile/metadata bytes.

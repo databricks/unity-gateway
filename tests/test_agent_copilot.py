@@ -138,6 +138,37 @@ class TestCatalogFromListings:
             "databricks-claude-sonnet-4-6"
         )
 
+    def test_prefers_the_anthropic_route_listing_with_its_limits(self):
+        gateway = AnthropicModelCatalog(
+            model_ids=[
+                "system.ai.claude-opus-4-8",
+                "anthropic-aigw-481f0baa-system.ai.gpt-6-luna",
+                "anthropic-aigw-73ea02b2-system.ai.glm-5-2",
+                "system.ai.claude-opus-4-1",
+            ],
+            model_id_to_display_name={},
+            model_id_to_limits={
+                "system.ai.claude-opus-4-8": (1_000_000, 128_000),
+                "anthropic-aigw-481f0baa-system.ai.gpt-6-luna": (922_000, 128_000),
+            },
+        )
+
+        models = copilot.catalog_from_listings([ModelServiceEntry(GPT)], [SONNET], gateway)
+
+        assert [(m.id, m.wire, m.listed_limits) for m in models] == [
+            ("system.ai.claude-opus-4-8", "anthropic", (1_000_000, 128_000)),
+            ("system.ai.gpt-6-luna", "responses", (922_000, 128_000)),
+        ]
+
+    def test_an_anthropic_route_listing_without_usable_models_falls_back(self):
+        gateway = AnthropicModelCatalog(
+            model_ids=[], model_id_to_display_name={}, error_msg="HTTP 404"
+        )
+
+        assert copilot.catalog_from_listings(
+            [ModelServiceEntry(GPT)], [SONNET], gateway
+        ) == catalog(SONNET, GPT)
+
     def test_no_answer_keeps_the_saved_catalog(self):
         assert copilot.catalog_from_listings(None, []) is None
 
@@ -177,6 +208,25 @@ class TestCopilotCatalog:
         assert saved["models"] == [SONNET, GPT]
         assert saved["discovered_at"].endswith("+00:00")
         assert copilot.copilot_catalog({"copilot_catalog": saved}) == catalog(SONNET, GPT)
+
+    def test_saved_catalog_keeps_the_listed_limits(self):
+        models = [
+            copilot.CopilotModel(SONNET, "anthropic"),
+            copilot.CopilotModel(GPT, "responses", (922_000, 128_000)),
+        ]
+
+        saved = copilot.catalog_state(models)
+        restored = copilot.copilot_catalog({"copilot_catalog": saved})
+
+        assert saved["limits"] == {GPT: [922_000, 128_000]}
+        assert [m.listed_limits for m in restored] == [None, (922_000, 128_000)]
+
+    def test_malformed_saved_limits_are_ignored(self):
+        saved = dict(copilot.catalog_state(catalog(GPT)), limits={GPT: [0, 1], SONNET: "x"})
+
+        restored = copilot.copilot_catalog({"copilot_catalog": saved})
+
+        assert [copilot.catalog_model_limits(m) for m in restored] == [None]
 
     def test_an_empty_saved_catalog_does_not_revive_older_lists(self):
         state = {"copilot_catalog": copilot.catalog_state([]), "codex_models": [GPT]}
@@ -474,6 +524,19 @@ class TestProviderCatalog:
         ]
         assert seen["listing"] == (MPS, "amazon_bedrock")
 
+    @pytest.mark.parametrize("tool", ["copilot", "vscode"])
+    def test_allow_all_adds_the_managed_default_for_the_cli_and_vscode(self, monkeypatch, tool):
+        _stub_provider_service(
+            monkeypatch,
+            {"provider_type": "anthropic", "targets": [], "allow_all_targets": True},
+            listed=["claude-opus-5"],
+        )
+        state = {"workspace": WS, "copilot_default_model": "claude-sonnet-5"}
+
+        models = copilot.provider_service_catalog(state, MPS, None, tool=tool)
+
+        assert sorted(m.id for m in models) == ["claude-opus-5", "claude-sonnet-5"]
+
     def test_allow_all_openai_takes_a_provider_ref_as_the_start_model(self, monkeypatch):
         seen = _stub_provider_service(
             monkeypatch,
@@ -518,7 +581,7 @@ class TestProviderCatalog:
             monkeypatch, {"provider_type": "anthropic", "targets": [], "allow_all_targets": True}
         )
 
-        with pytest.raises(RuntimeError, match="has no models ug copilot can use.*--model"):
+        with pytest.raises(RuntimeError, match="has no models Copilot can use.*--model"):
             copilot.provider_service_catalog({"workspace": WS}, MPS, None)
 
     def test_no_usable_model_lists_the_reasons(self, monkeypatch):
@@ -599,23 +662,48 @@ class TestLocationCatalog:
 
 class TestCopilotModelLimits:
     @pytest.mark.parametrize(
-        ("model", "limits"),
+        ("model", "tokens"),
         [
-            ("system.ai.claude-sonnet-5-5", (872_000, 128_000)),
-            ("system.ai.claude-haiku-5-5", (872_000, 128_000)),
-            ("system.ai.claude-haiku-4-5", (136_000, 64_000)),
-            ("system.ai.claude-sonnet-4-5", (168_000, 32_000)),
-            ("system.ai.claude-opus-4-8", (936_000, 32_000)),
-            ("system.ai.claude-opus-6", (936_000, 32_000)),
-            ("system.ai.claude-sonnet-4-7", (936_000, 32_000)),
-            ("system.ai.claude-opus-4-0", (168_000, 32_000)),
+            ("system.ai.claude-sonnet-5-5", (1_000_000, 128_000)),
+            ("system.ai.claude-haiku-5-5", (1_000_000, 128_000)),
+            ("system.ai.claude-opus-4-8", (1_000_000, 128_000)),
+            ("system.ai.claude-opus-6", (1_000_000, 128_000)),
+            ("system.ai.claude-sonnet-4-6", (1_000_000, 128_000)),
+            ("system.ai.claude-haiku-4-5", (200_000, 32_000)),
+            ("system.ai.claude-sonnet-4-5", (200_000, 32_000)),
+            ("system.ai.claude-opus-4-5", (200_000, 32_000)),
+            ("system.ai.claude-opus-4-1", (200_000, 32_000)),
+            ("system.ai.claude-opus-4-0", (200_000, 32_000)),
         ],
     )
-    def test_claude_limits(self, model, limits):
-        assert copilot.copilot_model_limits(model) == limits
+    def test_claude_token_limits_by_name(self, model, tokens):
+        assert copilot.claude_token_limits(model) == tokens
 
-    def test_gpt_keeps_copilots_defaults(self):
-        assert copilot.copilot_model_limits(GPT) is None
+    def test_gpt_has_no_limits_by_name(self):
+        assert copilot.claude_token_limits(GPT) is None
+
+    def test_claude_prompt_leaves_room_for_the_output(self):
+        model = copilot.CopilotModel(SONNET, "anthropic")
+
+        assert copilot.catalog_model_limits(model) == (872_000, 128_000)
+
+    def test_listed_limits_win_over_the_name(self):
+        model = copilot.CopilotModel(SONNET, "anthropic", (200_000, 64_000))
+
+        assert copilot.catalog_model_limits(model) == (136_000, 64_000)
+
+    def test_gpt_prompt_leaves_room_for_the_output(self):
+        model = copilot.CopilotModel(GPT, "responses", (922_000, 128_000))
+
+        assert copilot.catalog_model_limits(model) == (794_000, 128_000)
+
+    def test_gpt_without_listed_limits_keeps_copilots_defaults(self):
+        assert copilot.catalog_model_limits(copilot.CopilotModel(GPT, "responses")) is None
+
+    def test_a_listed_output_that_fills_the_window_is_ignored(self):
+        model = copilot.CopilotModel(SONNET, "anthropic", (64_000, 64_000))
+
+        assert copilot.catalog_model_limits(model) is None
 
 
 class TestRenderProvidersConfig:
@@ -694,7 +782,7 @@ class TestRenderProvidersConfig:
             },
         ]
 
-    def test_provider_service_claude_keeps_its_id_with_200k_limits(self):
+    def test_provider_service_claude_keeps_its_id_and_its_limits(self):
         claude, _ = provider_models(["claude-sonnet-4-6"], "anthropic")
 
         config = copilot.render_providers_config(claude, PROXY, "secret", provider_service=MPS)
@@ -706,10 +794,18 @@ class TestRenderProvidersConfig:
                 "wireModel": "claude-sonnet-4-6",
                 "name": "claude-sonnet-4-6",
                 "modelId": "claude-sonnet-4.6",
-                "maxPromptTokens": 168_000,
-                "maxOutputTokens": 32_000,
+                "maxPromptTokens": 872_000,
+                "maxOutputTokens": 128_000,
             }
         ]
+
+    def test_gpt_gets_its_listed_limits(self):
+        model = copilot.CopilotModel(GPT, "responses", (922_000, 128_000))
+
+        config = copilot.render_providers_config([model], PROXY, "secret")
+
+        assert config["models"][0]["maxPromptTokens"] == 794_000
+        assert config["models"][0]["maxOutputTokens"] == 128_000
 
 
 class TestBuildRuntimeEnv:
@@ -830,9 +926,7 @@ class TestMcpServerConfig:
 
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
         config_file = tmp_path / "mcp-config.json"
-        backup_file = tmp_path / "copilot-mcp-backup.json"
         monkeypatch.setattr(cp_mod, "COPILOT_MCP_CONFIG_PATH", config_file)
-        monkeypatch.setattr(cp_mod, "COPILOT_MCP_BACKUP_PATH", backup_file)
 
         config_file.write_text(
             json.dumps(
@@ -863,9 +957,7 @@ class TestMcpServerConfig:
 
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
         config_file = tmp_path / "mcp-config.json"
-        backup_file = tmp_path / "copilot-mcp-backup.json"
         monkeypatch.setattr(cp_mod, "COPILOT_MCP_CONFIG_PATH", config_file)
-        monkeypatch.setattr(cp_mod, "COPILOT_MCP_BACKUP_PATH", backup_file)
 
         config_file.write_text(
             json.dumps({"mcpServers": {"github": {"old": True}}}),
@@ -905,6 +997,88 @@ class TestMcpServerConfig:
         assert written["other"] is True
 
 
+class TestCopilotUserMcpConfig:
+    ENTRY = {"type": "local", "command": "ug", "args": ["mcp-proxy"], "tools": ["*"]}
+
+    def test_honors_copilot_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "copilot-home"))
+
+        copilot.write_user_mcp_servers({"svc": self.ENTRY}, set())
+
+        written = json.loads((tmp_path / "copilot-home" / "mcp-config.json").read_text())
+        assert written["mcpServers"] == {"svc": self.ENTRY}
+
+    def test_a_config_ug_cannot_parse_is_left_alone(self):
+        path = copilot.copilot_mcp_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        jsonc = '{\n  // mine\n  "mcpServers": {"mine": {"x": 1}},\n}\n'
+        path.write_text(jsonc, encoding="utf-8")
+        copilot.LEGACY_MCP_CONFIG_PATH.write_text(json.dumps({"mcpServers": {"old": self.ENTRY}}))
+
+        with pytest.raises(RuntimeError, match="Remove the comments"):
+            copilot.write_user_mcp_servers({"svc": self.ENTRY}, set())
+
+        assert path.read_text(encoding="utf-8") == jsonc
+        assert copilot.LEGACY_MCP_CONFIG_PATH.exists()
+
+    def test_failed_write_keeps_the_legacy_side_file(self, monkeypatch):
+        def fail(path, payload):
+            raise RuntimeError(f"Failed to write config file: {path}")
+
+        monkeypatch.setattr(copilot, "write_json_file", fail)
+        copilot.LEGACY_MCP_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        copilot.LEGACY_MCP_CONFIG_PATH.write_text(json.dumps({"mcpServers": {"old": self.ENTRY}}))
+
+        with pytest.raises(RuntimeError, match="Failed to write config file"):
+            copilot.migrate_legacy_mcp_config()
+
+        assert copilot.LEGACY_MCP_CONFIG_PATH.exists()
+
+    def test_a_legacy_side_file_that_cannot_be_deleted_raises_a_runtime_error(self, monkeypatch):
+        copilot.LEGACY_MCP_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        copilot.LEGACY_MCP_CONFIG_PATH.write_text("{}")
+
+        def unlink(self, missing_ok=False):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(Path, "unlink", unlink)
+
+        with pytest.raises(RuntimeError, match="Failed to remove"):
+            copilot.remove_legacy_mcp_config()
+
+    def test_empty_legacy_side_file_is_removed_without_a_write(self):
+        copilot.LEGACY_MCP_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        copilot.LEGACY_MCP_CONFIG_PATH.write_text("{}")
+
+        copilot.migrate_legacy_mcp_config()
+
+        assert not copilot.LEGACY_MCP_CONFIG_PATH.exists()
+        assert not copilot.copilot_mcp_config_path().exists()
+
+    def test_moves_legacy_side_file_servers_into_the_user_config(self):
+        path = copilot.copilot_mcp_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpServers": {"mine": {"x": 1}}, "other": True}))
+        copilot.LEGACY_MCP_CONFIG_PATH.write_text(
+            json.dumps({"mcpServers": {"svc": self.ENTRY, "gone": self.ENTRY}})
+        )
+        copilot.LEGACY_MCP_BACKUP_PATH.write_text("{}")
+
+        removed = copilot.write_user_mcp_servers({}, {"gone"})
+
+        assert removed == {"gone"}
+        written = json.loads(path.read_text())
+        assert written["other"] is True
+        assert written["mcpServers"] == {"mine": {"x": 1}, "svc": self.ENTRY}
+        assert not copilot.LEGACY_MCP_CONFIG_PATH.exists()
+        assert not copilot.LEGACY_MCP_BACKUP_PATH.exists()
+
+    def test_migration_is_a_no_op_without_a_legacy_side_file(self):
+        copilot.migrate_legacy_mcp_config()
+
+        assert not copilot.copilot_mcp_config_path().exists()
+
+
 def isolate_copilot_config_paths(monkeypatch, tmp_path):
     import ucode.config_io as config_io
     import ucode.state as state_mod
@@ -916,7 +1090,6 @@ def isolate_copilot_config_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(state_mod, "STATE_PATH", app_dir / "state.json")
     monkeypatch.setattr(copilot, "COPILOT_ENV_PATH", env_path)
     monkeypatch.setattr(copilot, "COPILOT_BACKUP_PATH", app_dir / "copilot-ucode-env.backup")
-    monkeypatch.setattr(copilot, "COPILOT_MCP_CONFIG_PATH", tmp_path / "missing-mcp.json")
     monkeypatch.setattr(copilot, "COPILOT_CONFIG_DIR", env_path.parent)
     return env_path
 
@@ -943,6 +1116,15 @@ class TestWriteToolConfig:
             "COPILOT_OFFLINE": "true",
         }
         assert state["managed_configs"]["copilot"]["keys"] == copilot.MANAGED_KEYS
+
+    @pytest.mark.parametrize(("reported", "recorded"), [("1.0.98", "1.0.98"), ("unknown", None)])
+    def test_records_the_cli_version_it_found(self, tmp_path, monkeypatch, reported, recorded):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: reported)
+
+        state = copilot.write_tool_config({"workspace": WS}, "gpt-5")
+
+        assert state.get(copilot.VERSION_STATE_KEY) == recorded
 
     def test_scrubs_a_token_an_earlier_version_wrote(self, tmp_path, monkeypatch):
         env_path = isolate_copilot_config_paths(monkeypatch, tmp_path)
@@ -1005,6 +1187,13 @@ class TestProxyHeaders:
 
         assert headers["User-Agent"] == f"ucode/0.9.0 copilot/1.0.91 {client_platform()}"
 
+    def test_asks_the_gateway_for_coding_agent_mode(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: "1")
+
+        headers = copilot.proxy_headers({})
+
+        assert headers["x-databricks-use-coding-agent-mode"] == "true"
+
     def test_adds_request_tags(self, monkeypatch):
         monkeypatch.setattr(copilot, "agent_version", lambda binary: "1")
         monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", '{"team":"ug"}')
@@ -1027,7 +1216,11 @@ class TestProxyHeaders:
             }
         )
 
-        assert headers == {"user-agent": "admin-agent", "X-Team": "data"}
+        assert headers == {
+            "x-databricks-use-coding-agent-mode": "true",
+            "user-agent": "admin-agent",
+            "X-Team": "data",
+        }
 
 
 class TestTokenProvider:
@@ -1139,7 +1332,14 @@ class TestLaunch:
                 options=copilot.LaunchOptions(launch_model=SONNET),
             )
 
-        assert seen["argv"] == ["copilot", "-p", "hi", "--model", f"dbx-responses/{GPT}"]
+        assert seen["argv"] == [
+            "copilot",
+            "--allow-all-mcp-server-instructions",
+            "-p",
+            "hi",
+            "--model",
+            f"dbx-responses/{GPT}",
+        ]
         assert seen["env"]["COPILOT_MODEL"] == f"dbx-responses/{GPT}"
 
     def test_starts_on_the_requested_launch_model(self, tmp_path, monkeypatch):
@@ -1261,7 +1461,7 @@ class TestLaunch:
             "main.ucode.claude_haiku",
         ]
         assert "headers" not in registry["providers"][0]
-        assert registry["models"][0]["maxPromptTokens"] == 168_000
+        assert registry["models"][0]["maxPromptTokens"] == 872_000
         assert seen["env"]["COPILOT_MODEL"] == "dbx-anthropic/main.ucode.claude-sonnet-4-6"
         assert copilot.LAUNCH_MODEL_LOCATION_KEY not in state
 
@@ -1320,24 +1520,20 @@ class TestValidateCmd:
         cmd = copilot.validate_cmd("copilot")
         assert "--prompt" in cmd
 
-    def test_adds_ucode_mcp_config_when_present(self, tmp_path, monkeypatch):
-        mcp_path = tmp_path / "ucode-mcp-config.json"
-        mcp_path.write_text("{}", encoding="utf-8")
-        monkeypatch.setattr(copilot, "COPILOT_MCP_CONFIG_PATH", mcp_path)
-
+    def test_lets_mcp_server_instructions_reach_the_model(self):
         cmd = copilot.validate_cmd("copilot")
 
-        assert cmd[:3] == ["copilot", "--additional-mcp-config", f"@{mcp_path}"]
+        assert cmd[:2] == ["copilot", "--allow-all-mcp-server-instructions"]
+        assert "--additional-mcp-config" not in cmd
 
 
 class TestWriteUserMcpServers:
     def test_batched_add_remove_preserves_other_keys(self, tmp_path, monkeypatch):
-        path = tmp_path / "ucode-mcp-config.json"
+        path = tmp_path / "mcp-config.json"
         path.write_text(
             json.dumps({"other": 1, "mcpServers": {"mine": {"type": "local"}, "gone": {}}})
         )
         monkeypatch.setattr(copilot, "COPILOT_MCP_CONFIG_PATH", path)
-        monkeypatch.setattr(copilot, "COPILOT_MCP_BACKUP_PATH", tmp_path / "backup.json")
 
         copilot.write_user_mcp_servers(
             {"svc": copilot.build_mcp_server_entry(["ug", "mcp-proxy", "u"])}, {"gone"}

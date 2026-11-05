@@ -5,6 +5,10 @@ vscode` packs the extension that ships with ug into a vsix, together with a `ug-
 holds the workspace, its models and the auth command, and installs it with VS Code's `code` command.
 The extension reads that file from its own folder, so ug never edits the user's settings.json.
 `ug revert` uninstalls the extension.
+
+The models are the Copilot CLI's, from one source: the catalog `ug configure` discovered for the
+workspace, a Model Provider Service (`--provider`), or the model services of a Unity Catalog schema
+(`--model-location`).
 """
 
 from __future__ import annotations
@@ -21,17 +25,23 @@ from typing import cast
 from xml.sax.saxutils import escape
 
 from ucode.agents.copilot import (
-    copilot_exclusion_reason,
-    copilot_model_limits,
-    uses_responses_api,
+    CopilotModel,
+    catalog_model_limits,
+    claude_model_name,
+    copilot_catalog,
+    location_catalog,
+    managed_http_headers,
+    provider_service_catalog,
+    unservable_static_models,
 )
-from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command, launch_token
-from ucode.databricks import build_auth_shell_command, discover_model_services
+from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command
+from ucode.databricks import build_auth_shell_command
 from ucode.managed_files import OS, current_os
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.system_cross_os import windows_program_files_dir
 from ucode.string_utils import model_picker_label
-from ucode.ui import console, print_heading, print_kv, print_warning
+from ucode.ui import console, print_heading, print_kv, print_note, print_warning
+from ucode.workspace import workspace_headers
 
 EXTENSION_DIR = Path(__file__).resolve().parent.parent / "vscode" / "extension"
 EXTENSION_ID = "databricks.unity-gateway"
@@ -161,36 +171,55 @@ def install_extension(code: Path, config: dict[str, object]) -> str:
     return f"installed {EXTENSION_ID} {version}"
 
 
-def _model_entry(model: str, name: str) -> dict[str, object]:
+def _model_entry(model: CopilotModel, name: str) -> dict[str, object]:
     entry: dict[str, object] = {
-        "id": model,
+        "id": model.id,
         "name": name,
-        "api": "responses" if uses_responses_api(model) else "chat_completions",
+        "family": claude_model_name(model.id),
+        # The wire names of Copilot's catalog; the extension dispatches on them (see APIS in
+        # vscode-extension/src/extension.ts).
+        "api": model.wire,
     }
-    # Claude's limits hold on Chat Completions too. Models without known limits get the
-    # extension's 128K-in, 32K-out default.
-    if limits := copilot_model_limits(model):
+    # Models without known limits get the extension's 128K-in, 32K-out default.
+    if limits := catalog_model_limits(model):
         entry["maxInputTokens"], entry["maxOutputTokens"] = limits
     return entry
 
 
-def model_entries(workspace: str, token: str) -> tuple[list[dict[str, object]], str | None]:
-    """The workspace's Claude and GPT models, each with the API the extension calls it on."""
-    # The models Copilot CLI offers: Gemini and open models, gpt-oss among them, fail on Copilot's
-    # requests or aren't served on every workspace.
-    claude, gpt, _gemini, _oss, reason = discover_model_services(workspace, token)
-    models = [
-        model
-        for model in dict.fromkeys([*claude.values(), *gpt])
-        if copilot_exclusion_reason(model) is None
-    ]
-    labels = {model: model_picker_label(model.rsplit(".", 1)[-1]) for model in models}
+def _catalog(state: dict, provider: str | None, location: str | None) -> list[CopilotModel]:
+    """The models Copilot CLI would offer from the same source; raises when there are none."""
+    if provider:
+        return provider_service_catalog(state, provider, None, tool="vscode")
+    if location:
+        return location_catalog(state, location)
+    catalog = copilot_catalog(state)
+    if catalog:
+        for model, reason in unservable_static_models(state):
+            print_warning(f"Skipping {model} from your workspace's managed config: {reason}.")
+    if not catalog:
+        reason = (state.get("_discovery_reasons") or {}).get("copilot")
+        raise RuntimeError(
+            f"No Claude or GPT models for VS Code ({reason or 'the workspace has none'})."
+        )
+    return catalog
+
+
+def model_entries(
+    state: dict, *, provider: str | None = None, location: str | None = None
+) -> list[dict[str, object]]:
+    """The models of the chosen source, each with the API the extension calls it on."""
+    catalog = _catalog(state, provider, location)
+    if provider:
+        # A service's targets are the provider's own ids, which is what its users know it by, and
+        # several of them differ only by a region the label would drop.
+        return [_model_entry(model, model.id) for model in catalog]
+    labels = {model: model_picker_label(claude_model_name(model.id)) for model in catalog}
     counts = Counter(labels.values())
     # As in Codex's picker: two models with the same label show their full ids instead.
     return [
-        _model_entry(model, model if counts[label] > 1 else label)
+        _model_entry(model, model.id if counts[label] > 1 else label)
         for model, label in labels.items()
-    ], reason
+    ]
 
 
 def auth_command(state: dict) -> str:
@@ -218,32 +247,45 @@ def next_steps() -> list[str]:
     ]
 
 
-def configure(state: dict) -> bool:
-    """Install the extension with this workspace's setup. Returns False, after a warning, if any
-    step fails."""
+def configure(state: dict, *, provider: str | None = None, location: str | None = None) -> bool:
+    """Install the extension with this workspace's setup and the models of ``provider`` (a Model
+    Provider Service), ``location`` (a ``<catalog>.<schema>``) or else the Copilot CLI's, with the
+    workspace's managed headers and its selection on a host that serves several workspaces. Returns
+    False, after a warning, if any step fails."""
     code = find_code()
     if code is None:
-        print_warning(
-            "VS Code's `code` command wasn't found. Install VS Code (on macOS, also run "
-            "\"Shell Command: Install 'code' command in PATH\"), then rerun `ug configure --agents vscode`."
+        print_note(
+            "VS Code's `code` command wasn't found, so VS Code was skipped. To add it, install VS "
+            "Code (on macOS, also run \"Shell Command: Install 'code' command in PATH\"), then "
+            "rerun `ug configure --agents copilot`."
         )
         return False
-    workspace = state["workspace"]
-    models, reason = model_entries(workspace, launch_token(state, workspace))
-    if not models:
+    try:
+        models = model_entries(state, provider=provider, location=location)
+    except RuntimeError as exc:
         # Keep what an earlier configure installed: a failed listing shouldn't wipe a working setup.
-        print_warning(
-            f"No Claude or GPT models for VS Code ({reason or 'the workspace has none'}). "
-            "VS Code was left unchanged."
-        )
+        print_warning(f"{exc} VS Code was left unchanged.")
         return False
-    config = {"workspace": workspace, "authCommand": auth_command(state), "models": models}
+    config: dict[str, object] = {
+        "workspace": state["workspace"],
+        "authCommand": auth_command(state),
+        "models": models,
+    }
+    if provider:
+        config["provider"] = provider
+    headers = managed_http_headers(state)
+    # Last, so an admin header can't select another workspace.
+    headers.update(workspace_headers(state["workspace"]))
+    if headers:
+        config["headers"] = headers
+    source = f" from {provider or location}" if provider or location else ""
     try:
         print_kv(
-            "VS Code extension", f"{install_extension(code, config)} with {len(models)} models"
+            "VS Code extension",
+            f"{install_extension(code, config)} with {len(models)} models{source}",
         )
     except RuntimeError as exc:
-        print_warning(f"{exc} Rerun `ug configure --agents vscode` to try again.")
+        print_warning(f"{exc} Rerun `ug configure --agents copilot` to try again.")
         return False
     print_heading("Next, in VS Code:")
     for line in next_steps():

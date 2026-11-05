@@ -1,6 +1,7 @@
 """CUJs: configure Antigravity CLI through ug, use its real TUI, and revert."""
 
 import json
+import time
 
 import pytest
 from utils.agents import antigravity
@@ -93,9 +94,26 @@ def test_ug_configure_antigravity_gemini_mps(
     assert state["antigravity_provider_model"] == model
     assert antigravity_provider in session.run("status").stdout
 
-    result = session.run(
-        "antigravity", "--", "-p", task.prompt, *antigravity.HEADLESS_ARGS, timeout=300
-    )
+    for attempt in range(antigravity.RESOURCE_EXHAUSTED_MAX_ATTEMPTS):
+        result = session.run(
+            "antigravity",
+            "--",
+            "-p",
+            task.prompt,
+            *antigravity.HEADLESS_ARGS,
+            timeout=300,
+            ok=False,
+        )
+        if not antigravity.resource_exhausted(result.stdout):
+            break
+        if attempt == antigravity.RESOURCE_EXHAUSTED_MAX_ATTEMPTS - 1:
+            break
+        delay = antigravity.resource_exhausted_retry_delay(attempt)
+        session.record(
+            f"antigravity-resource-exhausted-retry-{attempt + 1}.json",
+            {"attempt": attempt + 1, "delay_seconds": delay},
+        )
+        time.sleep(delay)
 
     task.assert_headless_answer("antigravity", result)
     assert antigravity.requested_models(session) == {model}

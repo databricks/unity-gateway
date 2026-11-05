@@ -32,7 +32,7 @@ API_MLFLOW_RESPONSES = "mlflow/v1/responses"
 API_OPENAI_CHAT_COMPLETIONS = "openai/v1/chat/completions"
 API_OPENAI_RESPONSES = "openai/v1/responses"
 MODEL_SERVICE_PARENT_SCHEMA_HEADER = "Databricks-Model-Service-Parent-Schema"
-# Names the smart-router recipe (e.g. `task_v3`) in use; sent only when smart routing is enabled.
+# Names the smart-router alias or recipe (e.g. `stable`); sent only when smart routing is enabled.
 SMART_ROUTER_RECIPE_HEADER = "Databricks-Smart-Router-Recipe"
 
 # Attribution tags the gateway records against every inference call. The value is
@@ -43,6 +43,10 @@ AI_GATEWAY_REQUEST_TAGS_HEADER = "Databricks-Ai-Gateway-Request-Tags"
 AI_GATEWAY_REQUEST_TAGS_ENV_VAR = "AI_GATEWAY_REQUEST_TAGS"
 # Extra Databricks request headers, one `Name: value` per line; `ug --header` adds to it.
 UG_HEADERS_ENV_VAR = "UG_HEADERS"
+# Launch-scoped opt-in to the AI Gateway's server-side Anthropic web search for Claude Code.
+UG_CLAUDE_SERVER_SIDE_WEB_SEARCH_ENV_VAR = "UG_CLAUDE_SERVER_SIDE_WEB_SEARCH"
+# Saved by `ug configure --enable-server-side-web-search`; absent means off.
+CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY = "claude_server_side_web_search"
 
 
 # MCP server registration scopes. Claude Code supports local/project/user; the

@@ -27,7 +27,7 @@ from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, NoReturn, cast, overload
+from typing import Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
@@ -54,6 +54,14 @@ from ucode.ui import (
     print_warning,
     spinner,
     status_subprocess_stdout,
+)
+from ucode.workspace import (
+    WorkspaceSelectionReason,
+    response_workspace_mismatch,
+    signin_redirect_reason,
+    workspace_failure_reason,
+    workspace_headers,
+    workspace_id_args,
 )
 
 UNIX_DATABRICKS_INSTALL_URL = (
@@ -116,6 +124,9 @@ class AnthropicModelCatalog:
     model_id_to_display_name: dict[str, str]
     error_msg: str | None = None
     model_id_to_description: dict[str, str] = field(default_factory=dict)
+    # (max_input_tokens, max_tokens) for the models the gateway reports limits for; it reports 0
+    # for unknown ones.
+    model_id_to_limits: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
 class CodexMpsModelCatalogUnavailable(RuntimeError):
@@ -315,6 +326,25 @@ def _capture_org_id(url: str, headers: Message | None) -> None:
         _WORKSPACE_ORG_IDS[hostname] = org_id
 
 
+def _workspace_response_failure(url: str, response: object) -> str | None:
+    """A failure reason when ``response`` is the sign-in page or answers for another workspace.
+
+    urllib follows a redirect to sign-in, which a multi-workspace host sends for a request that
+    selects no workspace; the HTML it lands on would otherwise surface as invalid JSON.
+    """
+    geturl = getattr(response, "geturl", None)
+    final_url = geturl() if callable(geturl) else None
+    if (
+        isinstance(final_url, str)
+        and urlparse(final_url).path.startswith("/login")
+        and not urlparse(url).path.startswith("/login")
+    ):
+        return signin_redirect_reason(url)
+    headers = getattr(response, "headers", None)
+    org_id = headers.get(_ORG_ID_HEADER) if isinstance(headers, Message) else None
+    return response_workspace_mismatch(url, org_id)
+
+
 def workspace_org_id(workspace: str) -> str | None:
     """The numeric workspace (org) id for ``workspace``, or None if no response has revealed it yet."""
     return _WORKSPACE_ORG_IDS.get(workspace_hostname(workspace))
@@ -344,14 +374,19 @@ def _http_get_bytes(
     if max_retries < 0:
         raise ValueError("max_retries must be non-negative")
 
-    request_headers = {**ug_headers(), "Authorization": f"Bearer {token}"}
+    request_headers = {**ug_headers(), **workspace_headers(url), "Authorization": f"Bearer {token}"}
     request_headers.update(headers or {})
     request = urllib_request.Request(url, headers=request_headers)
     for attempt in range(max_retries + 1):
         try:
             with urllib_request.urlopen(request, timeout=timeout) as response:
                 body = response.read()
-                _capture_org_id(url, getattr(response, "headers", None))
+                failure = _workspace_response_failure(url, response)
+                if failure is None:
+                    _capture_org_id(url, getattr(response, "headers", None))
+            if failure is not None:
+                _debug(f"GET {url}", failure)
+                return None, failure
             _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
             return body, None
         except urllib_error.HTTPError as exc:
@@ -369,6 +404,7 @@ def _http_get_bytes(
             body_excerpt = body.strip()[:200]
             if body_excerpt:
                 reason = f"{reason}: {body_excerpt}"
+            reason = workspace_failure_reason(url, exc.code, body) or reason
             if exc.code not in _HTTP_GET_RETRYABLE_STATUS_CODES or attempt == max_retries:
                 return None, reason
             retry_after = exc.headers.get("Retry-After") if exc.headers is not None else None
@@ -450,6 +486,7 @@ def _http_send_json(
     body_bytes = json.dumps(payload).encode("utf-8") if payload is not None else None
     request_headers = {
         **ug_headers(),
+        **workspace_headers(url),
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
     }
@@ -460,6 +497,10 @@ def _http_send_json(
     try:
         with urllib_request.urlopen(request, timeout=timeout) as response:
             body = response.read().decode("utf-8")
+            failure = _workspace_response_failure(url, response)
+        if failure is not None:
+            _debug(f"{method} {url}", failure)
+            return None, failure
         _debug(f"{method} {url}", f"HTTP {response.status}, {len(body)} bytes")
         if _debug_enabled():
             _debug("body", body[:4000])
@@ -482,6 +523,7 @@ def _http_send_json(
         body_excerpt = body.strip()[:200]
         if body_excerpt:
             reason = f"{reason}: {body_excerpt}"
+        reason = workspace_failure_reason(url, exc.code, body) or reason
         return None, reason
     except urllib_error.URLError as exc:
         _debug(f"{method} {url}", f"URLError: {exc.reason}")
@@ -970,7 +1012,14 @@ def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
 def ensure_databricks_cli_version(
     minimum: tuple[int, int, int] = MIN_DATABRICKS_CLI_VERSION,
 ) -> None:
-    clis = _discover_databricks_clis(use_cache=False)
+    discovery_was_cached = _DISCOVERED_DATABRICKS_CLIS_ORDERED is not None
+    clis = _discover_databricks_clis()
+    if discovery_was_cached and not any(
+        version is not None and version >= minimum for _, version in clis
+    ):
+        # Recheck an insufficient result before upgrading: a prior probe may have failed,
+        # or another process may have installed a CLI that meets this higher floor.
+        clis = _discover_databricks_clis(use_cache=False)
     if not clis:
         raise RuntimeError("Failed to read Databricks CLI version.")
 
@@ -1005,10 +1054,8 @@ def ensure_databricks_cli_version(
         ensure_databricks_cli_version(minimum)
         return
 
-    # A discovered CLI already meets the floor: drop the cached resolution so
-    # `databricks_cli_path()` re-resolves to it (it may differ from whatever was
-    # cached before this call, e.g. right after an install).
-    clear_databricks_cli_cache()
+    # Keep successful discovery for the remaining launch checks and auth calls.
+    # Installers invalidate it after replacing a binary.
 
 
 def databricks_cli_version() -> tuple[int, int, int] | None:
@@ -1129,7 +1176,9 @@ def external_bearer_configured() -> bool:
     )
 
 
-def save_databricks_cli_oauth_profile(workspace: str, profile: str, client_id: str) -> None:
+def save_databricks_cli_oauth_profile(
+    workspace: str, profile: str, client_id: str, *, workspace_id: str | None = None
+) -> None:
     """Persist the profile metadata normally written by ``databricks auth login``."""
     cfg_path = Path(os.environ.get("DATABRICKS_CONFIG_FILE") or "~/.databrickscfg").expanduser()
     parser = configparser.ConfigParser(default_section="@ucode-no-defaults@", interpolation=None)
@@ -1142,6 +1191,8 @@ def save_databricks_cli_oauth_profile(workspace: str, profile: str, client_id: s
             "auth_type": "databricks-cli",
             "client_id": client_id,
         }
+        if workspace_id:
+            parser[profile]["workspace_id"] = workspace_id
         cfg_path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(dir=cfg_path.parent, prefix=f".{cfg_path.name}.")
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -1260,8 +1311,11 @@ def list_profile_entries() -> list[dict]:
 
 def get_databricks_profiles() -> list[tuple[str, str]]:
     """Return [(host_url, profile_name), ...] from Databricks CLI profiles."""
-    profiles = list_profile_entries()
+    return profile_choices(list_profile_entries())
 
+
+def profile_choices(profiles: list[dict]) -> list[tuple[str, str]]:
+    """The non-PAT ``(host_url, profile_name)`` pairs among ``list_profile_entries`` results."""
     out: list[tuple[str, str]] = []
     pat = 0
     for p in profiles:
@@ -1288,6 +1342,38 @@ def find_profile_name_for_host(workspace: str) -> str | None:
         if host == normalized:
             return name
     return None
+
+
+def find_profile_name_for_workspace(workspace: str, workspace_id: str | None) -> str | None:
+    """Like :func:`find_profile_name_for_host`, preferring the profile for ``workspace_id``.
+
+    On a host that serves several workspaces any of its profiles mints the account token ug needs,
+    so another workspace's profile is the fallback.
+    """
+    if not workspace_id:
+        return find_profile_name_for_host(workspace)
+    normalized = workspace.rstrip("/")
+    fallback: str | None = None
+    for entry in list_profile_entries():
+        name = entry.get("name")
+        host = str(entry.get("host") or "").rstrip("/")
+        if not name or host != normalized or entry.get("auth_type") == "pat":
+            continue
+        if str(entry.get("workspace_id") or "") == workspace_id:
+            return str(name)
+        fallback = fallback or str(name)
+    return fallback
+
+
+def _new_profile_name(workspace: str) -> str:
+    label = (urlparse(workspace).hostname or "workspace").split(".")[0]
+    taken = {str(entry.get("name")) for entry in list_profile_entries() if entry.get("name")}
+    name = f"ug-{label}"
+    suffix = 2
+    while name in taken:
+        name = f"ug-{label}-{suffix}"
+        suffix += 1
+    return name
 
 
 def profile_auth_type(profile: str) -> str | None:
@@ -1365,23 +1451,33 @@ def apply_pat_environment(state: dict) -> None:
     ensure_pat_bearer(state.get("profile"))
 
 
-def run_databricks_login(workspace: str, profile: str | None = None) -> None:
+def run_databricks_login(
+    workspace: str, profile: str | None = None, *, workspace_id: str | None = None
+) -> None:
     """Run databricks auth login unconditionally.
 
     When ``profile`` is provided, it is passed via ``--profile``. Otherwise we
     fall back to looking up an existing profile by host so a stored session is
-    refreshed in place rather than overwriting another profile's tokens."""
+    refreshed in place rather than overwriting another profile's tokens.
+
+    ``workspace_id`` selects the workspace on a host that serves several. With no profile on that
+    host yet, the login names a new one: without a name the CLI saves none outside a terminal, and
+    its own default is shared by every workspace of the account."""
     print_section("Databricks Login")
     print_kv("Workspace", workspace)
     print_note("A browser may open for `databricks auth login`.")
     try:
-        profile_name = profile or find_profile_name_for_host(workspace)
+        profile_name = profile or find_profile_name_for_workspace(workspace, workspace_id)
+        login_host = workspace
+        if workspace_id and profile_name is None:
+            login_host = f"{workspace}?w={workspace_id}"
+            profile_name = _new_profile_name(workspace)
         cmd = [
             databricks_cli_path(),
             "auth",
             "login",
             "--host",
-            workspace,
+            login_host,
             *_profile_args(profile_name),
         ]
         run(cmd, env=build_databricks_cli_env(workspace, profile_name), timeout=300)
@@ -1396,7 +1492,11 @@ def run_databricks_login(workspace: str, profile: str | None = None) -> None:
 
 
 def ensure_databricks_auth(
-    workspace: str, profile: str | None = None, *, quiet: bool = False
+    workspace: str,
+    profile: str | None = None,
+    *,
+    quiet: bool = False,
+    workspace_id: str | None = None,
 ) -> None:
     """Check auth and login only if needed (used by launch path).
 
@@ -1410,7 +1510,7 @@ def ensure_databricks_auth(
         if not quiet:
             print_success(f"Databricks auth already available for {workspace}")
         return
-    run_databricks_login(workspace, profile)
+    run_databricks_login(workspace, profile, workspace_id=workspace_id)
 
 
 def _bearer_from_command(command: str) -> str:
@@ -1923,7 +2023,34 @@ def _looks_like_cli_permission_error(stderr: str | None) -> bool:
     return "403" in lowered or "not authorized" in lowered or "unauthorized" in lowered
 
 
+def _list_databricks_apps_over_http(workspace: str, profile: str | None) -> list[dict]:
+    """List apps with ug's own requests, which carry the workspace selection.
+
+    The CLI would select the workspace from its profile, which may be another workspace's profile
+    on the same host.
+    """
+    token = get_databricks_token(workspace, profile)
+    apps: list[dict] = []
+    page_token: str | None = None
+    while True:
+        params = {"page_size": "1000", **({"page_token": page_token} if page_token else {})}
+        payload, reason = _http_get_json(
+            f"{workspace.rstrip('/')}/api/2.0/apps?{urlencode(params)}", token, timeout=30
+        )
+        if payload is None:
+            if reason and ("HTTP 403" in reason or "permission" in reason.lower()):
+                raise PermissionDeniedError("Not authorized to list Databricks apps.")
+            raise RuntimeError(f"Failed to list Databricks apps ({reason}).")
+        apps.extend(_extract_apps_payload(payload))
+        next_token = payload.get("next_page_token") if isinstance(payload, dict) else None
+        if not isinstance(next_token, str) or not next_token:
+            return apps
+        page_token = next_token
+
+
 def list_databricks_apps(workspace: str, profile: str | None = None) -> list[dict]:
+    if workspace_headers(workspace):
+        return _list_databricks_apps_over_http(workspace, profile)
     env = build_databricks_cli_env(workspace)
     try:
         result = run(
@@ -1991,13 +2118,15 @@ def build_mcp_proxy_argv(
 
     Every coding agent registers this single command as a local stdio MCP
     server instead of a per-client HTTP endpoint with a bearer header. The proxy
-    forwards to ``url`` and mints a fresh OAuth token on each upstream request,
+    connects a small stdio relay to the shared local backend, which forwards to
+    ``url`` and mints a fresh OAuth token on each upstream request,
     so tokens never expire mid-session — the client only ever spawns a process,
     which keeps registration uniform across CLIs that disagree on HTTP-auth
     syntax. Like `build_auth_token_argv`, this resolves the absolute `ug`
     path and passes plain arguments (no shell), so it runs identically on every
     platform."""
     argv = [ug_binary(), "mcp-proxy", "--url", url, "--host", workspace.rstrip("/")]
+    argv += workspace_id_args(workspace)
     if profile:
         argv += ["--profile", profile]
     if use_pat:
@@ -2023,6 +2152,7 @@ def build_otel_headers_argv(
 ) -> list[str]:
     """Argv for Claude Code's refreshing OTLP headers helper."""
     argv = [ug_binary(), "otel-headers", "--host", workspace.rstrip("/")]
+    argv += workspace_id_args(workspace)
     if profile:
         argv += ["--profile", profile]
     if use_pat:
@@ -2442,18 +2572,19 @@ _CODING_AGENT_CONFIGS_API_PATH = "/api/ai-gateway/v2/coding-agent-configs"
 
 
 def _managed_config_user_agent() -> str:
-    """``ucode/<v>`` plus each ``<agent>/<v>`` ug already wrote into the OS-managed files, then the
-    client platform.
+    """``ucode/<v>`` plus each configured agent's ``<agent>/<v>``, then the client platform.
 
-    The fetch serves every agent, so it reports what ug configured on this machine; reading the
-    managed files avoids probing each agent's ``--version`` on every fetch."""
-    from ucode.agents import claude, codex  # the agent modules import this one
+    The fetch serves every agent, so it reports what ug configured on this machine: Claude Code and
+    Codex from the OS-managed files ug wrote, and Copilot, which has none, from the version
+    configure recorded. None of them probes an agent's ``--version`` on every fetch."""
+    from ucode.agents import claude, codex, copilot  # the agent modules import this one
     from ucode.managed_files import ug_agent_token
 
     tokens: list[str] = []
     for agent, user_agent in (
         ("claude", claude.managed_user_agent()),
         ("codex", codex.managed_user_agent()),
+        ("copilot", copilot.managed_user_agent()),
     ):
         token = ug_agent_token(user_agent or "", agent)
         if token:
@@ -2803,9 +2934,11 @@ _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
         "microsoft_foundry",
     ),
 }
+# Copilot Chat in VS Code can use the same provider types as Copilot CLI.
+_TOOL_PROVIDER_TYPES["vscode"] = _TOOL_PROVIDER_TYPES["copilot"]
 
 # Agents that can only use a Bedrock service's Claude targets.
-_CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot")
+_CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot", "vscode")
 
 # Provider types that expose Bedrock-style model ids (e.g.
 # `us.anthropic.claude-sonnet-4-6`, or region-less `anthropic.claude-*` on
@@ -2940,11 +3073,13 @@ def _provider_service_entry(raw_service: object) -> dict | None:
             api_types = entry.get("native_api_types")
             if isinstance(api_types, list):
                 target_api_types[model_id] = tuple(t for t in api_types if isinstance(t, str))
-    # Relayed = credential-less Anthropic (subscription relay). Only whether
+    # Relayed = credential-less Anthropic or OpenAI (subscription relay). Only whether
     # it's relayed matters here; the tier (Max vs Team/Enterprise) is governed
     # server-side, so both launch identically.
-    anthropic_cfg = config.get("anthropic")
-    relayed = isinstance(anthropic_cfg, dict) and "relayed" in anthropic_cfg
+    relayed = any(
+        isinstance(cfg, dict) and "relayed" in cfg
+        for cfg in (config.get("anthropic"), config.get("openai"))
+    )
     raw_type = config.get("provider_type")
     return {
         "name": full_name,
@@ -3039,7 +3174,7 @@ def list_tool_provider_services(
 def _provider_service_unusable_reason(tool: str, service: dict, service_name: str) -> str | None:
     """Why ``tool`` can't route through ``service``, or None when it can.
 
-    Beyond the provider-type match, only claude can use a relayed (subscription) service, and
+    Beyond the provider-type match, only claude (Anthropic) or codex (OpenAI) can use a relayed (subscription) service, and
     claude and copilot can use a Bedrock service only if it has a Claude target — otherwise there's
     no routable model id to pin — or is ``allow_all_targets``, in which case the model id comes
     from elsewhere (the managed config's default or ``--model``). (Anthropic services use canonical
@@ -3052,11 +3187,18 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
             f"Model provider service '{service_name}' is a '{provider_type}' provider, "
             f"which {tool} can't route to (supported: {supported})."
         )
-    if tool != "claude" and service.get("relayed"):
-        return (
-            f"Model provider service '{service_name}' relays a Claude subscription, which only "
-            f"Claude Code can use. Pick a Model Provider Service with an API key for {tool}."
+    if service.get("relayed"):
+        relay_tool, subscription, display = (
+            ("codex", "ChatGPT", "Codex")
+            if provider_type == "openai"
+            else ("claude", "Claude", "Claude Code")
         )
+        if tool != relay_tool:
+            return (
+                f"Model provider service '{service_name}' relays a {subscription} subscription, "
+                f"which only {display} can use. Pick a Model Provider Service with an API key "
+                f"for {tool}."
+            )
     if (
         tool in _CLAUDE_ONLY_BEDROCK_TOOLS
         and provider_type in BEDROCK_PROVIDER_TYPES
@@ -3504,6 +3646,10 @@ def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | 
 _NO_ANTHROPIC_MODEL_IDS = "AI Gateway returned no Anthropic model ids"
 
 
+def _positive_int(value: object) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
 def list_anthropic_model_catalog(
     workspace: str,
     token: str,
@@ -3525,6 +3671,7 @@ def list_anthropic_model_catalog(
     model_ids: list[str] = []
     display_names: dict[str, str] = {}
     descriptions: dict[str, str] = {}
+    limits: dict[str, tuple[int, int]] = {}
     seen: set[str] = set()
     for model in data.get("data", []):
         if not isinstance(model, dict):
@@ -3539,11 +3686,15 @@ def list_anthropic_model_catalog(
             description = model.get("description")
             if isinstance(description, str) and description:
                 descriptions[model_id] = description
+            max_input, max_output = model.get("max_input_tokens"), model.get("max_tokens")
+            if _positive_int(max_input) and _positive_int(max_output):
+                limits[model_id] = (max_input, max_output)
     if model_ids:
         return AnthropicModelCatalog(
             model_ids=model_ids,
             model_id_to_display_name=display_names,
             model_id_to_description=descriptions,
+            model_id_to_limits=limits,
         )
     return AnthropicModelCatalog(
         model_ids=[],
@@ -3605,8 +3756,9 @@ def fetch_ai_gateway_claude_models(workspace: str, token: str) -> dict[str, str]
 #   system.ai.claude-opus-4-7[1m]   -> claude-opus-4-7
 #   main.ucode.claude_haiku         -> claude_haiku
 #   gpt-5.5                         -> gpt-5.5 (one dot is a version, not a schema)
+# A region prefix is dotted on Bedrock (`us.anthropic.`) and slashed on Azure (`eu/gpt-5.6-luna`).
 _BARE_MODEL_NAME_PATTERN = re.compile(
-    r"^(?:[^.\[]+\.[^.\[]+\.)?(?:anthropic\.)?(?:databricks-)?(?P<name>[^\[]*)"
+    r"^(?:[^.\[]+\.[^.\[]+\.)?(?:[^/.\[]+/)?(?:anthropic\.)?(?:databricks-)?(?P<name>[^\[]*)"
 )
 
 
@@ -3792,15 +3944,35 @@ def _raise_model_service_permission_failure(workspace: str, model_service_reason
     )
 
 
+# Probes that returned an accessible model service, keyed by (workspace, token) so a re-login or a
+# different credential probes again. `ucode codex` configures once for auto-setup and again on the
+# launch path; re-probing a gateway that just answered only gives the flaky listing another chance
+# to fail. Failures, empty listings, and inconclusive results are never cached.
+_GATEWAY_PROBE_CACHE: dict[tuple[str, str], GatewayProbe] = {}
+
+
+def clear_gateway_probe_cache() -> None:
+    """Forget successful gateway probes (used by tests)."""
+    _GATEWAY_PROBE_CACHE.clear()
+
+
 def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe:
     """Return the model service probe, raising if model service access can't be verified."""
+    cache_key = (workspace, token)
+    cached = _GATEWAY_PROBE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     model_service_probe = _probe_model_services(workspace, token)
+    if model_service_probe.resource_available:
+        _GATEWAY_PROBE_CACHE[cache_key] = model_service_probe
     if model_service_probe.reachable:
         # resource_available, reachable-but-empty, and inconclusive are all non-fatal: the
         # caller surfaces the detail as a warning when no accessible model service came back.
         return model_service_probe
 
     reason = model_service_probe.detail
+    if isinstance(reason, WorkspaceSelectionReason):
+        raise RuntimeError(reason)
     if _looks_like_definitive_auth_failure(reason):
         _raise_ai_gateway_auth_failure(workspace, reason)
     if _looks_like_scope_failure(reason):
@@ -3815,9 +3987,14 @@ def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe
             "--skip-preflight to launch without this check."
         )
 
+    if _is_not_found_reason(reason):
+        raise RuntimeError(
+            "Databricks Unity Gateway is not enabled on this workspace: model services "
+            f"({reason}) are not available. See {AI_GATEWAY_DOCS_URL}"
+        )
     raise RuntimeError(
-        "Databricks Unity Gateway is not enabled on this workspace: model services "
-        f"({reason}) are not available. See {AI_GATEWAY_DOCS_URL}"
+        f"Could not verify Databricks Unity Gateway model services on {workspace} "
+        f"({reason}). See {AI_GATEWAY_DOCS_URL}"
     )
 
 
