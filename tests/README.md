@@ -337,9 +337,10 @@ fresh listing, local discovery and automatic recovery resume; pagination retains
 ownership within that listing. Discovery and unrelated replies continue during
 interactive login. Metadata-helper cases return `False` for failed lookups and absent
 connection kinds; later operations look up metadata again.
-A stream scenario covers tool failure, explicit login, tool refresh, task retry, and later
-reauthentication; explicit retry also works after cancellation. Discovery auth errors and
-service-scoped login-URL challenges expose recovery after earlier success. The authentication
+A stream scenario covers tool failure (including a generic connector error), explicit login,
+tool refresh, task retry, and later reauthentication; explicit retry also works after
+cancellation. Discovery auth errors and service-scoped login-URL challenges expose recovery
+after earlier success. The authentication
 tool explicitly reports known sign-in requirements; successful discovery or login clears that
 message while leaving recovery available. Gmail/Calendar
 tool-error and login-elicitation regressions check automatic sign-in and one request replay,
@@ -529,6 +530,12 @@ without calling Gmail; login and service calls in the same model response are re
 Model requests are not retried. Connector tools and CLI results are synthetic to isolate
 skill compliance from credentials; these are not native Desktop OAuth, Gmail, Cowork,
 proxy reconnect, or sleep/resume tests.
+
+Cowork Gmail cases use the generated skill and proxy authentication description after a
+generic search error. Authentication starts deferred: Claude must discover it, try it once,
+then retry Gmail only after successful login. Successful recovery requires a random value
+from the tool result; persistent errors, cancellation, and an absent authentication tool
+must end without repeated login or service calls.
 
 The suite is excluded from default collection. Run it with an explicitly chosen workspace,
 profile, and exact Claude model-service name; missing inputs fail rather than skip:

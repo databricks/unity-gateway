@@ -1109,6 +1109,8 @@ class TestMcpBridgeConnectionLogin:
         "failure_message",
         [
             "Sign-in required",
+            "The external MCP tool failed. Check the tool input or MCP service connection, "
+            "and contact the service owner if the problem persists.",
             'Atlassian tool error: {"error":true,"message":"You don\'t have permission to '
             'connect from this IP address. Please ask your organization admin for access."}',
         ],

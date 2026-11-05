@@ -1,6 +1,6 @@
 ---
 name: unity-gateway-connectors
-description: "Use for requests about these Unity Gateway connectors, including after a break. Discover and use current tools. Load this skill for missing tools or sign-in recovery. Connectors: `slack`, `gmail`."
+description: "Use for requests about these Unity Gateway connectors, including after a break. Discover and use current tools. Load this skill for connector errors, missing tools, or sign-in recovery. Connectors: `slack`, `gmail`."
 ---
 
 Use current tools rather than earlier connection-status notices to assess availability.
@@ -15,8 +15,8 @@ Desktop manages connector startup independently of this skill's plugin. Loading 
 
 If a connector returns a sign-in URL or asks the user to reconnect, use its discovered `authenticate` tool before falling back to manual login instructions. A warning not to retry service tools applies until sign-in succeeds; `authenticate` is the recovery action. Do not ask the user to report back after signing in.
 
-On an access denial, including an IP-address denial, try the connector's discovered `authenticate` tool once before recommending administrator or network changes. Describe this as a sign-in recovery attempt; the error alone does not establish its root cause. If the denial persists after successful sign-in and retry, report the original error and stop retrying authentication. Do not recommend disabling access controls.
+After any connector error, including a generic tool failure or access/IP-address denial, try that connector's `authenticate` tool once before giving up or asking the user to retry later. If it is not exposed, discover it with `ToolSearch` when available; call only its exact discovered name. This is a recovery attempt, not proof that credentials expired. Attempt authentication at most once per connector for the current request. If the service call still fails after successful sign-in and retry, report the error and stop; do not authenticate again. Do not recommend disabling access controls.
 
 After any successful sign-in, rediscover tools and continue the original task in the same turn when its tools are available. If they remain missing, follow the retry guidance above. If sign-in is canceled, fails, or times out, explain the observed failure and the recovery instructions returned by the tool. Do not claim success.
 
-If no authentication tool is available, relay any sign-in link or recovery instructions returned by the connector. Do not invent a settings path or assume an access denial or generic tool failure means the user's token expired.
+If no authentication tool is available after discovery, report the connector error and relay any sign-in link or recovery instructions it returned. Do not invent a settings path or treat a failed connector call as a startup delay.

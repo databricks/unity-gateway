@@ -724,14 +724,18 @@ elicitation stay unchanged. `../test_databricks.py` returns `False` for unsuppor
 and failed requests; later operations look up metadata again. `../test_cowork_plugin.py` also checks generated
 sign-in/retry guidance. These component tests replace external login and do not establish
 native Cowork browser recovery.
-Generated-guidance checks include one sign-in attempt for access/IP denials and stopping
-authentication retries if the denial persists. They verify the instructions, not model compliance.
+Generated-guidance checks include one sign-in attempt for any connector error, including
+generic failures and access/IP denials, and stopping if recovery fails. They verify the
+instructions, not model compliance.
 The separately selected `../connector_behavior/` suite tests model compliance using a real Claude
 model and synthetic connector tools: available Slack tools despite a stale notice, deferred tools
 found through discovery, and missing tools prompting a retry-later response without sleeps or
 startup polling. A visible authentication tool must not trigger login by itself; an explicit
 sign-in requirement must trigger one login followed by task completion. These replace the old
-fixed-wait scenarios. Code cases require sign-in before
+fixed-wait scenarios. Cowork Gmail cases cover generic search errors with deferred authentication:
+discover and authenticate once, resume only after successful sign-in, and stop after persistent
+errors, cancellation, or missing authentication tools. They use the generated proxy description
+alongside the skill. Code cases require sign-in before
 cached Gmail tools are called, with native HTTP CLI login or proxy authentication. Successful
 sign-in resumes the task; cancellation stops without a service call. CLI results are synthetic;
 these cases do not establish native Desktop OAuth, Gmail, sleep/resume, discovery, or proxy

@@ -13,6 +13,7 @@ import pytest
 
 from ucode.agents.desktop.cowork import CONNECTOR_SKILL_NAME, _write_connector_skill
 from ucode.agents.desktop.cowork_hooks import idle_resume_context
+from ucode.mcp_proxy import _ConnectionLogin, _McpBridge
 
 SLACK_TOOL_NAME = "mcp__slack__search"
 SLACK_TOOL = {
@@ -420,6 +421,104 @@ def test_code_authenticates_before_calling_cached_gmail_tools(
                 result = f"Today's Gmail: documentation task {marker} is due today."
             else:
                 pytest.fail(f"Claude called an unexposed tool: {name}")
+            results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": action["id"],
+                    "content": result,
+                    "is_error": failed,
+                }
+            )
+        conversation.append({"role": "user", "content": results})
+    pytest.fail(f"Claude did not finish within 12 model turns: {conversation}")
+
+
+@pytest.mark.parametrize("outcome", ["recovered", "persistent-error", "canceled", "no-auth-tool"])
+def test_cowork_recovers_from_generic_gmail_error_once(tmp_path, claude_messages, outcome):
+    """Scenario: Gmail search fails generically; authentication is deferred behind discovery.
+
+    Expected: discover Gmail authentication, try it once, and resume only after success.
+    Persistent errors, canceled login, or a missing auth tool end without a recovery loop.
+    """
+    _write_connector_skill(tmp_path, ["gmail"])
+    skill = (tmp_path / CONNECTOR_SKILL_NAME / "SKILL.md").read_text()
+    system = "You are Claude in Desktop Cowork. Follow this loaded connector skill:\n" + skill
+    search_name = "mcp__gmail__gmail_search"
+    search = {
+        "name": search_name,
+        "description": "Search the user's Gmail.",
+        "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}},
+    }
+    workspace = "https://example.databricks.com"
+    bridge = _McpBridge(
+        _ConnectionLogin(f"{workspace}/ai-gateway/mcp-services/system.ai.gmail", workspace, None)
+    )
+    generated_auth = bridge._authentication_tool()
+    auth_name = "mcp__gmail__authenticate"
+    auth = {
+        "name": auth_name,
+        "description": generated_auth["description"],
+        "input_schema": generated_auth["inputSchema"],
+    }
+    tools = [DISCOVERY_TOOL, search]
+    conversation = [{"role": "user", "content": "Please summarize my Gmail from today."}]
+    generic_error = (
+        "The external MCP tool failed. Check the tool input or MCP service connection, "
+        "and contact the service owner if the problem persists."
+    )
+    marker = "MAIL-" + secrets.token_hex(3)
+    service_calls = 0
+    auth_calls = 0
+    recovery_discovered = False
+    authenticated = False
+    for _ in range(12):
+        authenticated_before_response = authenticated
+        exposed = {tool["name"] for tool in tools}
+        response = claude_messages(system, conversation, tools)
+        content = response["content"]
+        conversation.append({"role": "assistant", "content": content})
+        actions = [block for block in content if block["type"] == "tool_use"]
+        if not actions:
+            assert response["stop_reason"] == "end_turn", response
+            answer = "\n".join(block["text"] for block in content if block["type"] == "text")
+            assert answer and recovery_discovered, conversation
+            assert auth_calls == (0 if outcome == "no-auth-tool" else 1), conversation
+            assert service_calls == (2 if authenticated else 1), conversation
+            if outcome == "recovered":
+                assert marker in answer, conversation
+            else:
+                assert marker not in answer, conversation
+            return
+        assert response["stop_reason"] == "tool_use", response
+        results = []
+        for action in actions:
+            name = action["name"]
+            assert name in exposed, "Claude guessed an unexposed tool"
+            failed = False
+            if name == "ToolSearch":
+                recovery_discovered = recovery_discovered or service_calls > 0
+                if service_calls and outcome != "no-auth-tool":
+                    tools = [DISCOVERY_TOOL, search, auth]
+                    result = json.dumps([search, auth])
+                else:
+                    result = json.dumps([search])
+            elif name == auth_name:
+                auth_calls += 1
+                assert service_calls == 1 and auth_calls == 1, conversation
+                authenticated = outcome != "canceled"
+                failed = not authenticated
+                result = "Authentication complete." if authenticated else "Login canceled."
+            elif name == search_name:
+                service_calls += 1
+                assert service_calls <= 2, conversation
+                if service_calls > 1:
+                    assert authenticated_before_response, "Claude retried before sign-in succeeded"
+                failed = service_calls == 1 or outcome == "persistent-error"
+                result = (
+                    generic_error if failed else f"Today's Gmail: review {marker} is due today."
+                )
+            else:
+                pytest.fail(f"Claude called an unexpected tool: {name}")
             results.append(
                 {
                     "type": "tool_result",
