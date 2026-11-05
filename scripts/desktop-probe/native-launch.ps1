@@ -44,6 +44,7 @@ try {
             [Windows.Automation.AutomationElement]::NameProperty, 'Cowork')
         $cowork = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $coworkCondition)
         $report.coworkControlFound = $null -ne $cowork
+        if (-not $cowork) { throw 'Cowork control is unavailable' }
         if ($cowork) {
             $pattern = $null
             if ($cowork.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
@@ -56,37 +57,92 @@ try {
             $report.coworkActivated = $true
             Start-Sleep -Seconds 10
         }
-    }
-    $report.processExited = $process.HasExited
-    if ($process.HasExited) { $report.exitCode = $process.ExitCode }
-    $report.processes = @(Get-Process -Name Claude -ErrorAction SilentlyContinue |
-        Select-Object Id, MainWindowTitle, @{Name='hasWindow'; Expression={$_.MainWindowHandle -ne 0}})
-    $report.windows = @($windows | ForEach-Object {
-        $element = [Windows.Automation.AutomationElement]::FromHandle($_.MainWindowHandle)
-        $controls = $element.FindAll([Windows.Automation.TreeScope]::Descendants,
-            [Windows.Automation.Condition]::TrueCondition)
-        @{
-            title = $_.MainWindowTitle
-            controls = @($controls | Select-Object -First 150 | ForEach-Object {
-                @{ name = $_.Current.Name; type = $_.Current.ControlType.ProgrammaticName }
-            })
+        $configuration = Get-Content (Join-Path $OutputDirectory 'configuration.json') -Raw | ConvertFrom-Json
+        $modelCondition = [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::NameProperty, "Model: $($configuration.targetModelLabel)")
+        if (-not $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $modelCondition)) {
+            throw 'Cowork did not select the expected system.ai Claude model'
         }
-    })
-    $rect = $window.Current.BoundingRectangle
-    $bounds = [Drawing.Rectangle]::new([int]$rect.X, [int]$rect.Y, [int]$rect.Width, [int]$rect.Height)
-    $bitmap = [Drawing.Bitmap]::new($bounds.Width, $bounds.Height)
-    $graphics = [Drawing.Graphics]::FromImage($bitmap)
-    try {
-        $graphics.CopyFromScreen($bounds.Location, [Drawing.Point]::Empty, $bounds.Size)
-        $bitmap.Save((Join-Path $OutputDirectory 'native-launch.png'), [Drawing.Imaging.ImageFormat]::Png)
-    } finally {
-        $graphics.Dispose()
-        $bitmap.Dispose()
+        $report.model = $configuration.targetModel
+        $editorCondition = [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::NameProperty, 'Write your prompt to Claude')
+        $editor = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $editorCondition)
+        if (-not $editor) { throw 'Cowork prompt editor is unavailable' }
+        $prompt = 'Reply with only the digits for forty-eight thousand two hundred thirteen. Do not use tools.'
+        $valuePattern = $null
+        if ($editor.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$valuePattern)) {
+            $valuePattern.SetValue($prompt)
+        } else {
+            $editor.SetFocus()
+            [Windows.Forms.SendKeys]::SendWait($prompt)
+        }
+        Start-Sleep -Seconds 1
+        $submitCondition = [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::NameProperty, 'Start task')
+        $submit = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $submitCondition)
+        if (-not $submit -or -not $submit.Current.IsEnabled) { throw 'Cowork Start task is unavailable or disabled' }
+        $submit.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+        $report.promptSubmitted = $true
+        $deadline = [DateTime]::UtcNow.AddSeconds(240)
+        $stableSince = $null
+        do {
+            Start-Sleep -Seconds 2
+            $controls = $window.FindAll([Windows.Automation.TreeScope]::Descendants,
+                [Windows.Automation.Condition]::TrueCondition)
+            $answer = @($controls | Where-Object {
+                $_.Current.ControlType -eq [Windows.Automation.ControlType]::Text -and
+                $_.Current.Name.Trim() -eq '48213'
+            })
+            $stopControls = @($controls | Where-Object {
+                $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and
+                $_.Current.Name -match '^Stop( |$)' -and $_.Current.IsEnabled
+            })
+            if ($answer.Count -and -not $stopControls.Count) {
+                if (-not $stableSince) { $stableSince = [DateTime]::UtcNow }
+                if (([DateTime]::UtcNow - $stableSince).TotalSeconds -ge 6) {
+                    $report.responseAsserted = $true
+                    $report.expectedResponse = '48213'
+                    break
+                }
+            } else {
+                $stableSince = $null
+            }
+        } until ([DateTime]::UtcNow -ge $deadline)
+        if (-not $report.responseAsserted) { throw 'Cowork did not show the expected response within 240 seconds' }
     }
 } catch {
     $report.error = $_.Exception.Message
-    $global:LASTEXITCODE = 1
 } finally {
+    try {
+        $report.processExited = $process.HasExited
+        if ($process.HasExited) { $report.exitCode = $process.ExitCode }
+        $report.processes = @(Get-Process -Name Claude -ErrorAction SilentlyContinue |
+            Select-Object Id, MainWindowTitle, @{Name='hasWindow'; Expression={$_.MainWindowHandle -ne 0}})
+        $report.windows = @($windows | ForEach-Object {
+            $element = [Windows.Automation.AutomationElement]::FromHandle($_.MainWindowHandle)
+            $controls = $element.FindAll([Windows.Automation.TreeScope]::Descendants,
+                [Windows.Automation.Condition]::TrueCondition)
+            @{
+                title = $_.MainWindowTitle
+                controls = @($controls | Select-Object -First 150 | ForEach-Object {
+                    @{ name = $_.Current.Name; type = $_.Current.ControlType.ProgrammaticName }
+                })
+            }
+        })
+        $rect = $window.Current.BoundingRectangle
+        $bounds = [Drawing.Rectangle]::new([int]$rect.X, [int]$rect.Y, [int]$rect.Width, [int]$rect.Height)
+        $bitmap = [Drawing.Bitmap]::new($bounds.Width, $bounds.Height)
+        $graphics = [Drawing.Graphics]::FromImage($bitmap)
+        try {
+            $graphics.CopyFromScreen($bounds.Location, [Drawing.Point]::Empty, $bounds.Size)
+            $bitmap.Save((Join-Path $OutputDirectory 'native-launch.png'), [Drawing.Imaging.ImageFormat]::Png)
+        } finally {
+            $graphics.Dispose()
+            $bitmap.Dispose()
+        }
+    } catch {
+        $report.captureError = $_.Exception.Message
+    }
     Get-Process -Name Claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     $json = $report | ConvertTo-Json -Depth 8
     if ($env:DATABRICKS_BEARER) { $json = $json.Replace($env:DATABRICKS_BEARER, '[REDACTED]') }

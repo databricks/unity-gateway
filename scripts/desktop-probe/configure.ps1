@@ -15,5 +15,12 @@ $profilePath = Join-Path $env:LOCALAPPDATA 'Claude-3p/configLibrary/5b36a0b9-b56
 if (-not (Test-Path $profilePath)) { throw 'UG did not create its Desktop profile' }
 $profile = Get-Content -Raw $profilePath | ConvertFrom-Json
 if ($profile.inferenceProvider -ne 'gateway') { throw 'Desktop profile is not using gateway inference' }
-@{ configured = $true; provider = $profile.inferenceProvider } | ConvertTo-Json |
+$targetModel = 'system.ai.claude-haiku-4-5'
+$models = @($profile.inferenceModels | Where-Object { $_.name -eq $targetModel })
+if ($models.Count -ne 1) { throw 'Expected system.ai Claude model is missing from the configured profile' }
+$label = $models[0].labelOverride
+if (-not $label) { $label = $targetModel }
+$matchingLabels = @($profile.inferenceModels | Where-Object { $_.labelOverride -eq $label -or $_.name -eq $label })
+if ($matchingLabels.Count -ne 1) { throw 'Configured target model label is ambiguous' }
+@{ configured = $true; provider = $profile.inferenceProvider; targetModel = $targetModel; targetModelLabel = $label } | ConvertTo-Json |
     Set-Content "$env:RUNNER_TEMP/claude-desktop-probe/configuration.json"
