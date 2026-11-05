@@ -418,7 +418,6 @@ def run_claude_pty(
             paste_deadline = 0.0
             verify_deadline = 0.0
             esc_deadline = 0.0
-            cancel_started = 0.0
             submit_attempts = 0
             switch_complete: OutputMarkerDetector | None = None
             model_pending = False
@@ -511,7 +510,8 @@ def run_claude_pty(
                     phase = "pasting"
                     log("[WARN] waiting_to_switch timed out; skipping /model, pasting prompt")
                 elif (
-                    phase == "switching"
+                    phase in ("switching", "waiting_cancel")
+                    and now >= esc_deadline
                     and switch_complete is not None
                     and switch_complete.triggered
                 ):
@@ -527,32 +527,21 @@ def run_claude_pty(
                         "Smart Routing could not confirm the model switch; "
                         "waiting for Claude before replaying your prompt.",
                     )
-                    cancel_started = now
+                    switch_started = now
                     esc_deadline = now + ESC_GAP_S
                     phase = "waiting_cancel"
                     log(f"[ERR] direct model switch timed out for {routed_model!r}")
-                elif phase == "waiting_cancel":
-                    if (
-                        now >= esc_deadline
-                        and switch_complete is not None
-                        and switch_complete.triggered
-                    ):
-                        # A late success still needs its settings write restored.
-                        phase = "waiting_persist"
-                        switch_started = now
-                        log("[SWITCH] model command completed after timeout")
-                    elif now - cancel_started >= READY_TIMEOUT_S:
-                        # A quiet redraw does not prove /model has stopped writing.
-                        # Release other launches and watch for its late settings write.
-                        defer_model_setting()
-                        deferred_restore = True
-                        inject_note(
-                            1,
-                            "Smart Routing could not confirm Claude was ready. "
-                            "Resend your prompt when Claude is ready.",
-                        )
-                        phase = "done"
-                        log("[WARN] Claude did not settle after Escape; automatic replay stopped")
+                elif phase == "waiting_cancel" and now - switch_started >= READY_TIMEOUT_S:
+                    # A quiet redraw does not prove /model has stopped writing.
+                    defer_model_setting()
+                    deferred_restore = True
+                    inject_note(
+                        1,
+                        "Smart Routing could not confirm Claude was ready. "
+                        "Resend your prompt when Claude is ready.",
+                    )
+                    phase = "done"
+                    log("[WARN] Claude did not settle after Escape; automatic replay stopped")
                 elif phase == "waiting_persist" and model_switch_persisted():
                     restore_model_setting()
                     model_pending = False

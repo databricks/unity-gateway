@@ -1319,10 +1319,8 @@ the file task, and normal exit. The managed default alone routes only subagents,
 orchestrator; the
 managed-default skill-toggle cases cover it.
 
-The offline PTY cases in `tests/test_claude_pty_replay.py` cover delayed model-command completion,
-intermediate redraws, bounded cancellation recovery, and settings-lock release. They assert
-exact prompt replay, deferred saved-default restoration, and preservation of manual model choices;
-they do not replace the completed file task required by these live journeys.
+`tests/test_claude_pty_replay.py` covers delayed switches and settings recovery offline.
+These checks do not replace the completed file task required by the live journeys.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
 these same-repository secrets rather than storing a long-lived bearer:

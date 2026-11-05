@@ -638,15 +638,10 @@ Codex decisions carry the same request metadata. These use mocked HTTP responses
 
 `test_claude_pty_replay.py` drives `run_claude_pty` against fake TUIs. One models Claude Code
 2.1.295 and later, which keep a hook-blocked prompt in the input box: `/model` must run as a
-command, and the replay must arrive unchanged after a switch, a switch timeout, or a missing
-quiet window. A delayed `/model` completion reproduces Claude Code 2.1.290's timeout race:
-the prompt must be submitted exactly once and the saved default restored after the native
-write. Intermediate redraws do not confirm cancellation or completion. Unconfirmed commands
-stop automatic replay with a warning and release the settings lock. Late writes are restored
-without replaying again; manual model choices, including the same routed model, are preserved.
-Lock contention is nonblocking, and deferred restoration waits for another active switch.
-These are component checks; live first-prompt
-routing on a pinned Claude Code version is not executed here.
+command. Delayed completion must replay the prompt exactly once and restore the saved default.
+Unconfirmed switches stop automatic input and release the lock; late writes, manual model
+choices, and lock contention have regression coverage. These are component checks; live
+first-prompt routing on a pinned Claude Code version is not executed here.
 
 Codex version tests cover one longer probe after an inconclusive cached result. Supported
 versions can pass that probe; old, unparseable, or repeatedly timed-out versions still fail
