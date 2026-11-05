@@ -576,7 +576,8 @@ def test_configure_passes_copilot_its_model_source_and_no_vscode(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert calls[0]["selected_tools"] == ["copilot"]
-    assert calls[0]["copilot_source"] == ("main.default.mps", None)
+    assert calls[0]["provider"] == "main.default.mps"
+    assert "model_location" not in calls[0]
     assert agents_mod._vscode_with_copilot is False
 
 
@@ -587,28 +588,61 @@ def _stub_workspace_setup(monkeypatch, state: dict, managed: dict | None) -> lis
     monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *args: True)
     monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
     monkeypatch.setattr(
-        cli_mod, "configure_selected_tools", lambda s, tools, **k: seen.append(dict(s)) or s
+        cli_mod,
+        "configure_selected_tools",
+        lambda s, tools, **k: (
+            seen.append({"state": dict(s), "tools": tools, **k})
+            or {**s, "last_configured_tools": list(tools)}
+        ),
     )
+    monkeypatch.setattr(cli_mod, "save_state", lambda s: None)
     return seen
 
 
-def test_configure_saves_copilots_model_source_for_its_launches(monkeypatch):
+@pytest.mark.parametrize("tools", [["copilot"], ["claude", "copilot"]], ids=["alone", "mixed"])
+def test_configure_saves_copilots_model_location_for_its_launches(monkeypatch, tools):
     state = {**STATE, "provider_services": {"copilot": "old.default.mps"}}
     seen = _stub_workspace_setup(monkeypatch, state, None)
-    monkeypatch.setattr(copilot, "location_catalog", lambda state, schema: ["a model"])
-
-    cli_mod.configure_workspace_command(
-        selected_tools=["copilot"], workspaces=[(WS, None)], copilot_source=(None, "main.models")
+    checked: list[str] = []
+    monkeypatch.setattr(
+        copilot, "location_catalog", lambda state, schema: checked.append(schema) or ["a model"]
     )
 
-    assert "provider_services" not in seen[0]
-    assert seen[0]["model_locations"] == {"copilot": "main.models"}
+    saved: list[dict] = []
+    monkeypatch.setattr(cli_mod, "save_state", lambda s: saved.append(s))
+    cli_mod.configure_workspace_command(
+        selected_tools=tools, workspaces=[(WS, None)], model_location="main.models"
+    )
+
+    assert checked == ["main.models"]
+    assert seen[0]["parent_schemas"] == dict.fromkeys(tools, "main.models")
+    assert "copilot" not in saved[-1].get("provider_services", {})
+    assert saved[-1]["model_locations"]["copilot"] == "main.models"
+
+
+def test_configure_saves_copilots_provider_for_its_launches(monkeypatch):
+    state = {**STATE, "model_locations": {"copilot": "old.models"}}
+    seen = _stub_workspace_setup(monkeypatch, state, None)
+    monkeypatch.setattr(copilot, "provider_service_catalog", lambda *a, **k: ["a model"])
+    saved: list[dict] = []
+    monkeypatch.setattr(cli_mod, "save_state", lambda s: saved.append(s))
+
+    cli_mod.configure_workspace_command(
+        selected_tools=["copilot"], workspaces=[(WS, None)], provider="main.default.mps"
+    )
+
+    assert seen[0]["providers"] == {"copilot": "main.default.mps"}
+    assert saved[-1]["provider_services"]["copilot"] == "main.default.mps"
+    assert "copilot" not in saved[-1].get("model_locations", {})
 
 
 @pytest.mark.parametrize(
-    "source", [("main.default.typo", None), (None, "main.empty")], ids=["provider", "location"]
+    "source",
+    [{"provider": "main.default.typo"}, {"model_location": "main.empty"}],
+    ids=["provider", "location"],
 )
-def test_configure_keeps_copilots_source_when_the_new_one_fails(monkeypatch, source):
+@pytest.mark.parametrize("tools", [["copilot"], ["claude", "copilot"]], ids=["alone", "mixed"])
+def test_configure_keeps_copilots_source_when_the_new_one_fails(monkeypatch, source, tools):
     def unusable(*args, **kwargs):
         raise RuntimeError("not usable")
 
@@ -618,39 +652,78 @@ def test_configure_keeps_copilots_source_when_the_new_one_fails(monkeypatch, sou
     monkeypatch.setattr(copilot, "location_catalog", unusable)
 
     with pytest.raises(RuntimeError, match="not usable"):
-        cli_mod.configure_workspace_command(
-            selected_tools=["copilot"], workspaces=[(WS, None)], copilot_source=source
-        )
+        cli_mod.configure_workspace_command(selected_tools=tools, workspaces=[(WS, None)], **source)
 
     assert seen == []
     assert state["provider_services"] == {"copilot": "old.default.mps"}
     assert "model_locations" not in state
 
 
-def test_configure_refuses_a_copilot_model_source_on_a_managed_workspace(monkeypatch):
+@pytest.mark.parametrize(
+    "source", [{"provider": "main.default.mps"}, {"model_location": "main.models"}]
+)
+def test_configure_refuses_a_copilot_model_source_on_a_managed_workspace(monkeypatch, source):
     seen = _stub_workspace_setup(
         monkeypatch, dict(STATE), {"enabled_agents": {"copilot": {"model_config": {}}}}
     )
 
-    with pytest.raises(RuntimeError, match="managed configuration"):
+    with pytest.raises(RuntimeError, match="managed"):
         cli_mod.configure_workspace_command(
-            selected_tools=["copilot"],
-            workspaces=[(WS, None)],
-            copilot_source=("main.default.mps", None),
+            selected_tools=["copilot"], workspaces=[(WS, None)], **source
         )
 
     assert seen == []
+
+
+def test_single_agent_copilot_checks_then_saves_its_source(monkeypatch):
+    state = dict(STATE)
+    monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+    monkeypatch.setattr(cli_mod, "_refresh_configured_policy", lambda s: (None, False))
+    monkeypatch.setattr(cli_mod, "_read_policy_for_other_agent", lambda s: (None, False))
+    order: list[str] = []
+    monkeypatch.setattr(
+        copilot, "location_catalog", lambda s, schema: order.append("check") or ["m"]
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "configure_single_tool",
+        lambda tool, s, **k: order.append(f"configure:{k['parent_schema']}") or s,
+    )
+    saved: list[dict] = []
+    monkeypatch.setattr(cli_mod, "save_state", lambda s: saved.append(s))
+
+    cli_mod._setup_single_agent(
+        [(WS, None)], "copilot", apply_managed=False, model_location="main.models"
+    )
+
+    assert order == ["check", "configure:main.models"]
+    assert saved[-1]["model_locations"]["copilot"] == "main.models"
+
+
+def test_single_agent_copilot_bad_source_is_not_configured(monkeypatch):
+    state = dict(STATE)
+    monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+
+    def unusable(*args, **kwargs):
+        raise RuntimeError("not usable")
+
+    monkeypatch.setattr(copilot, "provider_service_catalog", unusable)
+    monkeypatch.setattr(
+        cli_mod, "configure_single_tool", lambda *a, **k: pytest.fail("copilot was configured")
+    )
+
+    with pytest.raises(RuntimeError, match="not usable"):
+        cli_mod._setup_single_agent(
+            [(WS, None)], "copilot", apply_managed=False, provider="main.default.typo"
+        )
 
 
 @pytest.mark.parametrize(
     ("args", "error"),
     [
         (["--provider", "a.b.c"], "--provider requires --agent or --agents"),
-        # Another model agent alongside Copilot would silently keep the workspace's own models.
-        (
-            ["--agents", "claude,copilot", "--provider", "a.b.c"],
-            "isn't supported for GitHub Copilot CLI",
-        ),
+        (["--agents", "cursor", "--provider", "a.b.c"], "isn't supported for the selected agents"),
+        (["--agent", "gemini", "--model-location", "a.b"], "Supported: Claude Code, Codex, GitHub"),
         (
             ["--agents", "copilot", "--provider", "a.b.c", "--model-location", "a.b"],
             "cannot be combined",
@@ -669,6 +742,30 @@ def test_configure_refuses_a_model_source_copilot_cant_take(monkeypatch, args, e
 
     assert result.exit_code != 0
     assert error in " ".join(result.output.split())
+
+
+@pytest.mark.parametrize(
+    ("args", "kwargs"),
+    [
+        (["--agent", "copilot", "--model-location", "a.b"], {"tool": "copilot"}),
+        (["--agents", "claude,copilot", "--model-location", "a.b"], {}),
+        (["--agents", "copilot,cursor", "--provider", "a.b.c"], {}),
+    ],
+)
+def test_configure_accepts_copilot_with_a_model_source(monkeypatch, args, kwargs):
+    calls: list[dict] = []
+    monkeypatch.setattr("ucode.cli.install_databricks_cli", lambda: None)
+    monkeypatch.setattr("ucode.cli.install_tool_binary", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "ucode.cli.configure_workspace_command", lambda *a, **k: calls.append(k) or 0
+    )
+
+    result = CliRunner().invoke(app, ["configure", "--workspace", WS, *args])
+
+    assert result.exit_code == 0, result.output
+    assert calls
+    assert "copilot_source" not in calls[0]
+    assert calls[0].get("model_location") or calls[0].get("provider")
 
 
 def test_vscode_is_not_an_agent_of_its_own(monkeypatch):

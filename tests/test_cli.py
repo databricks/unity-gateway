@@ -9580,10 +9580,9 @@ class TestHeadlessConfigureModelSource:
             (["--agent", "gemini"], "--model-location", "main.models", "Gemini CLI"),
             (["--agent", "opencode"], "--provider", "main.default.anthropic", "OpenCode"),
             (["--agents", "claude,gemini"], "--model-location", "main.models", "Gemini CLI"),
-            (["--agents", "cursor"], "--model-location", "main.models", "Cursor"),
-            (["--agents", "claude,cursor"], "--provider", "main.default.anthropic", "Cursor"),
+            (["--agents", "cursor"], "--model-location", "main.models", "the selected agents"),
         ],
-        ids=["gemini-location", "opencode-provider", "agents-mixed", "cursor-only", "cursor-mixed"],
+        ids=["gemini-location", "opencode-provider", "agents-mixed", "cursor-only"],
     )
     def test_unsupported_agent_rejected_before_setup(
         self, monkeypatch, agent_args, flag, value, unsupported
