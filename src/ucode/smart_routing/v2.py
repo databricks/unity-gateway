@@ -612,6 +612,7 @@ def route_claude_subagent(
             route.task,
             route.decision,
             route.routed_model,
+            provider_service=provider,
         )
     if hook_output:
         updated_input = {

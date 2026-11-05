@@ -104,3 +104,25 @@ def test_subagent_start_without_model_reports_unknown_not_mismatch(tmp_path, mon
 
     assert record["requested_model"] == "system.ai.claude-sonnet-5"
     assert record["matches_router_decision"] is None
+
+
+def test_decision_records_provider_service_only_when_set(tmp_path):
+    decisions = tmp_path / "decisions.jsonl"
+    decision = routing.RoutingDecision(model="us.anthropic.claude-opus-4-6-v1")
+
+    routing.write_decision_record(decisions, {"session_id": "s1"}, "x", decision, decision.model)
+    routing.write_decision_record(
+        decisions,
+        {"session_id": "s1"},
+        "x",
+        decision,
+        decision.model,
+        provider_service="main.agents.bedrock_provider",
+    )
+
+    plain, provider = (json.loads(line) for line in decisions.read_text().splitlines())
+    assert "provider_service" not in plain
+    assert provider["provider_service"] == "main.agents.bedrock_provider"
+    assert {
+        k: v for k, v in provider.items() if k not in {"provider_service", "decision_id", "at"}
+    } == {k: v for k, v in plain.items() if k not in {"decision_id", "at"}}

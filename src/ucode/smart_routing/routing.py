@@ -402,6 +402,7 @@ def write_decision_record(
     requested_model: str,
     *,
     include_task_text: bool = True,
+    provider_service: str | None = None,
 ) -> None:
     """Record a routing decision so a later SubagentStart can reconcile it."""
     tool_input = payload.get("tool_input")
@@ -435,6 +436,7 @@ def write_decision_record(
             "raw_rationale": decision.raw_rationale
             if decision.raw_rationale is not None
             else decision.rationale,
+            **({"provider_service": provider_service} if provider_service else {}),
             "at": time.time(),
         },
     )
