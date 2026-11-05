@@ -632,30 +632,58 @@ class _ClaudeModelSettingGuard:
         self._before: dict | None = None
         self._routed_model: str | None = None
         self._lock: TextIO | None = None
+        self._owner_lock: TextIO | None = None
 
-    def _acquire_lock(self) -> bool:
+    @staticmethod
+    def _open_lock(name: str) -> TextIO | None:
         APP_DIR.mkdir(parents=True, exist_ok=True)
-        lock = open(APP_DIR / "claude-v2-model.lock", "a+", encoding="utf-8")
+        lock = open(APP_DIR / name, "a+", encoding="utf-8")
         try:
             acquire_exclusive_file_lock(lock, timeout=0)
         except TimeoutError:
             lock.close()
-            return False
+            return None
         except BaseException:
             lock.close()
             raise
-        self._lock = lock
-        return True
+        return lock
+
+    def _read_settings(self) -> dict:
+        try:
+            current = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        if not isinstance(current, dict):
+            raise ValueError(f"Expected an object in {self.settings_path}")
+        return current
 
     def begin(self, routed_model: str) -> bool:
-        if not self._acquire_lock():
+        if self._before is not None:
             return False
-        self._before = read_json_safe(self.settings_path)
-        self._routed_model = routed_model
-        return True
+        try:
+            # Deferral releases the settings lock, but another routed launch must
+            # not capture our outstanding temporary write as its own baseline.
+            self._owner_lock = self._open_lock("claude-v2-model-owner.lock")
+            if self._owner_lock is None:
+                return False
+            self._lock = self._open_lock("claude-v2-model.lock")
+            if self._lock is not None:
+                self._before = self._read_settings()
+                self._routed_model = routed_model
+                return True
+        except (OSError, ValueError):
+            pass
+        except BaseException:
+            self.abandon()
+            raise
+        self.abandon()
+        return False
 
     def is_routed(self) -> bool:
-        value = read_json_safe(self.settings_path).get("model")
+        try:
+            value = self._read_settings().get("model")
+        except (OSError, ValueError):
+            return False
         return isinstance(value, str) and value == self._routed_model
 
     def defer(self) -> None:
@@ -668,24 +696,59 @@ class _ClaudeModelSettingGuard:
         self._before = None
         self._routed_model = None
         self.defer()
+        if self._owner_lock is not None:
+            release_file_lock(self._owner_lock)
+            self._owner_lock.close()
+            self._owner_lock = None
 
     def restore(self) -> bool:
         if self._before is None:
             return True
-        if self._lock is None and not self._acquire_lock():
-            return False
+        if self._lock is None:
+            self._lock = self._open_lock("claude-v2-model.lock")
+            if self._lock is None:
+                return False
         try:
-            current = read_json_safe(self.settings_path)
+            current = self._read_settings()
             # A later user choice is not the temporary /model write we own.
             if current.get("model") == self._routed_model:
                 if "model" in self._before:
                     current["model"] = self._before["model"]
                 else:
                     current.pop("model", None)
-                write_json_file(self.settings_path, current)
+                if config_io.is_dry_run():
+                    write_json_file(self.settings_path, current)
+                else:
+                    config_io.atomic_write_json(self.settings_path, current)
+        except BaseException:
+            self.defer()
+            raise
+        self.abandon()
+        return True
+
+    def finish(self, *, timeout: float = 2.0) -> bool:
+        """Retry cleanup after the child has exited, without stalling exit forever."""
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                try:
+                    if self.restore():
+                        return True
+                except (OSError, ValueError, RuntimeError):
+                    pass
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    before = self._before or {}
+                    action = (
+                        f"Set its model back to {before['model']!r}."
+                        if "model" in before
+                        else "Remove its model setting."
+                    )
+                    print_warning(f"Smart Routing could not restore {self.settings_path}. {action}")
+                    return False
+                time.sleep(min(0.1, remaining))
         finally:
             self.abandon()
-        return True
 
 
 def launch_claude(
@@ -854,7 +917,7 @@ def launch_claude(
                     proc.send_signal(signal.SIGINT)
                     returncode = proc.wait()
     finally:
-        model_setting.restore()
+        model_setting.finish()
     sys.exit(returncode)
 
 

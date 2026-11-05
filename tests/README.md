@@ -758,9 +758,19 @@ Codex decisions carry the same request metadata. These use mocked HTTP responses
 `test_claude_pty_replay.py` drives `run_claude_pty` against fake TUIs. One models Claude Code
 2.1.295 and later, which keep a hook-blocked prompt in the input box: `/model` must run as a
 command. Delayed completion must replay the prompt exactly once and restore the saved default.
-Unconfirmed switches stop automatic input and release the lock; late writes, manual model
-choices, and lock contention have regression coverage. These are component checks; live
-first-prompt routing on a pinned Claude Code version is not executed here.
+Arrow keys and fragmented terminal replies keep recovery active. Typed input stops replay with
+a notice but retains cleanup; an explicit `/model` command transfers the saved default back to
+the user. Claude's completed `Kept model as` cancellation result permits replay, while generic
+cancel messages and unconfirmed switches stop automatic input. Settings assertions run before
+the child exits. The timing cases cover immediate persistence with and without a redraw, a pending
+write, and a write arriving after the persistence deadline without duplicating the redraw variants.
+
+`test_claude_smart_routing_v2.py` also covers settings restoration after a failed atomic write or
+temporary parse error, bounded exit cleanup under lock contention, and actionable failure output.
+Deferred cleanup releases the settings lock but reserves the original default until restoration
+or an explicit manual model command; another routed switch cannot capture the temporary value.
+PTY checks verify that settings reads are throttled during busy output. These are component
+checks; live first-prompt routing on a pinned Claude Code version is not executed here.
 
 Codex version tests cover one longer probe after an inconclusive cached result. Supported
 versions can pass that probe; old, unparseable, or repeatedly timed-out versions still fail

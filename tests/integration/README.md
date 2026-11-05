@@ -1428,7 +1428,11 @@ The smart-routing banner journeys inject static Claude and Codex model lists wit
 the file task, and normal exit. The managed default alone routes only Claude subagents, with the
 orchestrator; Codex's managed default is opted out and covered by its launch-only test.
 
-`tests/test_claude_pty_replay.py` covers delayed switches and settings recovery offline.
+`tests/test_claude_pty_replay.py` covers delayed switches, terminal input during recovery,
+completed versus ambiguous cancellation, and throttled settings recovery before child exit.
+`tests/test_claude_smart_routing_v2.py` covers deferred ownership, failed atomic writes,
+and bounded exit cleanup. These component checks use temporary settings and fake TUIs;
+they do not establish live Claude or gateway coverage.
 These checks do not replace the completed file task required by the live journeys.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
