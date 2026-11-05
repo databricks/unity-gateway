@@ -598,6 +598,10 @@ These assert protocol stdout without stripping ANSI escapes and make no workspac
 requests. `ucode smart-router-describe` is checked the same way, with and without a
 routing selector. The live Hosted configure journeys additionally execute the actual `ug`
 auth helper written into each agent's configuration before completing a real TUI task.
+A Codex PAT journey configures `--profile <PAT profile> --use-pat` with no exported bearer,
+then runs the profile-less `ug auth-token --host <workspace> --browser-login` that Codex MDM
+installs for every user, and requires it to print only the saved profile's PAT. It completes no
+Codex task, and a host other than the saved workspace is covered only by `../test_cli.py`.
 The Claude journey also opens `/model` after a plain `ug claude` launch, requires
 its native gateway cache to contain `system.ai` models, and checks that a discovered
 model appears in the picker. No managed config, provider, model location, discovery
@@ -768,7 +772,7 @@ All user journeys are top-level tests. There is no separate regressions category
 
 ```text
 test_ug_configure_claude.py             # Databricks Hosted and Anthropic MPS
-test_ug_configure_codex.py              # Databricks Hosted and OpenAI MPS
+test_ug_configure_codex.py              # Databricks Hosted, OpenAI MPS, PAT auth helper
 test_ug_claude_custom_oauth.py           # CLI custom-OAuth launch, profile, and managed helper
 test_ug_codex_custom_oauth.py            # CLI custom-OAuth launch and profile
 test_ug_claude_headless.py              # script prompts, models, caller settings
