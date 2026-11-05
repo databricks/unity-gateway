@@ -55,6 +55,7 @@ def assert_claude_desktop_profile(
     models: list[dict[str, str]],
     custom_headers: dict[str, str],
     otel_enabled: bool = False,
+    mcp_services: tuple[str, ...] = (),
 ) -> None:
     profile_path = config_library / f"{PROFILE_ID}.json"
     assert profile_path.is_file(), profile_path
@@ -84,8 +85,26 @@ def assert_claude_desktop_profile(
         "inferenceCredentialHelperTimeoutSec": 300,
         "inferenceCredentialHelperSilentRefreshEnabled": True,
         "modelDiscoveryEnabled": False,
+        "toolSearchEnabled": True,
         "inferenceModels": models,
         "inferenceCustomHeaders": custom_headers,
+        "managedMcpServers": [
+            {
+                "name": service.rsplit(".", 1)[-1],
+                "transport": "stdio",
+                "command": str(session.binary),
+                "args": [
+                    "mcp-proxy",
+                    "--url",
+                    f"{workspace}/ai-gateway/mcp-services/{service}",
+                    "--host",
+                    workspace,
+                    "--profile",
+                    CLI_PROFILE,
+                ],
+            }
+            for service in mcp_services
+        ],
     }
     if otel_enabled:
         expected.update(
