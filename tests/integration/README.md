@@ -430,6 +430,18 @@ errors, the `skip_model_discovery` and `skip_preflight` paths, and reuse of the 
 probe and listing caches. This suite does not assert live request overlap, probe/listing timing, or
 launch-time savings.
 
+`test_ug_configure_scope.py` runs, for Claude and Codex separately (Linux/macOS only), plain
+`ug configure`, `--user`, `UG_SKIP_OS_SETTINGS=1`, and `--global` over a user-owned
+`~/.claude/settings.json` or `~/.codex/config.toml`. It checks which of the per-user ug file
+(`~/.claude/ucode-settings.json`, `~/.codex/ucode.config.toml`) and the OS-managed file exist, that
+both point at the workspace, that the user-owned file is unchanged (plain configure keeps the user's
+keys), and the saved `config_scope`. A headless launch must then answer through the gateway without
+changing the OS-managed file. `--global` refuses an installation in a home folder, so that case runs
+a second, shared installation of the version under test in `/opt`: the runner's Python is copied
+there and the runner's frozen package set (`installed.txt`) is installed from the same index, as
+`scripts/mdm` does. Its managed auth helper must point at that installation. The suite uses the
+runner's passwordless sudo and does not count password prompts.
+
 The sudo-session regression checks live in `../test_managed_files.py` and `../test_cli.py`.
 They cover shared-worker invocation counts, shutdown/cancellation, and temporary-file failure
 handling without sudo.
@@ -828,6 +840,7 @@ test_ug_configure_claude_desktop.py     # Desktop lifecycle, system.ai/relay inf
 test_ug_configure_codex_desktop.py      # stubbed managed Codex desktop catalog pointer, no GUI
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
+test_ug_configure_scope.py              # files written by default, --user, UG_SKIP_OS_SETTINGS, --global; launch after each
 test_ug_claude_managed_model_discovery.py # Claude MPS policy cases (claude_mps.json)
 test_ug_codex_managed_model_discovery.py  # Codex MPS policy cases (codex_mps.json)
 test_ug_claude_model_discovery.py       # unmanaged scenarios 9, 11, 13
