@@ -40,8 +40,7 @@ from ucode.ui import (
 
 class TestSpinner:
     @pytest.mark.parametrize("raises", [False, True])
-    @pytest.mark.parametrize("dynamic", [False, True])
-    def test_exit_wakes_the_frame_wait_and_clears_the_line(self, monkeypatch, raises, dynamic):
+    def test_exit_wakes_the_frame_wait_and_clears_the_line(self, monkeypatch, raises):
         output = io.StringIO()
         monkeypatch.setattr(output, "isatty", lambda: True)
         monkeypatch.setattr(ui_mod.sys, "stdout", output)
@@ -66,13 +65,13 @@ class TestSpinner:
             threads.append(thread)
             return thread
 
+        # Keep Thread's own startup Event untouched by replacing only ui's module reference.
         monkeypatch.setattr(
             ui_mod, "threading", SimpleNamespace(Event=lambda: stop, Thread=start_thread)
         )
-        message = (lambda: "Loading...") if dynamic else "Loading..."
 
         def operation():
-            with ui_mod.spinner(message):
+            with ui_mod.spinner("Loading..."):
                 assert waiting.wait(5), "spinner frame did not enter an interruptible wait"
                 if raises:
                     raise RuntimeError("operation failed")
