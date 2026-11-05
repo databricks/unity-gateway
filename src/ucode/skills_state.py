@@ -207,7 +207,9 @@ def record_downloads(installs: list[SkillInstall]) -> None:
             old = index.remove(old_id)
             # Overwritten directories belong to the new install; only renames leave orphans.
             if old_id not in overwritten:
-                _delete_dirs(old.get("dirs") or [])
+                _delete_dirs(
+                    [directory for directory in old.get("dirs") or [] if isinstance(directory, str)]
+                )
         index.add(record)
     _save(list(index.records.values()))
 

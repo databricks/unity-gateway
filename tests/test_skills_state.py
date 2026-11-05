@@ -222,8 +222,14 @@ class TestReconciliation:
 
         assert len(skills_state.list_downloaded()) == 1
 
-    @pytest.mark.parametrize("same_batch", [False, True])
-    def test_re_download_renamed_bundle_deletes_orphan(self, tmp_path, same_batch):
+    @pytest.mark.parametrize(
+        ("same_batch", "malformed_orphan"),
+        [(False, False), (True, False), (False, True)],
+        ids=["separate-batches", "same-batch", "malformed-orphan"],
+    )
+    def test_re_download_renamed_bundle_deletes_orphan(
+        self, tmp_path, same_batch, malformed_orphan
+    ):
         base = tmp_path / "proj"
         old = _install(base, "main.default.triage", "triage")
         new = _install(base, "main.default.triage", "triage-renamed")
@@ -234,13 +240,17 @@ class TestReconciliation:
             skills_state.record_downloads([old, new])
         else:
             skills_state.record_downloads([old])
+            if malformed_orphan:
+                records = skills_state.list_downloaded()
+                records[0]["dirs"].append(None)
+                skills_state._save(records)
             skills_state.record_downloads([new])
 
         records = skills_state.list_downloaded()
         assert len(records) == 1
         assert records[0]["bundle_name"] == "triage-renamed"
-        assert not Path(old.dirs[0]).exists()
-        assert Path(new.dirs[0]).exists()
+        assert all(not Path(path).exists() for path in old.dirs)
+        assert all(Path(path).exists() for path in new.dirs)
 
     def test_target_dir_claimed_by_other_skill_drops_stale_record_keeps_files(self, tmp_path):
         base = tmp_path / "proj"

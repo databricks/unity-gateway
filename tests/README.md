@@ -3,7 +3,7 @@
 `test_skills_state.py` covers batch attribution reconciliation with indexed
 directories and install identities. It checks intra-batch ownership changes,
 duplicate historical owners, metastore separation,
-malformed-directory collision recovery, and orphan cleanup both within and across
+malformed-directory recovery during collisions and renames, and orphan cleanup within and across
 batches using real temporary files. These component checks establish reconciliation
 behavior, not normalization complexity
 or live download latency.

@@ -1,8 +1,8 @@
 # Integration tests
 
 `../test_skills_state.py` covers indexed attribution batches using temporary
-manifests/directories, including ownership changes, malformed-directory collision
-recovery, metastore identities, and orphan cleanup within and across batches.
+manifests/directories, including ownership changes, malformed-directory recovery
+during collisions and renames, metastore identities, and orphan cleanup within and across batches.
 Normalization complexity and live skill download latency are not covered.
 
 The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
