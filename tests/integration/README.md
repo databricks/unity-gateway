@@ -1,5 +1,8 @@
 # Integration tests
 
+Orchestrator import guards clear inherited routing flags and the version selector,
+then explicitly reject CLI and Typer imports while requiring active workflow output.
+
 Router-entrypoint component checks apply saved user scope before Claude/Codex routing.
 Helper usage parity covers help, missing hook events, and unknown-option errors.
 
