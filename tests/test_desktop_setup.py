@@ -909,7 +909,7 @@ def test_switching_workspace_replaces_one_reserved_profile(desktop):
 
 @pytest.mark.parametrize("desktop", ["win32"], indirect=True)
 @pytest.mark.parametrize("installation", ["installed", "missing", "timeout", "query_unavailable"])
-def test_windows_configure_before_first_desktop_launch(desktop, installation, monkeypatch, capsys):
+def test_windows_configure_claude_desktop(desktop, installation, monkeypatch, capsys):
     (desktop / "_meta.json").unlink()
     desktop.rmdir()
     desktop.parent.rmdir()
