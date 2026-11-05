@@ -3,12 +3,14 @@
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from ucode import config_io, managed_files
+from ucode.agents.desktop import claude as desktop
 from ucode.agents.desktop import cowork, setup
 from ucode.skills_state import SkillInstall, record_downloads, records_for_scope
 
@@ -31,6 +33,10 @@ def desktop_environment(tmp_path, monkeypatch, platform):
     monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
     root = tmp_path / "Desktop/local-agent-mode-sessions/account/org"
     root.mkdir(parents=True)
+    directory = tmp_path / "Native/configLibrary"
+    directory.mkdir(parents=True)
+    monkeypatch.setattr(desktop, "claude_desktop_directory", lambda: directory)
+    _configure_profile(WORKSPACE["workspace"])
 
     def native_cli(argv, **kwargs):
         # Model only external Claude registration/cache writes; UG and file writers stay real.
@@ -66,6 +72,20 @@ def desktop_environment(tmp_path, monkeypatch, platform):
 
     monkeypatch.setattr(cowork.subprocess_cross_os, "run", native_cli)
     return path
+
+
+def _configure_profile(workspace):
+    return desktop.configure_claude_desktop(
+        model_ids=["system.ai.claude-sonnet-5"],
+        base_url=f"{workspace}/ai-gateway/anthropic",
+        helper_command="/usr/bin/ug",
+        helper_args=["claude-desktop-auth", "--profile", "chosen"],
+    )
+
+
+def _native_servers():
+    path = desktop.claude_desktop_directory() / f"{desktop.PROFILE_ID}.json"
+    return json.loads(path.read_text())["managedMcpServers"]
 
 
 def _source(tmp_path, *, plugin_name="ug"):
@@ -108,8 +128,12 @@ def test_ordinary_configure_writes_only_user_source_and_one_install(system_sourc
     managed_files.set_config_scope(scope)
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
     plugin = cowork._marketplace_root() / "plugins/ug"
-    mcp = json.loads((plugin / ".mcp.json").read_text())
-    assert mcp == cowork._cowork_mcp_config(SERVERS, **WORKSPACE)
+    assert not (plugin / ".mcp.json").exists()
+    mcp = cowork._cowork_mcp_config(SERVERS, **WORKSPACE)
+    assert _native_servers() == [
+        {"name": name, "transport": "stdio", **{k: v for k, v in entry.items() if k != "type"}}
+        for name, entry in mcp["mcpServers"].items()
+    ]
     assert json.loads((plugin / "hooks/hooks.json").read_text()) == cowork._connector_hooks(
         mcp, **WORKSPACE, use_pat=False
     )
@@ -142,7 +166,12 @@ def test_first_configure_skips_uninitialized_cowork(
         organization = tmp_path / "org-plugins/ug"
         organization.mkdir(parents=True)
         monkeypatch.setattr(managed_files, "claude_desktop_org_plugin_path", lambda: organization)
-    assert not cowork.configure_cowork(WORKSPACE, SERVERS)
+    if organization_plugin:
+        with pytest.raises(RuntimeError, match="organization plugin already exists"):
+            cowork.configure_cowork(WORKSPACE, SERVERS)
+    else:
+        assert not cowork.configure_cowork(WORKSPACE, SERVERS)
+        assert [server["name"] for server in _native_servers()] == ["slack"]
     assert not cowork._marketplace_root().exists()
     assert not cowork._state_path().exists()
 
@@ -282,6 +311,7 @@ def test_downloaded_skills_follow_workspace_selection(system_source, tmp_path, m
         json.loads((installed / ".claude-plugin/plugin.json").read_text())["version"]
         != version_before
     )
+    _configure_profile("https://other.example")
     assert cowork.configure_cowork({**WORKSPACE, "workspace": "https://other.example"}, [])
     assert (
         cowork._marketplace_root() / "plugins/ug/skills/foreign/SKILL.md"
@@ -295,6 +325,8 @@ def test_failed_refresh_retains_generated_sources_for_recovery(
 ):
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
     user_before = cowork._marketplace_files(cowork._marketplace_root())
+    connectors_before = _native_servers()
+    _configure_profile(WORKSPACE["workspace"])
     managed_files.set_config_scope("global")
     run = cowork.subprocess_cross_os.run
     failed = False
@@ -311,6 +343,7 @@ def test_failed_refresh_retains_generated_sources_for_recovery(
     monkeypatch.setattr(cowork.subprocess_cross_os, "run", fail_refresh)
     with pytest.raises(RuntimeError, match="refresh failed"):
         cowork.configure_cowork(WORKSPACE, [{**SERVERS[0], "name": "changed"}])
+    assert _native_servers() == connectors_before
     generated = cowork._marketplace_files(cowork._marketplace_root())
     assert generated != user_before
     state = config_io.read_json_safe(cowork._state_path())
@@ -332,6 +365,48 @@ def test_failed_refresh_retains_generated_sources_for_recovery(
     )
 
 
+@pytest.mark.parametrize("failure", ["exit", "timeout"])
+def test_legacy_cleanup_failure_keeps_updated_plugin_and_native_connectors(
+    system_source, monkeypatch, capsys, failure
+):
+    assert cowork.configure_cowork(WORKSPACE, SERVERS)
+    (_installed_source() / ".mcp.json").write_text(
+        json.dumps(cowork._cowork_mcp_config(SERVERS, **WORKSPACE))
+    )
+    registry = cowork.discover_cowork_root() / "cowork_plugins/installed_plugins.json"
+    installed = config_io.read_json_safe(registry)
+    installed["plugins"][cowork.LEGACY_PLUGIN_ID] = [{"installPath": "old-plugin"}]
+    installed["plugins"]["other@unrelated"] = [{"installPath": "unrelated-plugin"}]
+    config_io.atomic_write_json(registry, installed)
+    _configure_profile(WORKSPACE["workspace"])
+    run = cowork.subprocess_cross_os.run
+
+    def fail_legacy_cleanup(argv, **kwargs):
+        if argv[1:4] == ["plugin", "uninstall", cowork.LEGACY_PLUGIN_ID]:
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(argv, 120)
+            return SimpleNamespace(returncode=1, stdout="", stderr="cleanup failed")
+        return run(argv, **kwargs)
+
+    monkeypatch.setattr(cowork.subprocess_cross_os, "run", fail_legacy_cleanup)
+    servers = [{**SERVERS[0], "name": "github"}]
+    assert cowork.configure_cowork(WORKSPACE, servers)
+    assert [server["name"] for server in _native_servers()] == ["github"]
+    plugin = _installed_source(other_plugins=(cowork.LEGACY_PLUGIN_ID, "other@unrelated"))
+    assert not (plugin / ".mcp.json").exists()
+    assert cowork._marketplace_files(plugin) == cowork._marketplace_files(
+        cowork._marketplace_root() / "plugins/ug"
+    )
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Could not remove legacy Claude Desktop plugin" in output
+    assert "Run `ug configure` again to retry cleanup" in output
+
+    monkeypatch.setattr(cowork.subprocess_cross_os, "run", run)
+    assert cowork.configure_cowork(WORKSPACE, servers)
+    _installed_source(other_plugins=("other@unrelated",))
+    assert [server["name"] for server in _native_servers()] == ["github"]
+
+
 def test_changed_payload_updates_user_source_and_installed_version(system_source):
     assert cowork.configure_cowork(WORKSPACE, SERVERS)
     before = json.loads((_installed_source() / ".claude-plugin/plugin.json").read_text())["version"]
@@ -341,9 +416,8 @@ def test_changed_payload_updates_user_source_and_installed_version(system_source
     assert cowork._marketplace_files(_installed_source()) == cowork._marketplace_files(
         cowork._marketplace_root() / "plugins/ug"
     )
-    assert set(json.loads((_installed_source() / ".mcp.json").read_text())["mcpServers"]) == {
-        "changed"
-    }
+    assert not (_installed_source() / ".mcp.json").exists()
+    assert [server["name"] for server in _native_servers()] == ["changed"]
     assert cowork.configure_cowork(WORKSPACE, [])
     installed = _installed_source()
     assert not (installed / ".mcp.json").exists()

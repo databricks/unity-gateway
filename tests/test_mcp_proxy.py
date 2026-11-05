@@ -885,7 +885,10 @@ class TestMcpBridgeConnectionLogin:
         anyio.run(scenario)
 
     @pytest.mark.parametrize("normal_tools", [[], [{"name": "search_pull_requests"}], [None]])
-    def test_successful_discovery_keeps_authentication_available(self, monkeypatch, normal_tools):
+    @pytest.mark.parametrize("previous_auth_error", [False, True])
+    def test_successful_discovery_keeps_authentication_available(
+        self, monkeypatch, normal_tools, previous_auth_error
+    ):
         from mcp.shared.message import ClientMessageMetadata
 
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda *a: "tok")
@@ -908,6 +911,13 @@ class TestMcpBridgeConnectionLogin:
             async with anyio.create_task_group() as tg:
                 tg.start_soon(bridge.pump_upstream, source_read, dest_send, retry_send)
                 with anyio.fail_after(1):
+                    if previous_auth_error:
+                        bridge.pending_requests[0] = self._request(0)
+                        await source_send.send(self._error(request_id=0))
+                        failed = (await dest_read.receive()).message
+                        assert failed.result["tools"][0]["description"].startswith(
+                            "Sign-in is required"
+                        )
                     for request_id in (1, 2):
                         bridge.pending_requests[request_id] = self._request(request_id)
                         response = self._response(request_id)
@@ -921,6 +931,10 @@ class TestMcpBridgeConnectionLogin:
                         }
                         assert received.metadata is response.metadata
                         assert response.message.result["tools"] == normal_tools
+                        assert not received.message.result["tools"][-1]["description"].startswith(
+                            "Sign-in is required"
+                        )
+                        assert not bridge.authentication_required
                 tg.cancel_scope.cancel()
 
         anyio.run(scenario)
@@ -1316,6 +1330,9 @@ class TestMcpBridgeConnectionLogin:
                     response = (await client_receive.receive()).message
                     assert isinstance(response, mcp_proxy.JSONRPCResponse)
                     assert response.result["tools"][0]["name"] == "authenticate"
+                    assert response.result["tools"][0]["description"].startswith(
+                        "Sign-in is required to discover this connector's tools."
+                    )
                     assert "same turn" in response.result["tools"][0]["description"]
                     with pytest.raises(anyio.WouldBlock):
                         upstream_receive.receive_nowait()
@@ -1505,6 +1522,12 @@ class TestMcpBridgeConnectionLogin:
                         *expected_tools,
                         bridge._authentication_tool(),
                     ]
+                    assert (
+                        received.result["tools"][-1]["description"].startswith(
+                            "Sign-in is required"
+                        )
+                        is refresh_requires_auth
+                    )
 
                     authentication = (await client_receive.receive()).message
                     assert isinstance(authentication, mcp_proxy.JSONRPCResponse)

@@ -87,6 +87,7 @@ def render_profile(
         "inferenceCredentialHelperTimeoutSec": 300,
         "inferenceCredentialHelperSilentRefreshEnabled": True,
         "modelDiscoveryEnabled": False,
+        "toolSearchEnabled": True,
         "inferenceModels": models,
     }
     if custom_headers is not None:
