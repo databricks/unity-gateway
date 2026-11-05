@@ -35,9 +35,9 @@ AGENT_LABEL = "com.databricks.unity-gateway.claude-desktop"
 AGENT_PATH = Path("/Library/LaunchAgents") / f"{AGENT_LABEL}.plist"
 
 
-def _require_macos(*, administrator: bool) -> None:
+def validate_mdm_execution(*, administrator: bool) -> None:
     if sys.platform != "darwin":
-        raise RuntimeError("--mdm-desktop currently supports macOS only.")
+        raise RuntimeError("Desktop MDM currently supports macOS only.")
     if system_cross_os.is_admin() != administrator:
         role = "root from your MDM script" if administrator else "the logged-in user, not root"
         raise RuntimeError(
@@ -65,7 +65,9 @@ def _check_machine_path(path: Path, *, required: bool = False) -> None:
 def _shared_path(value: str, name: str, *, executable: bool = False) -> Path:
     path = Path(value)
     if not path.is_absolute() or not path.exists():
-        raise RuntimeError(f"Install {name} in a shared machine location before --mdm-desktop.")
+        raise RuntimeError(
+            f"Install {name} in a shared machine location before ug configure --global."
+        )
     resolved = path.resolve()
     for candidate in (path, resolved):
         if any(
@@ -260,8 +262,8 @@ def require_dedicated_workspace(workspace: str) -> None:
         raise RuntimeError("Desktop MDM currently requires a dedicated workspace hostname.")
 
 
-def configure(workspace: str, profile: str | None, *, mcp_names: list[str] | None = None) -> None:
-    _require_macos(administrator=True)
+def configure(workspace: str, profile: str | None) -> None:
+    validate_mdm_execution(administrator=True)
     if managed_files.managed_settings_skipped():
         raise RuntimeError(
             "Unset UG_SKIP_OS_SETTINGS and use global scope for Desktop MDM provisioning."
@@ -297,12 +299,6 @@ def configure(workspace: str, profile: str | None, *, mcp_names: list[str] | Non
     selector = (managed or {}).get("mcp_servers") or {}
     _validate_selector(selector)
     servers = _resolve_managed_mcp_servers(selector, workspace, profile, ["claude"], token=token)
-    if mcp_names is not None:
-        mcp_names = [name.strip() for name in mcp_names]
-        _validate_selector({"names": mcp_names})
-        servers += _resolve_managed_mcp_servers(
-            {"names": mcp_names}, workspace, profile, ["claude"]
-        )
     user_profile = "UG_DESKTOP_" + hashlib.sha256(workspace.encode()).hexdigest()[:12]
     helper = MDM_ROOT / "ug"
     helper_args = [
@@ -311,7 +307,6 @@ def configure(workspace: str, profile: str | None, *, mcp_names: list[str] | Non
         workspace,
         "--profile",
         user_profile,
-        "--mdm-desktop",
     ]
     if state.get("claude_relayed"):
         helper_args += ["--relay", "--claude-binary", runtime["claude"]]
@@ -405,7 +400,7 @@ def _activate_logged_in_user() -> None:
 
 
 def remove() -> None:
-    _require_macos(administrator=True)
+    validate_mdm_execution(administrator=True)
     if not MDM_ROOT.exists() and not POLICY_PATH.exists():
         return
     _publish(
@@ -438,7 +433,7 @@ def _cached_version(cowork_root: Path) -> str | None:
 
 
 def sync_user() -> bool:
-    _require_macos(administrator=False)
+    validate_mdm_execution(administrator=False)
     path = MDM_ROOT / "deployment.json"
     _check_machine_path(path, required=True)
     configuration = json.loads(path.read_bytes())

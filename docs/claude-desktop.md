@@ -4,7 +4,7 @@ For macOS fleet provisioning as root, use
 [`ug configure --agents claude --global`](claude-desktop-mdm.md).
 The behavior below describes configure without a scope flag or with `--user`.
 Explicit `--global` uses the macOS MDM path and leaves Desktop's user files unchanged;
-on Windows and Linux it skips Desktop. `--mdm-desktop` retains the Desktop-only MDM path.
+on Windows and Linux it skips Desktop.
 
 After Claude Code is successfully configured, `ug configure` also creates and
 selects a `Unity Gateway - <CLI profile name>` profile for Claude Desktop on macOS,

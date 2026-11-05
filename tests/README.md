@@ -523,8 +523,7 @@ account, string-encoded machine policy, shared command bindings without admin cr
 managed skill assets/connectors, one native registration, cache updates, and machine-file
 removal that leaves user caches untouched. It checks foreign-policy preservation,
 generated-file replacement, failed discovery/download before publication, and repair by
-reconfiguration after a partial publication failure. CLI cases normalize spaced connector
-lists and reject multiple workspace URLs; malformed cached-plugin records remain untouched.
+reconfiguration after a partial publication failure; malformed cached-plugin records remain untouched.
 It reuses the temporary directory-copy fixture; workspace APIs, machine ownership, launchd,
 and Claude's registry/cache commands are simulated.
 Cross-file recovery backups, ownership ledgers, account-switch cleanup, and deferred user
@@ -535,14 +534,14 @@ this catches binary stdout being passed to `Path` during provisioning. Runtime p
 Provisioning rejects selected shared-workspace hosts before authentication and missing
 credentials before publication; browser login is disabled.
 MDM compatibility cases cover unrestricted empty agent lists and feature-disabled config
-discovery. MCP/tracing helper checks keep explicit OAuth profiles independent of unrelated
-saved PAT mode while retaining saved PAT mode for matching host, profile, and workspace ID.
+discovery. Existing authentication commands are reused unchanged; coexistence with saved
+user PAT settings is outside this MDM release and no longer covered by MDM-specific tests.
 Global Desktop rejects explicit PAT/custom OAuth and selected-workspace requests before
 authentication or agent writes; shared CLI-agent PAT validation/export remains covered
 with Claude selected, including precedence over the global Desktop OAuth branch.
-Both provisioning entry points reject unsafe Databricks and Claude CLI candidates before
+The global provisioning path rejects unsafe Databricks and Claude CLI candidates before
 installer, agent setup or profile discovery. Six representative cases cover both CLIs,
-Desktop/global provisioning, global dry run, and named/empty/omitted profiles; the rejected
+global dry run, and named/empty/omitted profiles; the rejected
 CLI cannot reach profile parsing. Intermediate runtime symlink parents are validated while
 protected virtualenv invocation paths are retained. These filesystem tests simulate root
 ownership and do not execute the test executables.
@@ -563,9 +562,8 @@ This does not establish native macOS MDM, launchd, fresh-user GUI login, or tool
 The rollout checklist is in `docs/claude-desktop-mdm.md`.
 
 MDM regressions also cover the `claude-code` configure alias and missing-manifest
-diagnostics that preserve the previous root bundle. MCP proxy and OTLP helper identity
-checks share the same lightweight saved-authentication predicate. These remain component
-checks; native launchd removal, manual user-plugin cleanup, and macOS execution require the documented checklist.
+diagnostics that preserve the previous root bundle. These remain component checks;
+native launchd removal, manual user-plugin cleanup, and macOS execution require the documented checklist.
 
 `test_desktop_scope.py` exercises the configure CLI with real Desktop writers in temporary
 directories: no flag and `--user` write only the user source, and explicit

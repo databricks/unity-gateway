@@ -19,8 +19,7 @@ Desktop profile, user marketplace, or plugin registration.
 | Explicit `--global` | macOS machine plist, root marketplace, shared helpers, and LaunchAgent |
 
 `--global` also configures the requested CLI agents under their existing scope rules.
-Use `--mdm-desktop` instead for Desktop-only provisioning. Windows/Linux skip Desktop
-under `--global` and reject `--mdm-desktop`. Saved `global` scope does not change the
+Windows/Linux skip Desktop under `--global`. Saved `global` scope does not change the
 Desktop behavior of a later default/user configure. Ordinary revert leaves MDM intact.
 
 ## Prerequisites and authentication
@@ -43,7 +42,7 @@ Supply an existing provisioning credential through `DATABRICKS_BEARER`,
 `DATABRICKS_BEARER_COMMAND`, or cached Databricks OAuth with `--profile <name>` instead
 of `--workspace`. With explicit Claude selection (`--agents claude` / `--agent claude`),
 `--global` validates shared CLI paths before profile lookup/version probes and does not
-force browser login. `--mdm-desktop` follows the same rule. Omitted-agent configure
+force browser login. Omitted-agent configure
 retains normal authentication/discovery before policy or the picker selects agents;
 Desktop prerequisites apply only if Claude is selected. Use explicit agents for MDM.
 
@@ -51,12 +50,12 @@ Provisioning reuses one token for discovery/download and never stores it in mach
 files. Shared helpers discard provisioning credential overrides and use each user's
 separate `UG_DESKTOP_<workspace-hash>` OAuth profile. Browser sign-in happens only on
 an interactive Desktop credential request. Background plugin refresh never authenticates;
-connector consent and subscription relay sign-in remain per-user.
+connector consent and subscription relay sign-in remain per-user. Existing MCP/tracing
+helpers keep their current authentication behavior; coexistence with a saved user PAT
+configuration is outside this MDM release.
 
 `--global --mcp` adds services to CLI clients; Desktop receives workspace-managed MCPs.
-`--mdm-desktop --mcp system.ai.slack,system.ai.github` adds named Desktop services.
-`--user` and `UG_SKIP_OS_SETTINGS` are incompatible with MDM. Desktop-only mode rejects
-model-source overrides and AI Tools installer flags. Explicit Desktop provisioning
+`UG_SKIP_OS_SETTINGS` is incompatible with MDM. Explicit Desktop provisioning
 errors fail configure. Desktop dry runs report destinations without publishing files;
 other agents retain their own dry-run behavior.
 

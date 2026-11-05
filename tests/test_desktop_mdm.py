@@ -16,7 +16,7 @@ import pytest
 from typer.testing import CliRunner
 
 from tests.test_desktop_bundle import system_source as system_source
-from ucode import cli, config_io, desktop_auth, managed_config, mcp, skills_download, workspace
+from ucode import cli, config_io, managed_config, mcp, skills_download, workspace
 from ucode.agents.desktop import claude_config, cowork, mdm, setup
 from ucode.databricks import AnthropicModelCatalog
 from ucode.skills_api import SkillRef
@@ -119,7 +119,6 @@ def test_provision_without_account_has_no_admin_credentials_or_user_writes(devic
         WORKSPACE,
         "--profile",
         descriptor["profile"],
-        "--mdm-desktop",
     ]
     plugin = device.source / "plugins/ug"
     servers = json.loads((plugin / ".mcp.json").read_bytes())["mcpServers"]
@@ -426,37 +425,7 @@ def test_platform_and_identity_guards(monkeypatch, platform, admin, provision):
     monkeypatch.setattr(mdm, "sys", SimpleNamespace(platform=platform))
     monkeypatch.setattr(mdm.system_cross_os, "is_admin", lambda: admin)
     with pytest.raises(RuntimeError):
-        mdm._require_macos(administrator=provision)
-
-
-@pytest.mark.parametrize("admin", [True, False])
-def test_mdm_helper_uses_user_auth_and_never_runs_plugin_install(monkeypatch, admin):
-    monkeypatch.setattr(mdm, "sys", SimpleNamespace(platform="darwin"))
-    monkeypatch.setattr(mdm.system_cross_os, "is_admin", lambda: admin)
-    auth = Mock(return_value="user-token")
-    monkeypatch.setattr(desktop_auth, "get_claude_desktop_databricks_token", auth)
-    monkeypatch.setattr(
-        mdm, "sync_user", Mock(side_effect=AssertionError("auth must not wait on plugin install"))
-    )
-    result = CliRunner().invoke(
-        cli.app,
-        [
-            "claude-desktop-auth",
-            "--mdm-desktop",
-            "--host",
-            WORKSPACE,
-            "--profile",
-            "UG_DESKTOP_test",
-        ],
-    )
-    if admin:
-        assert result.exit_code == 1
-        assert result.stdout == ""
-        auth.assert_not_called()
-    else:
-        assert result.exit_code == 0
-        assert result.stdout == "user-token\n"
-        auth.assert_called_once_with(WORKSPACE, "UG_DESKTOP_test")
+        mdm.validate_mdm_execution(administrator=provision)
 
 
 @pytest.mark.parametrize("private", [False, True])
@@ -561,7 +530,7 @@ def test_runtime_rejects_untrusted_cli_before_version_discovery(monkeypatch, tmp
 @pytest.mark.parametrize(
     ("flags", "profile"),
     [
-        (["--mdm-desktop"], "CACHED"),
+        (["--global"], "CACHED"),
         (["--global"], ""),
         (["--global", "--dry-run"], None),
     ],
@@ -673,48 +642,6 @@ def test_machine_path_validation(monkeypatch, problem):
         mdm._check_machine_path(path, required=True)
 
 
-@pytest.mark.parametrize(
-    ("args", "diagnostic"),
-    [
-        (["--agents", "claude"], "requires --workspace or --profile"),
-        (["--workspace", WORKSPACE], "Use --mdm-desktop with --agents claude"),
-        (
-            ["--agents", "claude", "--workspace", f"{WORKSPACE},https://another.example"],
-            "--workspace takes a single workspace URL",
-        ),
-        (["--workspace", WORKSPACE, "--user", "--agents", "claude"], "uses workspace policy"),
-        (["--workspace", WORKSPACE, "--agents", "codex"], "Use --mdm-desktop with --agents claude"),
-        (
-            ["--workspace", WORKSPACE, "--agents", "claude", "--enable-databricks-ai-tools"],
-            "uses workspace policy",
-        ),
-    ],
-)
-def test_cli_rejects_incompatible_mdm_arguments(device, monkeypatch, args, diagnostic):
-    monkeypatch.delenv("UG_WORKSPACE", raising=False)
-    monkeypatch.setattr(cli.sys, "platform", "darwin")
-    configure = Mock()
-    monkeypatch.setattr(mdm, "configure", configure)
-    result = CliRunner().invoke(cli.app, ["configure", "--mdm-desktop", *args])
-    assert result.exit_code == 1, result.output
-    assert diagnostic in " ".join(result.output.split())
-    configure.assert_not_called()
-    device.auth.assert_not_called()
-
-
-def test_cli_rejects_pat_profile_with_mdm_specific_error(monkeypatch):
-    configure = Mock()
-    monkeypatch.setattr(mdm, "configure", configure)
-    monkeypatch.setattr(cli, "_parse_profile_option", lambda value: [(WORKSPACE, value)])
-    result = CliRunner().invoke(
-        cli.app,
-        ["configure", "--mdm-desktop", "--agents", "claude", "--profile", "PAT", "--use-pat"],
-    )
-    assert result.exit_code == 1
-    assert "PAT/custom OAuth" in result.output
-    configure.assert_not_called()
-
-
 def test_global_with_cached_oauth_does_not_force_browser_login(device, monkeypatch):
     monkeypatch.setattr(cli.sys, "platform", "darwin")
     monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
@@ -740,29 +667,7 @@ def test_global_with_cached_oauth_does_not_force_browser_login(device, monkeypat
     login.assert_not_called()
 
 
-@pytest.mark.parametrize("agents", ["claude", "claude-code"])
-def test_cli_dispatches_mdm_without_normal_agent_configuration(device, monkeypatch, agents):
-    configure = Mock()
-    monkeypatch.setattr(mdm, "configure", configure)
-    for name in ("install_databricks_cli", "_configure_workspace_command", "save_state"):
-        monkeypatch.setattr(cli, name, Mock(side_effect=AssertionError(name)))
-    result = CliRunner().invoke(
-        cli.app,
-        [
-            "configure",
-            "--agents",
-            agents,
-            "--mdm-desktop",
-            "--workspace",
-            WORKSPACE,
-            "--mcp",
-            "system.ai.slack, system.ai.gmail, ",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    configure.assert_called_once_with(
-        WORKSPACE, None, mcp_names=["system.ai.slack", "system.ai.gmail"]
-    )
+def test_cli_removes_mdm_machine_files(device, monkeypatch):
     remove = Mock()
     monkeypatch.setattr(mdm, "remove", remove)
     monkeypatch.setattr(cli, "revert", Mock(side_effect=AssertionError("normal revert")))

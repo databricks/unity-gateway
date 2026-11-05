@@ -198,8 +198,7 @@ For macOS MDM deployment, run `ug configure --agents claude --global --workspace
 as root with a preinstalled shared runtime. This publishes Desktop's managed plist and root
 marketplace, then refreshes each user's normal plugin registration through a LaunchAgent.
 It leaves Desktop's user profile and marketplace source unchanged. Windows and Linux skip
-Desktop under `--global`. `--mdm-desktop` remains available for Desktop-only provisioning,
-without configuring Claude Code or other agents.
+Desktop under `--global`.
 Provisioning credentials stay separate from users' Desktop authentication.
 See [MDM prerequisites, deployment, and validation](docs/claude-desktop-mdm.md).
 

@@ -222,7 +222,6 @@ from ucode.state import (
     user_mcp_reconcile_pending,
     workspace_self_managed_agents,
 )
-from ucode.state_file import matches_saved_authentication
 from ucode.string_utils import is_valid_catalog_schema
 from ucode.ug_headers import parse_header_line
 from ucode.ui import (
@@ -2807,7 +2806,6 @@ def claude_desktop_auth_cmd(
     claude_binary: Annotated[
         str | None, typer.Option("--claude-binary", help="Absolute Claude Code executable path.")
     ] = None,
-    mdm_desktop: Annotated[bool, typer.Option("--mdm-desktop", hidden=True)] = False,
 ) -> None:
     """Print a Desktop credential, allowing browser login only for interactive requests."""
     import sys
@@ -2819,10 +2817,6 @@ def claude_desktop_auth_cmd(
 
     try:
         with redirect_stdout(sys.stderr):
-            if mdm_desktop:
-                from ucode.agents.desktop import mdm
-
-                mdm._require_macos(administrator=False)
             if relay:
                 if not claude_binary or not os.path.isabs(claude_binary):
                     raise RuntimeError("An absolute Claude Code executable path is required.")
@@ -3013,15 +3007,12 @@ def otel_headers_cmd(
     import sys
 
     state = load_state()
-    saved_auth_matches = matches_saved_authentication(
-        state, host=host, profile=profile, workspace_id=workspace_id
-    )
     workspace = host or state.get("workspace")
     if not workspace:
         print_err("No workspace configured. Run `ug configure` first.")
         raise typer.Exit(1)
     profile = profile or state.get("profile")
-    if use_pat or (saved_auth_matches and state.get("use_pat")):
+    if use_pat or state.get("use_pat"):
         if not ensure_pat_bearer(profile):
             print_err(
                 f"--use-pat: no personal access token available for profile "
@@ -4982,13 +4973,6 @@ def configure(
             "The choice is saved for later commands.",
         ),
     ] = False,
-    mdm_desktop: Annotated[
-        bool,
-        typer.Option(
-            "--mdm-desktop",
-            help="Provision Claude Desktop machine policy and plugins from a macOS MDM script running as root.",
-        ),
-    ] = False,
     verbose: Annotated[
         str,
         typer.Option(
@@ -5028,14 +5012,14 @@ def configure(
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
-        provisions_desktop = mdm_desktop
+        provisions_desktop = False
         if global_scope and sys.platform == "darwin":
             requested = [
                 normalize_tool(name)
                 for name in (agent or agents or "").split(",")
                 if name.strip() and name.strip().lower() not in ("cursor", "vscode")
             ]
-            provisions_desktop = provisions_desktop or "claude" in requested
+            provisions_desktop = "claude" in requested
         if provisions_desktop:
             if use_pat or custom_oauth:
                 raise RuntimeError(
@@ -5043,10 +5027,9 @@ def configure(
                 )
             from ucode.agents.desktop import mdm
 
-            mdm._require_macos(administrator=True)
+            mdm.validate_mdm_execution(administrator=True)
             mdm.validate_cli_discovery()
-        if not mdm_desktop:
-            install_databricks_cli()
+        install_databricks_cli()
         if agent is not None and agents is not None:
             raise RuntimeError("Use either --agent or --agents, not both.")
         if provider is not None or model_location is not None:
@@ -5086,44 +5069,6 @@ def configure(
         if provisions_desktop:
             for target_workspace, _ in workspace_entries or []:
                 mdm.require_dedicated_workspace(target_workspace)
-        if mdm_desktop:
-            from ucode.agents.desktop import mdm
-
-            if (
-                user_scope
-                or use_pat
-                or custom_oauth
-                or provider
-                or model_location
-                or enable_databricks_ai_tools is not None
-            ):
-                raise RuntimeError(
-                    "--mdm-desktop uses workspace policy and cannot combine with --user, PAT/custom OAuth, model overrides, or AI Tools installation flags."
-                )
-            if not (agent or agents) or _parse_agents_option(agent or agents or "") != ["claude"]:
-                raise RuntimeError("Use --mdm-desktop with --agents claude.")
-            if workspace_entries is None:
-                raise RuntimeError(
-                    "--mdm-desktop requires --workspace or --profile (or UG_WORKSPACE)."
-                )
-            target_workspace, target_profile = workspace_entries[0]
-            try:
-                mdm.configure(
-                    target_workspace,
-                    target_profile,
-                    mcp_names=(
-                        [name.strip() for name in mcp.split(",") if name.strip()]
-                        if mcp is not None
-                        else None
-                    ),
-                )
-            except (OSError, ValueError, subprocess.SubprocessError) as exc:
-                raise RuntimeError(f"Desktop MDM provisioning failed: {exc}") from exc
-            if not dry_run:
-                print_success(
-                    "Claude Desktop MDM deployment configured. Users authenticate when they open Desktop; start a new Cowork task after plugin refresh."
-                )
-            return
         flag_driven_workspace = workspace_entries is not None
         # Only forward the opt-in flags when set so existing call expectations
         # (and defaults) stay unchanged for the common interactive path.

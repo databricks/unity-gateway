@@ -34,7 +34,7 @@ def validate_global_desktop(state: dict, tools: list[str]) -> None:
 
     if state.get("use_pat") or state.get("custom_oauth"):
         raise RuntimeError("Desktop MDM provisioning does not support PAT/custom OAuth profiles.")
-    mdm._require_macos(administrator=True)
+    mdm.validate_mdm_execution(administrator=True)
     mdm.require_dedicated_workspace(state["workspace"])
     mdm.validate_cli_discovery()
 

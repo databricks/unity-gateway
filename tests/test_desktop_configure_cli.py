@@ -23,7 +23,7 @@ def test_explicit_global_desktop_scope_is_command_local(monkeypatch, flags, fail
 
     selections = []
     monkeypatch.setattr(cli.sys, "platform", "darwin")
-    monkeypatch.setattr(mdm, "_require_macos", lambda **kwargs: None)
+    monkeypatch.setattr(mdm, "validate_mdm_execution", lambda **kwargs: None)
     monkeypatch.setattr(mdm, "validate_cli_discovery", lambda: None)
     monkeypatch.setattr(cli, "install_databricks_cli", lambda: None)
 

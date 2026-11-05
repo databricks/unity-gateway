@@ -143,13 +143,15 @@ survive installation, reconfiguration, and revert unchanged. Revert also removes
 registration and generated user source. Root-file preservation is covered by component tests;
 the integration journeys do not inspect OS-managed directories.
 Desktop source placement, native-command simulation, root publication, CLI scope and
-argument validation (including connector whitespace and multiple workspaces), malformed
-cache inspection, authentication isolation, and machine-file removal have
+malformed cache inspection, per-user OAuth profiles, and machine-file removal have
 [component coverage](../README.md). These checks use temporary destinations and simulate
 external workspace, ownership, launchd, and Claude registration boundaries.
 MDM recovery ledgers, cross-file restoration, interrupted/account-switch cleanup, and
 deferred uninstall are outside this release. Their MDM-only component tests were removed
 with that behavior; ordinary user-plugin and bundle recovery coverage is unchanged.
+Standalone Desktop-only provisioning and its argument tests were removed in favor of
+`configure --global`. Existing auth/MCP/tracing commands are unchanged; MDM-specific
+saved-PAT coexistence tests were removed with that separate behavior change.
 CLI-agent scope unit coverage isolates Desktop prerequisites; Desktop scope components
 exercise the macOS CLI preflight. Shared Claude PAT handling is tested against the global
 Desktop OAuth branch. Command-local scope checks isolate machine prerequisites on macOS;
@@ -157,8 +159,8 @@ failure checks cover preflight and publication without writing user Desktop file
 These checks replace external authentication and do not exercise native macOS failures.
 Other component regressions cover MCP-only requests bypassing Desktop provisioning,
 intermediate runtime symlink trust, and early Databricks/Claude CLI validation before
-installer or version probes. Six representative unsafe-CLI cases retain both provisioning
-entry points, global dry run, and named/empty/omitted profiles. Omitted-agent selection and the
+installer or version probes. Six representative unsafe-CLI cases cover the global path,
+dry run, and named/empty/omitted profiles. Omitted-agent selection and the
 managed-only Desktop connector policy under `--global --mcp` also have component
 coverage; these are not native macOS integration checks.
 
@@ -168,9 +170,8 @@ GUI skill/tool invocation, and current flag routing on macOS remain unverified h
 Follow the [MDM rollout checklist](../../docs/claude-desktop-mdm.md) before fleet rollout.
 
 MDM regressions also cover the `claude-code` configure alias and missing-manifest
-diagnostics that preserve the previous root bundle. MCP proxy and OTLP helper identity
-checks share the same lightweight saved-authentication predicate. These remain component
-checks; native launchd removal, manual user-plugin cleanup, and macOS execution require the documented checklist.
+diagnostics that preserve the previous root bundle. These remain component checks;
+native launchd removal, manual user-plugin cleanup, and macOS execution require the documented checklist.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.web_search and allow

@@ -21,7 +21,7 @@ from typing import BinaryIO
 
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock, release_file_lock
-from ucode.state_file import current_workspace_state, matches_saved_authentication, read_state_file
+from ucode.state_file import current_workspace_state, read_state_file
 
 PROTOCOL_VERSION = 1
 MAX_FRAME_BYTES = 64 * 1024 * 1024
@@ -285,9 +285,6 @@ def run_proxy(
     workspace_id: str | None = None,
 ) -> None:
     state = load_proxy_state()
-    saved_auth_matches = matches_saved_authentication(
-        state, host=host, profile=profile, workspace_id=workspace_id
-    )
     workspace = host or state.get("workspace")
     if not workspace:
         print("No workspace configured. Run `ug configure` first.", file=sys.stderr)
@@ -299,7 +296,7 @@ def run_proxy(
         url,
         workspace,
         profile or state.get("profile"),
-        use_pat=use_pat or (saved_auth_matches and bool(state.get("use_pat"))),
+        use_pat=use_pat or bool(state.get("use_pat")),
         **options,
     )
 

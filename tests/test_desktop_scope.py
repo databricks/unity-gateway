@@ -128,7 +128,9 @@ def test_global_preserves_existing_desktop_user_files(desktop_configuration, dev
     assert cowork._state_path().read_bytes() == state
 
 
-@pytest.mark.parametrize("selector", [["--agent", "claude"], ["--agents", "claude,codex"]])
+@pytest.mark.parametrize(
+    "selector", [["--agent", "claude"], ["--agents", "claude-code"], ["--agents", "claude,codex"]]
+)
 def test_global_provisions_without_a_desktop_account(
     desktop_configuration, device, tmp_path, selector
 ):

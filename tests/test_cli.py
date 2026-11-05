@@ -2846,40 +2846,6 @@ class TestAuthTokenCommand:
 
 
 class TestOtelHeadersCommand:
-    @pytest.mark.parametrize("workspace_id,expected_pat", [("111", True), ("222", False)])
-    def test_saved_pat_requires_matching_workspace_selection(self, workspace_id, expected_pat):
-        with (
-            patch(
-                "ucode.cli.load_state",
-                return_value={
-                    "workspace": "https://shared.example",
-                    "workspace_id": "111",
-                    "profile": "saved-pat",
-                    "use_pat": True,
-                },
-            ),
-            patch("ucode.cli.ensure_pat_bearer", return_value=True) as pat,
-            patch("ucode.cli.get_databricks_token", return_value="user-token"),
-        ):
-            result = runner.invoke(
-                app,
-                [
-                    "otel-headers",
-                    "--host",
-                    "https://shared.example",
-                    "--profile",
-                    "saved-pat",
-                    "--workspace-id",
-                    workspace_id,
-                ],
-            )
-        assert result.exit_code == 0, result.output
-        assert pat.call_count == int(expected_pat)
-        assert json.loads(result.stdout) == {
-            "Authorization": "Bearer user-token",
-            **cli_mod.selector_headers(workspace_id),
-        }
-
     def test_explicit_profile_refreshes_headers_and_keeps_diagnostics_off_stdout(self):
         def token(workspace, profile, *, force_refresh):
             assert (workspace, profile, force_refresh) == (
@@ -2894,11 +2860,7 @@ class TestOtelHeadersCommand:
         with (
             patch(
                 "ucode.cli.load_state",
-                return_value={
-                    "workspace": "https://other.example",
-                    "profile": "other",
-                    "use_pat": True,
-                },
+                return_value={"workspace": "https://other.example", "profile": "other"},
             ),
             patch("ucode.cli.get_databricks_token", side_effect=token),
         ):
@@ -5359,7 +5321,7 @@ class TestConfigureMcpFlag:
         monkeypatch.setattr(cli_mod.sys, "platform", "darwin")
         with (
             patch(
-                "ucode.agents.desktop.mdm._require_macos",
+                "ucode.agents.desktop.mdm.validate_mdm_execution",
                 side_effect=AssertionError("MCP-only configure must not require Desktop MDM"),
             ) as desktop_preflight,
             patch("ucode.cli.install_databricks_cli"),
@@ -6744,7 +6706,7 @@ class TestConfigureScopeFlags:
         with (
             self._single_agent_env({"enabled_agents": {}}),
             patch("ucode.agents.desktop.mdm.configure"),
-            patch("ucode.agents.desktop.mdm._require_macos"),
+            patch("ucode.agents.desktop.mdm.validate_mdm_execution"),
             patch("ucode.agents.desktop.mdm.validate_cli_discovery"),
             patch(
                 "ucode.cli.configure_single_tool", side_effect=lambda _tool, state, **_kw: state
@@ -9105,22 +9067,16 @@ class TestMcpProxyCmdForwardsUsePat:
     """`ucode mcp-proxy` forwards the PAT choice to `serve`, which owns the
     actual PAT resolution. Behavior of that resolution lives in test_mcp_proxy."""
 
-    def _invoke(
-        self, monkeypatch, *, flag, state, profile=None, host="https://x", workspace_id=None
-    ):
+    def _invoke(self, monkeypatch, *, flag, state):
         captured: dict = {}
         monkeypatch.setattr("ucode.mcp_proxy_runtime.load_proxy_state", lambda **_: state)
         monkeypatch.setattr(
             "ucode.mcp_proxy_runtime.serve",
             lambda *a, **kw: captured.update(args=a, kwargs=kw),
         )
-        args = ["mcp-proxy", "--url", "https://x/mcp", "--host", host]
+        args = ["mcp-proxy", "--url", "https://x/mcp", "--host", "https://x"]
         if flag:
             args.append("--use-pat")
-        if profile:
-            args += ["--profile", profile]
-        if workspace_id:
-            args += ["--workspace-id", workspace_id]
         result = runner.invoke(app, args)
         return result, captured
 
@@ -9144,52 +9100,6 @@ class TestMcpProxyCmdForwardsUsePat:
         result, captured = self._invoke(monkeypatch, flag=False, state={"workspace": "https://x"})
         assert result.exit_code == 0, result.output
         assert captured["kwargs"]["use_pat"] is False
-
-    @pytest.mark.parametrize("profile,expected", [("saved-pat", True), ("desktop-oauth", False)])
-    def test_explicit_profile_inherits_only_its_own_saved_auth(
-        self, monkeypatch, profile, expected
-    ):
-        result, captured = self._invoke(
-            monkeypatch,
-            flag=False,
-            state={"workspace": "https://x", "profile": "saved-pat", "use_pat": True},
-            profile=profile,
-        )
-        assert result.exit_code == 0, result.output
-        assert captured["args"][2] == profile
-        assert captured["kwargs"]["use_pat"] is expected
-
-    @pytest.mark.parametrize(
-        "host,workspace_id,expected",
-        [
-            ("https://x", None, True),
-            ("https://x", "111", True),
-            ("https://x", "222", False),
-            ("https://other", None, False),
-        ],
-    )
-    def test_explicit_workspace_inherits_only_its_own_saved_auth(
-        self, monkeypatch, host, workspace_id, expected
-    ):
-        result, captured = self._invoke(
-            monkeypatch,
-            flag=False,
-            state={
-                "workspace": "https://x",
-                "workspace_id": "111",
-                "profile": "saved-pat",
-                "use_pat": True,
-            },
-            profile="saved-pat",
-            host=host,
-            workspace_id=workspace_id,
-        )
-        assert result.exit_code == 0, result.output
-        assert captured["args"][1:] == (host, "saved-pat")
-        assert captured["kwargs"]["use_pat"] is expected
-        assert captured["kwargs"].get("workspace_id") == (
-            workspace_id or ("111" if host == "https://x" else None)
-        )
 
 
 class TestForcedLoginWithExternalBearer:
