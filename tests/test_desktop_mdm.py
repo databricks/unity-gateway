@@ -654,5 +654,14 @@ def test_cli_removes_mdm_machine_files(device, monkeypatch):
     remove = Mock()
     monkeypatch.setattr(mdm, "remove", remove)
     monkeypatch.setattr(cli, "revert", Mock(side_effect=AssertionError("normal revert")))
-    assert CliRunner().invoke(cli.app, ["revert", "--mdm-desktop"]).exit_code == 0
+    assert CliRunner().invoke(cli.app, ["revert", "--global"]).exit_code == 0
     remove.assert_called_once()
+
+
+def test_cli_revert_rejects_removed_mdm_desktop_flag(device, monkeypatch):
+    remove = Mock()
+    monkeypatch.setattr(mdm, "remove", remove)
+    monkeypatch.setattr(cli, "revert", Mock(side_effect=AssertionError("normal revert")))
+    result = CliRunner().invoke(cli.app, ["revert", "--mdm-desktop"])
+    assert result.exit_code == 2
+    remove.assert_not_called()

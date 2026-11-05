@@ -5361,18 +5361,18 @@ def status_cmd() -> None:
 
 @app.command("revert", rich_help_panel="Manage")
 def revert_cmd(
-    mdm_desktop: Annotated[
+    global_scope: Annotated[
         bool,
         typer.Option(
-            "--mdm-desktop",
-            help="Remove Claude Desktop machine files (macOS, root); restart Desktop afterward.",
+            "--global",
+            help="Remove machine-scope Claude Desktop files (macOS, root); restart Desktop afterward.",
         ),
     ] = False,
 ) -> None:
     """Clear ug state and restore backed-up agent config files."""
     request_explicit_managed_writes("ug revert")
     try:
-        if mdm_desktop:
+        if global_scope:
             from ucode.agents.desktop import mdm
 
             try:

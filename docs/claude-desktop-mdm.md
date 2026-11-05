@@ -122,7 +122,7 @@ installed can duplicate skills/hooks and, for older versions, connectors.
 To remove this deployment as root:
 
 ```sh
-/opt/unitygateway/venv/bin/ug revert --mdm-desktop
+/opt/unitygateway/venv/bin/ug revert --global
 ```
 
 This removes the managed plist, organization plugin, and shared helpers. User credentials,
