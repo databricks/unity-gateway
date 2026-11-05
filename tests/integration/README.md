@@ -916,9 +916,10 @@ Explicit-model selection, command forwarding, app-server initialization, and cat
 retain their original legacy flags and on/off coverage; preset-specific behavior there is not
 covered.
 
-The Claude route-subagent hook journey checks that both hook notices name the agent
-in `updatedInput`, rather than the originally requested type. Native task-header
-rendering is outside that hook-contract check.
+The Claude route-subagent-mod journey checks that the response contains only the
+selected model and rationale and matches the decision log. The native mod applies
+that model at spawn without rewriting the reviewed tool input. Native task-header
+rendering is outside that CLI-contract check.
 
 The unit/component `../test_smart_routing_config.py` checks unset, disabled, enabled, and
 conflicting combinations of the routing, orchestration, and savings flags against the

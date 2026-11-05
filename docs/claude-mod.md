@@ -17,12 +17,17 @@ cleans up the files when Claude exits.
 
 The same entry point routes Agent/Task calls in a native `tool.call` hook. It pipes the
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
-the `routeCommand` plugin option, and continues the call with the returned input. The
-display label uses a random animal from a list of 100, without repeats until the list
+the `routeCommand` plugin option, and continues with the original input. The matching
+`agent.spawn` hook applies only the selected model, preserving the agent's type, prompt,
+name and permissions. The routing response contains only `model` and `rationale`;
+the model retains Claude's `[1m]` context hint for eligible GPT models.
+Forks and resumed agents keep their native model. This preserves
+auto mode's review of the tool input instead of invalidating it with a routing rewrite.
+The display label uses a random animal from a list of 100, without repeats until the list
 is exhausted; later cycles append `2`, `3`, and so on. Each call keeps its name while
-the plugin is loaded. A routed call without its own `name` is given the animal as its
-agent name, so Claude's messages from that subagent read `Message from Otter`; a call's
-own name is kept. Other execution inputs and audit IDs stay intact. Parallel decision cards use the same animal names beside their tasks.
+the plugin is loaded. Animal names are display labels for routing rows, parallel
+decision cards and the bottom panel. Claude's messages retain the agent's native name
+or type; routing does not inject a name into the reviewed call.
 The native bottom subagent panel uses Claude's `subagentStatusLine` extension, outside
 `ui.render`. After a routed spawn succeeds, the mod saves its animal name against the
 returned child ID in the temporary plugin directory, with the session ID. The plugin's

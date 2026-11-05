@@ -71,11 +71,17 @@ routing. They do not establish live
 parallel-agent TUI or gateway coverage.
 
 The bottom-bar regression in the native mod suite checks the spawn's returned child ID
-against its transcript animal name, reverse completion order, unchanged spawn parameters,
+against its transcript animal name, reverse completion order, a model-only spawn override,
 denied/unrouted spawns, and nonblocking mapping-write failures. `test_claude_mod.py` exercises
 the generated `subagentStatusLine` command, including paths with spaces, child-ID lookup,
 session isolation, missing/partial records, progress/token updates, and terminal-control
 filtering. These component checks do not establish interactive native-panel rendering.
+
+The native auto-mode regression serves controlled server verdicts to the real Claude binary.
+An approved Agent call retains its original input and starts a child on a different routed
+model without invoking the fallback classifier; a flagged call remains denied and starts no
+child. The fallback response is deliberately malformed, so an input rewrite fails the test.
+These are component checks, not live gateway evidence. Forks and resumed agents bypass routing.
 
 `test_agent_antigravity.py` covers the Antigravity CLI agent: Databricks-to-Antigravity model
 names (dotted versions, `-preview` names and their tiers, image models dropped), the `agy models`
