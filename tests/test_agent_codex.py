@@ -2172,6 +2172,24 @@ class TestCodexManagedConfig:
         codex.write_tool_config({"workspace": WS})
         assert read_toml_safe(system_dir / "config.toml") == {}
 
+    def test_mdm_files_are_world_readable_and_replace_symlinks(self, tmp_path, monkeypatch):
+        system_dir = self._patch_mdm(tmp_path, monkeypatch)
+        system_dir.mkdir(parents=True, mode=0o700)
+        target = tmp_path / "target"
+        target.write_text("keep\n", encoding="utf-8")
+        (system_dir / "requirements.toml").symlink_to(target)
+        previous_umask = os.umask(0o077)
+        try:
+            codex.write_tool_config(dict(self.MDM_STATE))
+        finally:
+            os.umask(previous_umask)
+
+        # Every user's Codex reads these files, so a restrictive root umask must not hide them.
+        assert system_dir.stat().st_mode & 0o777 == 0o755
+        for name in ("requirements.toml", "config.toml"):
+            assert not (system_dir / name).is_symlink()
+            assert (system_dir / name).stat().st_mode & 0o777 == 0o644
+        assert target.read_text(encoding="utf-8") == "keep\n"
 
     @pytest.mark.parametrize(
         ("os_", "root"), [(managed_files.OS.LINUX, False), (managed_files.OS.WINDOWS, True)]

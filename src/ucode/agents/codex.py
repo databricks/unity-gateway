@@ -1243,8 +1243,28 @@ def _write_mdm_files(state: dict) -> None:
     }
     model = state.get("codex_default_model")
     config = {"model": model} if isinstance(model, str) else {}
-    write_text_file(CODEX_SYSTEM_DIR / CODEX_REQUIREMENTS_FILE, tomlkit.dumps(requirements))
-    write_text_file(CODEX_SYSTEM_DIR / "config.toml", tomlkit.dumps(config))
+    _write_shared_file(CODEX_SYSTEM_DIR / CODEX_REQUIREMENTS_FILE, tomlkit.dumps(requirements))
+    _write_shared_file(CODEX_SYSTEM_DIR / "config.toml", tomlkit.dumps(config))
+
+
+def _write_shared_file(path: Path, text: str) -> None:
+    """Atomically replace a machine-wide file that every user's Codex reads, whatever root's umask.
+
+    The rename replaces a planted symlink itself rather than writing through it."""
+    if is_dry_run():
+        write_text_file(path, text)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.chmod(0o755)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.chmod(tmp_name, 0o644)
+        os.replace(tmp_name, path)
+    except BaseException:
+        os.unlink(tmp_name)
+        raise
 
 
 MANAGED_MCP_CONFIG_KEY = "mcp_servers"

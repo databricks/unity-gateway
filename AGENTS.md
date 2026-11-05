@@ -228,7 +228,7 @@ See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`. On Windows the managed file is `C:\ProgramData\OpenAI\Codex\requirements.toml`, which omits `model` and `mcp_servers` and adds `env_http_headers` for the launch-scoped headers.
 
-An MDM run (an explicit `ug configure --global` as root on Linux or macOS) leaves `managed_config.toml` alone and rebuilds two files from scratch instead. `/etc/codex/requirements.toml` gets `model_provider` and the whole `model_providers.Databricks` entry, laid out as on Windows, with the same `ug auth-token --host <workspace> --browser-login` command for every user. `/etc/codex/config.toml` gets only the config's `model`. Managed MCP servers fall back to user scope.
+An MDM run (an explicit `ug configure --global` as root on Linux or macOS) leaves `managed_config.toml` alone and rebuilds two files from scratch instead. `/etc/codex/requirements.toml` gets `model_provider` and the whole `model_providers.Databricks` entry, laid out as on Windows, with the same `ug auth-token --host <workspace> --browser-login` command for every user. `/etc/codex/config.toml` gets only the config's `model`. Both are replaced atomically and readable by every user. Managed MCP servers aren't written: like any `--global` run, it names them in a warning, and each user's own `ug configure` registers them.
 
 | Field | Without managed config | With managed config | Notes |
 |-------|------------------------|---------------------|-------|

@@ -675,6 +675,7 @@ No automated test runs a real root configure.
 `test_agent_codex.py` also covers the Codex MDM run, an explicit `--global` as root on Linux or
 macOS, against temp paths. Its `/etc/codex/requirements.toml` provider lock and
 `/etc/codex/config.toml` default model match the MDM design's example, a rerun replaces both files,
+both stay `0644` under a `077` umask, a planted symlink is replaced rather than followed,
 and the run skips `managed_config.toml` and its managed MCP servers. Non-root and Windows runs keep
 the managed file. No integration journey runs it: a real root run would lock the CI runner's Codex
 provider for every later Codex test.
