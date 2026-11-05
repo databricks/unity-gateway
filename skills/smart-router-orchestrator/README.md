@@ -6,6 +6,9 @@ Smart-routed Claude and Codex launches install and activate this skill alongside
 With `--enable-smart-routing` or workspace smart routing and no other version set, the default
 `subagent_orch_v0_claude_only` installs it for Claude only; Codex warns and launches unrouted
 without either skill.
+Resolved Auto sessions keep this skill available while routing activity follows the
+native model choice. The Auto config version is not registered yet; existing
+versions and the default enabled version are unchanged.
 UG expands the selected version into the session's legacy feature flags. The `_v1` revision
 enables both V2 and subagent-only routing flags alongside orchestration; subagent-only still
 takes precedence, so the first prompt is not routed.

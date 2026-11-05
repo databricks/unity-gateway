@@ -2,13 +2,21 @@ import type { Register } from 'claude-code';
 import { register as router } from '../hooks/register';
 
 export const register: Register = (on, options) => {
+  const modelCommands: string[] = [];
   router(on, options);
   on('session.start', {isInteractive: false}, async ($, e, next) => {
     await $.command.register({name: 'routing-probe', description: 'Observe routing', immediate: true});
     return next(e);
   });
+  // Characterize the real native command boundary without making inference requests.
+  on('command.run', {command: 'model'}, async ($, e, next) => {
+    modelCommands.push(e.args);
+    if (e.args === '__probe_auto') return {text: 'Auto command intercepted'};
+    return next(e.args === '__probe_haiku' ? {...e, args: 'haiku'} : e);
+  });
   on('command.run', {command: 'routing-probe'}, async ($) => ({text: JSON.stringify({
     revision: 'initial', options,
+    model: await $.session.model(), modelCommands,
     route: (options.routeCommand as readonly string[]).length
       ? await $.process.run(options.routeCommand as readonly string[], {stdin: '{}', timeoutMs: 10000})
       : null,

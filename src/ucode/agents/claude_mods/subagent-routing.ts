@@ -1,6 +1,7 @@
+import type { AutoPolicy } from './register.ts'
 import type { On, PluginOptions } from 'claude-code'
 
-type RoutingRecord = { name: string; task: string; model: string; rationale: string; seconds?: number }
+type RoutingRecord = { name: string; task: string; model: string; rationale: string; seconds?: number; revision?: number }
 
 const ANIMALS = [
   'Otter', 'Panda', 'Lynx', 'Fox', 'Badger', 'Beaver', 'Bison', 'Bobcat', 'Camel', 'Caribou',
@@ -78,7 +79,7 @@ export function endSubagentRoutingTurn(aborted: boolean): void {
   if (aborted) cards.unplaced = []
 }
 
-export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
+export const registerSubagentRouting = (on: On, options: PluginOptions, policy?: AutoPolicy): void => {
   const names = new Map<string, string>()
   const unusedNames = [...ANIMALS]
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
@@ -94,6 +95,11 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   const seen = new Set<string>()
 
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
+    const revision = policy?.revision
+    if (policy) {
+      if (policy.blocked || policy.picking) return {deny: 'Auto policy is unavailable; retry /model.'}
+      if (e.resume || await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') !== '1') return next(e)
+    }
     const command = options.routeCommand as readonly string[]
     if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
     const { tool, tool_use_id, agentId, ...input } = e
@@ -156,16 +162,27 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
           model: route.model,
           rationale: route.rationale,
           seconds,
+          revision,
         })
       }
       $.ui.invalidate('ui.render')
+    }
+    if (policy && (policy.blocked || policy.picking || policy.revision !== revision)) {
+      if (tool_use_id) records.delete(tool_use_id)
+      return {deny: 'Auto changed while this subagent was being routed; the pending spawn was cancelled.'}
     }
     // Auto mode reviewed this input; choose the child's model at agent.spawn instead.
     return next(e)
   })
 
   on('agent.spawn', async ($, e, next) => {
-    const route = e.resume ? undefined : records.get(e.tool_use_id)
+    let route = e.resume ? undefined : records.get(e.tool_use_id)
+    if (policy && !e.resume) {
+      if (policy.blocked || policy.picking || (route && route.revision !== policy.revision)) {
+        return {deny: 'Auto changed before this subagent spawned; retry the delegation.'}
+      }
+      if (await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') !== '1') route = undefined
+    }
     const name = route?.name
     const result = await next(route ? { ...e, model: route.model } : e)
     if (name && result.agentId) {

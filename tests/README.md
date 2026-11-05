@@ -1284,13 +1284,14 @@ added through `ug mcp add`, while retaining the original model/authentication-fi
 These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
 
-## Auto session controls
+## Auto model picker
 
-`test_smart_routing_config.py` covers explicit exposure values, legacy precedence,
-unknown-version no-op behavior, restoration, and capability/activity separation.
-`test_claude_auto_picker.py` exercises validated session writes, feedback checks,
-trimmed 15/16-character feedback boundaries, safe launch guards, and Claude-only
-rejection of legacy controls while Codex session toggles remain usable. Native options
-cover exposure with activity disabled. Inherited Auto capability cannot select an
-unregistered preset. The Auto preset is not
-registered; native picker behavior and live routing are not covered by this layer.
+Resolved-capability component tests in `test_claude_auto_picker.py` cover inactive
+provisioning, command cleanup, trimmed feedback boundaries, Claude-only toggle
+guards, and Codex session isolation. Native options cover exposure with activity off. Native
+`mod_tests/auto-picker.test.ts` covers model transitions, feedback, failed writes,
+`DISABLED_AUTO`, pending routes and continuing children. `native_claude/test_auto_picker.py`
+drives the real picker with resolved options and a fixture admin default, including
+saved/session-only choices and cancellation. Feedback transport is isolated.
+The Auto config version is still unregistered; managed injection/startup, live
+gateway routing, real feedback delivery and durable resume are not covered here.

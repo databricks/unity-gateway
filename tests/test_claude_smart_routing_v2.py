@@ -44,6 +44,7 @@ class TestManagedModelPicker:
                 {
                     "modelPicker": {
                         "options": [
+                            {"model": "auto", "label": "Auto"},
                             {"model": "system.ai.claude-opus-4-8", "label": "Opus"},
                             {"model": "system.ai.claude-sonnet-5", "label": "Sonnet"},
                         ]

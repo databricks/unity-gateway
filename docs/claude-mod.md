@@ -1,5 +1,22 @@
 # Claude mod entry point
 
+The native mod consumes a resolved Auto capability and an `autoMainModel` option.
+No config version registers this capability yet; managed exposure and admin-default
+startup are wired in the following change. Auto is excluded from routing candidates.
+
+`register.ts` handles `/model auto` and saved/session-only Auto rows with the same
+transition. Saved rows are intercepted before assigning the virtual model; their
+status survives redraws and reflects the actual result. Native command completion also
+handles session-only choices that bypass saved settings and rendered command hooks.
+Concrete selections disable
+future Auto behavior without cancelling existing children and set the body recipe to
+`DISABLED_AUTO`; legacy off controls retain `DISABLED`. Already-concrete picks do not
+require opt-out feedback. With feedback enabled, `/model` asks for the reason before
+opening the native picker; cancelling the picker keeps Auto on. Missing defaults and
+failed transitions report actionable errors; failed writes pause dispatch. Native component
+coverage is listed in [the test overview](../tests/README.md#auto-model-picker).
+Durable resume and live gateway coverage remain open.
+
 UG's Claude launcher loads `hooks/register.ts` through the existing launch-scoped
 `ug-smart-router` plugin in sessions launched with smart routing. Claude Code 2.1.290 or
 newer is required.

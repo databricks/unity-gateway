@@ -282,3 +282,22 @@ test('the continuation note keeps the fork exception when the host offers forks'
   expect(description).toContain('starts a fresh agent with no memory of prior runs (except subagent_type: "fork"), so the prompt');
   expect(description).not.toContain('Policy');
 });
+
+
+test('Auto shows the existing ON routing-subagents banner and hides it in concrete mode', {
+  options: {...ORCHESTRATED, EXPOSE_AUTO_IN_MODEL_PICKER: '1'},
+}, async ($, on) => {
+  const {env} = setup(on);
+  engine(on, env);
+  const band = await $.ui.mount(ABOVE_PROMPT);
+  const active = JSON.stringify(await band.drawn());
+  expect(active).toContain('unity gateway smart router');
+  expect(active).toContain(' ON ');
+  expect(active).toContain('routing subagents');
+  expect(active).not.toContain('/smart-router');
+  env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY = '0';
+  env.ENABLE_SMART_ROUTER_ORCHESTRATOR = '0';
+  await band.unmount();
+  const concrete = await $.ui.mount(ABOVE_PROMPT);
+  expect(hasBand(await concrete.drawn())).toBe(false);
+});

@@ -18,7 +18,7 @@ from ucode.constants import (
     AGENT_CODEX,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
 )
-from ucode.smart_routing.config import resolve_environment
+from ucode.smart_routing.config import auto_picker_enabled, resolve_environment
 from ucode.smart_routing.hooks import sync_managed_hooks
 from ucode.smart_routing.session_env import effective_environment, session_env_path
 
@@ -63,6 +63,8 @@ def enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
     from ucode.smart_routing.v2 import smart_routing_enabled
 
     source = os.environ if env is None else env
+    if auto_picker_enabled(source, agent=agent):
+        source = effective_environment(source, agent=agent)
     if not feature_enabled(source, agent=agent):
         return False
     try:
@@ -82,13 +84,13 @@ def skill_directory() -> Path:
 
 def add_claude_agents(plugin_dir: Path) -> None:
     """Load roles alongside the router's exact-model agents, only for this launch."""
-    if feature_enabled(agent=AGENT_CLAUDE):
+    if auto_picker_enabled(agent=AGENT_CLAUDE) or feature_enabled(agent=AGENT_CLAUDE):
         shutil.copytree(skill_directory() / "agents", plugin_dir / "agents", dirs_exist_ok=True)
 
 
 def sync_hooks(doc: dict, *, agent: str) -> None:
     groups = {}
-    if feature_enabled(agent=agent):
+    if auto_picker_enabled(agent=agent) or feature_enabled(agent=agent):
         argv = [sys.executable, "-m", HOOK_MODULE, "--agent", agent]
         hook = {
             "type": "command",

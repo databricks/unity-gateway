@@ -1,3 +1,4 @@
+import type { AutoPolicy } from './register.ts'
 import type { On } from 'claude-code'
 import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
@@ -53,10 +54,12 @@ async function readRoutingState($: any): Promise<RoutingState> {
   }
 }
 
-export const registerStatusBand = (on: On): void => {
+export const registerStatusBand = (on: On, auto = false, policy?: AutoPolicy): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
   on('prompt.submit', ($, e, next) => {
+    if (policy?.picking && !e.text.startsWith('/')) return {drop: 'Finish the model choice with Enter in /model; session-only choices are not supported by this build.'}
+    if (policy?.blocked && !e.text.startsWith('/')) return {drop: 'Auto policy could not be applied. Retry /model or restart through UG.'}
     if (band.isVisible) band.isHideArmed = true
     return next(e)
   })
@@ -82,6 +85,7 @@ export const registerStatusBand = (on: On): void => {
     if (!band.isVisible) return theirs
     const { Box, Text } = $.ui.resolve(e)
     const { enabled, firstPrompt } = await readRoutingState($)
+    if (auto && (!enabled || await $.env.get('ENABLE_SMART_ROUTER_ORCHESTRATOR') !== '1')) return theirs
 
     const pill = enabled
       ? Text({ bold: true, color: 'black', backgroundColor: 'green', children: [' ON '] })
