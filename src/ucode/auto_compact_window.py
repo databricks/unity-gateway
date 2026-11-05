@@ -1,4 +1,4 @@
-"""Claude Code ``autoCompactWindow`` bounds shared by ug and its dependency-light hook."""
+"""Claude Code ``autoCompactWindow`` bounds used by ug."""
 
 from __future__ import annotations
 
@@ -32,3 +32,19 @@ def valid_auto_compact_window(value: object) -> int | None:
     return (
         value if CLAUDE_AUTO_COMPACT_WINDOW_MIN <= value <= CLAUDE_AUTO_COMPACT_WINDOW_MAX else None
     )
+
+
+def user_auto_compact_windows(settings: object) -> dict[str, int]:
+    """Valid ``autoCompactWindow`` values per id without `[1m]`; the lower spelling wins."""
+    model_settings = settings.get("modelSettings") if isinstance(settings, dict) else None
+    if not isinstance(model_settings, dict):
+        return {}
+    windows: dict[str, int] = {}
+    for model, entry in model_settings.items():
+        if not isinstance(model, str) or not isinstance(entry, dict):
+            continue
+        window = valid_auto_compact_window(entry.get("autoCompactWindow"))
+        if window is not None:
+            canonical = model.removesuffix("[1m]")
+            windows[canonical] = min(windows.get(canonical, window), window)
+    return windows

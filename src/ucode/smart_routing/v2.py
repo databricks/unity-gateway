@@ -666,7 +666,7 @@ def launch_claude(
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.args import has_explicit_model_arg
-    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR, record_session_auto_compact
+    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
     from ucode.agents.claude import (
         auto_compact_model_settings as claude_auto_compact_model_settings,
     )
@@ -751,7 +751,6 @@ def launch_claude(
                 "Claude settings 'modelSettings' must be an object for smart routing."
             )
         deep_merge_dict(model_settings, cap_entries)
-    record_session_auto_compact(settings)
     routing_state = {
         **state,
         "claude_models": {str(index): model for index, model in enumerate(model_ids)},

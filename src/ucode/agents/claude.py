@@ -6,7 +6,6 @@ import copy
 import json
 import os
 import re
-import shlex
 import shutil
 import signal
 import socket
@@ -20,14 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from ucode.auto_compact_window import AUTO_COMPACT_CAP
-from ucode.claude_auto_compact_notice import (
-    HOOK_COMMAND_MARKER as AUTO_COMPACT_NOTICE_HOOK_MARKER,
-)
-from ucode.claude_auto_compact_notice import (
-    SESSION_WINDOWS_ENV_VAR,
-    user_auto_compact_windows,
-)
+from ucode.auto_compact_window import AUTO_COMPACT_CAP, user_auto_compact_windows
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -126,7 +118,6 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
-from ucode.smart_routing.hooks import sync_managed_hooks
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
@@ -837,45 +828,6 @@ def _sync_auto_compact_model_settings(
     deep_merge_dict(model_settings, entries)
     if removed and not model_settings:
         del settings[CLAUDE_MODEL_SETTINGS_KEY]
-
-
-def sync_auto_compact_notice_hook(doc: dict) -> None:
-    """Install ug's `/autocompact` restart-notice hook, replacing any earlier copy."""
-    command = shlex.join([sys.executable, "-m", AUTO_COMPACT_NOTICE_HOOK_MARKER])
-    groups = {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": command}]}]}
-    sync_managed_hooks(doc, AUTO_COMPACT_NOTICE_HOOK_MARKER, groups)
-
-
-def record_session_auto_compact(*overlays: dict) -> None:
-    """Record the ``autoCompactWindow`` caps this launch applies, for the restart-notice hook.
-
-    Sets ``SESSION_WINDOWS_ENV_VAR`` on this process so the Claude it starts, and that Claude's
-    hooks, inherit it. Claude Code's precedence is the OS-managed file over ``--settings``, so the
-    sources are ug's settings file, then ``overlays`` (the launch's own settings), then the
-    managed file, which only an administrator writes a window into. A launch with no cap window
-    clears an inherited value.
-    """
-    managed_path = managed_settings_path()
-    sources = [
-        read_json_safe(CLAUDE_SETTINGS_PATH),
-        *overlays,
-        read_json_safe(managed_path) if managed_path else {},
-    ]
-    effective: dict[str, int] = {}
-    for source in sources:
-        for model, window in user_auto_compact_windows(source).items():
-            if is_auto_compact_model_key(model):
-                effective[model] = window
-    user_windows = _user_auto_compact_windows(CLAUDE_USER_SETTINGS_PATH)
-    if not effective:
-        os.environ.pop(SESSION_WINDOWS_ENV_VAR, None)
-        return
-    os.environ[SESSION_WINDOWS_ENV_VAR] = json.dumps(
-        {
-            model: {"effective": window, "user": user_windows.get(model)}
-            for model, window in effective.items()
-        }
-    )
 
 
 _CLAUDE_PICKER_LABEL_RE = re.compile(
@@ -1928,7 +1880,6 @@ def write_tool_config(
         managed_settings_snapshots=None,
     )
     # Only the --settings file carries the hook: Claude Code merges hooks across sources.
-    sync_auto_compact_notice_hook(private_settings)
     write_json_file(CLAUDE_SETTINGS_PATH, private_settings)
 
     # The admin's settings may not displace anything ug writes, except the hooks and deny lists ug
@@ -2921,7 +2872,6 @@ def launch(
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-    record_session_auto_compact()
     if state.get("claude_relayed"):
         _launch_relayed(state, binary, tool_args)
         return
@@ -3010,7 +2960,6 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
-    record_session_auto_compact(settings_override or {})
     with _claude_launch_argv(binary, launch_args, settings_override=settings_override) as argv:
         exec_or_spawn(argv)
 
