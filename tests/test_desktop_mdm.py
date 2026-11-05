@@ -142,7 +142,7 @@ def test_provision_without_account_has_no_admin_credentials_or_user_writes(devic
     assert not cowork._state_path().exists()
     agent = plistlib.loads(mdm.AGENT_PATH.read_bytes())
     assert agent["ProgramArguments"] == [str(mdm.MDM_ROOT / "ug"), "desktop-mdm-sync"]
-    assert agent["RunAtLoad"] is True and agent["StartInterval"] == 60
+    assert agent["RunAtLoad"] is True and agent["StartInterval"] == 900
     if os.name != "nt":
         assert (mdm.MDM_ROOT / "deployment.json").stat().st_mode & 0o777 == 0o644
         assert (mdm.MDM_ROOT / "ug").stat().st_mode & 0o777 == 0o755

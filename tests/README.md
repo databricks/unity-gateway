@@ -559,6 +559,8 @@ and rejection when Claude is absent.
 User sync no longer depends on a Cowork configure/revert lock. Serial update/removal and
 account-cleanup journeys remain covered; concurrent manual refresh/configure is deferred.
 This does not establish native macOS MDM, launchd, fresh-user GUI login, or tool/skill execution.
+Generated LaunchAgent checks assert login refresh and a 15-minute interval; actual
+launchd scheduling remains a native validation gap.
 The rollout checklist is in `docs/claude-desktop-mdm.md`.
 
 MDM regressions also cover the `claude-code` configure alias and missing-manifest

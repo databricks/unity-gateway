@@ -354,7 +354,7 @@ def configure(workspace: str, profile: str | None) -> None:
                 "Label": AGENT_LABEL,
                 "ProgramArguments": [str(helper), "desktop-mdm-sync"],
                 "RunAtLoad": True,
-                "StartInterval": 60,
+                "StartInterval": 900,
                 "ProcessType": "Background",
             }
         )

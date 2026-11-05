@@ -80,7 +80,7 @@ UG preserves an existing policy whose credential helper belongs to another deplo
 Its own generated files and marketplace are replaced, including manual edits. Local
 administrator skills, project skills, and independent plugins are not distributed.
 
-The LaunchAgent runs at login and every 60 seconds; configure also tries to start it
+The LaunchAgent runs at login and every 15 minutes; configure also tries to start it
 for the current console user. With no Cowork account, it waits for Desktop to create
 one. It then uses native Claude marketplace/install/update commands to maintain one
 `ug@unity-gateway-cowork` registration and matching cached version in that account's
@@ -88,7 +88,8 @@ one. It then uses native Claude marketplace/install/update commands to maintain 
 tracking file or cleanup queue. Refresh can switch UG's standard user registration to
 the root source; ambiguous or conflicting account/source selections fail without guessing.
 
-After opening Cowork and completing user sign-in, wait for refresh and start a new task.
+After opening Cowork and completing user sign-in, wait up to 15 minutes for refresh
+and start a new task.
 To refresh immediately, run without sudo:
 
 ```sh

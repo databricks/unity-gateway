@@ -164,7 +164,8 @@ dry run, and named/empty/omitted profiles. Omitted-agent selection and the
 rejection of `--global --mcp` before Desktop publication also have component
 coverage; these are not native macOS integration checks.
 
-macOS MDM provisioning and its per-user LaunchAgent are outside these Linux/Windows
+Component checks assert that the generated LaunchAgent runs at login and every
+15 minutes. macOS MDM provisioning and its per-user LaunchAgent are outside these Linux/Windows
 journeys. Native launchd activation, first-user timing, managed-plist precedence,
 GUI skill/tool invocation, and current flag routing on macOS remain unverified here.
 Follow the [MDM rollout checklist](../../docs/claude-desktop-mdm.md) before fleet rollout.
