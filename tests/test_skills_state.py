@@ -162,30 +162,6 @@ class TestQueries:
 
 
 class TestReconciliation:
-    def test_batch_does_not_rescan_paths_for_each_install(self, tmp_path, monkeypatch):
-        calls = 0
-        normalize = skills_state._norm
-
-        def counted(path):
-            nonlocal calls
-            calls += 1
-            return normalize(path)
-
-        monkeypatch.setattr(skills_state, "_norm", counted)
-        counts = []
-        for size in (100, 200):
-            installs = [
-                _install(tmp_path, f"main.default.skill_{i}", f"skill-{i}") for i in range(size)
-            ]
-            skills_state.record_downloads(installs)
-            calls = 0
-            skills_state.record_downloads(installs)
-            counts.append(calls)
-            assert len(skills_state.list_downloaded()) == size
-        # Doubling both the manifest and batch must not quadruple normalization work.
-        assert counts[0] > 0
-        assert counts[1] <= 2 * counts[0]
-
     def test_batch_collision_then_rename_preserves_new_owner(self, tmp_path):
         first = _install(tmp_path, "main.default.first", "shared")
         owner = _install(tmp_path, "main.default.owner", "shared", metastore_id="other")

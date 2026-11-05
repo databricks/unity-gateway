@@ -188,7 +188,12 @@ class _AttributionIndex:
 
 
 def record_downloads(installs: list[SkillInstall]) -> None:
-    """Record each freshly downloaded install, reconciling superseded records."""
+    """Record each freshly downloaded install, reconciling superseded records.
+
+    A claimed directory was just overwritten by the new install: drop its stale
+    attribution but retain the new files. A same-identity install with different
+    directories is a rename, so delete its orphaned directories before replacing it.
+    """
     if not installs:
         return
     index = _AttributionIndex(_load())
