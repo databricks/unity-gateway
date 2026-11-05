@@ -56,6 +56,7 @@ from ucode.databricks import (
     workspace_origin,
 )
 from ucode.mcp_connection_login import connection_from_url, run_connection_login
+from ucode.telemetry import ucode_user_agent, ug_version
 from ucode.ug_headers import ug_headers
 from ucode.workspace import workspace_headers
 
@@ -66,6 +67,28 @@ CONNECTION_AUTH_REQUIRED_ERROR_CODE = -32006
 URL_ELICITATION_REQUIRED_ERROR_CODE = -32042
 AUTHENTICATE_TOOL_NAME = "authenticate"
 TOOLS_REFRESH_TIMEOUT_SECONDS = 5.0
+MCP_CLIENT_USER_AGENT_HEADER = "User-Agent"
+_HTTP_PRODUCT_CHARACTER = re.compile(r"[^!#$%&'*+.^_`|~0-9A-Za-z-]")
+_MAX_CLIENT_PRODUCT_LENGTH = 64
+
+
+def _client_user_agent(payload: JSONRPCRequest) -> str | None:
+    """Return a safe HTTP product for an MCP initialize request's clientInfo."""
+    if payload.method != "initialize" or not isinstance(payload.params, dict):
+        return None
+    client_info = payload.params.get("clientInfo")
+    if not isinstance(client_info, dict):
+        return None
+    name = client_info.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    product = _HTTP_PRODUCT_CHARACTER.sub("_", name.strip()[:_MAX_CLIENT_PRODUCT_LENGTH])
+    version = client_info.get("version")
+    if isinstance(version, str) and version.strip():
+        product += "/" + _HTTP_PRODUCT_CHARACTER.sub(
+            "_", version.strip()[:_MAX_CLIENT_PRODUCT_LENGTH]
+        )
+    return ucode_user_agent(ug_version(), product)
 
 
 def _httpx() -> ModuleType:
@@ -288,8 +311,13 @@ def _build_token_auth(
 class _McpBridge:
     """Bridge MCP messages and recover connection authentication failures."""
 
-    def __init__(self, connection_login: _ConnectionLogin) -> None:
+    def __init__(
+        self,
+        connection_login: _ConnectionLogin,
+        set_client_user_agent: Callable[[str], None] | None = None,
+    ) -> None:
         self.connection_login = connection_login
+        self.set_client_user_agent = set_client_user_agent or (lambda _value: None)
         self.pending_requests: dict[int | str, SessionMessage] = {}
         self.retried_requests: set[int | str] = set()
         self.authentication_required = False
@@ -336,10 +364,17 @@ class _McpBridge:
 
     def _authentication_tool(self) -> dict:
         connection = self.connection_login.connection or "this service"
+        sign_in_requirement = (
+            "Sign-in is required to discover this connector's tools. "
+            "Call this tool to sign in before retrying discovery. "
+            if self.authentication_required
+            else ""
+        )
         return {
             "name": AUTHENTICATE_TOOL_NAME,
             "description": (
-                f"Sign in to the Unity Gateway {connection} connection. Call this when the user "
+                f"{sign_in_requirement}Sign in to the Unity Gateway {connection} connection. "
+                "Call this when the user "
                 "requests this service and its tools report missing or expired sign-in, or "
                 "authentication is required to discover its tools. For an access denial, "
                 "including an IP-address denial, try sign-in once before recommending "
@@ -374,6 +409,7 @@ class _McpBridge:
         tools = payload.result.get("tools")
         if not isinstance(tools, list):
             return message
+        self.authentication_required = False
         if (
             request is None
             or not isinstance(request.params, dict)
@@ -566,6 +602,9 @@ class _McpBridge:
                         ) from message
                     payload = message.message
                     if isinstance(payload, JSONRPCRequest):
+                        client_user_agent = _client_user_agent(payload)
+                        if client_user_agent is not None:
+                            self.set_client_user_agent(client_user_agent)
                         if (
                             client is not None
                             and (self.authentication_required or self.authentication_tool_available)
@@ -673,9 +712,11 @@ async def _run(
     # 2.x-native shape: hand the transport a pre-built AsyncClient carrying our
     # per-request auth. Works on mcp 1.28+ and 2.x; `streamable_http_client`
     # yields a (read, write) pair in both.
+    extra_headers = ug_headers()
+    explicit_user_agent = any(key.casefold() == "user-agent" for key in extra_headers)
     async with httpx.AsyncClient(
         auth=auth,
-        headers={**ug_headers(), **workspace_headers(url)},
+        headers={**extra_headers, **workspace_headers(url)},
         timeout=httpx.Timeout(
             connect=30.0,
             read=300.0,
@@ -690,7 +731,14 @@ async def _run(
             http_read, http_write = streams[0], streams[1]
             async with stdio_server(stdin=stdin, stdout=stdout) as (stdio_read, stdio_write):
                 # Bidirectional bridge: client stdin -> Databricks, Databricks -> client stdout.
-                bridge = _McpBridge(connection_login)
+                bridge = _McpBridge(
+                    connection_login,
+                    None
+                    if explicit_user_agent
+                    else lambda value: http_client.headers.__setitem__(
+                        MCP_CLIENT_USER_AGENT_HEADER, value
+                    ),
+                )
                 async with anyio.create_task_group() as tg:
                     tg.start_soon(bridge.pump_upstream, http_read, stdio_write, http_write)
                     await bridge.pump_client(stdio_read, http_write, stdio_write)

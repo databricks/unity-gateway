@@ -27,7 +27,7 @@ from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, NoReturn, cast, overload
+from typing import Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
@@ -124,6 +124,9 @@ class AnthropicModelCatalog:
     model_id_to_display_name: dict[str, str]
     error_msg: str | None = None
     model_id_to_description: dict[str, str] = field(default_factory=dict)
+    # (max_input_tokens, max_tokens) for the models the gateway reports limits for; it reports 0
+    # for unknown ones.
+    model_id_to_limits: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
 class CodexMpsModelCatalogUnavailable(RuntimeError):
@@ -2569,18 +2572,19 @@ _CODING_AGENT_CONFIGS_API_PATH = "/api/ai-gateway/v2/coding-agent-configs"
 
 
 def _managed_config_user_agent() -> str:
-    """``ucode/<v>`` plus each ``<agent>/<v>`` ug already wrote into the OS-managed files, then the
-    client platform.
+    """``ucode/<v>`` plus each configured agent's ``<agent>/<v>``, then the client platform.
 
-    The fetch serves every agent, so it reports what ug configured on this machine; reading the
-    managed files avoids probing each agent's ``--version`` on every fetch."""
-    from ucode.agents import claude, codex  # the agent modules import this one
+    The fetch serves every agent, so it reports what ug configured on this machine: Claude Code and
+    Codex from the OS-managed files ug wrote, and Copilot, which has none, from the version
+    configure recorded. None of them probes an agent's ``--version`` on every fetch."""
+    from ucode.agents import claude, codex, copilot  # the agent modules import this one
     from ucode.managed_files import ug_agent_token
 
     tokens: list[str] = []
     for agent, user_agent in (
         ("claude", claude.managed_user_agent()),
         ("codex", codex.managed_user_agent()),
+        ("copilot", copilot.managed_user_agent()),
     ):
         token = ug_agent_token(user_agent or "", agent)
         if token:
@@ -3642,6 +3646,10 @@ def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | 
 _NO_ANTHROPIC_MODEL_IDS = "AI Gateway returned no Anthropic model ids"
 
 
+def _positive_int(value: object) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
 def list_anthropic_model_catalog(
     workspace: str,
     token: str,
@@ -3663,6 +3671,7 @@ def list_anthropic_model_catalog(
     model_ids: list[str] = []
     display_names: dict[str, str] = {}
     descriptions: dict[str, str] = {}
+    limits: dict[str, tuple[int, int]] = {}
     seen: set[str] = set()
     for model in data.get("data", []):
         if not isinstance(model, dict):
@@ -3677,11 +3686,15 @@ def list_anthropic_model_catalog(
             description = model.get("description")
             if isinstance(description, str) and description:
                 descriptions[model_id] = description
+            max_input, max_output = model.get("max_input_tokens"), model.get("max_tokens")
+            if _positive_int(max_input) and _positive_int(max_output):
+                limits[model_id] = (max_input, max_output)
     if model_ids:
         return AnthropicModelCatalog(
             model_ids=model_ids,
             model_id_to_display_name=display_names,
             model_id_to_description=descriptions,
+            model_id_to_limits=limits,
         )
     return AnthropicModelCatalog(
         model_ids=[],

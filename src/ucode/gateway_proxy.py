@@ -154,6 +154,7 @@ class TokenCache:
         self._stop = threading.Event()
         self._token = ""
         self._expiry = 0.0
+        self._generation = 0
         # Preserve the existing non-forced relayed-auth fetch. Gateway discovery
         # opts into a forced fetch so its static client token starts with a full TTL.
         self._refresh(force=force_refresh_near_expiry)
@@ -163,6 +164,9 @@ class TokenCache:
         token = self._token_provider(force)
         expiry = _jwt_exp(token) or (time.time() + _DEFAULT_TTL_S)
         with self._state_lock:
+            # A non-forced lookup may only return the same rejected cached token.
+            if force or token != self._token:
+                self._generation += 1
             self._token = token
             self._expiry = expiry
 
@@ -185,16 +189,23 @@ class TokenCache:
 
     @property
     def token(self) -> str:
+        return self.token_snapshot()[0]
+
+    def token_snapshot(self) -> tuple[str, int]:
+        """The current token and its refresh generation, read together."""
         self._ensure_fresh()
         with self._state_lock:
-            return self._token
+            return self._token, self._generation
 
     def report_refresh_failure(self, exc: BaseException) -> None:
         self._on_refresh_failure(exc)
 
-    def refresh(self) -> None:
-        """Force a fresh mint now (used by the retry-on-401 path)."""
+    def refresh(self, *, rejected_generation: int | None = None) -> None:
+        """Refresh unless another caller already replaced the rejected generation."""
         with self._refresh_lock:
+            with self._state_lock:
+                if rejected_generation is not None and rejected_generation != self._generation:
+                    return
             self._refresh(force=True)
 
     def run_refresher(self) -> None:
@@ -309,10 +320,8 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             route=route_label,
         )
 
-        def request_headers() -> dict[str, str]:
-            headers = forwarded_request_headers(
-                self, self.cache.token, token_header, extra_strip=extra_strip
-            )
+        def request_headers(token: str) -> dict[str, str]:
+            headers = forwarded_request_headers(self, token, token_header, extra_strip=extra_strip)
             headers.update(self._added_headers())
             if self.workspace_selector:
                 selector_names = {name.lower() for name in self.workspace_selector}
@@ -326,7 +335,8 @@ class _ProxyHandler(BaseHTTPRequestHandler):
 
         try:
             # First attempt with the current token.
-            headers = request_headers()
+            token, generation = self.cache.token_snapshot()
+            headers = request_headers(token)
             with self.client.stream(self.command, url, headers=headers, content=body) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",
@@ -348,7 +358,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             # genuine re-auth is triggered; a stale-Databricks 401 self-heals here
             # instead of surfacing to Claude Code as a spurious Anthropic prompt.
             try:
-                self.cache.refresh()
+                self.cache.refresh(rejected_generation=generation)
             except RuntimeError as exc:
                 # Refresh failed: the Databricks OAuth session is dead (not just the
                 # access token) and can't be re-minted non-interactively. Surface the
@@ -357,7 +367,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 # user to the wrong re-auth. Still retry + relay with the existing token.
                 if self._on_refresh_failure(exc):
                     return
-            headers = request_headers()
+            headers = request_headers(self.cache.token)
             with self.client.stream(self.command, url, headers=headers, content=body) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",
