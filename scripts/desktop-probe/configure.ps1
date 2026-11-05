@@ -6,7 +6,20 @@ $config = Join-Path $env:USERPROFILE '.databrickscfg'
 @('[desktop-ci]', "host = $env:UCODE_TEST_WORKSPACE", 'auth_type = databricks-cli') |
     Set-Content -LiteralPath $config
 $root = Join-Path $env:LOCALAPPDATA 'Claude-3p'
-$report = [ordered]@{ claude3pRootExistsBeforeConfigure = (Test-Path $root); profile = 'desktop-ci' }
+$rootExisted = Test-Path $root
+if (-not $env:CLAUDE_DESKTOP_EXECUTABLE -or
+    -not (Test-Path -LiteralPath $env:CLAUDE_DESKTOP_EXECUTABLE -PathType Leaf)) {
+    throw 'Verified Claude Desktop installation is required before preparing application data'
+}
+if (@(Get-Process -Name Claude -ErrorAction SilentlyContinue).Count) {
+    throw 'Desktop must not be running before the first configured launch'
+}
+New-Item -ItemType Directory -Path $root -Force | Out-Null
+$report = [ordered]@{
+    claude3pRootExistedAfterInstall = $rootExisted
+    claude3pRootPreparedWithoutLaunch = $true
+    profile = 'desktop-ci'
+}
 $report | ConvertTo-Json |
     Set-Content "$env:RUNNER_TEMP/claude-desktop-probe/configuration.json"
 & $env:UG_DESKTOP_PROBE_BINARY configure --profile desktop-ci `
