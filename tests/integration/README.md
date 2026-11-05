@@ -1,5 +1,10 @@
 # Integration tests
 
+`../test_workspace_selection.py::TestHelperArgv` also generates ordinary Desktop auth
+argv in temporary macOS/Windows/Linux profiles and parses it through the real CLI,
+checking the selected workspace reaches credential lookup. External authentication is
+replaced; this does not exercise native Desktop authentication.
+
 Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
 before numbered reuse, stable names during routing and in parallel cards, and unchanged
 execution inputs and row controls. They cover a lone call's decision under its Agent row,

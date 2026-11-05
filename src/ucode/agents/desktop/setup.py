@@ -171,6 +171,7 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
             "claude-desktop-auth",
             "--host",
             workspace,
+            *workspace_id_args(workspace),
             "--profile",
             profile,
             *(["--relay", "--claude-binary", claude_binary] if claude_binary else []),

@@ -5,6 +5,8 @@ selects a `Unity Gateway - <CLI profile name>` profile for Claude Desktop on mac
 Windows, and Linux. This uses
 the same workspace, Databricks CLI OAuth profile, model source, and managed HTTP
 headers as Claude Code. There is no separate Desktop checkbox or managed field.
+For a URL that serves several workspaces, the generated credential helper preserves
+the selected workspace ID when it requests credentials.
 
 ## Requirements and setup
 

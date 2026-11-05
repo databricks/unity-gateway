@@ -1,5 +1,9 @@
 # Test suites and user journeys
 
+`test_workspace_selection.py::TestHelperArgv` checks generated ordinary Desktop auth
+argv from real temporary profiles on all three platforms. The real CLI parses the argv
+and pins its workspace ID before requesting credentials; external authentication is replaced.
+
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.

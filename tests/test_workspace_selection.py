@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 from email.message import Message
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -208,6 +209,53 @@ class TestHttpChokepoints:
 
 
 class TestHelperArgv:
+    @pytest.mark.parametrize("platform", ["darwin", "win32", "linux"])
+    def test_desktop_auth(self, selected, monkeypatch, tmp_path, platform):
+        from typer.testing import CliRunner
+
+        from ucode import cli, desktop_auth
+        from ucode.agents.desktop import claude as desktop
+        from ucode.agents.desktop import setup
+
+        directory = tmp_path / "configLibrary"
+        directory.mkdir()
+        monkeypatch.setattr(setup, "claude_desktop_directory", lambda: directory)
+        monkeypatch.setattr(desktop, "claude_desktop_directory", lambda: directory)
+        monkeypatch.setattr(desktop, "APP_DIR", tmp_path / "ug")
+        monkeypatch.setattr(desktop, "sys", SimpleNamespace(platform=platform))
+        monkeypatch.setattr(
+            setup,
+            "sys",
+            SimpleNamespace(
+                platform=platform, executable=str(tmp_path / "venv with spaces/python")
+            ),
+        )
+        monkeypatch.setattr(setup, "get_databricks_token", lambda *args: "component-token")
+        monkeypatch.setattr(
+            setup,
+            "list_anthropic_model_catalog",
+            lambda *args, **kwargs: db_mod.AnthropicModelCatalog(
+                model_ids=["system.ai.claude-haiku-4-5"], model_id_to_display_name={}
+            ),
+        )
+        setup.configure_claude_desktop({"workspace": SHARED, "profile": "chosen-profile"})
+        metadata = json.loads((directory / "_meta.json").read_text())
+        profile = json.loads((directory / f"{metadata['appliedId']}.json").read_text())
+        args = profile["inferenceCredentialHelperArgs"]
+        assert args[args.index("--workspace-id") + 1] == WSID
+        activate(None, None)
+
+        def credential(host, profile):
+            assert host == SHARED
+            assert profile == "chosen-profile"
+            assert workspace_headers(host) == SELECTOR
+            return "user-token"
+
+        monkeypatch.setattr(desktop_auth, "get_claude_desktop_databricks_token", credential)
+        result = CliRunner().invoke(cli.app, args[2:])
+        assert result.exit_code == 0, result.output
+        assert result.stdout == "user-token\n"
+
     def test_mcp_proxy(self, selected):
         argv = db_mod.build_mcp_proxy_argv(f"{SHARED}/api/2.0/mcp/x", SHARED, "p")
         assert argv[argv.index("--workspace-id") + 1] == WSID
