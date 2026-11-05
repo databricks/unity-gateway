@@ -17,8 +17,27 @@ cleans up the files when Claude exits.
 
 The same entry point routes Agent/Task calls in a native `tool.call` hook. It pipes the
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
-the `routeCommand` plugin option, and continues the call with the returned input. The
-matching Agent row shows a spinner and elapsed seconds while the router answers. Claude
+the `routeCommand` plugin option, and continues with the original input. The matching
+`agent.spawn` hook applies only the selected model, preserving the agent's type, prompt,
+name and permissions. The routing response contains only `model` and `rationale`;
+the model retains Claude's `[1m]` context hint for eligible GPT models.
+Forks and resumed agents keep their native model. This preserves
+auto mode's review of the tool input instead of invalidating it with a routing rewrite.
+The display label uses a random animal from a list of 100, without repeats until the list
+is exhausted; later cycles append `2`, `3`, and so on. Each call keeps its name while
+the plugin is loaded. Animal names are display labels for routing rows, parallel
+decision cards and the bottom panel. Claude's messages retain the agent's native name
+or type; routing does not inject a name into the reviewed call.
+The native bottom subagent panel uses Claude's `subagentStatusLine` extension, outside
+`ui.render`. After a routed spawn succeeds, the mod saves its animal name against the
+returned child ID in the temporary plugin directory, with the session ID. The plugin's
+default status-line command reads that mapping and displays the same animal, current
+task label, token count, and running elapsed time. Claude retains the row controls and
+refreshes the custom text on its own status-line cadence. Unmapped tasks, stale-session
+records, and unreadable records retain native rendering; a failed write never prevents
+the agent from starting. User-configured status lines keep Claude's normal precedence.
+The mapping is removed with the launch directory, not written to user settings.
+The matching Agent row shows a spinner and elapsed seconds while the router answers. Claude
 hides that row once a second Agent call joins it, so while any call is routing, the turn's
 spinner line also reads `Selecting a model… Ns` or `Selecting models for N agents… Ns`,
 timed from the oldest waiting call; Claude's own glyph and counters stay.
@@ -39,8 +58,10 @@ failures also log a diagnostic.
 In eligible Smart Router Orchestrator launches, `tool.describe` replaces the native
 Agent/Task delegation advice with the orchestrator's instructions. It changes only the
 description, preserving the native input schema and execution. The host's `Usage notes`
-section stays intact for native continuation mechanics. The orchestrator instructions
-explicitly tell the parent to end its current turn when only background work remains
+section stays intact for native continuation mechanics; when the host description has
+no such section, the mod keeps a fixed note on resuming an agent through SendMessage,
+with the host's `fork` exception when the host offers fork subagents.
+The orchestrator instructions explicitly tell the parent to end its current turn when only background work remains
 and wait for the completion notification, without launching another worker to wait.
 The notification must arrive from the host; the parent must not invent a completion
 or predict the result. A waiting status hands control back to the host without
@@ -189,3 +210,18 @@ UG passes the resolved routing flags and recipe in the existing launch settings 
 `pluginConfigs["ug-smart-router"].options`. Claude supplies these to `register(on, options)`.
 `unset` lists originally absent flags because native options cannot carry null values.
 The source remains static; no additional launch snapshot file is created.
+
+### Original and routed choices
+
+`~/.ucode/claude-smart-routing-decisions.jsonl` records `original_model` and
+`original_subagent_type` from Claude's unmodified Agent input, alongside UG's
+`router_model` and `requested_model`. `session_id` plus `tool_use_id` joins a row
+to the original transcript call even when tasks run concurrently. These are local
+audit fields, not new gateway metrics or an OTel export.
+
+`original_model` is a raw selector (such as `sonnet`), not a resolved model ID.
+When Claude omits it, the field stays null; the original agent type is retained,
+but no inherited model or counterfactual native choice is guessed. The existing
+`requested_model` remains UG's routed target, not Claude's original choice.
+Actual execution still requires the child transcript or the separate subagent-start
+audit; that event can omit its model. Existing records are not backfilled.

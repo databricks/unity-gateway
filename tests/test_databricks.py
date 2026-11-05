@@ -437,6 +437,37 @@ class TestDiscoverClaudeModels:
             )
         ]
 
+    def test_keeps_the_listed_token_limits(self, monkeypatch):
+        payload = {
+            "data": [
+                {
+                    "id": "system.ai.claude-opus-4-8",
+                    "max_input_tokens": 1000000,
+                    "max_tokens": 128000,
+                },
+                {
+                    "id": "anthropic-aigw-481f0baa-system.ai.gpt-6-luna",
+                    "max_input_tokens": 922000,
+                    "max_tokens": 128000,
+                },
+                {
+                    "id": "anthropic-aigw-73ea02b2-system.ai.glm-5-2",
+                    "max_input_tokens": 0,
+                    "max_tokens": 0,
+                },
+                {"id": "system.ai.claude-odd", "max_input_tokens": True, "max_tokens": 64000},
+                {"id": "system.ai.claude-unlisted"},
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *_args, **_kwargs: (payload, None))
+
+        catalog = db_mod.list_anthropic_model_catalog(WS, "token")
+
+        assert catalog.model_id_to_limits == {
+            "system.ai.claude-opus-4-8": (1000000, 128000),
+            "anthropic-aigw-481f0baa-system.ai.gpt-6-luna": (922000, 128000),
+        }
+
     def test_selects_opus_4_8_when_advertised(self, monkeypatch):
         payload = {
             "data": [
@@ -886,6 +917,19 @@ class TestListModelProviderServices:
         by_name = {s["name"]: s for s in services}
         assert by_name["main.schema1.claude-max-svc"]["relayed"] is True
         assert by_name["main.schema1.anthropic-svc"]["relayed"] is False
+
+    def test_flags_relayed_openai(self):
+        entry = db_mod._provider_service_entry(
+            {
+                "name": "model-provider-services/main.s.chatgpt",
+                "config": {
+                    "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_OPENAI",
+                    "openai": {"relayed": {}},
+                },
+            }
+        )
+        assert entry["relayed"] is True
+        assert entry["provider_type"] == "openai"
 
     def test_extracts_targets(self, monkeypatch):
         monkeypatch.setattr(
@@ -1530,6 +1574,14 @@ class TestServiceUsableForTool:
     def test_copilot_skips_other_provider_types(self, provider_type):
         service = {"provider_type": provider_type, "targets": [], "allow_all_targets": True}
         assert not db_mod.service_usable_for_tool("copilot", service)
+
+    def test_openai_relay_is_codex_only(self):
+        service = {"provider_type": "openai", "targets": [], "relayed": True}
+        assert db_mod.service_usable_for_tool("codex", service)
+        assert not db_mod.service_usable_for_tool("copilot", service)
+        assert "ChatGPT" in db_mod._provider_service_unusable_reason("copilot", service, "svc")
+        anthropic = {"provider_type": "anthropic", "targets": [], "relayed": True}
+        assert not db_mod.service_usable_for_tool("codex", anthropic)
 
     def test_copilot_skips_a_subscription_relay(self):
         service = {"provider_type": "anthropic", "targets": [], "relayed": True}
