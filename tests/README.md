@@ -683,8 +683,21 @@ figures before and after the command.
 cache in `~/.ucode/routing-models.json`: round trips keep order and raw model IDs,
 entries stay separate by workspace key and by provider (including no provider), a
 missing, corrupt, or other-version file reads as no cache, and concurrent writers for
-different providers keep both entries under the file lock. Nothing calls the cache yet;
-these are unit checks only.
+different providers keep both entries under the file lock.
+
+`test_claude_smart_routing_v2.py::TestV2ProviderRouting` checks Claude routing over a
+Model Provider Service behind `UCODE_SMART_ROUTING_PROVIDER`: the catalog request
+carries the provider header and refreshes the cache, the router sees the provider's raw
+IDs, a failed fetch falls back to that provider's cached list (and fails the launch
+without one), and the routed model gains `[1m]` only from `max_input_tokens`.
+
+`test_cli.py::TestProviderSmartRoutingGate` checks that only gated Claude may combine
+smart routing with `--provider`, that such a launch fetches the provider catalog once
+and hands it to the routed launch, that a failed fetch launches on the cached list (and
+fails without one), and that ungated provider launches neither read nor write the
+cache. `TestProviderRoutingLaunchHygiene` checks that relayed providers keep the guard
+and that launch-scoped routing keys never reach `state.json`.
+These are unit/component checks; the gateway and router are stubbed.
 
 `test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
 gateway provider on Windows while Unix launch arguments stay unchanged and routing
