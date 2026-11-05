@@ -693,8 +693,8 @@ without one), and the routed model gains `[1m]` only from `max_input_tokens`.
 `TestV2ProviderSubagentRouting` covers subagents on that path: the launch writes a
 launch-scoped model snapshot and the mod's route command gains `--provider` and
 `--models-file`; routed agents and spawn models keep raw provider IDs, with
-deterministic hash-suffixed slugs for IDs containing `.`, `@` or `/`; and `[1m]` comes
-only from `max_input_tokens`.
+deterministic hash-suffixed slugs for IDs containing `.`, `@` or `/`; `[1m]` comes
+only from `max_input_tokens`; and decision records name the provider.
 
 `test_cli.py::TestProviderSmartRoutingGate` checks that only gated Claude may combine
 smart routing with `--provider`, that such a launch fetches the provider catalog once

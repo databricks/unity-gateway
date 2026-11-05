@@ -1520,7 +1520,9 @@ class TestV2ProviderSubagentRouting:
         ("routed", "spawn_model"),
         [(OPUS, f"{OPUS}[1m]"), (HAIKU, HAIKU), (PLATFORM, PLATFORM)],
     )
-    def test_routes_subagent_over_raw_ids(self, tmp_path, monkeypatch, routed, spawn_model):
+    def test_routes_subagent_over_raw_ids_and_logs_provider(
+        self, tmp_path, monkeypatch, routed, spawn_model
+    ):
         decisions_path = tmp_path / "decisions.jsonl"
         monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", decisions_path)
         captured = {}
@@ -1561,6 +1563,7 @@ class TestV2ProviderSubagentRouting:
             v2._routed_claude_agent_definitions(ids, self.CONTEXT)
         )
         record = json.loads(decisions_path.read_text())
+        assert record["provider_service"] == self.PROVIDER
         assert record["requested_model"] == routed
 
     @pytest.mark.parametrize("content", [None, "{not json", "[]", '{"id": "x"}'])
