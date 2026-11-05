@@ -1,7 +1,6 @@
 # macOS Cowork feasibility probe
 
-Independent experiment on disposable GitHub-hosted `macos-15` (Apple Silicon) and
-`macos-15-intel` runners. This is
+Independent experiment on a disposable GitHub-hosted `macos-15-intel` runner. This is
 not part of the required integration gate. Pushes to the probe branch run it.
 
 Installs the approved official Claude Desktop 4.23118.0 universal archive,
@@ -10,6 +9,13 @@ checkout and Claude CLI 2.1.290 through internal JFrog registries. No virtualiza
 setup or preliminary Desktop launch is performed. A read-only diagnostic records
 whether Apple’s Virtualization framework is supported. Disabled controls fail the
 probe before attempting inference.
+
+The Apple Silicon `macos-15` probe reported no Virtualization framework support,
+and Claude disabled Cowork. Intel reported support and exposed Cowork. Automation
+runs through Terminal, which the hosted image preauthorizes for Accessibility and
+System Events, because direct runner invocation displayed a permission prompt.
+Temporary credentials are owner-readable, consumed by the Terminal child, deleted,
+and never included in artifacts. The probe does not change macOS security settings.
 
 Uses existing CI workspace/bearer credentials and `ug configure` with an explicit
 `desktop-ci` profile. AppleScript/System Events drives actual Cowork controls and

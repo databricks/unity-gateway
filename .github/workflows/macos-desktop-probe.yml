@@ -15,11 +15,7 @@ concurrency:
 
 jobs:
   cowork:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15, macos-15-intel]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-15-intel
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -45,12 +41,12 @@ jobs:
         env:
           UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
           DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
-        run: '"$UG_PROBE_PYTHON" scripts/macos-desktop-probe/probe.py'
+        run: '"$UG_PROBE_PYTHON" scripts/macos-desktop-probe/terminal.py'
       - name: Upload sanitized evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: macos-cowork-probe-${{ matrix.os }}
+          name: macos-cowork-probe-macos-15-intel
           retention-days: 3
           if-no-files-found: warn
           path: ${{ runner.temp }}/macos-cowork-evidence/
