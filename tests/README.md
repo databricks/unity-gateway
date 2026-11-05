@@ -1,5 +1,8 @@
 # Test suites and user journeys
 
+Orchestrator import guards clear inherited routing flags and the version selector,
+then explicitly reject CLI and Typer imports while requiring active workflow output.
+
 `test_skills.py` exercises bundled skill discovery and installation from both
 wheel and checkout directory layouts using real temporary files. This is component coverage.
 

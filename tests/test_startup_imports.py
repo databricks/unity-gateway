@@ -110,12 +110,16 @@ def test_cli_import_defers_subcommand_specific_modules() -> None:
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
-def test_orchestrator_prompt_hook_skips_cli_imports(tmp_path, agent) -> None:
+def test_orchestrator_prompt_hook_skips_cli_imports(tmp_path, monkeypatch, agent) -> None:
     # Agents run this hook before every prompt is submitted.
+    monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_only_v0")
     session = tmp_path / "env.json"
     session.write_text("{}", encoding="utf-8")
     probe = (
         "import os\n"
+        "from ucode.constants import SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR\n"
+        "for key in (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR):\n"
+        "    os.environ.pop(key, None)\n"
         "os.environ.update(ENABLE_SMART_ROUTER_ORCHESTRATOR='1', "
         f"ENABLE_SMART_ROUTING_SUBAGENT_ONLY='1', UCODE_SESSION_ENV_FILE={str(session)!r})\n"
         "from ucode.smart_routing import orchestrator\n"
@@ -124,6 +128,8 @@ def test_orchestrator_prompt_hook_skips_cli_imports(tmp_path, agent) -> None:
         "print('is on for this session' in hook['hookSpecificOutput']['additionalContext'])"
     )
     deferred = (
+        "ucode.cli",
+        "typer",
         "importlib.metadata",
         "rich",
         "tomlkit",
