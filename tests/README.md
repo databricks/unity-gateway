@@ -1,9 +1,5 @@
 # Test suites and user journeys
 
-The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
-including exact service URLs, native OAuth metadata, and real `codex mcp get`
-readback. The per-user configuration remains separate.
-
 `test_gateway_proxy_integration.py` exercises the loopback proxy over local sockets.
 Its SSE scenario checks response order and verifies a nonzero TCP_NODELAY flag on the accepted
 proxy socket across Linux and BSD/macOS, avoiding timing thresholds while preventing Nagle buffering of small

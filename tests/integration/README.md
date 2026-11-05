@@ -1,8 +1,8 @@
 # Integration tests
 
-The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
-including exact service URLs, native OAuth metadata, and real `codex mcp get`
-readback. The per-user configuration remains separate.
+The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
+service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
+It replaces the obsolete stdio-only expectation; this checks configuration, not live login.
 
 `../test_gateway_proxy_integration.py` checks local proxy SSE response order and
 nonzero TCP_NODELAY on the accepted socket, including BSD/macOS flag values. These component checks avoid timing thresholds
