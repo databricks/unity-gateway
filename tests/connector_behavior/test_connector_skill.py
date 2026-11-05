@@ -7,7 +7,6 @@ reconnection. They do not establish native Desktop discovery, OAuth, or resume b
 import json
 import secrets
 import shlex
-import time
 from datetime import UTC, datetime
 
 import pytest
@@ -15,7 +14,7 @@ import pytest
 from ucode.agents.desktop.cowork import CONNECTOR_SKILL_NAME, _write_connector_skill
 from ucode.agents.desktop.cowork_hooks import idle_resume_context
 
-SLACK_TOOL_NAME = "mcp__plugin_ug_slack__search"
+SLACK_TOOL_NAME = "mcp__slack__search"
 SLACK_TOOL = {
     "name": SLACK_TOOL_NAME,
     "description": "Search Slack messages by channel and query.",
@@ -35,6 +34,12 @@ DISCOVERY_TOOL = {
         "required": ["query"],
         "additionalProperties": False,
     },
+}
+AUTH_TOOL_NAME = "mcp__slack__authenticate"
+AUTH_TOOL = {
+    "name": AUTH_TOOL_NAME,
+    "description": "Sign in to Slack when the connector reports that sign-in is required.",
+    "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
 }
 WAIT_TOOL = {
     "name": "wait",
@@ -112,12 +117,13 @@ def _run_resumed_request(tmp_path, claude_messages, *, availability, skill_loade
     )
     marker = "DOCS-" + secrets.token_hex(3)
     calls = []
-    waits = 0
+    ready = availability == "available"
+    sign_in_reported = False
     for _ in range(16):
-        ready = availability == "available" or (availability == "pending" and waits > 0)
-        tools = [skill_tool, DISCOVERY_TOOL, WAIT_TOOL]
+        tools = [skill_tool, DISCOVERY_TOOL, AUTH_TOOL, WAIT_TOOL]
         if ready:
             tools.append(SLACK_TOOL)
+        can_authenticate = sign_in_reported
         response = claude_messages(system, conversation, tools)
         content = response["content"]
         conversation.append({"role": "assistant", "content": content})
@@ -131,20 +137,25 @@ def _run_resumed_request(tmp_path, claude_messages, *, availability, skill_loade
         for action in actions:
             name, arguments = action["name"], action["input"]
             calls.append((name, arguments))
+            assert name in {tool["name"] for tool in tools}, "Claude guessed an unexposed tool"
             if name == "Skill":
                 assert arguments == {"skill": CONNECTOR_SKILL_NAME}
                 result = body
             elif name == "ToolSearch":
-                result = (
-                    json.dumps([SLACK_TOOL]) if ready else "No matching tools. Status: pending."
-                )
+                if ready or availability == "deferred":
+                    ready = True
+                    result = json.dumps([SLACK_TOOL, AUTH_TOOL])
+                elif availability == "sign-in-required":
+                    sign_in_reported = True
+                    result = "Slack requires sign-in. Use its authenticate tool to sign in."
+                else:
+                    result = "No matching service tools. Status: pending."
+            elif name == AUTH_TOOL_NAME:
+                assert can_authenticate, "Claude authenticated without a reported sign-in need"
+                ready = True
+                result = "Sign-in succeeded. Rediscover tools and continue the original task."
             elif name == "wait":
-                assert not ready, "Claude waited even though the Slack tool was exposed"
-                assert arguments == {"seconds": 5}
-                waits += 1
-                assert waits <= 2, "Claude exceeded the skill's bounded wait"
-                time.sleep(5)
-                result = "Waited 5 seconds."
+                pytest.fail("Claude waited for connector startup instead of using discovery")
             elif name == SLACK_TOOL_NAME:
                 assert ready, "Claude guessed a tool that was not exposed"
                 assert "coding-pod" in arguments["query"]
@@ -179,54 +190,80 @@ def test_calls_available_slack_despite_stale_disconnect_notice(
 @pytest.mark.parametrize(
     "skill_loaded", [False, True], ids=["description-only", "loaded-before-break"]
 )
-def test_waits_then_calls_slack_when_tools_appear_after_resume(
+def test_discovers_deferred_slack_without_waiting_or_authenticating(
     tmp_path, claude_messages, skill_loaded
 ):
-    """Scenario: Slack discovery is pending until an actual five-second wait finishes.
+    """Scenario: only authenticate is initially exposed, but discovery returns Slack tools.
 
-    Expected: Claude discovers, waits once, calls the newly exposed tool, and answers.
+    Expected: Claude discovers and uses Slack without waiting or starting an unnecessary login.
     """
     calls, answer, marker = _run_resumed_request(
-        tmp_path, claude_messages, availability="pending", skill_loaded=skill_loaded
+        tmp_path, claude_messages, availability="deferred", skill_loaded=skill_loaded
     )
     names = [name for name, _ in calls]
     assert "ToolSearch" in names, answer
-    assert names.count("wait") == 1, (calls, answer)
+    assert "wait" not in names, calls
+    assert AUTH_TOOL_NAME not in names, calls
     assert SLACK_TOOL_NAME in names, answer
-    assert names.index("wait") < names.index(SLACK_TOOL_NAME), calls
+    assert names.index("ToolSearch") < names.index(SLACK_TOOL_NAME), calls
     assert marker in answer, answer
 
 
-def test_reports_missing_tools_only_after_bounded_wait(tmp_path, claude_messages):
+@pytest.mark.parametrize(
+    "skill_loaded", [False, True], ids=["description-only", "loaded-before-break"]
+)
+def test_reports_missing_tools_and_asks_user_to_retry(tmp_path, claude_messages, skill_loaded):
     """Scenario: a resumed session never exposes Slack tools.
 
-    Expected: Claude performs two waits before reporting missing tools without invented auth.
+    Expected: Claude discovers, reports missing tools and asks the user to retry without
+    waiting, polling, or authenticating just because the authenticate tool is exposed.
     """
     calls, answer, _ = _run_resumed_request(
-        tmp_path, claude_messages, availability="absent", skill_loaded=True
+        tmp_path, claude_messages, availability="pending", skill_loaded=skill_loaded
     )
     names = [name for name, _ in calls]
-    assert names.count("wait") == 2, (calls, answer)
-    assert "ToolSearch" in names, answer
+    assert "wait" not in names, calls
+    assert AUTH_TOOL_NAME not in names, calls
+    assert names.count("ToolSearch") == 1, (calls, answer)
     assert SLACK_TOOL_NAME not in names, calls
     assert "tools" in answer.lower(), answer
+    assert any(phrase in answer.lower() for phrase in ("try again", "retry", "request again")), (
+        answer
+    )
     assert not any(
         claim in answer.lower()
         for claim in ("has disconnected", "need to reconnect", "token expired", "need to sign in")
     ), answer
 
 
-def test_idle_hook_note_overrides_stale_notice_before_skill_loads(tmp_path, claude_messages):
-    """Scenario: after an idle break, only the skill description and the prompt hook's note
-    are visible, and Slack tools reappear only after a wait.
+def test_authenticates_when_discovery_reports_sign_in_required(tmp_path, claude_messages):
+    """Scenario: discovery explicitly reports that Slack requires sign-in.
 
-    Expected: Claude does not trust the disconnect notice; it checks, waits, and uses Slack.
+    Expected: Claude signs in once, discovers Slack tools, and completes the task.
     """
     calls, answer, marker = _run_resumed_request(
-        tmp_path, claude_messages, availability="pending", skill_loaded=False, hook_note=True
+        tmp_path, claude_messages, availability="sign-in-required", skill_loaded=True
     )
     names = [name for name, _ in calls]
-    assert "wait" in names, (calls, answer)
+    assert names.count(AUTH_TOOL_NAME) == 1, (calls, answer)
+    assert names.index("ToolSearch") < names.index(AUTH_TOOL_NAME) < names.index(SLACK_TOOL_NAME)
+    assert "wait" not in names, calls
+    assert marker in answer, answer
+
+
+def test_idle_hook_note_overrides_stale_notice_before_skill_loads(tmp_path, claude_messages):
+    """Scenario: after an idle break, only the skill description and the prompt hook's note
+    are visible, and Slack tools are deferred until discovery.
+
+    Expected: Claude discovers and uses Slack without trusting the disconnect notice or waiting.
+    """
+    calls, answer, marker = _run_resumed_request(
+        tmp_path, claude_messages, availability="deferred", skill_loaded=False, hook_note=True
+    )
+    names = [name for name, _ in calls]
+    assert "ToolSearch" in names, answer
+    assert "wait" not in names, calls
+    assert AUTH_TOOL_NAME not in names, calls
     assert SLACK_TOOL_NAME in names, answer
     assert marker in answer, answer
 

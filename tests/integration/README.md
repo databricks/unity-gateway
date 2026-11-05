@@ -95,7 +95,7 @@ retained source after a failed removal, dry-run behavior, and
 Code setup succeeding when Cowork setup fails. Native Desktop GUI discovery and
 live connector calls remain unverified.
 Generated-plugin component tests cover the packaged Code/Cowork Markdown templates;
-Cowork's frozen prompt fixture protects bounded recovery and the delayed-startup retry guidance.
+Cowork's frozen prompt fixture protects discovery without startup sleeps and retry-later guidance.
 
 `../test_cli.py` and `../test_desktop_configure_cli.py` cover MCP-only Claude eligibility
 for Code guidance and Code refresh despite skill-download failures in single-agent and
@@ -687,9 +687,9 @@ a repeated revert also returns 0. This does not establish native Desktop coverag
 scoped Claude plugin commands, install/update selection, PAT/custom-OAuth behavior, and
 owned-file cleanup. It checks bounded skill descriptions and full connector lists for both
 Code and Cowork. A frozen fixture verifies that both default and explicit Cowork generation
-retain bounded recovery and the user-retry fallback when tools remain unavailable. Generated-skill
-assertions require the startup-readiness caveat and retry guidance; model compliance with the
-fallback remains unverified.
+retain discovery and the user-retry fallback when tools remain unavailable. Generated-skill
+assertions require the startup-readiness caveat, no startup sleeps, and no login solely because
+an authentication tool is visible; model compliance remains unverified by these component checks.
 Alias checks cover short UC names, unchanged proxy routing, custom-name
 preservation, order-independent collisions, and repeated replacement of old keys.
 Manifest checks require the `ug` name and display name in both manifests.
@@ -713,8 +713,11 @@ native Cowork browser recovery.
 Generated-guidance checks include one sign-in attempt for access/IP denials and stopping
 authentication retries if the denial persists. They verify the instructions, not model compliance.
 The separately selected `../connector_behavior/` suite tests model compliance using a real Claude
-model and synthetic connector tools: available Slack tools despite a stale notice, tools appearing
-after an actual wait, and tools absent through the wait limit. Code cases require sign-in before
+model and synthetic connector tools: available Slack tools despite a stale notice, deferred tools
+found through discovery, and missing tools prompting a retry-later response without sleeps or
+startup polling. A visible authentication tool must not trigger login by itself; an explicit
+sign-in requirement must trigger one login followed by task completion. These replace the old
+fixed-wait scenarios. Code cases require sign-in before
 cached Gmail tools are called, with native HTTP CLI login or proxy authentication. Successful
 sign-in resumes the task; cancellation stops without a service call. CLI results are synthetic;
 these cases do not establish native Desktop OAuth, Gmail, sleep/resume, discovery, or proxy

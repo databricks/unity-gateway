@@ -205,12 +205,11 @@ When connectors are configured, the plugin includes:
     be stale, which connectors answered or needed sign-in, and to check current tools before
     calling one unavailable.
 - A `unity-gateway-connectors` skill. On every connector request, including after a break,
-  Claude checks the tools exposed now and calls a relevant one. If only `authenticate`
-  appears, it signs in. If tools are missing or `pending`, it actually waits 5 seconds
-  (shell `sleep 5` or an exposed wait tool) and rechecks, at most twice, then reports that
-  the tools are not exposed. It explains that they may still be initializing and asks the
-  user to try the request again shortly, without promising recovery or guessing a cause.
-  Available tools are used immediately, without waiting for every connector to load.
+  Claude uses current tools or discovers them with `ToolSearch` when available. Seeing only
+  `authenticate` does not trigger login: service tools may be deferred. A reported sign-in
+  requirement triggers authentication. If discovery still finds no requested tools, Claude
+  explains that they may still be initializing and asks the user to retry shortly. It does
+  not sleep or poll for startup, promise recovery, or infer an authentication failure.
 
 Desktop manages connector startup independently of the plugin; loading the plugin does not
 guarantee every connector is ready. Idle recovery remains separate: the prompt hook refreshes
@@ -220,30 +219,21 @@ prompt for up to their 10-second budget, in addition to credential refresh.
 
 Native Cowork execution of these hooks still needs Desktop validation.
 
-Connection-status notices can become stale. The skill directs Claude to rediscover tools and
-try a relevant discovered tool before reporting a configured connector disconnected or unavailable.
-It must base availability claims on observed discovery results or tool errors, rather than a
-status reminder alone. If no callable tools are exposed after these checks, it reports that
-the connector's tools are not exposed in this session and asks the user to try again shortly,
-without inventing a disconnect, reconnection, or authentication diagnosis.
-
 The opt-in `tests/connector_behavior/` suite sends the generated skill to a real Claude model
 with synthetic Slack tools. It checks a stale disconnect notice with tools already available,
-tools appearing after an actual wait, and tools remaining absent through both waits.
-The first two cases run both with only the skill description initially visible and with the
-skill loaded before the break. These tests measure model compliance; they do not exercise
-Desktop's native tool exposure, sleep/resume, or proxy transport recovery. See
+deferred tools found through discovery without unnecessary login, missing tools prompting a
+retry-later response without sleeps, and a reported sign-in requirement followed by login and
+task completion. Available, deferred, and missing-tool cases run with both the skill description
+alone and the skill loaded before the break. These tests measure model compliance; they do
+not exercise Desktop's native tool exposure, sleep/resume, or proxy transport recovery. See
 `tests/README.md` for the explicit workspace, profile, and model inputs.
 
 The skill distinguishes configured connectors from authenticated connections. It directs
 Claude to check exposed tools and use supported discovery actions before calling them, using
 only the exact names exposed or returned. It forbids guessing tool names, repeating an unavailable
 call, authenticating another connector, or spawning a subagent solely to make tools appear.
-If no supported wait action exists, or tools remain absent after the bounded wait, Claude
-reports that limitation and asks the user to retry shortly, without inventing its cause.
-If discovery exposes only `authenticate`, Claude should call that discovered tool, rediscover after
-sign-in, and retry the original request in the same turn if its tools are available. Otherwise,
-the same bounded waits and retry guidance apply.
+After successful sign-in, Claude rediscovers tools and continues the original request in the same
+turn if its tools are available. Otherwise, it asks the user to retry shortly.
 An unavailable tool name and permission denials alone do not establish an authentication failure.
 When access is denied and an authentication tool is available, the guidance directs Claude
 to attempt sign-in once before recommending administrator or network changes. This includes

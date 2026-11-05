@@ -457,7 +457,7 @@ alongside every seeded user setting; unexpected additions or changes still fail.
 
 `test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
 generated marketplace/plugin manifests and native profile MCP registrations, the generated connector skill naming Claude-only
-MCP servers with its two 5-second retries, bounded descriptions and full connector lists for
+MCP servers with discovery and retry-later guidance, bounded descriptions and full connector lists for
 both Code and Cowork, and one sign-in recovery attempt for access/IP
 denials with a stop on persistent denial, the generated `SessionStart` hook command,
 current-workspace managed-skill selection,
@@ -472,10 +472,11 @@ cover managed setup after successful skill/MCP reconciliation, preservation afte
 reconciliation failures, and cleanup for unmanaged or non-Claude configurations. These tests
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
 late MCP connection, tool discovery, or inference behavior. A frozen fixture verifies that
-Cowork's skill text, including its description, retains bounded recovery and asks the user
+Cowork's skill text, including its description, uses discovery without startup sleeps and asks the user
 to retry shortly if tools remain unavailable, with either the default scope or explicit
-`code=False`. Generated-skill assertions also require the startup-readiness caveat and retry
-guidance. These prompt checks do not establish model compliance with that fallback.
+`code=False`. Generated-skill assertions also require the startup-readiness caveat, retry
+guidance, and no login based solely on a visible authentication tool. These prompt checks
+do not establish model compliance with that fallback.
 
 `test_desktop_marketplace.py` covers ordinary default/`--user` configuration writing
 only the user source, no elevation, preservation of the registered legacy root source,
@@ -507,14 +508,15 @@ This check does not establish native install/update failure recovery or Desktop 
 `--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers.
 
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
-It checks that Claude uses an available Slack tool despite a stale disconnect notice, actually
-waits and then uses a tool exposed after resume, and performs the bounded wait before reporting
-tools absent. Available/pending scenarios run with both the description alone and a skill loaded
-before the break. Assertions require actual tool calls and an answer containing a random value
-returned only by the synthetic Slack tool. The missing-tools scenario requires both real
-five-second waits and rejects invented reconnect/sign-in instructions. An idle-resume case
-shows only the skill description plus the `UserPromptSubmit` hook note and requires Claude to
-wait and use Slack instead of trusting the disconnect notice. Code cases start with cached
+It checks that Claude uses an available Slack tool despite a stale disconnect notice, discovers
+deferred tools without login, and asks the user to retry when tools remain unavailable. These
+scenarios run with both the description alone and a skill loaded before the break. Fixed-wait
+scenarios now require discovery or a retry-later response, with no sleeps or startup polling.
+A persistent authentication tool must not trigger login by itself; a separate scenario requires
+one login after discovery explicitly reports a sign-in need. Successful tasks require actual
+tool calls and an answer containing a random value returned only by the synthetic Slack tool.
+An idle-resume case shows only the skill description plus the `UserPromptSubmit` hook note and
+requires discovery and a Slack call instead of trusting the disconnect notice. Code cases start with cached
 Gmail tools and require successful authentication before service calls, through either
 native HTTP CLI login or a proxy's exposed authentication tool. Cancellation must finish
 without calling Gmail; login and service calls in the same model response are rejected.
