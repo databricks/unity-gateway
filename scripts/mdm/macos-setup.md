@@ -48,12 +48,15 @@ A service principal is used only while the Jamf policy runs, to download the wor
 
 1. In the workspace, go to **Settings → Identity and access → Service principals → Add service
    principal → Add new**, and name it, for example, `ug-jamf-provisioning`.
-2. On its **Configurations** tab, leave only **Workspace access** enabled. Grant nothing else: the
-   policy run only reads the coding-agent config and lists models.
-3. On its **Secrets** tab, choose **Generate secret** with a short lifetime. Under **Scope**, choose
+2. On its **Configurations** tab, leave only **Workspace access** enabled. It needs no other
+   entitlements: the policy run only reads the coding-agent config and lists models.
+3. Grant it access to the models, MCP servers, and skills in the published configuration, including
+   the Unity Catalog privileges they need. Without this, `ug configure` finds no models and
+   configures no agents.
+4. On its **Secrets** tab, choose **Generate secret** with a short lifetime. Under **Scope**, choose
    **Other APIs**, add the `ai-gateway` and `unity-catalog` scopes, and set each to **Read**. Copy
-   the client id and secret; the secret is shown only once.
-4. Check that it can see your models. With a token for the service principal:
+   the client id and secret; you can't view the secret again after you close the dialog.
+5. Check that it can see your models. With a token for the service principal:
 
    ```bash
    curl -sS -H "Authorization: Bearer $TOKEN" \
