@@ -143,6 +143,8 @@ def test_generic_non_gpt_uses_conservative_ordinary_tool_defaults(bundled):
         ("glm-5-3", ["text"], ["low", "high", "max"]),
         ("system.ai.glm-5-3-flash", ["text", "image"], ["low", "high", "max"]),
         ("system.ai.kimi-k3", ["text", "image"], ["low", "high", "max"]),
+        ("system.ai.deepseek-v4-1-flash", ["text", "image"], ["low", "high", "xhigh", "max"]),
+        ("system.ai.deepseek-v4-1-flash-1017", ["text", "image"], ["low", "high", "xhigh", "max"]),
     ],
 )
 def test_known_hosted_capabilities(bundled, name, modalities, efforts):

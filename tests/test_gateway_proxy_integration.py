@@ -281,6 +281,7 @@ def _running_gateway_auth_proxy(
     added_headers=None,
     on_refresh_failure=None,
     dropped_chat_completions_fields=(),
+    **hooks,
 ):
     server, cache, client = gateway_proxy.start_gateway_auth_proxy(
         gateway.base_url,
@@ -290,6 +291,7 @@ def _running_gateway_auth_proxy(
         sign_in_hint="Run `databricks auth login`.",
         on_refresh_failure=on_refresh_failure or (lambda exc: None),
         dropped_chat_completions_fields=dropped_chat_completions_fields,
+        **hooks,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -376,6 +378,56 @@ class TestGatewayAuthProxyEndToEnd:
                 timeout=10,
             )
         assert resp.status_code == 401
+        assert gw.requests == []
+
+    def test_antigravity_session_rewrites_model_and_body_with_fresh_token(self, make_gateway):
+        from ucode.agents import antigravity
+
+        gw = make_gateway()
+        catalog = {"gemini-3.8-flash": "system.ai.gemini-3-8-flash"}
+        with _running_gateway_auth_proxy(
+            gw,
+            _counting_token("dbx-token"),
+            added_headers=antigravity.proxy_headers("cat.sch.svc"),
+            allowed_path_prefixes=(antigravity.GEMINI_GATEWAY_PATH,),
+            path_rewriter=lambda path: antigravity.rewrite_model_path(path, catalog),
+            body_rewriter=antigravity.rewrite_request_body,
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/gemini/v1beta/models/"
+                "gemini-3.8-flash:streamGenerateContent?alt=sse",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                json={
+                    "generationConfig": {
+                        "thinkingConfig": {"includeThoughts": True, "thinkingBudget": 0}
+                    }
+                },
+                timeout=10,
+            )
+        assert resp.status_code == 200
+        req = gw.requests[-1]
+        assert req.path == (
+            "/ai-gateway/gemini/v1beta/models/system.ai.gemini-3-8-flash"
+            ":streamGenerateContent?alt=sse"
+        )
+        assert req.header("Authorization") == "Bearer dbx-token"
+        assert req.header("Databricks-Model-Provider-Service") == "cat.sch.svc"
+        assert json.loads(req.body) == {
+            "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}
+        }
+
+    def test_antigravity_session_reaches_only_the_gemini_route(self, make_gateway):
+        gw = make_gateway()
+        with _running_gateway_auth_proxy(
+            gw, allowed_path_prefixes=("/ai-gateway/gemini/",)
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b"{}",
+                timeout=10,
+            )
+        assert resp.status_code == 404
         assert gw.requests == []
 
     @pytest.mark.parametrize(

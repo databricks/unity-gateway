@@ -1,8 +1,8 @@
 """Safely manage root-owned, highest-precedence agent settings files.
 
 Interactive updates preserve unrelated policy, retain a private baseline for ``ucode revert``, and
-verify the privileged atomic replacement. Existing-file repairs may run without a terminal;
-the shared writer uses sudo's non-prompting mode without consuming the caller's standard input.
+verify the privileged atomic replacement. Without a terminal, writes use sudo's non-prompting mode
+without consuming the caller's standard input; managed settings are only repaired in place then.
 Windows has no sudo: only an elevated process writes there, with or without a terminal.
 """
 
@@ -15,6 +15,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -39,6 +40,9 @@ SKIP_OS_SETTINGS_ENV = "UG_SKIP_OS_SETTINGS"
 CONFIG_SCOPES = ("global", "user")
 DEFAULT_CONFIG_SCOPE = "global"
 _config_scope = DEFAULT_CONFIG_SCOPE
+# Set by an explicit `ug configure --global`: that run writes machine-wide settings and no per-user
+# agent settings. Not saved; launches and other commands are unaffected.
+_machine_wide_only = False
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
@@ -48,6 +52,7 @@ _managed_write_batch: tuple[str, ...] = ()
 _managed_write_notice_shown = False
 _managed_write_session_depth = 0
 _managed_write_worker: _SudoReplaceWorker | None = None
+_explicit_managed_command: str | None = None
 
 ManagedParser = Callable[[str], dict]
 ManagedDumper = Callable[[dict], str]
@@ -125,6 +130,39 @@ def config_scope() -> str:
     return _config_scope
 
 
+def set_machine_wide_only(enabled: bool) -> None:
+    """Mark this run as an explicit ``ug configure --global``, which writes no per-user settings."""
+    global _machine_wide_only
+    _machine_wide_only = enabled
+
+
+def machine_wide_only() -> bool:
+    """Whether this run writes only machine-wide settings and leaves per-user agent settings alone.
+
+    True only during an explicit ``ug configure --global``. ug's own state under ``~/.ucode`` and the
+    Databricks login are still written, since the machine-wide settings rely on them.
+    """
+    return _machine_wide_only
+
+
+def per_user_paths(paths: list[str]) -> list[str]:
+    """The ``paths`` inside a user's home folder, where other users may not be able to run them.
+
+    Checks each path both as given and with symlinks resolved, since a shared ``/usr/local/bin/ug``
+    can still point into one user's home."""
+    home = Path.home()
+    # A home of the filesystem root (HOME=/, as some MDM and system jobs run) holds every path.
+    roots = [home] if home.parent != home else []
+    if (profiles := system_cross_os.user_profiles_dir()) is not None:
+        roots.append(profiles)
+    found = []
+    for path in paths:
+        candidates = {Path(path).absolute(), Path(path).resolve()}
+        if any(c.is_relative_to(root) for c in candidates for root in roots):
+            found.append(path)
+    return found
+
+
 def managed_settings_skipped() -> bool:
     """Whether OS-managed settings are opted out via ``UG_SKIP_OS_SETTINGS`` or the ``user`` scope.
 
@@ -156,23 +194,53 @@ def managed_files_supported() -> bool:
 
 def claude_header_mod_root() -> Path | None:
     """Where ug installs its Claude header mod, or ``None`` where it installs none."""
-    # shortcut: no Windows install (no allowlisted admin folder), add one when Windows needs it.
-    return None if managed_settings_skipped() else CLAUDE_HEADER_MOD_ROOTS.get(current_os())
+    if managed_settings_skipped():
+        return None
+    if current_os() is OS.WINDOWS:
+        return _windows_claude_header_mod_root()
+    return CLAUDE_HEADER_MOD_ROOTS.get(current_os())
+
+
+def _windows_claude_header_mod_root() -> Path:
+    # Beside the managed file, so it inherits Program Files' administrator-only write access.
+    return windows_claude_managed_settings_path().parent / "ucode-plugins"
+
+
+def claude_desktop_org_plugin_path() -> Path | None:
+    if current_os() is OS.MACOS:
+        return Path("/Library/Application Support/Claude/org-plugins/ug")
+    if current_os() is OS.WINDOWS:
+        return system_cross_os.windows_program_files_dir() / "Claude" / "org-plugins" / "ug"
+    return None
 
 
 def reconcile_privileged_files(files: dict[Path, str], *, display: str) -> None:
-    """Write each allowlisted root-owned file whose contents differ, through the sudo worker."""
+    """Write each allowlisted root-owned file whose contents differ, through the sudo worker.
+
+    Without a terminal it runs ``sudo -n``, so a headless ``ug configure`` installs them where sudo
+    needs no password, as it does the workspace policy."""
     changed = [(path, text) for path, text in files.items() if read_managed_file(path) != text]
     if changed and _sudo_may_prompt():
         _print_managed_write_permission(display)
     for path, text in changed:
-        _privileged_replace(path, text)
+        if current_os() is OS.WINDOWS:
+            _windows_replace(path, text)
+        else:
+            _sudo_replace(path, text)
 
 
 def remove_privileged_tree(root: Path) -> None:
     """Remove a root-owned folder ug owns entirely, such as its header mod's, through sudo."""
     if root.is_symlink():
         raise RuntimeError(f"Refusing to remove {root} through a symlink.")
+    if current_os() is OS.WINDOWS:
+        if root != _windows_claude_header_mod_root() or root.is_junction():
+            raise RuntimeError(f"Refusing to remove unexpected folder {root}.")
+        if root.exists():
+            if not system_cross_os.is_admin():
+                raise PermissionError("administrator rights are required")
+            shutil.rmtree(root)
+        return
     if root.exists():
         subprocess_cross_os.run(
             _sudo_command("rm", "-rf", "--", str(root)), capture_output=True, text=True, check=True
@@ -272,11 +340,58 @@ def _sudo_may_prompt() -> bool:
     return current_os() is not OS.WINDOWS and sys.stdin.isatty()
 
 
-def managed_writes_allowed(*, repair_existing: bool = False) -> bool:
-    """Writes need either an interactive terminal or an existing file to repair in place.
+_sudo_needs_password_cache: bool | None = None
 
-    Windows has nothing to prompt with, so only an elevated (or SYSTEM) process may write there,
-    which lets device provisioning run ``ug configure`` without a terminal."""
+
+def _sudo_needs_password() -> bool:
+    """False when sudo is passwordless, so the "Enter password" note would be misleading.
+
+    Only informs that note; whether and how writes happen is unchanged. Skips the probe (and
+    assumes a prompt) on Windows and in dry-run mode, where no sudo is run."""
+    global _sudo_needs_password_cache
+    if current_os() is OS.WINDOWS or is_dry_run():
+        return True
+    if _sudo_needs_password_cache is None:
+        try:
+            result = subprocess_cross_os.run(
+                [_SUDO, "-n", "true"], capture_output=True, timeout=10, check=False
+            )
+            _sudo_needs_password_cache = result.returncode != 0
+        except (OSError, subprocess.SubprocessError):
+            _sudo_needs_password_cache = True
+    return _sudo_needs_password_cache
+
+
+def _print_password_note(message: str) -> None:
+    if _sudo_needs_password():
+        print_note(message)
+
+
+def request_explicit_managed_writes(command: str | None = "ug configure") -> None:
+    """Mark this run as the explicit ``command`` (``ug configure`` or ``ug revert``); ``None``
+    clears it. Error messages name the command to rerun.
+
+    Those commands always attempt the machine-wide writes, with or without a terminal, so an
+    interactive and a headless run take the same path. The write itself settles privilege: root
+    writes directly, a terminal lets sudo prompt, and otherwise ``sudo -n`` either succeeds or
+    fails with an actionable error. Launches still need a terminal or a file to repair."""
+    global _explicit_managed_command
+    _explicit_managed_command = command
+
+
+def explicit_managed_writes() -> bool:
+    """Whether this run is an explicit ``ug configure`` or ``ug revert``."""
+    return _explicit_managed_command is not None
+
+
+def managed_writes_allowed(*, repair_existing: bool = False) -> bool:
+    """Whether this run may write the OS-managed files.
+
+    ``ug configure`` and ``ug revert`` always may; the write decides whether privilege is available.
+    Otherwise writes need an interactive terminal or an existing file to repair in place. Windows
+    has nothing to prompt with, so only an elevated (or SYSTEM) process may write there."""
+    if _explicit_managed_command is not None:
+        return True
     if current_os() is not OS.WINDOWS:
         return _sudo_may_prompt() or repair_existing
     return system_cross_os.is_admin()
@@ -316,7 +431,16 @@ def warn_managed_write_skipped(path: Path, current: dict, desired: dict) -> None
         return
     if is_semantically_equal(mask_user_agent_versions(current), mask_user_agent_versions(desired)):
         return
-    print_warning(f"{path} wasn't updated because no admin privileges were detected.")
+    if current_os() is OS.WINDOWS:
+        print_warning(
+            f"{path} wasn't updated: writing it needs administrator rights. Run `ug configure` "
+            "from an elevated terminal to update it."
+        )
+        return
+    print_warning(
+        f"{path} wasn't updated: this run has no terminal to approve sudo. Run `ug configure` "
+        "to update it."
+    )
 
 
 @contextmanager
@@ -359,17 +483,17 @@ def _print_managed_write_permission(display: str) -> None:
         if _managed_write_worker is not None and _managed_write_worker.usable:
             _managed_write_notice_shown = True
             return
-        print_note("Enter password once to configure machine-wide coding agent settings.")
+        _print_password_note("Enter password once to configure machine-wide coding agent settings.")
         _managed_write_notice_shown = True
         return
     if not _managed_write_batch:
-        print_note(f"Enter password to configure settings for {display}.")
+        _print_password_note(f"Enter password to configure settings for {display}.")
         return
     if _managed_write_notice_shown:
         return
 
     displays = " and ".join(_managed_write_batch)
-    print_note(f"Enter password to configure settings for {displays}.")
+    _print_password_note(f"Enter password to configure settings for {displays}.")
     _managed_write_notice_shown = True
 
 
@@ -674,6 +798,12 @@ def reconcile_managed_file(
         try:
             _privileged_replace(path, desired_text)
         except PermissionError as exc:
+            if _explicit_managed_command is not None:
+                raise ManagedFileWriteUnavailable(
+                    _windows_admin_required_message(display, path, _explicit_managed_command)
+                    if current_os() is OS.WINDOWS
+                    else _explicit_write_failure_message(display, path, str(exc))
+                ) from exc
             if current_os() is not OS.WINDOWS:
                 raise ManagedFileWriteUnavailable(
                     f"{display} cannot start because ucode could not update {path}: {exc}. "
@@ -686,6 +816,14 @@ def reconcile_managed_file(
             ) from exc
         except subprocess.CalledProcessError as exc:
             raise ManagedFileWriteUnavailable(_sudo_failure_message(path, display, exc)) from exc
+        except OSError as exc:
+            # E.g. no sudo binary in a slim container: report it like a denied write.
+            raise ManagedFileWriteUnavailable(
+                _explicit_write_failure_message(display, path, str(exc))
+                if _explicit_managed_command is not None
+                else f"{display} cannot start because ucode could not update {path}: {exc}. "
+                "Contact your administrator."
+            ) from exc
 
         written_text = read_managed_file(path)
         if written_text == desired_text:
@@ -766,7 +904,7 @@ def revert_managed_file(
                 _privileged_remove(path)
             else:
                 _privileged_replace(path, desired_text)
-        except (PermissionError, subprocess.CalledProcessError) as exc:
+        except (OSError, subprocess.CalledProcessError) as exc:
             raise RuntimeError(
                 f"Could not restore {display} managed settings at {path}. The backup was retained "
                 f"under {MANAGED_BACKUP_DIR}. Resolve the permission issue and run `ug revert` "
@@ -1202,9 +1340,12 @@ def _sudo_replace_command(mode: str, *args: str, non_interactive: bool = False) 
         current_os().value,
         *args,
     ]
+    if _running_as_root():
+        # Run directly as root, the script still checks the temp source's owner against SUDO_UID,
+        # which is unset (a device-management agent) or names the caller (`sudo ug configure`)
+        # while root owns the source. Point it at root, as sudo itself does for root.
+        return ["/usr/bin/env", "SUDO_UID=0", *command]
     if non_interactive:
-        if os.geteuid() == 0:
-            return command
         return [_SUDO, "-n", *command]
     return _sudo_command(*command)
 
@@ -1230,7 +1371,7 @@ def update_workspace_policy(
     if current_text == desired_text:
         return
     # Checked before the dry-run preview, so a dry run never shows a write the real run refuses.
-    if not allow_sudo and os.geteuid() != 0:
+    if not allow_sudo and not _running_as_root():
         raise ManagedFileWriteUnavailable(
             "Workspace policy updates require an administrator or root provisioning run."
         )
@@ -1240,12 +1381,8 @@ def update_workspace_policy(
             f"{desired_text if desired_text is not None else '(remove)'}"
         )
         return
-    running_as_root = os.geteuid() == 0
-    can_prompt = interactive and managed_writes_allowed() and not running_as_root
-    # Run directly as root (no sudo), the script still checks the temp source's owner against
-    # SUDO_UID. Under `sudo ug configure` that variable names the invoking user while root owns the
-    # source, so point it at root for the direct run.
-    script_env = {**os.environ, "SUDO_UID": "0"} if running_as_root else None
+    running_as_root = _running_as_root()
+    can_prompt = interactive and _sudo_may_prompt() and not running_as_root
     try:
         if desired_text is not None and can_prompt:
             _sudo_replace(path, desired_text)
@@ -1268,7 +1405,6 @@ def update_workspace_policy(
                     check=True,
                     # A password prompt waits on the person typing; only unattended runs time out.
                     timeout=None if can_prompt else 30,
-                    env=script_env,
                 )
     except (OSError, subprocess.SubprocessError) as exc:
         stderr = getattr(exc, "stderr", None)
@@ -1436,7 +1572,11 @@ def _privileged_remove(path: Path) -> None:
 
 
 def _validate_windows_target(path: Path) -> None:
-    if path not in (windows_claude_managed_settings_path(), windows_codex_managed_settings_path()):
+    header_mod_files = {
+        _windows_claude_header_mod_root() / name for name in CLAUDE_HEADER_MOD_FILES
+    }
+    targets = {windows_claude_managed_settings_path(), windows_codex_managed_settings_path()}
+    if path not in targets | header_mod_files:
         raise RuntimeError(f"Refusing unexpected managed-settings target: {path}")
     if path.is_symlink():
         raise RuntimeError(f"Refusing to replace symlinked managed settings: {path}")
@@ -1521,10 +1661,10 @@ def _sudo_remove(path: Path) -> None:
 
 
 def _sudo_replace(path: Path, desired_text: str) -> None:
-    """Atomically replace ``path`` while preserving metadata and file flags."""
+    """Atomically replace ``path`` while preserving metadata and file flags.
+
+    Callers decide whether a write is allowed; without a terminal this runs ``sudo -n``."""
     _validate_sudo_replace_target(path)
-    if not managed_writes_allowed(repair_existing=path.is_file()):
-        raise RuntimeError("Refusing to create managed settings non-interactively.")
     non_interactive = not _sudo_may_prompt()
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=path.suffix or ".tmp", delete=False, encoding="utf-8"
@@ -1612,6 +1752,8 @@ def _sudo_failure_message(path: Path, display: str, exc: subprocess.CalledProces
             f"{display} managed settings at {path} are immutable and could not be updated. "
             "Contact your administrator."
         )
+    if _explicit_managed_command is not None:
+        return _explicit_write_failure_message(display, path, stderr or str(exc))
     return (
         f"{display} cannot start because ucode could not update {path}: {stderr or exc}. "
         "Run the ucode command from an interactive terminal and approve the administrator prompt, "
@@ -1619,6 +1761,26 @@ def _sudo_failure_message(path: Path, display: str, exc: subprocess.CalledProces
     )
 
 
+def _explicit_write_failure_message(display: str, path: Path, reason: str) -> str:
+    """The error when ``ug configure`` or ``ug revert`` can't write a machine-wide file."""
+    command = _explicit_managed_command or "ug configure"
+    user_scope = (
+        ", or pass `--user` to keep the settings per-user" if command == "ug configure" else ""
+    )
+    return (
+        f"Could not update {display} machine-wide settings at {path}: {reason}. Run `{command}` "
+        f"as root or from a terminal where you can approve the sudo prompt{user_scope}."
+    )
+
+
+def _running_as_root() -> bool:
+    """Whether this POSIX process runs as root (Windows has no effective user ID)."""
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
 def _sudo_command(*args: str) -> list[str]:
-    """Never prompt for privileged commands when no terminal is available."""
+    """Run a privileged command: directly as root, otherwise through sudo, which never prompts
+    when no terminal is available."""
+    if _running_as_root():
+        return list(args)
     return [_SUDO, *([] if _sudo_may_prompt() else ["-n"]), *args]

@@ -25,6 +25,7 @@ from ucode.managed_config import (
 )
 from ucode.managed_setup import validate_manifest
 from ucode.state import load_state
+from ucode.workspace import state_workspace_key
 
 # Server-assigned metadata that is part of the stored raw config but is not authored config and
 # must not appear in a portable export (it would be rejected or ignored on re-import).
@@ -52,7 +53,9 @@ def build_export_payload() -> dict:
     ``name`` stripped. Reads only local state — no network, no auth. Raises RuntimeError with an
     actionable message when no config is authored locally or the config fails structural validation.
     """
-    workspace = load_state().get("workspace") or managed_state_workspace(include_user_cache=True)
+    workspace = state_workspace_key(load_state()) or managed_state_workspace(
+        include_user_cache=True
+    )
     config = load_managed_configuration(workspace)
     if not config:
         raise RuntimeError(

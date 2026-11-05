@@ -175,6 +175,32 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
     assert connector_skill.startswith(f'---\nname: {cowork.CONNECTOR_SKILL_NAME}\ndescription: "')
     assert all(f"`{name}`" in connector_skill for name in mcp["mcpServers"])
     assert "codex-only" not in connector_skill
+    description_line = connector_skill.splitlines()[2]
+    description = json.loads(description_line.removeprefix("description: "))
+    assert len(description) <= 1024
+    assert "sign-in recovery" in description
+    assert "`authenticate` is the recovery action" in connector_skill
+    assert "task in the same turn" in connector_skill
+    assert "wait 5 seconds" in connector_skill
+    assert "wait another 5 seconds" in connector_skill
+    hooks = json.loads((plugin_root / "hooks" / "hooks.json").read_text())
+    assert set(hooks["hooks"]) == {"SessionStart", "UserPromptSubmit"}
+    expected_command = cowork.subprocess_cross_os.shell_command(
+        [
+            str(ug_binary),
+            "cowork-hook",
+            "--host",
+            "https://workspace.example",
+            "--profile",
+            "chosen",
+            "--server",
+            "github=https://workspace.example/api/2.0/mcp/github",
+        ]
+    )
+    for entries in hooks["hooks"].values():
+        hook = entries[0]["hooks"][0]
+        assert (hook["type"], hook["command"]) == ("command", expected_command)
+        assert hook["timeout"] <= 30
     assert [call[0][1:3] for call in calls] == [
         ["plugin", "validate"],
         ["plugin", "marketplace"],
@@ -662,3 +688,24 @@ def test_revert_retains_owned_files_when_claude_cli_is_missing(tmp_path, monkeyp
 
     assert marketplace.exists()
     assert state_path.exists()
+
+
+@pytest.mark.parametrize("options", [{}, {"code": False}], ids=["default", "explicit-cowork"])
+def test_cowork_connector_skill_preserves_previous_guidance(tmp_path, options):
+    """Code authentication changes must not alter Cowork's existing prompt."""
+    cowork._write_connector_skill(tmp_path, ["slack", "gmail"], **options)
+    actual = (tmp_path / cowork.CONNECTOR_SKILL_NAME / "SKILL.md").read_text(encoding="utf-8")
+    expected = (Path(__file__).parent / "fixtures" / "cowork_connector_skill.md").read_text(
+        encoding="utf-8"
+    )
+    assert actual == expected
+
+
+@pytest.mark.parametrize("code", [False, True])
+def test_connector_skill_description_is_bounded_with_many_connectors(tmp_path, code):
+    names = [f"connector_{i:03}_with_a_long_service_name" for i in range(100)]
+    cowork._write_connector_skill(tmp_path, names, code=code)
+    text = (tmp_path / cowork.CONNECTOR_SKILL_NAME / "SKILL.md").read_text()
+    description = json.loads(text.splitlines()[2].removeprefix("description: "))
+    assert len(description) <= 1024
+    assert all(f"`{name}`" in text.split("---\n", 2)[2] for name in names)
