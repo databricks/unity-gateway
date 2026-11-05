@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from ucode.constants import AGENT_CLAUDE, SMART_ROUTING_ENV_KEYS
-from ucode.smart_routing import config, v2
+from ucode.smart_routing import config, orchestrator, v2
 
 
 def test_plugin_contains_mod_entry_point(tmp_path):
@@ -175,5 +175,5 @@ def test_launch_options_expose_auto_with_activity_disabled():
     options = v2._claude_mod_launch_options(env)
     assert options["EXPOSE_AUTO_IN_MODEL_PICKER"] == "1"
     assert all(options[key] == "0" for key in SMART_ROUTING_ENV_KEYS)
-    assert options["orchestratorInstructions"] == ""
+    assert options["orchestratorInstructions"] == orchestrator.CLAUDE_AGENT_DESCRIPTION
     assert env == before
