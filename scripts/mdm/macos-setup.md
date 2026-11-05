@@ -75,6 +75,10 @@ A service principal is used only while the Jamf policy runs, to download the wor
    **Parameter 6** `Client secret`.
 4. Save.
 
+The script installs Claude Code, Codex and the Databricks CLI only when they're missing, and
+reinstalls `ug` on each run. It doesn't update the agents or the CLI after the first install; to
+keep them current, modify the script to match how you update software on your Macs.
+
 ## 3. Create the policy
 
 Go to **Computers → Policies → New**:
