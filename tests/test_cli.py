@@ -7021,6 +7021,14 @@ class TestConfigureSharedStateUsePat:
         monkeypatch.setattr(cli_mod, "discover_claude_models", lambda w, t: ({}, None))
         monkeypatch.setattr(cli_mod, "discover_gemini_models", lambda w, t: ([], None))
         monkeypatch.setattr(cli_mod, "discover_codex_models", lambda w, t: ([], None))
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_gemini_and_codex_models",
+            lambda w, t: (
+                cli_mod.discover_gemini_models(w, t),
+                cli_mod.discover_codex_models(w, t),
+            ),
+        )
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {})
         return cli_mod, logins, ensures, saved
 
@@ -7545,6 +7553,85 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
         assert len(requests) == 2
 
 
+class TestConfigureSharedFoundationListing:
+    WS = "https://example.databricks.com"
+
+    def test_both_missing_families_use_one_fresh_listing_per_configure(self, monkeypatch):
+        cli_mod, _, _, saved = TestConfigureSharedStateUsePat._stub_deps(
+            monkeypatch, pat_token=None
+        )
+        monkeypatch.setattr(
+            cli_mod, "discover_gemini_and_codex_models", db_mod.discover_gemini_and_codex_models
+        )
+        requests = []
+
+        def get(url, token):
+            requests.append((url, token))
+            return {
+                "endpoints": [
+                    {
+                        "name": f"current-model-{len(requests)}",
+                        "config": {
+                            "served_entities": [
+                                {
+                                    "foundation_model": {
+                                        "ai_gateway_v2_supported": True,
+                                        "api_types": [
+                                            "gemini/v1/generateContent",
+                                            "openai/v1/responses",
+                                        ],
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+        for generation in (1, 2):
+            state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["pi"])
+            assert (
+                state["gemini_models"] == state["codex_models"] == [f"current-model-{generation}"]
+            )
+            assert state["_discovery_reasons"]["gemini"] is None
+            assert state["_discovery_reasons"]["codex"] is None
+            assert "_discovery_reasons" not in saved[-1]
+        assert requests == [(f"{self.WS}/api/2.0/serving-endpoints:foundation-models", "token")] * 2
+
+    @pytest.mark.parametrize(
+        ("tools", "gemini_models", "codex_models"),
+        [
+            (["gemini"], [], []),
+            (["codex"], [], []),
+            (["pi"], ["uc-gemini"], []),
+            (["pi"], [], ["uc-codex"]),
+            (["pi"], ["uc-gemini"], ["uc-codex"]),
+        ],
+    )
+    def test_single_or_present_family_keeps_its_existing_path(
+        self, monkeypatch, tools, gemini_models, codex_models
+    ):
+        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda *args: ({}, codex_models, gemini_models, [], None),
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_gemini_and_codex_models",
+            lambda *args: pytest.fail("both missing families were not requested"),
+        )
+
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=tools)
+
+        if "gemini_models" in state:
+            assert state["gemini_models"] == gemini_models
+        if "codex_models" in state:
+            assert state["codex_models"] == codex_models
+
+
 class TestConfigureNoLongerValidates:
     @pytest.fixture(autouse=True)
     def _no_managed_config(self, monkeypatch):
@@ -7594,6 +7681,14 @@ class TestConfigureSharedStateMcpCleanup:
         monkeypatch.setattr(cli_mod, "discover_claude_models", lambda w, t: ({}, None))
         monkeypatch.setattr(cli_mod, "discover_gemini_models", lambda w, t: ([], None))
         monkeypatch.setattr(cli_mod, "discover_codex_models", lambda w, t: ([], None))
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_gemini_and_codex_models",
+            lambda w, t: (
+                cli_mod.discover_gemini_models(w, t),
+                cli_mod.discover_codex_models(w, t),
+            ),
+        )
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {})
 
     def test_switch_reconciles_source_managed_fallback_without_losing_destination_choices(
@@ -8026,6 +8121,9 @@ class TestConfigureSharedStateSkipPreflight:
         monkeypatch.setattr(cli_mod, "discover_model_services", _boom("discover_model_services"))
         monkeypatch.setattr(cli_mod, "_start_in_background", _boom("_start_in_background"))
         monkeypatch.setattr(cli_mod, "discover_codex_models", _boom("discover_codex_models"))
+        monkeypatch.setattr(
+            cli_mod, "discover_gemini_and_codex_models", _boom("discover_gemini_and_codex_models")
+        )
         monkeypatch.setattr(cli_mod, "find_profile_name_for_host", lambda w: "resolved")
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {"codex": "u/codex"})
         saved: list[dict] = []

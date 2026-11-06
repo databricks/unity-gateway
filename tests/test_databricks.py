@@ -2329,6 +2329,133 @@ class TestDiscoverGeminiModels:
         assert models == ["databricks-gpt-5-2-codex", "databricks-gpt-4-1"]
 
 
+class TestSharedFoundationModels:
+    @staticmethod
+    def _payload(prefix="databricks"):
+        payload = _foundation_models_payload(
+            [f"{prefix}-gemini-3-flash", f"{prefix}-gemini-4-flash"]
+        )
+        codex = _foundation_models_payload([f"{prefix}-gpt-5", f"{prefix}-gpt-6"])
+        for endpoint in codex["endpoints"]:
+            endpoint["config"]["served_entities"][0]["foundation_model"]["api_types"] = [
+                "openai/v1/responses"
+            ]
+        payload["endpoints"].extend(codex["endpoints"])
+        return payload
+
+    def test_one_listing_preserves_both_families_and_version_order(self, monkeypatch):
+        calls = []
+        payload = self._payload()
+        before = json.dumps(payload)
+
+        def get(url, token):
+            calls.append((url, token))
+            return payload, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+
+        gemini, codex = db_mod.discover_gemini_and_codex_models(WS, "token")
+
+        assert gemini == (["databricks-gemini-4-flash", "databricks-gemini-3-flash"], None)
+        assert codex == (["databricks-gpt-6", "databricks-gpt-5"], None)
+        assert calls == [(f"{WS}/api/2.0/serving-endpoints:foundation-models", "token")]
+        assert json.dumps(payload) == before
+
+    @pytest.mark.parametrize("v2", [True, False])
+    def test_missing_family_keeps_its_diagnostic(self, monkeypatch, v2):
+        payload = _foundation_models_payload(["databricks-gemini-4-flash"])
+        payload["endpoints"][0]["config"]["served_entities"][0]["foundation_model"][
+            "ai_gateway_v2_supported"
+        ] = v2
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (payload, None))
+
+        gemini, codex = db_mod.discover_gemini_and_codex_models(WS, "token")
+
+        if v2:
+            assert gemini == (["databricks-gemini-4-flash"], None)
+            assert codex == ([], "no endpoint exposes api_type `openai/v1/responses`")
+        else:
+            assert gemini[0] == codex[0] == []
+            assert "v1-only" in gemini[1]
+            assert "v1-only" in codex[1]
+
+    def test_failed_first_listing_still_allows_the_second_read(self, monkeypatch):
+        replies = iter([(None, "HTTP 503"), (self._payload(), None)])
+        calls = []
+
+        def get(url, token):
+            calls.append((url, token))
+            return next(replies)
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+
+        gemini, codex = db_mod.discover_gemini_and_codex_models(WS, "token")
+
+        assert gemini == ([], "HTTP 503")
+        assert codex == (["databricks-gpt-6", "databricks-gpt-5"], None)
+        assert len(calls) == 2
+
+    @pytest.mark.parametrize("payload", [{}, []])
+    def test_malformed_first_listing_does_not_suppress_the_second_read(self, monkeypatch, payload):
+        replies = iter([(payload, None), (self._payload(), None)])
+        calls = []
+
+        def get(url, token):
+            calls.append((url, token))
+            return next(replies)
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+
+        gemini, codex = db_mod.discover_gemini_and_codex_models(WS, "token")
+
+        assert gemini == ([], "foundation-models listing returned no endpoints")
+        assert codex == (["databricks-gpt-6", "databricks-gpt-5"], None)
+        assert len(calls) == 2
+
+    def test_each_operation_fetches_its_own_current_listing(self, monkeypatch):
+        calls = []
+
+        def get(url, token):
+            calls.append((url, token))
+            return self._payload(f"snapshot{len(calls)}"), None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+        requests = [(WS, "first"), (WS, "first"), (WS, "rotated"), ("https://other", "rotated")]
+
+        for index, (workspace, token) in enumerate(requests, 1):
+            gemini, codex = db_mod.discover_gemini_and_codex_models(workspace, token)
+            assert gemini[0][0] == f"snapshot{index}-gemini-4-flash"
+            assert codex[0][0] == f"snapshot{index}-gpt-6"
+
+        assert calls == [
+            (f"{workspace}/api/2.0/serving-endpoints:foundation-models", token)
+            for workspace, token in requests
+        ]
+
+    def test_concurrent_operations_do_not_share_credentials_or_results(self, monkeypatch):
+        from concurrent.futures import ThreadPoolExecutor
+
+        started = threading.Barrier(2, timeout=5)
+
+        def get(url, token):
+            assert url == f"https://{token}/api/2.0/serving-endpoints:foundation-models"
+            started.wait()
+            return self._payload(token), None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            tasks = {
+                token: pool.submit(
+                    db_mod.discover_gemini_and_codex_models, f"https://{token}", token
+                )
+                for token in ("first", "second")
+            }
+            for token, task in tasks.items():
+                gemini, codex = task.result(timeout=10)
+                assert gemini[0][0] == f"{token}-gemini-4-flash"
+                assert codex[0][0] == f"{token}-gpt-6"
+
+
 class TestResolvePatToken:
     def test_reads_pat_profile_token_from_cfg(self, monkeypatch, tmp_path):
         cfg = tmp_path / "databrickscfg"

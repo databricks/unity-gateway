@@ -208,6 +208,32 @@ class TestHttpChokepoints:
 
 
 class TestHelperArgv:
+    def test_shared_foundation_listing_follows_each_workspace_selection(
+        self, selected, monkeypatch
+    ):
+        url = f"{SHARED}/api/2.0/serving-endpoints:foundation-models"
+        sent = []
+
+        def urlopen(request, timeout):
+            sent.append(request)
+            return _Response(b'{"endpoints": []}', url, request.get_header("X-databricks-org-id"))
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        db_mod.discover_gemini_and_codex_models(SHARED, "first-token")
+        activate(SHARED, "222")
+        db_mod.discover_gemini_and_codex_models(SHARED, "second-token")
+
+        assert len(sent) == 2
+        assert [request.get_header("X-databricks-org-id") for request in sent] == [WSID, "222"]
+        assert [request.get_header("X-databricks-workspace-id") for request in sent] == [
+            WSID,
+            "222",
+        ]
+        assert [request.get_header("Authorization") for request in sent] == [
+            "Bearer first-token",
+            "Bearer second-token",
+        ]
+
     def test_mcp_proxy(self, selected):
         argv = db_mod.build_mcp_proxy_argv(f"{SHARED}/api/2.0/mcp/x", SHARED, "p")
         assert argv[argv.index("--workspace-id") + 1] == WSID

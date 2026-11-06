@@ -1,5 +1,11 @@
 # Integration tests
 
+Foundation fallback sharing is component-tested in `../test_databricks.py`,
+`../test_cli.py` and `../test_workspace_selection.py`: one successful response serves
+both missing families, subsequent operations stay fresh, failed or malformed reads preserve the next
+family's independent attempt, and selected workspace headers are retained. These checks
+do not measure live gateway latency or complete agent startup.
+
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They
