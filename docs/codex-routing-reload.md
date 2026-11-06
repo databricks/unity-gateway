@@ -3,8 +3,8 @@
 Smart-routed `ug codex` sessions reload saved conversations after `$smart-router
 off` or `$smart-router on`. This refreshes inference attribution for the parent,
 existing children, and new children without a gateway proxy or backend session state.
-It requires Codex 0.166.0 or newer. The managed default remains Claude-only;
-select a Codex-enabled preset to use this path:
+It retains the existing Codex 0.164.0 minimum and 0.165.0 routing CI pin.
+The managed default remains Claude-only; select a Codex-enabled preset to use this path:
 
 ```bash
 SMART_ROUTER_CONFIG_VERSION=subagent_orch_v1 ug codex
@@ -25,7 +25,7 @@ directly from the configured Databricks provider to AI Gateway.
 The initial launch and every reload set both:
 
 - Provider header `Databricks-Smart-Router-Recipe`.
-- `responses_api_metadata.smart_router_recipe_name`. Codex 0.166.0 serializes this
+- `responses_api_metadata.smart_router_recipe_name`. Codex serializes this
   inside `client_metadata["x-codex-turn-metadata"]` in the request body.
 
 Off sets both to `DISABLED`; on restores the launch recipe.
@@ -95,22 +95,39 @@ reconnects with controlled external transports.
 
 The installed-wheel journey
 `test_smart_router_codex_reload_updates_parent_and_existing_child_inference`
-runs real `$smart-router off/on`, interrupts a busy child, and checks the actual
-header and body recipe on parent, existing-child, and new-child inference. It
-also requires successful gateway responses, child-owned answers under stable IDs,
+runs real `$smart-router off/on` from the main agent, with two children running
+when switching off and all three existing children running when switching on.
+It checks the actual header and body recipe on every resumed parent and child
+request, including a new child spawned after each toggle. It also requires successful gateway responses, child-owned answers under stable IDs,
 preserved sandbox settings, and normal TUI exit. A test-only recorder forwards
 requests unchanged; it is not part of the product.
 
 Select it through `scripts/run_integration.py` with an explicit workspace,
-credentials/profile, `--ug-version checkout --codex-version 0.166.0`, and
+credentials/profile, `--ug-version checkout --codex-version 0.165.0`, and
 `-- -k test_smart_router_codex_reload_updates_parent_and_existing_child_inference`.
 
-Validated on Linux with Codex 0.166.0 against `eng-ml-inference` on 2026-11-06:
-the busy-child journey and the existing `subagent_only_v1` off/on journey passed.
-The busy-child run captured 11 post-off requests with `DISABLED` and nine post-on
-requests with the launch recipe in both fields, spanning parent, original child,
-and new child in each phase. The same test failed before the managed-header fix:
-body metadata changed but the pinned header stayed `stable`.
+The expanded journey passed on Linux with both supported versions against
+`eng-ml-inference` on 2026-11-06. Independent mitmproxy captures confirmed:
+
+- Codex 0.164.0: 22 requests after off and 18 after on.
+- Codex 0.165.0: 19 requests after off and 13 after on.
+
+Every request carried `DISABLED` or the launch recipe (`stable`), respectively,
+in both header and body and received HTTP 200. Each run covered the parent and
+three children after off, then the parent and all four children after on.
+Original IDs, permissions, child-owned final answers, and normal TUI exit were
+verified. These results do not require increasing the existing version floor.
+
+Mitmproxy was used only for this validation, scoped to the selected workspace
+with process-local certificate trust. It captured allowlisted recipe, model,
+thread, and response-status fields; no credentials or prompts. The test's
+recorder forwarded unchanged requests through mitmproxy to the real gateway.
+Neither recorder nor mitmproxy is used by product inference.
+
+Earlier Linux validation on 0.166.0 passed the original one-busy-child journey
+and the existing `subagent_only_v1` off/on journey. The original busy-child test
+failed before the managed-header fix: body metadata changed but the pinned
+header stayed `stable`.
 
 Native approval dialogs during reload, compaction, simultaneous roots, and
 Windows/macOS reload behavior still need dedicated live validation. Component

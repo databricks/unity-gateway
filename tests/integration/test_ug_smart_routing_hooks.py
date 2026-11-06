@@ -1071,13 +1071,12 @@ def _assert_codex_inference_recipes(
 def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
     live_session, workspace, tmp_path
 ):
-    """Scenario: toggle the installed skill while a native child is running, then turn it on again.
+    """Scenario: toggle off from the main agent with two children running, then on with three.
 
-    Expected: reload keeps root/child IDs and sandbox settings; the first resumed parent
-    inference and subsequent old/new child requests carry DISABLED in the header and body
-    while off, and the launch recipe after on (Windows requires body metadata and permits
-    an absent header). Real gateway responses, child-owned final
-    answers and normal TUI exit are required. The recorder only forwards actual requests.
+    Expected: every resumed parent/child inference carries the new recipe in body metadata
+    and the header (Windows permits an absent header). All original IDs and permissions
+    survive; busy children complete their own answers and newly spawned children inherit
+    the current recipe. Requires real gateway responses and a normal TUI exit.
     """
     session = live_session
     _select_smart_router_version(session, "codex", workspace, tmp_path, True, "subagent_orch_v1")
@@ -1086,19 +1085,38 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
     native_config.parent.mkdir(parents=True, exist_ok=True)
     native_config.write_text('approval_policy = "never"\nsandbox_mode = "workspace-write"\n')
     marker = fresh_id()
-    ready, release = session.cwd / "child-ready", session.cwd / "release-child"
     gate = session.cwd / "child-gate.py"
     python = session.binary.with_name("python.exe" if os.name == "nt" else "python")
     gate.write_text(
-        "import time\nfrom pathlib import Path\n"
-        "root = Path(__file__).parent\n"
-        "(root / 'child-ready').write_text('ready')\n"
+        "import sys, time\nfrom pathlib import Path\n"
+        "root = Path(__file__).parent\nphase, name = sys.argv[1:]\n"
+        "(root / f'{phase}-{name}-ready').write_text('ready')\n"
         "deadline = time.monotonic() + 180\n"
-        "while not (root / 'release-child').exists():\n"
+        "while not (root / f'release-{phase}').exists():\n"
         "    if time.monotonic() >= deadline: raise TimeoutError('child gate')\n"
         "    time.sleep(0.05)\n"
-        f"print('child-off-{marker}')\n"
+        f"print(f'child-{{phase}}-{{name}}-{marker}')\n"
     )
+
+    def assignment(phase, name):
+        return (
+            f"Run the Python script {json.dumps(str(gate))} with arguments {phase} {name}, "
+            f"using interpreter {json.dumps(str(python))}. Wait for its command to finish, "
+            f"then output child-{phase}-{name}-{marker} as your FINAL assistant answer and "
+            "END your turn. Do not send_message or wait for another assignment afterward."
+        )
+
+    def children_ready(phase, names):
+        return all((session.cwd / f"{phase}-{name}-ready").exists() for name in names)
+
+    def children_finished(phase, threads):
+        return all(
+            _codex_thread_answered(
+                session, tid, f"child-{phase}-{path.rsplit('/', 1)[-1]}-{marker}"
+            )
+            for path, tid in threads.items()
+        )
+
     with TuiRequestRecorder(workspace) as recorder:
         session.run(
             "configure",
@@ -1109,34 +1127,37 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
             "--disable-databricks-ai-tools",
         )
         with AgentTerminal(
-            session,
-            "codex",
-            [str(session.binary), "codex"],
-            "routing-reload",
+            session, "codex", [str(session.binary), "codex"], "routing-reload"
         ) as tui:
             tui.boot()
             checkpoint = recorder.checkpoint()
+            names = ("worker_a", "worker_b")
+            assignments = {name: assignment("off", name) for name in names}
+            (session.cwd / "off-assignments.json").write_text(json.dumps(assignments))
             tui.submit(
-                f'Spawn exactly one native child named worker with fork_turns="none". '
-                f"Its task is to run the Python script {json.dumps(str(gate))} using interpreter "
-                f"{json.dumps(str(python))}, wait for the command to finish, "
-                f"and reply child-off-{marker}. Root: after spawning, reply root-started-{marker} "
-                "and end your turn immediately without waiting. Keep the child open. "
-                "This explicit instruction overrides orchestration ownership for this interruption test."
+                'Read off-assignments.json. Spawn exactly two native children with fork_turns="none", '
+                "using its keys as task names and values as exact assignments. "
+                f"Root: after spawning both, reply root-started-{marker} and END your turn "
+                "without waiting for them. This explicit instruction overrides orchestration "
+                "ownership for this interruption test."
             )
             tui.wait_for(
                 lambda _: (
-                    ready.exists()
+                    children_ready("off", names)
                     and "/root" in _codex_thread_ids(session)
                     and _codex_thread_answered(
                         session, _codex_thread_ids(session)["/root"], f"root-started-{marker}"
                     )
                 ),
-                "busy native child with idle parent",
+                "two busy native children with idle parent",
                 timeout=180,
             )
             initial = _codex_thread_ids(session)
-            assert set(initial) == {"/root", "/root/worker"}, initial
+            assert set(initial) == {"/root", "/root/worker_a", "/root/worker_b"}, initial
+            original_children = {path: tid for path, tid in initial.items() if path != "/root"}
+            assert all(
+                not children_finished("off", {path: tid}) for path, tid in original_children.items()
+            )
             launch_requests = [
                 request
                 for request in recorder.requests_after(checkpoint)
@@ -1157,18 +1178,17 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
 
             off_checkpoint = recorder.checkpoint()
             reload_log = session.home / ".ucode/codex-v2-interposer.log"
+            log_checkpoint = len(reload_log.read_text())
             tui.submit("$smart-router off")
             tui.wait_for(
-                lambda _: reload_log.exists() and "recipe=DISABLED" in reload_log.read_text(),
-                "tree reloaded while child command was running",
+                lambda _: "recipe=DISABLED" in reload_log.read_text()[log_checkpoint:],
+                "tree reloaded while both child commands were running",
                 timeout=120,
             )
-            release.write_text("release")
+            (session.cwd / "release-off").write_text("release")
             tui.wait_for(
-                lambda _: _codex_thread_answered(
-                    session, initial["/root/worker"], f"child-off-{marker}"
-                ),
-                "original child recovered after off",
+                lambda _: children_finished("off", original_children),
+                "both original children recovered after off",
                 timeout=180,
             )
             tui.wait_for(
@@ -1179,7 +1199,7 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
             assert _codex_thread_ids(session) == initial
             _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
             off_threads = _codex_thread_ids(session)
-            assert len(off_threads) == 3, off_threads
+            assert len(off_threads) == 4, off_threads
             session.record(
                 "recipe-off.json",
                 _assert_codex_inference_recipes(
@@ -1192,46 +1212,63 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
                 ),
             )
 
-            on_checkpoint = recorder.checkpoint()
-            _toggle_with_skill(tui, session, "codex", enabled=True, orchestration_enabled=True)
+            existing_children = {path: tid for path, tid in off_threads.items() if path != "/root"}
+            assignments = {
+                path: assignment("on", path.rsplit("/", 1)[-1]) for path in existing_children
+            }
+            (session.cwd / "on-assignments.json").write_text(json.dumps(assignments))
             tui.submit(
-                "Use followup_task for the EXISTING worker with this exact task: "
-                f"'Output child-on-{marker} as your FINAL assistant answer and END your turn. "
-                "Do not call send_message or any waiting tool.' Wait for that final answer. "
-                "Preserve its saved session; do not spawn a replacement."
+                "Read on-assignments.json. Use followup_task on EACH existing child named by a key, "
+                "with its value as the exact assignment. Do not spawn replacements. "
+                f"Root: after assigning all three, reply root-on-ready-{marker} and END your turn "
+                "without waiting for them."
             )
             tui.wait_for(
-                lambda _: _codex_thread_answered(
-                    session, initial["/root/worker"], f"child-on-{marker}"
+                lambda _: (
+                    children_ready("on", [path.rsplit("/", 1)[-1] for path in existing_children])
+                    and _codex_thread_answered(session, initial["/root"], f"root-on-ready-{marker}")
                 ),
-                "original child continued after on",
+                "all three existing children running before on",
+                timeout=180,
+            )
+            assert all(
+                not children_finished("on", {path: tid}) for path, tid in existing_children.items()
+            )
+            on_checkpoint = recorder.checkpoint()
+            log_checkpoint = len(reload_log.read_text())
+            tui.submit("$smart-router on")
+            tui.wait_for(
+                lambda _: f"recipe={recipe}" in reload_log.read_text()[log_checkpoint:],
+                "tree reloaded while all three child commands were running",
+                timeout=120,
+            )
+            (session.cwd / "release-on").write_text("release")
+            tui.wait_for(
+                lambda _: children_finished("on", existing_children),
+                "all existing children recovered after on",
                 timeout=180,
             )
             tui.wait_for(
                 lambda screen: "esc to interrupt" not in screen.lower(),
-                "parent idle after continuing original child",
+                "parent idle after continuing all children",
                 timeout=180,
             )
             _run_calculation(tui, session, "codex", "2+2", "4", True, routed=True)
             on_threads = _codex_thread_ids(session)
-            assert len(on_threads) == 4, on_threads
-            assert all(on_threads[path] == tid for path, tid in initial.items())
-            on_request_ids = {
-                initial["/root"],
-                initial["/root/worker"],
-                *set(on_threads.values()).difference(off_threads.values()),
-            }
+            assert len(on_threads) == 5, on_threads
+            assert all(on_threads[path] == tid for path, tid in off_threads.items())
             session.record(
                 "recipe-on.json",
                 _assert_codex_inference_recipes(
                     session,
                     recorder,
                     on_checkpoint,
-                    on_request_ids,
+                    on_threads.values(),
                     recipe,
                     continuation="Smart Router is now on. The controller",
                 ),
             )
+            session.record("thread-identities.json", on_threads)
             for records in agent_sessions(session, "codex").values():
                 contexts = [row["payload"] for row in records if row.get("type") == "turn_context"]
                 assert contexts

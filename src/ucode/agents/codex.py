@@ -136,8 +136,8 @@ _LAUNCH_ROUTING_HEADER_ENV_VARS = {
 }
 MINIMUM_CODEX_VERSION = (0, 145, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.145.0"
-MINIMUM_SMART_ROUTING_CODEX_VERSION = (0, 166, 0)
-MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT = "0.166.0"
+MINIMUM_SMART_ROUTING_CODEX_VERSION = (0, 164, 0)
+MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT = "0.164.0"
 # Codex 0.134.0 introduced per-profile config files; older releases use the legacy layout.
 LEGACY_LAYOUT_CODEX_VERSION = (0, 134, 0)
 LEGACY_LAYOUT_CODEX_VERSION_TEXT = "0.134.0"
@@ -199,7 +199,7 @@ def minimum_version_error(*, smart_routing_enabled: bool = False) -> str | None:
             return None
         return (
             f"Codex smart routing requires Codex {MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT} "
-            f"or newer for native conversation reloads; found {version}. "
+            f"or newer for readable delegated assignments; found {version}. "
             "Upgrade Codex or launch with --disable-smart-routing."
         )
     if parsed is None or parsed >= MINIMUM_CODEX_VERSION:

@@ -16,11 +16,14 @@ permission preservation, multiple roots, rapid toggles, reconnects, Escape, and
 bounded failure handling with controlled transports.
 
 `test_smart_router_codex_reload_updates_parent_and_existing_child_inference`
-is an installed-wheel, real-TUI journey on Codex 0.166.0. It runs the actual
-off/on skill while a child command is busy, checks stable root/child IDs and
-permissions, and asserts both recipe fields on real inference requests from
-the parent, existing child, and newly spawned children. Its recorder forwards
+is an installed-wheel, real-TUI journey. It invokes the actual skill from the
+main agent: off with two children running, then on with all three existing
+children running. It checks stable IDs and permissions, child-owned final
+answers, and both recipe fields on every resumed parent and child request.
+New children must inherit the current recipe after each toggle. Its recorder forwards
 requests unchanged to the selected workspace and requires successful responses.
+Linux runs on Codex 0.164.0 and 0.165.0 passed, with independent mitmproxy
+verification of all requests after reload in both toggle phases.
 See [reload behavior and validation limits](../../docs/codex-routing-reload.md).
 
 Windows and macOS Cowork desktop coverage, installation detection, and required
