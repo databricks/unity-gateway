@@ -999,17 +999,12 @@ class TestListModelProviderServices:
             "main.schema2.bedrock-svc",
         ]
 
-    def test_codex_includes_openai_and_bedrock(self, monkeypatch):
+    def test_codex_excludes_services_without_responses_targets(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_http_get_json", lambda url, token, timeout=30: (self._PAYLOAD, None)
         )
         names, _ = db_mod.list_tool_provider_services("codex", WS, "token")
-        # Codex pins no Claude family, so a Bedrock service is usable whatever its targets.
-        assert names == [
-            "main.schema1.openai-svc",
-            "main.schema2.bedrock-svc",
-            "main.schema2.bedrock-titan-svc",
-        ]
+        assert names == ["main.schema1.openai-svc"]
 
 
 class TestMapClaudeFamilyModels:
@@ -1434,7 +1429,12 @@ class TestResolveProviderService:
                     "name": "model-provider-services/main.schema2.gpt-oss-svc",
                     "config": {
                         "provider_type": provider_type,
-                        "targets": [{"model": "openai.gpt-oss-120b"}],
+                        "targets": [
+                            {
+                                "model": "openai.gpt-oss-120b",
+                                "native_api_types": ["openai/v1/responses"],
+                            }
+                        ],
                     },
                 }
             ]
@@ -1451,6 +1451,58 @@ class TestResolveProviderService:
             "claude", "main.schema2.gpt-oss-svc", WS, "token"
         )
         assert "no compatible models for claude" in claude_error
+
+    @pytest.mark.parametrize(
+        "provider_type",
+        [
+            "openai",
+            "azure_openai",
+            "microsoft_foundry",
+            "amazon_bedrock",
+            "bedrock_mantle",
+            "custom",
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("api_types", "usable"),
+        [
+            (None, False),
+            ([], False),
+            (["anthropic/v1/messages"], False),
+            (["openai/v1/chat/completions"], False),
+            (["openai/v1/embeddings"], False),
+            (["openai/v1/responses"], True),
+            (["openai/v1/chat/completions", "openai/v1/responses"], True),
+        ],
+    )
+    def test_codex_requires_responses_targets(self, monkeypatch, provider_type, api_types, usable):
+        target = {"model": "team-coding"}
+        if api_types is not None:
+            target["native_api_types"] = api_types
+        payload = {
+            "model_provider_services": [
+                {
+                    "name": "model-provider-services/main.test.models",
+                    "config": {"provider_type": provider_type, "targets": [target]},
+                }
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **kw: (payload, None))
+
+        names, reason = db_mod.list_tool_provider_services("codex", WS, "token")
+        service, error = db_mod.resolve_provider_service("codex", "main.test.models", WS, "token")
+
+        assert reason is None
+        assert names == (["main.test.models"] if usable else [])
+        if usable:
+            assert error is None
+            assert service["targets"] == ["team-coding"]
+        else:
+            assert service is None
+            assert error == (
+                "Model provider service 'main.test.models' exposes no compatible models for codex — "
+                "add compatible targets, enable allow_all_targets, or pick a different service."
+            )
 
     def test_not_found_lists_usable(self, monkeypatch):
         self._patch(monkeypatch)
@@ -1552,12 +1604,7 @@ def test_bare_model_name(model, name):
 @pytest.mark.parametrize(
     ("tool", "provider_type"),
     [
-        ("codex", "openai"),
-        ("codex", "amazon_bedrock"),
-        ("codex", "bedrock_mantle"),
         ("copilot", "anthropic"),
-        ("codex", "microsoft_foundry"),
-        ("codex", "custom"),
         ("copilot", "microsoft_foundry"),
     ],
 )
@@ -1592,6 +1639,26 @@ def test_claude_provider_targets_use_messages_metadata_not_names(provider_type):
 
     assert db_mod.provider_targets_for_tool("claude", service) == ["team-coding"]
     assert db_mod.service_usable_for_tool("claude", service)
+
+
+@pytest.mark.parametrize(
+    "provider_type",
+    ["openai", "azure_openai", "microsoft_foundry", "amazon_bedrock", "bedrock_mantle", "custom"],
+)
+def test_codex_provider_targets_use_responses_metadata_not_names(provider_type):
+    service = {
+        "provider_type": provider_type,
+        "targets": ["team-coding", "backup-coding", "gpt-5.4", "gpt-5-nano", "claude-sonnet-5-5"],
+        "target_api_types": {
+            "team-coding": ("openai/v1/responses",),
+            "backup-coding": ("openai/v1/chat/completions", "openai/v1/responses"),
+            "gpt-5.4": ("openai/v1/chat/completions",),
+            "claude-sonnet-5-5": ("anthropic/v1/messages",),
+        },
+    }
+
+    assert db_mod.provider_targets_for_tool("codex", service) == ["team-coding", "backup-coding"]
+    assert db_mod.service_usable_for_tool("codex", service)
 
 
 class TestServiceUsableForTool:
@@ -1645,18 +1712,24 @@ class TestServiceUsableForTool:
         assert db_mod._provider_service_unusable_reason(tool, service, "main.test.models") is None
 
     @pytest.mark.parametrize(
-        ("targets", "target_api_types", "allow_all", "usable"),
+        ("targets", "target_api_types", "allow_all", "claude_usable", "codex_usable"),
         [
-            (["claude-opus-5-5"], {}, False, False),
-            (["team-coding"], {"team-coding": ("anthropic/v1/messages",)}, False, True),
-            (["gpt-5-nano"], {"gpt-5-nano": ("openai/v1/responses",)}, False, False),
-            (["claude-sonnet-5-5"], {"claude-sonnet-5-5": ("openai/v1/responses",)}, False, False),
-            ([], {}, False, False),
-            ([], {}, True, True),
+            (["claude-opus-5-5"], {}, False, False, False),
+            (["team-coding"], {"team-coding": ("anthropic/v1/messages",)}, False, True, False),
+            (["gpt-5-nano"], {"gpt-5-nano": ("openai/v1/responses",)}, False, False, True),
+            (
+                ["claude-sonnet-5-5"],
+                {"claude-sonnet-5-5": ("openai/v1/responses",)},
+                False,
+                False,
+                True,
+            ),
+            ([], {}, False, False, False),
+            ([], {}, True, True, True),
         ],
     )
-    def test_claude_foundry_requires_anthropic_targets(
-        self, targets, target_api_types, allow_all, usable
+    def test_foundry_requires_targets_for_the_tools_api(
+        self, targets, target_api_types, allow_all, claude_usable, codex_usable
     ):
         service = {
             "provider_type": "microsoft_foundry",
@@ -1664,8 +1737,8 @@ class TestServiceUsableForTool:
             "target_api_types": target_api_types,
             "allow_all_targets": allow_all,
         }
-        assert db_mod.service_usable_for_tool("claude", service) is usable
-        assert db_mod.service_usable_for_tool("codex", service) is bool(targets or allow_all)
+        assert db_mod.service_usable_for_tool("claude", service) is claude_usable
+        assert db_mod.service_usable_for_tool("codex", service) is codex_usable
         assert db_mod.service_usable_for_tool("copilot", service) is bool(targets or allow_all)
 
     def test_custom_responses_service_is_codex_only(self):
@@ -1699,6 +1772,7 @@ class TestServiceUsableForTool:
         service = {
             "provider_type": provider_type,
             "targets": ["openai.gpt-oss-120b"],
+            "target_api_types": {"openai.gpt-oss-120b": ("openai/v1/responses",)},
             "allow_all_targets": False,
         }
         assert not db_mod.service_usable_for_tool("claude", service)
@@ -5373,7 +5447,12 @@ class TestModelProviderServicesCache:
                     },
                     {
                         "name": "model-provider-services/main.j.oai",
-                        "config": {"provider_type": "OPENAI", "targets": [{"model": "gpt-5"}]},
+                        "config": {
+                            "provider_type": "OPENAI",
+                            "targets": [
+                                {"model": "gpt-5", "native_api_types": ["openai/v1/responses"]}
+                            ],
+                        },
                     },
                 ]
             }, None

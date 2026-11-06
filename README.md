@@ -126,6 +126,10 @@ Anthropic Messages for Claude or OpenAI Responses for Codex; MPS calls do not tr
 between APIs. Declare those APIs on the service's targets. Custom deployment names are
 preserved and can be selected with `--model`.
 
+For every supported provider, Codex accepts only targets declared with OpenAI Responses
+(`openai/v1/responses`). Restricted services with no compatible targets are hidden from
+the provider picker and rejected when selected explicitly.
+
 `ug codex --provider <catalog>.<schema>.<name>` on an Amazon Bedrock (runtime) service turns off Codex's
 built-in `web_search` for that launch, because Bedrock's Responses API rejects it, and registers the
 `system.ai.web_search` MCP service instead. Nothing is added if that service is already configured
