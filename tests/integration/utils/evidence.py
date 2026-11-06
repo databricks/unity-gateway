@@ -10,15 +10,34 @@ from .agents import _evidence_id, antigravity, claude, codex, copilot
 _AGENT_HELPERS = {"claude": claude, "codex": codex, "copilot": copilot}
 
 
-def assert_no_terminal_api_error(screen: str) -> None:
-    """Fail on definitive client errors, not an in-progress transient retry."""
-    error = re.search(
-        r"unexpected status (?:400|401|403|404|405|409|422)\b|PERMISSION_DENIED"
-        r"|exceeded retry limit",
-        screen,
-        re.IGNORECASE,
-    )
-    assert error is None, "Agent returned a terminal API error:\n" + screen
+_RATE_LIMIT_BANNER = re.compile(r"exceeded retry limit, last status: (?:429|503)\b", re.IGNORECASE)
+_FATAL_API_ERROR = re.compile(
+    r"unexpected status (?:400|401|403|404|405|409|422)\b|PERMISSION_DENIED"
+    r"|exceeded retry limit",
+    re.IGNORECASE,
+)
+
+
+class RateLimited(AssertionError):
+    """The client gave up retrying a 429/503; a caller may back off and resubmit."""
+
+
+def rate_limit_banner_count(screen: str) -> int:
+    """How many exhausted-retry 429/503 banners the screen currently shows."""
+    return len(_RATE_LIMIT_BANNER.findall(screen))
+
+
+def assert_no_terminal_api_error(screen: str, tolerated_rate_limits: int = 0) -> None:
+    """Fail on definitive client errors, not an in-progress transient retry.
+
+    An exhausted 429/503 retry limit raises ``RateLimited`` (an ``AssertionError``, so callers
+    that do not catch it fail exactly as before). ``tolerated_rate_limits`` is the number of such
+    banners already on screen from attempts the caller chose to retry.
+    """
+    message = "Agent returned a terminal API error:\n" + screen
+    assert _FATAL_API_ERROR.search(_RATE_LIMIT_BANNER.sub("", screen)) is None, message
+    if rate_limit_banner_count(screen) > tolerated_rate_limits:
+        raise RateLimited(message)
 
 
 def read_jsonl(path: Path) -> list[dict]:

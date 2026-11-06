@@ -19,7 +19,12 @@ import time
 import pyte
 from pyte.screens import wcwidth  # wcwidth is only a pyte dependency
 
-from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
+from .evidence import (
+    agent_sessions,
+    assert_no_terminal_api_error,
+    fresh_id,
+    rate_limit_banner_count,
+)
 
 SELECTED = "[›❯>]"
 
@@ -237,6 +242,7 @@ class TerminalProcess:
         self.actions = []
         self.ended = False
         self.approving = False
+        self.tolerated_rate_limits = 0
 
     @property
     def visible(self):
@@ -629,12 +635,26 @@ class AgentTerminal(TerminalProcess):
             self.approving = True
         return True
 
+    def tolerate_rate_limits_on_screen(self):
+        """Ignore the rate-limit banners now visible so a resubmitted turn is judged on its own.
+
+        Banners that later scroll off lower the allowance, so a new banner is still detected.
+        """
+        self.tolerated_rate_limits = rate_limit_banner_count(self.visible)
+
+    def check_api_error(self, screen):
+        """Raise on a terminal API error; ``RateLimited`` for an exhausted 429/503 retry limit."""
+        self.tolerated_rate_limits = min(
+            self.tolerated_rate_limits, rate_limit_banner_count(screen)
+        )
+        assert_no_terminal_api_error(screen, self.tolerated_rate_limits)
+
     def wait_for_task(self, task, timeout=180):
         permission_in_progress = False
 
         def completed(screen):
             nonlocal permission_in_progress
-            assert_no_terminal_api_error(screen)
+            self.check_api_error(screen)
             if "Do you want to proceed?" in screen:
                 if permission_in_progress:
                     return False
