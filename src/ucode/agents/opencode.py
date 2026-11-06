@@ -24,6 +24,7 @@ from ucode.databricks import (
     get_databricks_token,
     model_token_limits,
 )
+from ucode.launch_latency import handoff
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
@@ -496,7 +497,8 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
             *tool_args[separator:],
         ]
 
-    proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
+    with handoff():
+        proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

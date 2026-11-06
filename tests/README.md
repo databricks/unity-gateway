@@ -1,5 +1,15 @@
 # Test suites and user journeys
 
+`test_launch_latency.py` covers opt-in local launch timing, inclusion of CLI import
+time, exclusion of session runtime, failed exec corrections, Windows spawn/wait
+boundaries, no timing I/O in forked PTY children, early setup failure cohorts,
+metadata privacy, and capture failures.
+`test_launch_latency_dashboard.py` covers JSONL validation, corrected-event
+deduplication, UTC dates, safe offline HTML generation, and preservation of the
+source log. These are component checks; they do not establish production p50/p90,
+native agent readiness, or fleetwide telemetry coverage. See
+[launch latency](../docs/launch-latency.md) for the measurement definition.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component

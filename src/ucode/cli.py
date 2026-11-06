@@ -25,7 +25,7 @@ from rich.text import Text
 from typer import _click
 from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
-from ucode import custom_oauth
+from ucode import custom_oauth, launch_latency
 from ucode.agents import (
     GEMINI_API_TOOLS,
     MODEL_LOCATION_TOOLS,
@@ -3683,6 +3683,7 @@ def _launch_tool(
     previous = {}
     try:
         tool = normalize_tool(tool_name)
+        launch_latency.select(tool, skip_preflight=skip_preflight, refresh=refresh)
         routing_chosen = routing_already_chosen or smart_routing_config.known_version()
         previous = smart_routing_v2.apply_config(agent=tool)
         if not custom_oauth_cli_enabled(custom_oauth):
@@ -3713,6 +3714,7 @@ def _launch_tool(
         needs_auto_configure = not existing.get("workspace") or tool not in (
             existing.get("available_tools") or []
         )
+        launch_latency.update(auto_configure=needs_auto_configure)
         # Refuse an agent the managed config doesn't enable before installing or configuring it, so
         # a blocked launch never downloads the agent first. Reading the config needs a known
         # workspace and credentials; a first run without them is gated after setup instead.
@@ -3726,6 +3728,7 @@ def _launch_tool(
         gate_managed = managed
         if gate_managed is None and early_managed is not None:
             gate_managed, _ = early_managed
+        launch_latency.update(managed=gate_managed is not None)
         if not _launches_self_managed(gate_managed, existing, tool):
             _reject_disabled_agent(gate_managed, tool)
         ensure_bootstrap_dependencies(
@@ -3823,6 +3826,7 @@ def _launch_tool(
             managed_smart_routing_applies
             or smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
         )
+        launch_latency.update(managed=managed is not None)
         if routing_skipped and _smart_routing_launch_shape(tool, ctx.args, explicit_prompt):
             display = TOOL_SPECS[tool]["display"]
             print_warning(
@@ -4184,6 +4188,7 @@ def _launch_tool(
             launch_model=managed_model if tool == "copilot" else session_model,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
+        launch_latency.update(smart_routing=launch_options.launch_smart_routing)
         with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
@@ -4746,6 +4751,8 @@ def cursor_cmd(ctx: typer.Context) -> None:
     """
     from ucode.agents import cursor
 
+    launch_latency.select("cursor", skip_preflight=False)
+    launch_latency.update(managed=False, auto_configure=False, smart_routing=False)
     try:
         if not shutil.which(cursor.CURSOR_BINARY):
             raise RuntimeError(

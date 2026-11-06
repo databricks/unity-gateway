@@ -1,5 +1,12 @@
 # Integration tests
 
+Local launch timing and the offline dashboard have component coverage in
+`../test_launch_latency.py` and `../test_launch_latency_dashboard.py`, including
+import/handoff boundaries, failures, opt-in capture, no timing I/O in forked PTY
+children, and JSONL/HTML handling.
+No live integration journey currently measures UG handoff latency or native
+prompt readiness; component timings are not production latency evidence.
+
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They

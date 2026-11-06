@@ -25,6 +25,7 @@ from ucode.databricks import (
     build_tool_base_url,
     get_databricks_token,
 )
+from ucode.launch_latency import handoff
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import (
     get_provider_service,
@@ -267,7 +268,8 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     )
     refresher.start()
 
-    proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
+    with handoff():
+        proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

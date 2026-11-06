@@ -46,6 +46,7 @@ from ucode.databricks import (
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
 )
+from ucode.launch_latency import handoff
 from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
@@ -811,9 +812,10 @@ def launch_claude(
                     log_path=CLAUDE_PTY_LOG,
                 )
             else:
-                proc = subprocess_cross_os.popen(
-                    argv, stdin=subprocess.PIPE if stdin_prompt is not None else None
-                )
+                with handoff():
+                    proc = subprocess_cross_os.popen(
+                        argv, stdin=subprocess.PIPE if stdin_prompt is not None else None
+                    )
                 if stdin_prompt is not None and proc.stdin is not None:
                     # ug consumed stdin to route the prompt, so hand Claude the same bytes.
                     try:
@@ -950,9 +952,10 @@ def launch_codex(
                     if key in overlay
                 }
             )
-        tui = subprocess_cross_os.popen(
-            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
-        )
+        with handoff():
+            tui = subprocess_cross_os.popen(
+                [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
+            )
         try:
             returncode = tui.wait()
         except KeyboardInterrupt:

@@ -50,6 +50,7 @@ from ucode.constants import (
 )
 from ucode.custom_oauth import launch_token
 from ucode.databricks import bare_model_name
+from ucode.launch_latency import handoff
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import get_provider_service, mark_tool_managed, save_state, set_provider_service
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
@@ -517,7 +518,8 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         env = build_runtime_env(proxy_url, session_secret, models)
         if selected and not _is_subcommand(tool_args):
             tool_args = _with_model_arg(tool_args, _selection_id(binary, env, selected, catalog))
-        proc = subprocess_cross_os.popen([binary, *tool_args], env=env)
+        with handoff():
+            proc = subprocess_cross_os.popen([binary, *tool_args], env=env)
         returncode = _wait_for_exit(proc)
     finally:
         cache.stop()

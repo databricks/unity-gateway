@@ -61,6 +61,10 @@ On first launch of a model-backed agent, `ug` prompts for a Databricks
 workspace, authenticates, and writes local agent config. Later launches reuse
 the saved workspace and credentials.
 
+For local launch timing, set `UG_LAUNCH_LATENCY_PATH` and generate the
+[p50/p90 dashboard](docs/launch-latency.md). It measures UG startup through agent
+handoff, with filters for first-run setup, agent, version, and launch controls.
+
 When Claude Code or Codex is older than the minimum version `ug` supports, `ug`
 asks before upgrading it in place. Set `UG_AUTO_UPGRADE_AGENT=1` to upgrade
 without asking, for example from a launcher that manages the agent install.

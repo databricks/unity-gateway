@@ -61,6 +61,7 @@ from ucode.databricks import (
     ug_binary,
 )
 from ucode.env import env_bool
+from ucode.launch_latency import handoff
 from ucode.launcher import exec_or_spawn
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import (
@@ -2869,7 +2870,8 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
 
     try:
         with _claude_launch_argv(binary, tool_args, relayed=True) as argv:
-            proc = subprocess_cross_os.popen(argv)
+            with handoff():
+                proc = subprocess_cross_os.popen(argv)
             try:
                 returncode = proc.wait()
             except KeyboardInterrupt:

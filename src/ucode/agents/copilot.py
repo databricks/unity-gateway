@@ -74,6 +74,7 @@ from ucode.databricks import (
     model_version_sort_key,
     resolve_provider_service,
 )
+from ucode.launch_latency import handoff
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
@@ -1103,9 +1104,10 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
                     entry["wireModel"] = wire_override
         with session_registry(config) as registry_path:
             env = build_runtime_env(registry_path, start_model)
-            proc = subprocess_cross_os.popen(
-                [SPEC["binary"], *MCP_LAUNCH_ARGS, *tool_args], env=env
-            )
+            with handoff():
+                proc = subprocess_cross_os.popen(
+                    [SPEC["binary"], *MCP_LAUNCH_ARGS, *tool_args], env=env
+                )
             returncode = _wait_for_exit(proc)
     finally:
         cache.stop()

@@ -12,6 +12,7 @@ from tempfile import TemporaryFile
 from typing import Any
 
 from ucode.config_io import atomic_write_json
+from ucode.launch_latency import handoff
 from ucode.os_compatibility import subprocess_cross_os
 
 CAPABILITY_FILE = "claude-answer-delivery"
@@ -432,11 +433,12 @@ def run(argv: list[str], *, session_path: Path, stdin_prompt: bytes | None) -> i
         marker.touch()
     try:
         with TemporaryFile() as captured:
-            proc = subprocess_cross_os.popen(
-                argv,
-                stdin=subprocess.PIPE if stdin_prompt is not None else None,
-                stdout=captured if buffered else None,
-            )
+            with handoff():
+                proc = subprocess_cross_os.popen(
+                    argv,
+                    stdin=subprocess.PIPE if stdin_prompt is not None else None,
+                    stdout=captured if buffered else None,
+                )
             try:
                 proc.communicate(input=stdin_prompt)
             except KeyboardInterrupt:

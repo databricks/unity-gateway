@@ -27,6 +27,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from ucode.launch_latency import handoff
+
 MAX_MODEL_NAME_LEN = 200
 CONFIRM_TIMEOUT_S = 3.0
 SWITCH_TIMEOUT_S = 6.0
@@ -392,8 +394,11 @@ def run_claude_pty(
             "Smart routing could not start its local prompt-routing socket; Claude was not launched."
         )
 
-    pid, master_fd = pty.fork()
+    with handoff():
+        pid, master_fd = pty.fork()
     if pid == 0:
+        # A multithreaded fork's child must reach exec without timing-file I/O,
+        # including on exec failure. The parent already recorded the fork boundary.
         os.execvp(argv[0], argv)
         os._exit(127)
 

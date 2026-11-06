@@ -74,6 +74,15 @@ def main() -> None:
         proxy_main()
         return
 
-    from ucode.cli import main as cli_main
+    import time
 
-    cli_main()
+    started_ns = time.perf_counter_ns()
+    from ucode import launch_latency
+
+    launch_latency.begin(started_ns)
+    try:
+        from ucode.cli import main as cli_main
+
+        cli_main()
+    finally:
+        launch_latency.finish()
