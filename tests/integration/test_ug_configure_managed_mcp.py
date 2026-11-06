@@ -52,9 +52,8 @@ def test_managed_fixture_claude_mcp_lists_configured_server(live_session, worksp
 def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspace):
     """Scenario: an interactive configure with a managed MCP server writes Codex's managed file.
 
-    Expected: the server lands in the OS-managed `[mcp_servers]` table as native HTTP with
-    Codex's pinned OAuth client, or the ug mcp-proxy fallback when native OAuth is unavailable.
-    Both transports target the configured service, without a duplicate in the developer's config.
+    Expected: the server lands in the `[mcp_servers]` table of the OS-managed config with its
+    native HTTP URL and pinned Codex OAuth client, without a user-scope copy.
     """
     session = live_session
     use_managed_config_fixture(session, "codex_mcp")
@@ -66,22 +65,12 @@ def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspa
         session.run(CODEX_MANAGED_CONFIG_PATH, binary=session.which("cat"), timeout=30).stdout
     )
     servers = managed.get("mcp_servers") or {}
-    entries = {name: entry for name, entry in servers.items() if "github" in name.lower()}
-    assert entries, managed
-    entry = next(iter(entries.values()))
-    expected_url = f"{workspace}/ai-gateway/mcp-services/system.ai.github"
-    if "url" in entry:
-        assert entry["url"] == expected_url, entry
-        assert entry.get("oauth_resource") == expected_url, entry
-        assert entry.get("oauth", {}).get("client_id") == (
-            "https://chatgpt.com/oauth/codex/client.json"
-        ), entry
-        assert "command" not in entry and "args" not in entry, entry
-    else:
-        assert entry["command"].endswith("ug"), entry
-        assert entry["args"][0] == "mcp-proxy", entry
-        assert "--url" in entry["args"], entry
-        assert entry["args"][entry["args"].index("--url") + 1] == expected_url, entry
+    url = f"{workspace.rstrip('/')}/ai-gateway/mcp-services/system.ai.github"
+    assert servers.get("system-ai-github") == {
+        "url": url,
+        "oauth_resource": url,
+        "oauth": {"client_id": "https://chatgpt.com/oauth/codex/client.json"},
+    }, servers
 
     personal_path = session.home / ".codex" / "config.toml"
     personal = tomllib.loads(personal_path.read_text()) if personal_path.exists() else {}
