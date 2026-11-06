@@ -1,5 +1,16 @@
 # Integration tests
 
+The [Codex routing-toggle reload POC](../../docs/codex-routing-reload-poc.md) has
+component coverage in `../test_codex_routing_reload.py` and separate manual
+Linux/Codex 0.166.0 TUI validation against the explicitly selected
+`eng-ml-inference` workspace. Those checks include real skill toggles, interruption
+and recovery of the same child, captured recipe fields, and permission
+preservation. They are not installed-wheel integration tests or CI coverage.
+Separate process recovery preserved IDs and disabled attribution but reset the
+sandbox to read-only; automatic permission restoration on that path is deferred.
+Native approval dialogs, compaction, concurrent roots, and other platforms remain
+uncovered by the POC.
+
 Windows Desktop detection allows up to 30 seconds for the native package query.
 Component coverage in `test_desktop_setup.py` verifies slow successful detection creates
 UG's profile, while missing packages, timeouts, launch errors, and query failures leave

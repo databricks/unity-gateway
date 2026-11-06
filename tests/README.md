@@ -1,5 +1,16 @@
 # Test suites and user journeys
 
+`test_codex_routing_reload.py` covers the opt-in Codex reload controller with a
+controlled external transport: late children, unrelated roots, off/on recipe
+restoration, permission preservation, failed-resume reporting, held user requests,
+later approval replies, and ephemeral TUI helpers. Manual Linux/Codex 0.166.0
+checks exercised actual skill toggles, a busy child's recovery under its original
+ID, recipe fields on real requests, and unchanged sandbox settings. These are
+separate from the installed-wheel CI integration suite. See the
+[POC report](../docs/codex-routing-reload-poc.md) for evidence scope and gaps.
+Separate manual process recovery preserved the saved root/child and disabled
+attribution but reset the sandbox to read-only; that limitation remains open.
+
 Windows Desktop detection allows up to 30 seconds for the native package query.
 Component coverage in `test_desktop_setup.py` verifies slow successful detection creates
 UG's profile, while missing packages, timeouts, launch errors, and query failures leave
