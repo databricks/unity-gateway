@@ -919,8 +919,8 @@ def _discover_databricks_clis(
 
     try:
         saved = read_json_safe(SAVED_CLI_VERSIONS_PATH)
-    except ValueError:
-        # JSON integers beyond Python's parsing limit are not JSONDecodeError instances.
+    except (ValueError, RecursionError):
+        # JSON number/depth limits can raise errors other than JSONDecodeError.
         saved = {}
     probed: dict[str, dict] = {}
     reused_saved = False

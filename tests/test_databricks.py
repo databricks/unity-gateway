@@ -4713,6 +4713,41 @@ class TestEnsureDatabricksCliVersion:
         assert Path(db_mod.databricks_cli_path()).parent == tmp_path
         assert probes == []
 
+    def test_discovery_combines_reused_and_refreshed_versions(self, tmp_path, monkeypatch):
+        first, second = tmp_path / "reused", tmp_path / "refreshed"
+        first.mkdir()
+        second.mkdir()
+        env = self._fake_databricks(first, "Databricks CLI v1.20.0")
+        self._fake_databricks(second, "Databricks CLI v1.19.0")
+        env["PATH"] = os.pathsep.join((str(first), str(second)))
+        monkeypatch.setattr("os.environ", env)
+        ensure_databricks_cli_version()
+        executable = next(
+            Path(path)
+            for path, _ in db_mod._discover_databricks_clis()
+            if Path(path).parent == second
+        )
+        self._fake_databricks(second, "Databricks CLI v1.21.0")
+        stat = executable.stat()
+        os.utime(executable, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+        self._start_new_process()
+        probes = self._record_probes(monkeypatch)
+
+        discovered = db_mod._discover_databricks_clis()
+
+        assert [(Path(path).parent, version) for path, version in discovered] == [
+            (second, (1, 21, 0)),
+            (first, (1, 20, 0)),
+        ]
+        assert len(probes) == 1
+        assert Path(probes[0][0]).parent == second
+        saved = json.loads(db_mod.SAVED_CLI_VERSIONS_PATH.read_text())
+        assert sorted(entry["version"] for entry in saved.values()) == [[1, 20, 0], [1, 21, 0]]
+        self._start_new_process()
+        probes.clear()
+        ensure_databricks_cli_version()
+        assert probes == []
+
     def test_replaced_binary_is_probed_again(self, tmp_path, monkeypatch):
         env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
         monkeypatch.setattr("os.environ", env)
@@ -4728,6 +4763,7 @@ class TestEnsureDatabricksCliVersion:
         ensure_databricks_cli_version(db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
 
         assert len(probes) == 1
+        assert db_mod._discover_databricks_clis()[0][1] == (1, 21, 0)
         assert db_mod.databricks_cli_version() == (1, 21, 0)
 
     def test_saved_version_expires_after_max_age(self, tmp_path, monkeypatch):
@@ -4748,8 +4784,8 @@ class TestEnsureDatabricksCliVersion:
 
     @pytest.mark.parametrize(
         "serialized_timestamp",
-        [str(10**400), str(-(10**400)), "9" * 5000],
-        ids=["oversized-future", "oversized-past", "json-parser-limit"],
+        [str(10**400), str(-(10**400)), "9" * 5000, "[" * 10000 + "0" + "]" * 10000],
+        ids=["oversized-future", "oversized-past", "json-parser-limit", "json-nesting-limit"],
     )
     def test_oversized_saved_timestamp_is_reprobed(
         self, tmp_path, monkeypatch, serialized_timestamp
@@ -4817,6 +4853,9 @@ class TestEnsureDatabricksCliVersion:
 
         assert os.environ["PATH"] != str(tmp_path)
         assert db_mod.SAVED_CLI_VERSIONS_PATH.exists()
+        probes = self._record_probes(monkeypatch)
+        ensure_databricks_cli_version()
+        assert probes == []
 
     def test_auto_upgrades_when_version_too_old(self, tmp_path, monkeypatch):
         import ucode.databricks as db_mod
