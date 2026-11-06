@@ -1,7 +1,7 @@
 # Test suites and user journeys
 
 `test_config_io.py` and `test_state.py` cover avoiding unchanged local config/state writes:
-preserved timestamps, actual changes still written, encoding/native newline comparisons, dry-run
+preserved timestamps, actual changes still written, stateful encoding/native newline comparisons, dry-run
 output, real POSIX read-only/write-only permission fallbacks (non-root runs), and handling of symlinks and
 special files at the file-type boundary. State checks cover type-sensitive updates, live reads of
 other-workspace edits, selection changes, managed overlays, and bare-host alias repair. These are

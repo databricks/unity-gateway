@@ -252,6 +252,23 @@ class TestWriteHelpers:
         assert path.read_bytes() == expected
         assert path.stat().st_mtime_ns == 1_000_000_000
 
+    @pytest.mark.parametrize("existing", ["text-stream", "standalone-encoder"])
+    def test_stateful_encoding_matches_the_text_file_writer(self, tmp_path, existing):
+        path = tmp_path / "stateful.txt"
+        reference = tmp_path / "reference.txt"
+        content = "日本"
+        encoding = "iso2022_jp"
+        reference.write_text(content, encoding=encoding)
+        expected = reference.read_bytes()
+        initial = expected if existing == "text-stream" else content.encode(encoding)
+        path.write_bytes(initial)
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+
+        write_text_file(path, content, encoding=encoding)
+
+        assert path.read_bytes() == expected
+        assert (path.stat().st_mtime_ns == 1_000_000_000) is (initial == expected)
+
     def test_different_line_endings_are_rewritten_to_native_output(self, tmp_path):
         path = tmp_path / "newlines.txt"
         reference = tmp_path / "reference.txt"

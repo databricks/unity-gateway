@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import stat
@@ -99,9 +100,12 @@ def write_text_file(path: Path, content: str, *, encoding: str = "utf-8") -> Non
         return
     ensure_parent_dir(path)
     try:
-        # Match the bytes TextIOWrapper writes, including native newline translation.
+        # Match the real writer, including newline translation and stateful encoders.
         try:
-            expected = content.replace("\n", os.linesep).encode(encoding)
+            with io.BytesIO() as buffer, io.TextIOWrapper(buffer, encoding=encoding) as text:
+                text.write(content)
+                text.flush()
+                expected = buffer.getvalue()
         except (LookupError, UnicodeError):
             # Preserve the normal writer's exception and file-opening behavior.
             pass

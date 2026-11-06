@@ -1,7 +1,7 @@
 # Integration tests
 
 Unchanged local config/state persistence has offline component coverage in
-`../test_config_io.py` and `../test_state.py`: timestamps, changed values, encoding/newlines,
+`../test_config_io.py` and `../test_state.py`: timestamps, changed values, stateful encodings/newlines,
 dry-run, real POSIX permission checks under a non-root user, controlled file-type boundaries,
 state type distinctions, external workspace
 edits, selection changes, managed overlays, nested mapping reordering, and alias repair. No
