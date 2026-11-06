@@ -324,7 +324,8 @@ It also checks mixed PATH entries: unchanged binaries reuse saved versions while
 binaries refresh and merge their versions. A new process avoids unchanged probes, and probes
 again when the binary is replaced or the saved version is over a day old. An
 insufficient saved version is rechecked before any upgrade; unparseable versions and
-dry runs save nothing, a PATH refresh reuses saved versions without probing, and `ug doctor` probes.
+dry runs save nothing, a PATH refresh reuses saved versions without probing (with registry PATH isolated),
+and `ug doctor` probes.
 An unwritable cache directory is best-effort: failed temporary-file creation never
 blocks ordinary CLI discovery or launch preflight. Oversized saved timestamps are
 ignored and re-probed without overflowing numeric conversion. Raw JSON numbers beyond

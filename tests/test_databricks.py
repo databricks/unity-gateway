@@ -4846,6 +4846,8 @@ class TestEnsureDatabricksCliVersion:
         env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
         env["LOCALAPPDATA"] = str(tmp_path / "appdata")
         monkeypatch.setattr("os.environ", env)
+        # Registry PATH belongs to the runner/developer and can contain another real CLI.
+        monkeypatch.setattr(db_mod, "_windows_user_path", lambda: "")
         ensure_databricks_cli_version()
 
         # Adds the WinGet links directory to PATH; no binary was replaced.
