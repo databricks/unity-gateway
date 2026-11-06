@@ -1,9 +1,5 @@
 # Integration tests
 
-`../test_claude_routing.py` covers the shared routing journal's streamed matching
-and early exit. Local files verify reconciliation semantics; live routing and
-concurrent cross-process journal updates are not exercised by these additions.
-
 The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
 service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
 It replaces the obsolete stdio-only expectation; this checks configuration, not live login.

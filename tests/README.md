@@ -1,10 +1,5 @@
 # Test suites and user journeys
 
-`test_claude_routing.py` covers streamed routing-journal matching: used decisions,
-other sessions, malformed rows, FIFO fallback, and stopping JSON decoding after
-the first matching pending model. The shared reader also serves Codex. These are
-local-file component checks; no live router latency is established.
-
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
