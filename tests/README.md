@@ -1,5 +1,12 @@
 # Test suites and user journeys
 
+Provider launch component tests in `test_agents_init.py`, `test_cli.py`, and
+`test_agent_codex.py` verify that Codex reuses the validated provider type through
+launch options, without persisting it or repeating the web-search type lookup.
+They cover fresh per-launch metadata, managed providers, Bedrock runtime versus
+other providers, and the direct-launch lookup fallback. They do not measure live
+provider latency or native prompt readiness.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component
