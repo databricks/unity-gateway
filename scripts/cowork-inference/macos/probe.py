@@ -48,7 +48,7 @@ def wait_for(label, timeout=60, require_all=False, enabled=False):
         except RuntimeError as exc:
             last = str(exc)
         time.sleep(2)
-    save("last-ui.txt", last)
+    save("last-ui.json", last)
     raise RuntimeError(f"Timed out waiting for {label}")
 
 
@@ -121,31 +121,30 @@ def main():
                 stderr=log,
             )
         snapshot = wait_for(("Get started", "Continue"), timeout=60)
-        save("initial-ui.txt", snapshot)
-        if "Get started" in snapshot:
+        save("initial-ui.json", snapshot)
+        if matches_labels(snapshot, "Get started"):
             ui("click", "Get started")
         wait_for("Continue")
         ui("click", "Continue")
         print("Gateway onboarding accepted", flush=True)
         navigation = wait_for(("Cowork", "Show sidebar"), timeout=60)
-        if "Show sidebar" in navigation:
+        if not matches_labels(navigation, "Cowork"):
             ui("click", "Show sidebar")
         wait_for("Cowork", timeout=60)
-        save("navigation-ui.txt", ui("snapshot"))
+        save("navigation-ui.json", ui("snapshot"))
         ui("click", "Cowork")
         wait_for("Scheduled")
         report["coworkActivated"] = True
         print("Cowork selected", flush=True)
         snapshot = wait_for("Write your prompt to Claude", timeout=60)
-        save("cowork-ui.txt", snapshot)
+        save("cowork-ui.json", snapshot)
         expected_labels = {
             f"Model: {model_label}{suffix}"
             for suffix in ("", " Extended", " Low", " Medium", " High", " Max")
         }
-        if not any(expected_labels.intersection(row.split(" | ")) for row in snapshot.splitlines()):
+        if not matches_labels(snapshot, expected_labels):
             raise RuntimeError("Cowork did not select the expected system.ai model")
         ui("type", "Write your prompt to Claude", PROMPT)
-        wait_for("Start task", enabled=True)
         ui("click", "Start task")
         print("Start task requested", flush=True)
         snapshot = wait_for(
@@ -153,14 +152,14 @@ def main():
             timeout=240,
             require_all=True,
         )
-        save("response-ui.txt", snapshot)
+        save("response-ui.json", snapshot)
         report.update(responseAsserted=True, responseFinished=True, expectedResponse="48213")
     except Exception as exc:
         report["error"] = str(exc)
     finally:
         if app:
             try:
-                save("final-ui.txt", ui("snapshot"))
+                save("final-ui.json", ui("snapshot"))
             except Exception as exc:
                 report["captureError"] = str(exc)
             try:

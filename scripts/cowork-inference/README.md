@@ -81,7 +81,8 @@ Accessibility authorization; it does not modify TCC or macOS security settings.
 A missing permission fails the job. UG configures the app through its public CLI,
 then the test accepts gateway onboarding, opens Cowork, verifies the configured
 model, sends the prompt, and requires both the exact answer and completion marker.
-Controls wait for an enabled exact label; response assertions wait up to four minutes.
+JSON snapshots preserve multiline control values. Controls wait for an enabled exact label;
+response assertions wait up to four minutes.
 There are no whole-test retries.
 
 Terminal receives only the required environment through an owner-only temporary

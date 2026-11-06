@@ -1,7 +1,10 @@
+import json
+
+
 def matches_labels(snapshot, labels, *, require_all=False, enabled=False):
     if isinstance(labels, str):
         labels = [labels]
-    rows = [row.split(" | ") for row in snapshot.splitlines()]
+    rows = json.loads(snapshot)
     fields = {
         field
         for row in rows
