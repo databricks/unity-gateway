@@ -2244,7 +2244,10 @@ def model_token_limits(model_id: str) -> dict[str, int] | None:
 
 
 class EmptyModelDiscoveryReason(str):
-    """A successful complete listing with no eligible models, retaining its diagnostic text."""
+    """A complete empty result, preserving the existing string-diagnostic API.
+
+    Converting this to a plain string conservatively disables empty-result reuse.
+    """
 
 
 @dataclass(frozen=True)
@@ -2415,6 +2418,7 @@ def list_model_service_entries(
     page_token: str | None = None
     seen_tokens: set[str] = set()
     last_reason: str | None = None
+    invalid_entries_seen = False
     for _ in range(max_pages):
         params: dict[str, str] = {
             "parent": _MODEL_SERVICE_PARENT_SCHEMA,
@@ -2432,18 +2436,16 @@ def list_model_service_entries(
             break
         data = payload
         services = data.get("model_services", [])
-        if not isinstance(services, list) or any(
-            not isinstance(service, dict) for service in services
-        ):
+        if not isinstance(services, list):
             last_reason = "model-services listing returned invalid model entries"
             break
         for service in services:
-            if isinstance(service, dict):
-                model_id = _model_service_id(service)
-                if model_id and model_id not in entries:
-                    entries[model_id] = ModelServiceEntry(
-                        model_id, _model_service_api_types(service)
-                    )
+            if not isinstance(service, dict):
+                invalid_entries_seen = True
+                continue
+            model_id = _model_service_id(service)
+            if model_id and model_id not in entries:
+                entries[model_id] = ModelServiceEntry(model_id, _model_service_api_types(service))
         page_token = data.get("next_page_token")
         if page_token is not None and not isinstance(page_token, str):
             last_reason = "model-services listing returned an invalid page token"
@@ -2458,6 +2460,8 @@ def list_model_service_entries(
     else:
         last_reason = f"model-services listing exceeded {max_pages} pages"
 
+    if invalid_entries_seen and last_reason is None:
+        last_reason = "model-services listing returned invalid model entries"
     listed = [entries[model_id] for model_id in sorted(entries)]
     result_reason = (
         last_reason
@@ -3866,35 +3870,45 @@ def discover_endpoints_with_api_type(
         return [], invalid_reason
     out: list[str] = []
     saw_endpoint_without_v2 = False
+    invalid_entries_seen = False
     for ep in endpoints:
         if not isinstance(ep, dict) or not isinstance(ep.get("config", {}), dict):
-            return [], invalid_reason
+            invalid_entries_seen = True
+            continue
         name = ep.get("name", "")
         entities = ep.get("config", {}).get("served_entities", [])
         if not isinstance(entities, list):
-            return [], invalid_reason
+            invalid_entries_seen = True
+            continue
         api_types: set[str] = set()
         any_v2 = False
         for se in entities:
             if not isinstance(se, dict) or not isinstance(se.get("foundation_model", {}), dict):
-                return [], invalid_reason
+                invalid_entries_seen = True
+                continue
             fm = se.get("foundation_model", {})
-            advertised = fm.get("api_types", [])
-            if not isinstance(advertised, list) or any(
-                not isinstance(api, str) for api in advertised
-            ):
-                return [], invalid_reason
             if fm.get("ai_gateway_v2_supported") is True:
+                advertised = fm.get("api_types", [])
                 any_v2 = True
-                api_types.update(advertised)
+                if not isinstance(advertised, list):
+                    invalid_entries_seen = True
+                    continue
+                for advertised_api in advertised:
+                    if isinstance(advertised_api, str):
+                        api_types.add(advertised_api)
+                    else:
+                        invalid_entries_seen = True
         if not any_v2 and entities:
             saw_endpoint_without_v2 = True
         if api_type in api_types:
             if not isinstance(name, str) or not name:
-                return [], invalid_reason
+                invalid_entries_seen = True
+                continue
             out.append(name)
     if out:
-        return sorted(out, key=sort_key), None
+        return sorted(out, key=sort_key), invalid_reason if invalid_entries_seen else None
+    if invalid_entries_seen:
+        return [], invalid_reason
     if not endpoints:
         return [], EmptyModelDiscoveryReason("foundation-models listing returned no endpoints")
     if saw_endpoint_without_v2:

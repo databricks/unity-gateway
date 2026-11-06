@@ -573,6 +573,31 @@ class TestDiscoverModelServices:
         assert "invalid" in reason
         assert db_mod.cached_model_service_entries(WS) is None
 
+    def test_malformed_entry_keeps_valid_models_on_current_and_later_pages(self, monkeypatch):
+        pages = iter(
+            [
+                (
+                    {
+                        "model_services": [None, _model_service("system.ai.gpt-5")],
+                        "next_page_token": "more",
+                    },
+                    None,
+                ),
+                ({"model_services": [_model_service("system.ai.claude-opus-4-8")]}, None),
+            ]
+        )
+        monkeypatch.setattr(db_mod, "_get_model_services_page", lambda *args: next(pages))
+
+        entries, reason = db_mod.list_model_service_entries(WS, "token")
+
+        assert [entry.id for entry in entries] == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.gpt-5",
+        ]
+        assert type(reason) is str
+        assert "invalid model entries" in reason
+        assert db_mod.cached_model_service_entries(WS) is None
+
     def test_buckets_families_by_name(self, monkeypatch):
         payload = {
             "model_services": [
@@ -2138,6 +2163,44 @@ class TestModelVersionSortKey:
 
 
 class TestDiscoverGeminiModels:
+    def test_malformed_endpoints_and_entities_keep_later_valid_models(self, monkeypatch):
+        payload = _foundation_models_payload(["current-gemini"])
+        payload["endpoints"][0]["config"]["served_entities"].insert(0, None)
+        payload["endpoints"].insert(0, None)
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (payload, None))
+
+        models, reason = db_mod.discover_gemini_models(WS, "token")
+
+        assert models == ["current-gemini"]
+        assert type(reason) is str
+        assert "invalid" in reason
+
+    def test_malformed_v2_api_types_keep_valid_strings_and_models(self, monkeypatch):
+        payload = _foundation_models_payload(["current-gemini"])
+        entities = payload["endpoints"][0]["config"]["served_entities"]
+        entities[0]["foundation_model"]["api_types"].append(3)
+        entities.insert(
+            0, {"foundation_model": {"ai_gateway_v2_supported": True, "api_types": None}}
+        )
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (payload, None))
+
+        models, reason = db_mod.discover_gemini_models(WS, "token")
+
+        assert models == ["current-gemini"]
+        assert type(reason) is str
+        assert "invalid" in reason
+
+    def test_unused_v1_metadata_does_not_hide_valid_v2_models(self, monkeypatch):
+        payload = _foundation_models_payload(["legacy-gemini", "current-gemini"])
+        legacy = payload["endpoints"][0]["config"]["served_entities"][0]["foundation_model"]
+        legacy.update(ai_gateway_v2_supported=False, api_types=None)
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (payload, None))
+
+        models, reason = db_mod.discover_gemini_models(WS, "token")
+
+        assert models == ["current-gemini"]
+        assert reason is None
+
     @pytest.mark.parametrize("case", ["no-endpoints", "v1-only", "other-api"])
     def test_successful_empty_discovery_has_typed_reason(self, monkeypatch, case):
         payload = _foundation_models_payload([] if case == "no-endpoints" else ["gemini"])
@@ -2165,7 +2228,12 @@ class TestDiscoverGeminiModels:
 
     @pytest.mark.parametrize(
         ("payload", "error"),
-        [(None, "HTTP 503"), ([], None), ({"endpoints": None}, None)],
+        [
+            (None, "HTTP 503"),
+            ([], None),
+            ({"endpoints": None}, None),
+            ({"endpoints": [None]}, None),
+        ],
     )
     def test_errors_are_not_successful_empty_discovery(self, monkeypatch, payload, error):
         monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (payload, error))

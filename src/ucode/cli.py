@@ -999,12 +999,19 @@ def configure_shared_state(
         for family, reason in reasons.items()
         if family in {"gemini", "oss"} and isinstance(reason, EmptyModelDiscoveryReason)
     }
-    if (
+    discovery_failed = any(
+        reason for family, reason in reasons.items() if family not in empty_reasons
+    )
+    provider_search_complete = (
+        not (skip_model_discovery and want_claude) or web_search_model is not None
+    )
+    preflight_succeeded = (
         model_service_probe.resource_available
-        and not any(reason for family, reason in reasons.items() if family not in empty_reasons)
+        and not discovery_failed
         and _has_preflight_models(state, discovery_fields)
-        and (not skip_model_discovery or not want_claude or web_search_model is not None)
-    ):
+        and provider_search_complete
+    )
+    if preflight_succeeded:
         state[_LAUNCH_PREFLIGHT_STATE_KEY] = {
             "version": 1,
             "identity": preflight_identity,

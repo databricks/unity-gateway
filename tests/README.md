@@ -641,8 +641,9 @@ credential/profile/auth-mode/workspace-ID changes, family and discovery-mode cov
 reuse with real successful-empty Gemini/OSS diagnostics (retained on warm launches),
 expired/future/malformed stamps and model data, explicit refresh, and auth/probe/listing failure
 invalidation. Partial-pagination regressions retain API metadata for Copilot and completeness
-diagnostics for unbucketed Claude while leaving incomplete listings retryable. Typed empty results
-stay distinct from malformed responses and HTTP failures. These component checks control HTTP and clock
+diagnostics for unbucketed Claude while leaving incomplete listings retryable. Valid entries survive
+malformed neighbors and later pages; unused v1 metadata does not hide valid v2 endpoints. Typed empty
+results stay distinct from malformed responses and HTTP failures. These component checks control HTTP and clock
 boundaries; they do not establish live gateway timing, agent launch, or launch-time savings.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled

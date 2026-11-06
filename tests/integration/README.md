@@ -433,7 +433,8 @@ discovery-mode coverage, successfully empty optional Gemini/OSS families, malfor
 stamps, retained empty-family diagnostics, and failed-refresh invalidation.
 `../test_databricks.py` checks that interrupted pagination retains usable API metadata and
 completeness reasons without marking the catalog reusable. Malformed responses and HTTP failures
-remain distinct from confirmed empty catalogs. This suite does not assert live request overlap, cache timing, or launch-time
+remain distinct from confirmed empty catalogs; malformed individual entries do not discard valid
+neighbors. This suite does not assert live request overlap, cache timing, or launch-time
 savings.
 
 `test_ug_configure_scope.py` runs, for Claude and Codex separately (Linux/macOS only), plain
