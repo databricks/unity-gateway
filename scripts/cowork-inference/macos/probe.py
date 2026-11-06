@@ -28,6 +28,7 @@ def ui(*args):
     result = process.run(
         [str(TEMP / "desktop-ui"), *args],
         capture_output=True,
+        text=True,
         stdin=subprocess.DEVNULL,
         timeout=45,
     )
@@ -71,6 +72,7 @@ def configure():
             "--skip-upgrade",
         ],
         capture_output=True,
+        text=True,
         stdin=subprocess.DEVNULL,
         timeout=180,
     )
