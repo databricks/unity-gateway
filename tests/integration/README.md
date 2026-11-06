@@ -464,6 +464,13 @@ Caller permission-deny preservation is covered by `TestBuildClaudeArgv` in
 Native parent/child enforcement and the distinction between technical search exclusion
 and a semantic search deny are not yet covered by this integration suite.
 
+`TestEnsureHooksModulesGate` in `../test_agent_claude.py` uses real local locks to cover
+already-enabled launch gates without lock acquisition and updates that re-read after
+another writer changes the file. It also covers stale flags, dry-run, invalid/unreadable
+files, and concurrent MCP updates. The controlled benchmark in
+`scripts/benchmark_claude_hooks_gate.py` isolates lock contention; neither it nor these
+component tests establishes live Claude startup latency or production p90 improvement.
+
 OpenCode `--model` / `-m` selection is covered by unit/component tests in
 `test_cli.py` and `test_agent_opencode.py`: the shared CLI passes raw model values,
 and the OpenCode launcher validates and converts them before starting the native

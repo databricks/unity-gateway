@@ -1062,7 +1062,8 @@ def ensure_hooks_modules_gate() -> None:
     ``tengu_plugin_hooks_modules`` gate is on, and no settings key can force it on. The only
     source is the feature cache in ``.claude.json``, so seed ``true`` there before each launch.
     A stale top-level copy of the gate is dropped. Best-effort: an unreadable file is left alone
-    and a write failure never blocks the launch."""
+    and a write failure never blocks the launch. An already-enabled cache needs no write lock;
+    updates still re-read the file under the lock to preserve other ug writers' changes."""
 
     def mutate(config: dict) -> bool:
         features = config.get("cachedGrowthBookFeatures")
@@ -1078,8 +1079,13 @@ def ensure_hooks_modules_gate() -> None:
         return True
 
     try:
-        _update_claude_config(claude_code_config_path(), mutate)
-    except RuntimeError:
+        path = claude_code_config_path()
+        config = _read_claude_config_for_rewrite(path)
+        if config is not None and not mutate(config):
+            return
+        # Never write the optimistic snapshot: another process may have changed it.
+        _update_claude_config(path, mutate)
+    except (OSError, RuntimeError):
         _debug("Could not enable the Claude Code mods gate", traceback.format_exc())
 
 
