@@ -326,7 +326,8 @@ insufficient saved version is rechecked before any upgrade; unparseable versions
 dry runs save nothing, a PATH refresh keeps saved versions, and `ug doctor` probes.
 An unwritable cache directory is best-effort: failed temporary-file creation never
 blocks ordinary CLI discovery or launch preflight. Oversized saved timestamps are
-ignored and re-probed without overflowing numeric conversion.
+ignored and re-probed without overflowing numeric conversion. Raw JSON numbers beyond
+Python's integer-parsing limit are also cache misses for discovery and doctor.
 
 These component checks do not establish end-to-end launch latency.
 

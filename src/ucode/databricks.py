@@ -917,7 +917,11 @@ def _discover_databricks_clis(
     if use_cache and _DISCOVERED_DATABRICKS_CLIS_ORDERED is not None:
         return _DISCOVERED_DATABRICKS_CLIS_ORDERED
 
-    saved = read_json_safe(SAVED_CLI_VERSIONS_PATH)
+    try:
+        saved = read_json_safe(SAVED_CLI_VERSIONS_PATH)
+    except ValueError:
+        # JSON integers beyond Python's parsing limit are not JSONDecodeError instances.
+        saved = {}
     probed: dict[str, dict] = {}
     reused_saved = False
     seen_real: set[str] = set()

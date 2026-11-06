@@ -4746,18 +4746,32 @@ class TestEnsureDatabricksCliVersion:
 
         assert len(probes) == 1
 
-    @pytest.mark.parametrize("checked_at", [10**400, -(10**400)])
-    def test_oversized_saved_timestamp_is_reprobed(self, tmp_path, monkeypatch, checked_at):
+    @pytest.mark.parametrize(
+        "serialized_timestamp",
+        [str(10**400), str(-(10**400)), "9" * 5000],
+        ids=["oversized-future", "oversized-past", "json-parser-limit"],
+    )
+    def test_oversized_saved_timestamp_is_reprobed(
+        self, tmp_path, monkeypatch, serialized_timestamp
+    ):
         env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
         monkeypatch.setattr("os.environ", env)
         ensure_databricks_cli_version()
-        self._edit_saved_versions(lambda entry: entry.update(checked_at=checked_at))
+
+        def corrupt_timestamp():
+            self._edit_saved_versions(lambda entry: entry.update(checked_at="invalid-timestamp"))
+            path = db_mod.SAVED_CLI_VERSIONS_PATH
+            path.write_text(path.read_text().replace('"invalid-timestamp"', serialized_timestamp))
+
+        corrupt_timestamp()
         self._start_new_process()
         probes = self._record_probes(monkeypatch)
-
         ensure_databricks_cli_version()
-
         assert len(probes) == 1
+
+        corrupt_timestamp()
+        assert db_mod.databricks_cli_version() == (1, 20, 0)
+        assert len(probes) == 2
 
     def test_insufficient_saved_version_rechecks_before_upgrading(self, tmp_path, monkeypatch):
         env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
