@@ -1,5 +1,11 @@
 # Test suites and user journeys
 
+`test_startup_imports.py` checks that CLI imports and normal launch-version lookup
+leave distribution-discovery machinery unloaded. `test_telemetry.py` preserves
+installed version output, archive metadata fallback, and missing-metadata behavior;
+upgrade and bundled-skill tests exercise the deferred standard lookup at use sites.
+These component checks do not establish live gateway or native-agent latency.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component

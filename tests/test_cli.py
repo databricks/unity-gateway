@@ -509,7 +509,7 @@ class TestUpgrade:
         assert "uv" in result.output.lower()
 
     def test_installed_distribution_prefers_unity_gateway(self):
-        with patch("ucode.cli.metadata.version", return_value="1.0.0") as package_version:
+        with patch("importlib.metadata.version", return_value="1.0.0") as package_version:
             from ucode.cli import _installed_cli_distribution
 
             assert _installed_cli_distribution() == "unity-gateway"
@@ -522,13 +522,13 @@ class TestUpgrade:
                 raise metadata.PackageNotFoundError
             return "1.0.0"
 
-        with patch("ucode.cli.metadata.version", side_effect=package_version):
+        with patch("importlib.metadata.version", side_effect=package_version):
             from ucode.cli import _installed_cli_distribution
 
             assert _installed_cli_distribution() == "ucode"
 
     def test_source_checkout_without_metadata_uses_current_distribution(self):
-        with patch("ucode.cli.metadata.version", side_effect=metadata.PackageNotFoundError):
+        with patch("importlib.metadata.version", side_effect=metadata.PackageNotFoundError):
             assert cli_mod._installed_cli_distribution() == "unity-gateway"
 
 

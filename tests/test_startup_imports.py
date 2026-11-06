@@ -109,6 +109,16 @@ def test_cli_import_defers_subcommand_specific_modules() -> None:
     assert loaded == []
 
 
+def test_cli_and_launch_version_defer_distribution_discovery() -> None:
+    output, loaded = _modules_loaded_after(
+        "import ucode.cli\nfrom ucode.telemetry import ug_version\nprint(ug_version())",
+        ("importlib.metadata",),
+    )
+
+    assert output == version("unity-gateway")
+    assert loaded == []
+
+
 @pytest.mark.parametrize("reported_version", ["1.2.3", "1.2.3.post4", "1.2.3+abc123"])
 def test_metadata_reader_preserves_version_suffixes(
     tmp_path, monkeypatch, reported_version

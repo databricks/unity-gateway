@@ -1,5 +1,9 @@
 # Integration tests
 
+`../test_startup_imports.py` and `../test_telemetry.py` cover deferred distribution
+metadata loading, version parity, archive fallback and missing installs as component
+checks. Upgrade/skill behavior remains separately covered; live startup is unmeasured.
+
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They

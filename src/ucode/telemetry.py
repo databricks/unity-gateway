@@ -21,7 +21,6 @@ import re
 import subprocess
 import sys
 from functools import cache
-from importlib.metadata import PackageNotFoundError, version
 
 from ucode.os_compatibility import subprocess_cross_os
 
@@ -44,6 +43,16 @@ _WINDOWS_MACHINES = {0x8664: "x86_64", 0xAA64: "arm64", 0x014C: "x86", 0x01C4: "
 
 @cache
 def ug_version() -> str:
+    # Normal wheel/editable installs have plain dist-info metadata. Share the console
+    # entrypoint's reader so building launch headers does not import the distribution stack.
+    from ucode.entrypoint import _read_installed_version
+
+    installed = _read_installed_version()
+    if installed is not None:
+        return installed
+    # Preserve standard discovery for archives, eggs, or other unsupported metadata paths.
+    from importlib.metadata import PackageNotFoundError, version
+
     try:
         return version("unity-gateway")
     except PackageNotFoundError:

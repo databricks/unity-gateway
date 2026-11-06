@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
-from importlib.metadata import distribution
 from pathlib import Path
 
 _SKILL_ROOTS = {"claude": ".claude/skills", "codex": ".codex/skills"}
@@ -17,6 +16,8 @@ SMART_ROUTER_ORCHESTRATOR_SKILL = "smart-router-orchestrator"
 
 
 def _skills_source() -> Path:
+    from importlib.metadata import distribution
+
     installed = Path(str(distribution("unity-gateway").locate_file("skills")))
     if installed.is_dir():
         return installed
