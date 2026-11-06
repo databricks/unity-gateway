@@ -14,6 +14,7 @@ import pytest
 from utils.constants import CLAUDE_RELAY_TEST_MODEL, CLAUDE_TEST_MODEL
 from utils.desktop import (
     assert_desktop_mcp,
+    assert_desktop_model_labels,
     desktop_config_library,
     installed_cowork_servers,
     prepare_cowork_home,
@@ -260,6 +261,7 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     assert headers["x-databricks-use-coding-agent-mode"] == "true"
     assert "databricks-model-provider-service" not in headers
     assert CLAUDE_TEST_MODEL in {model["name"] for model in models}
+    assert_desktop_model_labels(session, {CLAUDE_TEST_MODEL: "Claude Haiku 4.5"})
     _assert_desktop_message(
         session,
         profile,
@@ -271,6 +273,9 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     _assert_desktop_selection(config_library, configured=True)
     session.run("mcp", "add", "--names", "system.ai.web_search", timeout=240)
     servers = installed_cowork_servers(session, root)
+    profile["managedMcpServers"] = _desktop_profile(session, config_library, workspace)[
+        "managedMcpServers"
+    ]
     _assert_unrelated_cowork_plugin(root, unrelated_plugin)
     anyio.run(assert_desktop_mcp, session, servers["web_search"], workspace)
 
@@ -374,6 +379,9 @@ def test_ug_configure_claude_desktop_subscription_relay(
     _assert_desktop_selection(config_library, configured=True)
     session.run("mcp", "add", "--names", "system.ai.web_search", timeout=240)
     servers = installed_cowork_servers(session, root)
+    profile["managedMcpServers"] = _desktop_profile(session, config_library, workspace)[
+        "managedMcpServers"
+    ]
     _assert_unrelated_cowork_plugin(root, unrelated_plugin)
     anyio.run(assert_desktop_mcp, session, servers["web_search"], workspace)
 

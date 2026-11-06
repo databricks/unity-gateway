@@ -120,6 +120,16 @@ config can set one for Copilot. `ug copilot --model-location <catalog>.<schema>`
 services of one schema instead: services named like Claude or GPT models use their usual API, and
 the rest go through the gateway's Anthropic endpoint, as for Claude Code.
 
+`ug claude --provider <catalog>.<schema>.<name>` and `ug codex --provider ...` also
+accept custom Model Provider Services. The upstream endpoint must natively support
+Anthropic Messages for Claude or OpenAI Responses for Codex; MPS calls do not translate
+between APIs. Declare those APIs on the service's targets. Custom deployment names are
+preserved and can be selected with `--model`.
+
+For every supported provider, Codex accepts only targets declared with OpenAI Responses
+(`openai/v1/responses`). Restricted services with no compatible targets are hidden from
+the provider picker and rejected when selected explicitly.
+
 `ug codex --provider <catalog>.<schema>.<name>` on an Amazon Bedrock (runtime) service turns off Codex's
 built-in `web_search` for that launch, because Bedrock's Responses API rejects it, and registers the
 `system.ai.web_search` MCP service instead. Nothing is added if that service is already configured
@@ -129,6 +139,13 @@ Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
 to select another model source; managed workspace configs control their own sources.
+`ug claude --provider <catalog>.<schema>.<name>` also supports Claude deployments on
+Microsoft Foundry. For every provider, Claude uses only targets declared with Anthropic Messages
+(`anthropic/v1/messages`); MPS requests do not translate other APIs to Messages. Restricted
+services with no compatible targets are rejected. Deployment names are passed unchanged.
+When no target identifies a Claude family, the first compatible target becomes the default.
+Use `--model <deployment>` to select another deployment or a model on an allow-all service
+without declared targets.
 Interactive `ug configure` also offers a **Custom Model Location** (`<catalog>.<schema>`) for
 Claude Code, Codex and Copilot alongside Databricks Hosted and External Models. The choice is saved
 with the rest of the configuration, so later `ug claude` / `ug codex` / `ug copilot` launches use it; an
@@ -159,7 +176,17 @@ ug configure --agents claude,codex
 ug configure --workspace https://first.databricks.com
 ug configure --profile DEFAULT --agents claude,codex
 ug configure --user
+ug configure --agent claude --model-location main.models
+ug configure --agents claude,codex --provider main.default.anthropic
 ```
+
+`--model-location <catalog>.<schema>` and `--provider <catalog>.<schema>.<name>` pick the model
+source without the interactive picker, so a script can configure it. `--model-location` applies to
+Claude Code, Codex, and Copilot (CLI and VS Code); `--provider` also applies to Gemini CLI. Either
+needs `--agent`/`--agents`, and they cannot be combined. Cursor may share the run but takes no
+source. The choice is saved for later launches, and each one replaces the other. A bad Copilot
+source fails before anything is saved. A managed config that enables agents names the source itself
+and rejects both flags.
 
 By default, `ug configure` writes both the per-user settings and the machine-wide Claude Code and
 Codex managed settings with sudo, with or without a terminal: run headless as root (or with

@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
+from utils.desktop import desktop_config_library
 from utils.evidence import fresh_id
 from utils.harness import UserSession
 from utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
@@ -191,6 +192,18 @@ def claude_provider():
     return os.environ["UG_INTEGRATION_CLAUDE_PROVIDER"]
 
 
+@pytest.fixture
+def desktop_cli_profile(live_session, workspace):
+    # A pre-existing Desktop directory and CLI profile are user-owned scenario inputs.
+    desktop_config_library(live_session).mkdir(parents=True)
+    profile = "desktop-model-labels"
+    Path(live_session.env["DATABRICKS_CONFIG_FILE"]).write_text(
+        f"[{profile}]\nhost = {workspace}\nauth_type = databricks-cli\n",
+        encoding="utf-8",
+    )
+    return profile
+
+
 @pytest.fixture(scope="session")
 def claude_relayed_provider():
     return os.environ["UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER"]
@@ -200,6 +213,21 @@ def claude_relayed_provider():
 def claude_bedrock_provider():
     # A Bedrock MPS that restricts its allowed models to an explicit set (Sonnet + Opus).
     return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def claude_foundry_provider():
+    return os.environ["UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def claude_foundry_provider_model():
+    return os.environ["UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def claude_foundry_provider_default_model():
+    return os.environ["UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER_DEFAULT_MODEL"]
 
 
 @pytest.fixture(scope="session")
@@ -213,6 +241,16 @@ def claude_oauth_token():
             "Set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) to run the relayed CUJ."
         )
     return token
+
+
+@pytest.fixture(scope="session")
+def claude_custom_provider():
+    return os.environ["UG_INTEGRATION_CLAUDE_CUSTOM_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def claude_custom_provider_model():
+    return os.environ["UG_INTEGRATION_CLAUDE_CUSTOM_PROVIDER_MODEL"]
 
 
 @pytest.fixture(scope="session")
@@ -231,6 +269,17 @@ def claude_bedrock_allow_all_provider():
 def claude_bedrock_allow_all_model():
     # An allow_all service declares no targets, so a launch must name the Bedrock model id itself.
     return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def claude_bedrock_mantle_provider():
+    # A Bedrock Mantle MPS (allow_all, UC service credential) that serves Claude.
+    return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_MANTLE_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def claude_bedrock_mantle_model():
+    return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_MANTLE_MODEL"]
 
 
 @pytest.fixture(scope="session")
@@ -270,6 +319,16 @@ def antigravity_provider_models():
 @pytest.fixture(scope="session")
 def codex_provider():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_custom_provider():
+    return os.environ["UG_INTEGRATION_CODEX_CUSTOM_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_custom_provider_model():
+    return os.environ["UG_INTEGRATION_CODEX_CUSTOM_PROVIDER_MODEL"]
 
 
 @pytest.fixture(scope="session")

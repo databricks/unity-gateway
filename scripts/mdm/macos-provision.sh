@@ -9,7 +9,7 @@
 #   UG_SKIP_OS_SETTINGS=1 ug claude    (or: ug codex)
 #
 # Jamf parameters ($1-$3 are reserved by Jamf):
-#   $4  Databricks workspace URL, e.g. https://myws.cloud.databricks.com
+#   $4  Databricks workspace URL, starting with https://
 #   $5  Service principal OAuth client id
 #   $6  Service principal OAuth client secret
 #
@@ -31,6 +31,8 @@ CLI_URL="$CLI_URL/databricks/setup-cli/main/install.sh"
 CLT_MARKER=/tmp/.com.apple.dt.CommandLineTools
 CLT_MARKER="$CLT_MARKER.installondemand.in-progress"
 
+# ug must be in a shared path: the machine-wide agent settings
+# run it by absolute path for every user.
 export UV_TOOL_DIR="$PREFIX/tools"
 export UV_TOOL_BIN_DIR=/usr/local/bin
 export UV_PYTHON_INSTALL_DIR="$PREFIX/python"
@@ -57,6 +59,10 @@ if [ ! -x /usr/local/bin/databricks ]; then
   curl -fsSL "$CLI_URL" | sh
 fi
 
+# Download into a private temporary directory, not fixed /tmp paths
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
 # Install Claude Code
 if [ ! -x /usr/local/bin/claude ]; then
   case "$(uname -m)" in
@@ -67,10 +73,9 @@ if [ ! -x /usr/local/bin/claude ]; then
   base="$CLAUDE_RELEASES/$version"
   checksum="$(curl -fsSL "$base/manifest.json" \
     | plutil -extract "platforms.$platform.checksum" raw -o - -)"
-  curl -fsSL -o /tmp/claude "$base/$platform/claude"
-  echo "$checksum  /tmp/claude" | shasum -a 256 -c -
-  install -m 755 /tmp/claude /usr/local/bin/claude
-  rm -f /tmp/claude
+  curl -fsSL -o "$tmp/claude" "$base/$platform/claude"
+  echo "$checksum  $tmp/claude" | shasum -a 256 -c -
+  install -m 755 "$tmp/claude" /usr/local/bin/claude
 fi
 
 # Install Codex
@@ -80,9 +85,8 @@ if [ ! -x /usr/local/bin/codex ]; then
     *) target=x86_64-apple-darwin ;;
   esac
   curl -fsSL "$CODEX_RELEASES/codex-$target.tar.gz" \
-    | tar -xzf - -C /tmp "codex-$target"
-  install -m 755 "/tmp/codex-$target" /usr/local/bin/codex
-  rm -f "/tmp/codex-$target"
+    | tar -xzf - -C "$tmp" "codex-$target"
+  install -m 755 "$tmp/codex-$target" /usr/local/bin/codex
 fi
 
 # Get short lived credential; curl reads the client id and secret from
@@ -90,7 +94,7 @@ fi
 resp="$(printf 'user = "%s:%s"\n' "$5" "$6" \
   | curl -sS -K - \
       -d grant_type=client_credentials \
-      -d scope=all-apis \
+      --data-urlencode 'scope=ai-gateway:read unity-catalog:read' \
       "$WORKSPACE/oidc/v1/token")"
 if ! DATABRICKS_BEARER="$(printf '%s' "$resp" \
     | plutil -extract access_token raw -o - -)"; then
@@ -99,4 +103,5 @@ if ! DATABRICKS_BEARER="$(printf '%s' "$resp" \
 fi
 export DATABRICKS_BEARER
 
-ug configure --workspace "$WORKSPACE" --agents claude,codex </dev/null
+ug configure --global --workspace "$WORKSPACE" \
+  --agents claude,codex </dev/null

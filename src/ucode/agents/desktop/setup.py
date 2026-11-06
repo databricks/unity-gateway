@@ -6,7 +6,9 @@ import os
 import re
 import shutil
 import sys
+from collections import Counter
 
+from ucode.agents.copilot import claude_model_name
 from ucode.agents.desktop.claude import (
     claude_desktop_directory,
     revert_claude_desktop,
@@ -20,6 +22,7 @@ from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_
 from ucode.databricks import build_tool_base_url, get_databricks_token, list_anthropic_model_catalog
 from ucode.managed_files import machine_wide_only
 from ucode.state import get_provider_service
+from ucode.string_utils import model_picker_label
 from ucode.ui import print_note, print_success, print_warning
 from ucode.workspace import workspace_headers, workspace_id_args
 
@@ -61,7 +64,9 @@ def configure_claude_code_plugin(mcp_servers: list[dict]) -> None:
         print_success("Claude Code connector plugin configured. Start a new Code session.")
 
 
-def configure_claude_cowork(state: dict, mcp_servers: list[dict]) -> None:
+def configure_claude_cowork(
+    state: dict, mcp_servers: list[dict], *, sync_plugin: bool = True
+) -> None:
     if sys.platform not in ("darwin", "win32", "linux"):
         return
     if machine_wide_only():
@@ -71,7 +76,7 @@ def configure_claude_cowork(state: dict, mcp_servers: list[dict]) -> None:
         print_note("Would configure Claude Cowork workspace skills and MCP servers.")
         return
     try:
-        configured = configure_cowork(state, mcp_servers)
+        configured = configure_cowork(state, mcp_servers, sync_plugin=sync_plugin)
     except Exception as exc:  # noqa: BLE001 -- Cowork must not block Claude Code setup
         print_warning(
             f"Could not configure Claude Desktop workspace plugin: {exc}. Claude Code setup is unchanged."
@@ -132,12 +137,10 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
     )
     if static_models:
         model_ids = static_models
-        display_names = catalog.model_id_to_display_name
     else:
         if not catalog.model_ids:
             raise RuntimeError(catalog.error_msg or "Gateway model discovery returned no models.")
         model_ids = catalog.model_ids
-        display_names = catalog.model_id_to_display_name
 
     model_ids = [model_id for model_id in model_ids if _CLAUDE_MODEL_PATTERN.search(model_id)]
     if not model_ids:
@@ -145,6 +148,18 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
             "No Claude-family models found for Desktop. "
             "Add a Claude model to your model source and run ug configure again."
         )
+
+    display_names = {}
+    for model_id in model_ids:
+        label = catalog.model_id_to_display_name.get(model_id)
+        if not label or label == model_id:
+            label = model_picker_label(claude_model_name(model_id))
+        display_names[model_id] = label
+    label_counts = Counter(display_names.values())
+    display_names = {
+        model_id: model_id if label_counts[label] > 1 else label
+        for model_id, label in display_names.items()
+    }
 
     headers = {"x-databricks-use-coding-agent-mode": "true"}
     if provider:
