@@ -60,6 +60,8 @@ class TestClassifyCopilotModel:
             ("system.ai.kimi-k3-1-pro", "completions"),
             ("system.ai.deepseek-v4-1-flash-1017", "completions"),
             ("databricks-glm-5-3-flash-scale", "completions"),
+            ("system.ai.kimi-k3-neo", "completions"),
+            ("system.ai.glm-9", "completions"),
         ],
     )
     def test_names_decide_the_wire(self, model, wire):
@@ -72,9 +74,6 @@ class TestClassifyCopilotModel:
             ("system.ai.gpt-oss-120b", "Claude, GPT, GLM, Kimi and DeepSeek"),
             ("system.ai.meta-llama-3-3-70b-instruct", "Claude, GPT"),
             ("system.ai.gte-large-en", "Claude, GPT"),
-            ("system.ai.deepseek-v4-1-flash", "isn't validated"),
-            ("system.ai.kimi-k3-neo", "isn't validated"),
-            ("system.ai.glm-9", "isn't validated"),
             ("system.ai.claude-opus-4-1", "thinking"),
             ("anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol", "alias"),
         ],
@@ -214,6 +213,7 @@ class TestCatalogFromListings:
             ("system.ai.claude-opus-4-8", "anthropic"),
             ("system.ai.deepseek-v4-1-flash-1017", "completions"),
             ("system.ai.glm-5-2", "completions"),
+            ("system.ai.kimi-k3-neo", "completions"),
         ]
 
     def test_open_models_dont_stand_in_for_a_missing_gpt_family(self):
@@ -820,17 +820,13 @@ class TestCopilotModelLimits:
         assert copilot.catalog_model_limits(copilot.CopilotModel(GPT, "responses")) is None
 
     @pytest.mark.parametrize(
-        "model", ["system.ai.glm-5-3", "system.ai.kimi-k3-1-pro", "deepseek-v4-1-flash-1017"]
+        "model",
+        ["system.ai.glm-5-3", "system.ai.kimi-k3-1-pro", "deepseek-v4-1-flash", "glm-9"],
     )
     def test_open_models_keep_the_prompt_well_inside_their_window(self, model):
         limits = copilot.catalog_model_limits(copilot.CopilotModel(model, "completions"))
 
         assert limits == (687_000, 32_000)
-
-    def test_unvalidated_open_models_keep_copilots_defaults(self):
-        model = copilot.CopilotModel("deepseek-v4-1-flash", "completions")
-
-        assert copilot.catalog_model_limits(model) is None
 
     def test_a_listed_output_that_fills_the_window_is_ignored(self):
         model = copilot.CopilotModel(SONNET, "anthropic", (64_000, 64_000))

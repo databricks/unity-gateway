@@ -6,16 +6,16 @@ model Copilot can use,
 so `/model` switches between them mid-session, across wire APIs. Each family keeps its native
 wire: Claude on the gateway's Anthropic endpoint (with Copilot's catalog id as `modelId`, so
 Copilot sends Claude request settings), GPT 5+ on Responses (Copilot sends `temperature: 0` on Chat
-Completions, which those models reject), older GPT on Chat Completions. Open models validated with
-Copilot (GLM, Kimi and DeepSeek, see `_OPEN_MODELS`) use Chat Completions, the one chat API they
-all serve. Gemini and other open models are excluded: Databricks' Gemini translation rejects the
-`stream_options` field Copilot sends, and the others aren't validated with Copilot yet.
+Completions, which those models reject), older GPT on Chat Completions. GLM, Kimi and DeepSeek
+models use Chat Completions, the one chat API all of them serve. Gemini and other open models are
+excluded: Databricks' Gemini translation rejects the `stream_options` field Copilot sends, and the
+others aren't validated with Copilot yet.
 
 `ug copilot --provider` registers a Model Provider Service's models instead: its Claude models on
 the Anthropic endpoint, its other chat models on the gateway's native OpenAI route, with every
 registry provider sending the service's routing header. `ug copilot --model-location` registers
-the model services of one Unity Catalog schema: those named like Claude, GPT or validated open
-models on their usual wire, the rest on the Anthropic endpoint like Claude Code, which the gateway
+the model services of one Unity Catalog schema: those named like Claude, GPT, GLM, Kimi or
+DeepSeek models on their usual wire, the rest on the Anthropic endpoint like Claude Code, which the gateway
 translates.
 
 Copilot holds its provider credential for the whole session, so every provider points at a
@@ -167,22 +167,10 @@ _CLAUDE_CATALOG_VERSION_PATTERN = re.compile(r"^claude-([a-z]+)-(\d+)(?:\.(\d+))
 _CLAUDE_1M_TOKENS = (1_000_000, 128_000)
 _CLAUDE_200K_TOKENS = (200_000, 32_000)
 
-# Open models validated with Copilot, by name.
-_OPEN_MODELS = frozenset(
-    {
-        "glm-5-2",
-        "glm-5-3",
-        "glm-5-3-flash",
-        "glm-5-3-flash-scale",
-        "kimi-k3",
-        "kimi-k3-1-pro",
-        "deepseek-v4-1-flash-1017",
-        "deepseek-v4-1-flash-scale",
-    }
-)
 _OPEN_MODEL_PATTERN = re.compile(r"^(?:glm|kimi|deepseek)-")
-# (max_input_tokens, max_tokens), so Copilot's prompt is 687K: their window is 1,048,576 tokens,
-# but Copilot counts tokens like GPT, and how far that under-counts their tokenizers is unmeasured.
+# (max_input_tokens, max_tokens), so Copilot's prompt is 687K: the GLM, Kimi and DeepSeek models
+# served today take 1,048,576 tokens, but Copilot counts tokens like GPT, and how far that
+# under-counts their tokenizers is unmeasured.
 _OPEN_MODEL_TOKENS = (687_000 + 32_000, 32_000)
 
 # Copilot compacts its history and retries only when an error calls the prompt too long in words it
@@ -241,9 +229,7 @@ def classify_model(
     if wire is None:
         if "gemini-" in tail:
             return None, "the gateway rejects the requests Copilot sends to Gemini models"
-        if tail not in _OPEN_MODELS:
-            if _OPEN_MODEL_PATTERN.match(tail):
-                return None, "it isn't validated with ug copilot yet"
+        if not _OPEN_MODEL_PATTERN.match(tail):
             return None, "ug copilot supports Claude, GPT, GLM, Kimi and DeepSeek models"
         wire = WIRE_COMPLETIONS
     if declared and not set(declared) & set(_WIRE_ROUTES[wire]):
@@ -319,7 +305,7 @@ def catalog_model_limits(model: CopilotModel) -> tuple[int, int] | None:
 
     The limits are the ones the gateway listed for the model, else Claude's or an open model's by
     name; the prompt leaves room for the output."""
-    open_limits = _OPEN_MODEL_TOKENS if bare_model_name(model.id) in _OPEN_MODELS else None
+    open_limits = _OPEN_MODEL_TOKENS if is_open_model(model.id) else None
     limits = model.listed_limits or claude_token_limits(model.id) or open_limits
     if limits is None or limits[0] <= limits[1]:
         return None

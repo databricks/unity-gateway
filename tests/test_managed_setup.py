@@ -340,15 +340,17 @@ class TestModelOptions:
             assert "system.ai.gemini-3-flash" in options, tool
             assert "system.ai.kimi-k2-6" in options, tool
 
-    def test_copilot_sees_only_claude_and_gpt(self):
+    def test_copilot_sees_claude_gpt_and_open_models_but_not_gemini(self):
         options = model_options_for_agent("copilot", STATE)
         assert "system.ai.claude-opus-4-8" in options
         assert "system.ai.gpt-5-6" in options
+        assert "system.ai.kimi-k2-6" in options
         assert "system.ai.gemini-3-flash" not in options
-        assert "system.ai.kimi-k2-6" not in options
 
-    def test_copilot_sees_the_open_models_validated_with_it(self):
-        state = {"oss_models": ["system.ai.kimi-k3", "system.ai.kimi-k2-6", "system.ai.glm-5-3"]}
+    def test_copilot_sees_glm_kimi_and_deepseek(self):
+        state = {
+            "oss_models": ["system.ai.kimi-k3", "system.ai.qwen3-next-80b", "system.ai.glm-5-3"]
+        }
 
         assert model_options_for_agent("copilot", state) == [
             "system.ai.kimi-k3",
