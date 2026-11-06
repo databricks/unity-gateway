@@ -153,3 +153,148 @@ def test_ug_configure_claude_bedrock_mps(live_session, workspace, claude_bedrock
     task.assert_completed(session, "claude")
     assert_completed_task_model(session, "claude", task.value, BEDROCK_SONNET_RESPONSE_MODEL)
     session.assert_not_routed()
+
+
+@pytest.mark.usefixtures("unmanaged_workspace")
+def test_ug_configure_claude_bedrock_mantle_mps(
+    live_session, workspace, claude_bedrock_mantle_provider, claude_bedrock_mantle_model
+):
+    """Scenario: select the Bedrock Mantle MPS in ug configure, then launch Claude on Opus 5.5.
+
+    Expected: ug saves the provider, and an interactive launch without --provider completes
+    a file-reading task on the selected Mantle model, exits normally, and leaves routing off.
+    """
+    session = live_session
+    task = FileTask(session)
+    session.record("model.json", {"model": claude_bedrock_mantle_model})
+    command = [
+        str(session.binary),
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    ]
+    with ConfigureTerminal(session, "claude", command, "configure-mantle-provider") as configure:
+        configure.select_agent("Claude Code")
+        configure.choose("How should Claude Code get its models?", "External Models")
+        configure.choose("Select a model provider service:", claude_bedrock_mantle_provider)
+        configure.finish(timeout=240)
+    assert (
+        session.workspace_state()["provider_services"]["claude"] == claude_bedrock_mantle_provider
+    )
+    assert claude_bedrock_mantle_provider in session.run("status").stdout
+    settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
+    assert (
+        f"Databricks-Model-Provider-Service: {claude_bedrock_mantle_provider}"
+        in settings["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+    )
+
+    command = [str(session.binary), "claude", "--model", claude_bedrock_mantle_model]
+    with AgentTerminal(session, "claude", command, "mantle-provider-session") as tui:
+        tui.boot()
+        tui.submit(task.prompt)
+        tui.wait_for_task(task, timeout=300)
+        tui.exit_normally()
+    task.assert_completed(session, "claude")
+    assert_completed_task_model(
+        session, "claude", task.value, claude_bedrock_mantle_model.removeprefix("anthropic.")
+    )
+    session.assert_not_routed()
+
+
+@pytest.mark.usefixtures("unmanaged_workspace")
+def test_ug_configure_claude_foundry_mps(
+    live_session,
+    workspace,
+    claude_foundry_provider,
+    claude_foundry_provider_model,
+    claude_foundry_provider_default_model,
+):
+    """Scenario: choose Foundry in ug configure, then launch plain ug claude.
+
+    Expected: the provider appears in the real picker and is saved. Claude uses the
+    saved provider and its allowed Sonnet deployment without an explicit model, completes
+    a file-reading task in the TUI, and exits normally with smart routing disabled.
+    """
+    session = live_session
+    task = FileTask(session)
+    session.record("model.json", {"model": claude_foundry_provider_default_model})
+    command = [
+        str(session.binary),
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    ]
+    with ConfigureTerminal(session, "claude", command, "configure-foundry-provider") as configure:
+        configure.select_agent("Claude Code")
+        configure.choose("How should Claude Code get its models?", "External Models")
+        configure.choose("Select a model provider service:", claude_foundry_provider)
+        configure.finish(timeout=240)
+    assert session.workspace_state()["provider_services"]["claude"] == claude_foundry_provider
+    assert claude_foundry_provider in session.run("status").stdout
+    settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
+    assert settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == claude_foundry_provider_model
+    assert (
+        settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == claude_foundry_provider_default_model
+    )
+
+    with AgentTerminal(
+        session, "claude", [str(session.binary), "claude"], "foundry-provider-session"
+    ) as tui:
+        tui.boot()
+        tui.submit(task.prompt)
+        tui.wait_for_task(task, timeout=300)
+        tui.exit_normally()
+    task.assert_completed(session, "claude")
+    assert_completed_task_model(
+        session, "claude", task.value, claude_foundry_provider_default_model
+    )
+    session.assert_not_routed()
+
+
+@pytest.mark.usefixtures("unmanaged_workspace")
+def test_ug_configure_claude_custom_foundry_mps(
+    live_session, workspace, claude_custom_provider, claude_custom_provider_model
+):
+    """Scenario: select a custom Foundry MPS in ug configure, then launch plain ug claude.
+
+    Expected: the real picker saves the provider and its Sonnet default. Claude uses that
+    saved provider without launch overrides, reads a local file in the TUI, returns its
+    unknown value on the expected deployment, and exits normally without smart routing.
+    """
+    session = live_session
+    task = FileTask(session)
+    session.record("model.json", {"model": claude_custom_provider_model})
+    command = [
+        str(session.binary),
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    ]
+    with ConfigureTerminal(session, "claude", command, "configure-custom-provider") as configure:
+        configure.select_agent("Claude Code")
+        configure.choose("How should Claude Code get its models?", "External Models")
+        configure.choose("Select a model provider service:", claude_custom_provider)
+        configure.finish(timeout=240)
+    assert session.workspace_state()["provider_services"]["claude"] == claude_custom_provider
+    assert claude_custom_provider in session.run("status").stdout
+    settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
+    assert settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == claude_custom_provider_model
+    headers = settings["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+    assert f"Databricks-Model-Provider-Service: {claude_custom_provider}" in headers
+
+    with AgentTerminal(
+        session, "claude", [str(session.binary), "claude"], "custom-provider-session"
+    ) as tui:
+        tui.boot()
+        tui.submit(task.prompt)
+        tui.wait_for_task(task, timeout=300)
+        tui.exit_normally()
+    task.assert_completed(session, "claude")
+    assert_completed_task_model(session, "claude", task.value, claude_custom_provider_model)
+    session.assert_not_routed()
