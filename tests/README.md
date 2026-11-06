@@ -2,7 +2,7 @@
 
 `test_databricks.py` covers the bounded `system.ai` gateway probe, complete-page
 reuse by model discovery, uncached pagination, complete/paginated credential transitions,
-cache-hit credential switches, immediate token
+cache-hit credential switches, token-checked metadata access, immediate token
 and workspace-selection rejection, one retry budget for persistent transient scoped
 failures, and unscoped fallback
 when system models are unavailable. These are

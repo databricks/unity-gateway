@@ -739,7 +739,7 @@ class TestDiscoverModelServices:
         assert ids == ["system.ai.gpt-5"]
         assert calls["n"] == 3  # two failures, third succeeds
 
-    def test_entries_keep_the_advertised_api_types(self, monkeypatch):
+    def test_entries_keep_api_types_and_bind_cache_to_credential(self, monkeypatch):
         service = {
             **_model_service("system.ai.gte-large-en"),
             "supported_api_types": ["mlflow/v1/embeddings", 3],
@@ -748,7 +748,14 @@ class TestDiscoverModelServices:
         monkeypatch.setattr(
             db_mod,
             "_get_model_services_page",
-            lambda url, token: ({"model_services": [service]}, None),
+            lambda url, token: (
+                {
+                    "model_services": [service]
+                    if token == "token"
+                    else [_model_service("system.ai.gpt-5")]
+                },
+                None,
+            ),
         )
 
         entries, reason = db_mod.list_model_service_entries(WS, "token")
@@ -757,7 +764,13 @@ class TestDiscoverModelServices:
         assert entries == [
             db_mod.ModelServiceEntry("system.ai.gte-large-en", ("mlflow/v1/embeddings",))
         ]
-        assert db_mod.cached_model_service_entries(WS) == entries
+        assert db_mod.cached_model_service_entries(WS, "token") == entries
+        assert db_mod.cached_model_service_entries(WS, "other-token") is None
+        # Changing credentials through discovery alone must evict the previous catalog too.
+        other_entries, reason = db_mod.list_model_service_entries(WS, "other-token")
+        assert reason is None
+        assert other_entries == [db_mod.ModelServiceEntry("system.ai.gpt-5")]
+        assert db_mod.cached_model_service_entries(WS, "token") is None
 
     def test_failed_listing_is_not_cached(self, monkeypatch):
         monkeypatch.setattr(
@@ -765,7 +778,7 @@ class TestDiscoverModelServices:
         )
 
         assert db_mod.list_model_service_entries(WS, "token") == ([], "HTTP 503")
-        assert db_mod.cached_model_service_entries(WS) is None
+        assert db_mod.cached_model_service_entries(WS, "token") is None
 
 
 class TestModelServiceExists:
@@ -3713,7 +3726,7 @@ class TestSystemModelServiceProbe:
         assert db_mod.probe_unity_gateway_capabilities(WS, "token").resource_available
         # Static-model and provider launches need only the probe, regardless of page count.
         assert len(calls) == 1
-        assert db_mod.cached_model_service_entries(WS) is None
+        assert db_mod.cached_model_service_entries(WS, "token") is None
 
         entries, reason = db_mod.list_model_service_entries(WS, "token")
         assert reason is None
@@ -3751,7 +3764,7 @@ class TestSystemModelServiceProbe:
         assert len(calls) == 2
         assert "parent=schemas%2Fsystem.ai" in calls[0]
         assert calls[1].endswith("?page_size=50")
-        assert db_mod.cached_model_service_entries(WS) is None
+        assert db_mod.cached_model_service_entries(WS, "token") is None
 
     @pytest.mark.parametrize(
         "reason",
@@ -3791,7 +3804,7 @@ class TestSystemModelServiceProbe:
 
         assert len(calls) == db_mod._MODEL_SERVICE_PROBE_MAX_RETRIES + 1
         assert all("parent=schemas%2Fsystem.ai" in url for url in calls)
-        assert db_mod.cached_model_service_entries(WS) is None
+        assert db_mod.cached_model_service_entries(WS, "token") is None
 
     @pytest.mark.parametrize("second_is_paginated", [False, True])
     def test_new_credential_reprobes_and_replaces_complete_listing(
@@ -3826,7 +3839,7 @@ class TestSystemModelServiceProbe:
         assert len(calls) == before_cached_probe
         expected_first = [db_mod.ModelServiceEntry("system.ai.first")]
         assert db_mod.list_model_service_entries(WS, "first") == (expected_first, None)
-        assert db_mod.cached_model_service_entries(WS) == expected_first
+        assert db_mod.cached_model_service_entries(WS, "first") == expected_first
 
 
 class TestProbeUnityGatewayCapabilities:

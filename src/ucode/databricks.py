@@ -2342,10 +2342,10 @@ def _discard_model_services_for_other_token(workspace: str, token: str) -> None:
 _MODEL_PROVIDER_SERVICES_CACHE: dict[tuple[str, str], list[dict]] = {}
 
 
-def cached_model_service_entries(workspace: str) -> list[ModelServiceEntry] | None:
-    """The model services this process already listed for ``workspace``, without a request."""
+def cached_model_service_entries(workspace: str, token: str) -> list[ModelServiceEntry] | None:
+    """Model services already listed with this workspace and credential, without a request."""
     cached = _MODEL_SERVICES_CACHE.get(workspace)
-    return list(cached.entries) if cached is not None else None
+    return list(cached.entries) if cached is not None and cached.token == token else None
 
 
 def clear_model_services_cache() -> None:
