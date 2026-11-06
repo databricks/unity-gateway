@@ -1,9 +1,5 @@
 # Integration tests
 
-`../test_databricks.py` covers direct named-provider lookup, compatibility checks
-and listing fallback at controlled API boundaries. No live request-count or
-latency result is claimed.
-
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They
