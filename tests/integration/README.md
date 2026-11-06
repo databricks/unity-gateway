@@ -1,5 +1,11 @@
 # Integration tests
 
+Provider target component tests filter Claude targets by Messages API metadata across
+Anthropic, Bedrock, Mantle, and Foundry, preserving custom deployment names. They cover
+the generic empty-target error, `allow_all_targets` bypass, and custom defaults through
+configuration and launch with explicit overrides. Other tools retain existing filtering.
+These are component checks; custom deployment names have no live integration coverage.
+
 The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
 service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
 It replaces the obsolete stdio-only expectation; this checks configuration, not live login.
@@ -675,8 +681,8 @@ unacquired handles. Paths use temporary homes across simulated macOS, Windows, a
 including relocated/default Windows Local AppData, missing apps, invalid paths, creation
 failures, and parent-metadata preservation.
 
-Rendering tests cover the exact profile fields without `_comment`, complete model IDs,
-order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
+Rendering tests cover the exact profile fields (manual import enabled, no `_comment`),
+complete model IDs, order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
 are removed on replacement. Shared managed-header parsing retains its pre-Desktop behavior;
 the extra header-validation tests were removed with that out-of-scope parser change.
 The default-model warning assertion was removed because that limitation is documented
@@ -686,8 +692,8 @@ canonicalization tests are replaced by reserved-file replacement/deletion covera
 Reconfigure tests remove the legacy `_comment` field while preserving unrelated profiles,
 metadata, and previous-selection state, and verify subsequent configure is a no-op.
 Existing CLI URL normalization is unchanged. Native Desktop activation,
-GUI/helper/browser behavior, and inference remain untested by these component checks;
-they do not establish native Windows or Linux support.
+GUI/helper/browser behavior, project and chat import, and inference remain untested
+by these component checks; they do not establish native Windows or Linux support.
 
 `../test_file_lock_cross_os.py` tests the shared timeout mechanism used by Desktop:
 real contention, preserving the holder on timeout, and successful acquisition after
@@ -986,6 +992,15 @@ remains uncovered.
 MPS CUJs select the existing services already used by e2e:
 
 - Claude: `main.ucode.ci_e2e_anthropic_nonrelay_mps`.
+- Claude (Microsoft Foundry): `main.ucode.ci_foundry_claude_mps` declares
+  `claude-haiku-5-5` and `claude-sonnet-5-5` on `anthropic/v1/messages`, plus
+  `gpt-5.4` on `openai/v1/responses`. `test_ug_claude_fresh_foundry_mps`
+  completes a headless file task from fresh state with an explicit provider and Haiku deployment.
+  `test_ug_configure_claude_foundry_mps` selects the service through the real configure picker,
+  verifies the saved provider and both family defaults, and completes a Sonnet TUI file task with plain
+  `ug claude`. Override these inputs with `--claude-foundry-provider` and
+  `--claude-foundry-provider-model` (Haiku), and `--claude-foundry-provider-default-model`
+  (Sonnet). Both journeys run in the full Claude lanes on Linux and Windows.
 - Claude (relayed hybrid): `main.ucode.ci_e2e_anthropic_relay_mps`, which also
   requires `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) so the relayed
   launch runs headless instead of opening a browser login.

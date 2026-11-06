@@ -564,6 +564,19 @@ class TestRenderOverlay:
             in env["ANTHROPIC_CUSTOM_HEADERS"]
         )
 
+    @pytest.mark.parametrize("explicit_model", [None, "backup-coding"])
+    def test_custom_provider_default_preserves_explicit_model(self, explicit_model):
+        overlay, _ = claude.render_overlay(
+            WS,
+            None,
+            provider="main.default.custom",
+            provider_models={"default": "team-coding"},
+            route_root_model=explicit_model,
+        )
+
+        assert overlay["env"]["ANTHROPIC_MODEL"] == (explicit_model or "team-coding")
+        assert not any(key.startswith("ANTHROPIC_DEFAULT_") for key in overlay["env"])
+
     def test_non_relayed_provider_pins_tier_via_anthropic_model(self):
         # A non-relayed api-key Anthropic MPS launched on a specific tier: the tier
         # rides ANTHROPIC_MODEL (route_root_model), the routing header selects the
@@ -2052,7 +2065,18 @@ class TestWriteToolConfigManagedSettings:
             assert written["companyPolicy"] == "keep"
         assert (["modelPicker"] in updated["managed_configs"]["claude"]["keys"]) is with_catalog
 
-    def test_managed_file_keeps_provider_model_pins(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("models", "env_key", "expected"),
+        [
+            (
+                {"opus": "us.anthropic.claude-opus-4-6"},
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "us.anthropic.claude-opus-4-6",
+            ),
+            ({"default": "team-coding"}, "ANTHROPIC_MODEL", "team-coding"),
+        ],
+    )
+    def test_managed_file_keeps_provider_model_pins(self, monkeypatch, models, env_key, expected):
         private_writes: list = []
         managed_writes: list = []
         self._patch(monkeypatch, private_writes, managed_writes)
@@ -2062,11 +2086,11 @@ class TestWriteToolConfigManagedSettings:
             state,
             None,
             provider="main.default.bedrock",
-            provider_models={"opus": "us.anthropic.claude-opus-4-6"},
+            provider_models=models,
         )
 
         env = json.loads(managed_writes[0][1])["env"]
-        assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "us.anthropic.claude-opus-4-6"
+        assert env[env_key] == expected
 
     def test_managed_file_prunes_static_picker_when_switching_to_provider(self, monkeypatch):
         private_writes: list = []
