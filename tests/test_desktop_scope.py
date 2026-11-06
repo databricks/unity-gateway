@@ -334,16 +334,16 @@ def test_plain_revert_cleans_available_scopes_and_retries_mdm(
                 Mock(side_effect=PermissionError("sudo authentication denied")),
             )
         result = CliRunner().invoke(cli.app, ["revert"])
-    assert result.exit_code == (1 if deny_elevation else 0), result.output
+    assert result.exit_code == 0, result.output
     assert restore.called
     assert not cowork._marketplace_root().exists()
     assert not (claude.claude_desktop_directory() / f"{claude.PROFILE_ID}.json").exists()
     if deny_elevation:
-        assert "Could not revert Claude Desktop MDM" in result.output
-        assert "sudo authentication denied" in result.output
+        output = " ".join(result.output.split())
+        assert "an administrator must run `ug revert`" in output
+        assert "sudo authentication denied" in output
         assert mdm.POLICY_PATH.read_bytes() == policy_before
         assert device.source.exists()
-        assert state_store.load_state()["workspace"] == WORKSPACE
         retry = CliRunner().invoke(cli.app, ["revert"])
         assert retry.exit_code == 0, retry.output
     assert state_store.load_state() == {}

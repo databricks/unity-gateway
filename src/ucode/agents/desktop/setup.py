@@ -228,10 +228,10 @@ def revert_claude_desktop_mdm() -> str:
 
     try:
         return "removed" if mdm.remove() else "unchanged"
-    except ManagedFileWriteUnavailable:
+    except ManagedFileWriteUnavailable as exc:
         print_warning(
-            "Claude Desktop MDM is installed machine-wide; an administrator must run "
-            "`ug revert` to remove it."
+            f"Claude Desktop MDM is installed machine-wide; an administrator must run "
+            f"`ug revert` to remove it ({exc})."
         )
         return "skipped"
     except Exception as exc:  # noqa: BLE001 -- Preserve other revert operations on failure
