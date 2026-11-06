@@ -28,6 +28,24 @@ the customer's MDM process. Explicit-agent, selected-agent, and managed configur
 flows all set up Desktop after successful Claude Code configuration. Ordinary agent
 launches and `ug agents add` do not configure Desktop.
 
+## Import existing projects and chats
+
+UG enables Claude Desktop's import wizard with `claudeAiImport.enabled: true`.
+After configuring and reopening Desktop, go to **Settings → Import & export → Import…**.
+Sign in to claude.ai and fetch your export, or choose a downloaded export ZIP,
+then review and import. For Team or Enterprise workspaces, a workspace owner must
+enable member data export first.
+
+Projects, chats, and custom project instructions are copied locally. Accept imported
+instructions before using them. Personal/member exports omit uploaded project knowledge
+files and conversation attachments; add those separately. If an imported project has a
+folder, add it again through **Context → + → Choose a folder → Choose a different folder**
+and start a new chat to let Claude read it.
+
+Import is a one-time copy that you start explicitly. Original data stays intact,
+and later activity on claude.ai requires another import. See Anthropic's
+[import guide](https://claude.com/docs/third-party/claude-desktop/import) for details.
+
 ## Code tab connector guidance
 
 `ug configure` also installs `ug@unity-gateway-code` in the regular Claude Code

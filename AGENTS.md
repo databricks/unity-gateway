@@ -154,6 +154,7 @@ UG reserves UUID `5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6` for its fully owned prof
 Configure replaces the profile, updates its metadata entry, and selects it, retaining
 same-workspace connectors until MCP reconciliation succeeds. Changing workspaces
 replaces the same profile without retaining its connectors. Revert deletes that file and entry.
+The generated profile enables the manual import wizard with `claudeAiImport.enabled: true`.
 Unrelated profiles and metadata are preserved. Only the previous selection is saved
 in `~/.ucode/claude-desktop.json`; profile contents are not restored on revert.
 Old random-ID and workspace-derived profiles are left untouched.

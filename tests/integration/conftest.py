@@ -203,6 +203,21 @@ def claude_bedrock_provider():
 
 
 @pytest.fixture(scope="session")
+def claude_foundry_provider():
+    return os.environ["UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def claude_foundry_provider_model():
+    return os.environ["UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def claude_foundry_provider_default_model():
+    return os.environ["UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER_DEFAULT_MODEL"]
+
+
+@pytest.fixture(scope="session")
 def claude_oauth_token():
     # Real subscription OAuth token (`claude setup-token`); the relayed launch needs it to run
     # headless. Missing means the launch would fall back to a browser login, so fail rather than
@@ -213,6 +228,16 @@ def claude_oauth_token():
             "Set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) to run the relayed CUJ."
         )
     return token
+
+
+@pytest.fixture(scope="session")
+def claude_custom_provider():
+    return os.environ["UG_INTEGRATION_CLAUDE_CUSTOM_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def claude_custom_provider_model():
+    return os.environ["UG_INTEGRATION_CLAUDE_CUSTOM_PROVIDER_MODEL"]
 
 
 @pytest.fixture(scope="session")
@@ -231,6 +256,17 @@ def claude_bedrock_allow_all_provider():
 def claude_bedrock_allow_all_model():
     # An allow_all service declares no targets, so a launch must name the Bedrock model id itself.
     return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def claude_bedrock_mantle_provider():
+    # A Bedrock Mantle MPS (allow_all, UC service credential) that serves Claude.
+    return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_MANTLE_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def claude_bedrock_mantle_model():
+    return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_MANTLE_MODEL"]
 
 
 @pytest.fixture(scope="session")
@@ -270,6 +306,16 @@ def antigravity_provider_models():
 @pytest.fixture(scope="session")
 def codex_provider():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_custom_provider():
+    return os.environ["UG_INTEGRATION_CODEX_CUSTOM_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_custom_provider_model():
+    return os.environ["UG_INTEGRATION_CODEX_CUSTOM_PROVIDER_MODEL"]
 
 
 @pytest.fixture(scope="session")
