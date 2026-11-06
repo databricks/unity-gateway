@@ -25,6 +25,7 @@ from ucode.databricks import (
     install_ai_tools,
     install_databricks_cli,
     map_claude_family_models,
+    provider_targets_for_tool,
     resolve_provider_service,
 )
 from ucode.env import env_bool
@@ -417,9 +418,11 @@ def resolve_provider_models(
     """Validate ``provider`` for ``tool`` and return the model ids to pin.
 
     Returns ``(provider_models, error, relayed)``. ``provider_models`` is a ``{family: model_id}``
-    dict re-derived from the service's declared targets — Bedrock (provider-side slugs), API-key
-    Anthropic, and relayed Anthropic that declares a curated allowlist alike — so the client uses the
-    ids the MPS allows rather than Claude Code's defaults. It is None when ``provider`` is None, when
+    dict re-derived from the service's declared targets — Bedrock (provider-side slugs), Foundry
+    (deployment names), API-key Anthropic, and relayed Anthropic that declares a curated allowlist
+    alike — so the client uses the ids the MPS allows rather than Claude Code's defaults.
+    When no family can be inferred, ``default`` pins the first compatible target instead.
+    It is None when ``provider`` is None, when
     the service declares no Claude targets (e.g. an ``allow_all`` relay), or for a non-Claude (e.g.
     codex) service. ``relayed`` is True for a credential-less Anthropic subscription relay, which the
     launch path wires with the relayed overlay + refresh proxy. A non-None ``error`` means the
@@ -444,7 +447,11 @@ def resolve_provider_models(
     # through Claude-family logic would be meaningless (see docstring).
     if tool != "claude":
         return None, None, relayed
-    return map_claude_family_models(service.get("targets") or []) or None, None, relayed
+    targets = provider_targets_for_tool(tool, service)
+    models = map_claude_family_models(targets)
+    if not models and targets:
+        models = {"default": targets[0]}
+    return models or None, None, relayed
 
 
 def _newest_first(model: str) -> list[int]:

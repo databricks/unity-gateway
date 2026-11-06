@@ -1,9 +1,8 @@
 """Stdio MCP servers that coding agents start with every session.
 
-Claude Code starts `ug mcp web-search` when ug replaces its web search, and every agent starts one
-`ug mcp-proxy` per configured Databricks MCP server. `ucode.entrypoint` runs them through `run`
-without loading the full CLI; `ucode.cli` registers the same functions, so parsing and help are
-identical.
+Claude Code starts `ug mcp web-search` when ug replaces its web search. `ucode.entrypoint` runs
+it through `run` without loading the full CLI; `ucode.cli` registers the same function, so parsing
+and help are identical. Proxy relays keep their dedicated lightweight parser in mcp_proxy_runtime.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ from typing import Annotated
 import typer
 
 # Keep in sync with `ucode.entrypoint._AGENT_HELPERS`, which can't import this module.
-COMMANDS = ("mcp web-search", "mcp-proxy")
+COMMANDS = ("mcp web-search",)
 
 
 def mcp_web_search_cmd(
@@ -72,10 +71,9 @@ def mcp_proxy_cmd(
 
 
 def run(argv: list[str]) -> None:
-    """Run `ug mcp web-search ...` or `ug mcp-proxy ...` with only those commands registered."""
+    """Run `ug mcp web-search ...` with only that command registered."""
     app = typer.Typer(add_completion=False)
     mcp_app = typer.Typer(add_completion=False, no_args_is_help=True)
     mcp_app.command("web-search")(mcp_web_search_cmd)
     app.add_typer(mcp_app, name="mcp")
-    app.command("mcp-proxy", hidden=True)(mcp_proxy_cmd)
     app(args=argv, prog_name="ug")

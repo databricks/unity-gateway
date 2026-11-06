@@ -164,6 +164,7 @@ def test_agent_helper_entrypoint_skips_the_cli(tmp_path, command, expected) -> N
 )
 def test_router_hook_records_skip_the_cli(tmp_path, command, event, payload, artifact) -> None:
     # Agents run these at session start and before every subagent starts.
+    payload = {**payload, "session_id": "s1-東京"}
     session = tmp_path / "env.json"
     session.write_text("{}", encoding="utf-8")
     probe = (
@@ -171,7 +172,7 @@ def test_router_hook_records_skip_the_cli(tmp_path, command, event, payload, art
         f"os.environ.update(HOME={str(tmp_path)!r}, USERPROFILE={str(tmp_path)!r}, "
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY='1', "
         f"UCODE_SESSION_ENV_FILE={str(session)!r})\n"
-        f"sys.argv, sys.stdin = ['ug', {command!r}, {event!r}], io.TextIOWrapper(io.BytesIO({json.dumps(payload)!r}.encode()), encoding='cp1252')\n"
+        f"sys.argv, sys.stdin = ['ug', {command!r}, {event!r}], io.TextIOWrapper(io.BytesIO({json.dumps(payload, ensure_ascii=False)!r}.encode('utf-8')), encoding='cp1252')\n"
         "from ucode.entrypoint import main\n"
         "try:\n    main()\nexcept SystemExit as exc:\n    assert not exc.code, exc.code"
     )
@@ -181,7 +182,8 @@ def test_router_hook_records_skip_the_cli(tmp_path, command, event, payload, art
 
     assert output == ""
     assert loaded == []
-    assert '"session_id": "s1"' in (tmp_path / ".ucode" / artifact).read_text(encoding="utf-8")
+    recorded = json.loads((tmp_path / ".ucode" / artifact).read_text(encoding="utf-8"))
+    assert recorded["session_id"] == payload["session_id"]
 
 
 def test_web_search_server_initializes_without_the_cli(tmp_path) -> None:
@@ -231,7 +233,6 @@ def test_agent_helpers_are_the_cli_hidden_helper_commands() -> None:
         "claude-router-hook",
         "codex-router-hook",
         "mcp web-search",
-        "mcp-proxy",
     ],
 )
 def test_agent_helper_help_matches_the_cli(command) -> None:

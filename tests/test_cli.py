@@ -2434,6 +2434,20 @@ class TestClaudeModelFlag:
         assert result.exit_code == 0, result.output
         assert mock_configure.call_args.kwargs["route_root_model"] == "claude-haiku-4-5"
 
+    @pytest.mark.parametrize("explicit_model", [None, "backup-coding"])
+    def test_provider_with_custom_deployment_pins_launch_model(self, monkeypatch, explicit_model):
+        argv = ["claude", "--provider", "cat.schema.svc"]
+        if explicit_model:
+            argv.extend(["--model", explicit_model])
+        result, mock_configure, _ = self._provider_launch(
+            monkeypatch, argv, {"default": "team-coding"}
+        )
+
+        assert result.exit_code == 0, result.output
+        assert mock_configure.call_args.kwargs["route_root_model"] == (
+            explicit_model or "team-coding"
+        )
+
     def test_provider_with_opus_still_defaults_to_sonnet(self, monkeypatch):
         # No --model: pin sonnet (Claude Code's default tier) whenever the service allows it, even
         # when opus is on offer — we always pin an allowed target instead of deferring to the default.
@@ -4885,7 +4899,7 @@ class TestConfigureAgentFlag:
         mock_mcp.assert_called_once_with()
         mock_configure_code.assert_called_once_with(configured_state["mcp_servers"])
         mock_configure_cowork.assert_called_once_with(
-            configured_state, configured_state["mcp_servers"]
+            configured_state, configured_state["mcp_servers"], sync_plugin=True
         )
 
     def test_cowork_sync_merges_user_and_managed_mcp_servers(self):
@@ -4917,7 +4931,9 @@ class TestConfigureAgentFlag:
             cli_mod._sync_claude_cowork_plugin(state, managed_mcp_servers=managed)
 
         mock_code.assert_called_once_with([*state["mcp_servers"], *managed])
-        mock_configure.assert_called_once_with(state, [*state["mcp_servers"], *managed])
+        mock_configure.assert_called_once_with(
+            state, [*state["mcp_servers"], *managed], sync_plugin=True
+        )
 
     def test_cowork_sync_loads_managed_mcp_servers_when_not_supplied(self):
         import ucode.cli as cli_mod
@@ -4944,7 +4960,7 @@ class TestConfigureAgentFlag:
 
         mock_managed.assert_called_once_with(state, {"claude"})
         mock_code.assert_called_once_with(managed)
-        mock_configure.assert_called_once_with(state, managed)
+        mock_configure.assert_called_once_with(state, managed, sync_plugin=True)
 
     def test_cowork_sync_preserves_explicit_empty_managed_mcp_state(self):
         import ucode.cli as cli_mod
@@ -4965,7 +4981,7 @@ class TestConfigureAgentFlag:
             cli_mod._sync_claude_cowork_plugin(state, managed_mcp_servers=[])
 
         mock_code.assert_called_once_with([])
-        mock_configure.assert_called_once_with(state, [])
+        mock_configure.assert_called_once_with(state, [], sync_plugin=True)
 
     @pytest.mark.parametrize("mcp_clients", [[], ["codex"], ["claude"]])
     def test_cowork_sync_skips_when_claude_is_not_configured(self, mcp_clients):

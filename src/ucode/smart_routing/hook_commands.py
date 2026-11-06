@@ -174,7 +174,7 @@ def claude_router_hook_cmd(
     )
 
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
+        payload = json.loads(getattr(sys.stdin, "buffer", sys.stdin).read() or "{}")
     except ValueError:
         return
     if not isinstance(payload, dict):

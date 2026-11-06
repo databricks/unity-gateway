@@ -21,7 +21,6 @@ _AGENT_HELPERS = {
     "claude-router-hook": "ucode.smart_routing.hook_commands",
     "codex-router-hook": "ucode.smart_routing.hook_commands",
     "mcp web-search": "ucode.mcp_commands",
-    "mcp-proxy": "ucode.mcp_commands",
 }
 
 
@@ -76,6 +75,11 @@ def main() -> None:
 
             version = ug_version()
         print(version)
+        return
+    if sys.argv[1:2] == ["mcp-proxy"]:
+        from ucode.mcp_proxy_runtime import main as proxy_main
+
+        proxy_main()
         return
     args = sys.argv[1:]
     helper = _AGENT_HELPERS.get(" ".join(args[:1])) or _AGENT_HELPERS.get(" ".join(args[:2]))

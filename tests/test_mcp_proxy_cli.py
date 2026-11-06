@@ -11,7 +11,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from ucode.cli import mcp_proxy_cmd
+from ucode.mcp_commands import mcp_proxy_cmd
 
 
 @pytest.mark.parametrize("command", ["ug", "ucode"])

@@ -13,7 +13,6 @@ so it falls back to the user-scope registration, which the real /mcp view still 
 workspace to publish the `claude-code` OAuth client, which E2E_ADMIN_WORKSPACE does not.
 """
 
-import json
 import tomllib
 
 import pytest
@@ -53,8 +52,8 @@ def test_managed_fixture_claude_mcp_lists_configured_server(live_session, worksp
 def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspace):
     """Scenario: an interactive configure with a managed MCP server writes Codex's managed file.
 
-    Expected: Codex reads the server from the OS-managed file, using native HTTP/OAuth when
-    available or the ug stdio proxy otherwise; the user's config gains no managed server.
+    Expected: the server lands in the `[mcp_servers]` table of the OS-managed config with its
+    native HTTP URL and pinned Codex OAuth client, without a user-scope copy.
     """
     session = live_session
     use_managed_config_fixture(session, "codex_mcp")
@@ -66,24 +65,12 @@ def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspa
         session.run(CODEX_MANAGED_CONFIG_PATH, binary=session.which("cat"), timeout=30).stdout
     )
     servers = managed.get("mcp_servers") or {}
-    entries = {name: entry for name, entry in servers.items() if "github" in name.lower()}
-    assert entries, managed
-    assert len(entries) == 1, entries
-    name, entry = next(iter(entries.items()))
-    expected_url = f"{workspace.rstrip('/')}/ai-gateway/mcp-services/system.ai.github"
-    if "url" in entry:
-        assert entry["url"] == expected_url, entry
-        assert entry["oauth_resource"] == expected_url, entry
-        assert entry["oauth"]["client_id"] == "https://chatgpt.com/oauth/codex/client.json", entry
-        assert "command" not in entry and "args" not in entry, entry
-    else:
-        assert entry["command"].endswith("ug"), entry
-        assert entry["args"][0] == "mcp-proxy", entry
-        assert "--url" in entry["args"], entry
-        assert entry["args"][entry["args"].index("--url") + 1] == expected_url, entry
-
-    result = session.run("mcp", "get", name, "--json", binary=session.which("codex"), timeout=30)
-    assert json.loads(result.stdout)["name"] == name, result.stdout
+    url = f"{workspace.rstrip('/')}/ai-gateway/mcp-services/system.ai.github"
+    assert servers.get("system-ai-github") == {
+        "url": url,
+        "oauth_resource": url,
+        "oauth": {"client_id": "https://chatgpt.com/oauth/codex/client.json"},
+    }, servers
 
     personal_path = session.home / ".codex" / "config.toml"
     personal = tomllib.loads(personal_path.read_text()) if personal_path.exists() else {}
