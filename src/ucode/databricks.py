@@ -849,6 +849,7 @@ def _read_databricks_cli_version(path: str) -> tuple[int, int, int] | None:
 # preserved among equals. `databricks_cli_path` just reads the front. None means
 # "not yet scanned" — distinct from an empty list, a cached "found nothing".
 _DISCOVERED_DATABRICKS_CLIS_ORDERED: list[tuple[str, tuple[int, int, int] | None]] | None = None
+_DATABRICKS_CLI_DISCOVERY_LOCK = threading.Lock()
 
 
 def _discover_databricks_clis(
@@ -858,6 +859,7 @@ def _discover_databricks_clis(
 
     Dedupes by ``os.path.realpath`` (first PATH-order occurrence wins), so the
     same binary reachable via more than one PATH entry is only probed once.
+    Distinct binaries are probed concurrently, with at most four subprocesses at once.
     Version is None when the candidate's ``--version`` errors or its output can't
     be parsed. The result is sorted newest-version-first (unparseable last, PATH
     order kept among ties), so the front entry is the one to run. Cached for the
@@ -865,23 +867,50 @@ def _discover_databricks_clis(
     also refreshes the cache).
     """
     global _DISCOVERED_DATABRICKS_CLIS_ORDERED
-    if use_cache and _DISCOVERED_DATABRICKS_CLIS_ORDERED is not None:
-        return _DISCOVERED_DATABRICKS_CLIS_ORDERED
+    # Concurrent auth/discovery callers share the same scan. Cache invalidation takes this lock
+    # too, so a scan already in flight cannot publish an old result after an install clears it.
+    with _DATABRICKS_CLI_DISCOVERY_LOCK:
+        if use_cache and _DISCOVERED_DATABRICKS_CLIS_ORDERED is not None:
+            return _DISCOVERED_DATABRICKS_CLIS_ORDERED
 
-    seen_real: set[str] = set()
-    discovered: list[tuple[str, tuple[int, int, int] | None]] = []
-    for path in _iter_databricks_executables():
-        real = os.path.realpath(path)
-        if real in seen_real:
-            continue
-        seen_real.add(real)
-        discovered.append((path, _read_databricks_cli_version(path)))
+        seen_real: set[str] = set()
+        paths: list[str] = []
+        for path in _iter_databricks_executables():
+            real = os.path.realpath(path)
+            if real in seen_real:
+                continue
+            seen_real.add(real)
+            paths.append(path)
 
-    # Best-first: highest version wins. A stable sort keeps PATH order among equal
-    # versions, and the None-version sentinel (unparseable) sinks below every real one.
-    discovered.sort(key=lambda pv: pv[1] or (-1, -1, -1), reverse=True)
-    _DISCOVERED_DATABRICKS_CLIS_ORDERED = discovered
-    return _DISCOVERED_DATABRICKS_CLIS_ORDERED
+        if len(paths) > 1:
+            from concurrent.futures import Future
+
+            def probe(path: str, future: Future[tuple[int, int, int] | None]) -> None:
+                try:
+                    future.set_result(_read_databricks_cli_version(path))
+                except BaseException as exc:
+                    future.set_exception(exc)
+
+            # Bounded batches retain PATH order and never queue more work after an interrupt.
+            # Daemon workers let Ctrl-C propagate without waiting for unrelated --version
+            # timeouts; ThreadPoolExecutor would join those workers on context/interpreter exit.
+            discovered: list[tuple[str, tuple[int, int, int] | None]] = []
+            for offset in range(0, len(paths), 4):
+                batch = paths[offset : offset + 4]
+                futures = [Future[tuple[int, int, int] | None]() for _ in batch]
+                for path, future in zip(batch, futures, strict=True):
+                    threading.Thread(target=probe, args=(path, future), daemon=True).start()
+                discovered.extend(
+                    (path, future.result()) for path, future in zip(batch, futures, strict=True)
+                )
+        else:
+            discovered = [(path, _read_databricks_cli_version(path)) for path in paths]
+
+        # Best-first: highest version wins. A stable sort keeps PATH order among equal
+        # versions, and the None-version sentinel (unparseable) sinks below every real one.
+        discovered.sort(key=lambda pv: pv[1] or (-1, -1, -1), reverse=True)
+        _DISCOVERED_DATABRICKS_CLIS_ORDERED = discovered
+        return discovered
 
 
 def _select_databricks_cli(
@@ -919,7 +948,8 @@ def databricks_cli_path() -> str:
 def clear_databricks_cli_cache() -> None:
     """Forget cached CLI discovery/resolution (used by tests, and after an install/upgrade)."""
     global _DISCOVERED_DATABRICKS_CLIS_ORDERED
-    _DISCOVERED_DATABRICKS_CLIS_ORDERED = None
+    with _DATABRICKS_CLI_DISCOVERY_LOCK:
+        _DISCOVERED_DATABRICKS_CLIS_ORDERED = None
     with _AUTH_LOGIN_NO_BROWSER_SUPPORT_LOCK:
         _AUTH_LOGIN_NO_BROWSER_SUPPORT.clear()
 
