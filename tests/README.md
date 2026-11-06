@@ -1,10 +1,5 @@
 # Test suites and user journeys
 
-`test_skills_api.py` verifies that a discovered descendant is listed before a slow
-sibling finishes, using synchronization events rather than latency thresholds.
-Existing tree, pagination, concurrency-cap, cancellation, and all-or-nothing
-failure checks remain. These controlled client tests do not measure live UC latency.
-
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
