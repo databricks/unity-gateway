@@ -578,7 +578,8 @@ class TestResolveProviderModels:
         assert relayed is False
 
     @pytest.mark.parametrize(
-        "provider_type", ["anthropic", "amazon_bedrock", "bedrock_mantle", "microsoft_foundry"]
+        "provider_type",
+        ["anthropic", "amazon_bedrock", "bedrock_mantle", "microsoft_foundry", "custom"],
     )
     @pytest.mark.parametrize("family_model", [None, "claude-sonnet-5-5"])
     def test_custom_messages_deployment_is_launch_default(

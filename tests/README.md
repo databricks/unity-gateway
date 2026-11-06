@@ -7,6 +7,12 @@ and the configured fallback model and successful agent/model recommendations are
 preserved. These component tests replace authentication and network boundaries;
 they do not measure live startup latency.
 
+`TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
+normal and exceptional exit, clearing the terminal line, and leaving redirected
+output free of animation threads. These component
+checks use thread synchronization rather than elapsed-time thresholds; they do not
+establish end-to-end agent startup latency.
+
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
@@ -26,11 +32,12 @@ Integration runs a freshly installed ug wheel/release, exact real Claude/Codex
 mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 
 Provider target component tests require explicit Messages API metadata for Claude across
-Anthropic, Bedrock, Mantle, and Foundry. They preserve custom deployment names, reject
+Anthropic, Bedrock, Mantle, Foundry, and custom providers. They preserve custom deployment names, reject
 missing metadata or incompatible APIs, and cover the generic empty-target error and
 `allow_all_targets` bypass. Resolver, configuration, and launch tests verify custom-name
 defaults and explicit overrides without inventing a Claude family. Other tools keep their
-existing filters. These checks do not establish live custom-deployment coverage.
+existing filters. Opaque names such as `team-coding` have component coverage only; custom-provider
+integration journeys use vendor model IDs.
 
 | Category | Location | What it proves |
 | --- | --- | --- |
@@ -328,6 +335,14 @@ Program Files lookup.
 Claude's native resolver tests remain in
 `test_agent_claude.py`; installation failures are covered in `test_agents_init.py`.
 These are component checks, not live Windows coverage for every agent.
+
+`TestEnsureHooksModulesGate` in `test_agent_claude.py` checks that an enabled Claude
+feature cache avoids the config write lock, including while another writer holds it.
+Updates re-read after acquiring the real lock, preserve concurrent changes, and remove
+stale top-level flags. Dry-run, invalid/unreadable files, modes, write failures, and
+concurrent MCP writers retain coverage. These are local component checks; the controlled
+lock-contention benchmark in `scripts/benchmark_claude_hooks_gate.py` does not measure
+live agent startup or the production frequency of lock contention.
 
 `TestEnsureDatabricksCliVersion` in `test_databricks.py`
 checks that repeated launch preflights reuse a successful CLI version probe, higher
@@ -887,6 +902,8 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task; normal exit |
 | `test_ug_configure_claude_foundry_mps` | Select Foundry MPS in the real configure picker; launch Claude without an explicit model | Saved provider and Haiku/Sonnet deployment defaults; completed TUI file task on Sonnet; normal exit |
 | `test_ug_claude_fresh_foundry_mps` | Launch fresh Claude with a Foundry provider and deployment name | Correct provider header; successful structured answer containing an unknown file value; no routing |
+| `test_ug_configure_claude_custom_foundry_mps` | Select custom Foundry MPS through the configure picker, then launch plain Claude | Saved provider and Sonnet default; correct Claude provider header; completed TUI file task on Sonnet; normal exit; no routing |
+| `test_ug_configure_codex_custom_azure_openai_mps` | Select custom Azure OpenAI MPS through the configure picker, then launch Codex without a provider override | Saved provider; completed TUI file task on the selected GPT deployment; normal exit; no routing |
 | `test_ug_configure_claude_bedrock_mps` | Select the restricted Bedrock MPS in the real configure picker; launch Claude without an explicit model | Saved provider in status; Sonnet 4.6 is selected from the Sonnet + Haiku allow-list and completes a TUI file task; normal exit |
 | `test_ug_configure_codex_databricks` | Configure Databricks Hosted; execute the generated auth helper; open Codex TUI and read a file | Generated helper invokes `ug` with clean token stdout; completed assistant answer contains the file value; normal exit and reopen |
 | `test_ug_configure_codex_openai_mps` | Select OpenAI MPS in the real configure picker; launch Codex | Saved provider in status; completed TUI file task; normal exit |
