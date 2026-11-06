@@ -1901,18 +1901,24 @@ class TestLaunchManagedConfigReuse:
         assert not managed_config.REFRESH_TS_PATH.exists()
 
     @pytest.mark.parametrize("manifest", [None, {}, {"enabled_agents": {"claude": {}}}])
-    @pytest.mark.parametrize("self_managed", [False, True])
-    def test_passes_resolved_policy_presence_to_settings(self, manifest, self_managed):
-        with (
-            _launch_policy_patches(manifest) as calls,
-            patch("ucode.cli._launches_self_managed", return_value=self_managed),
-        ):
+    def test_passes_resolved_policy_presence_to_settings(self, manifest):
+        with _launch_policy_patches(manifest) as calls:
             result = runner.invoke(app, ["claude"])
 
         assert result.exit_code == 0, result.output
         assert calls["configure"].call_args.kwargs["managed_config_present"] is (
             manifest is not None
         )
+        calls["launch"].assert_called_once()
+
+    def test_self_managed_launch_retains_workspace_policy_presence(self):
+        with _launch_policy_patches({"enabled_agents": {"codex": {}}}) as calls:
+            calls["state"]["self_managed_agents"] = ["claude"]
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert "self-managed on this machine" in result.output
+        assert calls["configure"].call_args.kwargs["managed_config_present"] is True
         calls["launch"].assert_called_once()
 
 
