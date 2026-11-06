@@ -142,8 +142,9 @@ def main():
         print("Cowork selected", flush=True)
         snapshot = wait_for("Write your prompt to Claude", timeout=60)
         save("cowork-ui.txt", snapshot)
-        if f"Model: {model_label}" not in snapshot:
-            raise RuntimeError("Cowork did not select the expected system.ai model")
+        expected_labels = {f"Model: {model_label}", f"Model: {model_label} Extended"}
+        if not any(expected_labels.intersection(row.split(" | ")) for row in snapshot.splitlines()):
+            raise RuntimeError("Cowork did not select the configured model")
         ui("type", "Write your prompt to Claude", PROMPT)
         time.sleep(1)
         ui("click", "Start task")

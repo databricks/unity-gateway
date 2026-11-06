@@ -2,11 +2,16 @@ import json
 import os
 import shutil
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-from ucode.agents.desktop.claude import claude_desktop_directory, configure_claude_desktop
+from ucode.agents.desktop.claude import (
+    ClaudeDesktopUnavailableError,
+    claude_desktop_directory,
+    configure_claude_desktop,
+)
 from ucode.databricks import list_anthropic_model_catalog
 from ucode.desktop_auth import get_claude_desktop_relay_credential
 
@@ -65,15 +70,23 @@ def configure():
                 )
             args += ["--relay", "--claude-binary", claude]
             credential = get_claude_desktop_relay_credential(WORKSPACE, "desktop-ci", claude)
-        configure_claude_desktop(
-            model_ids=[case["model"]],
-            model_id_to_display_name=catalog.model_id_to_display_name,
-            base_url=WORKSPACE + "/ai-gateway/anthropic",
-            helper_command=sys.executable,
-            helper_args=args,
-            custom_headers=headers,
-            profile_key="desktop-ci",
-        )
+        for attempt in range(3):
+            try:
+                configure_claude_desktop(
+                    model_ids=[case["model"]],
+                    model_id_to_display_name=catalog.model_id_to_display_name,
+                    base_url=WORKSPACE + "/ai-gateway/anthropic",
+                    helper_command=sys.executable,
+                    helper_args=args,
+                    custom_headers=headers,
+                    profile_key="desktop-ci",
+                )
+                report["installationDetectionAttempts"] = attempt + 1
+                break
+            except ClaudeDesktopUnavailableError:
+                if sys.platform != "win32" or attempt == 2:
+                    raise
+                time.sleep(5)
         directory = claude_desktop_directory()
         profile = json.loads((directory / "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json").read_text())
         assert profile["inferenceProvider"] == "gateway"

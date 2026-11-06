@@ -59,10 +59,13 @@ try {
         Start-Sleep -Seconds 10
     }
     $configuration = Get-Content (Join-Path $OutputDirectory 'configuration.json') -Raw | ConvertFrom-Json
-    $modelCondition = [Windows.Automation.PropertyCondition]::new(
+    $modelNameCondition = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::NameProperty, "Model: $($configuration.targetModelLabel)")
+    $extendedModelCondition = [Windows.Automation.PropertyCondition]::new(
+        [Windows.Automation.AutomationElement]::NameProperty, "Model: $($configuration.targetModelLabel) Extended")
+    $modelCondition = [Windows.Automation.OrCondition]::new($modelNameCondition, $extendedModelCondition)
     if (-not $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $modelCondition)) {
-        throw 'Cowork did not select the expected system.ai Claude model'
+        throw 'Cowork did not select the configured Claude model'
     }
     $report.model = $configuration.targetModel
     $editorCondition = [Windows.Automation.PropertyCondition]::new(
