@@ -43,8 +43,8 @@ def test_ug_configure_selected_managed_claude_leaves_other_agents_unconfigured(
         program_data = next(
             (value for name, value in session.env.items() if name.casefold() == "programdata"), None
         )
-        assert program_data, "Windows session is missing ProgramData"
-        codex_managed = Path(program_data) / "OpenAI/Codex/requirements.toml"
+        # The isolated environment can omit ProgramData; ug then uses Windows' default.
+        codex_managed = Path(program_data or r"C:\ProgramData") / "OpenAI/Codex/requirements.toml"
     else:
         codex_managed = Path("/etc/codex/managed_config.toml")
     codex_managed_before = _snapshot(codex_managed)
