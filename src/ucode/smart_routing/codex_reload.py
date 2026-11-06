@@ -144,7 +144,9 @@ class RoutingReload:
             continuation = self.continuations.pop(tid, None)
             if continuation:
                 params["input"] = [{"type": "text", "text": continuation}, *params.get("input", [])]
-        if method in {"thread/start", "thread/resume"}:
+        if method in {"thread/start", "thread/resume"} and not self.parents.get(
+            params.get("threadId")
+        ):
             # New roots and resumed roots must not inherit the app-server's launch recipe.
             config = routing_config(self.config, self.enabled())
             overrides = copy.deepcopy(params.get("config") or {})
@@ -271,13 +273,15 @@ class RoutingReload:
                     and isinstance(thread, dict)
                     and not thread.get("ephemeral")
                     and not requested.get("ephemeral")
+                    and not self.parents.get(thread["id"])
                 ):
+                    tid = thread["id"]
+                    known_root = tid == self.root or tid in self.conversations
                     if self.root:
                         self.conversations[self.root] = self.settings
-                    tid = thread["id"]
                     self.root = tid
                     self.settings = self.conversations.setdefault(tid, ConversationSettings())
-                    if requested_method == "thread/resume":
+                    if requested_method == "thread/resume" and not known_root:
                         # Resuming a loaded thread can ignore config overrides on reconnect.
                         self.reload_requested = True
                 target = thread.get("id") if isinstance(thread, dict) else requested.get("threadId")
@@ -322,7 +326,9 @@ class RoutingReload:
         source = thread.get("source")
         subagent = source.get("subAgent") if isinstance(source, dict) else None
         spawn = subagent.get("thread_spawn", {}) if isinstance(subagent, dict) else {}
-        self.parents[tid] = thread.get("parentThreadId") or spawn.get("parent_thread_id")
+        self.parents[tid] = (
+            thread.get("parentThreadId") or spawn.get("parent_thread_id") or self.parents.get(tid)
+        )
         if spawn.get("agent_path"):
             self.task_paths[tid] = spawn["agent_path"]
 
