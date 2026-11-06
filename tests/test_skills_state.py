@@ -6,6 +6,8 @@ import json
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from ucode import config_io, skills_state
 from ucode.skills_state import SkillInstall
 
@@ -160,6 +162,58 @@ class TestQueries:
 
 
 class TestReconciliation:
+    def test_batch_collision_then_rename_preserves_new_owner(self, tmp_path):
+        first = _install(tmp_path, "main.default.first", "shared")
+        owner = _install(tmp_path, "main.default.owner", "shared", metastore_id="other")
+        renamed = _install(tmp_path, "main.default.first", "renamed")
+        _write_dirs(owner)
+        _write_dirs(renamed)
+        skills_state.record_downloads([first, owner, renamed])
+        assert [record["fqn"] for record in skills_state.list_downloaded()] == [
+            owner.fqn,
+            renamed.fqn,
+        ]
+        assert all(Path(path).exists() for install in (owner, renamed) for path in install.dirs)
+
+    def test_duplicate_owners_and_metastore_identity_are_preserved(self, tmp_path):
+        old = _install(tmp_path, "main.default.first", "old")
+        duplicate = _install(tmp_path, "main.default.first", "also-old")
+        foreign = _install(tmp_path, "main.default.first", "foreign", metastore_id="other")
+        replaced = _install(tmp_path, "main.default.replaced", "new")
+        new = _install(tmp_path, "main.default.first", "new")
+        for install in (old, duplicate, foreign, replaced):
+            _write_dirs(install)
+        skills_state._save(
+            [skills_state._to_record(i) for i in (old, duplicate, foreign, replaced)]
+        )
+        skills_state.record_downloads([new])
+        assert [record["bundle_name"] for record in skills_state.list_downloaded()] == [
+            "foreign",
+            "new",
+        ]
+        assert all(not Path(path).exists() for i in (old, duplicate) for path in i.dirs)
+        assert all(Path(path).exists() for i in (foreign, new) for path in i.dirs)
+
+    @pytest.mark.parametrize(
+        "invalid", [{"metastore_id": ["invalid"]}, {"base": None}, {"fqn": {}}]
+    )
+    def test_unhashable_identity_keeps_directory_collision_behavior(self, tmp_path, invalid):
+        current = _install(tmp_path, "main.default.current", "shared")
+        malformed = {
+            **skills_state._to_record(current),
+            **invalid,
+            "dirs": [*current.dirs, None],
+        }
+        unrelated = {**malformed, "dirs": [str(tmp_path / "unrelated")]}
+        skills_state._save([malformed, unrelated])
+        _write_dirs(current)
+        skills_state.record_downloads([current])
+        records = skills_state.list_downloaded()
+        assert records[0] == unrelated
+        assert records[1]["metastore_id"] == "metastore-1"
+        assert len(records) == 2
+        assert all(Path(path).exists() for path in current.dirs)
+
     def test_re_download_same_name_keeps_single_record(self, tmp_path):
         base = tmp_path / "proj"
         first = _install(base, "main.default.triage", "triage")
@@ -168,21 +222,50 @@ class TestReconciliation:
 
         assert len(skills_state.list_downloaded()) == 1
 
-    def test_re_download_renamed_bundle_deletes_orphan(self, tmp_path):
+    @pytest.mark.parametrize("invalid_dirs", ["invalid", {"invalid": "ignored"}, 42])
+    def test_rename_ignores_non_list_directories(self, tmp_path, monkeypatch, invalid_dirs):
+        old = _install(tmp_path, "main.default.triage", "old")
+        new = _install(tmp_path, "main.default.triage", "new")
+        skills_state._save([{**skills_state._to_record(old), "dirs": invalid_dirs}])
+        deleted = []
+        monkeypatch.setattr(skills_state, "_delete_dirs", lambda dirs: deleted.extend(dirs))
+
+        skills_state.record_downloads([new])
+
+        assert deleted == []
+        records = skills_state.list_downloaded()
+        assert len(records) == 1
+        assert records[0]["dirs"] == list(new.dirs)
+
+    @pytest.mark.parametrize(
+        ("same_batch", "malformed_orphan"),
+        [(False, False), (True, False), (False, True)],
+        ids=["separate-batches", "same-batch", "malformed-orphan"],
+    )
+    def test_re_download_renamed_bundle_deletes_orphan(
+        self, tmp_path, same_batch, malformed_orphan
+    ):
         base = tmp_path / "proj"
         old = _install(base, "main.default.triage", "triage")
         new = _install(base, "main.default.triage", "triage-renamed")
         _write_dirs(old)
         _write_dirs(new)
 
-        skills_state.record_downloads([old])
-        skills_state.record_downloads([new])
+        if same_batch:
+            skills_state.record_downloads([old, new])
+        else:
+            skills_state.record_downloads([old])
+            if malformed_orphan:
+                records = skills_state.list_downloaded()
+                records[0]["dirs"].append(None)
+                skills_state._save(records)
+            skills_state.record_downloads([new])
 
         records = skills_state.list_downloaded()
         assert len(records) == 1
         assert records[0]["bundle_name"] == "triage-renamed"
-        assert not Path(old.dirs[0]).exists()
-        assert Path(new.dirs[0]).exists()
+        assert all(not Path(path).exists() for path in old.dirs)
+        assert all(Path(path).exists() for path in new.dirs)
 
     def test_target_dir_claimed_by_other_skill_drops_stale_record_keeps_files(self, tmp_path):
         base = tmp_path / "proj"
