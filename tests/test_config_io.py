@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import tomlkit
@@ -24,6 +28,7 @@ from ucode.config_io import (
     write_text_file,
     write_toml_file,
 )
+from ucode.os_compatibility.system_cross_os import is_admin
 
 
 @pytest.fixture(autouse=True)
@@ -205,6 +210,147 @@ class TestWriteHelpers:
         config_io.atomic_write_json(p, {"a": 2})
         assert json.loads(p.read_text()) == {"a": 2}
         assert not list(tmp_path.glob(".out.json.*"))
+
+    @pytest.mark.parametrize("kind", ["text", "json", "toml"])
+    def test_identical_config_does_not_touch_file_but_changes_are_written(self, tmp_path, kind):
+        path = tmp_path / f"config.{kind}"
+
+        def write(value):
+            if kind == "json":
+                write_json_file(path, {"model": value})
+            elif kind == "toml":
+                write_toml_file(path, tomlkit.parse(f'# retained comment\nmodel = "{value}"\n'))
+            else:
+                write_text_file(path, f"model={value}\n")
+
+        write("first")
+        original = path.read_bytes()
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+        before = path.stat()
+
+        write("first")
+
+        assert path.read_bytes() == original
+        assert path.stat().st_mtime_ns == before.st_mtime_ns
+        assert path.stat().st_mode == before.st_mode
+
+        write("second")
+
+        assert path.read_bytes() != original
+        assert path.stat().st_mtime_ns != before.st_mtime_ns
+        assert path.stat().st_mode == before.st_mode
+
+    def test_same_text_uses_requested_encoding_and_native_newlines(self, tmp_path):
+        path = tmp_path / "unicode.txt"
+        text = "café\nnext line\n"
+        path.write_text(text, encoding="utf-16")
+        expected = path.read_bytes()
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+
+        write_text_file(path, text, encoding="utf-16")
+
+        assert path.read_bytes() == expected
+        assert path.stat().st_mtime_ns == 1_000_000_000
+
+    @pytest.mark.parametrize("existing", ["text-stream", "standalone-encoder"])
+    def test_stateful_encoding_matches_the_text_file_writer(self, tmp_path, existing):
+        path = tmp_path / "stateful.txt"
+        reference = tmp_path / "reference.txt"
+        content = "日本"
+        encoding = "iso2022_jp"
+        reference.write_text(content, encoding=encoding)
+        expected = reference.read_bytes()
+        initial = expected if existing == "text-stream" else content.encode(encoding)
+        path.write_bytes(initial)
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+
+        write_text_file(path, content, encoding=encoding)
+
+        assert path.read_bytes() == expected
+        assert (path.stat().st_mtime_ns == 1_000_000_000) is (initial == expected)
+
+    def test_different_line_endings_are_rewritten_to_native_output(self, tmp_path):
+        path = tmp_path / "newlines.txt"
+        reference = tmp_path / "reference.txt"
+        reference.write_text("first\nsecond\n", encoding="utf-8")
+        expected = reference.read_bytes()
+        alternate = b"first\r\nsecond\r\n" if b"\r" not in expected else b"first\nsecond\n"
+        path.write_bytes(alternate)
+
+        write_text_file(path, "first\nsecond\n")
+
+        assert path.read_bytes() == expected
+
+    @pytest.mark.skipif(
+        os.name == "nt" or is_admin(), reason="POSIX permissions under a non-root user"
+    )
+    def test_unreadable_existing_file_still_uses_the_write_path(self, tmp_path):
+        path = tmp_path / "write-only.txt"
+        path.write_text("same", encoding="utf-8")
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+        permissions = stat.S_IMODE(path.stat().st_mode)
+        path.chmod(0o200)
+        try:
+            write_text_file(path, "same")
+        finally:
+            path.chmod(permissions)
+
+        assert path.read_text() == "same"
+        assert path.stat().st_mtime_ns != 1_000_000_000
+
+    @pytest.mark.skipif(
+        os.name == "nt" or is_admin(), reason="POSIX permissions under a non-root user"
+    )
+    def test_identical_read_only_config_keeps_the_existing_write_error(self, tmp_path):
+        path = tmp_path / "read-only.txt"
+        path.write_text("same", encoding="utf-8")
+        permissions = stat.S_IMODE(path.stat().st_mode)
+        path.chmod(0o400)
+        try:
+            with pytest.raises(RuntimeError, match="Failed to write config file") as error:
+                write_text_file(path, "same")
+            assert isinstance(error.value.__cause__, PermissionError)
+        finally:
+            path.chmod(permissions)
+
+        assert path.read_text() == "same"
+
+    @pytest.mark.parametrize("file_kind", [stat.S_IFLNK, stat.S_IFIFO, stat.S_IFCHR])
+    def test_symlinks_and_special_files_keep_the_existing_write_path(
+        self, tmp_path, monkeypatch, file_kind
+    ):
+        path = tmp_path / "config"
+        path.write_text("same", encoding="utf-8")
+        original_lstat = Path.lstat
+        original_write = Path.write_text
+        writes = []
+
+        def lstat(self, *args, **kwargs):
+            if self == path:
+                return SimpleNamespace(st_mode=file_kind)
+            return original_lstat(self, *args, **kwargs)
+
+        def write(self, *args, **kwargs):
+            writes.append(self)
+            return original_write(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "lstat", lstat)
+        monkeypatch.setattr(Path, "write_text", write)
+
+        write_text_file(path, "same")
+
+        assert writes == [path]
+
+    def test_dry_run_prints_even_when_content_is_already_present(self, tmp_path, capsys):
+        path = tmp_path / "existing.txt"
+        path.write_text("same", encoding="utf-8")
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+        set_dry_run(True)
+
+        write_text_file(path, "same")
+
+        assert "dry run" in capsys.readouterr().out
+        assert path.stat().st_mtime_ns == 1_000_000_000
 
 
 # ---------------------------------------------------------------------------
