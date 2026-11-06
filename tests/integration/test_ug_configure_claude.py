@@ -35,8 +35,6 @@ def test_ug_configure_claude_databricks(live_session, workspace, desktop_cli_pro
         "configure",
         "--agents",
         "claude",
-        "--workspace",
-        workspace,
         "--profile",
         desktop_cli_profile,
         "--skip-upgrade",
@@ -82,7 +80,7 @@ def test_ug_configure_claude_databricks(live_session, workspace, desktop_cli_pro
 
 
 def test_ug_configure_claude_anthropic_mps(
-    live_session, workspace, claude_provider, claude_provider_model, desktop_cli_profile
+    live_session, claude_provider, claude_provider_model, desktop_cli_profile
 ):
     """Scenario: choose the real Anthropic MPS in ug configure's provider picker.
 
@@ -97,8 +95,6 @@ def test_ug_configure_claude_anthropic_mps(
     command = [
         str(session.binary),
         "configure",
-        "--workspace",
-        workspace,
         "--profile",
         desktop_cli_profile,
         "--skip-upgrade",
@@ -127,7 +123,7 @@ def test_ug_configure_claude_anthropic_mps(
 
 
 def test_ug_configure_claude_bedrock_mps(
-    live_session, workspace, claude_bedrock_provider, desktop_cli_profile
+    live_session, claude_bedrock_provider, desktop_cli_profile
 ):
     """Scenario: pick the real AWS Bedrock (amazon_bedrock) Anthropic MPS in the provider picker.
     This MPS allows only a restricted set of models (its explicit targets: Sonnet 5.5 + Opus 5.5), unlike
@@ -147,8 +143,6 @@ def test_ug_configure_claude_bedrock_mps(
     command = [
         str(session.binary),
         "configure",
-        "--workspace",
-        workspace,
         "--profile",
         desktop_cli_profile,
         "--skip-upgrade",
@@ -185,7 +179,6 @@ def test_ug_configure_claude_bedrock_mps(
 @pytest.mark.usefixtures("unmanaged_workspace")
 def test_ug_configure_claude_foundry_mps(
     live_session,
-    workspace,
     claude_foundry_provider,
     claude_foundry_provider_model,
     claude_foundry_provider_default_model,
@@ -204,8 +197,6 @@ def test_ug_configure_claude_foundry_mps(
     command = [
         str(session.binary),
         "configure",
-        "--workspace",
-        workspace,
         "--profile",
         desktop_cli_profile,
         "--skip-upgrade",
@@ -249,7 +240,6 @@ def test_ug_configure_claude_foundry_mps(
 @pytest.mark.usefixtures("unmanaged_workspace")
 def test_ug_configure_claude_custom_foundry_mps(
     live_session,
-    workspace,
     claude_custom_provider,
     claude_custom_provider_model,
     desktop_cli_profile,
@@ -267,8 +257,6 @@ def test_ug_configure_claude_custom_foundry_mps(
     command = [
         str(session.binary),
         "configure",
-        "--workspace",
-        workspace,
         "--profile",
         desktop_cli_profile,
         "--skip-upgrade",
