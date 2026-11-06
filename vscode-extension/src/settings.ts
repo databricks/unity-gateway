@@ -1,7 +1,15 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type * as vscode from "vscode";
 
 /** globalState key of the settings values the extension last wrote. */
 export const OWNED_SETTINGS_KEY = "unityGateway.ownedSettings";
+
+/**
+ * A copy of the record in the extension's global storage folder. `ug` reads it before uninstalling the extension, which
+ * can't clean up after itself, and removes those values from the user settings.
+ */
+export const OWNED_SETTINGS_FILE = "owned-settings.json";
 
 /** VS Code's default model for new chat conversations, matched against each model's id. */
 export const DEFAULT_MODEL_SETTING = "chat.defaultModel";
@@ -11,7 +19,7 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 /**
  * Writes `wanted` to the user settings, and removes a value it wrote before that is no longer wanted. A value the
  * developer changed since is theirs and stays. A key in `developerWins` is only written while the developer hasn't
- * set a value of their own.
+ * set a value of their own. Returns what the extension owns afterwards.
  */
 export const syncSettings = async (
   settings: Pick<vscode.WorkspaceConfiguration, "inspect" | "update">,
@@ -19,7 +27,7 @@ export const syncSettings = async (
   wanted: Readonly<Record<string, unknown>>,
   log: (line: string) => void,
   developerWins: ReadonlySet<string> = new Set(),
-): Promise<void> => {
+): Promise<Record<string, unknown>> => {
   const owned = state.get<Record<string, unknown>>(OWNED_SETTINGS_KEY) ?? {};
   const write = async (key: string, value: unknown) => {
     try {
@@ -48,4 +56,16 @@ export const syncSettings = async (
     nowOwned[key] = value;
   }
   await state.update(OWNED_SETTINGS_KEY, Object.keys(nowOwned).length > 0 ? nowOwned : undefined);
+  return nowOwned;
+};
+
+/** Writes `owned` to `folder`'s copy of the record, or removes the copy when the extension owns nothing. */
+export const writeOwnedSettingsFile = (folder: string, owned: Readonly<Record<string, unknown>>): void => {
+  const path = join(folder, OWNED_SETTINGS_FILE);
+  if (Object.keys(owned).length === 0) {
+    rmSync(path, { force: true });
+    return;
+  }
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(path, JSON.stringify(owned, null, 2) + "\n");
 };
