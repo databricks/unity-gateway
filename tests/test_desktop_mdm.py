@@ -441,6 +441,7 @@ def test_shared_runtime_checks_intermediate_link_parents(monkeypatch, tmp_path, 
         return os.stat_result(info)
 
     monkeypatch.setattr(Path, "stat", machine_stat)
+    monkeypatch.setattr(Path, "lstat", lambda path: machine_stat(path, follow_symlinks=False))
     if problem is None:
         assert mdm._shared_path(str(executable), "Python", executable=True) == executable
     else:
@@ -476,6 +477,7 @@ def test_shared_runtime_accepts_root_owned_uv_python_version_link(
         return os.stat_result(info)
 
     monkeypatch.setattr(Path, "stat", machine_stat)
+    monkeypatch.setattr(Path, "lstat", lambda path: machine_stat(path, follow_symlinks=False))
     if version_link_owner == 0:
         assert mdm._shared_path(str(executable), "Python", executable=True) == executable
     else:
@@ -516,6 +518,7 @@ def test_runtime_rejects_untrusted_cli_before_version_discovery(monkeypatch, tmp
     subprocess_run.assert_not_called()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows files report uid 0, so ownership never fails")
 @pytest.mark.parametrize("cli_name", ["Databricks CLI", "Claude CLI"])
 def test_mdm_rejects_untrusted_cli_before_auth_or_publication(monkeypatch, tmp_path, cli_name):
     command = "databricks" if cli_name == "Databricks CLI" else "claude"
