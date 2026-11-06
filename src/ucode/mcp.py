@@ -21,6 +21,8 @@ from ucode.agents import antigravity, claude, codex, copilot, cursor, gemini, ki
 from ucode.config_io import read_json_safe, read_toml_safe
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
+    _MCP_SERVICES_WALK_DEADLINE_SECONDS,
+    _MCP_SERVICES_WALK_TIMEOUT_REASON,
     AIGW_MCP_SERVICES_SEGMENT,
     AuthTokenError,
     PermissionDeniedError,
@@ -550,12 +552,13 @@ def discover_all_mcp_service_names(
     on_services: Callable[[list[str]], None] | None = None,
     cancel_event: threading.Event | None = None,
     metadata: dict[str, dict] | None = None,
-) -> list[str]:
+) -> tuple[list[str], str | None]:
     """All MCP services across every `<catalog>.<schema>` in the workspace. This
     walks the workspace (see `list_all_mcp_services`) and is the workspace-wide
     counterpart to `discover_mcp_service_names`. `on_progress` is forwarded to
     the walk for live count reporting, and `on_services` to stream newly-found
-    service names into the picker as the walk progresses."""
+    service names into the picker as the walk progresses. Returns names and an optional
+    incomplete-discovery reason."""
     token = get_databricks_token(workspace, profile)
     kwargs = {"metadata": metadata} if metadata is not None else {}
     names, reason = list_all_mcp_services(
@@ -567,7 +570,7 @@ def discover_all_mcp_service_names(
         **kwargs,
     )
     raise_for_invalid_access_token(workspace, reason)
-    return names
+    return names, reason
 
 
 def _normalize_workspace_title(text: str) -> str:
@@ -912,7 +915,9 @@ def prompt_for_mcp_server_choices(
     additive: bool = False,
     managed_names: set[str] | None = None,
     service_metadata: dict[str, dict] | None = None,
-    background_loader: Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]
+    background_loader: Callable[
+        [Callable[[list[questionary.Choice]], None], threading.Event], str | None
+    ]
     | None = None,
 ) -> list[str] | None | _Back:
     """Show the MCP server picker. Returns the list of selected values, `None`
@@ -1453,7 +1458,7 @@ def _mcp_services_background_loader(
     known_names: set[str],
     additive: bool,
     managed_names: set[str] | None = None,
-) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]:
+) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], str | None]:
     """Return a picker `background_loader` that runs the workspace-wide MCP-services walk and
     streams each schema's newly-found services into the open picker as choices, so the walk
     never blocks the picker from opening. Deduping against already-shown rows (e.g. the fast
@@ -1463,7 +1468,7 @@ def _mcp_services_background_loader(
 
     def loader(
         append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
-    ) -> None:
+    ) -> str | None:
         def on_services(new_names: list[str]) -> None:
             append(
                 [
@@ -1474,13 +1479,20 @@ def _mcp_services_background_loader(
                 ]
             )
 
-        discover_all_mcp_service_names(
+        names, reason = discover_all_mcp_service_names(
             workspace,
             profile,
             on_services=on_services,
             cancel_event=cancel_event,
             metadata=metadata,
         )
+        if not cancel_event.is_set() and reason == _MCP_SERVICES_WALK_TIMEOUT_REASON:
+            return (
+                f"⚠️ Timed out after {int(_MCP_SERVICES_WALK_DEADLINE_SECONDS)}s, "
+                f"found {len(names)} MCP services. "
+                "Use `ug mcp add --names <catalog.schema.service>` to add a known service."
+            )
+        return None
 
     return loader
 
