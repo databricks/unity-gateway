@@ -7131,24 +7131,6 @@ class TestConfigureSharedStateUsePat:
         assert "v2" not in message.lower()
         assert "v3" not in message.lower()
 
-    def test_second_configure_in_process_does_not_reprobe_the_gateway(self, monkeypatch):
-        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
-        calls: list[str] = []
-
-        def fake_get(url, token, **kwargs):
-            calls.append(url)
-            return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
-
-        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
-        monkeypatch.setattr(
-            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
-        )
-
-        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
-        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
-
-        assert len(calls) == 1
-
     def test_use_pat_without_pat_profile_raises(self, monkeypatch):
         cli_mod, logins, _, _ = self._stub_deps(monkeypatch, pat_token=None)
 
@@ -7510,7 +7492,7 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
         # Provider mode keeps its separate single-call web-search lookup.
         assert state["web_search_model"] == "system.ai.gpt-5"
 
-    def test_overlapped_listing_composes_with_process_caches(self, monkeypatch):
+    def test_explicit_reconfigure_refreshes_probe_and_listing(self, monkeypatch):
         cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
@@ -7541,8 +7523,455 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
         for state in (first, second):
             assert state["claude_models"] == {"opus": "system.ai.claude-opus-4-8"}
             assert state["codex_models"] == ["system.ai.gpt-5"]
-        # One probe and one listing page; the second configure answers from both process caches.
-        assert len(requests) == 2
+        # Explicit reconfiguration refreshes both requests, including within one process.
+        assert len(requests) == 4
+        assert sum("parent=" in url for url in requests) == 2
+
+
+class TestConfiguredLaunchPreflightCache:
+    WS = "https://example.databricks.com"
+
+    @pytest.fixture
+    def preflight(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from ucode import state as state_mod
+
+        # ensure_pat_bearer writes directly; register its original value for fixture teardown.
+        monkeypatch.setenv("DATABRICKS_BEARER", os.environ.get("DATABRICKS_BEARER", ""))
+        TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token="pat-token")
+        monkeypatch.setattr(cli_mod, "load_state", state_mod.load_state)
+        monkeypatch.setattr(cli_mod, "save_state", real_save_state)
+        monkeypatch.setattr(cli_mod, "purge_cross_workspace_mcp_residue", lambda *a, **k: None)
+        authentication = MagicMock()
+        token = MagicMock(return_value="current-token")
+        probe = MagicMock(return_value=MODEL_SERVICE_PROBE)
+        listing = MagicMock(
+            return_value=(
+                {"opus": "system.ai.claude-opus-4-8"},
+                ["system.ai.gpt-5"],
+                ["system.ai.gemini-3"],
+                ["system.ai.glm-5"],
+                None,
+            )
+        )
+        now = [1000.0]
+        monkeypatch.setattr(cli_mod, "ensure_databricks_auth", authentication)
+        monkeypatch.setattr(cli_mod, "get_databricks_token", token)
+        monkeypatch.setattr(cli_mod, "probe_unity_gateway_capabilities", probe)
+        monkeypatch.setattr(cli_mod, "discover_model_services", listing)
+        monkeypatch.setattr(
+            cli_mod,
+            "list_anthropic_model_catalog",
+            lambda *a: db_mod.AnthropicModelCatalog(
+                ["system.ai.claude-opus-4-8", "system.ai.gpt-5"], {}
+            ),
+        )
+        monkeypatch.setattr(cli_mod.time, "time", lambda: now[0])
+
+        def configure(**overrides):
+            options = {"profile": "DEFAULT", "tools": ["claude"], "reuse_preflight": True}
+            options.update(overrides)
+            return cli_mod.configure_shared_state(options.pop("workspace", self.WS), **options)
+
+        return SimpleNamespace(
+            configure=configure,
+            load=state_mod.load_state,
+            save=real_save_state,
+            authentication=authentication,
+            token=token,
+            probe=probe,
+            listing=listing,
+            now=now,
+        )
+
+    def test_warm_launch_reuses_persisted_discovery_after_fresh_auth(self, preflight):
+        first = preflight.configure()
+        db_mod.clear_gateway_probe_cache()
+        db_mod.clear_model_services_cache()
+        preflight.now[0] += 10
+
+        second = preflight.configure()
+
+        assert second["claude_models"] == first["claude_models"]
+        assert second["launch_preflight"] == first["launch_preflight"]
+        assert preflight.authentication.call_count == preflight.token.call_count == 2
+        assert preflight.probe.call_count == preflight.listing.call_count == 1
+        assert "current-token" not in json.dumps(preflight.load())
+
+    def test_warm_launch_runs_cleanup_deferred_by_global_workspace_switch(
+        self, preflight, monkeypatch
+    ):
+        preflight.configure(workspace="https://previous.databricks.com")
+        with monkeypatch.context() as global_scope:
+            global_scope.setattr(cli_mod, "machine_wide_only", lambda: True)
+            preflight.configure(reuse_preflight=False, force_login=True)
+        assert cli_mod.user_mcp_reconcile_pending()
+        purge = MagicMock()
+        monkeypatch.setattr(cli_mod, "purge_cross_workspace_mcp_residue", purge)
+
+        state = preflight.configure()
+
+        assert preflight.probe.call_count == preflight.listing.call_count == 2
+        purge.assert_called_once_with(state, self.WS)
+
+    def test_failed_preferred_copilot_catalog_keeps_fallback_retryable(
+        self, preflight, monkeypatch
+    ):
+        preferred = MagicMock(return_value=db_mod.AnthropicModelCatalog([], {}, "HTTP 503"))
+        monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", preferred)
+
+        for _ in range(2):
+            state = preflight.configure(tools=["copilot"])
+            assert state["copilot_catalog"]["models"]
+            assert "launch_preflight" not in state
+            assert state["_discovery_reasons"]["copilot"] == "HTTP 503"
+        assert preferred.call_count == preflight.listing.call_count == 2
+
+    @pytest.mark.parametrize("tool", ["codex", "pi", "opencode"])
+    def test_successful_empty_optional_families_are_reused(self, preflight, monkeypatch, tool):
+        preflight.listing.return_value = (
+            {"opus": "system.ai.claude-opus-4-8"},
+            ["system.ai.gpt-5"],
+            [],
+            [],
+            None,
+        )
+        monkeypatch.setattr(cli_mod, "discover_gemini_models", db_mod.discover_gemini_models)
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: ({"endpoints": []}, None))
+
+        first = preflight.configure(tools=[tool])
+        second = preflight.configure(tools=[tool])
+
+        assert first["launch_preflight"] == second["launch_preflight"]
+        assert preflight.probe.call_count == preflight.listing.call_count == 1
+        assert preflight.authentication.call_count == preflight.token.call_count == 2
+        for field in {"gemini_models", "oss_models"} & set(second["launch_preflight"]["fields"]):
+            assert second[field] == []
+        if tool != "codex":
+            assert (
+                first["_discovery_reasons"]["gemini"]
+                == (second["_discovery_reasons"]["gemini"])
+                == "foundation-models listing returned no endpoints"
+            )
+
+    @pytest.mark.parametrize("tool", ["gemini", "antigravity"])
+    def test_required_gemini_family_retries_after_successful_empty_discovery(
+        self, preflight, monkeypatch, tool
+    ):
+        from ucode.agents import resolve_launch_model
+
+        claude, codex, _gemini, oss, reason = preflight.listing.return_value
+        preflight.listing.return_value = (claude, codex, [], oss, reason)
+        payload = {"endpoints": []}
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: (payload, None))
+        monkeypatch.setattr(cli_mod, "discover_gemini_models", db_mod.discover_gemini_models)
+        # A stamp valid for Pi's optional Gemini family must not admit a Gemini-only launch.
+        preflight.configure(tools=["pi"])
+
+        empty = preflight.configure(tools=[tool])
+
+        assert "launch_preflight" not in empty
+        with pytest.raises(RuntimeError, match="No models available"):
+            resolve_launch_model(tool, empty, None)
+        model = "databricks-gemini-3-flash"
+        payload["endpoints"] = [
+            {
+                "name": model,
+                "config": {
+                    "served_entities": [
+                        {
+                            "foundation_model": {
+                                "ai_gateway_v2_supported": True,
+                                "api_types": ["gemini/v1/generateContent"],
+                            }
+                        }
+                    ]
+                },
+            }
+        ]
+
+        recovered = preflight.configure(tools=[tool])
+
+        assert preflight.listing.call_count == preflight.probe.call_count == 3
+        assert resolve_launch_model(tool, recovered, None) == (recovered, model)
+        assert "launch_preflight" in recovered
+
+    @pytest.mark.parametrize("tool", ["codex", "copilot"])
+    def test_complete_empty_uc_catalog_keeps_successful_fallbacks_reusable(
+        self, preflight, monkeypatch, tool
+    ):
+        monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
+        listing = MagicMock(return_value=({"model_services": []}, None))
+        fallback = MagicMock(return_value=(["databricks-gpt-5"], None))
+        monkeypatch.setattr(db_mod, "_http_get_json", listing)
+        monkeypatch.setattr(cli_mod, "discover_codex_models", fallback)
+        monkeypatch.setattr(
+            cli_mod, "discover_claude_models", lambda *a: ({"sonnet": "claude-sonnet"}, None)
+        )
+        monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", lambda *a: None)
+
+        first = preflight.configure(tools=[tool])
+        second = preflight.configure(tools=[tool])
+
+        assert first["launch_preflight"] == second["launch_preflight"]
+        assert second["codex_models"] == ["databricks-gpt-5"]
+        if tool == "codex":
+            assert second["oss_models"] == []
+            assert (
+                second["_discovery_reasons"]["oss"] == "model-services listing returned no models"
+            )
+        else:
+            assert second["copilot_catalog"]["models"] == ["claude-sonnet", "databricks-gpt-5"]
+            assert second["_discovery_reasons"]["copilot"] is None
+        assert listing.call_count == fallback.call_count == preflight.probe.call_count == 1
+
+    def test_partial_copilot_listing_keeps_api_metadata_without_reusing_failure(
+        self, preflight, monkeypatch
+    ):
+        monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
+        monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", lambda *a: None)
+        requests = []
+
+        def get_page(url, token, **kwargs):
+            requests.append(url)
+            if "page_token=" in url:
+                return None, "HTTP 503"
+            return {
+                "model_services": [
+                    {"name": "system.ai.gpt-5", "supported_api_types": ["openai/v1/responses"]},
+                    {
+                        "name": "system.ai.gpt-4-1",
+                        "supported_api_types": ["gemini/v1/generateContent"],
+                    },
+                ],
+                "next_page_token": "more",
+            }, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get_page)
+
+        for _ in range(2):
+            state = preflight.configure(tools=["copilot"])
+            assert state["copilot_catalog"]["models"] == ["system.ai.gpt-5"]
+            assert state["_discovery_reasons"]["copilot"] == "HTTP 503"
+            assert "launch_preflight" not in state
+        assert sum("page_token=" not in url for url in requests) == 2
+        assert preflight.probe.call_count == 2
+
+    @pytest.mark.parametrize("age", [300, -1])
+    def test_expired_or_future_stamp_rechecks(self, preflight, age):
+        preflight.configure()
+        preflight.now[0] += age
+
+        preflight.configure()
+
+        assert preflight.probe.call_count == preflight.listing.call_count == 2
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"version": 2},
+            {"verified_at": True},
+            {"verified_at": float("nan")},
+            {"verified_at": 10**400},
+            {"fields": [["claude_models"]]},
+            {"empty_family_reasons": []},
+        ],
+    )
+    def test_malformed_stamp_rechecks(self, preflight, change):
+        preflight.configure()
+        state = preflight.load()
+        state["launch_preflight"].update(change)
+        preflight.save(state)
+
+        preflight.configure()
+
+        assert preflight.probe.call_count == 2
+
+    @pytest.mark.parametrize(
+        "value", [None, {}, [], "not-a-catalog", {"opus": None}, {"opus": " "}]
+    )
+    def test_missing_or_malformed_cached_models_recheck(self, preflight, value):
+        preflight.configure()
+        state = preflight.load()
+        state["claude_models"] = value
+        preflight.save(state)
+
+        preflight.configure()
+
+        assert preflight.listing.call_count == 2
+
+    @pytest.mark.parametrize("change", ["token", "profile", "workspace", "workspace_id", "pat"])
+    def test_changed_identity_cannot_reuse_success(self, preflight, change):
+        first_workspace = self.WS + "?w=111" if change == "workspace_id" else self.WS
+        preflight.configure(workspace=first_workspace)
+        options = {"workspace": first_workspace}
+        if change == "token":
+            preflight.token.return_value = "new-token"
+        elif change == "profile":
+            options["profile"] = "OTHER"
+        elif change == "workspace":
+            options["workspace"] = "https://other.databricks.com"
+        elif change == "workspace_id":
+            options["workspace"] = self.WS + "?w=222"
+        else:
+            options["use_pat"] = True
+
+        preflight.configure(**options)
+
+        assert preflight.probe.call_count == preflight.listing.call_count == 2
+
+    def test_new_model_family_requires_discovery(self, preflight):
+        preflight.configure()
+
+        state = preflight.configure(tools=["codex"])
+
+        assert preflight.listing.call_count == 2
+        assert state["oss_models"] == ["system.ai.glm-5"]
+
+    def test_custom_oauth_profile_change_rechecks_same_token(self, preflight, monkeypatch):
+        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
+        custom_token = MagicMock(return_value="current-token")
+        monkeypatch.setattr(cli_mod, "ensure_custom_oauth_cli_token", custom_token)
+        config = {
+            "client_id": "client",
+            "redirect_url": "http://localhost:8020",
+            "scopes": ["all-apis"],
+            "profile": "custom-one",
+        }
+        preflight.configure(custom_oauth=config)
+
+        preflight.configure(custom_oauth={**config, "profile": "custom-two"})
+
+        assert custom_token.call_count == preflight.probe.call_count == 2
+
+    def test_changed_launch_routing_headers_recheck(self, preflight, monkeypatch):
+        preflight.configure()
+        monkeypatch.setenv("UG_HEADERS", "X-Team: selected-route")
+
+        preflight.configure()
+
+        assert preflight.probe.call_count == preflight.listing.call_count == 2
+
+    def test_full_configure_can_prime_single_agent_launch(self, preflight):
+        preflight.configure(tools=None, reuse_preflight=False, force_login=True)
+
+        preflight.configure()
+
+        assert preflight.listing.call_count == 1
+
+    def test_provider_mode_discovers_web_search_before_reusing(self, preflight, monkeypatch):
+        preflight.configure()
+        web_search = MagicMock(return_value=(["system.ai.gpt-5"], None))
+        monkeypatch.setattr(cli_mod, "discover_codex_models", web_search)
+
+        state = preflight.configure(skip_model_discovery=True)
+        preflight.configure(skip_model_discovery=True)
+
+        assert state["web_search_model"] == "system.ai.gpt-5"
+        assert preflight.probe.call_count == 2
+        assert web_search.call_count == 1
+
+    def test_empty_provider_discovery_keeps_fallback_but_does_not_cache_it(
+        self, preflight, monkeypatch
+    ):
+        monkeypatch.setattr(
+            cli_mod, "discover_codex_models", lambda *a: (["system.ai.gpt-5"], None)
+        )
+        preflight.configure(skip_model_discovery=True)
+        monkeypatch.setattr(cli_mod, "discover_codex_models", lambda *a: ([], None))
+
+        state = preflight.configure(skip_model_discovery=True, reuse_preflight=False)
+
+        assert state["web_search_model"] == "system.ai.gpt-5"
+        assert "launch_preflight" not in preflight.load()
+
+    @pytest.mark.parametrize(
+        ("failure", "probe_calls"),
+        [("authentication", 2), ("token", 2), ("probe", 3), ("listing", 3)],
+    )
+    def test_failed_refresh_invalidates_prior_success(self, preflight, failure, probe_calls):
+        preflight.configure()
+        operation = getattr(preflight, failure)
+        operation.side_effect = RuntimeError("refresh failed")
+
+        with pytest.raises(RuntimeError, match="refresh failed"):
+            preflight.configure(reuse_preflight=False)
+        assert "launch_preflight" not in preflight.load()
+        operation.side_effect = None
+
+        preflight.configure()
+
+        assert preflight.probe.call_count == probe_calls
+        assert "launch_preflight" in preflight.load()
+
+    @pytest.mark.parametrize("failed", ["probe", "listing", "empty", "recovered_families"])
+    def test_cold_failure_or_partial_discovery_never_seeds_success(
+        self, preflight, monkeypatch, failed
+    ):
+        if failed == "probe":
+            preflight.probe.side_effect = RuntimeError("gateway unavailable")
+            with pytest.raises(RuntimeError, match="gateway unavailable"):
+                preflight.configure()
+        else:
+            preflight.listing.return_value = (
+                {},
+                [] if failed == "recovered_families" else ["system.ai.gpt-5"],
+                ["system.ai.gemini-3"] if failed == "recovered_families" else [],
+                [],
+                None if failed == "empty" else "incomplete listing",
+            )
+            if failed == "recovered_families":
+                monkeypatch.setattr(
+                    cli_mod, "discover_claude_models", lambda *a: ({"opus": "claude-opus"}, None)
+                )
+                monkeypatch.setattr(cli_mod, "discover_codex_models", lambda *a: (["gpt-5"], None))
+            preflight.configure()
+        assert "launch_preflight" not in preflight.load()
+        if failed == "recovered_families":
+            preflight.configure()
+            assert preflight.listing.call_count == 2
+
+    def test_null_optional_family_response_does_not_seed_success(self, preflight, monkeypatch):
+        claude, codex, _gemini, oss, reason = preflight.listing.return_value
+        preflight.listing.return_value = (claude, codex, [], oss, reason)
+        monkeypatch.setattr(cli_mod, "discover_gemini_models", db_mod.discover_gemini_models)
+        http = MagicMock(return_value=(None, None))
+        monkeypatch.setattr(db_mod, "_http_get_json", http)
+
+        for _ in range(2):
+            state = preflight.configure(tools=["pi"])
+            assert "launch_preflight" not in state
+        assert http.call_count == 2
+
+    @pytest.mark.parametrize("scenario", ["provider_mode_switch", "partial_listing"])
+    def test_launch_reuses_the_verified_probe_when_full_stamp_cannot_be_reused(
+        self, preflight, monkeypatch, scenario
+    ):
+        db_mod.clear_gateway_probe_cache()
+        probe_http = MagicMock(
+            return_value=({"model_services": [{"name": "system.ai.gpt-5"}]}, None)
+        )
+        monkeypatch.setattr(db_mod, "_http_get_json", probe_http)
+        monkeypatch.setattr(
+            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
+        )
+        monkeypatch.setattr(
+            cli_mod, "discover_codex_models", lambda *a: (["system.ai.gpt-5"], None)
+        )
+        if scenario == "partial_listing":
+            preflight.listing.return_value = (
+                *preflight.listing.return_value[:-1],
+                "incomplete listing",
+            )
+
+        preflight.configure(reuse_preflight=False)
+        provider_mode = scenario == "provider_mode_switch"
+        preflight.configure(skip_model_discovery=provider_mode)
+
+        assert probe_http.call_count == 1
+        preflight.configure(skip_model_discovery=provider_mode, reuse_preflight=False)
+        assert probe_http.call_count == 2
 
 
 class TestConfigureNoLongerValidates:
@@ -7903,15 +8332,18 @@ class TestConfigureSharedStateCopilotCatalog:
         monkeypatch.setattr(
             cli_mod, "load_full_state", lambda: {"workspaces": {self.WS: dest_block}}
         )
-        if listed is not None:
-            db_mod._MODEL_SERVICES_CACHE[self.WS] = [db_mod.ModelServiceEntry(m) for m in listed]
         reason = None if listed else "HTTP 503"
         sonnet = "system.ai.claude-sonnet-4-6"
+
+        def discover(workspace, token):
+            return ({"sonnet": sonnet}, [], [], [], None) if listed else ({}, [], [], [], reason)
+
+        monkeypatch.setattr(cli_mod, "discover_model_services", discover)
         monkeypatch.setattr(
             cli_mod,
-            "discover_model_services",
-            lambda w, t: (
-                ({"sonnet": sonnet}, [], [], [], None) if listed else ({}, [], [], [], reason)
+            "latest_model_service_listing",
+            lambda workspace: db_mod.ModelServiceListing(
+                tuple(db_mod.ModelServiceEntry(model) for model in (listed or [])), reason
             ),
         )
         monkeypatch.setattr(cli_mod, "discover_claude_models", lambda w, t: ({}, reason))
@@ -8205,6 +8637,16 @@ class TestSkipPreflightFlag:
             result = runner.invoke(app, [tool])
         assert result.exit_code == 0, result.output
         assert cfg.call_args.kwargs["skip_preflight"] is False
+        assert cfg.call_args.kwargs["reuse_preflight"] is True
+
+    def test_refresh_forces_fresh_preflight(self):
+        cfg = MagicMock(return_value=MINIMAL_STATE)
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(cfg):
+                stack.enter_context(p)
+            result = runner.invoke(app, ["codex", "--refresh"])
+        assert result.exit_code == 0, result.output
+        assert cfg.call_args.kwargs["reuse_preflight"] is False
 
 
 class TestDeniedMachineWorkspaceSwitch:

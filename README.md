@@ -61,6 +61,12 @@ On first launch of a model-backed agent, `ug` prompts for a Databricks
 workspace, authenticates, and writes local agent config. Later launches reuse
 the saved workspace and credentials.
 
+Configured launches can reuse a successful gateway check and model catalog for up to five minutes.
+New models can take that long to appear. Use `ug claude --refresh`, `ug codex --refresh`, or
+`ug configure` to check immediately. Authentication and managed-policy handling still run;
+reuse requires the same workspace, profile, and current credential. Only a credential fingerprint
+is saved with the discovery stamp. Failed or incomplete checks remain retryable.
+
 When Claude Code or Codex is older than the minimum version `ug` supports, `ug`
 asks before upgrading it in place. Set `UG_AUTO_UPGRADE_AGENT=1` to upgrade
 without asking, for example from a launcher that manages the agent install.
