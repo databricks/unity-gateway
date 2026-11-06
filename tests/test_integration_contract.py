@@ -603,6 +603,7 @@ SKIPPED_ON_FORK_PRS = {
     "managed",
     "managed-opencode",
     "codex-desktop-macos",
+    "mdm-provision",
     "dedicated-cuj-plan",
     "dedicated-cuj",
     "cujs",
