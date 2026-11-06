@@ -996,16 +996,19 @@ MPS CUJs select the existing services already used by e2e:
   `--claude-foundry-provider-model` (Haiku), and `--claude-foundry-provider-default-model`
   (Sonnet). Both journeys run in the full Claude lanes on Linux and Windows.
 - Claude (custom Foundry): `main.ucode.ci_custom_foundry_claude_mps` declares Haiku/Sonnet 5.5
-  on `anthropic/v1/messages`. `test_ug_claude_fresh_custom_foundry_mps` completes a headless
-  file-reading task on Haiku through this `CUSTOM` provider. Override with
-  `--claude-custom-provider` and `--claude-custom-provider-model`.
+  on `anthropic/v1/messages`. `test_ug_configure_claude_custom_foundry_mps` selects the service
+  in the real configure picker, verifies the saved provider and Sonnet default, then completes
+  a TUI file-reading task on Sonnet through plain `ug claude`. Override with
+  `--claude-custom-provider` and `--claude-custom-provider-model` (Sonnet).
 - Codex (custom Azure OpenAI): `main.ucode.ci_custom_azure_openai_mps` declares GPT deployments
-  on `openai/v1/responses`. `test_ug_codex_fresh_custom_azure_openai_mps` completes a headless
-  file-reading task on `gpt-5-nano` through this `CUSTOM` provider. Override with
-  `--codex-custom-provider` and `--codex-custom-provider-model`.
-  Both custom-provider journeys assert the exact generated routing header and completed-turn
-  model, and run in their full agent lanes on Linux and Windows. They require preprovisioned
-  services; the tests never create Azure resources or store upstream credentials.
+  on `openai/v1/responses`. `test_ug_configure_codex_custom_azure_openai_mps` selects the service
+  in the real configure picker, then launches Codex without `--provider` and completes a TUI
+  file-reading task on `gpt-5-nano`. Override with `--codex-custom-provider` and
+  `--codex-custom-provider-model`.
+  Both journeys assert the saved provider, completed-turn model, and normal exit, and run
+  in their full agent lanes on Linux and Windows. Codex sets its MPS header at launch;
+  the chosen provider persists in UG state. These tests require preprovisioned services and
+  never create Azure resources or store upstream credentials.
   Their `custom.direct.header_auth` entries reference UC Secrets
   `main.ucode.ci_foundry_claude_key` and `main.ucode.ci_azure_openai_key`, respectively.
   The suite needs only Databricks authentication and MPS `EXECUTE`; it never reads those secrets.

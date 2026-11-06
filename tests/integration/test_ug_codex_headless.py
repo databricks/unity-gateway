@@ -1,7 +1,6 @@
 """CUJs for using codex from scripts through installed ug."""
 
 import json
-import tomllib
 
 import pytest
 from utils.constants import CODEX_TEST_MODEL
@@ -216,46 +215,6 @@ def test_ug_codex_fresh_provider_launch(live_session, workspace, codex_provider)
         timeout=180,
     )
     assert codex_provider in result.stdout
-    session.assert_not_routed()
-
-
-@pytest.mark.usefixtures("unmanaged_workspace")
-def test_ug_codex_fresh_custom_azure_openai_mps(
-    live_session, workspace, codex_custom_provider, codex_custom_provider_model
-):
-    """Scenario: launch ug codex --provider against a custom Azure OpenAI MPS from a fresh home.
-
-    Expected: the real Codex agent reads a local file through the Responses API and returns
-    its unknown value in a completed turn on the selected deployment. The generated config
-    retains the exact provider header; smart routing stays off.
-    """
-    session = live_session
-    session.choose_codex_windows_sandbox()
-    task = FileTask(session)
-    session.record("model.json", {"model": codex_custom_provider_model})
-
-    result = session.run(
-        "codex",
-        "--workspace",
-        workspace,
-        "--provider",
-        codex_custom_provider,
-        "--model",
-        codex_custom_provider_model,
-        "--",
-        "exec",
-        "--skip-git-repo-check",
-        "--json",
-        "--",
-        task.prompt,
-        timeout=240,
-    )
-
-    task.assert_headless_answer("codex", result)
-    config = tomllib.loads((session.home / ".codex/ucode.config.toml").read_text())
-    headers = config["model_providers"]["Databricks"]["http_headers"]
-    assert headers["Databricks-Model-Provider-Service"] == codex_custom_provider
-    assert_completed_task_model(session, "codex", task.value, codex_custom_provider_model)
     session.assert_not_routed()
 
 

@@ -219,46 +219,6 @@ def test_ug_claude_fresh_foundry_mps(
     session.assert_not_routed()
 
 
-@pytest.mark.usefixtures("unmanaged_workspace")
-def test_ug_claude_fresh_custom_foundry_mps(
-    live_session, workspace, claude_custom_provider, claude_custom_provider_model
-):
-    """Scenario: launch ug claude --provider against a custom Foundry MPS from a fresh home.
-
-    Expected: the real Claude agent accepts the provider, reads a local file, and returns
-    its unknown value in a successful structured result through the selected deployment.
-    The generated settings retain the exact provider header; smart routing stays off.
-    """
-    session = live_session
-    task = FileTask(session)
-    session.record("model.json", {"model": claude_custom_provider_model})
-
-    result = session.run(
-        "claude",
-        "--workspace",
-        workspace,
-        "--provider",
-        claude_custom_provider,
-        "--model",
-        claude_custom_provider_model,
-        "--",
-        "-p",
-        task.prompt,
-        "--output-format",
-        "json",
-        "--allowedTools",
-        "Read",
-        timeout=240,
-    )
-
-    task.assert_headless_answer("claude", result)
-    settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
-    headers = settings["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
-    assert f"Databricks-Model-Provider-Service: {claude_custom_provider}" in headers
-    assert_completed_task_model(session, "claude", task.value, claude_custom_provider_model)
-    session.assert_not_routed()
-
-
 @pytest.mark.parametrize("model_form", ["separate", "equals"])
 @pytest.mark.parametrize("model_owner", ["ug", "claude"])
 def test_ug_claude_headless_explicit_model_bypasses_routing(

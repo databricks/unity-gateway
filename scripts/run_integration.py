@@ -438,8 +438,8 @@ def arguments(
     )
     parser.add_argument(
         "--claude-custom-provider-model",
-        default="claude-haiku-5-5",
-        help="Deployment used by the Claude custom-provider file task.",
+        default="claude-sonnet-5-5",
+        help="Sonnet deployment selected by a plain launch through the custom Foundry MPS.",
     )
     parser.add_argument(
         "--claude-provider-model",

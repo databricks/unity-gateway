@@ -162,3 +162,43 @@ def test_ug_configure_codex_foundry_mps(
     _run_codex_openai_dialect_mps_cuj(
         live_session, workspace, codex_foundry_provider, codex_foundry_provider_model, "foundry"
     )
+
+
+@pytest.mark.usefixtures("unmanaged_workspace")
+def test_ug_configure_codex_custom_azure_openai_mps(
+    live_session, workspace, codex_custom_provider, codex_custom_provider_model
+):
+    """Scenario: select a custom Azure OpenAI MPS in ug configure, then launch Codex.
+
+    Expected: the real picker saves the provider. Codex uses it without --provider,
+    completes a TUI file-reading task on the selected deployment, returns the unknown
+    file value, and exits normally without smart routing.
+    """
+    session = live_session
+    task = FileTask(session)
+    session.record("model.json", {"model": codex_custom_provider_model})
+    command = [
+        str(session.binary),
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    ]
+    with ConfigureTerminal(session, "codex", command, "configure-custom-provider") as configure:
+        configure.select_agent("Codex")
+        configure.choose("How should Codex get its models?", "External Models")
+        configure.choose("Select a model provider service:", codex_custom_provider)
+        configure.finish(timeout=240)
+    assert session.workspace_state()["provider_services"]["codex"] == codex_custom_provider
+    assert codex_custom_provider in session.run("status").stdout
+
+    command = [str(session.binary), "codex", "--", "--model", codex_custom_provider_model]
+    with AgentTerminal(session, "codex", command, "custom-provider-session") as tui:
+        tui.boot()
+        tui.submit(task.prompt)
+        tui.wait_for_task(task, timeout=300)
+        tui.exit_normally()
+    task.assert_completed(session, "codex")
+    assert_completed_task_model(session, "codex", task.value, codex_custom_provider_model)
+    session.assert_not_routed()
