@@ -413,7 +413,11 @@ def resolve_launch_model(
 
 
 def resolve_provider_models(
-    tool: str, state: dict, provider: str | None
+    tool: str,
+    state: dict,
+    provider: str | None,
+    *,
+    on_resolved: Callable[[dict], None] | None = None,
 ) -> tuple[dict | None, str | None, bool]:
     """Validate ``provider`` for ``tool`` and return the model ids to pin.
 
@@ -432,6 +436,9 @@ def resolve_provider_models(
     path pins from the admin's authored manifest slots instead — see
     ``managed_resolve.managed_provider_family_models`` and its launch call site — so an admin's chosen
     versions win rather than being re-derived here.
+
+    ``on_resolved`` receives the validated service for invocation-scoped launch
+    options. This avoids another provider lookup without persisting API metadata.
     """
     if not provider:
         return None, None, False
@@ -439,6 +446,8 @@ def resolve_provider_models(
     service, error = resolve_provider_service(tool, provider, state["workspace"], token)
     if error or service is None:
         return None, error, False
+    if on_resolved is not None:
+        on_resolved(service)
     relayed = bool(service.get("relayed"))
     # Relayed services enforce their declared targets too, so map them like any Anthropic service
     # (allow_all declares none). relayed gates auth, not model reconciliation.

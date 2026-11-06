@@ -2167,6 +2167,38 @@ def test_claude_discovery_changes_do_not_break_other_managed_providers():
 
 
 class TestManagedCodexModelSource:
+    @pytest.mark.parametrize("managed_provider", [False, True])
+    def test_provider_type_is_fresh_and_passed_only_through_launch_options(
+        self, monkeypatch, managed_provider
+    ):
+        provider = "main.default.svc"
+        managed = (
+            {"enabled_agents": {"codex": {"model_config": {"model_provider_service": provider}}}}
+            if managed_provider
+            else None
+        )
+        lookups = []
+        for provider_type in ("amazon_bedrock", "openai"):
+            with _launch_policy_patches(managed, persisted_provider=provider) as calls:
+                calls["resolve_provider"].side_effect = agents.resolve_provider_models
+                monkeypatch.setattr(agents, "get_databricks_token", lambda *_args: "token")
+
+                def resolve(tool, name, workspace, token, resolved_type=provider_type):
+                    lookups.append((tool, name, workspace, token))
+                    return {"provider_type": resolved_type}, None
+
+                monkeypatch.setattr(agents, "resolve_provider_service", resolve)
+                result = runner.invoke(app, ["codex"])
+
+            assert result.exit_code == 0, result.output
+            options = calls["launch"].call_args.kwargs["options"]
+            assert options.provider_service == provider
+            assert options.provider_type == provider_type
+            for state in (calls["configure"].call_args.args[1], calls["launch"].call_args.args[1]):
+                assert "provider_type" not in state
+                assert "provider_details" not in state
+        assert len(lookups) == 2
+
     @pytest.mark.parametrize(
         ("model_config", "expected_provider", "expected_parent"),
         [
@@ -2404,7 +2436,9 @@ class TestClaudeModelFlag:
         mock_launch = MagicMock()
         monkeypatch.setattr(cli_mod, "launch_agent", mock_launch)
         monkeypatch.setattr(
-            cli_mod, "resolve_provider_models", lambda t, s, p: (provider_models, None, relayed)
+            cli_mod,
+            "resolve_provider_models",
+            lambda t, s, p, *, on_resolved=None: (provider_models, None, relayed),
         )
         mock_configure = MagicMock(return_value=state)
         monkeypatch.setattr(cli_mod, "configure_tool", mock_configure)

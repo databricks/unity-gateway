@@ -1,5 +1,10 @@
 # Integration tests
 
+`../test_agents_init.py`, `../test_cli.py`, and `../test_agent_codex.py` cover
+invocation-scoped provider-type reuse and Codex web-search configuration with
+controlled external boundaries. No live journey currently asserts the provider
+request count or latency saved by this reuse.
+
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They

@@ -421,6 +421,31 @@ class TestResolveLaunchModel:
 class TestResolveProviderModels:
     _STATE = {"workspace": "https://ws.databricks.com", "profile": None}
 
+    def test_exposes_validated_service_without_mutating_state(self, monkeypatch):
+        service = {"provider_type": "amazon_bedrock", "name": "main.default.svc"}
+        self._patch(monkeypatch, service, None)
+        received = []
+        state = dict(self._STATE)
+
+        result = agents_mod.resolve_provider_models(
+            "codex", state, service["name"], on_resolved=received.append
+        )
+
+        assert result == (None, None, False)
+        assert received == [service]
+        assert state == self._STATE
+
+    def test_invalid_service_does_not_supply_launch_metadata(self, monkeypatch):
+        self._patch(monkeypatch, {"provider_type": "anthropic"}, "incompatible provider")
+        received = []
+
+        result = agents_mod.resolve_provider_models(
+            "codex", dict(self._STATE), "main.default.svc", on_resolved=received.append
+        )
+
+        assert result == (None, "incompatible provider", False)
+        assert received == []
+
     def _patch(self, monkeypatch, service, error):
         monkeypatch.setattr(agents_mod, "get_databricks_token", lambda w, p: "token")
         monkeypatch.setattr(

@@ -3692,9 +3692,12 @@ def _launch_options(
     user_pinned_model: str | None,
     provider: str | None,
     launch_model: str | None = None,
+    provider_type: str | None = None,
 ) -> LaunchOptions:
     return LaunchOptions(
         launch_model=launch_model,
+        provider_service=provider if provider_type is not None else None,
+        provider_type=provider_type,
         # Pinned models for providers are resolved above through the provider-specific launch path.
         user_pinned_model=user_pinned_model if provider is None else None,
         launch_smart_routing=(
@@ -4016,6 +4019,7 @@ def _launch_tool(
         # Gemini is exempt: it validates the service and resolves its target in a single
         # lookup via resolve_gemini_provider_model (below), and uses no family model map.
         provider_models = None
+        provider_details: dict = {}
         picker_catalog = None
         catalog_profile = _get_catalog_profile(state)
         relayed = False
@@ -4025,7 +4029,9 @@ def _launch_tool(
             else {}
         )
         if provider and tool not in GEMINI_API_TOOLS:
-            provider_models, error, relayed = resolve_provider_models(tool, state, provider)
+            provider_models, error, relayed = resolve_provider_models(
+                tool, state, provider, on_resolved=provider_details.update
+            )
             if error:
                 if managed is not None and provider == managed_provider_service(managed, tool):
                     # Clear error if the admin has Unity Catalog grants the developer doesn't.
@@ -4282,6 +4288,7 @@ def _launch_tool(
             # Copilot picks its start model from its own catalog; the admin's or budget pick leads.
             # session_model is set for claude only.
             launch_model=managed_model if tool == "copilot" else session_model,
+            provider_type=provider_details.get("provider_type"),
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):

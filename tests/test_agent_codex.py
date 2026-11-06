@@ -1511,6 +1511,67 @@ class TestCodexLaunch:
         assert "mcp-proxy" in entry
         assert not any(a == "mcp_servers={}" or a.startswith("mcp_servers=") for a in args)
 
+    @pytest.mark.parametrize("provider_type", ["amazon_bedrock", "openai", "bedrock_mantle"])
+    def test_launch_reuses_matching_provider_type_without_another_lookup(
+        self, tmp_path, monkeypatch, provider_type
+    ):
+        launches = self._patch(tmp_path, monkeypatch)
+        provider = "main.default.svc"
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "app-catalog.json")
+        monkeypatch.setattr(codex, "_model_catalog_path", lambda *_args: tmp_path / "m.json")
+        monkeypatch.setattr(
+            codex,
+            "_fetch_codex_model_catalog",
+            lambda *_args, **_kwargs: {"models": [{"slug": "m"}]},
+        )
+        monkeypatch.setattr(
+            codex,
+            "get_model_provider_service",
+            lambda *_args: pytest.fail("provider metadata was already resolved for this launch"),
+        )
+
+        codex.launch(
+            {"workspace": WS, "_codex_launch_provider": provider},
+            [],
+            options=LaunchOptions(provider_service=provider, provider_type=provider_type),
+        )
+
+        assert ('web_search="disabled"' in launches[0]) is (provider_type == "amazon_bedrock")
+        assert any(arg.startswith("mcp_servers.") for arg in launches[0]) is (
+            provider_type == "amazon_bedrock"
+        )
+
+    def test_provider_type_for_another_service_does_not_suppress_lookup(
+        self, tmp_path, monkeypatch
+    ):
+        launches = self._patch(tmp_path, monkeypatch)
+        looked_up = []
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "app-catalog.json")
+        monkeypatch.setattr(codex, "_model_catalog_path", lambda *_args: tmp_path / "m.json")
+        monkeypatch.setattr(
+            codex,
+            "_fetch_codex_model_catalog",
+            lambda *_args, **_kwargs: {"models": [{"slug": "m"}]},
+        )
+        monkeypatch.setattr(
+            codex,
+            "get_model_provider_service",
+            lambda provider, workspace, token: (
+                looked_up.append((provider, workspace, token)) or {"provider_type": "openai"},
+                None,
+            ),
+        )
+        codex.launch(
+            {"workspace": WS, "_codex_launch_provider": "other.svc.name"},
+            [],
+            options=LaunchOptions(
+                provider_service="main.default.svc", provider_type="amazon_bedrock"
+            ),
+        )
+
+        assert looked_up == [("other.svc.name", WS, "tok")]
+        assert not any(arg.startswith(("web_search=", "mcp_servers.")) for arg in launches[0])
+
     @pytest.mark.parametrize(
         "provider_type", ["bedrock_mantle", "openai", "azure_openai", "microsoft_foundry"]
     )

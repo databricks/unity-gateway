@@ -1454,17 +1454,24 @@ def _web_search_mcp_configured(state: dict, url: str) -> bool:
 
 
 def _bedrock_runtime_web_search_overlay(
-    state: dict, workspace: str, token: str, provider: str
+    state: dict,
+    workspace: str,
+    token: str,
+    provider: str,
+    *,
+    provider_type: str | None = None,
 ) -> dict:
     """Launch-scoped config that swaps Codex's built-in web_search for the web_search MCP service
     when ``provider`` is an Amazon Bedrock runtime Model Provider Service; empty otherwise.
 
     A failed provider lookup leaves the launch unchanged rather than blocking Codex."""
-    service, reason = get_model_provider_service(provider, workspace, token)
-    if service is None:
-        print_warning_err(f"Could not check the provider type of {provider}: {reason}")
-        return {}
-    if service.get("provider_type") != _BUILTIN_WEB_SEARCH_UNSUPPORTED_PROVIDER_TYPE:
+    if provider_type is None:
+        service, reason = get_model_provider_service(provider, workspace, token)
+        if service is None:
+            print_warning_err(f"Could not check the provider type of {provider}: {reason}")
+            return {}
+        provider_type = service.get("provider_type")
+    if provider_type != _BUILTIN_WEB_SEARCH_UNSUPPORTED_PROVIDER_TYPE:
         return {}
     overlay: dict = {"web_search": "disabled"}
     url = build_mcp_service_url(workspace, WEB_SEARCH_MCP_SERVICE)
@@ -1918,7 +1925,17 @@ def launch(
     updating = tool_args[:1] == ["update"]
     launches_session_on_mps = bool(workspace and token and provider) and not (updating or relayed)
     if launches_session_on_mps:
-        profile_doc.update(_bedrock_runtime_web_search_overlay(state, workspace, token, provider))
+        profile_doc.update(
+            _bedrock_runtime_web_search_overlay(
+                state,
+                workspace,
+                token,
+                provider,
+                provider_type=(
+                    options.provider_type if options.provider_service == provider else None
+                ),
+            )
+        )
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")
     if workspace and token and (provider or parent_schema) and not updating and not relayed:
