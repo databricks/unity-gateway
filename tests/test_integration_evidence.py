@@ -8,9 +8,11 @@ from tests.integration.utils import evidence
 from tests.integration.utils.agents import antigravity, claude, codex, copilot
 from tests.integration.utils.evidence import (
     FileTask,
+    RateLimited,
     SubagentCalculation,
     assert_no_terminal_api_error,
     assistant_answer_contains,
+    rate_limit_banner_count,
     tool_outputs,
 )
 from tests.integration.utils.terminal import codex_command_approval_pending
@@ -624,3 +626,41 @@ def test_codex_compacted_prompt_uses_adjacent_native_spawn():
         "ug_subagent_ab12",
         orchestrator_on=True,
     )
+
+
+@pytest.mark.parametrize("status", ["429 Too Many Requests", "503 Service Unavailable"])
+def test_exhausted_rate_limit_is_distinguished_from_fatal_errors(status):
+    screen = f"■ exceeded retry limit, last status: {status}"
+    assert rate_limit_banner_count(screen) == 1
+    with pytest.raises(RateLimited, match="Agent returned a terminal API error"):
+        assert_no_terminal_api_error(screen)
+    # Subclass of AssertionError, so callers that do not catch it fail as before.
+    with pytest.raises(AssertionError):
+        assert_no_terminal_api_error(screen)
+
+
+@pytest.mark.parametrize(
+    "screen",
+    [
+        "■ unexpected status 400 Bad Request",
+        "■ unexpected status 422 Unprocessable Entity",
+        "■ unexpected status 403 Forbidden: PERMISSION_DENIED",
+        "■ exceeded retry limit, last status: 500 Internal Server Error",
+        "■ exceeded retry limit, last status: 429 Too Many Requests\n"
+        "■ unexpected status 401 Unauthorized",
+    ],
+)
+def test_fatal_errors_are_never_rate_limited(screen):
+    with pytest.raises(AssertionError) as error:
+        assert_no_terminal_api_error(screen)
+    assert not isinstance(error.value, RateLimited)
+    with pytest.raises(AssertionError) as tolerated:
+        assert_no_terminal_api_error(screen, tolerated_rate_limits=1)
+    assert not isinstance(tolerated.value, RateLimited)
+
+
+def test_tolerated_rate_limit_banners_only_allow_the_earlier_ones():
+    banner = "■ exceeded retry limit, last status: 429 Too Many Requests"
+    assert_no_terminal_api_error(banner, tolerated_rate_limits=1)
+    with pytest.raises(RateLimited):
+        assert_no_terminal_api_error(f"{banner}\n{banner}", tolerated_rate_limits=1)

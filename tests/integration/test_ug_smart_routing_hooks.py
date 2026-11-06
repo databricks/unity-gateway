@@ -11,12 +11,15 @@ Smart Router skill and spawn real children before and after its session-local to
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
+from utils.agents.antigravity import resource_exhausted_retry_delay
 from utils.agents.claude import assert_follow_ups_resumed
 from utils.evidence import (
     FileTask,
+    RateLimited,
     SubagentCalculation,
     agent_sessions,
     assert_subagent_routed,
@@ -88,6 +91,41 @@ def _routing_display_for_task(
     return codex_routing_display_for_task(screen, marker, orchestrator_on=orchestrator_on)
 
 
+# Codex gives up with "exceeded retry limit, last status: 429" after its own retries. Back off
+# and resubmit the turn twice (three attempts) before failing; other API errors stay fatal.
+RATE_LIMIT_RETRIES = 2
+
+
+def _retry_on_rate_limit(tui, description: str, attempt_once, *, sleep=time.sleep):
+    """Run ``attempt_once()``, backing off and rerunning it when the client exhausts a 429/503."""
+    for retry in range(RATE_LIMIT_RETRIES + 1):
+        try:
+            return attempt_once()
+        except RateLimited as error:
+            if retry == RATE_LIMIT_RETRIES:
+                raise AssertionError(
+                    f"{description} was rate limited on all {RATE_LIMIT_RETRIES + 1} attempts:\n"
+                    f"{error}"
+                ) from error
+            delay = resource_exhausted_retry_delay(retry)
+            tui.actions.append(
+                {"reason": f"rate-limited-retry-{retry + 1}", "delay": delay, "what": description}
+            )
+            sleep(delay)
+            # The banner stays on screen; judge the resubmitted turn on its own.
+            tui.tolerate_rate_limits_on_screen()
+
+
+def _guarded(tui, predicate):
+    """A wait predicate that also surfaces terminal API errors (and rate limits) early."""
+
+    def check(screen):
+        tui.check_api_error(screen)
+        return predicate(screen)
+
+    return check
+
+
 def _run_calculation(
     tui,
     session,
@@ -98,17 +136,41 @@ def _run_calculation(
     *,
     routed: bool,
 ):
+    def attempt():
+        return _run_calculation_once(
+            tui, session, agent, expression, expected, orchestration_enabled, routed=routed
+        )
+
+    if agent != "codex":
+        return attempt()
+    return _retry_on_rate_limit(tui, f"the calculation {expression}", attempt)
+
+
+def _run_calculation_once(
+    tui,
+    session,
+    agent: str,
+    expression: str,
+    expected: str,
+    orchestration_enabled: bool,
+    *,
+    routed: bool,
+):
+    # A fresh task (and marker) per attempt, with the decision baseline taken just before submit.
     task = SubagentCalculation(expression, expected)
     before = _routing_decisions(session, agent)
     tui.submit(task.prompt)
 
     if routed:
         tui.wait_for(
-            lambda screen: _routing_display_for_task(
-                screen,
-                task.marker,
-                agent=agent,
-                orchestrator_on=orchestration_enabled,
+            _guarded(
+                tui,
+                lambda screen: _routing_display_for_task(
+                    screen,
+                    task.marker,
+                    agent=agent,
+                    orchestrator_on=orchestration_enabled,
+                ),
             ),
             f"the Smart Router subagent display for {task.marker}",
             timeout=120,
@@ -117,7 +179,7 @@ def _run_calculation(
     # A parent may report the requested value while its background child is still
     # running. Require the child's own persisted answer before asserting completion.
     tui.wait_for(
-        lambda _: task.completed(session, agent, child=True),
+        _guarded(tui, lambda _: task.completed(session, agent, child=True)),
         f"the child assistant answer for {task.marker}",
         timeout=180,
     )
@@ -215,6 +277,14 @@ def _toggle_with_skill(
         )
         return
 
+    _retry_on_rate_limit(
+        tui,
+        f"the Smart Router {state} toggle",
+        lambda: _toggle_codex_once(tui, session, agent, enabled, state, invocation, confirmation),
+    )
+
+
+def _toggle_codex_once(tui, session, agent, enabled, state, invocation, confirmation) -> None:
     controls = list(Path(session.env["TMPDIR"]).glob("ug-session-env-*/env.json"))
     assert len(controls) == 1, controls
     expected = (
@@ -248,6 +318,7 @@ def _toggle_with_skill(
 
     def toggled(screen):
         nonlocal approval_sent
+        tui.check_api_error(screen)
         # Fresh remote Codex sessions can be read-only. Approve only this
         # requested toggle through the native dialog, keeping the sandbox intact.
         if not approval_sent and codex_command_approval_pending(screen, command):
