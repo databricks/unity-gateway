@@ -417,6 +417,21 @@ def arguments(
         help="Existing relayed (subscription-relay) Anthropic MPS for the hybrid-routing CUJ.",
     )
     parser.add_argument(
+        "--claude-foundry-provider",
+        default="main.ucode.ci_foundry_claude_mps",
+        help="Existing Microsoft Foundry MPS serving Claude over Anthropic Messages.",
+    )
+    parser.add_argument(
+        "--claude-foundry-provider-model",
+        default="claude-haiku-5-5",
+        help="Haiku deployment used by the Microsoft Foundry headless journey.",
+    )
+    parser.add_argument(
+        "--claude-foundry-provider-default-model",
+        default="claude-sonnet-5-5",
+        help="Sonnet deployment selected by a plain launch through the Microsoft Foundry MPS.",
+    )
+    parser.add_argument(
         "--claude-provider-model",
         default="claude-haiku-4-5-20251001",
         help="Only model exposed by the Anthropic MPS discovery fixture.",
@@ -742,6 +757,9 @@ def main() -> int:
             "antigravity_model": args.antigravity_model,
             "claude_provider": args.claude_provider,
             "claude_relayed_provider": args.claude_relayed_provider,
+            "claude_foundry_provider": args.claude_foundry_provider,
+            "claude_foundry_provider_model": args.claude_foundry_provider_model,
+            "claude_foundry_provider_default_model": args.claude_foundry_provider_default_model,
             "claude_provider_model": args.claude_provider_model,
             "claude_bedrock_allow_all_provider": args.claude_bedrock_allow_all_provider,
             "claude_bedrock_allow_all_model": args.claude_bedrock_allow_all_model,
@@ -1059,6 +1077,9 @@ def main() -> int:
                 "UG_INTEGRATION_AGENTS": ",".join(agents),
                 "UG_INTEGRATION_CLAUDE_PROVIDER": args.claude_provider,
                 "UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER": args.claude_relayed_provider,
+                "UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER": args.claude_foundry_provider,
+                "UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER_MODEL": args.claude_foundry_provider_model,
+                "UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER_DEFAULT_MODEL": args.claude_foundry_provider_default_model,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_PROVIDER": args.claude_bedrock_provider,
                 "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN": oauth_token,
                 "UG_INTEGRATION_CLAUDE_PROVIDER_MODEL": args.claude_provider_model,

@@ -627,13 +627,13 @@ def render_overlay(
     # shows only one row per model. `ucode claude -- --model X` still overrides for
     # a single session via Claude Code's own --model flag.
     #
-    # The one exception is smart routing: `route_root_model` pins the
-    # router's per-launch pick for the root session as ANTHROPIC_MODEL. The
-    # duplicate-picker-row cost is acceptable because the whole point is to launch
-    # on the routed model rather than the family default.
+    # Routed launches and custom provider deployments need an explicit root model
+    # because their chosen target may not resolve through a family alias.
     _ = model  # API stability; no longer pinned via env.
     if route_root_model:
         env["ANTHROPIC_MODEL"] = maybe_add_gpt_1m_suffix(route_root_model)
+    elif provider and provider_models and provider_models.get("default"):
+        env["ANTHROPIC_MODEL"] = provider_models["default"]
     # A Bedrock-backed provider needs its provider-side ids pinned verbatim
     # (Claude Code's canonical names aren't routable there). These come from the
     # service's targets, already de-duped to one id per family upstream.
