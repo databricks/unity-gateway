@@ -1,5 +1,13 @@
 # Integration tests
 
+Daily skill-refresh prefetch is covered by component tests in `../test_skills_download.py`:
+metadata/read overlap, a shared eight-worker bundle pool, exact metadata-version reuse,
+collision checks before caller-thread writes, cancellation, failure preservation, and
+unchanged/daily-rate-limited controls. Metadata reads and nested Files API requests have their
+existing separate pools. No live journey currently measures this overlap or startup p90;
+the tests do not establish a hard total deadline, atomic directory replacement, or bounded
+bundle byte sizes.
+
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They

@@ -1,5 +1,13 @@
 # Test suites and user journeys
 
+`TestRefreshBundlePrefetch`, `TestUpdateStaleSkills`, and `TestRefreshOnLaunch` in
+`test_skills_download.py` cover overlapping the first eight stale skill bundle reads with
+metadata checks. Events verify a shared eight-worker bundle limit, caller-only writes after
+metadata collection, queued-read cancellation, and retention of ready results after another
+read expires. Other cases cover exact metadata-version reuse, final-destination cache release,
+rename collisions, read failures, and unchanged/daily-rate-limited controls. These component
+tests do not establish live startup p90, a hard wall-clock deadline, or a byte limit on bundles.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component
