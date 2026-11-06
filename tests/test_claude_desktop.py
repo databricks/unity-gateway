@@ -95,6 +95,7 @@ def test_render_profile_uses_exact_owned_fields_and_full_model_ids(tmp_path: Pat
             {"name": "databricks/anthropic/claude-sonnet-4"},
             {"name": "openai/gpt-oss-120b"},
         ],
+        "claudeAiImport": {"enabled": True},
     }
     assert "defaultModel" not in profile
     assert "inferenceGatewayCustomHeaders" not in profile
