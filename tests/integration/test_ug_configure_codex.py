@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from utils.constants import CODEX_TEST_MODEL
 from utils.evidence import FileTask, assert_completed_task_model
+from utils.request_recorder import TuiRequestRecorder, assert_served
 from utils.terminal import AgentTerminal, ConfigureTerminal
 
 pytestmark = [pytest.mark.live, pytest.mark.tui, pytest.mark.codex]
@@ -100,40 +101,56 @@ def test_ug_configure_codex_openai_mps(
 
 
 def _run_codex_openai_dialect_mps_cuj(session, workspace, provider, model, label):
-    """Configure Codex through an OpenAI-dialect MPS, then complete a task on one of its models.
+    """Configure Codex through an OpenAI-dialect MPS, then get a successful model response.
 
     Azure OpenAI and Microsoft Foundry both speak the OpenAI dialect the gateway fronts for Codex,
     so the CUJ is identical apart from which MPS the picker selects. Codex always sends
-    `reasoning.effort`, so a completed task also proves two things a plain routing check would miss:
+    `reasoning.effort`, so a 200 also proves two things a plain routing check would miss:
     the provider-type allowlist accepts the MPS's type for Codex, and the backing deployment is
     reasoning-capable (a non-reasoning model 400s the request's `reasoning.effort`).
+
+    The small models used here can botch a shell command (notably PowerShell quoting on Windows),
+    so this asserts the gateway's behavior, not the model's answer: the turn finishes, every
+    Responses request the TUI made for the model got HTTP 200 through the recorder, and the
+    screen shows no terminal API error.
     """
     task = FileTask(session)
 
-    command = [
-        str(session.binary),
-        "configure",
-        "--workspace",
-        workspace,
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-    ]
-    with ConfigureTerminal(session, "codex", command, f"configure-{label}-provider") as configure:
-        configure.select_agent("Codex")
-        configure.choose("How should Codex get its models?", "External Models")
-        configure.choose("Select a model provider service:", provider)
-        configure.finish(timeout=240)
-    assert session.workspace_state()["provider_services"]["codex"] == provider
-    assert provider in session.run("status").stdout
+    with TuiRequestRecorder(workspace) as recorder:
+        # Configure through the forwarding URL using the public CLI, keeping ug state real.
+        command = [
+            str(session.binary),
+            "configure",
+            "--workspace",
+            recorder.url,
+            "--skip-upgrade",
+            "--disable-databricks-ai-tools",
+        ]
+        with ConfigureTerminal(
+            session, "codex", command, f"configure-{label}-provider"
+        ) as configure:
+            configure.select_agent("Codex")
+            configure.choose("How should Codex get its models?", "External Models")
+            configure.choose("Select a model provider service:", provider)
+            configure.finish(timeout=240)
+        assert session.workspace_state()["provider_services"]["codex"] == provider
+        assert provider in session.run("status").stdout
 
-    command = [str(session.binary), "codex", "--", "--model", model]
-    with AgentTerminal(session, "codex", command, f"{label}-provider-session") as tui:
-        tui.boot()
-        tui.submit(task.prompt)
-        tui.wait_for_task(task, timeout=300)
-        tui.exit_normally()
-    task.assert_completed(session, "codex")
-    assert_completed_task_model(session, "codex", task.value, model)
+        command = [str(session.binary), "codex", "--", "--model", model]
+        with AgentTerminal(session, "codex", command, f"{label}-provider-session") as tui:
+            tui.boot()
+            checkpoint = recorder.checkpoint()
+            tui.submit(task.prompt)
+            tui.wait_for_codex_turn(timeout=300)
+            tui.exit_normally()
+        inference = [
+            request
+            for request in recorder.requests_after(checkpoint)
+            if request.method == "POST" and request.path.endswith("/responses")
+        ]
+        assert inference, "Codex made no Responses request through the gateway"
+        for request in inference:
+            assert_served(recorder, request, model)
     session.assert_not_routed()
 
 
@@ -142,8 +159,9 @@ def test_ug_configure_codex_azure_openai_mps(
 ):
     """Scenario: select an Azure OpenAI (`azure_openai`) MPS in ug configure's picker for Codex.
 
-    Expected: ug saves the provider and a real Codex session completes a file task on one of its
-    reasoning-capable models (see _run_codex_openai_dialect_mps_cuj).
+    Expected: ug saves the provider and a real Codex session gets HTTP 200 responses on one of its
+    reasoning-capable models, without asserting the model's answer (see
+    _run_codex_openai_dialect_mps_cuj).
     """
     _run_codex_openai_dialect_mps_cuj(
         live_session, workspace, codex_azure_provider, codex_azure_provider_model, "azure"
@@ -155,9 +173,10 @@ def test_ug_configure_codex_foundry_mps(
 ):
     """Scenario: select a Microsoft Foundry (`microsoft_foundry`) MPS in ug configure's picker.
 
-    Expected: ug saves the provider and a real Codex session completes a file task, exercising the
+    Expected: ug saves the provider and a real Codex session gets HTTP 200 responses, exercising the
     `microsoft_foundry` allowlist entry for Codex. Foundry speaks the same OpenAI dialect as Azure
-    OpenAI, so this reuses the Azure CUJ (see _run_codex_openai_dialect_mps_cuj).
+    OpenAI, so this reuses the Azure CUJ (see
+    _run_codex_openai_dialect_mps_cuj).
     """
     _run_codex_openai_dialect_mps_cuj(
         live_session, workspace, codex_foundry_provider, codex_foundry_provider_model, "foundry"
@@ -171,37 +190,13 @@ def test_ug_configure_codex_custom_azure_openai_mps(
     """Scenario: select a custom Azure OpenAI MPS in ug configure, then launch Codex.
 
     Expected: the real picker saves the provider. Codex uses it without --provider,
-    completes a TUI file-reading task on the selected deployment, returns the unknown
-    file value, and exits normally without smart routing.
+    gets HTTP 200 responses on the selected deployment (without asserting the model's
+    answer), and exits normally without smart routing.
     """
-    session = live_session
-    task = FileTask(session)
-    session.record("model.json", {"model": codex_custom_provider_model})
-    command = [
-        str(session.binary),
-        "configure",
-        "--workspace",
-        workspace,
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-    ]
-    with ConfigureTerminal(session, "codex", command, "configure-custom-provider") as configure:
-        configure.select_agent("Codex")
-        configure.choose("How should Codex get its models?", "External Models")
-        configure.choose("Select a model provider service:", codex_custom_provider)
-        configure.finish(timeout=240)
-    assert session.workspace_state()["provider_services"]["codex"] == codex_custom_provider
-    assert codex_custom_provider in session.run("status").stdout
-
-    command = [str(session.binary), "codex", "--", "--model", codex_custom_provider_model]
-    with AgentTerminal(session, "codex", command, "custom-provider-session") as tui:
-        tui.boot()
-        tui.submit(task.prompt)
-        tui.wait_for_task(task, timeout=300)
-        tui.exit_normally()
-    task.assert_completed(session, "codex")
-    assert_completed_task_model(session, "codex", task.value, codex_custom_provider_model)
-    session.assert_not_routed()
+    live_session.record("model.json", {"model": codex_custom_provider_model})
+    _run_codex_openai_dialect_mps_cuj(
+        live_session, workspace, codex_custom_provider, codex_custom_provider_model, "custom"
+    )
 
 
 @pytest.mark.usefixtures("unmanaged_workspace")

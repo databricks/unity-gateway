@@ -122,6 +122,17 @@ def assert_completed_task_model(session, agent: str, answer_value: str, expected
     assert observed == {expected}, {"expected": expected, "observed": sorted(observed)}
 
 
+def codex_turn_completed(session) -> bool:
+    """Whether a parent Codex session recorded a finished turn, whatever it answered."""
+    return any(
+        record.get("type") == "event_msg"
+        and record.get("payload", {}).get("type") == "task_complete"
+        for path, records in agent_sessions(session, "codex").items()
+        if not is_child_session("codex", path, records)
+        for record in records
+    )
+
+
 def assistant_answer_contains(session, agent: str, value: str, *, child: bool = False) -> bool:
     """Whether a native parent or child assistant answer contains ``value``."""
     return any(
