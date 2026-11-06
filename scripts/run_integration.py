@@ -68,7 +68,11 @@ ANTIGRAVITY_SHA512 = {
 ALL_AGENTS = (*AGENT_PACKAGES, *NATIVE_AGENT_BINARIES)
 WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
 # Claude exports no spans on Windows, where ug writes no machine-wide Claude settings.
-WINDOWS_UNSUPPORTED_MODULES = {"test_ug_claude_tracing.py"}
+WINDOWS_UNSUPPORTED_MODULES = {
+    "test_ug_claude_tracing.py",
+    # Uses sudo and the Linux/macOS OS-managed settings paths.
+    "test_ug_configure_scope.py",
+}
 WINDOWS_UNSUPPORTED_NODES = {
     # Seeds machine-wide managed settings, which ug has no Windows path for.
     "test_ug_configure_claude_lifecycle.py::test_unmanaged_claude_preserves_preexisting_family_defaults",
@@ -413,24 +417,79 @@ def arguments(
         help="Existing relayed (subscription-relay) Anthropic MPS for the hybrid-routing CUJ.",
     )
     parser.add_argument(
+        "--claude-foundry-provider",
+        default="main.ucode.ci_foundry_claude_mps",
+        help="Existing Microsoft Foundry MPS serving Claude over Anthropic Messages.",
+    )
+    parser.add_argument(
+        "--claude-foundry-provider-model",
+        default="claude-haiku-5-5",
+        help="Haiku deployment used by the Microsoft Foundry headless journey.",
+    )
+    parser.add_argument(
+        "--claude-foundry-provider-default-model",
+        default="claude-sonnet-5-5",
+        help="Sonnet deployment selected by a plain launch through the Microsoft Foundry MPS.",
+    )
+    parser.add_argument(
+        "--claude-custom-provider",
+        default="main.ucode.ci_custom_foundry_claude_mps",
+        help="Existing custom MPS serving Foundry Messages for the Claude file task.",
+    )
+    parser.add_argument(
+        "--claude-custom-provider-model",
+        default="claude-sonnet-5-5",
+        help="Sonnet deployment selected by a plain launch through the custom Foundry MPS.",
+    )
+    parser.add_argument(
         "--claude-provider-model",
         default="claude-haiku-4-5-20251001",
         help="Only model exposed by the Anthropic MPS discovery fixture.",
     )
     parser.add_argument(
         "--claude-bedrock-allow-all-provider",
-        default="main.ucode.ci_bedrock_mason_all_models",
-        help="Bedrock MPS with allow_all_targets and no declared targets, for the #811 CUJ.",
+        default="main.ucode.ci_bedrock_runtime_svc_cred_all_models",
+        help="Bedrock runtime MPS (UC service credential) with allow_all_targets and no declared targets, for the #811 CUJ.",
     )
     parser.add_argument(
         "--claude-bedrock-allow-all-model",
-        default="us.anthropic.claude-sonnet-4-6",
+        default="us.anthropic.claude-sonnet-5-5",
         help="Explicit Bedrock model id the allow_all CUJ pins (the service declares no targets).",
     )
     parser.add_argument(
         "--claude-bedrock-provider",
-        default="main.ucode.ci_bedrock_mason_filtered_models",
-        help="AWS Bedrock Anthropic MPS with a restricted allowed-models set (Sonnet + Opus), selected in the configure CUJ.",
+        default="main.ucode.ci_bedrock_runtime_svc_cred_filtered_models",
+        help="AWS Bedrock runtime MPS (UC service credential) with a restricted allowed-models set (Sonnet 5.5 + Opus 5.5), selected in the configure CUJ.",
+    )
+    parser.add_argument(
+        "--claude-bedrock-mantle-provider",
+        default="main.ucode.ci_bedrock_mantle_svc_cred_claude",
+        help="Bedrock Mantle MPS (UC service credential, us-east-1) with allow_all_targets, serving Claude.",
+    )
+    parser.add_argument(
+        "--claude-bedrock-mantle-model",
+        default="anthropic.claude-opus-5-5",
+        help="Mantle model id the Claude Mantle CUJ pins.",
+    )
+    parser.add_argument(
+        "--codex-bedrock-runtime-provider",
+        default="main.ucode.ci_bedrock_runtime_svc_cred_all_models",
+        help="Bedrock runtime MPS (UC service credential) with allow_all_targets, serving GPT-5.6 over Responses.",
+    )
+    parser.add_argument(
+        "--codex-bedrock-runtime-model",
+        default="us.openai.gpt-5.6-terra",
+        help="Bedrock inference-profile id the Codex runtime CUJ pins.",
+    )
+    parser.add_argument(
+        "--codex-bedrock-mantle-provider",
+        default="main.ucode.ci_bedrock_mantle_svc_cred_gpt",
+        help="Bedrock Mantle MPS (UC service credential, us-west-2) with allow_all_targets, serving GPT-5.6 over Responses.",
+    )
+    parser.add_argument(
+        "--codex-bedrock-mantle-model",
+        default="openai.gpt-5.6-terra",
+        help="Mantle model id the Codex Mantle CUJ pins.",
     )
     parser.add_argument(
         "--antigravity-provider",
@@ -439,7 +498,8 @@ def arguments(
     )
     parser.add_argument(
         "--antigravity-provider-models",
-        default="gemini-4-argon,gemini-3.8-flash",
+        # gemini-4-argon is left out: it keeps timing out before response headers in CI.
+        default="gemini-3.8-flash",
         help="Comma-separated targets of --antigravity-provider, newest first, each run as a "
         "task with --model; the first is the one `ug configure` pins.",
     )
@@ -447,6 +507,16 @@ def arguments(
         "--codex-provider",
         default="main.ucode.ci_openai_mps",
         help="Existing OpenAI MPS selected in the configure CUJ.",
+    )
+    parser.add_argument(
+        "--codex-custom-provider",
+        default="main.ucode.ci_custom_azure_openai_mps",
+        help="Existing custom MPS serving Azure OpenAI Responses for the Codex file task.",
+    )
+    parser.add_argument(
+        "--codex-custom-provider-model",
+        default="gpt-5-nano",
+        help="Deployment used by the Codex custom-provider file task.",
     )
     parser.add_argument(
         "--codex-provider-model",
@@ -716,15 +786,28 @@ def main() -> int:
             "copilot_model": args.copilot_model,
             "antigravity_model": args.antigravity_model,
             "claude_provider": args.claude_provider,
+            "claude_custom_provider": args.claude_custom_provider,
             "claude_relayed_provider": args.claude_relayed_provider,
+            "claude_foundry_provider": args.claude_foundry_provider,
+            "claude_foundry_provider_model": args.claude_foundry_provider_model,
+            "claude_foundry_provider_default_model": args.claude_foundry_provider_default_model,
             "claude_provider_model": args.claude_provider_model,
+            "claude_custom_provider_model": args.claude_custom_provider_model,
             "claude_bedrock_allow_all_provider": args.claude_bedrock_allow_all_provider,
             "claude_bedrock_allow_all_model": args.claude_bedrock_allow_all_model,
             "claude_bedrock_provider": args.claude_bedrock_provider,
+            "claude_bedrock_mantle_provider": args.claude_bedrock_mantle_provider,
+            "claude_bedrock_mantle_model": args.claude_bedrock_mantle_model,
+            "codex_bedrock_runtime_provider": args.codex_bedrock_runtime_provider,
+            "codex_bedrock_runtime_model": args.codex_bedrock_runtime_model,
+            "codex_bedrock_mantle_provider": args.codex_bedrock_mantle_provider,
+            "codex_bedrock_mantle_model": args.codex_bedrock_mantle_model,
             "antigravity_provider": args.antigravity_provider,
             "antigravity_provider_models": args.antigravity_provider_models,
             "codex_provider": args.codex_provider,
+            "codex_custom_provider": args.codex_custom_provider,
             "codex_provider_model": args.codex_provider_model,
+            "codex_custom_provider_model": args.codex_custom_provider_model,
             "codex_azure_provider": args.codex_azure_provider,
             "codex_azure_provider_model": args.codex_azure_provider_model,
             "codex_foundry_provider": args.codex_foundry_provider,
@@ -1029,16 +1112,29 @@ def main() -> int:
                 "UG_INTEGRATION_RUN_DIR": str(output),
                 "UG_INTEGRATION_AGENTS": ",".join(agents),
                 "UG_INTEGRATION_CLAUDE_PROVIDER": args.claude_provider,
+                "UG_INTEGRATION_CLAUDE_CUSTOM_PROVIDER": args.claude_custom_provider,
                 "UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER": args.claude_relayed_provider,
+                "UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER": args.claude_foundry_provider,
+                "UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER_MODEL": args.claude_foundry_provider_model,
+                "UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER_DEFAULT_MODEL": args.claude_foundry_provider_default_model,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_PROVIDER": args.claude_bedrock_provider,
                 "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN": oauth_token,
                 "UG_INTEGRATION_CLAUDE_PROVIDER_MODEL": args.claude_provider_model,
+                "UG_INTEGRATION_CLAUDE_CUSTOM_PROVIDER_MODEL": args.claude_custom_provider_model,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_PROVIDER": args.claude_bedrock_allow_all_provider,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL": args.claude_bedrock_allow_all_model,
+                "UG_INTEGRATION_CLAUDE_BEDROCK_MANTLE_PROVIDER": args.claude_bedrock_mantle_provider,
+                "UG_INTEGRATION_CLAUDE_BEDROCK_MANTLE_MODEL": args.claude_bedrock_mantle_model,
+                "UG_INTEGRATION_CODEX_BEDROCK_RUNTIME_PROVIDER": args.codex_bedrock_runtime_provider,
+                "UG_INTEGRATION_CODEX_BEDROCK_RUNTIME_MODEL": args.codex_bedrock_runtime_model,
+                "UG_INTEGRATION_CODEX_BEDROCK_MANTLE_PROVIDER": args.codex_bedrock_mantle_provider,
+                "UG_INTEGRATION_CODEX_BEDROCK_MANTLE_MODEL": args.codex_bedrock_mantle_model,
                 "UG_INTEGRATION_ANTIGRAVITY_PROVIDER": args.antigravity_provider,
                 "UG_INTEGRATION_ANTIGRAVITY_PROVIDER_MODELS": args.antigravity_provider_models,
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,
+                "UG_INTEGRATION_CODEX_CUSTOM_PROVIDER": args.codex_custom_provider,
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
+                "UG_INTEGRATION_CODEX_CUSTOM_PROVIDER_MODEL": args.codex_custom_provider_model,
                 "UG_INTEGRATION_CODEX_AZURE_PROVIDER": args.codex_azure_provider,
                 "UG_INTEGRATION_CODEX_AZURE_PROVIDER_MODEL": args.codex_azure_provider_model,
                 "UG_INTEGRATION_CODEX_FOUNDRY_PROVIDER": args.codex_foundry_provider,

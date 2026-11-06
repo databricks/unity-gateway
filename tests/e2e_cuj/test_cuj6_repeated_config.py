@@ -158,7 +158,7 @@ class AgentFiles:
     """ug-written agent settings and MCP registrations in the shared home."""
 
     claude_settings: dict
-    claude_user_settings: str
+    claude_user_settings: dict
     codex_config: dict
     codex_ucode_config: dict
     codex_model_catalog: dict
@@ -228,7 +228,7 @@ class PhaseC:
 
 @dataclass(frozen=True)
 class SeededUserState:
-    claude_settings: str
+    claude_settings: dict
     codex_keys: dict
     mcp_registrations: dict[str, dict]
     skill_files: dict[str, str]
@@ -305,7 +305,7 @@ class Journey:
         claude_mcp = read_json(self.home / ".claude/.claude.json").get("mcpServers", {})
         return AgentFiles(
             claude_settings=read_json(self.home / ".claude/ucode-settings.json"),
-            claude_user_settings=(self.home / ".claude/settings.json").read_text(),
+            claude_user_settings=read_json(self.home / ".claude/settings.json"),
             codex_config=codex_config,
             codex_ucode_config=read_toml(self.home / ".codex/ucode.config.toml"),
             codex_model_catalog=read_json(self.home / ".ucode/codex-model-catalog.json"),
@@ -464,7 +464,7 @@ class Journey:
             )
         assert not (self.home / ".ucode").exists(), "Seeding must not create ug state"
         return SeededUserState(
-            claude_settings=claude_settings.read_text(),
+            claude_settings=read_json(claude_settings),
             codex_keys=self.user_codex_keys(read_toml(codex_config)),
             mcp_registrations={
                 CLAUDE: read_json(self.home / ".claude/.claude.json")["mcpServers"][USER_MCP],
@@ -791,8 +791,20 @@ class TestCujRepeatedConfig(BaseCujTest):
 
     def test_user_state_survives_every_phase(self, journey, phase_a, phase_b, phase_c):
         seeded = journey.seeded
+        expected_claude_settings = {
+            **seeded.claude_settings,
+            "enabledPlugins": {"ug@unity-gateway-code": True},
+            "extraKnownMarketplaces": {
+                "unity-gateway-code": {
+                    "source": {
+                        "source": "directory",
+                        "path": str(journey.home / ".ucode/claude-code-marketplace"),
+                    }
+                }
+            },
+        }
         for files in (phase_a.second, phase_b.restarted, phase_c.final):
-            assert files.claude_user_settings == seeded.claude_settings
+            assert files.claude_user_settings == expected_claude_settings
             assert journey.user_codex_keys(files.codex_config) == seeded.codex_keys
             assert files.claude_mcp.get(USER_MCP) == seeded.mcp_registrations[CLAUDE]
             assert files.codex_mcp.get(USER_MCP) == seeded.mcp_registrations[CODEX]

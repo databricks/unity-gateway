@@ -1,10 +1,9 @@
 """Cowork plugin hooks that keep Claude informed about Unity Gateway connectors.
 
-Cowork connects plugin MCP servers lazily and drops them when a session sits idle,
-then tells Claude they disconnected. These hooks cannot make Cowork reconnect
-sooner, but they refresh the Databricks token every proxy mints, wake each upstream
-MCP server, and tell Claude which connectors answered. They run on SessionStart and
-on UserPromptSubmit after an idle gap.
+Cowork may drop idle MCP connections and report them as disconnected. These hooks
+cannot make Cowork reconnect sooner, but they refresh Databricks credentials,
+probe upstream MCP servers, and provide recovery guidance. They run on SessionStart
+and on UserPromptSubmit after an idle gap.
 """
 
 from __future__ import annotations

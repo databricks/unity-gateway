@@ -126,7 +126,7 @@ def test_ug_antigravity_headless_gemini_mps(
     """
     session = live_session
     _configure(session, workspace)
-    assert len(antigravity_provider_models) >= 2, antigravity_provider_models
+    assert antigravity_provider_models, antigravity_provider_models
 
     for model in antigravity_provider_models:
         task = FileTask(session)

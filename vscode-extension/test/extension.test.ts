@@ -4,7 +4,7 @@ import { afterEach, describe, it } from "node:test";
 import type * as vscode from "vscode";
 import packageJson from "../package.json";
 import { Tokens } from "../src/auth";
-import { DatabricksModels, PROVIDER_HEADER, readConfig, userAgent, type Settings } from "../src/extension";
+import { DatabricksModels, PROVIDER_HEADER, readConfig, requestHeaders, userAgent, type Settings } from "../src/extension";
 import { streamEvents } from "../src/gateway";
 import { collect, message, rejectsWith, text, tokenCommand, USER } from "./support";
 import { LanguageModelChatToolMode, LanguageModelTextPart } from "./vscode";
@@ -12,7 +12,7 @@ import { LanguageModelChatToolMode, LanguageModelTextPart } from "./vscode";
 const sse = (...data: string[]) => data.map((item) => `data: ${item}\n\n`).join("");
 
 /** Replaces fetch with one that answers each request with the next status and SSE body. */
-const stubFetch = (...answers: [number, string][]) => {
+const stubFetch = (...answers: [number, string, string?][]) => {
   const requests: { url: string; authorization: string; userAgent: string; provider: string | null; body: Record<string, unknown> }[] = [];
   globalThis.fetch = (async (url: string, init: RequestInit) => {
     const headers = new Headers(init.headers);
@@ -23,11 +23,14 @@ const stubFetch = (...answers: [number, string][]) => {
       provider: headers.get(PROVIDER_HEADER),
       body: JSON.parse(String(init.body)),
     });
-    const [status, body] = answers[Math.min(requests.length - 1, answers.length - 1)] ?? [500, ""];
+    const [status, body, contentType] = answers[Math.min(requests.length - 1, answers.length - 1)] ?? [500, ""];
     // Split the body mid-line so the reader has to join chunks.
     const bytes = new TextEncoder().encode(body);
     const middle = Math.floor(bytes.length / 2);
-    return new Response(new Blob([bytes.slice(0, middle), bytes.slice(middle)]).stream(), { status });
+    return new Response(new Blob([bytes.slice(0, middle), bytes.slice(middle)]).stream(), {
+      status,
+      ...(contentType ? { headers: { "content-type": contentType } } : {}),
+    });
   }) as typeof fetch;
   return requests;
 };
@@ -59,7 +62,7 @@ describe("streamEvents", () => {
     requests = stubFetch([401, ""]);
     await rejectsWith(
       collect(streamEvents("https://ws", "/r", {}, new Tokens(tokenCommand(["a", "b"]).command), {}, new AbortController().signal)),
-      "Run `ug configure --agents vscode` to sign in again",
+      "Run `ug configure --agents copilot` to sign in again",
     );
     assert.equal(requests.length, 2);
   });
@@ -84,6 +87,14 @@ describe("streamEvents", () => {
     assert.equal(requests.length, 2);
   });
 
+  it("reports a web page, such as a sign-in page, instead of reading it as a cut-off reply", async () => {
+    stubFetch([200, "<!doctype html><title>Databricks - Sign In</title>", "text/html; charset=utf-8"]);
+    await rejectsWith(
+      collect(streamEvents("https://ws", "/r", {}, new Tokens(tokenCommand(["t"]).command), {}, new AbortController().signal)),
+      "AI Gateway answered with a web page instead of the model's reply. Run `ug configure --agents copilot` again, then retry.",
+    );
+  });
+
   it("reports other gateway errors with their body", async () => {
     stubFetch([400, '{"message":"bad tools"}']);
     await rejectsWith(
@@ -104,6 +115,17 @@ describe("userAgent", () => {
   it("names ug's extension and Copilot Chat's version", () => {
     assert.equal(userAgent("0.71.0"), `ucode/${packageJson.version} githubcopilotchat/0.71.0`);
     assert.equal(userAgent(undefined), `ucode/${packageJson.version} githubcopilotchat`);
+  });
+});
+
+describe("requestHeaders", () => {
+  it("adds the admin's headers to the User-Agent, and theirs wins by name", () => {
+    assert.deepEqual(requestHeaders("0.71.0"), { "User-Agent": `ucode/${packageJson.version} githubcopilotchat/0.71.0` });
+    assert.deepEqual(requestHeaders("0.71.0", { "X-Team": "ml" }), {
+      "User-Agent": `ucode/${packageJson.version} githubcopilotchat/0.71.0`,
+      "X-Team": "ml",
+    });
+    assert.deepEqual(requestHeaders("0.71.0", { "user-agent": "admin" }), { "user-agent": "admin" });
   });
 });
 
@@ -138,6 +160,23 @@ describe("readConfig", () => {
     });
   });
 
+  it("keeps the string headers except Authorization", () => {
+    const config = {
+      workspace: "https://ws",
+      authCommand: "ug auth-token",
+      models: [],
+      headers: { "X-Team": "ml", authorization: "Bearer x", "X-Count": 3, " ": "blank" },
+    };
+    assert.deepEqual(readConfig(JSON.stringify(config)), {
+      workspace: "https://ws",
+      authCommand: "ug auth-token",
+      provider: "",
+      models: [],
+      headers: { "X-Team": "ml" },
+    });
+    assert.equal(readConfig(JSON.stringify({ ...config, headers: ["X-Team"] })).headers, undefined);
+  });
+
   it("gives no models for a missing or malformed file", () => {
     const none = { workspace: "", authCommand: "", models: [], provider: "" };
     for (const text of [undefined, "", "{", "[]", "null", '"text"']) {
@@ -170,7 +209,7 @@ describe("DatabricksModels", () => {
       ],
     );
     assert.deepEqual(await new DatabricksModels(() => ({ ...settings(""), models: [] }), (line) => logs.push(line)).provideLanguageModelChatInformation(), []);
-    assert.deepEqual(logs, ["No Databricks models: run `ug configure --agents vscode` to set them up."]);
+    assert.deepEqual(logs, ["No Databricks models: run `ug configure --agents copilot` to set them up."]);
   });
 
   const answers: [number, string][] = [

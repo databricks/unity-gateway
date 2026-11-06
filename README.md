@@ -120,10 +120,32 @@ config can set one for Copilot. `ug copilot --model-location <catalog>.<schema>`
 services of one schema instead: services named like Claude or GPT models use their usual API, and
 the rest go through the gateway's Anthropic endpoint, as for Claude Code.
 
+`ug claude --provider <catalog>.<schema>.<name>` and `ug codex --provider ...` also
+accept custom Model Provider Services. The upstream endpoint must natively support
+Anthropic Messages for Claude or OpenAI Responses for Codex; MPS calls do not translate
+between APIs. Declare those APIs on the service's targets. Custom deployment names are
+preserved and can be selected with `--model`.
+
+For every supported provider, Codex accepts only targets declared with OpenAI Responses
+(`openai/v1/responses`). Restricted services with no compatible targets are hidden from
+the provider picker and rejected when selected explicitly.
+
+`ug codex --provider <catalog>.<schema>.<name>` on an Amazon Bedrock (runtime) service turns off Codex's
+built-in `web_search` for that launch, because Bedrock's Responses API rejects it, and registers the
+`system.ai.web_search` MCP service instead. Nothing is added if that service is already configured
+for Codex. Bedrock Mantle and other providers keep the built-in tool.
+
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
 to select another model source; managed workspace configs control their own sources.
+`ug claude --provider <catalog>.<schema>.<name>` also supports Claude deployments on
+Microsoft Foundry. For every provider, Claude uses only targets declared with Anthropic Messages
+(`anthropic/v1/messages`); MPS requests do not translate other APIs to Messages. Restricted
+services with no compatible targets are rejected. Deployment names are passed unchanged.
+When no target identifies a Claude family, the first compatible target becomes the default.
+Use `--model <deployment>` to select another deployment or a model on an allow-all service
+without declared targets.
 Interactive `ug configure` also offers a **Custom Model Location** (`<catalog>.<schema>`) for
 Claude Code, Codex and Copilot alongside Databricks Hosted and External Models. The choice is saved
 with the rest of the configuration, so later `ug claude` / `ug codex` / `ug copilot` launches use it; an
@@ -154,19 +176,50 @@ ug configure --agents claude,codex
 ug configure --workspace https://first.databricks.com
 ug configure --profile DEFAULT --agents claude,codex
 ug configure --user
+ug configure --agent claude --model-location main.models
+ug configure --agents claude,codex --provider main.default.anthropic
 ```
 
-`--global` (the default) writes the machine-wide Claude Code and Codex managed settings with sudo,
-with or without a terminal: run headless as root (or with passwordless sudo), since a write that
-can't be authorized fails the command.
+`--model-location <catalog>.<schema>` and `--provider <catalog>.<schema>.<name>` pick the model
+source without the interactive picker, so a script can configure it. `--model-location` applies to
+Claude Code, Codex, and Copilot (CLI and VS Code); `--provider` also applies to Gemini CLI. Either
+needs `--agent`/`--agents`, and they cannot be combined. Cursor may share the run but takes no
+source. The choice is saved for later launches, and each one replaces the other. A bad Copilot
+source fails before anything is saved. A managed config that enables agents names the source itself
+and rejects both flags.
+
+By default, `ug configure` writes both the per-user settings and the machine-wide Claude Code and
+Codex managed settings with sudo, with or without a terminal: run headless as root (or with
+passwordless sudo), since a write that can't be authorized fails the command.
+`--global` writes only the machine-wide managed settings and leaves every per-user setting alone:
+`~/.claude/ucode-settings.json`, `~/.codex/ucode.config.toml` and `~/.codex/config.toml`, user MCP
+servers, skills, Databricks AI Tools, Claude Desktop, and Cowork. Only Claude Code and Codex
+(0.134.0 or newer) have machine-wide settings; other agents are skipped with a note, so a run that
+names only them does nothing. It fails for `--mcp`, `--enable-databricks-ai-tools`, a subscription
+relay, and `UG_SKIP_OS_SETTINGS`. It also fails when `ug` or its Python is in a user's home folder
+(checked through symlinks), since every user's agents run them: install ug in a shared location
+first, as `scripts/mdm/macos-provision.sh` does with `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR`, and
+`UV_PYTHON_INSTALL_DIR`. Workspace MCP servers that only user settings can hold, the
+web_search MCP server, and a static Codex model list are skipped with a warning. ug still saves its
+own state in `~/.ucode` and your Databricks login. Only that run is limited: each user's first
+launch writes their per-user settings as usual.
 `--user` skips them, like `UG_SKIP_OS_SETTINGS`, and needs no sudo; use it when you launch through
 `ug`. `UG_SKIP_OS_SETTINGS=1` neither writes nor checks the OS-managed files: ug trusts whatever is
 there and the agents apply their native precedence. Configure fails while a managed file for the agent exists, since managed settings take
 precedence; later launches use whatever files are present.
 The choice is saved for launches after a successful configure; `ug configure` without `--user`
-and `ug revert` return to `--global`.
+and `ug revert` return to the default, which writes both.
 `--user` also fails for a workspace that publishes a managed config, which must be installed
-machine-wide; use `--global` for it.
+machine-wide: run `ug configure` without `--user`, or ask your administrator to run
+`ug configure --global`.
+
+For Claude Desktop, default `ug configure` and `--user` both write only the user's
+3P JSON profile, generated marketplace, and native Cowork registration/cache. They leave
+root files untouched. Explicit `--global` skips those user-level Desktop writers; machine
+policy and plugin provisioning are separate macOS MDM work. CLI-agent scope handling is
+unchanged. If Desktop has not initialized a Cowork account directory, ordinary configure
+skips plugin setup until that directory exists. See
+[Desktop plugin installation](docs/claude-desktop.md#cowork-workspace-skills-and-mcp-servers).
 
 ### Hosts that serve several workspaces
 
@@ -189,6 +242,18 @@ Not supported yet on these hosts: disaster-recovery stable connection ids, signi
 service connection that needs your own login, and the MDM bootstrap script. MCP servers are
 registered through `ug mcp-proxy`, never as the agent's own OAuth connection.
 
+### Server-side web search for Claude Code
+
+ug denies Claude Code's native `WebSearch` and registers its own `web_search` MCP. For one launch,
+`UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1 ug claude` instead uses the AI Gateway's server-side search,
+writing no file. If the OS-managed settings, their `managed-settings.d`
+drop-ins, or the user settings deny `WebSearch`, ug warns and keeps its MCP for that launch.
+To make it the default, run `ug configure --enable-server-side-web-search` (`--disable-...` undoes it;
+omitting the flag keeps the saved choice). An explicit `ug configure` then also removes a bare
+`WebSearch` deny from the OS-managed settings unless your admin settings request it, and `ug revert`
+restores it only if that deny list wasn't edited since. ug never writes the deny to the managed file.
+Relayed launches are unaffected.
+
 ### Extra headers for one session
 
 ```bash
@@ -203,9 +268,11 @@ Nothing is written to a config file.
 
 - **Codex**: added to the launch's `-c` provider headers.
 - **Claude Code**: added by a mod, even when managed settings set `ANTHROPIC_CUSTOM_HEADERS`.
-  Only `ug configure` installs or upgrades it beside the managed settings (Linux and macOS, with
-  sudo, not under `--user`); a launch never writes there. When it is missing or out of date the
-  launch warns and Claude doesn't send them.
+  Only `ug configure` installs or upgrades it beside the managed settings (with sudo, or as an
+  administrator on Windows; not under `--user` or `UG_SKIP_OS_SETTINGS`); a launch never writes
+  there. Without a terminal, configure needs passwordless sudo and an existing managed file. Another
+  tool's copy of the mod, such as Isaac's, also counts. When none is enabled, or ug's is out of
+  date, the launch warns and Claude doesn't send them.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `kilo`, `copilot`, `pi`, and `antigravity`. `cursor` can be included in `--agents` for MCP-only setup;
@@ -287,6 +354,11 @@ it does not require CLI `auth login --resource` or a CLI upgrade.
 V2 AI Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
+
+UG automatically shares the MCP proxy across agents to reduce memory usage while
+keeping each connection's session and credentials separate. No configuration changes
+are needed. If a proxy connection closes unexpectedly, reconnect the MCP server in
+your agent.
 
 Claude-only setup also discovers GPT models for its generated `web_search`
 server; installing or configuring Codex is not required. Search registration
@@ -391,6 +463,7 @@ ug skills remove --location main.default --via mcp
 | `ug export` | Print or write portable managed config JSON |
 | `ug doctor` | Diagnose local setup and offer fixes |
 | `ug usage` | Show Unity Gateway spend and budget |
+| `ug web` | Open the Unity Gateway page for your workspace in a browser |
 | `ug revert` | Clear saved state and restore backed-up config files |
 | `ug upgrade` | Upgrade Unity Gateway |
 
@@ -441,8 +514,14 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 
 `--enable-smart-routing` and a workspace config with `smart_routing.enabled` turn routing on
 through `SMART_ROUTER_CONFIG_VERSION`: they keep a known version and otherwise select
-`subagent_orch_v0`, which routes subagents and turns on Smart Router Orchestrator while the
-main session stays on its default model.
+`subagent_orch_v0_claude_only`. For Claude, that routes subagents and turns on Smart Router
+Orchestrator while the main session stays on its default model. Codex stays unrouted and
+without orchestration under this default, and a Codex launch that turns routing on this way
+warns and runs without smart routing: `--enable-smart-routing` says smart routing on Codex is
+currently not supported, and workspace smart routing says it is enabled for Codex in this
+workspace but currently only supported for Claude Code. `ug codex --help` hides
+`--enable-smart-routing` and `--disable-smart-routing` (the Smart Router skill still uses them)
+and notes that Smart Routing is currently only supported for the Claude Code harness.
 Like any version, it overrides individually set routing env vars. `--disable-smart-routing`
 turns routing off for the launch, including over a workspace config.
 
@@ -500,14 +579,15 @@ orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=
 `subagent_orch_v0_claude_only` keeps Claude's `subagent_orch_v0` flags (`0`, `1`, `1`)
 and sets all three flags to `"0"` for Codex. Codex uses its ordinary launch and
 managed default model, without routing or orchestration. `--enable-smart-routing` and
-workspace smart routing keep this version, so Codex stays unrouted.
+workspace smart routing keep this version, so Codex stays unrouted: ug warns and launches it
+like a plain `ug codex`, without the Smart Router skills or routing hooks.
 
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 
 Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
-and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill,
-as do `--enable-smart-routing` and workspace smart routing when they select `subagent_orch_v0`.
-For example:
+and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill.
+`--enable-smart-routing` and workspace smart routing select `subagent_orch_v0_claude_only`, which
+installs both skills for Claude only; Codex gets neither. For example:
 
 ```bash
 SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude
@@ -523,7 +603,7 @@ no preset is applied, the inherited environment is unchanged, and commands conti
 `--disable-smart-routing` and session on/off controls apply after expansion;
 `--enable-smart-routing` and workspace smart routing keep a known version.
 Orchestration is off by default unless `--enable-smart-routing` or workspace smart routing
-selects `subagent_orch_v0`.
+selects `subagent_orch_v0_claude_only`, which enables it for Claude only.
 
 Version names require an explicit suffix. Future revisions use new `_v1`, `_v2`,
 etc. names without changing existing versions.
@@ -575,7 +655,7 @@ preferences are ignored and their files are left untouched. See the bundled
 | Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS), `C:\Program Files\ClaudeCode\managed-settings.json` (Windows, written only from an elevated terminal) |
 | Gemini CLI | `~/.gemini/ucode.env`, `~/.ucode/.gemini-home/.gemini/settings.json` |
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |
-| GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/ucode-mcp-config.json` |
+| GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/mcp-config.json` (or `$COPILOT_HOME/mcp-config.json`) |
 | Pi | `~/.ucode/pi-home/.pi/agent/models.json`, `~/.ucode/pi-home/.pi/agent/settings.json` |
 | Antigravity CLI | `~/.gemini/config/skills.json` (adds `~/.agents/skills`), `~/.gemini/config/mcp_config.json` (ug's MCP servers only); the gateway is set per launch through `AGY_LLM_GATEWAY_*` variables |
 | Cursor Agent | `~/.cursor/mcp.json` |
@@ -670,3 +750,21 @@ opening a public issue.
 ## License
 
 See [LICENSE.md](./LICENSE.md) and [NOTICE.md](./NOTICE.md).
+
+## Publish skills from GitHub
+
+Use the [Publish skills action](actions/publish-skills/README.md) to sync skill
+folders in your GitHub repository to Unity Catalog on each push. No notebook, job,
+or Unity Gateway CLI installation is required. After configuring Databricks
+authentication and UC permissions, add this step to your workflow:
+
+```yaml
+- uses: databricks/unity-gateway/actions/publish-skills@main
+  with:
+    skills-directory: skills
+    target-schema: acme.team_skills
+```
+
+The [setup guide](actions/publish-skills/README.md) includes complete OIDC and OAuth
+workflows, custom folder mappings, sharing permissions, and verification steps.
+Use `@main` for automatic updates or pin a reviewed commit for reproducible runs.

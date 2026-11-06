@@ -437,6 +437,37 @@ class TestDiscoverClaudeModels:
             )
         ]
 
+    def test_keeps_the_listed_token_limits(self, monkeypatch):
+        payload = {
+            "data": [
+                {
+                    "id": "system.ai.claude-opus-4-8",
+                    "max_input_tokens": 1000000,
+                    "max_tokens": 128000,
+                },
+                {
+                    "id": "anthropic-aigw-481f0baa-system.ai.gpt-6-luna",
+                    "max_input_tokens": 922000,
+                    "max_tokens": 128000,
+                },
+                {
+                    "id": "anthropic-aigw-73ea02b2-system.ai.glm-5-2",
+                    "max_input_tokens": 0,
+                    "max_tokens": 0,
+                },
+                {"id": "system.ai.claude-odd", "max_input_tokens": True, "max_tokens": 64000},
+                {"id": "system.ai.claude-unlisted"},
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *_args, **_kwargs: (payload, None))
+
+        catalog = db_mod.list_anthropic_model_catalog(WS, "token")
+
+        assert catalog.model_id_to_limits == {
+            "system.ai.claude-opus-4-8": (1000000, 128000),
+            "anthropic-aigw-481f0baa-system.ai.gpt-6-luna": (922000, 128000),
+        }
+
     def test_selects_opus_4_8_when_advertised(self, monkeypatch):
         payload = {
             "data": [
@@ -821,18 +852,25 @@ class TestListModelProviderServices:
         "model_provider_services": [
             {
                 "name": "model-provider-services/main.schema1.anthropic-svc",
-                "config": {"provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC"},
+                "config": {
+                    "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC",
+                    "allow_all_targets": True,
+                },
             },
             {
                 "name": "model-provider-services/main.schema1.claude-max-svc",
                 "config": {
                     "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC",
                     "anthropic": {"relayed": {}},
+                    "allow_all_targets": True,
                 },
             },
             {
                 "name": "model-provider-services/main.schema1.openai-svc",
-                "config": {"provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_OPENAI"},
+                "config": {
+                    "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_OPENAI",
+                    "allow_all_targets": True,
+                },
             },
             {
                 "name": "model-provider-services/main.schema2.bedrock-svc",
@@ -869,7 +907,7 @@ class TestListModelProviderServices:
             "provider_type": "anthropic",
             "targets": [],
             "target_api_types": {},
-            "allow_all_targets": False,
+            "allow_all_targets": True,
             "relayed": False,
         }
         assert {s["provider_type"] for s in services} == {
@@ -961,17 +999,12 @@ class TestListModelProviderServices:
             "main.schema2.bedrock-svc",
         ]
 
-    def test_codex_includes_openai_and_bedrock(self, monkeypatch):
+    def test_codex_excludes_services_without_responses_targets(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_http_get_json", lambda url, token, timeout=30: (self._PAYLOAD, None)
         )
         names, _ = db_mod.list_tool_provider_services("codex", WS, "token")
-        # Codex pins no Claude family, so a Bedrock service is usable whatever its targets.
-        assert names == [
-            "main.schema1.openai-svc",
-            "main.schema2.bedrock-svc",
-            "main.schema2.bedrock-titan-svc",
-        ]
+        assert names == ["main.schema1.openai-svc"]
 
 
 class TestMapClaudeFamilyModels:
@@ -1080,6 +1113,12 @@ class TestResolveProviderLaunchModel:
         assert db_mod.resolve_provider_launch_model("claude-3-7-sonnet", models) == (
             "claude-3-7-sonnet"
         )
+
+    def test_custom_default_does_not_invent_a_family(self):
+        with pytest.raises(
+            RuntimeError, match="does not offer a 'sonnet' model.*available families: none"
+        ):
+            db_mod.resolve_provider_launch_model("sonnet", {"default": "team-coding"})
 
     def test_no_models_and_no_override_is_none(self):
         assert db_mod.resolve_provider_launch_model(None, {}) is None
@@ -1295,7 +1334,7 @@ class TestResolveProviderService:
             "copilot", "main.schema2.bedrock-titan-svc", WS, "token"
         )
         assert service is None
-        assert "no Claude models" in error
+        assert "no compatible models for copilot" in error
 
     def test_copilot_rejects_a_subscription_relay(self, monkeypatch):
         payload = {
@@ -1324,7 +1363,7 @@ class TestResolveProviderService:
             "claude", "main.schema2.bedrock-titan-svc", WS, "token"
         )
         assert service is None
-        assert "no Claude models" in error
+        assert "no compatible models for claude" in error
 
     def test_bedrock_allow_all_targets_ok(self, monkeypatch):
         # allow_all_targets routes any model, so no explicit Claude target is needed — the model id
@@ -1357,7 +1396,12 @@ class TestResolveProviderService:
                     "name": "model-provider-services/main.schema2.mantle-svc",
                     "config": {
                         "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_BEDROCK_MANTLE",
-                        "targets": [{"model": "anthropic.claude-haiku-4-5"}],
+                        "targets": [
+                            {
+                                "model": "anthropic.claude-haiku-4-5",
+                                "native_api_types": ["anthropic/v1/messages"],
+                            }
+                        ],
                     },
                 }
             ]
@@ -1385,7 +1429,12 @@ class TestResolveProviderService:
                     "name": "model-provider-services/main.schema2.gpt-oss-svc",
                     "config": {
                         "provider_type": provider_type,
-                        "targets": [{"model": "openai.gpt-oss-120b"}],
+                        "targets": [
+                            {
+                                "model": "openai.gpt-oss-120b",
+                                "native_api_types": ["openai/v1/responses"],
+                            }
+                        ],
                     },
                 }
             ]
@@ -1401,7 +1450,59 @@ class TestResolveProviderService:
         _, claude_error = db_mod.resolve_provider_service(
             "claude", "main.schema2.gpt-oss-svc", WS, "token"
         )
-        assert "no Claude models" in claude_error
+        assert "no compatible models for claude" in claude_error
+
+    @pytest.mark.parametrize(
+        "provider_type",
+        [
+            "openai",
+            "azure_openai",
+            "microsoft_foundry",
+            "amazon_bedrock",
+            "bedrock_mantle",
+            "custom",
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("api_types", "usable"),
+        [
+            (None, False),
+            ([], False),
+            (["anthropic/v1/messages"], False),
+            (["openai/v1/chat/completions"], False),
+            (["openai/v1/embeddings"], False),
+            (["openai/v1/responses"], True),
+            (["openai/v1/chat/completions", "openai/v1/responses"], True),
+        ],
+    )
+    def test_codex_requires_responses_targets(self, monkeypatch, provider_type, api_types, usable):
+        target = {"model": "team-coding"}
+        if api_types is not None:
+            target["native_api_types"] = api_types
+        payload = {
+            "model_provider_services": [
+                {
+                    "name": "model-provider-services/main.test.models",
+                    "config": {"provider_type": provider_type, "targets": [target]},
+                }
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **kw: (payload, None))
+
+        names, reason = db_mod.list_tool_provider_services("codex", WS, "token")
+        service, error = db_mod.resolve_provider_service("codex", "main.test.models", WS, "token")
+
+        assert reason is None
+        assert names == (["main.test.models"] if usable else [])
+        if usable:
+            assert error is None
+            assert service["targets"] == ["team-coding"]
+        else:
+            assert service is None
+            assert error == (
+                "Model provider service 'main.test.models' exposes no compatible models for codex — "
+                "add compatible targets, enable allow_all_targets, or pick a different service."
+            )
 
     def test_not_found_lists_usable(self, monkeypatch):
         self._patch(monkeypatch)
@@ -1500,7 +1601,160 @@ def test_bare_model_name(model, name):
     assert db_mod.bare_model_name(model) == name
 
 
+@pytest.mark.parametrize(
+    ("tool", "provider_type"),
+    [
+        ("copilot", "anthropic"),
+        ("copilot", "microsoft_foundry"),
+    ],
+)
+def test_provider_targets_preserve_other_tool_combinations(tool, provider_type):
+    targets = ["claude-sonnet-5-5", "gpt-5.4"]
+    service = {
+        "provider_type": provider_type,
+        "targets": targets,
+        "target_api_types": {
+            "claude-sonnet-5-5": ("anthropic/v1/messages",),
+            "gpt-5.4": ("openai/v1/responses",),
+        },
+    }
+
+    assert db_mod.provider_targets_for_tool(tool, service) == targets
+
+
+@pytest.mark.parametrize(
+    "provider_type",
+    ["anthropic", "amazon_bedrock", "bedrock_mantle", "microsoft_foundry", "custom"],
+)
+def test_claude_provider_targets_use_messages_metadata_not_names(provider_type):
+    service = {
+        "provider_type": provider_type,
+        "targets": ["team-coding", "claude-sonnet-99", "claude-haiku-5-5", "gpt-5.4"],
+        "target_api_types": {
+            "team-coding": ("anthropic/v1/messages",),
+            "claude-sonnet-99": ("openai/v1/responses",),
+            "gpt-5.4": ("openai/v1/responses",),
+        },
+    }
+
+    assert db_mod.provider_targets_for_tool("claude", service) == ["team-coding"]
+    assert db_mod.service_usable_for_tool("claude", service)
+
+
+@pytest.mark.parametrize(
+    "provider_type",
+    ["openai", "azure_openai", "microsoft_foundry", "amazon_bedrock", "bedrock_mantle", "custom"],
+)
+def test_codex_provider_targets_use_responses_metadata_not_names(provider_type):
+    service = {
+        "provider_type": provider_type,
+        "targets": ["team-coding", "backup-coding", "gpt-5.4", "gpt-5-nano", "claude-sonnet-5-5"],
+        "target_api_types": {
+            "team-coding": ("openai/v1/responses",),
+            "backup-coding": ("openai/v1/chat/completions", "openai/v1/responses"),
+            "gpt-5.4": ("openai/v1/chat/completions",),
+            "claude-sonnet-5-5": ("anthropic/v1/messages",),
+        },
+    }
+
+    assert db_mod.provider_targets_for_tool("codex", service) == ["team-coding", "backup-coding"]
+    assert db_mod.service_usable_for_tool("codex", service)
+
+
 class TestServiceUsableForTool:
+    @pytest.mark.parametrize(
+        ("tool", "provider_type"),
+        [
+            ("claude", "anthropic"),
+            ("claude", "microsoft_foundry"),
+            ("claude", "custom"),
+            ("codex", "openai"),
+            ("codex", "custom"),
+            ("copilot", "microsoft_foundry"),
+            ("gemini", "gemini_enterprise"),
+        ],
+    )
+    def test_empty_restricted_services_are_unusable(self, tool, provider_type):
+        service = {"provider_type": provider_type, "targets": []}
+
+        assert not db_mod.service_usable_for_tool(tool, service)
+        service["allow_all_targets"] = True
+        assert db_mod.service_usable_for_tool(tool, service)
+
+    @pytest.mark.parametrize(
+        ("tool", "provider_type"),
+        [
+            ("claude", "anthropic"),
+            ("claude", "microsoft_foundry"),
+            ("claude", "custom"),
+            ("claude", "amazon_bedrock"),
+            ("claude", "bedrock_mantle"),
+            ("copilot", "amazon_bedrock"),
+            ("copilot", "bedrock_mantle"),
+            ("vscode", "amazon_bedrock"),
+            ("vscode", "bedrock_mantle"),
+        ],
+    )
+    def test_missing_compatible_targets_error(self, tool, provider_type):
+        service = {
+            "provider_type": provider_type,
+            "targets": ["gpt-5.4"],
+            "target_api_types": {"gpt-5.4": ("openai/v1/responses",)},
+        }
+
+        reason = db_mod._provider_service_unusable_reason(tool, service, "main.test.models")
+
+        assert reason == (
+            f"Model provider service 'main.test.models' exposes no compatible models for {tool} — "
+            "add compatible targets, enable allow_all_targets, or pick a different service."
+        )
+        service["allow_all_targets"] = True
+        assert db_mod._provider_service_unusable_reason(tool, service, "main.test.models") is None
+
+    @pytest.mark.parametrize(
+        ("targets", "target_api_types", "allow_all", "claude_usable", "codex_usable"),
+        [
+            (["claude-opus-5-5"], {}, False, False, False),
+            (["team-coding"], {"team-coding": ("anthropic/v1/messages",)}, False, True, False),
+            (["gpt-5-nano"], {"gpt-5-nano": ("openai/v1/responses",)}, False, False, True),
+            (
+                ["claude-sonnet-5-5"],
+                {"claude-sonnet-5-5": ("openai/v1/responses",)},
+                False,
+                False,
+                True,
+            ),
+            ([], {}, False, False, False),
+            ([], {}, True, True, True),
+        ],
+    )
+    def test_foundry_requires_targets_for_the_tools_api(
+        self, targets, target_api_types, allow_all, claude_usable, codex_usable
+    ):
+        service = {
+            "provider_type": "microsoft_foundry",
+            "targets": targets,
+            "target_api_types": target_api_types,
+            "allow_all_targets": allow_all,
+        }
+        assert db_mod.service_usable_for_tool("claude", service) is claude_usable
+        assert db_mod.service_usable_for_tool("codex", service) is codex_usable
+        assert db_mod.service_usable_for_tool("copilot", service) is bool(targets or allow_all)
+
+    def test_custom_responses_service_is_codex_only(self):
+        service = {
+            "provider_type": "custom",
+            "targets": ["team-coding"],
+            "target_api_types": {"team-coding": ("openai/v1/responses",)},
+        }
+        assert db_mod.service_usable_for_tool("codex", service)
+        assert not db_mod.service_usable_for_tool("claude", service)
+        assert not db_mod.service_usable_for_tool("copilot", service)
+
+    def test_claude_still_rejects_azure_openai(self):
+        service = {"provider_type": "azure_openai", "allow_all_targets": True}
+        assert not db_mod.service_usable_for_tool("claude", service)
+
     def test_bedrock_allow_all_targets_usable_without_targets(self):
         service = {"provider_type": "amazon_bedrock", "targets": [], "allow_all_targets": True}
         assert db_mod.service_usable_for_tool("claude", service)
@@ -1518,6 +1772,7 @@ class TestServiceUsableForTool:
         service = {
             "provider_type": provider_type,
             "targets": ["openai.gpt-oss-120b"],
+            "target_api_types": {"openai.gpt-oss-120b": ("openai/v1/responses",)},
             "allow_all_targets": False,
         }
         assert not db_mod.service_usable_for_tool("claude", service)
@@ -1545,7 +1800,12 @@ class TestServiceUsableForTool:
         assert not db_mod.service_usable_for_tool("copilot", service)
 
     def test_openai_relay_is_codex_only(self):
-        service = {"provider_type": "openai", "targets": [], "relayed": True}
+        service = {
+            "provider_type": "openai",
+            "targets": [],
+            "relayed": True,
+            "allow_all_targets": True,
+        }
         assert db_mod.service_usable_for_tool("codex", service)
         assert not db_mod.service_usable_for_tool("copilot", service)
         assert "ChatGPT" in db_mod._provider_service_unusable_reason("copilot", service, "svc")
@@ -1553,7 +1813,12 @@ class TestServiceUsableForTool:
         assert not db_mod.service_usable_for_tool("codex", anthropic)
 
     def test_copilot_skips_a_subscription_relay(self):
-        service = {"provider_type": "anthropic", "targets": [], "relayed": True}
+        service = {
+            "provider_type": "anthropic",
+            "targets": [],
+            "relayed": True,
+            "allow_all_targets": True,
+        }
         assert not db_mod.service_usable_for_tool("copilot", service)
         assert db_mod.service_usable_for_tool("claude", service)
 
@@ -4092,6 +4357,59 @@ class TestHttpGetJsonRetries:
 
         return HTTPError(url="", code=code, msg=message, hdrs=headers or {}, fp=None)
 
+    @pytest.mark.parametrize(
+        ("max_retries", "recovers", "attempts", "delays"),
+        [(0, False, 1, []), (2, False, 3, [1.25, 2.5]), (2, True, 2, [1.25])],
+    )
+    def test_truncated_response_obeys_retry_budget(
+        self, monkeypatch, max_retries, recovers, attempts, delays
+    ):
+        from http.client import IncompleteRead
+        from unittest.mock import MagicMock
+
+        truncated = MagicMock()
+        truncated.__enter__.return_value = truncated
+        # Even a valid JSON prefix is incomplete and must never be returned or cached.
+        truncated.read.side_effect = IncompleteRead(b'{"partial": true}', 100)
+        responses = [truncated, _FakeResponse({"complete": True})] if recovers else None
+        urlopen = MagicMock(side_effect=responses, return_value=truncated)
+        sleeps = []
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+
+        payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=max_retries)
+
+        assert urlopen.call_count == attempts
+        assert truncated.__exit__.call_count == (1 if recovers else attempts)
+        assert sleeps == delays
+        if recovers:
+            assert payload == {"complete": True}
+            assert reason is None
+        else:
+            assert payload is None
+            assert reason == "network error: IncompleteRead(17 bytes read, 100 more expected)"
+
+    @pytest.mark.parametrize("error_type", ["BadStatusLine", "LineTooLong"])
+    def test_retries_protocol_errors_before_response_body(self, monkeypatch, error_type):
+        import http.client
+        from unittest.mock import MagicMock
+
+        urlopen = MagicMock(
+            side_effect=[
+                getattr(http.client, error_type)("invalid HTTP response"),
+                _FakeResponse({"complete": True}),
+            ]
+        )
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda delay: None)
+
+        payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=1)
+
+        assert payload == {"complete": True}
+        assert reason is None
+        assert urlopen.call_count == 2
+
     def test_retries_429_after_retry_after_delay(self, monkeypatch):
         outcomes = iter(
             [
@@ -5172,12 +5490,22 @@ class TestModelProviderServicesCache:
                         "name": "model-provider-services/main.j.ant",
                         "config": {
                             "provider_type": "ANTHROPIC",
-                            "targets": [{"model": "claude-opus-5"}],
+                            "targets": [
+                                {
+                                    "model": "claude-opus-5",
+                                    "native_api_types": ["anthropic/v1/messages"],
+                                }
+                            ],
                         },
                     },
                     {
                         "name": "model-provider-services/main.j.oai",
-                        "config": {"provider_type": "OPENAI", "targets": [{"model": "gpt-5"}]},
+                        "config": {
+                            "provider_type": "OPENAI",
+                            "targets": [
+                                {"model": "gpt-5", "native_api_types": ["openai/v1/responses"]}
+                            ],
+                        },
                     },
                 ]
             }, None
