@@ -223,7 +223,7 @@ from ucode.state import (
     workspace_self_managed_agents,
 )
 from ucode.string_utils import is_valid_catalog_schema, is_valid_catalog_schema_name
-from ucode.ug_headers import parse_header_line
+from ucode.ug_headers import parse_header_line, ug_headers
 from ucode.ui import (
     console,
     heading,
@@ -252,6 +252,7 @@ from ucode.workspace import (
     selector_headers,
     split_workspace_key,
     state_workspace_key,
+    workspace_headers,
     workspace_key,
 )
 
@@ -582,6 +583,7 @@ def configure_shared_state(
     custom_oauth: CustomOAuthConfig | None = None,
     clear_custom_oauth: bool = False,
     claude_server_side_web_search: bool | None = None,
+    on_authenticated: Callable[[str, str], None] | None = None,
 ) -> dict:
     """Log into Databricks, verify AI Gateway, fetch model lists, persist state.
 
@@ -601,6 +603,8 @@ def configure_shared_state(
     in ``_launch_tool``) and the gateway was verified by that earlier configure.
     Only the local profile resolution and the shared state assembly still run;
     the saved model lists are preserved.
+    ``on_authenticated``, when provided, receives this workspace and its authenticated token
+    before gateway/model discovery. It is not called when preflight is skipped.
     """
     workspace = normalize_workspace_url(workspace)
     if not split_workspace_key(workspace)[1]:
@@ -747,6 +751,8 @@ def configure_shared_state(
     with spinner("Verifying Unity AI Gateway..."):
         if not cli_custom_oauth:
             token = get_databricks_token(workspace, profile)
+        if on_authenticated is not None:
+            on_authenticated(workspace, token)
         # The listing is independent of the probe, so overlap the two round trips. The probe still
         # gates the launch; its failure abandons the listing rather than waiting for it.
         model_services_discovery = (
@@ -3528,24 +3534,21 @@ def _note_recommended_agent(recommendation: dict | None, tool: str) -> None:
     )
 
 
-def _fetch_budget_recommendation(state: dict, managed: dict | None) -> dict | None:
-    """The agent and model the caller's budget tier allows, or None when no tier is configured.
-
-    Enforcement is server-side, so a failed read only costs the recommendation: the config's own
-    ``default_model`` still applies and the launch proceeds.
-    """
+def _budget_recommendation_enabled(managed: dict | None) -> bool:
     smart_defaults = (managed or {}).get("smart_defaults")
     tiers = smart_defaults.get("tiers") if isinstance(smart_defaults, dict) else None
-    if not tiers or is_dry_run():
-        return None
+    return bool(tiers) and not is_dry_run()
+
+
+def _finish_budget_recommendation(
+    read: Callable[[], tuple[dict | None, str | None]],
+) -> dict | None:
+    """Join a recommendation read and render its recoverable warning on the calling thread."""
     reason: str | None = None
     recommendation = None
     with spinner("Checking your budget..."):
         try:
-            recommendation, reason = get_model_recommendation(
-                state["workspace"],
-                get_databricks_token(state["workspace"], state.get("profile")),
-            )
+            recommendation, reason = read()
         except (RuntimeError, OSError) as exc:
             # A token that lapsed since the config refresh — or a Databricks CLI that isn't
             # installed or reachable — must not block the launch; the config's default_model stands.
@@ -3556,6 +3559,22 @@ def _fetch_budget_recommendation(state: dict, managed: dict | None) -> dict | No
             "using the default model from your workspace's config."
         )
     return recommendation
+
+
+def _fetch_budget_recommendation(state: dict, managed: dict | None) -> dict | None:
+    """Read the caller's live budget recommendation, or None without configured tiers.
+
+    Enforcement is server-side, so a failed read only costs the recommendation: the config's own
+    ``default_model`` still applies and the launch proceeds.
+    """
+    if not _budget_recommendation_enabled(managed):
+        return None
+    return _finish_budget_recommendation(
+        lambda: get_model_recommendation(
+            state["workspace"],
+            get_databricks_token(state["workspace"], state.get("profile")),
+        )
+    )
 
 
 def _launch_title(tool: str) -> str:
@@ -3937,7 +3956,31 @@ def _launch_tool(
         # tools like pi which read multiple model bundles never run on
         # stale state from before a tool added a new bundle). Under a provider
         # this heavy discovery is skipped (only a web-search model is fetched).
-        configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
+        configure_kwargs: dict[str, Any] = (
+            {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
+        )
+        pending_recommendation: Future[tuple[dict | None, str | None]] | None = None
+
+        def start_recommendation(workspace: str, token: str) -> None:
+            nonlocal pending_recommendation
+            # An abandoned worker can outlive this invocation. Bind routing and attribution
+            # before the launch restores its environment or another invocation selects a workspace.
+            headers = {**ug_headers(), **workspace_headers(workspace)}
+            pending_recommendation = _start_in_background(
+                lambda: get_model_recommendation(workspace, token, default_headers=headers)
+            )
+
+        if (
+            recommendation is None
+            and not skip_preflight
+            and _budget_recommendation_enabled(managed)
+        ):
+            # The selected agent is already known. Its live budget recommendation needs the
+            # authenticated workspace, but not the gateway probe or discovered model catalogs.
+            # Keep authentication and UI on this thread; overlap only the independent API read.
+            # A failed probe can abandon an in-flight read. Its daemon worker emits no UI and
+            # cannot keep the CLI alive while the existing gateway failure propagates.
+            configure_kwargs["on_authenticated"] = start_recommendation
         family_defaults = (
             claude_agent.get_family_defaults(
                 state,
@@ -3975,7 +4018,9 @@ def _launch_tool(
         # `configure_shared_state`, whose returned state it overrides, and before the provider and
         # model are settled below — the two state files are never merged on disk.
         # Bare `ucode` already read one to choose the agent; refetching would double the round trip.
-        if recommendation is None:
+        if pending_recommendation is not None:
+            recommendation = _finish_budget_recommendation(pending_recommendation.result)
+        elif recommendation is None:
             recommendation = _fetch_budget_recommendation(state, managed)
         _note_recommended_agent(recommendation, tool)
         if managed is not None:

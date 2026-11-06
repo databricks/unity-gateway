@@ -1,5 +1,14 @@
 # Integration tests
 
+The configure-scope cases in `../test_cli.py` mock installation and authentication;
+they do not validate the native Databricks CLI installer.
+
+Background budget reads capture the launch's routing/attribution headers before
+starting. Component regressions in `../test_cli.py` and `../test_workspace_selection.py`
+verify that an abandoned worker cannot inherit a later invocation's headers or
+workspace selection, and an empty snapshot stays empty. These do not simulate a
+live gateway failure.
+
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They
@@ -470,6 +479,14 @@ component tests in `../test_cli.py`: overlap, probe failure without waiting, lis
 errors, the `skip_model_discovery` and `skip_preflight` paths, and reuse of the process-local
 probe and listing caches. This suite does not assert live request overlap, probe/listing timing, or
 launch-time savings.
+
+Explicit-agent budget recommendation overlap is covered by synchronized component tests in
+`../test_cli.py::TestExplicitLaunchOverlapsBudget`. They preserve authentication ordering,
+single reads for unavailable recommendations, main-thread warnings, selected workspace headers,
+custom-OAuth token reuse,
+and failure/skip behavior, including process exit through the real launch orchestration while
+a budget worker is blocked. Bare `ug` still reads the recommendation before choosing its agent.
+No native journey currently measures this overlap or its effect on launch p50/p90.
 
 `test_ug_configure_scope.py` runs, for Claude and Codex separately (Linux/macOS only), plain
 `ug configure`, `--user`, `UG_SKIP_OS_SETTINGS=1`, and `--global` over a user-owned

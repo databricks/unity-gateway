@@ -1,5 +1,14 @@
 # Test suites and user journeys
 
+Configure-scope component tests stub Databricks CLI installation alongside workspace
+authentication, so policy assertions run without requiring an installed CLI on Windows.
+
+Background budget reads capture the launch's routing/attribution headers before
+starting. Component regressions in `test_cli.py` and `test_workspace_selection.py`
+verify that an abandoned worker cannot inherit a later invocation's headers or
+workspace selection, and an empty snapshot stays empty. These do not simulate a
+live gateway failure.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component
@@ -718,6 +727,16 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 `smart_defaults` wire field, reading older `spend_tiers` caches, skipping recommendations
 without tier rules, applying recommendations when tiers exist, and serializing the current
 API field. These are unit/component checks; live request-count coverage is not included.
+
+`test_cli.py::TestExplicitLaunchOverlapsBudget` covers explicit-agent budget recommendations
+overlapping the gateway probe and model discovery after authentication. Synchronized checks
+cover one read for unavailable results, warning output on the calling thread, failure before
+authentication, gateway failure without joining a daemon worker, selected workspace headers,
+custom-OAuth token reuse,
+and the no-tier, dry-run, pre-supplied recommendation, and skipped-preflight paths. These
+component tests do not establish live API overlap or production startup percentiles. A failed
+gateway probe may leave the read in flight; a child-process check drives the real launch
+orchestration and confirms it reports the probe error and exits while the request is blocked.
 
 `test_usage.py`, `test_budget.py`, and `test_cli.py` cover budget usage without an
 opt-in, including the five highest usage percentages, stable ties, missing percentages
