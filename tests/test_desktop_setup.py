@@ -983,7 +983,10 @@ def test_switching_workspace_replaces_one_reserved_profile(desktop):
 
 
 @pytest.mark.parametrize("desktop", ["win32"], indirect=True)
-@pytest.mark.parametrize("installation", ["installed", "missing", "timeout", "query_unavailable"])
+@pytest.mark.parametrize(
+    "installation",
+    ["installed", "slow_installed", "missing", "timeout", "query_unavailable", "query_failed"],
+)
 def test_windows_configure_claude_desktop(desktop, installation, monkeypatch, capsys):
     (desktop / "_meta.json").unlink()
     desktop.rmdir()
@@ -991,24 +994,41 @@ def test_windows_configure_claude_desktop(desktop, installation, monkeypatch, ca
 
     def query_installed_package(args, **kwargs):
         # Simulate the Windows package query while keeping real configuration writes.
-        if installation == "timeout":
+        if installation == "timeout" or (
+            installation == "slow_installed" and kwargs["timeout"] < 20
+        ):
             raise subprocess.TimeoutExpired(args, kwargs["timeout"])
         if installation == "query_unavailable":
             raise FileNotFoundError("PowerShell unavailable")
-        return subprocess.CompletedProcess(args, 0 if installation == "installed" else 1)
+        if installation == "query_failed":
+            return subprocess.CompletedProcess(
+                args, 2, stderr="AppX package registration unavailable"
+            )
+        return subprocess.CompletedProcess(
+            args, 0 if installation in ("installed", "slow_installed") else 1
+        )
 
     monkeypatch.setattr(claude_desktop.subprocess_cross_os, "run", query_installed_package)
     desktop_setup.configure_claude_desktop(
         {"workspace": "https://workspace.example", "profile": "chosen-profile"}
     )
 
-    if installation == "installed":
+    if installation in ("installed", "slow_installed"):
         profile = configured_profile(desktop)
         assert profile["inferenceProvider"] == "gateway"
         assert profile["inferenceModels"] == [
             {"name": "system.ai.claude-haiku-4-5", "labelOverride": "Claude Haiku 4.5"}
         ]
         return
-    assert "Open Claude Desktop once" in capsys.readouterr().out
+    output = " ".join(capsys.readouterr().out.split())
+    expected = {
+        "missing": "Open Claude Desktop once",
+        "timeout": "Checking the installed Claude Desktop package timed out after 30 seconds",
+        "query_unavailable": "Could not start PowerShell",
+        "query_failed": "PowerShell exit code 2): AppX package registration unavailable",
+    }
+    assert expected[installation] in output
+    if installation != "missing":
+        assert "Open Claude Desktop once" not in output
     assert not desktop.parent.exists()
     assert not claude_desktop.APP_DIR.exists()

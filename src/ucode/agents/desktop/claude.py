@@ -369,25 +369,44 @@ def _claude_desktop_installed(*, home: Path | str | None = None) -> bool:
     powershell = windows_system32_dir() / "WindowsPowerShell" / "v1.0" / "powershell.exe"
     command = r"""
 $ErrorActionPreference = 'Stop'
-foreach ($package in Get-AppxPackage -Name Claude) {
-    $manifest = Get-AppxPackageManifest -Package $package.PackageFullName
-    foreach ($app in $manifest.Package.Applications.Application) {
-        if ($app.Executable -match '(^|[\\/])claude\.exe$' -and
-            (Test-Path -LiteralPath (Join-Path $package.InstallLocation $app.Executable) -PathType Leaf)) {
-            exit 0
+try {
+    foreach ($package in Get-AppxPackage -Name Claude) {
+        $manifest = Get-AppxPackageManifest -Package $package.PackageFullName
+        foreach ($app in $manifest.Package.Applications.Application) {
+            if ($app.Executable -match '(^|[\\/])claude\.exe$' -and
+                (Test-Path -LiteralPath (Join-Path $package.InstallLocation $app.Executable) -PathType Leaf)) {
+                exit 0
+            }
         }
     }
+    exit 1
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 2
 }
-exit 1
 """
     try:
         result = subprocess_cross_os.run(
             [str(powershell), "-NoProfile", "-NonInteractive", "-Command", command],
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            timeout=10,
+            text=True,
+            timeout=30,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
+    except subprocess.TimeoutExpired as exc:
+        raise ClaudeDesktopUnavailableError(
+            "Checking the installed Claude Desktop package timed out after 30 seconds. "
+            "Run ug configure again"
+        ) from exc
+    except OSError as exc:
+        raise ClaudeDesktopUnavailableError(
+            f"Could not start PowerShell to check the installed Claude Desktop package: {exc}"
+        ) from exc
+    if result.returncode not in (0, 1):
+        detail = (result.stderr or "No error details returned").strip()[:500]
+        raise ClaudeDesktopUnavailableError(
+            "Could not query the installed Claude Desktop package "
+            f"(PowerShell exit code {result.returncode}): {detail}"
+        )
     return result.returncode == 0

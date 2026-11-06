@@ -23,6 +23,9 @@ The test installs UG from the checkout, runs `ug configure` with the existing
 gateway profile. UG detects the installed Windows MSIX package and executable,
 then creates `%LOCALAPPDATA%/Claude-3p/configLibrary` before the first launch.
 The test does not create that directory or write UG's configuration itself.
+UG allows 30 seconds for the Windows package query and distinguishes a missing
+installation from a query timeout, PowerShell launch failure, or package-query error.
+Detection failures still fail the test; the inference assertion is unchanged.
 
 The test rejects model-provider routing, accepts gateway onboarding, opens
 Cowork, and verifies the selected model maps to `system.ai.claude-haiku-4-5`.
