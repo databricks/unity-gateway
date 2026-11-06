@@ -25,6 +25,11 @@ from ucode.ui import (
 )
 
 _PER_USER_SCOPE = "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER"
+_SCOPE_TYPE_PREFIX = "ALERT_CONFIGURATION_SCOPE_TYPE_"
+_TIME_PERIOD_PREFIX = "ALERT_CONFIGURATION_TIME_PERIOD_"
+_SCOPE_LABELS = {_PER_USER_SCOPE: "personal", "ALERT_CONFIGURATION_SCOPE_TYPE_SHARED": "shared"}
+_PERIOD_ADJECTIVES = {"DAY": "Daily", "MONTH": "Monthly"}
+_PERIOD_PHRASES = {"DAY": "today", "MONTH": "this month"}
 _DEFAULT_LIMIT_COUNT = 5
 
 
@@ -40,21 +45,45 @@ def _limit_percent(status: BudgetLimitStatus) -> Decimal | None:
     return None
 
 
+def _enum_words(value: str, prefix: str) -> str:
+    """Readable words for an enum value this version has no label for: a scope or period the API
+    adds later reads as ``per-group`` instead of ``ALERT_CONFIGURATION_SCOPE_TYPE_PER_GROUP``.
+    """
+    words = value.removeprefix(prefix).strip("_").replace("_", "-").lower()
+    return words or value.lower()
+
+
+def _period_adjective(time_period: str) -> str:
+    adjective = _PERIOD_ADJECTIVES.get(time_period)
+    if adjective is None:
+        adjective = _enum_words(time_period, _TIME_PERIOD_PREFIX).capitalize()
+    return adjective
+
+
+def _period_phrase(time_period: str) -> str:
+    phrase = _PERIOD_PHRASES.get(time_period)
+    if phrase is None:
+        phrase = f"this {_enum_words(time_period, _TIME_PERIOD_PREFIX)}"
+    return phrase
+
+
+def _scope_noun(scope_type: str) -> str:
+    noun = _SCOPE_LABELS.get(scope_type)
+    if noun is None:
+        noun = _enum_words(scope_type, _SCOPE_TYPE_PREFIX)
+    return noun
+
+
 def _limit_label(status: BudgetLimitStatus) -> str:
-    period = {"DAY": "Daily", "MONTH": "Monthly"}.get(status.time_period, status.time_period)
-    scope = {
-        _PER_USER_SCOPE: "personal",
-        "ALERT_CONFIGURATION_SCOPE_TYPE_SHARED": "shared",
-    }.get(status.scope_type, f"scope {status.scope_type}")
+    period = _period_adjective(status.time_period)
+    scope = _scope_noun(status.scope_type)
     return f"{period} {scope} limit (budget {status.budget_id[:8]})"
 
 
 def _personal_spend_line(status: BudgetLimitStatus) -> str | None:
     if status.scope_type != _PER_USER_SCOPE:
         return None
-    period = {"DAY": "today", "MONTH": "this month"}.get(
-        status.time_period, f"for period {escape(status.time_period)}"
-    )
+    period = escape(_period_phrase(status.time_period))
     if status.threshold is None:
         return f"{format_usd(status.spend)} used {period}" if status.spend is not None else None
     if status.spend is None:

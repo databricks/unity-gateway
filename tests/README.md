@@ -725,7 +725,9 @@ ordered last, and the full listing with `--all`.
 They check workspace authentication, unavailable usage, and lookup errors without
 reporting failures as absent budgets.
 Presentation checks cover short budget IDs, spacing, usage colors, over-limit values,
-output without colors, and the hint when more limits exist.
+output without colors, readable generic labels (never raw enum text) for periods and scope
+types without a known name, markup escaping of those values, and the hint when more limits
+exist.
 These are unit/component tests; CUJ5 checks live `ug usage --all` output against budget
 figures before and after the command.
 
