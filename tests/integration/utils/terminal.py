@@ -15,6 +15,7 @@ import signal
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import pyte
 from pyte.screens import wcwidth  # wcwidth is only a pyte dependency
@@ -22,6 +23,33 @@ from pyte.screens import wcwidth  # wcwidth is only a pyte dependency
 from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
 
 SELECTED = "[›❯>]"
+
+
+def codex_trust_dialog_shown(screen: str, cwd: Path) -> bool:
+    """Whether Codex is asking to trust the test project, in its pre-0.156 or 0.156 layout."""
+    older = (
+        bool(
+            re.search(
+                rf"(?m)^\s*>\s+You are in {re.escape(str(cwd.parent))}[\\/][^\\/\r\n]*$",
+                screen,
+            )
+        )
+        and (
+            "Do you trust the contents of this directory?" in screen
+            or "directory allows project-local config, hooks, and exec policies to load." in screen
+        )
+        and bool(re.search(rf"(?m)^\s*{SELECTED}\s*1[.)]\s+Yes, continue\s*$", screen))
+        and bool(re.search(r"(?m)^\s*2[.)]\s+No, quit\s*$", screen))
+        and "Press enter to continue" in screen
+    )
+    current = (
+        bool(re.search(r"(?m)^\s*Folder access\s*$", screen))
+        and bool(re.search(rf"(?m)^\s*{re.escape(str(cwd))}\s*$", screen))
+        and "Trust this folder?" in screen
+        and bool(re.search(rf"(?m)^\s*{SELECTED}\s*1[.)]\s+Trust and continue\s*$", screen))
+        and bool(re.search(r"(?m)^\s*2[.)]\s+Quit\s*$", screen))
+    )
+    return older or current
 
 
 def codex_command_approval_pending(screen: str, expected_command: str) -> bool:
@@ -494,22 +522,7 @@ class AgentTerminal(TerminalProcess):
                 ),
                 (
                     "trust-directory",
-                    self.agent == "codex"
-                    and bool(
-                        re.search(
-                            rf"(?m)^\s*>\s+You are in "
-                            rf"{re.escape(str(self.session.cwd.parent))}[\\/][^\\/\r\n]*$",
-                            text,
-                        )
-                    )
-                    and (
-                        "Do you trust the contents of this directory?" in text
-                        or "directory allows project-local config, hooks, and exec policies to load."
-                        in text
-                    )
-                    and bool(re.search(rf"(?m)^\s*{SELECTED}\s*1[.)]\s+Yes, continue\s*$", text))
-                    and bool(re.search(r"(?m)^\s*2[.)]\s+No, quit\s*$", text))
-                    and "Press enter to continue" in text,
+                    self.agent == "codex" and codex_trust_dialog_shown(text, self.session.cwd),
                     "\r",
                 ),
             ]

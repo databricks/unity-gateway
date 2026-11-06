@@ -13,7 +13,10 @@ from tests.integration.utils.evidence import (
     assistant_answer_contains,
     tool_outputs,
 )
-from tests.integration.utils.terminal import codex_command_approval_pending
+from tests.integration.utils.terminal import (
+    codex_command_approval_pending,
+    codex_trust_dialog_shown,
+)
 
 
 @pytest.mark.parametrize(
@@ -60,6 +63,46 @@ def test_codex_approval_requires_the_exact_local_command(command, environment, m
         assert (
             codex_command_approval_pending(screen, "ug codex --disable-smart-routing") is expected
         )
+
+
+# Codex 0.156.0's folder-trust dialog, as captured in CI run 42283317759.
+_CODEX_0_156_TRUST = """  Folder access
+  {cwd}
+
+  Trust this folder? Codex can read, edit, and run files here, ...
+
+  › 1. Trust and continue
+    2. Quit
+
+  enter continue · esc quit"""
+_CODEX_OLDER_TRUST = """> You are in {cwd}
+
+  Do you trust the contents of this directory?
+
+› 1. Yes, continue
+  2. No, quit
+
+  Press enter to continue"""
+
+
+@pytest.mark.parametrize(
+    ("layout", "change", "shown"),
+    [
+        (_CODEX_0_156_TRUST, None, True),
+        (_CODEX_OLDER_TRUST, None, True),
+        (_CODEX_0_156_TRUST, ("project with spaces", "other project"), False),
+        (_CODEX_0_156_TRUST, ("› 1.", "  1."), False),
+        (_CODEX_0_156_TRUST, ("2. Quit", "2. Exit"), False),
+        (_CODEX_0_156_TRUST, ("Folder access", "Folder"), False),
+        (_CODEX_0_156_TRUST, ("Trust this folder?", "Trust it?"), False),
+    ],
+)
+def test_codex_trust_dialog_requires_the_test_project(tmp_path, layout, change, shown):
+    cwd = tmp_path / "project with spaces"
+    screen = layout.format(cwd=cwd)
+    if change:
+        screen = screen.replace(*change)
+    assert codex_trust_dialog_shown(screen, cwd) is shown
 
 
 class _Session:
