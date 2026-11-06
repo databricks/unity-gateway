@@ -832,6 +832,31 @@ class TestBuildRuntimeEnv:
         env = copilot.build_runtime_env(tmp_path / "providers.json", catalog(GPT)[0])
         assert env.get(key) != "user-value"
 
+    def test_tracing_replaces_the_users_own_exporter_settings(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://collector:4318/t")
+        monkeypatch.setenv("COPILOT_OTEL_FILE_EXPORTER_PATH", "/tmp/spans")
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "team=ml")
+        otel = copilot.otel_env(PROXY, "secret")
+
+        env = copilot.build_runtime_env(tmp_path / "providers.json", catalog(GPT)[0], otel=otel)
+
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == f"{PROXY}/ai-gateway/otel"
+        assert env["OTEL_EXPORTER_OTLP_PROTOCOL"] == "http/protobuf"
+        assert env["OTEL_EXPORTER_OTLP_HEADERS"] == "x-api-key=secret"
+        assert env["COPILOT_OTEL_ENABLED"] == "true"
+        assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in env
+        assert "COPILOT_OTEL_FILE_EXPORTER_PATH" not in env
+        assert env["OTEL_RESOURCE_ATTRIBUTES"] == "team=ml"
+
+    def test_without_tracing_keeps_the_users_own_exporter_settings(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+
+        env = copilot.build_runtime_env(tmp_path / "providers.json", catalog(GPT)[0])
+
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://collector:4318"
+        assert "COPILOT_OTEL_ENABLED" not in env
+
 
 class TestSessionRegistry:
     def test_writes_a_private_registry_removed_at_exit(self, tmp_path, monkeypatch):
@@ -1291,6 +1316,14 @@ def _stub_launch(monkeypatch, process=None, token="dbx-token"):
             content=b"{}",
             timeout=5,
         ).status_code
+        if endpoint := env.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+            api_key = env["OTEL_EXPORTER_OTLP_HEADERS"].removeprefix("x-api-key=")
+            seen["metrics_status"] = httpx.post(
+                f"{endpoint}/v1/metrics", headers={"x-api-key": api_key}, content=b"", timeout=5
+            ).status_code
+            seen["unsigned_traces_status"] = httpx.post(
+                f"{endpoint}/v1/traces", content=b"", timeout=5
+            ).status_code
         return process or _ExitedProcess()
 
     monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
@@ -1320,6 +1353,31 @@ class TestLaunch:
         # The proxy is live while Copilot runs and refuses other credentials.
         assert seen["wrong_secret_status"] == 401
         assert not os.path.exists(seen["registry_path"])
+
+    def test_tracing_exports_to_the_session_proxy(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        seen = _stub_launch(monkeypatch)
+
+        with pytest.raises(SystemExit):
+            copilot.launch(
+                {**STATE, "copilot_otel_tracing": True}, [], options=copilot.LaunchOptions()
+            )
+
+        secret = seen["registry"]["providers"][0]["bearerToken"]
+        assert seen["env"]["OTEL_EXPORTER_OTLP_HEADERS"] == f"x-api-key={secret}"
+        assert seen["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"].startswith("http://127.0.0.1:")
+        assert seen["metrics_status"] == 200
+        assert seen["unsigned_traces_status"] == 401
+
+    def test_without_tracing_the_proxy_serves_no_otel_path(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        seen = _stub_launch(monkeypatch)
+
+        with pytest.raises(SystemExit):
+            copilot.launch(dict(STATE), [], options=copilot.LaunchOptions())
+
+        assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in seen["env"]
+        assert "COPILOT_OTEL_ENABLED" not in seen["env"]
 
     def test_explicit_model_is_rewritten_to_the_registry_ref(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
