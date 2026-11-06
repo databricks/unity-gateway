@@ -22,8 +22,8 @@ def save(name, text):
     (EVIDENCE / name).write_text(redact(text))
 
 
-def ui(*args):
-    if args[0] in ("click", "type"):
+def ui(*args, wait_until_enabled=True):
+    if wait_until_enabled and args[0] in ("click", "type"):
         wait_for(args[1], enabled=True)
     result = process.run(
         [str(TEMP / "desktop-ui"), *args],
@@ -127,9 +127,14 @@ def main():
         wait_for("Continue")
         ui("click", "Continue")
         print("Gateway onboarding accepted", flush=True)
-        navigation = wait_for(("Cowork", "Show sidebar"), timeout=60)
+        navigation = wait_for(("Cowork", "Show sidebar"), timeout=60, enabled=True)
         if not matches_labels(navigation, "Cowork"):
-            ui("click", "Show sidebar")
+            try:
+                ui("click", "Show sidebar", wait_until_enabled=False)
+            except RuntimeError as exc:
+                if str(exc) != "Control unavailable: Show sidebar":
+                    raise
+                wait_for("Cowork", timeout=10, enabled=True)
         wait_for("Cowork", timeout=60)
         save("navigation-ui.json", ui("snapshot"))
         ui("click", "Cowork")
