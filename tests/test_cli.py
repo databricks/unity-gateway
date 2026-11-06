@@ -2180,9 +2180,7 @@ class TestManagedCodexModelSource:
         lookups = []
         for provider_type in ("amazon_bedrock", "openai"):
             with _launch_policy_patches(managed, persisted_provider=provider) as calls:
-                monkeypatch.setattr(
-                    cli_mod, "resolve_provider_models", agents.resolve_provider_models
-                )
+                calls["resolve_provider"].side_effect = agents.resolve_provider_models
                 monkeypatch.setattr(agents, "get_databricks_token", lambda *_args: "token")
 
                 def resolve(tool, name, workspace, token, resolved_type=provider_type):
@@ -2440,7 +2438,7 @@ class TestClaudeModelFlag:
         monkeypatch.setattr(
             cli_mod,
             "resolve_provider_models",
-            lambda t, s, p, **kwargs: (provider_models, None, relayed),
+            lambda t, s, p, *, on_resolved=None: (provider_models, None, relayed),
         )
         mock_configure = MagicMock(return_value=state)
         monkeypatch.setattr(cli_mod, "configure_tool", mock_configure)
