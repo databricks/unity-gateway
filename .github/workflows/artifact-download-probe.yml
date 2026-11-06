@@ -1,0 +1,32 @@
+name: Ad hoc artifact download probe
+
+on:
+  push:
+    branches: [masonc08/artifact-download-probe]
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15-intel]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Check service reachability and artifact download
+        shell: bash
+        env:
+          ARTIFACT_DOWNLOAD_URL: ${{ secrets.UG_ARTIFACT_PROBE_URL_20261106 }}
+        run: python3 scripts/artifact-download-probe/probe.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: artifact-probe-${{ matrix.os }}
+          path: artifact-probe-result.json
+          retention-days: 7
