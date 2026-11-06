@@ -8810,7 +8810,8 @@ class TestBudgetRecommendationAtLaunch:
         state = dict(MINIMAL_STATE)
         calls: list[str] = []
 
-        def fake_recommendation(workspace, token):
+        def fake_recommendation(workspace, token, *, timeout):
+            assert timeout == 3
             calls.append(workspace)
             return recommendation, reason
 
@@ -9006,6 +9007,23 @@ class TestBudgetRecommendationAtLaunch:
         )
         assert result.exit_code == 0, result.output
         assert "Could not check your budget" in result.output
+
+    def test_a_timeout_keeps_the_configured_model(self, monkeypatch):
+        result, calls, cfg = self._launch(
+            monkeypatch,
+            managed={
+                "enabled_agents": {
+                    "claude": {"model_config": {"default_model": "system.ai.claude-opus-4-8"}}
+                },
+                **self.SMART_DEFAULTS,
+            },
+            reason="network error: timed out",
+        )
+
+        assert result.exit_code == 0, result.output
+        assert calls == [MINIMAL_STATE["workspace"]]
+        assert cfg.call_args.args[2] == "system.ai.claude-opus-4-8"
+        assert result.output.count("Could not check your budget") == 1
 
     def test_a_404_is_silently_ignored(self, monkeypatch):
         result, _calls, _cfg = self._launch(

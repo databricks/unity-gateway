@@ -3428,11 +3428,15 @@ def _note_recommended_agent(recommendation: dict | None, tool: str) -> None:
     )
 
 
+_LAUNCH_BUDGET_REQUEST_TIMEOUT_SECONDS = 3
+
+
 def _fetch_budget_recommendation(state: dict, managed: dict | None) -> dict | None:
     """The agent and model the caller's budget tier allows, or None when no tier is configured.
 
     Enforcement is server-side, so a failed read only costs the recommendation: the config's own
-    ``default_model`` still applies and the launch proceeds.
+    ``default_model`` still applies and the launch proceeds. Use a short socket timeout for this
+    advisory read; authentication keeps its own bounds and is still acquired on the caller thread.
     """
     smart_defaults = (managed or {}).get("smart_defaults")
     tiers = smart_defaults.get("tiers") if isinstance(smart_defaults, dict) else None
@@ -3445,6 +3449,7 @@ def _fetch_budget_recommendation(state: dict, managed: dict | None) -> dict | No
             recommendation, reason = get_model_recommendation(
                 state["workspace"],
                 get_databricks_token(state["workspace"], state.get("profile")),
+                timeout=_LAUNCH_BUDGET_REQUEST_TIMEOUT_SECONDS,
             )
         except (RuntimeError, OSError) as exc:
             # A token that lapsed since the config refresh — or a Databricks CLI that isn't
