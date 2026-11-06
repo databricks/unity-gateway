@@ -1,5 +1,10 @@
 # Integration tests
 
+The Claude same-child follow-up journey explicitly omits `notify_when_idle` from
+`SendMessage`, which native Claude supports only for sessions, and waits for the
+child's automatic completion notification. The journey still requires exactly one
+spawn, the same child session, and both completed file answers.
+
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They

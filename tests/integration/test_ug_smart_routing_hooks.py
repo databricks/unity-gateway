@@ -576,6 +576,8 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
     Expected: on Claude 2.1.314+ the parent uses SendMessage to continue the original
     child. Both hidden file values appear in that same child's completed answers,
     exactly one Agent/Task call occurs, and no second child session is created.
+    Follow-up messages omit notify_when_idle, which native Claude supports only
+    for sessions, and wait for the child's automatic completion notification.
     """
     session = live_session
     _select_smart_router_version(session, "claude", workspace, tmp_path, True, "subagent_orch_v0")
@@ -614,7 +616,9 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
         tui.submit(
             "Continue the same subagent using SendMessage and ask it to do this follow-up: "
             f"{second.prompt} Do not spawn another agent or read the file yourself. "
-            "Wait for that agent's answer and reply with only the value it returned."
+            "Do not set notify_when_idle on SendMessage; it is unsupported for subagents. "
+            "Wait for that agent's automatic completion notification and reply with only "
+            "the value it returned."
         )
         tui.wait_for_task(second)
         tui.wait_for(
