@@ -299,7 +299,7 @@ class TestLaunchCodex:
 
         monkeypatch.setattr(custom_oauth, "get_databricks_token", get_token)
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
-        monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
+        monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout, *, process: True)
 
         def start_interposer(*args, **kwargs):
             interposer_args["args"] = args
@@ -432,7 +432,7 @@ class TestLaunchCodex:
         monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_k: "token")
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
-        monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
+        monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout, *, process: True)
         monkeypatch.setattr(
             codex_interposer,
             "start_interposer_thread",
@@ -595,7 +595,7 @@ class TestLaunchCodex:
         )
         monkeypatch.setattr(codex, "agent_version", lambda binary: "unknown")
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
-        monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
+        monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout, *, process: True)
         monkeypatch.setattr(
             v2.subprocess,
             "Popen",
@@ -736,7 +736,7 @@ class TestCustomCatalogModels:
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "token")
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
-        monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
+        monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout, *, process: True)
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.145.0")
         monkeypatch.setattr(codex, "ug_version", lambda: "test")
         launched = []

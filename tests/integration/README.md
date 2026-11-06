@@ -1,5 +1,10 @@
 # Integration tests
 
+`../test_codex_readiness.py` checks local app-server health polling, child-exit
+detection, deadline handling, and failure cleanup at component boundaries. The
+real-child case uses Python; native Codex interactive startup and completed tasks
+remain the responsibility of the existing real-agent journeys.
+
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They
