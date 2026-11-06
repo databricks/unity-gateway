@@ -14,6 +14,7 @@ import {
   type Reply,
 } from "./formats";
 import { streamEvents } from "./gateway";
+import { DEFAULT_MODEL_SETTING, syncSettings } from "./settings";
 
 // ug writes the wire name of the model it configured (WIRE_* in src/ucode/agents/copilot.py).
 const APIS = ["anthropic", "completions", "responses"] as const;
@@ -35,6 +36,8 @@ export interface Settings {
   readonly provider: string;
   /** Headers for every gateway request: the workspace admin's, and the selected workspace on a host that serves several. */
   readonly headers?: Readonly<Record<string, string>>;
+  /** The workspace's default model, one of `models`, for new chat conversations. */
+  readonly defaultModel?: string;
 }
 
 /** Routes a request to a Model Provider Service; its models aren't served without it. */
@@ -73,23 +76,26 @@ export const readConfig = (text: string | undefined): Settings => {
   const get = (key: string) => config[key];
   const models = get("models");
   const headers = managedHeaders(get("headers"));
+  const defaultModel = get("defaultModel");
+  const kept: ModelSetting[] = (Array.isArray(models) ? models : [])
+    .filter(
+      (model): model is ModelSetting =>
+        typeof model?.id === "string" && model.id !== "" && APIS.includes(model.api),
+    )
+    .map((model) => ({
+      id: model.id,
+      ...(typeof model.name === "string" && model.name.trim() ? { name: model.name.trim() } : {}),
+      ...(typeof model.family === "string" && model.family ? { family: model.family } : {}),
+      api: model.api,
+      ...tokenLimits(model),
+    }));
   return {
     workspace: String(get("workspace") ?? "").replace(/\/+$/, ""),
-    models: (Array.isArray(models) ? models : [])
-      .filter(
-        (model): model is ModelSetting =>
-          typeof model?.id === "string" && model.id !== "" && APIS.includes(model.api),
-      )
-      .map((model) => ({
-        id: model.id,
-        ...(typeof model.name === "string" && model.name.trim() ? { name: model.name.trim() } : {}),
-        ...(typeof model.family === "string" && model.family ? { family: model.family } : {}),
-        api: model.api,
-        ...tokenLimits(model),
-      })),
+    models: kept,
     authCommand: String(get("authCommand") ?? ""),
     provider: typeof get("provider") === "string" ? String(get("provider")) : "",
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    ...(typeof defaultModel === "string" && kept.some((model) => model.id === defaultModel) ? { defaultModel } : {}),
   };
 };
 
@@ -201,4 +207,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const headers = () => requestHeaders(vscode.extensions.getExtension("GitHub.copilot-chat")?.packageJSON?.version, settings.headers);
   const provider = new DatabricksModels(() => settings, (line) => output.info(line), headers);
   context.subscriptions.push(output, vscode.lm.registerLanguageModelChatProvider("databricks-unity-gateway", provider));
+  const warn = (line: string) => output.warn(line);
+  // This also removes what an earlier configure had the extension write and this one doesn't.
+  const wanted = settings.defaultModel ? { [DEFAULT_MODEL_SETTING]: settings.defaultModel } : {};
+  syncSettings(vscode.workspace.getConfiguration(), context.globalState, wanted, warn, new Set([DEFAULT_MODEL_SETTING])).catch(
+    (error: unknown) => warn(`Could not update VS Code's settings: ${String(error)}`),
+  );
 }
