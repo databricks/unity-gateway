@@ -662,6 +662,7 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
         if part.get("type") == "tool_use" and part.get("name") == "SendMessage"
     }
     assert followups, calls
+    assert all("notify_when_idle" not in part["input"] for part in followups.values()), followups
     assert_follow_ups_resumed(list(followups.values()), parent_records, child_id)
     for task in (first, second):
         task.assert_completed(session, "claude")
