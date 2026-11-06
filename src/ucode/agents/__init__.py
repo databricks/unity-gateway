@@ -29,7 +29,6 @@ from ucode.databricks import (
     resolve_provider_service,
 )
 from ucode.env import env_bool
-from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import config_scope, machine_wide_only, managed_write_batch
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import get_model_location, get_provider_service, load_state, save_state
@@ -110,28 +109,20 @@ AITOOLS_AGENT_TOKENS = {
 }
 
 
-def install_databricks_ai_tools_for_agents(
-    tools: list[str], state: dict, *, force_refresh: bool = False
-) -> None:
+def install_databricks_ai_tools_for_agents(tools: list[str], state: dict) -> None:
     """Install Databricks AI Tools for supported agents.
 
     Gemini and Pi have no ``aitools`` support and are dropped.
 
-    This runs only during ``ug configure``. ``force_refresh`` reads the managed config fresh; a
-    caller that already refreshed this launch (the main configure path) leaves it False so the gate
-    reuses that read instead of adding another control-plane round trip.
+    This runs only during ``ug configure``.
     """
-    if not state.get("databricks_ai_tools_enabled"):
+    if is_dry_run() or not state.get("databricks_ai_tools_enabled"):
         return
     if machine_wide_only():
         # AI Tools install into per-user agent settings.
         print_note(
             "Skipped Databricks AI Tools: `ug configure --global` writes only machine-wide settings."
         )
-        return
-    # An admin's managed config governs the workspace, so ucode does not
-    # self-install AI Tools under one (may become a managed-config option later).
-    if refresh_managed_config(state, force_refresh=force_refresh).manifest is not None:
         return
     agents = [AITOOLS_AGENT_TOKENS[tool] for tool in tools if tool in AITOOLS_AGENT_TOKENS]
     if not agents:
