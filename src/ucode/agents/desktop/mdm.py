@@ -177,12 +177,20 @@ def _policy_values(profile: dict) -> dict[str, str]:
     }
 
 
+def _read_policy() -> dict | None:
+    """The installed policy, or None when it is unreadable, so it is never treated as UG's."""
+    try:
+        policy = plistlib.loads(POLICY_PATH.read_bytes())
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return None
+    return policy if isinstance(policy, dict) else None
+
+
 def _publish(source: Path | None, files: dict[Path, bytes | None]) -> None:
     for path in files:
         _check_machine_path(path)
     if POLICY_PATH in files and POLICY_PATH.exists():
-        policy = plistlib.loads(POLICY_PATH.read_bytes())
-        if policy.get("inferenceCredentialHelper") != str(MDM_ROOT / "ug"):
+        if (_read_policy() or {}).get("inferenceCredentialHelper") != str(MDM_ROOT / "ug"):
             raise RuntimeError(
                 "Existing Desktop policy is not this UG deployment; remove it through its MDM owner first."
             )
@@ -202,7 +210,9 @@ def _publish(source: Path | None, files: dict[Path, bytes | None]) -> None:
             )
     except (OSError, subprocess.SubprocessError) as exc:
         detail = str(getattr(exc, "stderr", None) or exc).strip()
-        raise RuntimeError(f"Could not update Desktop MDM files: {detail}") from exc
+        raise managed_files.ManagedFileWriteUnavailable(
+            f"Could not update Desktop MDM files: {detail}"
+        ) from exc
 
 
 def _validate_selector(selector: dict) -> None:
@@ -355,8 +365,7 @@ def remove() -> bool:
     plugin = managed_files.claude_desktop_org_plugin_path()
     files: dict[Path, bytes | None] = {}
     if POLICY_PATH.exists():
-        policy = plistlib.loads(POLICY_PATH.read_bytes())
-        if policy.get("inferenceCredentialHelper") == str(MDM_ROOT / "ug"):
+        if (_read_policy() or {}).get("inferenceCredentialHelper") == str(MDM_ROOT / "ug"):
             files[POLICY_PATH] = None
     if not files and not MDM_ROOT.exists() and (plugin is None or not plugin.exists()):
         return False
@@ -364,5 +373,10 @@ def remove() -> bool:
     files.update({MDM_ROOT / "ug": None, MDM_ROOT / "otel-headers.sh": None})
     _publish(None, files)
     if MDM_ROOT.exists() and not any(MDM_ROOT.iterdir()):
-        managed_files.remove_privileged_tree(MDM_ROOT, empty_only=True)
+        try:
+            managed_files.remove_privileged_tree(MDM_ROOT, empty_only=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise managed_files.ManagedFileWriteUnavailable(
+                f"Could not remove {MDM_ROOT}: {exc}"
+            ) from exc
     return True

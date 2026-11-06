@@ -691,3 +691,42 @@ def test_owned_binary_policy_can_be_updated_or_removed(device, operation):
         assert not mdm.POLICY_PATH.exists()
         assert not device.source.exists()
         assert not mdm.MDM_ROOT.exists()
+
+
+def test_remove_without_sudo_raises_write_unavailable(device, monkeypatch):
+    mdm.configure(WORKSPACE, "admin")
+    sudo_refused = subprocess.CalledProcessError(1, ["sudo", "-n"], stderr="a password is required")
+    monkeypatch.setattr(managed_files, "reconcile_privileged_files", Mock(side_effect=sudo_refused))
+    with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="password is required"):
+        mdm.remove()
+
+
+def test_revert_skips_mdm_when_privilege_is_unavailable(monkeypatch, capsys):
+    monkeypatch.setattr(setup.sys, "platform", "darwin")
+    unavailable = managed_files.ManagedFileWriteUnavailable("sudo refused")
+    monkeypatch.setattr(mdm, "remove", Mock(side_effect=unavailable))
+    assert setup.revert_claude_desktop_mdm() == "skipped"
+    assert "an administrator must run" in capsys.readouterr().out
+
+
+def test_revert_fails_on_a_genuine_mdm_error(monkeypatch):
+    monkeypatch.setattr(setup.sys, "platform", "darwin")
+    monkeypatch.setattr(mdm, "remove", Mock(side_effect=RuntimeError("unsafe path")))
+    assert setup.revert_claude_desktop_mdm() == "failed"
+
+
+def test_corrupt_policy_does_not_block_revert_and_is_left_alone(device):
+    mdm.configure(WORKSPACE, "admin")
+    mdm.POLICY_PATH.write_bytes(b"not a plist")
+    assert mdm.remove() is True
+    assert mdm.POLICY_PATH.read_bytes() == b"not a plist"
+    assert not device.source.exists()
+    assert not (mdm.MDM_ROOT / "ug").exists()
+
+
+def test_configure_refuses_to_overwrite_a_corrupt_policy(device):
+    mdm.POLICY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    mdm.POLICY_PATH.write_bytes(b"not a plist")
+    with pytest.raises(RuntimeError, match="not this UG deployment"):
+        mdm.configure(WORKSPACE, "admin")
+    assert mdm.POLICY_PATH.read_bytes() == b"not a plist"

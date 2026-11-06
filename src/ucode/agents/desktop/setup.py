@@ -18,7 +18,7 @@ from ucode.agents.desktop.cowork import configure_code, configure_cowork, revert
 from ucode.config_io import is_dry_run
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_SCHEMA_HEADER
 from ucode.databricks import build_tool_base_url, get_databricks_token, list_anthropic_model_catalog
-from ucode.managed_files import machine_wide_only
+from ucode.managed_files import ManagedFileWriteUnavailable, machine_wide_only
 from ucode.state import get_provider_service
 from ucode.ui import print_note, print_success, print_warning
 from ucode.workspace import workspace_headers, workspace_id_args
@@ -228,6 +228,12 @@ def revert_claude_desktop_mdm() -> str:
 
     try:
         return "removed" if mdm.remove() else "unchanged"
+    except ManagedFileWriteUnavailable:
+        print_warning(
+            "Claude Desktop MDM is installed machine-wide; an administrator must run "
+            "`ug revert` to remove it."
+        )
+        return "skipped"
     except Exception as exc:  # noqa: BLE001 -- Preserve other revert operations on failure
         print_warning(
             f"Could not revert Claude Desktop MDM: {exc}. Fix it, then run ug revert again."
@@ -242,7 +248,9 @@ def revert_desktop() -> str:
     if claude_desktop_directory() is None:
         if "failed" in results:
             return "failed"
-        return "removed" if "removed" in results else "unchanged"
+        if "removed" in results:
+            return "removed"
+        return "skipped" if "skipped" in results else "unchanged"
     try:
         result = revert_claude_desktop()
     except Exception as exc:  # noqa: BLE001 -- Preserve other revert operations on failure
@@ -253,4 +261,4 @@ def revert_desktop() -> str:
         return "failed"
     if "removed" in (native_result, *results):
         return "removed"
-    return "unchanged"
+    return "skipped" if "skipped" in results else "unchanged"
