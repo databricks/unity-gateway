@@ -22,6 +22,9 @@ def test_ug_configure_selected_managed_claude_leaves_other_agents_unconfigured(
     Expected: public configure creates only Claude's agent configuration, leaves Codex's
     generated config and Pi's binary/files absent, and the real Claude TUI completes a tiny
     file-reading task through the gateway before exiting normally.
+
+    The fixture publishes no MCPs or skills; workspace-wide shared policy reconciliation
+    is outside this installation/model-configuration selection check.
     """
     session = live_session
     use_managed_config_fixture(session, "selected_managed_agents")

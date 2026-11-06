@@ -163,9 +163,13 @@ ug configure --user
 
 With a workspace-managed configuration, `--agents` limits setup to the requested agents the admin
 enables, plus requested agents already added with `ug agents add`. Those self-managed agents
-retain their own model/provider settings. Omitting `--agents` configures every admin-enabled agent.
+retain their own model location and provider settings. Omitting `--agents` configures every
+admin-enabled agent.
 A requested agent with neither admin enablement nor a self-managed opt-in is skipped with a
 warning, or fails the command when none of the requested agents can be configured.
+This selection limits agent installation and direct agent setup. Workspace-wide policy,
+managed MCP servers for configured clients, and shared skills are still reconciled; `--agents`
+does not restrict that shared setup to the selected agents.
 
 By default, `ug configure` writes both the per-user settings and the machine-wide Claude Code and
 Codex managed settings with sudo, with or without a terminal: run headless as root (or with

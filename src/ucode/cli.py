@@ -1351,14 +1351,17 @@ def _configure_workspace_command(
             managed_tools = [name for name in managed_tools if name in selected_tools] + (
                 selected_self_managed
             )
+            displays = ", ".join(TOOL_SPECS[name]["display"] for name in excluded)
+            opt_ins = ", ".join(f"`ug agents add {name}`" for name in excluded)
             if not managed_tools:
-                if selected_tools:
-                    _reject_disabled_agent(managed, selected_tools[0])
+                if excluded:
+                    raise RuntimeError(
+                        f"Your workspace's managed config doesn't enable {displays}. "
+                        f"Run {opt_ins} to use them self-managed."
+                    )
                 print_note("No coding agents selected — nothing to configure.")
                 return 0
             if excluded:
-                displays = ", ".join(TOOL_SPECS[name]["display"] for name in excluded)
-                opt_ins = ", ".join(f"`ug agents add {name}`" for name in excluded)
                 print_warning(
                     f"Skipping agent(s) not enabled by your workspace configuration: {displays}. "
                     f"Run {opt_ins} to use them self-managed."
@@ -1394,6 +1397,12 @@ def _configure_workspace_command(
                 else None
             )
             if (
+                tool_name in selected_self_managed
+                and tool_name in MODEL_LOCATION_TOOLS
+                and not get_provider_service(resolved, tool_name)
+            ):
+                parent_schema = get_model_location(resolved, tool_name)
+            if (
                 get_provider_service(resolved, tool_name)
                 or parent_schema
                 or check_gateway_endpoint(resolved, tool_name)
@@ -1425,6 +1434,10 @@ def _configure_workspace_command(
                 else:
                     failed_tools.append(tool_name)
         if not configured_tools:
+            if selected_tools is not None:
+                raise RuntimeError(
+                    "None of the selected coding agents are available on this workspace."
+                )
             raise RuntimeError(
                 "None of the coding agents enabled by your workspace configuration "
                 "are available on this workspace."
