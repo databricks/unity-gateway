@@ -183,7 +183,7 @@ user-authored, and other-workspace skills are excluded. The user-scope source li
 this user source, the user 3P profile, and native Cowork registration/cache, even when saved
 scope is `global`. They never publish or remove root Desktop files. Explicit `--global`
 is detected by the command-local `machine_wide_only` switch and skips ordinary Desktop
-profile/plugin setup; macOS MDM provisioning is a separate follow-up. CLI-agent behavior
+profile/plugin setup and instead provisions Desktop through macOS MDM. CLI-agent behavior
 is unchanged by these Desktop guards.
 Ordinary plugin setup requires Desktop's local account/org directory and uses scoped
 `claude plugin ... --cowork --json` with `CLAUDE_CONFIG_DIR`. First configure skips if no
@@ -198,8 +198,30 @@ generated user marketplace, including manual edits. Its writer retains staged re
 and rollback. Native refresh failures retain the source/state for retry/revert. A failed source switch
 restores the previous marketplace/plugin through native commands when possible, and
 reports a failed recovery with configure retry instructions. Ordinary
-revert removes user source/registration only. Explicit MCP/skill changes resync this source;
-launches do not. Root bundle publication is implemented in the separate MDM follow-up.
+revert removes user source/registration and attempts macOS MDM cleanup. Explicit MCP/skill changes resync this source;
+launches do not. The privileged bundle writer is used only for MDM publication; its
+macOS worker uses the existing on-demand sudo path, validates caller ownership of staged
+files, and rejects links/special files before copying into a root-owned destination.
+Staged replacement restores the previous bundle if publication fails.
+The macOS Desktop MDM mode requires preinstalled, root-owned shared UG/Python,
+Databricks CLI, and Claude CLI runtimes. It publishes the managed plist with
+`managedMcpServers` and `toolSearchEnabled`, shared helpers, and a required organization
+plugin at `/Library/Application Support/Claude/org-plugins/ug`. That plugin contains
+skills/assets, connector guidance, and warming hooks, with no MCP declarations.
+It reuses the normal generator and content-derived version, with matching `version.json`.
+Desktop loads the organization plugin itself; no LaunchAgent, timer, per-user marketplace
+sync, deployment descriptor, or `desktop-mdm-sync` command is installed. No administrator-local
+profile, skills, or credentials are copied. Provisioning reuses one token and existing
+bundle/atomic writers; rerun configure after partial publication failure. Existing auth,
+MCP proxy and tracing commands are unchanged; users authenticate with their own OAuth profiles.
+A foreign policy is recognized by its credential helper and preserved. Generated root files
+belong to UG and are replaced. Desktop provisioning failures warn without failing CLI setup.
+Ordinary `ug revert` attempts user and machine cleanup; failed MDM cleanup warns,
+continues other cleanup, and retains UG state for retry. Revert has no scope flags. Earlier marketplace/LaunchAgent
+builds require manual migration; remove prior UG marketplace registrations to avoid duplicate
+skills/hooks. Restart Desktop after updates. Native organization-plugin delivery remains a
+validation gap. See the deployment guide before migration or rollout.
+Windows MDM and shared-runtime installation remain unsupported. See docs/claude-desktop-mdm.md.
 Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
 custom registration names and full proxy URLs are preserved. Its name and display name
 are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old

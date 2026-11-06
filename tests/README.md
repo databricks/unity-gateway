@@ -529,7 +529,10 @@ Unreferenced root-path sentinels and an ineffective temporary-directory alias te
 removed; content updates and empty-payload cache refresh now share one lifecycle test.
 Equivalent registered-directory aliases remain covered separately.
 Dry-run preservation covers both fresh and already-configured installations.
-Root bundle writer checks belong to the separate MDM follow-up.
+`test_desktop_bundle.py` covers macOS publication through on-demand elevation, target/source validation,
+whole-bundle updates/removal, failed-replacement recovery, and linked/special-file rejection.
+It exercises the packaged POSIX shell with temporary path, ownership and OS adapters;
+Windows MDM is unsupported.
 Temporary filesystem destinations are real; external Claude registry/cache operations
 and platform privilege boundaries are simulated. These checks do not establish native
 Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
@@ -540,7 +543,57 @@ that behavior. A null directory path was rejected by native registry validation;
 ignoring it during UG inspection does not establish automatic registry repair.
 This check does not establish native install/update failure recovery or Desktop GUI behavior.
 `test_desktop_configure_cli.py` also checks explicit-global selection versus default and
-`--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers.
+`--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers. MDM cases also
+cover skipping non-macOS platforms and surfacing provisioning prerequisite failures.
+
+`test_desktop_mdm.py` covers macOS guards, provisioning before a Cowork account
+exists, string-encoded inference/MCP/tool-search policy, shared command bindings without
+administrator credentials, and a required organization plugin containing skill assets,
+connector guidance, warming hooks, and matching version metadata. MCP definitions appear
+only in the plist; no per-user native plugin commands or refresh job are used.
+Update/removal checks cover changed skill versions, removed connectors/assets, untouched
+user registrations (including malformed records), foreign-policy preservation, failed
+discovery/download before publication, and retry after partial publication failure.
+Plain revert covers user plus MDM cleanup, MDM-only installations, continued cleanup after
+sudo denial, state retention and successful retry, and no prompt without an MDM deployment.
+Scope flags are rejected. Foreign policy is preserved without blocking UG cleanup.
+Packaged file writes check executable helpers, readable policy, and binary-plist updates/removal.
+The root bundle tests exercise the packaged shell worker with temporary target/ownership
+adapters, including binary/executable assets, linked/special-file rejection, missing manifests,
+and failed-replacement recovery. Workspace APIs and machine ownership are simulated.
+Runtime checks retain isolated Python import probing, shared virtualenv paths, early
+Databricks/Claude CLI trust validation within MDM, and provisioning-credential scrubbing. Global
+Desktop skips unsupported PAT/custom OAuth and shared-host selections with warnings,
+while CLI configuration continues.
+Existing auth/MCP/tracing command behavior is unchanged. Global configure authentication
+routing matches Claude and Codex for external bearers, bearer commands, and the normal
+login path. MDM calls the common token helper and preserves its errors. These checks
+substitute authentication boundaries; they do not validate live service-principal credentials.
+LaunchAgent scheduling, cached-marketplace synchronization, and account-cleanup tests were
+replaced with organization-plugin publication and user-file preservation checks because
+those MDM mechanisms were removed. Ordinary user-plugin/cache coverage remains.
+These checks do not establish native macOS organization-plugin loading, fresh-user login,
+GUI tool/skill invocation, managed-plist precedence, or update delivery after restart.
+Follow `docs/claude-desktop-mdm.md` for migration and the native rollout checklist.
+
+`test_desktop_scope.py` exercises the configure CLI with real Desktop writers in temporary
+directories: no flag and `--user` write only the user source, and explicit
+`--global` publishes MDM without changing the user's profile, source or registration. It also
+checks an existing MDM deployment stays byte-for-byte unchanged under default/user configure,
+provisioning before account creation, warnings on Desktop failures, dry run, command-local
+scope, and skipping Desktop on platforms without MDM support.
+Public Desktop CLI scope cases check that Desktop-only prerequisite/authentication failures
+warn and leave CLI configuration successful.
+Command-local scope checks also run as a standard user. Failure checks cover runtime validation and publication after valid
+authentication, without creating a user profile, source, or registration.
+CLI-agent setup and external services
+are isolated; this is component coverage, not native macOS or live connector coverage.
+Omitted-agent cases cover managed and interactive selection: Codex-only configuration
+works without Desktop privileges, while selecting Claude still completes CLI setup if
+MDM prerequisites fail. An explicit `--global --mcp` case rejects user-level
+MCP registration before any Desktop publication, following the shared global contract.
+`test_cli.py::TestConfigureMcpFlag` retains coverage for ordinary MCP-only configure;
+`TestConfigureScopeFlags` covers rejection of user-level requests under `--global`.
 
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
 It checks that Claude uses an available Slack tool despite a stale disconnect notice, discovers
