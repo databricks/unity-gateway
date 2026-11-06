@@ -1,6 +1,7 @@
 """Inspect MCP inventories through the real agent terminals."""
 
 import re
+import time
 
 import pyte
 
@@ -80,9 +81,11 @@ def open_claude_mcp_inventory(tui, services: dict[str, str]) -> str:
     return inventory
 
 
-def open_codex_mcp_inventory(tui, services: dict[str, str]) -> str:
-    output_start = len(tui.output)
-    tui.submit("/mcp verbose")
+CODEX_MCP_INVENTORY_TIMEOUT = 120
+CODEX_MCP_INVENTORY_ATTEMPT_TIMEOUT = 10
+
+
+def _codex_mcp_inventory_connected(tui, services: dict[str, str], timeout: float) -> None:
     for service, tool in services.items():
         name = re.escape(service.replace(".", "-"))
         tui.wait_for(
@@ -93,8 +96,36 @@ def open_codex_mcp_inventory(tui, services: dict[str, str]) -> str:
                 screen,
             ),
             f"{service} connected with {tool} loaded in Codex's MCP inventory",
-            timeout=120,
+            timeout=timeout,
         )
+
+
+def open_codex_mcp_inventory(tui, services: dict[str, str]) -> str:
+    """Open Codex's `/mcp verbose` inventory, re-submitting while servers are still starting.
+
+    Codex renders the inventory as a static snapshot, so a server that was still starting when it
+    was printed never updates on screen. Re-submit the command until every server shows connected,
+    but only while the latest snapshot still shows `starting`; any other state (failed, needs
+    auth) and the overall deadline re-raise immediately.
+    """
+    deadline = time.monotonic() + CODEX_MCP_INVENTORY_TIMEOUT
+    attempt = 0
+    while True:
+        attempt += 1
+        output_start = len(tui.output)
+        tui.submit("/mcp verbose")
+        tui.actions.append({"reason": f"codex-mcp-inventory-attempt-{attempt}"})
+        remaining = deadline - time.monotonic()
+        try:
+            _codex_mcp_inventory_connected(
+                tui, services, min(CODEX_MCP_INVENTORY_ATTEMPT_TIMEOUT, max(remaining, 1))
+            )
+            break
+        except AssertionError:
+            latest = tui.visible.rsplit("MCP Tools", 1)
+            still_starting = len(latest) == 1 or "starting" in latest[-1].casefold()
+            if not still_starting or time.monotonic() >= deadline:
+                raise
     screen = pyte.HistoryScreen(140, 60, history=1000)
     pyte.Stream(screen).feed("".join(tui.output[output_start:]))
     assert len(screen.history.top) < screen.history.size, "Codex's MCP inventory was truncated"
