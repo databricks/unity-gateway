@@ -1,17 +1,5 @@
 # Test suites and user journeys
 
-Orchestrator import guards clear inherited routing flags and the version selector,
-then explicitly reject CLI and Typer imports while requiring active workflow output.
-
-Router-entrypoint component checks apply saved user scope before Claude/Codex routing.
-Helper usage parity covers help, missing hook events, and unknown-option errors.
-
-Fresh-process helper checks exercise both explicit-host credentials and saved user scope,
-workspace/profile selection, and a real temporary PAT profile without loading agent builders.
-
-`test_skills.py` exercises bundled skill discovery and installation from both
-wheel and checkout directory layouts using real temporary files. This is component coverage.
-
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
@@ -315,6 +303,8 @@ The `claude-router-hook` and `codex-router-hook` commands go to
 interpreter, write the routing canary or audit row, and skip the CLI, Databricks client, UI, and
 smart-routing launch modules. Routing events keep their `TestSubcommandRouting` coverage; no live
 router call is made.
+
+Helper probes isolate external profile discovery with an empty PATH while retaining saved-state/PAT-file reads. Both ug and ucode preserve help and usage errors; routing honors saved user scope. Orchestrator probes clear conflicting inherited flags and reject CLI/Typer imports. Resource-layout and dry-run output checks protect the lightweight imports.
 
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.

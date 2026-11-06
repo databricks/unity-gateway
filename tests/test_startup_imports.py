@@ -120,7 +120,7 @@ def test_cli_import_defers_subcommand_specific_modules() -> None:
 @pytest.mark.parametrize("saved", [False, True], ids=["explicit-host", "saved-pat"])
 def test_agent_helper_entrypoint_skips_the_cli(tmp_path, command, expected, saved) -> None:
     workspace = "https://ws.example"
-    environment = {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
+    environment = {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path), "PATH": ""}
     arguments = ["--host", workspace]
     if saved:
         app_dir = tmp_path / ".ucode"
@@ -145,6 +145,14 @@ def test_agent_helper_entrypoint_skips_the_cli(tmp_path, command, expected, save
         "import os, sys\n"
         f"os.environ.update({environment!r})\n"
         f"sys.argv = {['ug', command, *arguments]!r}\n"
+    )
+    if saved:
+        # Only external profile discovery is stubbed; the temporary PAT file is read normally.
+        probe += (
+            "import ucode.databricks as db\n"
+            "db.list_profile_entries = lambda: [{'name': 'SAVED', 'auth_type': 'pat'}]\n"
+        )
+    probe += (
         "from ucode.entrypoint import main\n"
         "try:\n    main()\nexcept SystemExit as exc:\n    assert not exc.code, exc.code\n"
     )
@@ -269,13 +277,14 @@ def test_agent_helpers_are_the_cli_hidden_helper_commands() -> None:
     ]
     + [(command, [], 2) for command in ["claude-router-hook", "codex-router-hook"]],
 )
-def test_agent_helper_usage_matches_the_cli(command, arguments, expected_exit) -> None:
+@pytest.mark.parametrize("executable", ["ug", "ucode"])
+def test_agent_helper_usage_matches_the_cli(command, arguments, expected_exit, executable) -> None:
     def command_output(module: str) -> tuple[str, str]:
         result = subprocess.run(
             [
                 sys.executable,
                 "-c",
-                f"import sys\nsys.argv = {['ug', command, *arguments]!r}\n"
+                f"import sys\nsys.argv = {[executable, command, *arguments]!r}\n"
                 f"from {module} import main\nmain()",
             ],
             stdin=subprocess.DEVNULL,
@@ -294,6 +303,7 @@ def test_agent_helper_usage_matches_the_cli(command, arguments, expected_exit) -
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 def test_orchestrator_prompt_hook_skips_cli_imports(tmp_path, monkeypatch, agent) -> None:
     # Agents run this hook before every prompt is submitted.
+    # A conflicting inherited selector verifies that the child isolates its explicit flags.
     monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_only_v0")
     session = tmp_path / "env.json"
     session.write_text("{}", encoding="utf-8")
@@ -441,6 +451,7 @@ def test_version_entrypoint_falls_back_to_telemetry(monkeypatch, capsys, flag) -
         [],
         ["--help"],
         ["--dry-run", "--version"],
+        ["--header", "X-Test: yes", "auth-token"],
         ["--version", "foo"],
         ["--version", "--help"],
         ["-V", "claude"],
