@@ -269,7 +269,7 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 <details>
 <summary>GitHub Copilot in VS Code</summary>
 
-Fields live in the VS Code user `settings.json`. `ug`'s extension writes them when it starts, from the `ug-config.json` that `ug configure` packed into it, and records what it wrote: once a configure no longer asks for a field, the extension removes the value it wrote, and a value the developer changed since stays. Uninstalling the extension leaves them.
+Fields live in the VS Code user `settings.json`. `ug`'s extension writes them when it starts, from the `ug-config.json` that `ug configure` packed into it, and records what it wrote: once a configure no longer asks for a field, the extension removes the value it wrote, and a value the developer changed since stays. It keeps a copy of that record in `owned-settings.json` in its global storage folder, because an uninstalled extension can't clean up: `ug` removes those values before it uninstalls the extension.
 
 | Field | Without managed config | With managed config | Notes |
 |-------|------------------------|---------------------|-------|

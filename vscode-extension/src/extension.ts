@@ -14,7 +14,7 @@ import {
   type Reply,
 } from "./formats";
 import { streamEvents } from "./gateway";
-import { DEFAULT_MODEL_SETTING, syncSettings } from "./settings";
+import { DEFAULT_MODEL_SETTING, syncSettings, writeOwnedSettingsFile } from "./settings";
 
 // ug writes the wire name of the model it configured (WIRE_* in src/ucode/agents/copilot.py).
 const APIS = ["anthropic", "completions", "responses"] as const;
@@ -210,7 +210,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const warn = (line: string) => output.warn(line);
   // This also removes what an earlier configure had the extension write and this one doesn't.
   const wanted = settings.defaultModel ? { [DEFAULT_MODEL_SETTING]: settings.defaultModel } : {};
-  syncSettings(vscode.workspace.getConfiguration(), context.globalState, wanted, warn, new Set([DEFAULT_MODEL_SETTING])).catch(
-    (error: unknown) => warn(`Could not update VS Code's settings: ${String(error)}`),
-  );
+  syncSettings(vscode.workspace.getConfiguration(), context.globalState, wanted, warn, new Set([DEFAULT_MODEL_SETTING]))
+    .then((owned) => writeOwnedSettingsFile(context.globalStorageUri.fsPath, owned))
+    .catch((error: unknown) => warn(`Could not update VS Code's settings: ${String(error)}`));
 }
