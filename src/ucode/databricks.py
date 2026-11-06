@@ -2595,18 +2595,13 @@ def discover_model_services(
     oss_models = [m for m in ids if any(family in m for family in _OSS_MODEL_FAMILIES)]
 
     if not (claude_models or codex_models or gemini_models or oss_models):
-        sample = ", ".join(ids[:5])
-        return (
-            {},
-            [],
-            [],
-            [],
-            reason
-            or (
+        if reason is None:
+            sample = ", ".join(ids[:5])
+            reason = EmptyModelDiscoveryReason(
                 "model-services returned model ids but none matched "
                 f"claude/gpt/gemini/oss families (got: {sample})"
-            ),
-        )
+            )
+        return {}, [], [], [], reason
     return claude_models, codex_models, gemini_models, oss_models, reason
 
 
@@ -3859,10 +3854,10 @@ def discover_endpoints_with_api_type(
     payload, reason = _http_get_json(
         f"https://{hostname}/api/2.0/serving-endpoints:foundation-models", token
     )
-    if payload is None:
-        return [], reason
-
     invalid_reason = "foundation-models listing returned an invalid response"
+    if payload is None:
+        return [], reason or invalid_reason
+
     if not isinstance(payload, dict):
         return [], invalid_reason
     endpoints = payload.get("endpoints", [])
@@ -4017,11 +4012,10 @@ def _raise_model_service_permission_failure(workspace: str, model_service_reason
     )
 
 
-# Probes that returned an accessible model service, keyed by (workspace, token) so a re-login or a
-# different credential probes again. `ucode codex` configures once for auto-setup and again on the
-# launch path; re-probing a gateway that just answered only gives the flaky listing another chance
-# to fail. Failures, empty listings, and inconclusive results are never cached.
-_GATEWAY_PROBE_CACHE: dict[tuple[str, str], GatewayProbe] = {}
+# Successful probes are keyed by workspace, credential and effective routing/selector headers.
+# Auto-setup and launch can share a probe, while workspace selection or routing changes re-probe.
+# Failures, empty listings, and inconclusive results are never cached.
+_GATEWAY_PROBE_CACHE: dict[tuple[str, str, tuple[tuple[str, str], ...]], GatewayProbe] = {}
 
 
 def clear_gateway_probe_cache() -> None:
@@ -4031,7 +4025,14 @@ def clear_gateway_probe_cache() -> None:
 
 def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe:
     """Return the model service probe, raising if model service access can't be verified."""
-    cache_key = (workspace, token)
+    routing_headers = {name.casefold(): value for name, value in ug_headers().items()}
+    routing_headers.update(
+        (name.casefold(), value)
+        for name, value in workspace_headers(workspace_origin(workspace)).items()
+    )
+    # The explicit token wins over UG_HEADERS on the wire, and already has its own key field.
+    routing_headers.pop("authorization", None)
+    cache_key = (workspace, token, tuple(sorted(routing_headers.items())))
     cached = _GATEWAY_PROBE_CACHE.get(cache_key)
     if cached is not None:
         return cached

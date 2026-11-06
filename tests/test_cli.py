@@ -7772,7 +7772,7 @@ class TestConfiguredLaunchPreflightCache:
 
         assert preflight.listing.call_count == 1
 
-    def test_provider_discovery_mode_requires_a_new_probe(self, preflight, monkeypatch):
+    def test_provider_mode_discovers_web_search_before_reusing(self, preflight, monkeypatch):
         preflight.configure()
         web_search = MagicMock(return_value=(["system.ai.gpt-5"], None))
         monkeypatch.setattr(cli_mod, "discover_codex_models", web_search)
@@ -7817,8 +7817,10 @@ class TestConfiguredLaunchPreflightCache:
         assert preflight.probe.call_count == probe_calls
         assert "launch_preflight" in preflight.load()
 
-    @pytest.mark.parametrize("failed", ["probe", "listing", "empty"])
-    def test_cold_failure_or_partial_discovery_never_seeds_success(self, preflight, failed):
+    @pytest.mark.parametrize("failed", ["probe", "listing", "empty", "recovered_families"])
+    def test_cold_failure_or_partial_discovery_never_seeds_success(
+        self, preflight, monkeypatch, failed
+    ):
         if failed == "probe":
             preflight.probe.side_effect = RuntimeError("gateway unavailable")
             with pytest.raises(RuntimeError, match="gateway unavailable"):
@@ -7826,24 +7828,62 @@ class TestConfiguredLaunchPreflightCache:
         else:
             preflight.listing.return_value = (
                 {},
-                ["system.ai.gpt-5"],
+                [] if failed == "recovered_families" else ["system.ai.gpt-5"],
+                ["system.ai.gemini-3"] if failed == "recovered_families" else [],
                 [],
-                [],
-                "incomplete listing" if failed == "listing" else None,
+                None if failed == "empty" else "incomplete listing",
             )
+            if failed == "recovered_families":
+                monkeypatch.setattr(
+                    cli_mod, "discover_claude_models", lambda *a: ({"opus": "claude-opus"}, None)
+                )
+                monkeypatch.setattr(cli_mod, "discover_codex_models", lambda *a: (["gpt-5"], None))
             preflight.configure()
         assert "launch_preflight" not in preflight.load()
+        if failed == "recovered_families":
+            preflight.configure()
+            assert preflight.listing.call_count == 2
 
-    def test_refresh_bypasses_process_local_successes(self, preflight, monkeypatch):
-        preflight.configure()
-        clears = [MagicMock(), MagicMock()]
-        monkeypatch.setattr(cli_mod, "clear_gateway_probe_cache", clears[0])
-        monkeypatch.setattr(cli_mod, "clear_model_services_cache", clears[1])
+    def test_null_optional_family_response_does_not_seed_success(self, preflight, monkeypatch):
+        claude, codex, _gemini, oss, reason = preflight.listing.return_value
+        preflight.listing.return_value = (claude, codex, [], oss, reason)
+        monkeypatch.setattr(cli_mod, "discover_gemini_models", db_mod.discover_gemini_models)
+        http = MagicMock(return_value=(None, None))
+        monkeypatch.setattr(db_mod, "_http_get_json", http)
+
+        for _ in range(2):
+            state = preflight.configure(tools=["pi"])
+            assert "launch_preflight" not in state
+        assert http.call_count == 2
+
+    @pytest.mark.parametrize("scenario", ["provider_mode_switch", "partial_listing"])
+    def test_launch_reuses_the_verified_probe_when_full_stamp_cannot_be_reused(
+        self, preflight, monkeypatch, scenario
+    ):
+        db_mod.clear_gateway_probe_cache()
+        probe_http = MagicMock(
+            return_value=({"model_services": [{"name": "system.ai.gpt-5"}]}, None)
+        )
+        monkeypatch.setattr(db_mod, "_http_get_json", probe_http)
+        monkeypatch.setattr(
+            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
+        )
+        monkeypatch.setattr(
+            cli_mod, "discover_codex_models", lambda *a: (["system.ai.gpt-5"], None)
+        )
+        if scenario == "partial_listing":
+            preflight.listing.return_value = (
+                *preflight.listing.return_value[:-1],
+                "incomplete listing",
+            )
 
         preflight.configure(reuse_preflight=False)
+        provider_mode = scenario == "provider_mode_switch"
+        preflight.configure(skip_model_discovery=provider_mode)
 
-        assert all(clear.call_count == 1 for clear in clears)
-        assert preflight.probe.call_count == preflight.listing.call_count == 2
+        assert probe_http.call_count == 1
+        preflight.configure(skip_model_discovery=provider_mode, reuse_preflight=False)
+        assert probe_http.call_count == 2
 
 
 class TestConfigureNoLongerValidates:

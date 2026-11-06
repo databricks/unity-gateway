@@ -434,8 +434,11 @@ stamps, retained empty-family diagnostics, and failed-refresh invalidation.
 `../test_databricks.py` checks that interrupted pagination retains usable API metadata and
 completeness reasons without marking the catalog reusable. Malformed responses and HTTP failures
 remain distinct from confirmed empty catalogs; malformed individual entries do not discard valid
-neighbors. This suite does not assert live request overlap, cache timing, or launch-time
+neighbors. JSON null and partial listings followed by successful family fallbacks remain retryable.
+This suite does not assert live request overlap, cache timing, or launch-time
 savings.
+Component HTTP-boundary cases also cover same-command probe reuse across auto-setup/mode changes,
+explicit refresh, and separation by credential, routing headers, and workspace selectors.
 
 `test_ug_configure_scope.py` runs, for Claude and Codex separately (Linux/macOS only), plain
 `ug configure`, `--user`, `UG_SKIP_OS_SETTINGS=1`, and `--global` over a user-owned

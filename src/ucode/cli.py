@@ -853,6 +853,7 @@ def configure_shared_state(
     # configure must persist that discovered family too.
     want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
     want_copilot = fetch_all or "copilot" in tools
+    want_opencode = fetch_all or "opencode" in tools or "kilo" in tools
     discovery_fields = {
         field
         for wanted, field in (
@@ -861,7 +862,7 @@ def configure_shared_state(
             (want_codex, "codex_models"),
             (want_oss, "oss_models"),
             (want_copilot, copilot_agent.CATALOG_STATE_KEY),
-            (fetch_all or "opencode" in tools or "kilo" in tools, "opencode_models"),
+            (want_opencode, "opencode_models"),
         )
         if wanted
     }
@@ -887,8 +888,11 @@ def configure_shared_state(
         }
         return state
     state.pop(_LAUNCH_PREFLIGHT_STATE_KEY, None)
-    # Process-local listings are not credential-scoped; a fresh preflight must bypass them.
-    clear_gateway_probe_cache()
+    # Explicit configure/refresh must recheck. Ordinary launches retain the context-bound probe
+    # from auto-setup even when their discovery mode prevents reuse of the full persisted stamp.
+    if not reuse_preflight or force_login:
+        clear_gateway_probe_cache()
+    # Listings are not credential-scoped, so each new discovery must bypass their process cache.
     clear_model_services_cache()
     with spinner("Verifying Unity AI Gateway..."):
         model_services_discovery = (
@@ -914,6 +918,7 @@ def configure_shared_state(
     oss_models = []
     opencode_models: dict[str, list[str]] = {}
     web_search_model: str | None = None
+    model_listing_complete = skip_model_discovery
     if skip_model_discovery:
         # Provider mode: the agent routes through a Model Provider Service and
         # pins no Databricks model, so the full family discovery is unused. Web
@@ -933,6 +938,9 @@ def configure_shared_state(
         assert model_services_discovery is not None
         with spinner("Fetching available models..."):
             ms_claude, ms_codex, ms_gemini, ms_oss, ms_reason = model_services_discovery.result()
+            model_listing_complete = ms_reason is None or isinstance(
+                ms_reason, EmptyModelDiscoveryReason
+            )
             if want_claude:
                 claude_models, claude_reason = ms_claude, ms_reason
                 if not claude_models:
@@ -984,7 +992,7 @@ def configure_shared_state(
                 f"Copilot model discovery failed ({copilot_reason}); "
                 "using the models found last time."
             )
-        if fetch_all or "opencode" in tools or "kilo" in tools:
+        if want_opencode:
             # Kilo is an OpenCode fork and consumes the same discovered view.
             state["opencode_models"] = opencode_models
     reasons = {
@@ -1007,6 +1015,7 @@ def configure_shared_state(
     )
     preflight_succeeded = (
         model_service_probe.resource_available
+        and model_listing_complete
         and not discovery_failed
         and _has_preflight_models(state, discovery_fields)
         and provider_search_complete

@@ -643,8 +643,12 @@ expired/future/malformed stamps and model data, explicit refresh, and auth/probe
 invalidation. Partial-pagination regressions retain API metadata for Copilot and completeness
 diagnostics for unbucketed Claude while leaving incomplete listings retryable. Valid entries survive
 malformed neighbors and later pages; unused v1 metadata does not hide valid v2 endpoints. Typed empty
-results stay distinct from malformed responses and HTTP failures. These component checks control HTTP and clock
+results stay distinct from malformed responses (including JSON null) and HTTP failures. Successful
+family fallbacks cannot erase the preferred listing's incomplete status. These component checks control HTTP and clock
 boundaries; they do not establish live gateway timing, agent launch, or launch-time savings.
+The same launch cases preserve a verified process-local probe across auto-setup and discovery-mode
+changes; explicit configure/refresh still probes again. HTTP-boundary checks bind probe reuse to
+effective routing and workspace-selector headers as well as the credential.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,

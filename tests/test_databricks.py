@@ -708,6 +708,28 @@ class TestDiscoverModelServices:
 
         assert (claude, codex, gemini, oss) == ({}, [], [], [])
         assert reason is not None and "llama-4-maverick" in reason
+        assert isinstance(reason, db_mod.EmptyModelDiscoveryReason)
+
+    def test_no_matching_families_preserves_partial_failure(self, monkeypatch):
+        pages = iter(
+            [
+                (
+                    {
+                        "model_services": [_model_service("system.ai.llama-4-maverick")],
+                        "next_page_token": "more",
+                    },
+                    None,
+                ),
+                (None, "HTTP 503"),
+            ]
+        )
+        monkeypatch.setattr(db_mod, "_get_model_services_page", lambda *args: next(pages))
+
+        claude, codex, gemini, oss, reason = db_mod.discover_model_services(WS, "token")
+
+        assert (claude, codex, gemini, oss) == ({}, [], [], [])
+        assert reason == "HTTP 503"
+        assert type(reason) is str
 
     def test_ignores_non_system_ai_schemas(self, monkeypatch):
         # The metastore listing returns services from every schema; only
@@ -2230,6 +2252,7 @@ class TestDiscoverGeminiModels:
         ("payload", "error"),
         [
             (None, "HTTP 503"),
+            (None, None),
             ([], None),
             ({"endpoints": None}, None),
             ({"endpoints": [None]}, None),
@@ -4041,6 +4064,55 @@ class TestProbeUnityGatewayCapabilities:
         assert db_mod.probe_unity_gateway_capabilities(WS, "token-b").resource_available
 
         assert calls == ["token-a", "token-a", "token-a", "token-b"]
+
+    def test_probe_cache_uses_effective_routing_headers(self, monkeypatch):
+        from ucode.ug_headers import scoped_ug_headers
+
+        requests = []
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            return _FakeResponse({"model_services": [_model_service("system.ai.gpt-5")]})
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setenv("UG_HEADERS", "X-Route: first\nX-Client: same\nauthorization: ignored")
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token").resource_available
+        # Header case/order and an overridden credential do not change the actual request.
+        monkeypatch.setenv("UG_HEADERS", "x-client: same\nx-route: first\nAuthorization: changed")
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token").resource_available
+        with scoped_ug_headers("X-Client: same\nX-Route: second"):
+            assert db_mod.probe_unity_gateway_capabilities(WS, "token").resource_available
+            assert db_mod.probe_unity_gateway_capabilities(WS, "token").resource_available
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token").resource_available
+
+        assert [request.get_header("X-route") for request in requests] == ["first", "second"]
+        assert [request.get_header("Authorization") for request in requests] == [
+            "Bearer token",
+            "Bearer token",
+        ]
+
+    def test_probe_cache_separates_selected_workspaces(self, monkeypatch):
+        from ucode.workspace import activate
+
+        requests = []
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            return _FakeResponse({"model_services": [_model_service("system.ai.gpt-5")]})
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setenv("UG_HEADERS", "")
+        for workspace_id in ("111", "111", "222", "222", "111", None):
+            activate(WS, workspace_id)
+            assert db_mod.probe_unity_gateway_capabilities(WS, "token").resource_available
+
+        assert [
+            (
+                request.get_header("X-databricks-workspace-id"),
+                request.get_header("X-databricks-org-id"),
+            )
+            for request in requests
+        ] == [("111", "111"), ("222", "222"), (None, None)]
 
     def test_model_service_auth_failure_raises(self, monkeypatch):
         calls: list[str] = []
