@@ -1,11 +1,5 @@
 # Integration tests
 
-`test_ug_configure_selected_managed_agents.py` checks selected Claude setup, an unchanged
-Codex OS-managed file, absent unrequested per-user configs, preserved Pi executable availability,
-and a real TUI file task.
-The fixture declares no MCPs or skills. See the [coverage overview](../README.md) for component
-cases, source precedence, and the scope of shared policy/MCP/skill reconciliation.
-
 The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
 service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
 It replaces the obsolete stdio-only expectation; this checks configuration, not live login.
@@ -874,7 +868,7 @@ journey still requires its own completed interactive task or command assertions
 journeys pass it). Tests disable optional Databricks AI Tools and retain
 `--skip-upgrade` as a deprecated no-op for compatibility. UG only upgrades
 agents below its required minimum; before/after version checks still enforce the
-selected versions. Fable and required-update policy are covered
+selected versions. Fable, subset selection, and required-update policy are covered
 by unit/component tests, not dedicated live journeys. Tests use real onboarding
 and trust choices, without seeded acceptance or disabled agent sandboxing. If a
 routed child asks to locate the random fixture beneath the disposable project,
