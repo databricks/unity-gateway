@@ -57,7 +57,16 @@ class TestModelArgumentParsing:
 
 class TestToolSpecs:
     def test_all_tools_present(self):
-        assert set(TOOL_SPECS) == {"codex", "claude", "gemini", "opencode", "kilo", "copilot", "pi"}
+        assert set(TOOL_SPECS) == {
+            "codex",
+            "claude",
+            "gemini",
+            "opencode",
+            "kilo",
+            "copilot",
+            "pi",
+            "antigravity",
+        }
 
     def test_each_spec_has_required_keys(self):
         required = {"binary", "package", "display", "config_path", "backup_path"}
@@ -169,7 +178,9 @@ class TestConfigureWiresAiToolsInstall:
 
     def _stub_configure(self, monkeypatch):
         captured = {}
-        monkeypatch.setattr(agents_mod, "configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            agents_mod, "configure_tool", lambda tool, state, model=None, **_kw: state
+        )
         monkeypatch.setattr(agents_mod, "save_state", lambda state: None)
         monkeypatch.setattr(
             agents_mod,
@@ -224,6 +235,25 @@ class TestConfigureWiresAiToolsInstall:
         configure.assert_called_once_with(
             "claude", state, None, provider="main.default.relay", provider_models=None, relayed=True
         )
+
+    def test_configure_selected_tools_records_failures_without_raising(self, monkeypatch):
+        # The CLI fails a `--global` run once every agent and the MCP/skills setup have run, so the
+        # dispatcher reports failures through `last_configured_tools` instead of raising.
+        from ucode import managed_files
+
+        def configure_one(tool, state, provider, **_kw):
+            if tool == "claude":
+                raise RuntimeError("needs a managed file")
+            return state
+
+        monkeypatch.setattr(agents_mod, "_configure_one", configure_one)
+        monkeypatch.setattr(agents_mod, "save_state", lambda _state: None)
+        managed_files.set_machine_wide_only(True)
+
+        state = agents_mod.configure_selected_tools({}, ["claude", "codex"])
+
+        assert state["last_configured_tools"] == ["codex"]
+        assert state["available_tools"] == ["codex"]
 
     def test_configure_selected_tools_triggers_install(self, monkeypatch):
         captured = self._stub_configure(monkeypatch)
@@ -407,7 +437,14 @@ class TestResolveProviderModels:
         # match the declared targets → gateway 403 "not in the allowed models list").
         self._patch(
             monkeypatch,
-            {"provider_type": "anthropic", "targets": ["claude-sonnet-5", "claude-haiku-4-5"]},
+            {
+                "provider_type": "anthropic",
+                "targets": ["claude-sonnet-5", "claude-haiku-4-5"],
+                "target_api_types": {
+                    "claude-sonnet-5": ("anthropic/v1/messages",),
+                    "claude-haiku-4-5": ("anthropic/v1/messages",),
+                },
+            },
             None,
         )
         models, error, relayed = agents_mod.resolve_provider_models(
@@ -418,9 +455,11 @@ class TestResolveProviderModels:
         assert relayed is False
 
     def test_anthropic_with_no_claude_targets_pins_nothing(self, monkeypatch):
-        # No Claude-family targets → no pins (the `or None` fallback), leaving Claude Code's
-        # defaults in place rather than an empty dict.
-        self._patch(monkeypatch, {"provider_type": "anthropic", "targets": []}, None)
+        self._patch(
+            monkeypatch,
+            {"provider_type": "anthropic", "targets": [], "allow_all_targets": True},
+            None,
+        )
         models, error, relayed = agents_mod.resolve_provider_models(
             "claude", self._STATE, "main.a.empty"
         )
@@ -429,7 +468,14 @@ class TestResolveProviderModels:
     def test_relayed_allow_all_pins_nothing(self, monkeypatch):
         # allow_all relay declares no Claude targets: nothing pinned, still flagged relayed.
         self._patch(
-            monkeypatch, {"provider_type": "anthropic", "targets": [], "relayed": True}, None
+            monkeypatch,
+            {
+                "provider_type": "anthropic",
+                "targets": [],
+                "relayed": True,
+                "allow_all_targets": True,
+            },
+            None,
         )
         models, error, relayed = agents_mod.resolve_provider_models(
             "claude", self._STATE, "main.a.relayed"
@@ -445,6 +491,10 @@ class TestResolveProviderModels:
             {
                 "provider_type": "anthropic",
                 "targets": ["claude-opus-4-8", "claude-haiku-4-5"],
+                "target_api_types": {
+                    "claude-opus-4-8": ("anthropic/v1/messages",),
+                    "claude-haiku-4-5": ("anthropic/v1/messages",),
+                },
                 "relayed": True,
             },
             None,
@@ -460,6 +510,10 @@ class TestResolveProviderModels:
         service = {
             "provider_type": "amazon_bedrock",
             "targets": ["us.anthropic.claude-sonnet-4-6", "global.anthropic.claude-opus-4-8"],
+            "target_api_types": {
+                "us.anthropic.claude-sonnet-4-6": ("anthropic/v1/messages",),
+                "global.anthropic.claude-opus-4-8": ("anthropic/v1/messages",),
+            },
         }
         self._patch(monkeypatch, service, None)
         models, error, relayed = agents_mod.resolve_provider_models(
@@ -479,6 +533,10 @@ class TestResolveProviderModels:
                 "global.anthropic.claude-opus-4-8",
                 "openai.gpt-oss-120b-1:0",
             ],
+            "target_api_types": {
+                "global.anthropic.claude-opus-4-8": ("anthropic/v1/messages",),
+                "openai.gpt-oss-120b-1:0": ("openai/v1/responses",),
+            },
         }
         self._patch(monkeypatch, service, None)
 
@@ -490,6 +548,26 @@ class TestResolveProviderModels:
         assert models == {"opus": "global.anthropic.claude-opus-4-8"}
         assert relayed is False
 
+    def test_foundry_preserves_deployment_ids_and_filters_other_apis(self, monkeypatch):
+        service = {
+            "provider_type": "microsoft_foundry",
+            "targets": ["team-claude-sonnet-5-5", "claude-sonnet-99", "gpt-5-nano"],
+            "target_api_types": {
+                "team-claude-sonnet-5-5": ("anthropic/v1/messages",),
+                "claude-sonnet-99": ("openai/v1/responses",),
+                "gpt-5-nano": ("openai/v1/responses",),
+            },
+        }
+        self._patch(monkeypatch, service, None)
+
+        models, error, relayed = agents_mod.resolve_provider_models(
+            "claude", self._STATE, "main.a.foundry"
+        )
+
+        assert error is None
+        assert models == {"sonnet": "team-claude-sonnet-5-5"}
+        assert relayed is False
+
     def test_invalid_provider_returns_error(self, monkeypatch):
         self._patch(monkeypatch, None, "boom")
         models, error, relayed = agents_mod.resolve_provider_models(
@@ -498,6 +576,38 @@ class TestResolveProviderModels:
         assert models is None
         assert error == "boom"
         assert relayed is False
+
+    @pytest.mark.parametrize(
+        "provider_type",
+        ["anthropic", "amazon_bedrock", "bedrock_mantle", "microsoft_foundry", "custom"],
+    )
+    @pytest.mark.parametrize("family_model", [None, "claude-sonnet-5-5"])
+    def test_custom_messages_deployment_is_launch_default(
+        self, monkeypatch, provider_type, family_model
+    ):
+        service = {
+            "provider_type": provider_type,
+            "targets": ["gpt-5.4", "team-coding", "backup-coding"],
+            "target_api_types": {
+                "gpt-5.4": ("openai/v1/responses",),
+                "team-coding": ("anthropic/v1/messages",),
+                "backup-coding": ("anthropic/v1/messages",),
+            },
+        }
+        if family_model:
+            service["targets"].append(family_model)
+            service["target_api_types"][family_model] = ("anthropic/v1/messages",)
+        self._patch(monkeypatch, service, None)
+
+        models, error, relayed = agents_mod.resolve_provider_models(
+            "claude", self._STATE, "main.a.custom"
+        )
+
+        assert error is None
+        assert relayed is False
+        assert models is not None
+        assert db_mod.resolve_provider_launch_model(None, models) == (family_model or "team-coding")
+        assert db_mod.resolve_provider_launch_model("backup-coding", models) == "backup-coding"
 
     @pytest.mark.parametrize("tool", ["gemini", "codex"])
     def test_non_claude_pins_no_family_map(self, monkeypatch, tool):
@@ -521,7 +631,10 @@ class TestConfigureOneGeminiProvider:
         monkeypatch.setattr(
             agents_mod,
             "resolve_gemini_provider_model",
-            lambda state, provider, model, **kw: ("gemini-3.5-flash", None),
+            lambda state, provider, model, **kw: (
+                (captured.setdefault("pick_newest", kw.get("pick_newest")) and None)
+                or ("gemini-3.5-flash", None)
+            ),
         )
         captured = {}
 
@@ -533,7 +646,12 @@ class TestConfigureOneGeminiProvider:
 
         monkeypatch.setattr(agents_mod, "configure_tool", _fake_configure_tool)
         agents_mod._configure_one("gemini", self._STATE, "c.s.g")
-        assert captured == {"tool": "gemini", "model": "gemini-3.5-flash", "provider": "c.s.g"}
+        assert captured == {
+            "pick_newest": True,
+            "tool": "gemini",
+            "model": "gemini-3.5-flash",
+            "provider": "c.s.g",
+        }
 
     def test_gemini_provider_resolution_error_raises(self, monkeypatch):
         monkeypatch.setattr(
@@ -584,6 +702,20 @@ class TestPersistedModelLocation:
         assert calls[0][1]["provider"] == "main.default.mps"
         assert "parent_schema" not in calls[0][1]
 
+    def test_explicit_provider_wins_over_saved_location(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        monkeypatch.setattr(
+            agents_mod, "resolve_provider_models", lambda *_a: ({"opus": "x"}, None, False)
+        )
+        state = {**self._STATE, "model_locations": {"claude": "main.models"}}
+
+        agents_mod.configure_selected_tools(
+            state, ["claude"], install_ai_tools=False, providers={"claude": "main.default.mps"}
+        )
+
+        assert calls[0][1]["provider"] == "main.default.mps"
+        assert "parent_schema" not in calls[0][1]
+
     def test_gemini_ignores_saved_location(self):
         state = {**self._STATE, "model_locations": {"gemini": "main.models"}}
         assert agents_mod._persisted_model_location("gemini", state, None) is None
@@ -620,6 +752,58 @@ class TestResolveGeminiProviderModel:
         )
         model, error = agents_mod.resolve_gemini_provider_model(self._STATE, "c.s.g", None)
         assert (model, error) == ("gemini-3.5-pro", None)
+
+    def test_allow_all_service_accepts_any_named_model(self, monkeypatch):
+        # An allow-all service declares few targets but serves its provider's whole catalog.
+        self._patch(
+            monkeypatch,
+            {"name": "c.s.g", "targets": ["gemini-4-carbon"], "allow_all_targets": True},
+        )
+        model, error = agents_mod.resolve_gemini_provider_model(
+            self._STATE, "c.s.g", "gemini-4-argon"
+        )
+        assert (model, error) == ("gemini-4-argon", None)
+
+    def test_allow_all_service_reuses_a_pinned_model_it_does_not_declare(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {"name": "c.s.g", "targets": ["gemini-4-carbon"], "allow_all_targets": True},
+            persisted="gemini-3.8-flash",
+        )
+        model, _ = agents_mod.resolve_gemini_provider_model(self._STATE, "c.s.g", None)
+        assert model == "gemini-3.8-flash"
+
+    def test_allow_all_service_without_targets_asks_for_a_model(self, monkeypatch):
+        self._patch(monkeypatch, {"name": "c.s.g", "targets": [], "allow_all_targets": True})
+        model, error = agents_mod.resolve_gemini_provider_model(self._STATE, "c.s.g", None)
+        assert model is None
+        assert "pass --model" in error
+
+    def test_configure_pins_the_newest_of_several_targets(self, monkeypatch):
+        # Configure has no --model; a launch would still ask for one (below).
+        self._patch(
+            monkeypatch,
+            {
+                "name": "c.s.g",
+                "targets": ["gemini-3.7-flash", "gemini-3.1-pro-preview", "gemini-4-argon"],
+            },
+            persisted=None,
+        )
+        model, error = agents_mod.resolve_gemini_provider_model(
+            self._STATE, "c.s.g", None, pick_newest=True
+        )
+        assert (model, error) == ("gemini-4-argon", None)
+
+    def test_configure_keeps_a_previously_pinned_target(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {"name": "c.s.g", "targets": ["gemini-4-argon", "gemini-3.8-flash"]},
+            persisted="gemini-3.8-flash",
+        )
+        model, _ = agents_mod.resolve_gemini_provider_model(
+            self._STATE, "c.s.g", None, pick_newest=True
+        )
+        assert model == "gemini-3.8-flash"
 
     def test_multi_target_without_choice_errors(self, monkeypatch):
         # Multiple targets, nothing pinned, no --model → ask the user to choose.
@@ -1120,7 +1304,9 @@ class TestConfigureSelectedTools:
     def test_merges_with_existing_available_tools(self, monkeypatch):
         """Configuring a new tool should not drop previously-configured tools
         from state['available_tools']."""
-        monkeypatch.setattr("ucode.agents.configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            "ucode.agents.configure_tool", lambda tool, state, model=None, **_kw: state
+        )
         monkeypatch.setattr("ucode.agents.save_state", lambda s: None)
 
         state = {
@@ -1132,7 +1318,9 @@ class TestConfigureSelectedTools:
         assert set(result["available_tools"]) == {"codex", "claude"}
 
     def test_adds_new_tool_to_available_tools(self, monkeypatch):
-        monkeypatch.setattr("ucode.agents.configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            "ucode.agents.configure_tool", lambda tool, state, model=None, **_kw: state
+        )
         monkeypatch.setattr("ucode.agents.save_state", lambda s: None)
 
         state = {
@@ -1144,7 +1332,9 @@ class TestConfigureSelectedTools:
         assert set(result["available_tools"]) == {"codex", "claude"}
 
     def test_empty_selection_preserves_existing(self, monkeypatch):
-        monkeypatch.setattr("ucode.agents.configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            "ucode.agents.configure_tool", lambda tool, state, model=None, **_kw: state
+        )
         monkeypatch.setattr("ucode.agents.save_state", lambda s: None)
 
         state = {"workspace": "https://x.databricks.com", "available_tools": ["codex"]}
@@ -1230,7 +1420,9 @@ class TestConfigureToolUserScope:
         managed_files.set_config_scope("user")
 
         if exists:
-            with pytest.raises(RuntimeError, match=r"--user.*managed settings exist.*--global"):
+            with pytest.raises(
+                RuntimeError, match=r"--user.*managed settings exist.*without --user"
+            ):
                 agents_mod.refuse_user_scope_over_managed_files([tool])
         else:
             agents_mod.refuse_user_scope_over_managed_files([tool])
@@ -1253,8 +1445,13 @@ class TestConfigureToolUserScope:
 
     def test_managed_config_blocks_user_scope(self):
         managed_files.set_config_scope("user")
-        with pytest.raises(RuntimeError, match=r"--user.*publishes a managed config.*--global"):
+        with pytest.raises(
+            RuntimeError,
+            match=r"--user.*publishes a managed config.*without --user.*administrator.*--global",
+        ) as excinfo:
             agents_mod.refuse_user_scope_over_managed_config("https://ws.example.com", {"x": 1})
+        # `--global` writes only machine-wide settings now, so it is no longer the default.
+        assert "the default" not in str(excinfo.value)
 
     @pytest.mark.parametrize("scope", ["user", "global"])
     def test_no_managed_config_does_not_block(self, scope):
@@ -1283,3 +1480,143 @@ class TestConfigureToolUserScope:
         managed_files.set_config_scope("user")
         agents_mod.configure_tool("claude", {}, "m")
         assert written == [1]
+
+
+class TestAntigravityDispatch:
+    _STATE = {"workspace": "https://ws.databricks.com", "profile": None}
+
+    @pytest.mark.parametrize("alias", ["antigravity", "agy", "Antigravity-CLI"])
+    def test_aliases_normalize(self, alias):
+        assert agents_mod.normalize_tool(alias) == "antigravity"
+
+    def test_available_only_with_agent_capable_gemini_models(self):
+        assert agents_mod.check_gateway_endpoint(
+            {"gemini_models": ["system.ai.gemini-3-8-flash"]}, "antigravity"
+        )
+        assert not agents_mod.check_gateway_endpoint(
+            {"gemini_models": ["system.ai.gemini-3-pro-image"]}, "antigravity"
+        )
+
+    def test_provider_configure_resolves_target_for_antigravity(self, monkeypatch):
+        seen = {}
+
+        def _resolve(state, provider, model, **kwargs):
+            seen["tool"] = kwargs.get("tool")
+            return "gemini-3.1-pro-preview", None
+
+        monkeypatch.setattr(agents_mod, "resolve_gemini_provider_model", _resolve)
+        captured = {}
+        monkeypatch.setattr(
+            agents_mod,
+            "configure_tool",
+            lambda tool, state, model=None, **kw: (
+                captured.update(tool=tool, model=model, provider=kw.get("provider")) or state
+            ),
+        )
+
+        agents_mod._configure_one("antigravity", dict(self._STATE), "c.s.g")
+
+        assert seen["tool"] == "antigravity"
+        assert captured == {
+            "tool": "antigravity",
+            "model": "gemini-3.1-pro-preview",
+            "provider": "c.s.g",
+        }
+
+    def test_provider_model_reuses_antigravity_pinned_target(self, monkeypatch):
+        monkeypatch.setattr(agents_mod, "get_databricks_token", lambda w, p: "token")
+        looked_up = {}
+
+        def _service(tool, name, workspace, token):
+            looked_up["tool"] = tool
+            return {"name": name, "targets": ["gemini-3.8-flash", "gemini-3.1-pro-preview"]}, None
+
+        monkeypatch.setattr(agents_mod, "resolve_provider_service", _service)
+        state = {**self._STATE, "antigravity_provider_model": "gemini-3.1-pro-preview"}
+
+        model, error = agents_mod.resolve_gemini_provider_model(
+            state, "c.s.g", None, tool="antigravity"
+        )
+
+        assert (model, error) == ("gemini-3.1-pro-preview", None)
+        assert looked_up["tool"] == "antigravity"
+
+    def test_configure_tool_writes_antigravity_config(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            agents_mod.antigravity,
+            "write_tool_config",
+            lambda state, model, provider=None: (
+                captured.update(model=model, provider=provider) or state
+            ),
+        )
+
+        agents_mod.configure_tool("antigravity", dict(self._STATE), "system.ai.gemini-3-8-flash")
+
+        assert captured == {"model": "system.ai.gemini-3-8-flash", "provider": None}
+
+    def test_missing_binary_uses_native_installer_not_npm(self, monkeypatch):
+        installed = []
+        monkeypatch.setattr(agents_mod.shutil, "which", lambda b: None)
+        monkeypatch.setattr(agents_mod.antigravity, "resolve_binary", lambda: None)
+
+        def _install():
+            installed.append(True)
+            monkeypatch.setattr(
+                agents_mod.antigravity, "resolve_binary", lambda: "/h/.local/bin/agy"
+            )
+
+        monkeypatch.setattr(agents_mod.antigravity, "install_binary", _install)
+        run = MagicMock()
+        monkeypatch.setattr(agents_mod.subprocess_cross_os, "run", run)
+
+        assert agents_mod.install_tool_binary("antigravity") is True
+        assert installed == [True]
+        run.assert_not_called()
+
+    def test_old_off_path_install_is_caught_and_upgraded_in_place(self, monkeypatch):
+        # `~/.local/bin` is not on PATH: probing bare `agy` would read "unknown" and pass.
+        installed = "/home/u/.local/bin/agy"
+        versions = iter(["1.2.14", "1.4.9"])
+        probed = []
+        monkeypatch.setattr(agents_mod.shutil, "which", lambda b: None)
+        monkeypatch.setattr(agents_mod.antigravity, "resolve_binary", lambda: installed)
+        monkeypatch.setattr(
+            agents_mod.antigravity,
+            "agent_version",
+            lambda binary: probed.append(binary) or next(versions),
+        )
+        monkeypatch.setenv(agents_mod.AUTO_UPGRADE_AGENT_ENV, "1")
+        run = MagicMock()
+        monkeypatch.setattr(agents_mod.subprocess_cross_os, "run", run)
+
+        assert agents_mod.install_tool_binary("antigravity") is True
+
+        assert run.call_args.args[0] == [installed, "update"]
+        assert probed == [installed, installed]
+
+    def test_native_installer_failure_is_actionable(self, monkeypatch):
+        monkeypatch.setattr(agents_mod.shutil, "which", lambda b: None)
+        monkeypatch.setattr(agents_mod.antigravity, "resolve_binary", lambda: None)
+
+        def _fail():
+            raise RuntimeError("no network")
+
+        monkeypatch.setattr(agents_mod.antigravity, "install_binary", _fail)
+
+        with pytest.raises(RuntimeError, match="Failed to install Antigravity CLI.*no network"):
+            agents_mod.install_tool_binary("antigravity")
+        assert agents_mod.install_tool_binary("antigravity", strict=False) is False
+
+    def test_pinned_version_is_reported_as_unsupported(self, monkeypatch, capsys):
+        monkeypatch.setattr(agents_mod.shutil, "which", lambda b: "/usr/bin/agy")
+
+        assert agents_mod._update_installed_tool_binary("antigravity", version="1.2.15") is False
+        assert "can't be installed at a specific version (1.2.15)" in capsys.readouterr().out
+
+    def test_missing_binary_hint_names_installer(self, monkeypatch):
+        monkeypatch.setattr(agents_mod.shutil, "which", lambda b: None)
+        monkeypatch.setattr(agents_mod.antigravity, "resolve_binary", lambda: None)
+
+        with pytest.raises(RuntimeError, match="antigravity.google/cli/install.sh"):
+            agents_mod.ensure_tool_binary_available("antigravity")

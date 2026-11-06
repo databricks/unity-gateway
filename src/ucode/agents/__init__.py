@@ -11,23 +11,26 @@ below and to `TOOL_ALIASES` if needed.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
-from ucode.config_io import ToolSpec
-from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
+from ucode.config_io import ToolSpec, is_dry_run
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT
 from ucode.databricks import (
     AnthropicModelCatalog,
     get_databricks_token,
     install_ai_tools,
     install_databricks_cli,
     map_claude_family_models,
+    provider_targets_for_tool,
     resolve_provider_service,
 )
 from ucode.env import env_bool
 from ucode.managed_config import refresh_managed_config
-from ucode.managed_files import config_scope, managed_write_batch
+from ucode.managed_files import config_scope, machine_wide_only, managed_write_batch
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import get_model_location, get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
@@ -43,7 +46,7 @@ from ucode.ui import (
     status_subprocess_stdout,
 )
 
-from . import claude, codex, copilot, gemini, kilo, opencode, pi
+from . import antigravity, claude, codex, copilot, gemini, kilo, opencode, pi
 from .args import LaunchOptions as LaunchOptions
 from .args import explicit_model_arg_value as explicit_model_arg_value
 
@@ -55,6 +58,7 @@ _MODULES = {
     "kilo": kilo,
     "copilot": copilot,
     "pi": pi,
+    "antigravity": antigravity,
 }
 
 TOOL_SPECS: dict[str, ToolSpec] = {name: module.SPEC for name, module in _MODULES.items()}
@@ -75,15 +79,24 @@ TOOL_ALIASES = {
     "kilocode": "kilo",
     "copilot": "copilot",
     "pi": "pi",
+    "antigravity": "antigravity",
+    "agy": "antigravity",
+    "antigravity-cli": "antigravity",
 }
 
 DEFAULT_TOOL = "codex"
 BUNDLE_VERSION = 1
 _MANAGED_SETTINGS_TOOLS = {"claude", "codex"}
+# Agents that can take their models from a Unity Catalog schema (`--model-location`).
+MODEL_LOCATION_TOOLS = (AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT)
 _NATIVE_UPGRADE_COMMANDS = {
     "claude": ["claude", "upgrade"],
     "codex": ["codex", "update"],
+    "antigravity": ["agy", "update"],
 }
+# Agents that speak Google's Gemini API, so a Gemini Enterprise provider service backs them and
+# a provider launch pins one of its target models.
+GEMINI_API_TOOLS = ("gemini", "antigravity")
 # Lets launchers that already own the agent install (e.g. Isaac) skip the
 # required-upgrade confirmation; declining it would only fail the launch.
 AUTO_UPGRADE_AGENT_ENV = "UG_AUTO_UPGRADE_AGENT"
@@ -110,6 +123,12 @@ def install_databricks_ai_tools_for_agents(
     """
     if not state.get("databricks_ai_tools_enabled"):
         return
+    if machine_wide_only():
+        # AI Tools install into per-user agent settings.
+        print_note(
+            "Skipped Databricks AI Tools: `ug configure --global` writes only machine-wide settings."
+        )
+        return
     # An admin's managed config governs the workspace, so ucode does not
     # self-install AI Tools under one (may become a managed-config option later).
     if refresh_managed_config(state, force_refresh=force_refresh).manifest is not None:
@@ -124,7 +143,8 @@ def normalize_tool(tool: str) -> str:
     normalized = TOOL_ALIASES.get(tool.strip().lower())
     if not normalized:
         raise RuntimeError(
-            f"Unsupported tool '{tool}'. Use one of: codex, claude, gemini, opencode, kilo, copilot, pi."
+            f"Unsupported tool '{tool}'. Use one of: codex, claude, gemini, opencode, kilo, copilot, "
+            "pi, antigravity."
         )
     return normalized
 
@@ -135,8 +155,22 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
     package = spec["package"]
     target = f"{package}@{version}" if version else package
 
+    off_path = _off_path_binary(tool)
     if tool in _NATIVE_UPGRADE_COMMANDS and version is None and shutil.which(binary):
         command = _NATIVE_UPGRADE_COMMANDS[tool]
+    elif tool in _NATIVE_UPGRADE_COMMANDS and version is None and off_path:
+        # Installed by its own installer into a directory PATH doesn't reach yet.
+        command = [off_path, *_NATIVE_UPGRADE_COMMANDS[tool][1:]]
+    elif callable(getattr(_MODULES[tool], "install_binary", None)):
+        # Not published on npm: only its own updater can upgrade it, and only to its latest.
+        if version is not None:
+            print_warning(
+                f"{spec['display']} can't be installed at a specific version ({version}); "
+                "continuing."
+            )
+        else:
+            print_warning(f"`{binary}` is not available to update {spec['display']}; continuing.")
+        return False
     else:
         if not shutil.which("npm"):
             print_warning(f"`npm` is not available to update {spec['display']}; continuing.")
@@ -155,7 +189,7 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
 
     print_success(f"{spec['display']} is up to date")
     agent_version.cache_clear()
-    return bool(shutil.which(binary))
+    return bool(shutil.which(binary)) or _installed_off_path(tool)
 
 
 def _auto_upgrade_agent_enabled() -> bool:
@@ -167,6 +201,28 @@ def _minimum_version_error(tool: str) -> str | None:
     if not callable(checker):
         return None
     return checker()
+
+
+def ensure_minimum_version(
+    tool: str, version_check: Callable[[], str | None], *, allow_upgrade: bool = True
+) -> None:
+    version_error = version_check()
+    if version_error and allow_upgrade:
+        print_warning(version_error)
+        # Native upgraders run in place; EOF/piped runs take the existing default.
+        if (
+            tool in _NATIVE_UPGRADE_COMMANDS
+            and not _auto_upgrade_agent_enabled()
+            and not prompt_yes_no_default(
+                f"Upgrade {TOOL_SPECS[tool]['display']} if available?", default=True
+            )
+        ):
+            raise RuntimeError(version_error)
+        if not _update_installed_tool_binary(tool):
+            raise RuntimeError(version_error)
+        version_error = version_check()
+    if version_error:
+        raise RuntimeError(version_error)
 
 
 def _too_new_downgrade(tool: str) -> tuple[str, str] | None:
@@ -210,31 +266,19 @@ def install_tool_binary(
     binary = spec["binary"]
     package = spec["package"]
 
-    if shutil.which(binary):
+    if shutil.which(binary) or _installed_off_path(tool):
         # A too-new build is a correctness blocker (the tool runs but misbehaves
         # against the gateway), so check it on every launch — not just when
         # auto-configuring — mirroring the minimum-version gate below.
         too_new = _maybe_downgrade_too_new_tool(tool)
-        version_error = _minimum_version_error(tool)
-
-        if not too_new and version_error:
-            print_warning(version_error)
-            # Native upgraders run in place, so confirm before mutating the install;
-            # EOF/piped runs take the default and upgrade (a required fix must not stall).
-            if (
-                tool in _NATIVE_UPGRADE_COMMANDS
-                and not _auto_upgrade_agent_enabled()
-                and not prompt_yes_no_default(
-                    f"Upgrade {spec['display']} if available?", default=True
-                )
-            ):
-                raise RuntimeError(version_error)
-            if not _update_installed_tool_binary(tool):
-                raise RuntimeError(version_error)
-            version_error = _minimum_version_error(tool)
-        if version_error:
-            raise RuntimeError(version_error)
+        ensure_minimum_version(
+            tool, lambda: _minimum_version_error(tool), allow_upgrade=not too_new
+        )
         return True
+
+    installer = getattr(_MODULES[tool], "install_binary", None)
+    if callable(installer):
+        return _run_native_installer(tool, installer, strict=strict)
 
     if not shutil.which("npm"):
         message = f"`{binary}` is not installed and npm is not available to install it."
@@ -271,21 +315,60 @@ def install_tool_binary(
     return True
 
 
+def _off_path_binary(tool: str) -> str | None:
+    """The binary an agent with its own installer put where PATH may not reach yet."""
+    resolver = getattr(_MODULES[tool], "resolve_binary", None)
+    return resolver() if callable(resolver) else None
+
+
+def _installed_off_path(tool: str) -> bool:
+    return _off_path_binary(tool) is not None
+
+
+def _run_native_installer(tool: str, installer: Callable[[], None], *, strict: bool) -> bool:
+    """Install ``tool`` with its module's own installer, for agents not published on npm."""
+    spec = TOOL_SPECS[tool]
+    print_section("Bootstrap")
+    print_warning(f"`{spec['binary']}` was not found. Installing {spec['display']}...")
+    try:
+        installer()
+    except (RuntimeError, OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        message = f"Failed to install {spec['display']} automatically: {exc}"
+        if strict:
+            raise RuntimeError(message) from exc
+        print_warning(f"{message} Continuing without it.")
+        return False
+    agent_version.cache_clear()
+    if not (shutil.which(spec["binary"]) or _installed_off_path(tool)):
+        message = f"{spec['display']} install completed, but `{spec['binary']}` was not found."
+        if strict:
+            raise RuntimeError(message)
+        print_warning(f"{message} Continuing without it.")
+        return False
+    return True
+
+
+def _install_hint(tool: str) -> str:
+    hint = getattr(_MODULES[tool], "INSTALL_HINT", None)
+    if isinstance(hint, str):
+        return hint
+    return f"Install it with `npm install -g {TOOL_SPECS[tool]['package']}`"
+
+
 def ensure_tool_binary_available(tool: str) -> None:
     spec = TOOL_SPECS[tool]
     binary = spec["binary"]
-    if shutil.which(binary):
+    if shutil.which(binary) or _installed_off_path(tool):
         return
     raise RuntimeError(
         f"{spec['display']} is not installed (`{binary}` was not found on PATH). "
-        f"Install it with `npm install -g {spec['package']}` or run "
-        f"`ug configure` to try automatic installation."
+        f"{_install_hint(tool)} or run `ug configure` to try automatic installation."
     )
 
 
 def tool_binary_installed(tool: str) -> bool:
     """True when the agent's CLI binary is on PATH. Read-only — for ``ucode doctor``."""
-    return bool(shutil.which(TOOL_SPECS[tool]["binary"]))
+    return bool(shutil.which(TOOL_SPECS[tool]["binary"])) or _installed_off_path(tool)
 
 
 def update_tool_binary(tool: str) -> bool:
@@ -335,9 +418,11 @@ def resolve_provider_models(
     """Validate ``provider`` for ``tool`` and return the model ids to pin.
 
     Returns ``(provider_models, error, relayed)``. ``provider_models`` is a ``{family: model_id}``
-    dict re-derived from the service's declared targets — Bedrock (provider-side slugs), API-key
-    Anthropic, and relayed Anthropic that declares a curated allowlist alike — so the client uses the
-    ids the MPS allows rather than Claude Code's defaults. It is None when ``provider`` is None, when
+    dict re-derived from the service's declared targets — Bedrock (provider-side slugs), Foundry
+    (deployment names), API-key Anthropic, and relayed Anthropic that declares a curated allowlist
+    alike — so the client uses the ids the MPS allows rather than Claude Code's defaults.
+    When no family can be inferred, ``default`` pins the first compatible target instead.
+    It is None when ``provider`` is None, when
     the service declares no Claude targets (e.g. an ``allow_all`` relay), or for a non-Claude (e.g.
     codex) service. ``relayed`` is True for a credential-less Anthropic subscription relay, which the
     launch path wires with the relayed overlay + refresh proxy. A non-None ``error`` means the
@@ -362,7 +447,17 @@ def resolve_provider_models(
     # through Claude-family logic would be meaningless (see docstring).
     if tool != "claude":
         return None, None, relayed
-    return map_claude_family_models(service.get("targets") or []) or None, None, relayed
+    targets = provider_targets_for_tool(tool, service)
+    models = map_claude_family_models(targets)
+    if not models and targets:
+        models = {"default": targets[0]}
+    return models or None, None, relayed
+
+
+def _newest_first(model: str) -> list[int]:
+    """Sort key putting the highest version first, whether dotted (`gemini-3.8-flash`, as
+    provider services name targets) or dashed (`gemini-3-8-flash`); ties keep their order."""
+    return [-int(part) for part in re.findall(r"\d+", model)]
 
 
 def resolve_gemini_provider_model(
@@ -371,43 +466,61 @@ def resolve_gemini_provider_model(
     explicit_model: str | None,
     *,
     service: dict | None = None,
+    tool: str = "gemini",
+    pick_newest: bool = False,
 ) -> tuple[str | None, str | None]:
-    """Pick the Gemini model to pin for a provider-service launch.
+    """Pick the Gemini model to pin for a provider-service launch of ``tool`` (a Gemini API agent).
 
     A Gemini Enterprise service routes by header but the request still names a
     concrete model in the URL, so one of the service's declared targets must be
     pinned. In precedence order: ``explicit_model`` (from ``--model``) when it
     names a target; the model already pinned in the env file when it is still a
     target (so a bare relaunch or reconfigure needn't re-pass ``--model``); the
-    sole target when the service declares exactly one; otherwise ask the user to
-    choose. Returns ``(model, error)``.
+    sole target when the service declares exactly one; otherwise the newest target when
+    ``pick_newest`` (`ug configure`, which has no ``--model``), else ask the user to choose.
+    Returns ``(model, error)``.
 
     Pass ``service`` to reuse an already-fetched service dict and skip the
     control-plane lookup (the launch/configure paths hold one).
     """
     if service is None:
         token = get_databricks_token(state["workspace"], state.get("profile"))
-        service, error = resolve_provider_service("gemini", provider, state["workspace"], token)
+        service, error = resolve_provider_service(tool, provider, state["workspace"], token)
         if error or service is None:
             return None, error or f"Model provider service '{provider}' was not found."
     targets = [t for t in (service.get("targets") or []) if isinstance(t, str) and t]
+    # An allow-all service serves any of its provider's models, beyond those it declares.
+    allow_all = bool(service.get("allow_all_targets"))
     if explicit_model:
-        if explicit_model in targets:
+        if explicit_model in targets or allow_all:
             return explicit_model, None
         available = ", ".join(targets) or "none"
         return None, (
             f"Model '{explicit_model}' is not a target of provider service '{provider}'. "
             f"Available: {available}."
         )
+    persisted = (
+        antigravity.persisted_provider_model(state)
+        if tool == "antigravity"
+        else gemini.persisted_provider_model()
+    )
+    if allow_all and persisted and not targets:
+        return persisted, None
     if not targets:
+        if allow_all:
+            return None, (
+                f"Provider service '{provider}' serves any of its provider's models; "
+                "pass --model to choose one."
+            )
         return None, f"Provider service '{provider}' exposes no models to launch."
     # Reuse a previously pinned target so a bare relaunch/reconfigure keeps working without
-    # --model — but only when it is still one of the service's declared targets.
-    persisted = gemini.persisted_provider_model()
-    if persisted in targets:
+    # --model — when it is still one of the service's targets (any model, for allow-all).
+    if persisted in targets or (allow_all and persisted):
         return persisted, None
     if len(targets) == 1:
         return targets[0], None
+    if pick_newest:
+        return min(targets, key=_newest_first), None
     return None, (
         f"Provider service '{provider}' exposes several models "
         f"({', '.join(targets)}); pass --model to choose one."
@@ -428,8 +541,8 @@ def refuse_user_scope_over_managed_files(tools: list[str]) -> None:
         if path is not None and path.exists():
             raise RuntimeError(
                 f"`ug configure --user` can't be used while {display} managed settings exist at "
-                f"{path}; they take precedence over user settings. Run `ug revert` if ug wrote "
-                "them, ask your administrator to remove them, or use `ug configure --global`."
+                f"{path}; they take precedence over user settings. Run `ug configure` without "
+                "--user, run `ug revert` if ug wrote them, or ask your administrator to remove them."
             )
 
 
@@ -443,7 +556,8 @@ def refuse_user_scope_over_managed_config(workspace: str | None, managed: dict |
         return
     raise RuntimeError(
         f"`ug configure --user` can't be used with {workspace}: it publishes a managed config, "
-        "which must be installed machine-wide. Use `ug configure --global` (the default)."
+        "which must be installed machine-wide. Run `ug configure` without --user, or ask your "
+        "administrator to run `ug configure --global`."
     )
 
 
@@ -459,11 +573,12 @@ def configure_tool(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
+    derive_managed_model_inputs: bool = False,
 ) -> dict:
     result: dict | tuple[dict, str]
     if tool == AGENT_CODEX:
         result = codex.write_tool_config(
-            state, model, provider=provider, parent_schema=parent_schema
+            state, model, provider=provider, parent_schema=parent_schema, relayed=relayed
         )
     elif tool == AGENT_CLAUDE:
         # A Model Provider Service or parent schema routes by header and discovers models natively,
@@ -481,10 +596,12 @@ def configure_tool(
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
             picker_catalog=picker_catalog,
+            derive_managed_model_inputs=derive_managed_model_inputs,
         )
     elif tool == "copilot":
-        # Under a model provider service, Copilot starts on one of the service's models, chosen at launch.
-        if not model and not provider:
+        # Under a model provider service or a model location, Copilot starts on one of its models,
+        # chosen at launch.
+        if not model and not provider and not parent_schema:
             raise RuntimeError(f"A {tool} model must be selected before configuration.")
         result = copilot.write_tool_config(state, model)
     else:
@@ -494,13 +611,15 @@ def configure_tool(
             raise RuntimeError(f"A {tool} model must be selected before configuration.")
         if tool == "gemini":
             result = gemini.write_tool_config(state, model, provider=provider)
+        elif tool == "antigravity":
+            result = antigravity.write_tool_config(state, model, provider=provider)
         elif tool == "pi":
             result = pi.write_tool_config(state, model)
         elif tool == "kilo":
             result = kilo.write_tool_config(state, model)
         else:
             result = opencode.write_tool_config(state, model)
-    # gemini/opencode/kilo/pi return (state, token); codex/claude/copilot return state
+    # gemini/opencode/kilo/pi return (state, token); codex/claude/copilot/antigravity return state
     if isinstance(result, tuple):
         return result[0]
     return result
@@ -545,6 +664,8 @@ def check_gateway_endpoint(state: dict, tool: str) -> bool:
         return bool(state.get("codex_models"))
     if tool == "gemini":
         return bool(state.get("gemini_models"))
+    if tool == "antigravity":
+        return bool(antigravity.model_catalog(state))
     if tool == "copilot":
         return bool(copilot.copilot_catalog(state))
     if tool == "pi":
@@ -564,6 +685,7 @@ _TOOL_DISCOVERY_SOURCES: dict[str, tuple[str, ...]] = {
     "gemini": ("gemini",),
     "copilot": ("copilot",),
     "pi": ("claude", "codex", "gemini"),
+    "antigravity": ("gemini",),
 }
 
 
@@ -578,10 +700,38 @@ def _availability_failure_detail(tool: str, state: dict) -> str:
     return " (" + "; ".join(parts) + ")"
 
 
+_vscode_with_copilot = True
+
+
+def request_vscode_with_copilot(requested: bool = True) -> None:
+    """Whether configuring Copilot in this run also sets up VS Code (``ug configure --no-vscode``
+    passes ``False``)."""
+    global _vscode_with_copilot
+    _vscode_with_copilot = requested
+
+
+def configure_vscode(state: dict, *, provider: str | None, parent_schema: str | None) -> None:
+    """Set up Copilot Chat in VS Code with the models the Copilot CLI was configured with."""
+    if not _vscode_with_copilot:
+        return
+    if is_dry_run():
+        print_note("Dry run: VS Code isn't changed.")
+        return
+    from . import vscode
+
+    vscode.configure(state, provider=provider, location=parent_schema)
+
+
 def configure_single_tool(
-    tool: str, state: dict, *, parent_schema: str | None = None, provider: str | None = None
+    tool: str,
+    state: dict,
+    *,
+    parent_schema: str | None = None,
+    provider: str | None = None,
+    with_vscode: bool = False,
 ) -> dict:
-    """Check availability, configure, and persist state for one tool only."""
+    """Check availability, configure, and persist state for one tool only. ``with_vscode`` also
+    sets up VS Code after Copilot."""
     parent_schema = parent_schema or _persisted_model_location(tool, state, provider)
     provider = None if parent_schema else provider or get_provider_service(state, tool)
     # A Model Provider Service or parent schema routes through the same gateway and pins no
@@ -596,6 +746,8 @@ def configure_single_tool(
             )
     with managed_write_batch(_managed_settings_displays([tool])):
         state = _configure_one(tool, state, provider, parent_schema=parent_schema)
+    if with_vscode and tool == AGENT_COPILOT:
+        configure_vscode(state, provider=provider, parent_schema=parent_schema)
     available_tools = list(set((state.get("available_tools") or []) + [tool]))
     state["available_tools"] = available_tools
     save_state(state)
@@ -605,10 +757,10 @@ def configure_single_tool(
 def _persisted_model_location(tool: str, state: dict, provider: str | None) -> str | None:
     """The model location ``ug configure`` saved for ``tool``, unless a provider is in play.
 
-    Only claude and codex discover models by parent schema; an explicit or persisted provider
-    keeps the source it names.
+    Only ``MODEL_LOCATION_TOOLS`` discover models by parent schema; an explicit or persisted
+    provider keeps the source it names.
     """
-    if tool not in (AGENT_CLAUDE, AGENT_CODEX) or provider or get_provider_service(state, tool):
+    if tool not in MODEL_LOCATION_TOOLS or provider or get_provider_service(state, tool):
         return None
     return get_model_location(state, tool)
 
@@ -620,11 +772,15 @@ def _configure_one(
     if parent_schema:
         return configure_tool(tool, state, parent_schema=parent_schema)
     if provider:
-        if tool == "gemini":
+        if tool in GEMINI_API_TOOLS:
             # Gemini pins a concrete target in the URL, so configure must resolve one now —
             # unlike claude/codex, its config writer requires a model. This also validates the
             # service in a single lookup (no resolve_provider_models family map for gemini).
-            model, error = resolve_gemini_provider_model(state, provider, None)
+            # Configure has no --model, so a multi-target service starts on its newest model;
+            # `--model` at launch still picks any other target.
+            model, error = resolve_gemini_provider_model(
+                state, provider, None, tool=tool, pick_newest=True
+            )
             if error:
                 raise RuntimeError(error)
             return configure_tool(tool, state, model, provider=provider)
@@ -637,6 +793,9 @@ def _configure_one(
     if tool == "codex":
         return configure_tool("codex", state)
     state, model = resolve_launch_model(tool, state, None)
+    if tool == AGENT_CLAUDE:
+        # `ug configure` writes the managed model keys a plain launch would.
+        return configure_tool(tool, state, model, derive_managed_model_inputs=True)
     return configure_tool(tool, state, model)
 
 
@@ -646,6 +805,7 @@ def configure_selected_tools(
     *,
     install_ai_tools: bool = True,
     parent_schemas: dict[str, str] | None = None,
+    providers: dict[str, str] | None = None,
 ) -> dict:
     """Configure the given tools. Caller is responsible for ensuring each tool
     is available on the workspace.
@@ -661,10 +821,14 @@ def configure_selected_tools(
     configured: list[str] = []
     with managed_write_batch(_managed_settings_displays(tools)):
         for tool in tools:
+            # An explicit provider displaces a saved model location, as on the picker.
+            explicit_provider = (providers or {}).get(tool)
             parent_schema = (parent_schemas or {}).get(tool) or _persisted_model_location(
-                tool, state, None
+                tool, state, explicit_provider
             )
-            provider = None if parent_schema else get_provider_service(state, tool)
+            provider = (
+                None if parent_schema else explicit_provider or get_provider_service(state, tool)
+            )
             try:
                 state = _configure_one(tool, state, provider, parent_schema=parent_schema)
             except Exception as exc:  # noqa: BLE001 -- surface any harness failure as a warning
@@ -673,6 +837,9 @@ def configure_selected_tools(
                 )
                 continue
             configured.append(tool)
+            # `ug configure` sets up Copilot Chat in VS Code along with the Copilot CLI.
+            if tool == AGENT_COPILOT:
+                configure_vscode(state, provider=provider, parent_schema=parent_schema)
 
     existing = state.get("available_tools") or []
     state["available_tools"] = sorted(set(existing) | set(configured))

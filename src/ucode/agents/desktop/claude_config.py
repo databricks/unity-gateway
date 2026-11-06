@@ -87,7 +87,9 @@ def render_profile(
         "inferenceCredentialHelperTimeoutSec": 300,
         "inferenceCredentialHelperSilentRefreshEnabled": True,
         "modelDiscoveryEnabled": False,
+        "toolSearchEnabled": True,
         "inferenceModels": models,
+        "claudeAiImport": {"enabled": True},
     }
     if custom_headers is not None:
         profile["inferenceCustomHeaders"] = dict(custom_headers)

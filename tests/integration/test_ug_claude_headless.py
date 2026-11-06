@@ -4,9 +4,14 @@ import json
 
 import pytest
 from utils.constants import CLAUDE_TEST_MODEL
-from utils.evidence import FileTask
+from utils.evidence import FileTask, assert_completed_task_model
 
 pytestmark = [pytest.mark.live, pytest.mark.claude]
+
+# The filtered Bedrock runtime MPS declares this inference profile; Bedrock reports the
+# bare Anthropic id as the response model.
+BEDROCK_RUNTIME_OPUS_MODEL = "us.anthropic.claude-opus-5-5"
+BEDROCK_OPUS_RESPONSE_MODEL = "claude-opus-5-5"
 
 
 @pytest.mark.smoke
@@ -174,6 +179,46 @@ def test_ug_claude_fresh_provider_launch(live_session, workspace, claude_provide
     session.assert_not_routed()
 
 
+@pytest.mark.usefixtures("unmanaged_workspace")
+def test_ug_claude_fresh_foundry_mps(
+    live_session, workspace, claude_foundry_provider, claude_foundry_provider_model
+):
+    """Scenario: launch ug claude --provider against Foundry from a fresh home.
+
+    Expected: the real Claude agent accepts the provider, reads a local file, and returns
+    its unknown value in a successful structured result through the selected deployment.
+    The generated settings retain the exact provider header; smart routing stays off.
+    """
+    session = live_session
+    task = FileTask(session)
+    session.record("model.json", {"model": claude_foundry_provider_model})
+
+    result = session.run(
+        "claude",
+        "--workspace",
+        workspace,
+        "--provider",
+        claude_foundry_provider,
+        "--model",
+        claude_foundry_provider_model,
+        "--",
+        "-p",
+        task.prompt,
+        "--output-format",
+        "json",
+        "--allowedTools",
+        "Read",
+        timeout=240,
+    )
+
+    task.assert_headless_answer("claude", result)
+    settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
+    headers = settings["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+    assert f"Databricks-Model-Provider-Service: {claude_foundry_provider}" in headers
+    assert_completed_task_model(session, "claude", task.value, claude_foundry_provider_model)
+    session.assert_not_routed()
+
+
 @pytest.mark.parametrize("model_form", ["separate", "equals"])
 @pytest.mark.parametrize("model_owner", ["ug", "claude"])
 def test_ug_claude_headless_explicit_model_bypasses_routing(
@@ -299,10 +344,10 @@ def test_ug_claude_headless_allow_all_bedrock_provider(
     live_session, workspace, claude_bedrock_allow_all_provider, claude_bedrock_allow_all_model
 ):
     """Scenario: launch Claude through a Bedrock MPS with allow_all_targets and no declared
-    targets (issue #811), pinning an explicit Bedrock model.
+    targets (issue #811), pinning the explicit Bedrock Sonnet 5.5 model.
 
-    Expected: ug accepts the provider (rather than rejecting it as "exposes no Claude models"),
-    and the real file task completes through Bedrock.
+    Expected: ug accepts the provider without declared targets, and the real file task
+    completes through Bedrock.
     """
     session = live_session
     task = FileTask(session)
@@ -332,3 +377,47 @@ def test_ug_claude_headless_allow_all_bedrock_provider(
         timeout=240,
     )
     task.assert_headless_answer("claude", result)
+
+
+def _run_bedrock_provider_headless(session, workspace, provider, model):
+    task = FileTask(session)
+    session.run(
+        "configure",
+        "--agents",
+        "claude",
+        "--workspace",
+        workspace,
+        "--skip-validate",
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    )
+    result = session.run(
+        "claude",
+        "--provider",
+        provider,
+        "--model",
+        model,
+        "--",
+        "-p",
+        task.prompt,
+        "--output-format",
+        "json",
+        "--allowedTools",
+        "Read",
+        timeout=240,
+    )
+    task.assert_headless_answer("claude", result)
+    return task
+
+
+def test_ug_claude_headless_bedrock_runtime_opus(live_session, workspace, claude_bedrock_provider):
+    """Scenario: launch Claude through the Bedrock runtime MPS (UC service-credential auth) that
+    declares Sonnet 5.5 and Opus 5.5, pinning the Opus 5.5 inference profile.
+
+    Expected: the real file task completes through Bedrock and Bedrock reports the bare Opus 5.5
+    model id, so the pinned `us.anthropic.*` profile was the one served.
+    """
+    task = _run_bedrock_provider_headless(
+        live_session, workspace, claude_bedrock_provider, BEDROCK_RUNTIME_OPUS_MODEL
+    )
+    assert_completed_task_model(live_session, "claude", task.value, BEDROCK_OPUS_RESPONSE_MODEL)

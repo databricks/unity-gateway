@@ -51,7 +51,9 @@ class McpFixtureTask:
             f"Use these read-only MCP tools: {calls}. "
             "Do not use shell commands, files, or subagents. Reply with only a JSON object "
             f"whose keys are exactly the bare tool names {keys}, with no server name or "
-            "mcp__ prefix, each mapped to the text that tool returned, without code fences."
+            "mcp__ prefix, each mapped to the text that tool returned, copied character for "
+            "character from the tool result without retyping or abbreviating it, "
+            "and without code fences."
         )
         # Claude may key a receipt by its native tool name and echo the raw tool result.
         self.aliases = {
