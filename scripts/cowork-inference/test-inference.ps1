@@ -148,11 +148,13 @@ try {
         $text = Get-Content -LiteralPath $log.FullName -Raw
         if ($text) {
             if ($env:DATABRICKS_BEARER) { $text = $text.Replace($env:DATABRICKS_BEARER, '[REDACTED]') }
+            if ($env:CLAUDE_CODE_OAUTH_TOKEN) { $text = $text.Replace($env:CLAUDE_CODE_OAUTH_TOKEN, '[REDACTED]') }
             $text | Set-Content -LiteralPath (Join-Path $OutputDirectory $log.Name) -Encoding utf8
         }
     }
     $json = $report | ConvertTo-Json -Depth 8
     if ($env:DATABRICKS_BEARER) { $json = $json.Replace($env:DATABRICKS_BEARER, '[REDACTED]') }
+    if ($env:CLAUDE_CODE_OAUTH_TOKEN) { $json = $json.Replace($env:CLAUDE_CODE_OAUTH_TOKEN, '[REDACTED]') }
     $json | Set-Content -LiteralPath (Join-Path $OutputDirectory 'native-launch.json') -Encoding utf8
 }
 if ($report.error) { exit 1 }

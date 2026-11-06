@@ -1,0 +1,110 @@
+[
+  {
+    "provider": "main.ucode.ci_bedrock_mason_filtered_models",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_AMAZON_BEDROCK",
+    "relay": false,
+    "model": "us.anthropic.claude-sonnet-4-6"
+  },
+  {
+    "provider": "main.ucode.ci_e2e_anthropic_relay_mps",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC",
+    "relay": true,
+    "model": "claude-haiku-4-5"
+  },
+  {
+    "provider": "main.ucode.ci_bedrock_runtime_svc_cred_all_models",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_AMAZON_BEDROCK",
+    "relay": false,
+    "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  },
+  {
+    "provider": "main.ucode.ci_e2e_bedrock_mps",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_AMAZON_BEDROCK",
+    "relay": false,
+    "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  },
+  {
+    "provider": "main.ucode.ci_bedrock_mantle_svc_cred_gpt",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_BEDROCK_MANTLE",
+    "relay": false,
+    "model": "anthropic.claude-haiku-4-5"
+  },
+  {
+    "provider": "main.jasmine.mason-anthropic-enterprise",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC",
+    "relay": true,
+    "model": "claude-haiku-4-5"
+  },
+  {
+    "provider": "main.ucode.ci_bedrock_runtime_svc_cred_filtered_models",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_AMAZON_BEDROCK",
+    "relay": false,
+    "model": "us.anthropic.claude-sonnet-5-5"
+  },
+  {
+    "provider": "main.ucode.ci_e2e_anthropic_nonrelay_mps",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC",
+    "relay": false,
+    "model": "claude-haiku-4-5-20251001"
+  },
+  {
+    "provider": "main.jasmine.mps_test_ant",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC",
+    "relay": false,
+    "model": "claude-opus-5"
+  },
+  {
+    "provider": "main.ucode.e2e_bedrock_all_models_enabled",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_AMAZON_BEDROCK",
+    "relay": false,
+    "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  },
+  {
+    "provider": "main.ucode.ci_bedrock_mantle_svc_cred_claude",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_BEDROCK_MANTLE",
+    "relay": false,
+    "model": "anthropic.claude-haiku-4-5"
+  },
+  {
+    "provider": "main.ucode.bedrock_e2e",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_AMAZON_BEDROCK",
+    "relay": false,
+    "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  },
+  {
+    "provider": "main.pooja.mps_spend_test",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC",
+    "relay": false,
+    "model": "claude-haiku-4-5"
+  },
+  {
+    "provider": "main.ucode.ci_foundry_claude_mps",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_MICROSOFT_FOUNDRY",
+    "relay": false,
+    "model": "claude-haiku-5-5"
+  },
+  {
+    "provider": "main.jasmine.rohit-test",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC",
+    "relay": true,
+    "model": "claude-haiku-4-5"
+  },
+  {
+    "provider": "main.ucode.ci_bedrock_mason_all_models",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_AMAZON_BEDROCK",
+    "relay": false,
+    "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  },
+  {
+    "provider": "main.jasmine.anjali-mps-test",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC",
+    "relay": true,
+    "model": "claude-haiku-4-5"
+  },
+  {
+    "provider": "main.ucode.ci_custom_foundry_claude_mps",
+    "type": "EXTERNAL_MODEL_PROVIDER_TYPE_CUSTOM",
+    "relay": false,
+    "model": "claude-haiku-5-5"
+  }
+]

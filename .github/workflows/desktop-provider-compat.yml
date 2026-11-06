@@ -1,0 +1,114 @@
+name: Ad hoc desktop provider compatibility
+
+on:
+  push:
+    branches: [masonc08/desktop-provider-compat]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  cases:
+    runs-on: ubuntu-latest
+    outputs:
+      cases: ${{ steps.cases.outputs.cases }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - id: cases
+        run: |
+          python3 - <<'PY'
+          import json, os
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('cases=' + json.dumps(json.load(open('scripts/provider-compat/cases.json'))) + '\n')
+          PY
+
+  cowork:
+    name: ${{ matrix.os }} · ${{ matrix.case.provider }}
+    needs: cases
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        os: [windows-latest, macos-15-intel]
+        case: ${{ fromJSON(needs.cases.outputs.cases) }}
+    env:
+      PYTHONUTF8: 1
+      UG_COMPAT_CASE: ${{ toJSON(matrix.case) }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install signed Claude Desktop on macOS
+        if: runner.os == 'macOS'
+        run: bash scripts/macos-desktop-probe/install-desktop.sh
+      - name: Authenticate macOS package downloads
+        if: runner.os == 'macOS'
+        id: jfrog
+        uses: jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5
+        env:
+          JF_URL: https://databricks.jfrog.io
+        with:
+          oidc-provider-name: github-actions
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        env:
+          PYTHONPATH: src
+          JFROG_USER: ${{ steps.jfrog.outputs.oidc-user }}
+          JFROG_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
+        run: python3 scripts/macos-desktop-probe/install-dependencies.py
+      - name: Install signed Claude Desktop on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'Claude.msix'
+          Invoke-WebRequest -Uri 'https://downloads.claude.ai/releases/win32/x64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.msix' -OutFile $installer -TimeoutSec 300
+          ./scripts/cowork-inference/install-desktop.ps1 -InstallerPath $installer -ExpectedSha256 'D737861F0DA3175C6B663172AF0E602494CD99FF1B350D57DAE5910A49519FC9' -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/cowork-inference/install-dependencies.ps1
+      - name: Run macOS Cowork case
+        if: runner.os == 'macOS'
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.case.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+        run: '"$UG_PROBE_PYTHON" scripts/macos-desktop-probe/terminal.py'
+      - name: Configure Windows provider case
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.case.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+        run: |
+          $python = Join-Path (Split-Path $env:UG_COWORK_TEST_BINARY) 'python.exe'
+          & $python scripts/provider-compat/configure.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run Windows Cowork case
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.case.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-inference.ps1 -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload sanitized case evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ matrix.os }}-${{ matrix.case.provider }}
+          retention-days: 3
+          path: |
+            ${{ runner.temp }}/macos-cowork-evidence/
+            ${{ runner.temp }}/cowork-inference/*.json
+            ${{ runner.temp }}/cowork-inference/*.png
+            ${{ runner.temp }}/cowork-inference/native-*.log
