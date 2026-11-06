@@ -19,7 +19,7 @@ The same entry point routes Agent/Task calls in a native `tool.call` hook. It pi
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
 the `routeCommand` plugin option, and continues with the original input. The matching
 `agent.spawn` hook applies only the selected model, preserving the agent's type, prompt,
-name and permissions. The routing response contains only `model` and `rationale`;
+name and permissions. The routing response contains `model`, `rationale`, and optional explanation details;
 the model retains Claude's `[1m]` context hint for eligible GPT models.
 Forks and resumed agents keep their native model. This preserves
 auto mode's review of the tool input instead of invalidating it with a routing rewrite.
@@ -51,9 +51,45 @@ a call still routing waits for a later reply, and a call whose routing failed dr
 Cards survive a turn that ends while the reply waits on a background agent and are dropped
 only when the turn is aborted. Nothing is drawn above the prompt and nothing is logged.
 Decisions are kept for the session; a plugin reload clears them from the screen, and the
-routing decision audit log is unchanged.
+routing decision audit log retains any optional explanation returned with the decision.
 Disabled routing, command failures, and invalid responses keep the original call;
 failures also log a diagnostic.
+
+### Routing explanations
+
+`/smart-router explain on` adds a **Why this model?** button to routing rows and
+parallel decision cards for the current plugin session. Explanations start off;
+`/smart-router explain off` hides the buttons and closes the pane.
+`/smart-router explain latest` opens the most recent recorded decision directly.
+These commands do not change routing, submit feedback, or make model requests.
+
+The native pane shows the selected model, a short explanation, and a model selector
+for the alternatives supplied by the router. **Show numbers** reveals optional quality,
+cost, and scoring details. These are the router's estimates, not measured outcomes or
+billed costs. The mod displays the service's reasons without generating new ones.
+Claude owns pane layout and focus: the fullscreen renderer supports the clickable side
+pane. The command reports when Claude cannot place the pane. UG does not change
+the user's renderer setting.
+
+Detailed comparisons require the routing service to include optional explanation data
+as `route_selection[0].params.routing_explanation`, either a JSON-encoded string or
+an object. The decoded object is limited to 64 KiB and must contain finite JSON values.
+Older services remain compatible: the pane shows the original rationale and identifies
+that comparison details were not returned, while routing continues normally. Malformed,
+oversized, or mismatched explanation data is discarded independently of the model
+selection. Opening a pane uses the saved decision and never reruns the router.
+
+The explanation object contains `selected_model`, `summary`, `task_understanding`
+(a list of short strings), and `models`. Each model entry contains `id`, `name`,
+`selected`, `considered`, and `reason`; exactly one selected entry must match the routed
+model. Model IDs use the offered name with any synthetic Anthropic gateway wrapper,
+the `system.ai.` prefix, and `[1m]` context hint removed; the client requires one explanation row per distinct offered model and
+rejects missing, repeated, or extra rows. Optional `quality_estimate`, `estimated_cost_usd`, `routing_score`, `components`,
+and `difference_from_winner` supply the numeric view. Optional `recipe` and `formula`
+identify the scoring policy. Any supplied `session_id` or `tool_use_id`, including
+inside `evidence`, must match the current call. The service must describe the same
+decision and offered alternatives, including reasons for excluded models, without
+running another classifier or changing its selection policy.
 
 In eligible Smart Router Orchestrator launches, `tool.describe` replaces the native
 Agent/Task delegation advice with the orchestrator's instructions. It changes only the

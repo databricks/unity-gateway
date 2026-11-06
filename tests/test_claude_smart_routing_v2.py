@@ -26,6 +26,102 @@ requires_pty = pytest.mark.skipif(
 )
 
 
+_EXPLANATION = {
+    "selected_model": "model-b",
+    "summary": "Chosen for lower expected cost.",
+    "task_understanding": [],
+    "models": [
+        {
+            "id": "model-b",
+            "name": "Selected model",
+            "selected": True,
+            "considered": True,
+            "reason": "Best expected fit.",
+        },
+        {
+            "id": "alternative",
+            "name": "Alternative",
+            "selected": False,
+            "considered": False,
+            "reason": "Excluded by the routing policy.",
+        },
+    ],
+}
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize(
+    ("explanation", "retained"),
+    [
+        (_EXPLANATION, True),
+        (json.dumps(_EXPLANATION), True),
+        ({**_EXPLANATION, "models": _EXPLANATION["models"][:1]}, False),
+        ({**_EXPLANATION, "models": [{"id": "unoffered"}, {"id": "alternative"}]}, False),
+        ({**_EXPLANATION, "models": [{"id": "alternative"}] * 2}, False),
+        (None, False),
+        ("invalid", False),
+        ("[]", False),
+        ("null", False),
+        ('{"score": NaN}', False),
+        ('{"summary": "' + "x" * 65536 + '"}', False),
+        ("[" * 2000 + "0" + "]" * 2000, False),
+        ({"summary": "x" * 65536}, False),
+        ({"score": float("nan")}, False),
+    ],
+)
+def test_explanation_roundtrip_does_not_change_subagent_selection(
+    tmp_path, monkeypatch, explanation, retained, wrapped
+):
+    prefix = "anthropic-aigw-01234567-" if wrapped else ""
+    selected = prefix + "system.ai.model-b"
+    calls = []
+    original = {"prompt": "inspect parser", "subagent_type": "general-purpose", "model": "opus"}
+    payload = {
+        "session_id": "s1",
+        "tool_use_id": "t1",
+        "tool_name": "Agent",
+        "tool_input": original.copy(),
+    }
+
+    def reply(request, timeout):
+        calls.append(json.loads(request.data))
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "route_selection": [
+                        {
+                            "route_option": {"model": selected},
+                            "params": {"routing_explanation": explanation},
+                        }
+                    ],
+                    "rationale": "Selected by router.",
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(routing.urllib.request, "urlopen", reply)
+    monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
+    result = v2.route_claude_subagent(
+        payload,
+        workspace="https://example.com",
+        token="token",
+        available_models=[selected, prefix + "system.ai.alternative"],
+        audit_decision=True,
+    )
+    assert result["model"] == selected
+    assert result["rationale"] == "Selected by router."
+    assert payload["tool_input"] == original
+    assert len(calls) == 1
+    assert calls[0]["task"] == {"prompt": "inspect parser"}
+    record = json.loads((tmp_path / "decisions.jsonl").read_text())
+    assert record["session_id"] == "s1" and record["tool_use_id"] == "t1"
+    if retained:
+        expected = json.loads(explanation) if isinstance(explanation, str) else explanation
+        assert result["explanation"] == record["explanation"] == expected
+    else:
+        assert "explanation" not in result and "explanation" not in record
+
+
 def _plugin_agent_models(plugin_dir: Path) -> set[str]:
     models = set()
     for agent_path in (plugin_dir / "agents").glob("*.md"):

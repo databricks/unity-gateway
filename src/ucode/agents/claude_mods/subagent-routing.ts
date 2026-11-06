@@ -1,6 +1,121 @@
 import type { On, PluginOptions } from 'claude-code'
 
-type RoutingRecord = { name: string; task: string; model: string; rationale: string; seconds?: number }
+type NumericDetails = Record<string, number>
+type ExplanationModel = {
+  id: string; name: string; selected: boolean; considered: boolean; reason: string
+  qualityEstimate?: number; estimatedCostUsd?: number; routingScore?: number
+  components?: NumericDetails; differenceFromWinner?: NumericDetails
+}
+type RoutingExplanation = {
+  selectedModel: string; summary: string; taskUnderstanding: string[]; models: ExplanationModel[]
+  recipe?: string; formula?: string
+}
+type RoutingRecord = {
+  name: string; task: string; model: string; rationale: string; seconds?: number
+  explanation?: RoutingExplanation
+}
+type ExplanationState = { enabled: boolean; showNumbers?: boolean; latest?: RoutingRecord; paneRecord?: RoutingRecord; modelId?: string }
+
+const EXPLANATION_PANE = 'smart-router-explanation'
+const MAX_EXPLANATION_BYTES = 64 * 1024
+const isObject = (value: unknown): value is Record<string, any> =>
+  Boolean(value && typeof value === 'object' && !Array.isArray(value))
+
+const safeText = (value: unknown, limit: number): string | undefined => {
+  if (typeof value !== 'string') return undefined
+  const clean = value
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, limit)
+  return clean || undefined
+}
+
+const safeNumber = (value: unknown, nonNegative = false): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1e12 && (!nonNegative || value >= 0)
+    ? value : undefined
+
+function numericDetails(value: unknown): NumericDetails | undefined {
+  if (!isObject(value) || Object.keys(value).length > 8) return undefined
+  const entries = Object.entries(value)
+  if (entries.some(([key, number]) => !/^[A-Za-z][A-Za-z0-9_. -]{0,63}$/.test(key)
+      || safeNumber(number) === undefined)) return undefined
+  return Object.fromEntries(entries as [string, number][])
+}
+
+const canonicalModel = (model: string): string => model.replace(/^anthropic-aigw-[0-9a-fA-F]{8}-/, '').replace(/^system\.ai\./, '').replace(/\[1m\]$/, '')
+
+function utf8Length(value: string): number {
+  let bytes = 0
+  for (const char of value) {
+    const point = char.codePointAt(0) ?? 0
+    bytes += point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4
+    if (bytes > MAX_EXPLANATION_BYTES) return bytes
+  }
+  return bytes
+}
+
+function matchesRequestIdentity(value: unknown, sessionId?: string, toolUseId?: string): boolean {
+  if (!isObject(value)) return true
+  for (const source of [value, value.evidence]) {
+    if (!isObject(source)) continue
+    for (const [field, expected] of [['session_id', sessionId], ['tool_use_id', toolUseId]] as const) {
+      const actual = source[field]
+      if (actual != null && (typeof actual !== 'string' || actual.length > 256 || actual !== expected)) return false
+    }
+  }
+  return true
+}
+
+function parseExplanation(
+  value: unknown, routedModel: string, sessionId?: string, toolUseId?: string,
+): RoutingExplanation | undefined {
+  if (!isObject(value)) return undefined
+  const serialized = JSON.stringify(value)
+  if (Object.keys(value).length > 32 || utf8Length(serialized) > MAX_EXPLANATION_BYTES
+      || !matchesRequestIdentity(value, sessionId, toolUseId)) return undefined
+  const selectedModel = safeText(value.selected_model, 160)
+  const summary = safeText(value.summary, 2000)
+  if (!selectedModel || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(selectedModel)
+      || selectedModel !== canonicalModel(routedModel) || !summary
+      || !Array.isArray(value.models) || value.models.length < 1
+      || !Array.isArray(value.task_understanding) || value.task_understanding.length > 8) return undefined
+
+  const taskUnderstanding = value.task_understanding.map((item: unknown) => safeText(item, 240))
+  if (taskUnderstanding.some((item: string | undefined) => !item)) return undefined
+  const ids = new Set<string>()
+  const models: ExplanationModel[] = []
+  for (const candidate of value.models) {
+    if (!isObject(candidate)) return undefined
+    const id = safeText(candidate.id, 160)
+    const name = safeText(candidate.name, 128)
+    const reason = safeText(candidate.reason, 1200)
+    if (!id || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(id) || ids.has(id)
+        || !name || !reason || typeof candidate.selected !== 'boolean'
+        || typeof candidate.considered !== 'boolean' || (candidate.selected && !candidate.considered)) return undefined
+    ids.add(id)
+    const qualityEstimate = candidate.quality_estimate === undefined ? undefined : safeNumber(candidate.quality_estimate)
+    const estimatedCostUsd = candidate.estimated_cost_usd === undefined ? undefined : safeNumber(candidate.estimated_cost_usd, true)
+    const routingScore = candidate.routing_score === undefined ? undefined : safeNumber(candidate.routing_score)
+    const components = candidate.components === undefined ? undefined : numericDetails(candidate.components)
+    const differenceFromWinner = candidate.difference_from_winner === undefined
+      ? undefined : numericDetails(candidate.difference_from_winner)
+    if ((candidate.quality_estimate !== undefined && qualityEstimate === undefined)
+        || (candidate.estimated_cost_usd !== undefined && estimatedCostUsd === undefined)
+        || (candidate.routing_score !== undefined && routingScore === undefined)
+        || (candidate.components !== undefined && components === undefined)
+        || (candidate.difference_from_winner !== undefined && differenceFromWinner === undefined)) return undefined
+    models.push({ id, name, reason, selected: candidate.selected, considered: candidate.considered,
+      qualityEstimate, estimatedCostUsd, routingScore, components, differenceFromWinner })
+  }
+  if (models.filter((model) => model.selected).length !== 1
+      || !models.some((model) => model.id === selectedModel && model.selected)) return undefined
+  const recipe = value.recipe === undefined ? undefined : safeText(value.recipe, 240)
+  const formula = value.formula === undefined ? undefined : safeText(value.formula, 500)
+  if ((value.recipe !== undefined && !recipe) || (value.formula !== undefined && !formula)) return undefined
+  return { selectedModel, summary, taskUnderstanding: taskUnderstanding as string[], models, recipe, formula }
+}
 
 const ANIMALS = [
   'Otter', 'Panda', 'Lynx', 'Fox', 'Badger', 'Beaver', 'Bison', 'Bobcat', 'Camel', 'Caribou',
@@ -16,6 +131,22 @@ const ANIMALS = [
 ]
 
 const shortModel = (model: string): string => model.replace(/^system\.ai\./, '').replace(/^databricks-/, '')
+
+async function openExplanation($: any, state: ExplanationState, record: RoutingRecord): Promise<boolean> {
+  state.showNumbers = false
+  state.paneRecord = record
+  state.modelId = record.explanation?.selectedModel
+  $.ui.invalidate('ui.render')
+  try {
+    await $.ui.open({
+      id: EXPLANATION_PANE, title: 'Why this model?', focus: true, closeOnEscape: true, rows: 18, columns: 72,
+    })
+    const panes = await $.ui.panes()
+    if (state.paneRecord && panes.some((pane) => pane.id === EXPLANATION_PANE && pane.isPlaced)) return true
+    await $.ui.close({ id: EXPLANATION_PANE })
+  } catch {}
+  return false
+}
 // Claude's own spinner glyphs, played forwards then back as Claude does.
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
 const SPINNER = [...SPINNER_GLYPHS, ...SPINNER_GLYPHS.slice(1, -1).reverse()]
@@ -36,8 +167,10 @@ const secondsSince = async ($: any, start: number | undefined): Promise<number |
 
 // The selected model with its routing time, then the reason. Labels recede so the routed
 // model, in the status band's ON green, stands out; the time is omitted without a clock.
-const selection = ($: any, e: any, record: RoutingRecord, arrow: string, reasonPadding: number) => {
-  const { Box, Text } = $.ui.resolve(e)
+const selection = (
+  $: any, e: any, record: RoutingRecord, arrow: string, reasonPadding: number, onWhy?: () => void,
+) => {
+  const { Box, Text, Button } = $.ui.resolve(e)
   const lines = [Box({
     flexDirection: 'row',
     children: [
@@ -46,6 +179,7 @@ const selection = ($: any, e: any, record: RoutingRecord, arrow: string, reasonP
       ...(record.seconds === undefined ? [] : [
         Text({ dimColor: true, children: [` (routed in ${record.seconds.toFixed(1)}s)`] }),
       ]),
+      ...(onWhy ? [Button({ key: 'why-this-model', label: 'Why this model?', onPress: onWhy })] : []),
     ],
   })]
   if (record.rationale) {
@@ -58,13 +192,13 @@ const selection = ($: any, e: any, record: RoutingRecord, arrow: string, reasonP
 }
 
 // A grouped call's decision: its task, then the selection.
-const card = ($: any, e: any, record: RoutingRecord) => {
+const card = ($: any, e: any, record: RoutingRecord, onWhy?: () => void) => {
   const { Box, Text } = $.ui.resolve(e)
   return Box({
     flexDirection: 'column',
     paddingLeft: 2,
     marginBottom: 1,
-    children: [Text({ bold: true, children: [record.name, ' — ', record.task] }), ...selection($, e, record, '↳ ', 2)],
+    children: [Text({ bold: true, children: [record.name, ' — ', record.task] }), ...selection($, e, record, '↳ ', 2, onWhy)],
   })
 }
 
@@ -92,12 +226,93 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   const anchors = new Map<string, string[]>()
   // Replies already drawn before a batch was routed are never its anchor.
   const seen = new Set<string>()
+  const explanationState: ExplanationState = { enabled: false }
+
+  on('command.run', { command: 'smart-router' }, async ($, e, next) => {
+    const [verb, action, ...extra] = e.args.trim().split(/\s+/)
+    if (verb !== 'explain') return next(e)
+    if (extra.length || (action !== 'on' && action !== 'off' && action !== 'latest')) {
+      return { text: 'Usage: /smart-router explain on|off|latest' }
+    }
+    if (action === 'on') {
+      explanationState.enabled = true
+      $.ui.invalidate('ui.render')
+      return { text: 'Routing explanations are on for this session.' }
+    }
+    if (action === 'off') {
+      explanationState.enabled = false
+      explanationState.paneRecord = undefined
+      explanationState.modelId = undefined
+      $.ui.invalidate('ui.render')
+      try { await $.ui.close({ id: EXPLANATION_PANE }) } catch {}
+      return { text: 'Routing explanations are off for this session.' }
+    }
+    if (!explanationState.latest) return { text: 'No completed routing decision is available in this session.' }
+    return await openExplanation($, explanationState, explanationState.latest)
+      ? { text: 'Showing the latest routing explanation.' }
+      : { text: 'Could not open the native routing explanation pane.' }
+  })
+
+  on('ui.render', { component: 'Pane' }, ($, e, next) => {
+    if (e.requestId !== EXPLANATION_PANE || e.surface === 'mobile') return next(e)
+    const { Box, Text, Button, Select } = $.ui.resolve(e)
+    const record = explanationState.paneRecord
+    if (!record) return next(e)
+    const explanation = record.explanation
+    if (!explanation) return Box({ flexDirection: 'column', children: [
+      Text({ bold: true, children: ['Why this model?'] }),
+      Text({ children: [`Selected route: ${shortModel(record.model)}`] }),
+      ...(safeText(record.rationale, 2000) ? [Text({ children: [safeText(record.rationale, 2000)!] })] : []),
+      Text({ children: ['No routing explanation details were returned. The selected model is unchanged.'] }),
+      Button({ key: 'close', label: 'Close', onPress: () => $.ui.close({ id: EXPLANATION_PANE }) }),
+    ] })
+
+    const selected = explanation.models.find((model) => model.id === explanationState.modelId)
+    const detail = selected ?? explanation.models.find((model) => model.selected)!
+    const numberText = (label: string, value: number | undefined, suffix = '') => value === undefined
+      ? undefined : Text({ children: [`${label}: ${value.toFixed(3)}${suffix}`] })
+    const breakdown = (label: string, values: NumericDetails | undefined) => values && Object.keys(values).length
+      ? Text({ dimColor: true, children: [`${label}: ${Object.entries(values)
+        .map(([key, value]) => `${key} ${value.toFixed(3)}`).join(' · ')}`] }) : undefined
+    const detailLines = [
+      numberText('Quality estimate', detail.qualityEstimate),
+      numberText('Est. cost', detail.estimatedCostUsd, ' USD'),
+      numberText('Routing score', detail.routingScore),
+      breakdown('Components', detail.components),
+      breakdown('Vs. routed', detail.differenceFromWinner),
+    ].filter(Boolean)
+    return Box({ flexDirection: 'column', children: [
+      Text({ color: 'green', bold: true, children: [`Chosen: ${explanation.models.find((model) => model.selected)!.name}`] }),
+      Text({ children: [explanation.summary] }),
+      ...(explanation.taskUnderstanding.length ? [
+        Text({ bold: true, children: ['Task understanding'] }),
+        ...explanation.taskUnderstanding.map((item) => Text({ children: [item] })),
+      ] : []),
+      Box({ marginTop: 1, marginBottom: 1, children: [Select({
+        key: 'compare-model', label: 'Compare model', autoFocus: true,
+        value: detail.id,
+        options: explanation.models.map((model) => ({ value: model.id,
+          label: `${model.name}${model.selected ? ' · chosen' : ''}` })),
+        onSelect: (id) => { explanationState.modelId = id; $.ui.invalidate('ui.render') },
+      })] }),
+      Text({ bold: true, children: [`${detail.name} — ${detail.considered ? 'considered' : 'not considered'}`] }),
+      Text({ children: [detail.reason] }),
+      ...(detailLines.length ? [Button({ key: 'numbers',
+        label: explanationState.showNumbers ? 'Hide numbers' : 'Show numbers',
+        onPress: () => { explanationState.showNumbers = !explanationState.showNumbers; $.ui.invalidate('ui.render') },
+      }), ...(explanationState.showNumbers ? detailLines : [])] : []),
+      ...(explanationState.showNumbers && explanation.formula ? [Text({ dimColor: true, children: [`Scoring formula: ${explanation.formula}`] })] : []),
+      Button({ key: 'close', label: 'Close', onPress: () => $.ui.close({ id: EXPLANATION_PANE }) }),
+    ] })
+  })
 
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[]
     if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
     const { tool, tool_use_id, agentId, ...input } = e
     let route
+    let explanation: RoutingExplanation | undefined
+    let sessionId: string | undefined
     let spinner: { cancel: () => void } | undefined
     if (tool_use_id) {
       if (!names.has(tool_use_id)) {
@@ -127,9 +342,9 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       $.ui.invalidate('ui.render')
     }
     try {
-      const session_id = await $.session.id()
+      sessionId = await $.session.id()
       const result = await $.process.run(command, {
-        stdin: JSON.stringify({ session_id, tool_use_id, tool_name: tool, tool_input: input }),
+        stdin: JSON.stringify({ session_id: sessionId, tool_use_id, tool_name: tool, tool_input: input }),
         timeoutMs: 35000,
       })
       if (result.exitCode !== 0) throw new Error('Router command failed')
@@ -142,21 +357,34 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       }
     } catch {
       route = undefined
+      explanation = undefined
       $.ui.log('Smart Router could not route this subagent; using its original settings.')
     } finally {
       spinner?.cancel()
+    }
+    if (route?.explanation !== undefined) {
+      try {
+        explanation = matchesRequestIdentity(route, sessionId, tool_use_id)
+          ? parseExplanation(route.explanation, route.model, sessionId, tool_use_id) : undefined
+      } catch {
+        // Optional display metadata must never discard a valid model selection.
+      }
+      if (!explanation) $.ui.log('Smart Router returned invalid explanation details; keeping its selected model.')
     }
     const seconds = tool_use_id ? await secondsSince($, pending.get(tool_use_id)) : undefined
     if (tool_use_id) {
       pending.delete(tool_use_id)
       if (route) {
-        records.set(tool_use_id, {
+        const record: RoutingRecord = {
           name: names.get(tool_use_id)!,
           task: input.description || input.subagent_type || tool,
           model: route.model,
           rationale: route.rationale,
           seconds,
-        })
+          explanation,
+        }
+        records.set(tool_use_id, record)
+        explanationState.latest = record
       }
       $.ui.invalidate('ui.render')
     }
@@ -204,7 +432,8 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       })] })
     }
     if (grouped.has(e.requestId)) return original
-    return Box({ flexDirection: 'column', children: [original, ...selection($, e, record, '  ↳ ', 4)] })
+    const onWhy = explanationState.enabled ? () => { void openExplanation($, explanationState, record) } : undefined
+    return Box({ flexDirection: 'column', children: [original, ...selection($, e, record, '  ↳ ', 4, onWhy)] })
   })
 
   // Claude's parallel-agent block hides the row spinner, so the turn's own spinner line
@@ -230,6 +459,10 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     const ids = anchors.get(e.requestId)
     if (!ids) return original
     const { Box } = $.ui.resolve(e)
-    return Box({ flexDirection: 'column', children: [...ids.map((id) => card($, e, records.get(id)!)), original] })
+    return Box({ flexDirection: 'column', children: [...ids.map((id) => {
+      const record = records.get(id)!
+      const onWhy = explanationState.enabled ? () => { void openExplanation($, explanationState, record) } : undefined
+      return card($, e, record, onWhy)
+    }), original] })
   })
 }

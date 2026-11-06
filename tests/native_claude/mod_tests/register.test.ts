@@ -282,3 +282,17 @@ test('the continuation note keeps the fork exception when the host offers forks'
   expect(description).toContain('starts a fresh agent with no memory of prior runs (except subagent_type: "fork"), so the prompt');
   expect(description).not.toContain('Policy');
 });
+
+
+test('explanation commands leave routing and feedback controls untouched', { options: ROUTED }, async ($, on) => {
+  const { env, writes } = setup(on);
+  const initial = { ...env };
+  let processes = 0;
+  on('process.run', () => { processes++; return { value: { exitCode: 0, stdout: '', stderr: '' } }; });
+  for (const action of ['explain on', 'explain latest', 'explain off']) {
+    await $.command.run({ command: 'smart-router', args: action });
+  }
+  expect(env).toEqual(initial);
+  expect(writes).toEqual([]);
+  expect(processes).toBe(0);
+});

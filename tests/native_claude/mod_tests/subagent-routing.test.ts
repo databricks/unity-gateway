@@ -436,3 +436,184 @@ test('a name the call gave is kept as the routed agent name', async ($, on) => {
   await $.tool.call({ tool: 'Agent', tool_use_id: 'named', ...originalInput, name: 'scout' });
   expect(forwarded[0].name).toBe('scout');
 });
+
+const explanationModel = 'system.ai.model-b[1m]';
+const explanation = {
+  selected_model: 'model-b',
+  summary: 'Model B was the best expected quality and cost trade-off.',
+  task_understanding: ['Reasoning: multi step', 'Coverage: exhaustive'],
+  models: [
+    { id: 'model-a', name: 'Model A', selected: false, considered: true,
+      reason: 'The router expected a weaker fit.', quality_estimate: 0.8, estimated_cost_usd: 0.12,
+      routing_score: 0.7, components: { quality: 0.8 }, difference_from_winner: { quality: -0.1 } },
+    { id: 'model-b', name: 'Model B', selected: true, considered: true,
+      reason: 'Chosen for its expected quality.', quality_estimate: 0.9, estimated_cost_usd: 0.24,
+      routing_score: 0.85, components: { quality: 0.9 }, difference_from_winner: { quality: 0 } },
+  ],
+  evidence: { request_id: 'hidden-request', source: 'hidden-source' },
+};
+
+for (const modelCount of [2, 20]) {
+test(`explanations for ${modelCount} models are opt-in and preserve the routed model`, async ($, on) => {
+  const routedModel = modelCount === 20 ? 'anthropic-aigw-01234567-system.ai.model-b[1m]' : explanationModel;
+  let routeCalls = 0;
+  const spawns: any[] = [];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', ($, e) => {
+    routeCalls++;
+    const request = JSON.parse(e.init.stdin);
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: routedModel, rationale: 'Selected for the task', explanation: {
+        ...explanation, session_id: request.session_id, tool_use_id: request.tool_use_id,
+        models: [...explanation.models, ...Array.from({ length: modelCount - 2 }, (_, i) => ({
+          id: `alternative-${i}`, name: `Alternative ${i}`, selected: false, considered: true, reason: 'Lower expected fit.',
+        }))],
+      }, session_id: request.session_id, tool_use_id: request.tool_use_id,
+    }) } };
+  });
+  on('tool.call', () => ({ result: 'ok' }));
+  on('agent.spawn', ($, e) => { spawns.push(e); return { model: e.model, agentId: `child-${e.tool_use_id}` }; });
+  on('fs.write', () => ({ value: undefined }));
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
+
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'off-by-default', ...originalInput });
+  const hidden = await $.ui.mount(row('off-by-default'));
+  expect(JSON.stringify(await hidden.drawn())).not.toContain('Why this model?');
+  await hidden.unmount();
+
+  await $.command.run({ command: 'smart-router', args: 'explain on' });
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'shown', ...originalInput });
+  const shown = await $.ui.mount(row('shown'));
+  expect(JSON.stringify(await shown.drawn())).toContain('Why this model?');
+  await shown.press({ key: 'why-this-model' });
+  await shown.unmount();
+
+  await $.command.run({ command: 'smart-router', args: 'explain latest' });
+  const pane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
+  const tree = JSON.stringify(await pane.drawn());
+  for (const text of ['best expected quality', 'Model A', 'Model B', 'Chosen for its expected quality', 'Show numbers']) {
+    expect(tree).toContain(text);
+  }
+  for (const text of ['hidden-request', 'hidden-source', 'session-1', 'shown']) {
+    expect(tree).not.toContain(text);
+  }
+  expect(tree).not.toContain('Est. cost');
+  await pane.select({ key: 'compare-model', value: 'model-a' });
+  expect(JSON.stringify(await pane.drawn())).toContain('The router expected a weaker fit');
+  await pane.press({ key: 'numbers' });
+  expect(JSON.stringify(await pane.drawn())).toContain('Est. cost: 0.120 USD');
+  await pane.unmount();
+
+  await $.agent.spawn({ tool_use_id: 'shown', name: 'caller', prompt: 'inspect' });
+  expect(spawns[0].model).toBe(routedModel);
+  expect(routeCalls).toBe(2);
+  await $.command.run({ command: 'smart-router', args: 'explain off' });
+  const off = await $.ui.mount(row('shown'));
+  expect(JSON.stringify(await off.drawn())).not.toContain('Why this model?');
+  await off.unmount();
+});
+
+}
+
+for (const [name, details, diagnostic] of [
+  ['missing', undefined, false],
+  ['malformed', { ...explanation, selected_model: 'model-c' }, true],
+  ['wrong session identity', { ...explanation, session_id: 'another-session' }, true],
+  ['wrong tool identity', { ...explanation, tool_use_id: 'another-tool' }, true],
+] as const) {
+  test(`${name} explanation shows no details while preserving the route`, async ($, on) => {
+    const logs: string[] = [];
+    const routed = 'system.ai.model-b[1m]';
+    const forwarded: any[] = [];
+    on('session.id', () => ({ value: 'session-1' }));
+    on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: routed, rationale: 'Original route reason', ...(details ? { explanation: details } : {}),
+    }) } }));
+    on('tool.call', () => ({ result: 'ok' }));
+    on('agent.spawn', ($, e) => { forwarded.push(e); return { model: e.model }; });
+    on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
+    on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
+
+    await $.tool.call({ tool: 'Agent', tool_use_id: name, ...originalInput });
+    expect(logs).toEqual(diagnostic
+      ? ['Smart Router returned invalid explanation details; keeping its selected model.'] : []);
+    await $.command.run({ command: 'smart-router', args: 'explain latest' });
+    const pane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
+    expect(JSON.stringify(await pane.drawn())).toContain('No routing explanation details were returned.');
+    expect(JSON.stringify(await pane.drawn())).toContain('Original route reason');
+    await pane.unmount();
+
+    await $.agent.spawn({ tool_use_id: name, prompt: 'inspect' });
+    expect(forwarded[0].model).toBe(routed);
+  });
+}
+
+
+test('explanation parsing failures preserve a valid routed spawn', async ($, on) => {
+  const forwarded: any[] = [];
+  const logs: string[] = [];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout:
+    '{"model":"model-b","rationale":"Original route reason","explanation":{"nested":'
+      + '['.repeat(20000) + '0' + ']'.repeat(20000) + '}}',
+  } }));
+  on('tool.call', ($, e) => { forwarded.push(e); return { result: 'ok' }; });
+  on('agent.spawn', ($, e) => { forwarded.push(e); return { model: e.model }; });
+  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
+
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'deep-metadata', ...originalInput });
+  expect(forwarded[0]).toEqual({ tool: 'Agent', tool_use_id: 'deep-metadata', ...originalInput });
+  await $.agent.spawn({ tool_use_id: 'deep-metadata', prompt: 'inspect' });
+  expect(forwarded[1].model).toBe('model-b');
+  expect(logs).toEqual(['Smart Router returned invalid explanation details; keeping its selected model.']);
+});
+
+
+test('turning explanations off closes a pane that is still opening', async ($, on) => {
+  let finishOpen!: () => void;
+  let startedOpen!: () => void;
+  const started = new Promise<void>((resolve) => { startedOpen = resolve; });
+  const ready = new Promise<void>((resolve) => { finishOpen = resolve; });
+  let placed = false;
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout:
+    '{"model":"model-b","rationale":"Selected for the task"}',
+  } }));
+  on('tool.call', () => ({ result: 'ok' }));
+  on('ui.open', async () => {
+    startedOpen();
+    await ready;
+    placed = true;
+    return { value: undefined };
+  });
+  on('ui.panes', () => ({ value: [{ id: 'smart-router-explanation', title: 'Why this model?',
+    isPlaced: placed, isShown: placed, isFocused: placed }] }));
+  on('ui.close', () => { placed = false; return { value: undefined }; });
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'pane-opening', ...originalInput });
+  const opening = $.command.run({ command: 'smart-router', args: 'explain latest' });
+  await started;
+  await $.command.run({ command: 'smart-router', args: 'explain off' });
+  finishOpen();
+  expect((await opening).text).toBe('Could not open the native routing explanation pane.');
+  expect(placed).toBe(false);
+});
+
+for (const placed of [true, false]) {
+  test(`pane placement is read independently of the open return value: ${placed}`, async ($, on) => {
+    let closes = 0;
+    on('session.id', () => ({ value: 'session-1' }));
+    on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout:
+      '{"model":"model-b","rationale":"Selected for the task"}',
+    } }));
+    on('tool.call', () => ({ result: 'ok' }));
+    on('ui.open', () => ({ value: undefined }));
+    on('ui.panes', () => ({ value: [{ id: 'smart-router-explanation', title: 'Why this model?',
+      isPlaced: placed, isShown: placed, isFocused: placed }] }));
+    on('ui.close', () => { closes++; return { value: undefined }; });
+    await $.tool.call({ tool: 'Agent', tool_use_id: 'pane-placement', ...originalInput });
+    const result = await $.command.run({ command: 'smart-router', args: 'explain latest' });
+    expect(result.text).toBe(placed ? 'Showing the latest routing explanation.'
+      : 'Could not open the native routing explanation pane.');
+    expect(closes).toBe(placed ? 0 : 1);
+  });
+}
