@@ -393,6 +393,17 @@ resource-name ID extraction, unavailable usage, and errors.
 CUJ5 compares a known personal limit's displayed spend, threshold, and percentage
 with live values before and after `ug usage --all`.
 
+Dashboard-link component coverage in `../test_usage.py`, `../test_databricks.py`, and
+`../test_workspace_selection.py` checks the authenticated dashboard GET, workspace selector
+headers, the optional footer after limits or empty/unavailable-budget messages, literal
+URL rendering, and omission for absent URLs or failed lookups. Presentation checks cover
+the bold footer label with its external-link indicator, a blank line after the link,
+the underlined URL's target, OSC 8
+output in terminal mode, and intact long URLs at 40/80/200-column widths in both terminal
+and plain redirected output. Terminal wrapping does not insert newlines into the URL,
+preserving automatic URL detection and copying. These checks do not establish live
+dashboard access or browser navigation.
+
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
 enforced by Ruff. These component checks do not establish native Windows coverage
 for every agent; the Windows journeys below validate their explicitly selected paths.

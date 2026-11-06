@@ -690,6 +690,17 @@ output without colors, and the hint when more limits exist.
 These are unit/component tests; CUJ5 checks live `ug usage --all` output against budget
 figures before and after the command.
 
+Dashboard-link component coverage in `test_usage.py`, `test_databricks.py`, and
+`test_workspace_selection.py` checks the authenticated dashboard GET, workspace selector
+headers, the optional footer after limits or empty/unavailable-budget messages, literal
+URL rendering, and omission for absent URLs or failed lookups. Presentation checks cover
+the bold footer label with its external-link indicator, a blank line after the link,
+the underlined URL's target, OSC 8
+output in terminal mode, and intact long URLs at 40/80/200-column widths in both terminal
+and plain redirected output. Terminal wrapping does not insert newlines into the URL,
+preserving automatic URL detection and copying. These checks do not establish live
+dashboard access or browser navigation.
+
 `test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
 gateway provider on Windows while Unix launch arguments stay unchanged and routing
 hooks stay with the app-server. This is component coverage, not a live Windows

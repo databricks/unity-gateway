@@ -443,7 +443,11 @@ ug skills remove --location main.default --via mcp
 `ug usage` shows up to five Unity Gateway budget limits with the highest usage
 percentages, with a short budget ID on each entry. It tells you when more limits
 exist. Run `ug usage --all` to show every limit. Both commands use your configured
-workspace login.
+workspace login. When an accessible usage dashboard is available, the command ends
+with `↗ Explore usage trends: <dashboard URL>`, including when no spend limits are configured.
+The URL is underlined and clickable in terminals that support hyperlinks, and remains
+visible for copying in other terminals and redirected output. Long URLs are left intact
+so the terminal can wrap them without losing automatic link detection.
 
 A launch (`ug claude`, `ug codex`) uses the workspace's managed coding agent config that
 `ug configure` last saved and does not refetch it. After an admin changes that config, run
