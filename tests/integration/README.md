@@ -92,6 +92,10 @@ from configuration/installation, protects read-only managed MCP rows, and checks
 attribution against source identity, target directories, and surviving files. These checks
 do not establish live workspace discovery or agent invocation coverage.
 
+`../test_skills_state.py` covers indexed attribution reconciliation, malformed directory containers and list
+members, within-batch ownership changes, and orphan cleanup with persisted state. These are
+component checks; live skill-download latency is unmeasured.
+
 Claude answer delivery has offline transcript and subprocess coverage in
 `../test_claude_answer_delivery.py`, including stdout preservation for text, JSON and
 streaming JSON when UG redirects diagnostics to stderr. Live model/gateway selection
