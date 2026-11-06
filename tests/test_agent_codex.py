@@ -40,8 +40,8 @@ class TestMinimumVersion:
             ("0.145.0", False),
             ("0.148.0", False),
             ("0.163.0", False),
-            ("0.164.0", True),
-            ("0.165.0", True),
+            ("0.166.0", True),
+            ("0.166.0", True),
             ("1.0.0", True),
         ],
     )
@@ -68,7 +68,7 @@ class TestMinimumVersion:
 
     @pytest.mark.parametrize(
         ("version", "allowed"),
-        [("0.165.0", True), ("0.163.0", False), ("unknown", False), (None, False)],
+        [("0.166.0", True), ("0.163.0", False), ("unknown", False), (None, False)],
     )
     def test_smart_routing_rechecks_an_unknown_version_with_a_longer_bound(
         self, monkeypatch, version, allowed
@@ -2105,12 +2105,58 @@ class TestCodexManagedConfig:
         assert doc["model_providers"]["Databricks"]["env_http_headers"] == {
             codex.MODEL_PROVIDER_SERVICE_HEADER: "UG_CODEX_MODEL_PROVIDER_SERVICE",
             codex.MODEL_SERVICE_PARENT_SCHEMA_HEADER: "UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA",
-            codex.SMART_ROUTER_RECIPE_HEADER: "UG_CODEX_SMART_ROUTER_RECIPE",
             codex.AI_GATEWAY_REQUEST_TAGS_HEADER: "UG_CODEX_REQUEST_TAGS",
         }
         profile = read_toml_safe(config_path)
         assert profile["model"] == "gpt-5"
         assert "env_http_headers" not in profile["model_providers"]["Databricks"]
+
+    @pytest.mark.parametrize("filename", ["managed_config.toml", "requirements.toml"])
+    def test_recipe_is_launch_only_and_removed_from_existing_managed_config(
+        self, tmp_path, monkeypatch, filename
+    ):
+        config_path, _ = self._patch(tmp_path, monkeypatch)
+        managed_path = tmp_path / "managed" / filename
+        managed_path.parent.mkdir()
+        managed_path.write_text(
+            "[model_providers.Databricks.http_headers]\n"
+            'databricks-smart-router-recipe = "stale"\n'
+            "[model_providers.Databricks.env_http_headers]\n"
+            'Databricks-Smart-Router-Recipe = "UG_CODEX_SMART_ROUTER_RECIPE"\n'
+        )
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
+        monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        codex.write_tool_config({"workspace": WS})
+
+        for path in (config_path, managed_path):
+            provider = read_toml_safe(path)["model_providers"]["Databricks"]
+            for key in ("http_headers", "env_http_headers"):
+                assert not any(
+                    name.casefold() == codex.SMART_ROUTER_RECIPE_HEADER.casefold()
+                    for name in provider.get(key, {})
+                )
+        launch = codex._render_launch_overlay(WS)
+        assert launch["model_providers"]["Databricks"]["http_headers"][
+            codex.SMART_ROUTER_RECIPE_HEADER
+        ]
+
+    @pytest.mark.parametrize("key", ["http_headers", "env_http_headers"])
+    def test_smart_routing_rejects_stale_managed_recipe_before_startup(
+        self, tmp_path, monkeypatch, key
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_path.parent.mkdir(parents=True)
+        managed_path.write_text(
+            f'[model_providers.Databricks.{key}]\ndatabricks-smart-router-recipe = "stale"\n'
+        )
+        monkeypatch.setattr("ucode.agents.ensure_minimum_version", lambda *args: None)
+        monkeypatch.setattr(
+            codex.smart_routing_v2,
+            "launch_codex",
+            lambda *args, **kwargs: pytest.fail("stale attribution must block startup"),
+        )
+        with pytest.raises(RuntimeError, match="ug configure"):
+            codex._launch_smart_routing({"workspace": WS}, [])
 
     @pytest.mark.parametrize("opt_out", ["env", "user_scope"])
     def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch, opt_out):

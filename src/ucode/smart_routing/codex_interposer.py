@@ -255,11 +255,15 @@ async def _handle_tui(
                 if (
                     controller is not None
                     and isinstance(frame, str)
-                    and "method" not in json.loads(frame)
+                    and json.loads(frame).get("method") in (None, "turn/interrupt")
                 ):
                     # Approval replies must pass even behind a held user request.
-                    await upstream.send(frame)
+                    message = await controller.before_tui(json.loads(frame))
+                    if message is not None:
+                        await upstream.send(json.dumps(message))
                 else:
+                    if controller is not None and isinstance(frame, str):
+                        controller.buffer_input(json.loads(frame))
                     await queued_frames.put(frame)
             await queued_frames.put(None)
 
@@ -275,7 +279,10 @@ async def _handle_tui(
             async for frame in tui_frames():
                 if isinstance(frame, str):
                     if controller is not None:
-                        await controller.before_tui(json.loads(frame))
+                        message = await controller.before_tui(json.loads(frame))
+                        if message is None:
+                            continue
+                        frame = json.dumps(message)
                     result = await asyncio.to_thread(sess.on_tui_frame, frame)
                     if result.needs_settings_update and sess.thread_id:
                         update_id = f"ucode-route-{uuid.uuid4().hex}"
@@ -306,7 +313,12 @@ async def _handle_tui(
         async def app_to_tui():
             async for frame in upstream:
                 if controller is not None and isinstance(frame, str):
-                    if controller.observe(json.loads(frame)):
+                    try:
+                        consumed = controller.observe(json.loads(frame))
+                    except (ValueError, RuntimeError) as exc:
+                        await controller.report_failure(exc)
+                        raise
+                    if consumed:
                         continue
                 await tui.send(frame)
                 if isinstance(frame, str):
@@ -319,12 +331,14 @@ async def _handle_tui(
         if controller is not None:
             tasks.add(asyncio.create_task(read_tui()))
             tasks.add(asyncio.create_task(controller.watch()))
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for t in pending:
-            t.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-        for task in done:
-            task.result()
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
     log("[CONN] TUI session closed")
 
 

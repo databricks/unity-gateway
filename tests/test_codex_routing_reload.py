@@ -7,8 +7,8 @@ import json
 import pytest
 
 from ucode.constants import SMART_ROUTING_ENV_KEYS
-from ucode.smart_routing import codex_interposer
-from ucode.smart_routing.codex_reload import RoutingReload
+from ucode.smart_routing import codex_interposer, codex_reload
+from ucode.smart_routing.codex_reload import RoutingReload, routing_config
 
 CONFIG = {
     "model_provider": "Databricks",
@@ -31,6 +31,9 @@ class Peer:
         self.controller = None
         self.late_child = False
         self.resume_error = False
+        self.on_resume = None
+        self.on_list = None
+        self.on_turn_start = None
 
     def add(self, tid, parent, active=True):
         thread = {"id": tid, "parentThreadId": parent}
@@ -50,11 +53,13 @@ class Peer:
     async def send(self, raw):
         message = json.loads(raw)
         self.calls.append(message)
-        if "id" not in message:
+        if "id" not in message or "method" not in message:
             return
         method, params = message["method"], message["params"]
         result = {}
         if method == "thread/loaded/list":
+            if self.on_list:
+                await self.on_list()
             result = {"data": list(self.loaded), "nextCursor": None}
         elif method == "thread/read":
             result = {"thread": self.loaded[params["threadId"]]}
@@ -74,12 +79,22 @@ class Peer:
         elif method == "thread/unsubscribe":
             del self.loaded[params["threadId"]]
         elif method == "thread/resume":
+            if self.on_resume:
+                self.on_resume()
             if self.resume_error:
                 self.controller.observe(
                     {"id": message["id"], "error": {"message": "resume unavailable"}}
                 )
                 return
             result = {"thread": {"id": params["threadId"], "parentThreadId": None}}
+        elif method == "turn/start":
+            turn = {"id": "continuation-turn"}
+            self.controller.observe(
+                {"method": "turn/started", "params": {"threadId": params["threadId"], "turn": turn}}
+            )
+            if self.on_turn_start:
+                await self.on_turn_start()
+            result = {"turn": turn}
         self.controller.observe({"id": message["id"], "result": result})
 
 
@@ -341,5 +356,255 @@ def test_interposer_drains_approval_reply_behind_held_request(tmp_path, monkeypa
             if not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_rejected_permission_update_cannot_change_resumed_permissions(tmp_path):
+    async def scenario():
+        controller, engine, _, _ = make_controller(tmp_path)
+        controller.remember_settings({"sandbox": "workspace-write", "approvalPolicy": "on-request"})
+        await controller.before_tui(
+            {
+                "id": 8,
+                "method": "thread/settings/update",
+                "params": {
+                    "threadId": "root",
+                    "sandboxPolicy": {"type": "dangerFullAccess"},
+                    "approvalPolicy": "never",
+                },
+            }
+        )
+        assert not controller.client_idle.is_set()
+        controller.observe({"id": 8, "error": {"message": "not allowed"}})
+        assert controller.client_idle.is_set()
+        await controller.reload()
+        resumed = next(call["params"] for call in engine.calls if call["method"] == "thread/resume")
+        assert resumed["sandbox"] == "workspace-write"
+        assert resumed["approvalPolicy"] == "on-request"
+
+    asyncio.run(scenario())
+
+
+def test_switching_roots_reloads_each_tree_with_its_own_settings(tmp_path):
+    async def scenario():
+        controller, engine, _, controls = make_controller(tmp_path)
+        controller.remember_settings(
+            {"sandbox": "workspace-write", "cwd": "/first", "model": "first"}
+        )
+        await controller.before_tui(
+            {
+                "id": 9,
+                "method": "thread/start",
+                "params": {
+                    "sandbox": "read-only",
+                    "cwd": "/second",
+                    "model": "second",
+                },
+            }
+        )
+        controller.observe({"id": 9, "result": {"thread": {"id": "second-root"}}})
+        engine.add("second-root", None, active=False)
+        engine.add("unrelated", None)
+        controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
+        await controller.reload()
+        resumed = {
+            call["params"]["threadId"]: call["params"]
+            for call in engine.calls
+            if call["method"] == "thread/resume"
+        }
+        assert set(resumed) == {"root", "second-root"}
+        assert resumed["root"]["sandbox"] == "workspace-write"
+        assert resumed["root"]["model"] == "first"
+        assert resumed["root"]["cwd"] == "/first"
+        assert resumed["second-root"]["sandbox"] == "read-only"
+        assert resumed["second-root"]["model"] == "second"
+        assert resumed["second-root"]["cwd"] == "/second"
+        assert "unrelated" in engine.loaded
+
+    asyncio.run(scenario())
+
+
+def test_new_root_while_off_gets_current_recipe_without_changing_other_overrides(tmp_path):
+    async def scenario():
+        controller, _, _, controls = make_controller(tmp_path)
+        controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
+        message = await controller.before_tui(
+            {
+                "id": 10,
+                "method": "thread/start",
+                "params": {
+                    "config": {
+                        "model_providers": {
+                            "Databricks": {
+                                "http_headers": {
+                                    "Custom": "preserved",
+                                    "databricks-smart-router-recipe": "stale",
+                                }
+                            }
+                        },
+                        "responses_api_metadata": {"custom": "preserved"},
+                    },
+                },
+            }
+        )
+        config = message["params"]["config"]
+        assert config["model_providers"]["Databricks"]["http_headers"] == {
+            "Custom": "preserved",
+            "Databricks-Smart-Router-Recipe": "DISABLED",
+        }
+        assert config["responses_api_metadata"] == {
+            "custom": "preserved",
+            "smart_router_recipe_name": "DISABLED",
+        }
+
+    asyncio.run(scenario())
+
+
+def test_toggle_during_resume_is_applied_before_continuation(tmp_path):
+    async def scenario():
+        controller, engine, _, controls = make_controller(tmp_path)
+        controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
+        engine.on_resume = lambda: controls.write_text("{}")
+        await controller.reload()
+        recipes = [
+            call["params"]["config"]["responses_api_metadata"]["smart_router_recipe_name"]
+            for call in engine.calls
+            if call["method"] == "thread/resume"
+        ]
+        assert recipes == ["DISABLED", "stable"]
+        continuations = [call for call in engine.calls if call["method"] == "turn/start"]
+        assert len(continuations) == 1
+        assert "Smart Router is now on" in continuations[0]["params"]["input"][0]["text"]
+        assert controller.applied
+
+    asyncio.run(scenario())
+
+
+def test_reload_timeout_blocks_input_and_late_internal_reply_stays_private(tmp_path, monkeypatch):
+    async def scenario():
+        controller, engine, tui, controls = make_controller(tmp_path)
+        monkeypatch.setattr(codex_reload, "RELOAD_TIMEOUT_SECONDS", 0.01)
+        controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
+        engine.on_list = asyncio.Event().wait
+        with pytest.raises(TimeoutError):
+            await controller.watch()
+        assert not controller.ready.is_set()
+        assert not controller.pending
+        assert not any(call["method"] == "turn/start" for call in engine.calls)
+        assert "ug codex -- resume root" in tui.calls[-1]["params"]["error"]["message"]
+        identity = engine.calls[-1]["id"]
+        assert controller.observe({"id": identity, "result": {"data": []}})
+
+    asyncio.run(scenario())
+
+
+def test_escape_during_reload_prevents_automatic_continuation(tmp_path):
+    async def scenario():
+        controller, engine, tui, _ = make_controller(tmp_path)
+
+        async def cancel():
+            assert (
+                await controller.before_tui(
+                    {
+                        "id": 12,
+                        "method": "turn/interrupt",
+                        "params": {"threadId": "root", "turnId": "root-turn"},
+                    }
+                )
+                is None
+            )
+
+        engine.on_list = cancel
+        await controller.reload()
+        assert any(call["method"] == "thread/resume" for call in engine.calls)
+        assert not any(call["method"] == "turn/start" for call in engine.calls)
+        assert {"id": 12, "result": {}} in tui.calls
+        assert controller.ready.is_set()
+
+    asyncio.run(scenario())
+
+
+def test_escape_while_continuation_starts_interrupts_the_new_turn(tmp_path):
+    async def scenario():
+        controller, engine, _, _ = make_controller(tmp_path)
+
+        async def escape():
+            await controller.before_tui(
+                {
+                    "id": 13,
+                    "method": "turn/interrupt",
+                    "params": {"threadId": "root", "turnId": "root-turn"},
+                }
+            )
+
+        engine.on_turn_start = escape
+        await controller.reload()
+        assert engine.calls[-1]["method"] == "turn/interrupt"
+        assert engine.calls[-1]["params"]["turnId"] == "continuation-turn"
+        assert "root" not in controller.active
+
+    asyncio.run(scenario())
+
+
+def test_recipe_headers_are_case_insensitive_and_launch_config_is_immutable():
+    config = copy.deepcopy(CONFIG)
+    headers = config["model_providers"]["Databricks"]["http_headers"]
+    headers["databricks-smart-router-recipe"] = headers.pop("Databricks-Smart-Router-Recipe")
+    original = copy.deepcopy(config)
+    resumed = routing_config(config, enabled=True)
+    assert resumed["responses_api_metadata"]["smart_router_recipe_name"] == "stable"
+    assert resumed["model_providers"]["Databricks"]["http_headers"] == {
+        "User-Agent": "preserve",
+        "Databricks-Smart-Router-Recipe": "stable",
+    }
+    assert config == original
+
+
+def test_buffered_user_turn_receives_recovery_context_without_competing_turn(tmp_path):
+    async def scenario():
+        controller, engine, _, _ = make_controller(tmp_path)
+        pending = {
+            "id": 20,
+            "method": "turn/start",
+            "params": {
+                "threadId": "root",
+                "input": [{"type": "text", "text": "Change the next step"}],
+            },
+        }
+
+        async def user_input():
+            controller.buffer_input(pending)
+
+        engine.on_list = user_input
+        await controller.reload()
+        assert not any(call["method"] == "turn/start" for call in engine.calls)
+        forwarded = await controller.before_tui(pending)
+        texts = [item["text"] for item in forwarded["params"]["input"]]
+        assert "Existing interrupted agents" in texts[0]
+        assert texts[1] == "Change the next step"
+        assert not controller.continuations
+
+    asyncio.run(scenario())
+
+
+def test_reconnected_root_is_reloaded_even_when_controls_have_not_changed(tmp_path):
+    async def scenario():
+        controller, engine, _, _ = make_controller(tmp_path)
+        await controller.before_tui(
+            {"id": 21, "method": "thread/resume", "params": {"threadId": "root"}}
+        )
+        controller.observe({"id": 21, "result": {"thread": {"id": "root"}}})
+        resumed = asyncio.Event()
+        engine.on_resume = resumed.set
+        watcher = asyncio.create_task(controller.watch())
+        try:
+            await asyncio.wait_for(resumed.wait(), 1)
+            await asyncio.wait_for(controller.ready.wait(), 1)
+            assert not controller.reload_requested
+            assert any(call["method"] == "turn/interrupt" for call in engine.calls)
+        finally:
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
 
     asyncio.run(scenario())

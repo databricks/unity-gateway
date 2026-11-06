@@ -1054,7 +1054,7 @@ class TestSubcommandRouting:
         assert observed == [(tool in routed_tools, expected_env)]
         assert _routing_env() == env_before
 
-    @pytest.mark.parametrize("installed_version", ["0.145.0", "0.163.0"])
+    @pytest.mark.parametrize("installed_version", ["0.145.0", "0.165.0"])
     @pytest.mark.parametrize("recovery", ["decline", "upgrade", "disable", "managed-default"])
     def test_codex_routing_version_requires_upgrade_or_explicit_disable(
         self, tmp_path, monkeypatch, installed_version, recovery
@@ -1077,7 +1077,7 @@ class TestSubcommandRouting:
                 return subprocess.CompletedProcess(argv, 0, stdout="0.265.0\n", stderr="")
             assert argv == ["codex", "update"]
             updates.append(argv)
-            version = "0.164.0"
+            version = "0.166.0"
             return subprocess.CompletedProcess(argv, 0)
 
         def launch_native(*_args, **_kwargs):
@@ -1108,7 +1108,7 @@ class TestSubcommandRouting:
             result = runner.invoke(app, args)
 
         assert result.exit_code == (1 if recovery == "decline" else 0), result.output
-        assert routed == (["0.164.0"] if recovery == "upgrade" else [])
+        assert routed == (["0.166.0"] if recovery == "upgrade" else [])
         assert bool(plain) == (recovery in {"disable", "managed-default"})
         assert updates == ([["codex", "update"]] if recovery == "upgrade" else [])
         assert prompt.call_count == (0 if recovery in {"disable", "managed-default"} else 1)

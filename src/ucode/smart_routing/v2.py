@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import os
@@ -37,7 +36,6 @@ from ucode.constants import (
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     LOOPBACK_HOST,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
-    SMART_ROUTER_RECIPE_HEADER,
     SMART_ROUTING_ENV_KEYS,
 )
 from ucode.custom_oauth import custom_oauth_cli_enabled, launch_token
@@ -48,7 +46,6 @@ from ucode.databricks import (
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
 )
-from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
@@ -857,8 +854,6 @@ def launch_codex(
     binary: str,
     start_model: str | None,
     render_overlay: Callable[..., dict],
-    reload_on_toggle: bool = False,
-    resume_controls: Path | None = None,
 ) -> NoReturn:
     workspace = state.get("workspace")
     if not workspace:
@@ -902,36 +897,18 @@ def launch_codex(
         "Your assigned task path identifies you.\n\n" + CODEX_V2_COLLABORATION_GUIDANCE
     )
     session_env_path = _prepare_smart_router_session("codex")
-    if resume_controls is not None:
-        if not reload_on_toggle:
-            raise ValueError("Session-control recovery requires the reload controller")
-        session_env_path = resume_controls
-        os.environ[SESSION_ENV_VAR] = str(session_env_path)
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
     overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)
     overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
         SESSION_PYTHON_ENV_VAR
     ]
-    reload_config = None
-    if reload_on_toggle:
-        from ucode.smart_routing.codex_reload import session_routing_enabled
+    from ucode.smart_routing.codex_reload import routing_config
 
-        overlay["thread_unload_delay_secs"] = 0
-        reload_config = copy.deepcopy(overlay)
-        if not session_routing_enabled(session_env_path):
-            overlay["model_providers"][overlay["model_provider"]]["http_headers"][
-                SMART_ROUTER_RECIPE_HEADER
-            ] = "DISABLED"
-            overlay.setdefault("responses_api_metadata", {})["smart_router_recipe_name"] = (
-                "DISABLED"
-            )
+    overlay["thread_unload_delay_secs"] = 0
+    overlay = routing_config(overlay, enabled=True)
     config_args = codex_config_args(overlay)
     first_prompt = first_prompt_routing_enabled(agent=AGENT_CODEX)
-    if not first_prompt and not reload_on_toggle:
-        # Subagent-only routing needs neither the app-server nor the interposer:
-        # the hooks ride in the CLI config, so launch the TUI directly.
-        exec_or_spawn([binary, *config_args, *tool_args])
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
 
@@ -961,11 +938,8 @@ def launch_codex(
             token_provider=(lambda: launch_token(state, workspace)) if first_prompt else None,
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
-            **(
-                {"reload_config": reload_config, "session_controls": session_env_path}
-                if reload_on_toggle
-                else {}
-            ),
+            reload_config=overlay,
+            session_controls=session_env_path,
         )
         tui_url = _loopback_websocket_url(tui_port)
         provider_args = []
@@ -994,4 +968,5 @@ def launch_codex(
             app_server.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
         except Exception:  # noqa: BLE001
             app_server.kill()
+            app_server.wait()
     sys.exit(returncode)

@@ -84,6 +84,7 @@ def use_smart_routing_fixture(
     elif agent == "codex":
         override = os.environ.get("UCODE_TEST_CODEX_ROUTING_FIXTURE", "").strip()
         fixtures = {
+            "eng-ml-inference.staging.cloud.databricks.com": "codex_smart_routing",
             "eng-ml-inference-team-us-east-1.cloud.databricks.com": "codex_smart_routing",
             "eng-ml-inference-team-ca-central-1.cloud.databricks.com": "codex_smart_routing_ca",
         }

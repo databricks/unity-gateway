@@ -135,8 +135,8 @@ _LAUNCH_ROUTING_HEADER_ENV_VARS = {
 }
 MINIMUM_CODEX_VERSION = (0, 145, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.145.0"
-MINIMUM_SMART_ROUTING_CODEX_VERSION = (0, 164, 0)
-MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT = "0.164.0"
+MINIMUM_SMART_ROUTING_CODEX_VERSION = (0, 166, 0)
+MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT = "0.166.0"
 # Codex 0.134.0 introduced per-profile config files; older releases use the legacy layout.
 LEGACY_LAYOUT_CODEX_VERSION = (0, 134, 0)
 LEGACY_LAYOUT_CODEX_VERSION_TEXT = "0.134.0"
@@ -198,7 +198,7 @@ def minimum_version_error(*, smart_routing_enabled: bool = False) -> str | None:
             return None
         return (
             f"Codex smart routing requires Codex {MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT} "
-            f"or newer for readable delegated assignments; found {version}. "
+            f"or newer for native conversation reloads; found {version}. "
             "Upgrade Codex or launch with --disable-smart-routing."
         )
     if parsed is None or parsed >= MINIMUM_CODEX_VERSION:
@@ -556,6 +556,7 @@ def write_tool_config(
             for key in ("model", "model_reasoning_effort"):
                 profiles[CODEX_PROFILE_NAME].pop(key, None)
         _set_provider_header(doc, None)
+        _remove_persisted_recipe(doc)
         write_toml_file(LEGACY_CODEX_CONFIG_PATH, doc)
         state = mark_tool_managed(state, "codex", LEGACY_MANAGED_KEYS)
         save_state(state)
@@ -609,6 +610,7 @@ def write_tool_config(
             else:
                 base.pop("model_catalog_json", None)
         _set_provider_header(base, None)
+        _remove_persisted_recipe(base)
         return base
 
     # `ug configure --global` writes only the machine-wide file below.
@@ -1209,6 +1211,10 @@ def _as_requirements(compose: Callable[[dict], dict]) -> Callable[[dict], dict]:
         doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]["env_http_headers"] = dict(
             _LAUNCH_ROUTING_HEADER_ENV_VARS
         )
+        # App-server environment is fixed at launch; reload updates body metadata instead.
+        doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]["env_http_headers"].pop(
+            SMART_ROUTER_RECIPE_HEADER, None
+        )
         return doc
 
     return compose_requirements
@@ -1529,6 +1535,16 @@ def clear_model_preferences(state: dict) -> bool:
 
 def _set_provider_header(config: dict, provider: str | None) -> None:
     _set_routing_header(config, MODEL_PROVIDER_SERVICE_HEADER, provider)
+
+
+def _remove_persisted_recipe(config: dict) -> None:
+    # OS-managed headers outrank even thread/resume overrides, freezing attribution.
+    provider = config.get("model_providers", {}).get(CODEX_MODEL_PROVIDER_NAME, {})
+    for key in ("http_headers", "env_http_headers"):
+        headers = provider.get(key, {})
+        for name in list(headers):
+            if name.casefold() == SMART_ROUTER_RECIPE_HEADER.casefold():
+                del headers[name]
 
 
 def _set_parent_schema_header(config: dict, parent_schema: str | None) -> None:
@@ -1993,6 +2009,7 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
 
     binary = SPEC["binary"]
     ensure_minimum_version("codex", lambda: minimum_version_error(smart_routing_enabled=True))
+    _reject_managed_recipe()
 
     configured_model = _smart_routing_config_model(state)
     # Prefer the custom catalog if it exists.
@@ -2009,6 +2026,24 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
         start_model=start_model,
         render_overlay=_render_launch_overlay,
     )
+
+
+def _reject_managed_recipe() -> None:
+    path = codex_managed_config_path()
+    if path is None or (text := read_managed_file(path)) is None:
+        return
+    managed = _parse_managed_config(text)
+    provider = managed.get("model_providers", {}).get(CODEX_MODEL_PROVIDER_NAME, {})
+    if any(
+        name.casefold() == SMART_ROUTER_RECIPE_HEADER.casefold()
+        for key in ("http_headers", "env_http_headers")
+        for name in provider.get(key, {})
+    ):
+        raise RuntimeError(
+            f"Codex managed settings at {path} pin the Smart Router recipe. "
+            "Run `ug configure` to remove that persisted header before using smart routing; "
+            "otherwise session toggles cannot update inference attribution."
+        )
 
 
 def disable_smart_routing(state: dict) -> bool:

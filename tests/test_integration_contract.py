@@ -190,7 +190,7 @@ def test_smoke_and_full_together_cover_every_blocking_live_case(agent):
         for name in ("full", "managed"):
             assert "smart_routing: [false]" in jobs[name]
             assert (
-                "CODEX_VERSION: ${{ matrix.smart_routing && '0.165.0' || "
+                "CODEX_VERSION: ${{ matrix.smart_routing && '0.166.0' || "
                 "inputs.codex_version || '0.154.0' }}"
             ) in jobs[name]
             assert "matrix.smart_routing && '-smart-routing' || ''" in jobs[name]
@@ -290,7 +290,7 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert 'UV_HTTP_TIMEOUT: "120"' in job and 'UV_HTTP_RETRIES: "6"' in job
     assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
     assert (
-        "CODEX_VERSION: ${{ matrix.test == 'test_cuj4_smart_routing.py' && '0.165.0' || "
+        "CODEX_VERSION: ${{ matrix.test == 'test_cuj4_smart_routing.py' && '0.166.0' || "
         "inputs.codex_version || '0.154.0' }}"
     ) in job
 
