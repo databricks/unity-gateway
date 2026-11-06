@@ -5842,6 +5842,47 @@ class TestCodingAgentConfigCrudClients:
         assert reason == "HTTP 404 Not Found"
 
 
+class TestGetUsageDashboardUrl:
+    def test_fetches_published_url_with_workspace_token(self, monkeypatch):
+        dashboard_url = f"{WS}/dashboardsv3/dashboard/published?o=123"
+        requests = []
+
+        def urlopen(request, timeout):
+            requests.append((request, timeout))
+            return _FakeResponse({"dashboard_id": "dashboard", "dashboard_url": dashboard_url})
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+
+        assert db_mod.get_usage_dashboard_url(WS, "workspace-token") == dashboard_url
+        assert len(requests) == 1
+        request, timeout = requests[0]
+        assert request.full_url == f"{WS}/api/ai-gateway/v2/usage-analytics-dashboard"
+        assert request.get_method() == "GET"
+        assert request.get_header("Authorization") == "Bearer workspace-token"
+        assert timeout == 10
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            None,
+            [],
+            {},
+            {"dashboard_id": "dashboard"},
+            {"dashboard_url": None},
+            {"dashboard_url": ""},
+            {"dashboard_url": "  "},
+            {"dashboard_url": 123},
+        ],
+    )
+    def test_omits_link_without_a_nonempty_url(self, monkeypatch, payload):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (payload, None))
+        assert db_mod.get_usage_dashboard_url(WS, "token") is None
+
+    def test_lookup_failure_omits_optional_link(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (None, "HTTP 403 Forbidden"))
+        assert db_mod.get_usage_dashboard_url(WS, "token") is None
+
+
 class TestListWorkspaceBudgets:
     PER_USER = "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER"
     SHARED = "ALERT_CONFIGURATION_SCOPE_TYPE_SHARED"

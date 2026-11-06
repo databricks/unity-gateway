@@ -691,6 +691,22 @@ def list_workspace_budgets(workspace: str, token: str) -> tuple[list[dict], str 
     return budgets, None
 
 
+def get_usage_dashboard_url(workspace: str, token: str) -> str | None:
+    """Return the caller's published usage dashboard URL, if available.
+
+    This optional link must not prevent displaying spend limits when the dashboard
+    is absent, inaccessible, or temporarily unavailable.
+    """
+    url = f"https://{workspace_hostname(workspace)}/api/ai-gateway/v2/usage-analytics-dashboard"
+    payload, reason = _http_get_json(url, token)
+    if reason is not None or not isinstance(payload, dict):
+        return None
+    dashboard_url = payload.get("dashboard_url")
+    if isinstance(dashboard_url, str) and dashboard_url.strip():
+        return dashboard_url.strip()
+    return None
+
+
 def get_current_user_name(workspace: str, token: str) -> str | None:
     """Return the current user's login (email) via SCIM `Me`, or None on failure.
 
