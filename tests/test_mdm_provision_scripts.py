@@ -1,11 +1,11 @@
-"""The MDM E2E's Linux provisioning script must match the real macOS one where they overlap."""
+"""The Linux and macOS MDM provisioning scripts must install, authenticate and configure alike."""
 
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MACOS = ROOT / "scripts" / "mdm" / "macos-provision.sh"
-LINUX = ROOT / "tests" / "e2e_mdm" / "linux-provision.sh"
+LINUX = ROOT / "scripts" / "mdm" / "linux-provision.sh"
 
 
 def _commands(path: Path) -> list[str]:
