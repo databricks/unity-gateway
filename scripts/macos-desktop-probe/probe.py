@@ -133,7 +133,12 @@ def main():
         print("Gateway onboarding accepted", flush=True)
         navigation = wait_for(("Cowork", "Show sidebar"), timeout=60)
         if "Show sidebar" in navigation:
-            ui("click", "Show sidebar")
+            try:
+                ui("click", "Show sidebar")
+            except RuntimeError as exc:
+                if "Control unavailable: Show sidebar" not in str(exc):
+                    raise
+                wait_for("Cowork", timeout=10)
         wait_for("Cowork", timeout=60)
         save("navigation-ui.txt", ui("snapshot"))
         ui("click", "Cowork")

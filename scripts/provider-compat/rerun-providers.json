@@ -1,4 +1,3 @@
 [
-  "main.ucode.ci_foundry_claude_mps",
-  "main.ucode.ci_custom_foundry_claude_mps"
+  "main.ucode.ci_e2e_anthropic_relay_mps"
 ]

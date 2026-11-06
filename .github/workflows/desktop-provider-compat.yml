@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       cases: ${{ steps.cases.outputs.cases }}
+      platforms: ${{ steps.cases.outputs.platforms }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -30,6 +31,9 @@ jobs:
               cases = [case for case in cases if case['provider'] in selected]
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write('cases=' + json.dumps(cases) + '\n')
+              platforms_file = Path('scripts/provider-compat/rerun-platforms.json')
+              platforms = json.loads(platforms_file.read_text()) if platforms_file.exists() else ['windows-latest', 'macos-15-intel']
+              output.write('platforms=' + json.dumps(platforms) + '\n')
           PY
 
   cowork:
@@ -41,7 +45,7 @@ jobs:
       fail-fast: false
       max-parallel: 10
       matrix:
-        os: [windows-latest, macos-15-intel]
+        os: ${{ fromJSON(needs.cases.outputs.platforms) }}
         case: ${{ fromJSON(needs.cases.outputs.cases) }}
     env:
       PYTHONUTF8: 1
