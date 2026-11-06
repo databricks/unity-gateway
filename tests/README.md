@@ -796,9 +796,20 @@ Codex decisions carry the same request metadata. These use mocked HTTP responses
 
 `test_claude_pty_replay.py` drives `run_claude_pty` against fake TUIs. One models Claude Code
 2.1.295 and later, which keep a hook-blocked prompt in the input box: `/model` must run as a
-command, and the replay must arrive unchanged after a switch, a switch timeout, or a missing
-quiet window. These are component checks; live first-prompt routing on a pinned Claude Code
-version is not executed here.
+command. Delayed completion must replay the prompt exactly once and restore the saved default.
+Arrow keys and fragmented terminal replies keep recovery active. Typed input stops replay with
+a notice but retains cleanup; an explicit `/model` command transfers the saved default back to
+the user. Claude's completed `Kept model as` cancellation result permits replay, while generic
+cancel messages and unconfirmed switches stop automatic input. Settings assertions run before
+the child exits. The timing cases cover immediate persistence with and without a redraw, a pending
+write, and a write arriving after the persistence deadline without duplicating the redraw variants.
+
+`test_claude_smart_routing_v2.py` also covers settings restoration after a failed atomic write or
+temporary parse error, bounded exit cleanup under lock contention, and actionable failure output.
+Deferred cleanup releases the settings lock but reserves the original default until restoration
+or an explicit manual model command; another routed switch cannot capture the temporary value.
+PTY checks verify that settings reads are throttled during busy output. These are component
+checks; live first-prompt routing on a pinned Claude Code version is not executed here.
 
 Codex version tests cover one longer probe after an inconclusive cached result. Supported
 versions can pass that probe; old, unparseable, or repeatedly timed-out versions still fail
@@ -958,6 +969,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_case_02_*` | Launch managed Codex after configure and from fresh state | The scoped and stable catalogs, ug-launched app server, and fresh bare app server match the independently fetched admin MPS model IDs. The configured case uses real `ug revert` to remove ug's shared pointer and stable file while preserving a user setting |
 | `test_case_04_*`, `test_case_06_*` | Pass a provider or model-location override to managed Codex after configure and from fresh state | ug rejects the override before Codex starts and preserves agent-owned state |
 | `test_ug_configure_managed_codex_catalog_fallback` | Configure from an injected managed response containing a GPT model absent from Codex's bundled catalog, then inspect the picker with legacy smart routing off/on | Actionable metadata warning; conservative catalog entry for the unknown model; real Codex picker lists the custom catalog model |
+| `test_managed_fixture_codex_mcp_written_to_managed_file` | Interactive PTY configure with the managed `system.ai.github` MCP service | The OS-managed entry uses the exact service and OAuth resource URL through native HTTP with Codex's pinned OAuth client; no duplicate server is added to the user's config. Configuration only, without an MCP tool call |
 | `test_managed_fixture_codex_http_headers_in_managed_file` | Interactive PTY configure with injected managed `http_headers` for Codex | The specified header (`x-databricks-workspace`) lands in `model_providers.Databricks.http_headers` in `/etc/codex/managed_config.toml` with the exact admin value |
 | `test_managed_claude_mps_defaults_accompany_discovery`, `test_managed_claude_parent_schema_defaults_accompany_discovery` | Configure from a stubbed config and launch Claude with MPS discovery (`main.default.ci_e2e_anthropic_mps`) and with `system.ai` Unity Catalog discovery, respectively, both on the managed workspace | Both generated settings files retain every admin-authored default alongside the source header and every independently fetched catalog model with its label; MPS pickers keep family shortcut rows separate from catalog entries; only UC Opus/Sonnet family ids gain `[1m]` |
 | `test_launcher_sessions_prompt_at_most_once` (CUJ8) | Three launcher sessions: a second writer applies a launcher's OS-managed field set on drift, then a real smart-routed `ug claude` TUI with the launcher's args and env opens `/model` and runs a task | At most two privileged writes in the first session and none after; no ug password notice after the first session, warnings, or errors; writer's picker shown; every writer field unchanged except ug-owned ones; no discovered defaults in either settings file; orchestrator on; inference served on the writer's Haiku default; `ug revert` restores the writer's file exactly |

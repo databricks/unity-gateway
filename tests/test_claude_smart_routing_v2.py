@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -285,7 +286,9 @@ class TestV2Launch:
             user_settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
             kwargs["prepare_model_switch"]("system.ai.claude-sonnet-5")
             # Simulate `/model` changing the user file, plus an unrelated concurrent edit.
-            user_settings.write_text(json.dumps({"model": "routed", "theme": "light", "new": True}))
+            user_settings.write_text(
+                json.dumps({"model": "system.ai.claude-sonnet-5", "theme": "light", "new": True})
+            )
             kwargs["restore_model_setting"]()
             captured["restored_during_run"] = json.loads(user_settings.read_text())
             # A later user choice must survive session exit.
@@ -974,24 +977,131 @@ class TestSubagentRouting:
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         first = v2._ClaudeModelSettingGuard(user_settings)
         second = v2._ClaudeModelSettingGuard(user_settings)
-        captured: list[str] = []
-
-        first.begin("system.ai.claude-opus-4-8")
+        assert first.begin("system.ai.claude-opus-4-8") is True
         user_settings.write_text(json.dumps({"model": "system.ai.claude-opus-4-8"}))
-
-        def run_second() -> None:
-            second.begin("system.ai.claude-sonnet-5")
-            captured.append(json.loads(user_settings.read_text())["model"])
+        try:
+            assert second.begin("system.ai.claude-sonnet-5") is False
+        finally:
+            first.restore()
+        assert second.begin("system.ai.claude-sonnet-5") is True
+        try:
+            assert json.loads(user_settings.read_text()) == {"model": "haiku"}
+        finally:
             second.restore()
 
-        thread = threading.Thread(target=run_second)
-        thread.start()
-        first.restore()
-        thread.join(timeout=5)
-
-        assert not thread.is_alive()
-        assert captured == ["haiku"]
+    def test_deferred_restore_keeps_its_original_default(self, tmp_path, monkeypatch):
+        user_settings = tmp_path / "settings.json"
+        user_settings.write_text(json.dumps({"model": "haiku"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        first = v2._ClaudeModelSettingGuard(user_settings)
+        second = v2._ClaudeModelSettingGuard(user_settings)
+        assert first.begin("sonnet") is True
+        first.defer()
+        try:
+            user_settings.write_text(json.dumps({"model": "sonnet"}))
+            assert second.begin("opus") is False
+        finally:
+            second.restore()
+            first.restore()
+        assert second.begin("opus") is True
+        user_settings.write_text(json.dumps({"model": "opus"}))
+        assert second.restore() is True
         assert json.loads(user_settings.read_text()) == {"model": "haiku"}
+
+
+class TestModelSettingRecovery:
+    @pytest.fixture
+    def settings_guard(self, tmp_path, monkeypatch):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        guard = v2._ClaudeModelSettingGuard(settings)
+        yield guard, settings
+        guard.finish(timeout=0)
+
+    def test_atomic_write_failure_preserves_snapshot_and_file(self, settings_guard, monkeypatch):
+        guard, settings = settings_guard
+        assert guard.begin("sonnet")
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        replace = os.replace
+
+        def fail_replace(_source, _target):
+            raise PermissionError("read-only directory")
+
+        # Exercise an actual failed atomic write, without mocking the guard.
+        monkeypatch.setattr(os, "replace", fail_replace)
+        with pytest.raises(RuntimeError, match="Failed to write file"):
+            guard.restore()
+        assert json.loads(settings.read_text()) == {"model": "sonnet", "theme": "light"}
+        other = v2._ClaudeModelSettingGuard(settings)
+        assert other.begin("opus") is False
+        monkeypatch.setattr(os, "replace", replace)
+
+        assert guard.restore() is True
+        assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+        assert other.begin("opus") is True
+        other.finish()
+
+    def test_incomplete_settings_write_retains_recovery(self, settings_guard):
+        guard, settings = settings_guard
+        assert guard.begin("sonnet")
+        settings.write_text('{"model":')
+        with pytest.raises(ValueError):
+            guard.restore()
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        assert guard.restore() is True
+        assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+
+    def test_exit_waits_for_a_contended_settings_lock(self, settings_guard):
+        guard, settings = settings_guard
+        assert guard.begin("sonnet")
+        settings.write_text(json.dumps({"model": "sonnet"}))
+        guard.defer()
+        locked = threading.Event()
+        release = threading.Event()
+
+        def other_writer():
+            with (settings.parent / "claude-v2-model.lock").open("a+") as lock:
+                v2.acquire_exclusive_file_lock(lock, timeout=0)
+                locked.set()
+                release.wait(timeout=2)
+                v2.release_file_lock(lock)
+
+        writer = threading.Thread(target=other_writer)
+        writer.start()
+        try:
+            assert locked.wait(timeout=1)
+            assert guard.restore() is False
+            timer = threading.Timer(0.05, release.set)
+            timer.start()
+            assert guard.finish(timeout=1) is True
+            timer.join(timeout=1)
+            assert json.loads(settings.read_text()) == {"model": "haiku"}
+        finally:
+            release.set()
+            writer.join(timeout=2)
+        assert not writer.is_alive()
+
+    @pytest.mark.parametrize("before", [{"model": "haiku"}, {}])
+    def test_failed_exit_cleanup_is_bounded_and_actionable(
+        self, settings_guard, monkeypatch, capsys, before
+    ):
+        guard, settings = settings_guard
+        settings.write_text(json.dumps(before))
+        assert guard.begin("sonnet")
+        settings.write_text(json.dumps({"model": "sonnet"}))
+
+        def read_only(_path, _payload):
+            raise PermissionError("read-only directory")
+
+        monkeypatch.setattr(v2.config_io, "atomic_write_json", read_only)
+        started = time.monotonic()
+        assert guard.finish(timeout=0.02) is False
+        assert time.monotonic() - started < 1
+        assert json.loads(settings.read_text()) == {"model": "sonnet"}
+        warning = capsys.readouterr().out
+        assert "could not restore" in warning
+        assert "haiku" in warning if before else "Remove its model setting" in warning
 
 
 @requires_pty
