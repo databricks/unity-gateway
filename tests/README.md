@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+`test_cli_startup.py` guards reuse of CLI-owned option annotations and deferral of
+optional catalog imports in fresh processes. Existing CLI, routing and UI
+component tests cover parsing, help and progress activation. These checks do not
+measure live agent startup or gateway latency.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component

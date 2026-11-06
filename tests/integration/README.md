@@ -1,5 +1,8 @@
 # Integration tests
 
+`../test_cli_startup.py` covers CLI annotation reuse and optional import boundaries
+as component checks. Native agent startup and live gateway latency are unmeasured.
+
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They
