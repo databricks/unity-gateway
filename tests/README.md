@@ -1,5 +1,11 @@
 # Test suites and user journeys
 
+`TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
+normal and exceptional exit, clearing the terminal line, and leaving redirected
+output free of animation threads. These component
+checks use thread synchronization rather than elapsed-time thresholds; they do not
+establish end-to-end agent startup latency.
+
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
@@ -17,6 +23,16 @@ do not establish live workspace discovery or agent invocation coverage.
 Integration runs a freshly installed ug wheel/release, exact real Claude/Codex
 (and optionally OpenCode) versions, and the existing real e2e workspace. It has no application imports,
 mocks, monkeypatching, fake binaries/services, or fabricated ug state.
+
+Provider target component tests require explicit Messages API metadata for Claude across
+Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Responses API metadata for
+Codex across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They
+preserve multiple custom deployment names, reject missing metadata or incompatible APIs,
+and cover provider-picker exclusion, the generic empty-target error, and `allow_all_targets`
+bypass. Resolver, configuration, and launch tests verify custom-name Claude defaults and
+explicit overrides without inventing a Claude family. Other tools keep their existing filters.
+Opaque names such as `team-coding` have component coverage only; custom-provider integration
+journeys use vendor model IDs.
 
 | Category | Location | What it proves |
 | --- | --- | --- |
@@ -105,8 +121,9 @@ user's home folder is rejected, an agent failure fails the run only after the ot
 managed file is written; relay, legacy Codex and platforms without one fail), and
 `test_mcp.py` (no user-scope MCP fallback).
 `TestConfigureSharedStateMcpCleanup::test_explicit_configure_switch_restores_saved_mcp_entries` covers
-a `--global` workspace switch followed by a normal configure of the same workspace. No live or integration journey covers `--global`; the
-sudo write is mocked.
+a `--global` workspace switch followed by a normal configure of the same workspace; these
+unit checks mock the sudo write. `integration/test_ug_configure_scope.py` covers the files a real
+`--global` run writes from a shared installation, and the later launch (see `integration/README.md`).
 
 `test_mcp.py` and `test_cli.py` cover Claude/Codex MCP setup without their CLIs:
 finding an existing config, creating one with `--agents`, and reporting status
@@ -314,6 +331,14 @@ Claude's native resolver tests remain in
 `test_agent_claude.py`; installation failures are covered in `test_agents_init.py`.
 These are component checks, not live Windows coverage for every agent.
 
+`TestEnsureHooksModulesGate` in `test_agent_claude.py` checks that an enabled Claude
+feature cache avoids the config write lock, including while another writer holds it.
+Updates re-read after acquiring the real lock, preserve concurrent changes, and remove
+stale top-level flags. Dry-run, invalid/unreadable files, modes, write failures, and
+concurrent MCP writers retain coverage. These are local component checks; the controlled
+lock-contention benchmark in `scripts/benchmark_claude_hooks_gate.py` does not measure
+live agent startup or the production frequency of lock contention.
+
 `TestEnsureDatabricksCliVersion` in `test_databricks.py`
 checks that repeated launch preflights reuse a successful CLI version probe, higher
 minimums recheck insufficient cached versions, and an installer invalidates discovery.
@@ -339,7 +364,9 @@ interactive login. Metadata-helper cases return `False` for failed lookups and a
 connection kinds; later operations look up metadata again.
 A stream scenario covers tool failure, explicit login, tool refresh, task retry, and later
 reauthentication; explicit retry also works after cancellation. Discovery auth errors and
-service-scoped login-URL challenges expose recovery after earlier success. Gmail/Calendar
+service-scoped login-URL challenges expose recovery after earlier success. The authentication
+tool explicitly reports known sign-in requirements; successful discovery or login clears that
+message while leaving recovery available. Gmail/Calendar
 tool-error and login-elicitation regressions check automatic sign-in and one request replay,
 cancel/persistent-error pass-through, PAT/non-U2M exclusions, and nonblocking discovery.
 Direct URL-matcher tests reject other services/hosts and malformed URLs; representative
@@ -370,8 +397,8 @@ unacquired handles. Paths use temporary homes across simulated macOS, Windows, a
 including relocated/default Windows Local AppData, missing apps, invalid paths, creation
 failures, and parent-metadata preservation.
 
-Rendering tests cover the exact profile fields without `_comment`, complete model IDs,
-order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
+Rendering tests cover the exact profile fields (manual import enabled, no `_comment`),
+complete model IDs, order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
 are removed on replacement. Shared managed-header parsing retains its pre-Desktop behavior;
 the extra header-validation tests were removed with that out-of-scope parser change.
 The default-model warning assertion was removed because that limitation is documented
@@ -381,11 +408,11 @@ canonicalization tests are replaced by reserved-file replacement/deletion covera
 Reconfigure tests remove the legacy `_comment` field while preserving unrelated profiles,
 metadata, and previous-selection state, and verify subsequent configure is a no-op.
 Existing CLI URL normalization is unchanged. Native Desktop activation,
-GUI/helper/browser behavior, and inference remain untested by these component checks;
-they do not establish native Windows or Linux support.
+GUI/helper/browser behavior, project and chat import, and inference remain untested
+by these component checks; they do not establish native Windows or Linux support.
 The installed-CLI integration suite covers two complete Desktop journeys on Linux and Windows:
 system.ai models and subscription-relay Anthropic MPS. Both verify profile configuration,
-credential-helper execution, live Messages inference, installed Cowork MCP calls, preservation,
+credential-helper execution, live Messages inference, native profile MCP calls, preservation,
 and revert. Inference requires HTTP 200 and nonempty assistant text; MCP calls use web_search
 to find Databricks' official website without SQL compute. See
 [integration coverage](integration/README.md) for prerequisites and evidence.
@@ -447,17 +474,19 @@ tests and Cowork's frozen prompt fixture.
 `test_cli.py` and `test_desktop_configure_cli.py` cover Code eligibility for MCP-only
 Claude setup, merged server inputs for both plugins, and Code refresh after successful MCP
 reconciliation despite skill-download failures in both single-agent and managed configure.
-MCP failures preserve both plugins; Cowork retains its model and skill-success gates.
-These component tests mock both plugin setup boundaries to avoid invoking an installed
-Claude CLI; they do not establish native Desktop or live connector behavior.
+MCP failures preserve both plugins. Skill failures preserve the Cowork plugin while still
+updating native Desktop connectors after model setup. Reconfigure regressions use real
+profile writers to verify connector replacement/removal and unchanged plugin files after
+a failed download in both flows. Authentication, model discovery, downloads, and native CLI
+boundaries are controlled; these are component checks, not native Desktop or live connector coverage.
 
 CUJ6 compares parsed Claude user settings across repeated configure calls. Its
 preservation check requires the exact UG Code plugin and marketplace entries
 alongside every seeded user setting; unexpected additions or changes still fail.
 
 `test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
-generated marketplace/plugin/MCP manifests, the generated connector skill naming Claude-only
-MCP servers with its two 5-second retries, bounded descriptions and full connector lists for
+generated marketplace/plugin manifests and native profile MCP registrations, the generated connector skill naming Claude-only
+MCP servers with discovery and retry-later guidance, bounded descriptions and full connector lists for
 both Code and Cowork, and one sign-in recovery attempt for access/IP
 denials with a stop on persistent denial, the generated `SessionStart` hook command,
 current-workspace managed-skill selection,
@@ -472,8 +501,11 @@ cover managed setup after successful skill/MCP reconciliation, preservation afte
 reconciliation failures, and cleanup for unmanaged or non-Claude configurations. These tests
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
 late MCP connection, tool discovery, or inference behavior. A frozen fixture verifies that
-Cowork's skill text, including its description, stays identical to the version before the
-Code authentication changes, with either the default scope or explicit `code=False`.
+Cowork's skill text, including its description, uses discovery without startup sleeps and asks the user
+to retry shortly if tools remain unavailable, with either the default scope or explicit
+`code=False`. Generated-skill assertions also require the startup-readiness caveat, retry
+guidance, and no login based solely on a visible authentication tool. These prompt checks
+do not establish model compliance with that fallback.
 
 `test_desktop_marketplace.py` covers ordinary default/`--user` configuration writing
 only the user source, no elevation, preservation of the registered legacy root source,
@@ -483,7 +515,9 @@ skills/assets, previous-account cleanup,
 malformed marketplace metadata (including missing or nonstring directory paths),
 equivalent path aliases, source-switch failure recovery
 for both current and legacy-only plugin identities, preserved nonlocal registrations,
-and retained user source/state after refresh failures. Explicit global skips ordinary
+and retained user source/state after refresh failures. Legacy uninstall errors and timeouts
+warn while preserving the updated plugin and native connectors; retry removes the legacy
+registration and preserves unrelated plugins. Explicit global skips ordinary
 Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
 Overlapping installer/state checks and duplicate simulated-OS cases are consolidated;
 user installation, persisted account state and registered-source preservation remain covered.
@@ -505,14 +539,15 @@ This check does not establish native install/update failure recovery or Desktop 
 `--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers.
 
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
-It checks that Claude uses an available Slack tool despite a stale disconnect notice, actually
-waits and then uses a tool exposed after resume, and performs the bounded wait before reporting
-tools absent. Available/pending scenarios run with both the description alone and a skill loaded
-before the break. Assertions require actual tool calls and an answer containing a random value
-returned only by the synthetic Slack tool. The missing-tools scenario requires both real
-five-second waits and rejects invented reconnect/sign-in instructions. An idle-resume case
-shows only the skill description plus the `UserPromptSubmit` hook note and requires Claude to
-wait and use Slack instead of trusting the disconnect notice. Code cases start with cached
+It checks that Claude uses an available Slack tool despite a stale disconnect notice, discovers
+deferred tools without login, and asks the user to retry when tools remain unavailable. These
+scenarios run with both the description alone and a skill loaded before the break. Fixed-wait
+scenarios now require discovery or a retry-later response, with no sleeps or startup polling.
+A persistent authentication tool must not trigger login by itself; a separate scenario requires
+one login after discovery explicitly reports a sign-in need. Successful tasks require actual
+tool calls and an answer containing a random value returned only by the synthetic Slack tool.
+An idle-resume case shows only the skill description plus the `UserPromptSubmit` hook note and
+requires discovery and a Slack call instead of trusting the disconnect notice. Code cases start with cached
 Gmail tools and require successful authentication before service calls, through either
 native HTTP CLI login or a proxy's exposed authentication tool. Cancellation must finish
 without calling Gmail; login and service calls in the same model response are rejected.
@@ -860,9 +895,16 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_cuj_configuration`, `test_cuj_codex_inference`, `test_cuj_claude_inference` in `test_cuj2_mps_mcp.py` | Read the permanently preconfigured two-agent MPS/MCP config; run separate configure, Codex TUI, and Claude TUI cases | Configuration verifies both native MPS APIs, generated settings, and sandbox inclusion with web_search excluded; each TUI case records its exact MPS target header and model, paired HTTP 200 response, and a completed parent turn with a nonempty greeting answer. Request IDs correlate traffic without requiring the model to repeat them. Live sandbox execution is deferred because MAS cannot downscope the CI service principal. No workspace config CRUD is performed |
 | `test_ug_configure_claude_databricks` | Configure Databricks Hosted; execute the generated auth helper; launch plain `ug claude`, read a file, and open `/model` | Generated helper invokes `ug` with clean token stdout; assistant returns an unpredictable file value; native discovery caches `system.ai` models and the picker shows a discovered model without an opt-in flag; normal exit; reopen with working keyboard input |
 | `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task; normal exit |
+| `test_ug_configure_claude_foundry_mps` | Select Foundry MPS in the real configure picker; launch Claude without an explicit model | Saved provider and Haiku/Sonnet deployment defaults; completed TUI file task on Sonnet; normal exit |
+| `test_ug_claude_fresh_foundry_mps` | Launch fresh Claude with a Foundry provider and deployment name | Correct provider header; successful structured answer containing an unknown file value; no routing |
+| `test_ug_configure_claude_custom_foundry_mps` | Select custom Foundry MPS through the configure picker, then launch plain Claude | Saved provider and Sonnet default; correct Claude provider header; completed TUI file task on Sonnet; normal exit; no routing |
+| `test_ug_configure_codex_custom_azure_openai_mps` | Select custom Azure OpenAI MPS through the configure picker, then launch Codex without a provider override | Saved provider; completed TUI file task on the selected GPT deployment; normal exit; no routing |
 | `test_ug_configure_claude_bedrock_mps` | Select the restricted Bedrock MPS in the real configure picker; launch Claude without an explicit model | Saved provider in status; Sonnet 4.6 is selected from the Sonnet + Haiku allow-list and completes a TUI file task; normal exit |
+| `test_ug_configure_claude_bedrock_mantle_mps` | Select the Mantle MPS in the real configure picker; launch Claude on Opus 5.5 without a provider override | Saved provider and Claude provider header; completed TUI file task on the selected model; normal exit; no routing |
 | `test_ug_configure_codex_databricks` | Configure Databricks Hosted; execute the generated auth helper; open Codex TUI and read a file | Generated helper invokes `ug` with clean token stdout; completed assistant answer contains the file value; normal exit and reopen |
 | `test_ug_configure_codex_openai_mps` | Select OpenAI MPS in the real configure picker; launch Codex | Saved provider in status; completed TUI file task; normal exit |
+| `test_ug_configure_codex_bedrock_runtime_mps` | Select the Bedrock Runtime MPS in the real configure picker; launch Codex on its GPT-5.6 inference profile without a provider override | Saved provider in status; completed TUI file task on the selected model; normal exit; no routing |
+| `test_ug_configure_codex_bedrock_mantle_mps` | Select the Bedrock Mantle MPS in the real configure picker; launch Codex on GPT-5.6 without a provider override | Saved provider in status; completed TUI file task on the selected model; normal exit; no routing |
 | `test_ug_claude_custom_oauth_cli_boots`, `test_ug_codex_custom_oauth_cli_boots` | Launch with `ENABLE_CUSTOM_OAUTH_FROM_CLI=1`, `--workspace`, and `--client-id databricks-cli` | Real TUI reaches a usable prompt, accepts keyboard input, exits normally, and saves `client_id = databricks-cli` in its generated CLI profile; Claude also reads the OS-managed settings and requires a profile-only `apiKeyHelper` |
 | `test_case_07_configured_claude_discovers_system_models` (CUJ7), `test_case_09_fresh_claude_discovers_system_models` (integration) | Launch configured/fresh Claude with no discovery flag or source override | Claude caches `system.ai` models (including recognized Anthropic gateway aliases), includes ug's discovered family defaults, and shows a discovered picker entry; case 07 lives in `e2e_cuj/test_cuj7_model_discovery.py` |
 | `test_case_08_configured_codex_uses_default_models` (CUJ7), `test_case_10_fresh_codex_uses_default_models` (integration) | Launch configured/fresh Codex with no source override | ug discovers `system.ai` models but leaves model/reasoning preferences unset; app-server exposes native GPT entries without a generated scoped catalog; case 08 lives in `e2e_cuj/test_cuj7_model_discovery.py` |
@@ -930,7 +972,9 @@ With Claude and Codex selected there are **88 live cases** (12 marked TUI cases)
 the CodingAgentConfig input injected from a JSON file in `fixtures/managed_config/`), and **8 installation checks**. The 14 retained numbered scenarios
 comprise **24 explicit journeys**: 12 managed configured/fresh executions and 12 unmanaged
 executions. The remaining managed-fixture cases cover focused model, MCP, skills,
-saved-config replay, and lifecycle shapes, including two Claude defaults cases. Parametrization varies
+saved-config replay, and lifecycle shapes, including two Claude defaults cases. The Codex MCP
+journey checks its OS-managed native HTTP entry, exact service/resource URL, pinned OAuth
+client, and absence of a duplicate user-scope entry. Parametrization varies
 argument spelling or external routing selector, never hides the agent/provider in the test name. Duplicate boot-only cases
 are incorporated into the Databricks configuration TUI journeys.
 Generated-file cleanup and strict app-server stdout assertions remain enforced.
@@ -1258,3 +1302,16 @@ idle shutdown, and live login diagnostics with native line endings. Multi-worksp
 reach authentication worker threads without changing another session's headers.
 Credential resolution is replaced only in the PAT provider component
 check. These tests do not establish live gateway or native Windows coverage.
+
+Desktop connector component checks cover `toolSearchEnabled: true`, native stdio registration,
+removal of plugin MCP declarations on repeated setup, preserved skills/hooks, registration before
+the first Cowork session, last-connector removal, and profile rollback on plugin failure.
+CLI configure regressions retain native connectors after discovery errors or rate limits,
+apply replacements/removals despite failed skill downloads, and keep connector fallback
+scoped to the same workspace, including workspace selector headers.
+Missing, malformed, and other-workspace profiles leave plugin setup untouched.
+Installed-CLI Desktop journeys read MCP commands from `managedMcpServers` and require the
+installed plugin to contain no duplicate servers. Reconfigure comparisons include connectors
+added through `ug mcp add`, while retaining the original model/authentication-field assertions.
+These checks do not prove Desktop GUI
+tool search, reduced context usage, or native connector consent.
