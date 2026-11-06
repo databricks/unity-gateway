@@ -1,11 +1,11 @@
-"""The MDM E2E's Linux provisioning script must match the real macOS one where they overlap."""
+"""The Linux and macOS MDM provisioning scripts must install, authenticate and configure alike."""
 
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MACOS = ROOT / "scripts" / "mdm" / "macos-provision.sh"
-LINUX = ROOT / "tests" / "e2e_mdm" / "linux-provision.sh"
+LINUX = ROOT / "scripts" / "mdm" / "linux-provision.sh"
 
 
 def _commands(path: Path) -> list[str]:
@@ -19,14 +19,22 @@ def _shared(path: Path) -> list[str]:
         line
         for line in _commands(path)
         if line.startswith(
-            ("export UV_", "UG_REPO=", "UG_INSTALL_SPEC=", "uv tool install", "ug configure")
+            (
+                "export UV_",
+                "UG_REPO=",
+                "UG_INSTALL_SPEC=",
+                "uv tool install",
+                "ug configure",
+                "alias ",
+            )
         )
         or "/oidc/v1/token" in line
     ]
 
 
-def test_linux_script_matches_macos_install_token_and_configure_steps():
+def test_linux_script_matches_macos_install_token_configure_and_alias_steps():
     macos = _shared(MACOS)
     assert any("scope=" in line for line in macos)
     assert any(line.startswith("ug configure") for line in macos)
+    assert any(line.startswith("alias ") for line in macos)
     assert _shared(LINUX) == macos
