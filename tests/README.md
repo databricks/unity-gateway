@@ -678,10 +678,7 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 `test_managed_setup.py`, `test_databricks.py`, and `test_managed_budget.py`: parsing the
 `smart_defaults` wire field, reading older `spend_tiers` caches, skipping recommendations
 without tier rules, applying recommendations when tiers exist, and serializing the current
-API field. Bare `ug` and explicit Claude/Codex launches read the recommendation once even
-when it is empty, unavailable, or times out; failed bare-launch reads warn once and preserve
-the configured default. These are unit/component checks with the recommendation response
-mocked; live request-count and startup-latency coverage are not included.
+API field. These are unit/component checks; live request-count coverage is not included.
 
 `test_usage.py`, `test_budget.py`, and `test_cli.py` cover budget usage without an
 opt-in, including the five highest usage percentages, stable ties, missing percentages

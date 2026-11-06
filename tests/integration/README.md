@@ -347,10 +347,6 @@ no UG-owned `--model` option: all three spellings are forwarded to Codex in eith
 The `smart_defaults` wire schema, legacy `spend_tiers` cache reads, and recommendation
 request gating are covered by unit/component tests listed in `../README.md`. This suite
 does not yet assert live `recommendModel` request counts for configs with and without tiers.
-Component regressions in `../test_cli.py` require one recommendation read per bare or
-explicit Claude/Codex launch, including empty responses, 404s, server failures, and timeouts.
-They also check warning count and default-model fallback; responses are mocked, so they
-do not establish live startup latency or network failure behavior.
 
 ## Dedicated-workspace CUJ5
 
