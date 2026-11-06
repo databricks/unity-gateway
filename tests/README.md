@@ -1,5 +1,12 @@
 # Test suites and user journeys
 
+`test_codex_catalog_prefetch.py` checks POSIX native catalog extraction overlapping
+launch preparation, large-output handling, watchdog timeouts, wrapper/child cleanup,
+and validation before config writes. `TestManagedCodexModelSource` in `test_cli.py`
+checks scope, cleanup before handoff, and synchronous fallback for other launch shapes.
+The native benchmark simulates preflight latency; live gateway latency and Windows
+process-tree overlap are not covered by these component checks.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component

@@ -5,10 +5,14 @@ from __future__ import annotations
 import copy
 import json
 import os
+import signal
 import subprocess
 import tempfile
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import IO
 
 from ucode.codex_config import ModelVisibility
 from ucode.os_compatibility import subprocess_cross_os
@@ -17,6 +21,116 @@ from ucode.string_utils import model_picker_label
 from ucode.ui import print_warning
 
 _TIMEOUT_SECONDS = 30
+
+
+class BundledCatalogRead:
+    """One launch's owned native extraction; no metadata survives this operation."""
+
+    def __init__(
+        self,
+        binary: str,
+        process: subprocess.Popen[str],  # noqa: TID251 - annotation; spawning uses the shared helper
+        stdout: IO[str],
+        stderr: IO[str],
+    ) -> None:
+        self.binary = binary
+        self.process = process
+        self._stdout = stdout
+        self._stderr = stderr
+        self._lock = threading.Lock()
+        self._timed_out = False
+        self._closed = False
+        self._timer = threading.Timer(_TIMEOUT_SECONDS, self._expire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _kill(self) -> None:
+        # start_new_session isolates the wrapper and its native child from UG. Kill both
+        # so interrupted preflight does not leave a Node wrapper's child running.
+        try:
+            os.killpg(self.process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    def _expire(self) -> None:
+        with self._lock:
+            if not self._closed and self.process.poll() is None:
+                self._timed_out = True
+                self._kill()
+
+    def result(self) -> subprocess.CompletedProcess[str]:
+        self.process.wait(timeout=_TIMEOUT_SECONDS)
+        with self._lock:
+            if self._timed_out:
+                raise subprocess.TimeoutExpired(self.process.args, _TIMEOUT_SECONDS)
+            self._timer.cancel()
+            self._stdout.seek(0)
+            self._stderr.seek(0)
+            result = subprocess.CompletedProcess(
+                self.process.args,
+                self.process.returncode,
+                self._stdout.read(),
+                self._stderr.read(),
+            )
+        result.check_returncode()
+        return result
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._timer.cancel()
+            if self.process.poll() is None:
+                self._kill()
+        self.process.wait()
+        self._timer.join()
+
+
+@contextmanager
+def read_bundled_catalog_in_background(binary: str) -> Iterator[BundledCatalogRead | None]:
+    """Overlap offline extraction with preflight on POSIX, owning its process group.
+
+    Windows retains the synchronous path until equivalent process-tree cleanup is available.
+    Output goes to temporary files so large bundled catalogs cannot fill a pipe while UG
+    is doing other work. A timer bounds the child even during an interactive login.
+    """
+    if os.name != "posix":
+        yield None
+        return
+    with (
+        tempfile.TemporaryDirectory(prefix="ug-codex-bundled-") as home,
+        tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as stdout,
+        tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as stderr,
+    ):
+        try:
+            process = subprocess_cross_os.popen(
+                [binary, "debug", "models", "--bundled"],
+                env={**os.environ, "CODEX_HOME": home},
+                cwd=home,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout,
+                stderr=stderr,
+                text=True,
+                start_new_session=True,
+            )
+        except OSError:
+            # Leave the usual synchronous path to report a failed install after preflight.
+            yield None
+            return
+        try:
+            pending = BundledCatalogRead(binary, process, stdout, stderr)
+        except BaseException:
+            # Even a failure to create the watchdog must not abandon the native process.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            raise
+        try:
+            yield pending
+        finally:
+            pending.close()
+
 
 # Known hosted-model capabilities, following universe#2591694. These are not
 # universal non-GPT defaults: an arbitrary UC service need not support images,
@@ -176,16 +290,23 @@ def validate_codex_catalog(binary: str, catalog: dict) -> None:
         ) from None
 
 
-def prepare_codex_catalog(binary: str, names: list[str]) -> dict:
+def prepare_codex_catalog(
+    binary: str, names: list[str], *, bundled_read: BundledCatalogRead | None = None
+) -> dict:
     """Extract and validate with the launch binary; never fetch or reuse stale metadata.
 
     --bundled bypasses discovery. Validation reads an explicit local catalog.
-    Both commands run outside user/project config in a disposable CODEX_HOME.
+    Both commands run outside user/project config in disposable CODEX_HOME directories.
+    A speculative bundled read is consumed only by this launch; validation still runs here.
     Failure blocks configuration rather than falling back to remote discovery.
     """
     try:
         with tempfile.TemporaryDirectory(prefix="ug-codex-catalog-") as home:
-            result = _run_catalog_command(binary, ["debug", "models", "--bundled"], home)
+            result = (
+                bundled_read.result()
+                if bundled_read is not None and bundled_read.binary == binary
+                else _run_catalog_command(binary, ["debug", "models", "--bundled"], home)
+            )
             payload = json.loads(result.stdout)
             bundled = payload.get("models") if isinstance(payload, dict) else None
             if (

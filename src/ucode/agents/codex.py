@@ -13,7 +13,8 @@ import socket
 import sys
 import tempfile
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from subprocess import CalledProcessError, TimeoutExpired, list2cmdline
 from xml.sax.saxutils import escape
@@ -104,7 +105,12 @@ from ucode.ui import print_note, print_success, print_warning_err
 from ucode.workspace import workspace_headers, workspace_id_args
 
 from .args import LaunchOptions
-from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
+from .codex_catalog import (
+    BundledCatalogRead,
+    prepare_codex_catalog,
+    read_bundled_catalog_in_background,
+    validate_codex_catalog,
+)
 from .request_tags import request_tags_header_value
 
 CODEX_CONFIG_DIR = Path.home() / ".codex"
@@ -480,12 +486,23 @@ def configured_paths(state: dict) -> list[str]:
     return paths
 
 
+@contextmanager
+def prefetch_static_catalog() -> Iterator[BundledCatalogRead | None]:
+    """Read native presets while launch preflight runs, after bootstrap/version checks."""
+    if machine_wide_only() or _use_legacy_layout():
+        yield None
+        return
+    with read_bundled_catalog_in_background(SPEC["binary"]) as pending:
+        yield pending
+
+
 def write_tool_config(
     state: dict,
     model: str | None = None,
     provider: str | None = None,
     parent_schema: str | None = None,
     relayed: bool = False,
+    bundled_catalog_read: BundledCatalogRead | None = None,
 ) -> dict:
     workspace = state["workspace"]
     # Leave model selection to Codex. The gateway still receives the configured
@@ -566,7 +583,11 @@ def write_tool_config(
     # catalog enabled or partially rewrite the user's configuration.
     try:
         catalog = (
-            prepare_codex_catalog(SPEC["binary"], static_models)
+            prepare_codex_catalog(
+                SPEC["binary"],
+                static_models,
+                **({"bundled_read": bundled_catalog_read} if bundled_catalog_read else {}),
+            )
             if static_models and not provider
             else None
         )

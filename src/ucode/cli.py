@@ -11,7 +11,7 @@ import sys
 import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
-from contextlib import contextmanager, redirect_stdout
+from contextlib import ExitStack, contextmanager, redirect_stdout
 from dataclasses import asdict
 from enum import StrEnum
 from importlib import metadata
@@ -3781,6 +3781,7 @@ def _launch_tool(
     routing_unsupported: bool = False,
 ) -> None:
     previous = {}
+    catalog_preparation = ExitStack()
     try:
         tool = normalize_tool(tool_name)
         routing_chosen = routing_already_chosen or smart_routing_config.known_version()
@@ -3937,6 +3938,16 @@ def _launch_tool(
         # tools like pi which read multiple model bundles never run on
         # stale state from before a tool added a new bundle). Under a provider
         # this heavy discovery is skipped (only a web-search model is fetched).
+        bundled_codex_catalog = None
+        if (
+            tool == AGENT_CODEX
+            and not skip_preflight
+            and not provider
+            and managed_static_models(managed or {}, tool)
+        ):
+            bundled_codex_catalog = catalog_preparation.enter_context(
+                codex_agent.prefetch_static_catalog()
+            )
         configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
         family_defaults = (
             claude_agent.get_family_defaults(
@@ -4209,7 +4220,10 @@ def _launch_tool(
             custom_model=None,
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
+            **({"bundled_codex_catalog": bundled_codex_catalog} if bundled_codex_catalog else {}),
         )
+        # Before exec: replacing UG would otherwise bypass context cleanup.
+        catalog_preparation.close()
         # A plain launch keeps Claude Code's own starting model, as its own picker did.
         if (
             picker_catalog
@@ -4293,7 +4307,10 @@ def _launch_tool(
         print_err("Interrupted.")
         raise typer.Exit(130) from None
     finally:
-        smart_routing_v2.restore_smart_routing_env(previous)
+        try:
+            catalog_preparation.close()
+        finally:
+            smart_routing_v2.restore_smart_routing_env(previous)
 
 
 # Launch-only escape hatch for managed/headless launchers (e.g. omnigent) that

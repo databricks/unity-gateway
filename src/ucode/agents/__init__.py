@@ -49,6 +49,7 @@ from ucode.ui import (
 from . import antigravity, claude, codex, copilot, gemini, kilo, opencode, pi
 from .args import LaunchOptions as LaunchOptions
 from .args import explicit_model_arg_value as explicit_model_arg_value
+from .codex_catalog import BundledCatalogRead
 
 _MODULES = {
     "codex": codex,
@@ -574,11 +575,17 @@ def configure_tool(
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
     derive_managed_model_inputs: bool = False,
+    bundled_codex_catalog: BundledCatalogRead | None = None,
 ) -> dict:
     result: dict | tuple[dict, str]
     if tool == AGENT_CODEX:
         result = codex.write_tool_config(
-            state, model, provider=provider, parent_schema=parent_schema, relayed=relayed
+            state,
+            model,
+            provider=provider,
+            parent_schema=parent_schema,
+            relayed=relayed,
+            **({"bundled_catalog_read": bundled_codex_catalog} if bundled_codex_catalog else {}),
         )
     elif tool == AGENT_CLAUDE:
         # A Model Provider Service or parent schema routes by header and discovers models natively,

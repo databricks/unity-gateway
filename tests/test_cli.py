@@ -2167,6 +2167,91 @@ def test_claude_discovery_changes_do_not_break_other_managed_providers():
 
 
 class TestManagedCodexModelSource:
+    def test_disabled_codex_does_not_start_catalog_extraction(self, monkeypatch):
+        monkeypatch.setattr(
+            cli_mod.codex_agent,
+            "prefetch_static_catalog",
+            lambda: pytest.fail("a policy-blocked launch must not start native preparation"),
+        )
+        with _launch_policy_patches({"enabled_agents": {"claude": {}}}) as calls:
+            result = runner.invoke(app, ["codex"])
+        assert result.exit_code == 1, result.output
+        calls["shared"].assert_not_called()
+        calls["configure"].assert_not_called()
+        calls["launch"].assert_not_called()
+
+    @pytest.mark.parametrize("failure_stage", [None, "preflight", "config"])
+    def test_static_catalog_read_is_scoped_to_preparation(self, monkeypatch, failure_stage):
+        managed = {"enabled_agents": {"codex": {"model_config": {"model_services": ["gpt-5"]}}}}
+        pending = object()
+        events = []
+
+        @contextlib.contextmanager
+        def prefetch():
+            events.append("extract")
+            try:
+                yield pending
+            finally:
+                events.append("close")
+
+        monkeypatch.setattr(cli_mod.codex_agent, "prefetch_static_catalog", prefetch)
+        with _launch_policy_patches(managed) as calls:
+
+            def shared(*args, **kwargs):
+                assert events == ["extract"]
+                events.append("preflight")
+                if failure_stage == "preflight":
+                    raise RuntimeError("preflight failed")
+                return dict(calls["state"])
+
+            def configure(*args, **kwargs):
+                assert kwargs["bundled_codex_catalog"] is pending
+                assert args[1]["codex_static_models"] == ["gpt-5"]
+                events.append("config")
+                if failure_stage == "config":
+                    raise RuntimeError("config failed")
+                return dict(calls["state"])
+
+            def launch(*args, **kwargs):
+                assert events[-1] == "close"
+                events.append("launch")
+
+            calls["shared"].side_effect = shared
+            calls["configure"].side_effect = configure
+            calls["launch"].side_effect = launch
+            result = runner.invoke(app, ["codex"])
+
+        assert result.exit_code == (1 if failure_stage else 0), result.output
+        assert events == (
+            ["extract", "preflight", "close"]
+            if failure_stage == "preflight"
+            else ["extract", "preflight", "config", "close"]
+            if failure_stage == "config"
+            else ["extract", "preflight", "config", "close", "launch"]
+        )
+
+    @pytest.mark.parametrize(
+        "model_config,args",
+        [
+            ({"model_services": ["gpt-5"]}, ["codex", "--skip-preflight"]),
+            ({"model_provider_service": "main.default.provider"}, ["codex"]),
+            ({"unity_catalog_location": "main.default"}, ["codex"]),
+            ({"model_services": ["gpt-5"]}, ["claude"]),
+        ],
+    )
+    def test_no_speculative_extraction_for_other_launch_shapes(
+        self, monkeypatch, model_config, args
+    ):
+        managed = {"enabled_agents": {"codex": {"model_config": model_config}, "claude": {}}}
+        monkeypatch.setattr(
+            cli_mod.codex_agent,
+            "prefetch_static_catalog",
+            lambda: pytest.fail("this launch does not need an overlapped static catalog"),
+        )
+        with _launch_policy_patches(managed):
+            result = runner.invoke(app, args)
+        assert result.exit_code == 0, result.output
+
     @pytest.mark.parametrize(
         ("model_config", "expected_provider", "expected_parent"),
         [
