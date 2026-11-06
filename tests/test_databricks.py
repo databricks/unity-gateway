@@ -2175,6 +2175,47 @@ class TestWalkCatalogSchemas:
         assert not failures
         assert set(collected) == {"fast.first", "slow.later"}
 
+    def test_busy_probe_queue_does_not_starve_catalog_listing(self, monkeypatch):
+        third_catalog_started = threading.Event()
+        release_probes = threading.Event()
+        failures: list[Exception] = []
+
+        def fake_pages(url, token, *, items_key, **kwargs):
+            if items_key == "catalogs":
+                return [{"name": name} for name in ("first", "second", "third")], None
+            catalog = kwargs["extra_params"]["catalog_name"]
+            if catalog == "third":
+                third_catalog_started.set()
+            return ([{"name": f"s{i}"} for i in range(30)] if catalog == "first" else []), None
+
+        def probe(catalog, schema):
+            release_probes.wait(timeout=3)
+            return f"{catalog}.{schema}"
+
+        def run_walk():
+            try:
+                db_mod.walk_catalog_schemas(
+                    WS,
+                    "token",
+                    deadline=time.monotonic() + 5,
+                    probe=probe,
+                    collect=lambda *args: None,
+                    max_workers=2,
+                )
+            except Exception as exc:  # noqa: BLE001
+                failures.append(exc)
+
+        monkeypatch.setattr(db_mod, "_paginated_json_items", fake_pages)
+        thread = threading.Thread(target=run_walk, daemon=True)
+        thread.start()
+        try:
+            assert third_catalog_started.wait(timeout=1.5)
+        finally:
+            release_probes.set()
+            thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert not failures
+
 
 class TestListAllMcpServices:
     """Workspace-wide walk: catalogs -> schemas -> per-schema mcp-services."""

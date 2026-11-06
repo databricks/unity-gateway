@@ -3484,21 +3484,34 @@ def walk_catalog_schemas[T](
     if time.monotonic() > deadline:
         return "deadline exceeded while listing UC catalogs"
 
-    jobs: queue.Queue[tuple[str, str, str | None]] = queue.Queue()
+    catalog_jobs: queue.Queue[str] = queue.Queue()
+    probe_jobs: queue.Queue[tuple[str, str]] = queue.Queue()
     results: queue.Queue[tuple[str, Any, str]] = queue.Queue()
     finished = threading.Event()
     worker_count = max(1, max_workers)
-    catalog_iter = iter(catalog_names)
+    catalog_workers = max(1, worker_count // 2)
     catalogs_remaining = len(catalog_names)
     schemas_total = 0
     schemas_done = 0
 
-    def worker() -> None:
+    for catalog in catalog_names:
+        catalog_jobs.put(catalog)
+
+    def worker(list_catalogs: bool) -> None:
         while not finished.is_set() and not should_stop():
-            try:
-                kind, catalog, schema = jobs.get(timeout=_WALK_POLL_INTERVAL)
-            except queue.Empty:
-                continue
+            if list_catalogs:
+                try:
+                    catalog = catalog_jobs.get_nowait()
+                except queue.Empty:
+                    list_catalogs = False
+                    continue
+                kind = "catalog"
+            else:
+                try:
+                    catalog, schema = probe_jobs.get(timeout=_WALK_POLL_INTERVAL)
+                except queue.Empty:
+                    continue
+                kind = "probe"
             try:
                 if kind == "catalog":
                     value = _paginated_json_items(
@@ -3509,19 +3522,15 @@ def walk_catalog_schemas[T](
                         timeout=_UC_LIST_HTTP_TIMEOUT,
                     )
                 else:
-                    assert schema is not None
                     value = probe(catalog, schema)
             except Exception:  # noqa: BLE001
                 value = _PROBE_FAILED
             results.put((kind, value, catalog))
 
-    # Keep some catalog requests in flight while the remaining workers can probe schemas as soon
-    # as they arrive. No more than `max_workers` requests run concurrently.
-    catalog_slots = max(1, worker_count // 2)
-    for _ in range(min(catalog_slots, catalogs_remaining)):
-        jobs.put(("catalog", next(catalog_iter), None))
-    for _ in range(worker_count):
-        threading.Thread(target=worker, daemon=True).start()
+    # Reserve workers for catalog enumeration so a busy catalog's probes cannot hide later
+    # catalogs. Once catalogs are exhausted, those workers help drain the probe queue.
+    for index in range(worker_count):
+        threading.Thread(target=worker, args=(index < catalog_workers,), daemon=True).start()
 
     try:
         while (catalogs_remaining or schemas_done < schemas_total) and not should_stop():
@@ -3531,15 +3540,13 @@ def walk_catalog_schemas[T](
                 continue
             if kind == "catalog":
                 catalogs_remaining -= 1
-                if next_catalog := next(catalog_iter, None):
-                    jobs.put(("catalog", next_catalog, None))
                 if value is not _PROBE_FAILED:
                     schemas, _ = value
                     for schema in schemas:
                         name = schema.get("name")
                         if isinstance(name, str) and name and name != "information_schema":
                             schemas_total += 1
-                            jobs.put(("probe", catalog, name))
+                            probe_jobs.put((catalog, name))
             else:
                 schemas_done += 1
                 if value is not _PROBE_FAILED:
