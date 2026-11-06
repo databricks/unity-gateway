@@ -593,7 +593,9 @@ def _launch_preflight_identity(state: dict, token: str, skip_model_discovery: bo
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
 
-def _can_reuse_launch_preflight(state: dict, identity: str, fields: set[str]) -> bool:
+def _can_reuse_launch_preflight(
+    state: dict, identity: str, fields: set[str], required_fields: set[str]
+) -> bool:
     stamp = state.get(_LAUNCH_PREFLIGHT_STATE_KEY)
     if (
         not isinstance(stamp, dict)
@@ -615,11 +617,11 @@ def _can_reuse_launch_preflight(state: dict, identity: str, fields: set[str]) ->
         and isinstance(empty_reasons, dict)
         and empty_reasons.keys() <= {"gemini", "oss"}
         and all(isinstance(reason, str) for reason in empty_reasons.values())
-        and _has_preflight_models(state, fields)
+        and _has_preflight_models(state, fields, required_fields)
     )
 
 
-def _has_preflight_models(state: dict, fields: set[str]) -> bool:
+def _has_preflight_models(state: dict, fields: set[str], required_fields: set[str]) -> bool:
     """Require valid catalogs, allowing successfully discovered empty optional families."""
     for field in fields:
         value = state.get(field)
@@ -639,7 +641,7 @@ def _has_preflight_models(state: dict, fields: set[str]) -> bool:
             models = value
         if not isinstance(models, list):
             return False
-        if not models and field not in {"oss_models", "gemini_models"}:
+        if not models and field in required_fields:
             return False
         if not all(isinstance(model, str) and model.strip() for model in models):
             return False
@@ -868,6 +870,10 @@ def configure_shared_state(
     }
     if skip_model_discovery:
         discovery_fields = {"web_search_model"} if want_claude else set()
+    optional_fields = {"oss_models"}
+    if not {"gemini", "antigravity"}.intersection(tools or ()):
+        optional_fields.add("gemini_models")
+    required_fields = discovery_fields - optional_fields
     if not cli_custom_oauth:
         token = get_databricks_token(workspace, profile)
     preflight_identity = _launch_preflight_identity(state, token, skip_model_discovery)
@@ -875,7 +881,9 @@ def configure_shared_state(
         reuse_preflight
         and not force_login
         and previous_key == key
-        and _can_reuse_launch_preflight(state, preflight_identity, discovery_fields)
+        and _can_reuse_launch_preflight(
+            state, preflight_identity, discovery_fields, required_fields
+        )
     ):
         save_state(state)
         _purge_after_workspace_switch(state, workspace, previous_key, key)
@@ -1024,7 +1032,7 @@ def configure_shared_state(
         model_service_probe.resource_available
         and model_listing_complete
         and not discovery_failed
-        and _has_preflight_models(state, discovery_fields)
+        and _has_preflight_models(state, discovery_fields, required_fields)
         and provider_search_complete
     )
     if preflight_succeeded:

@@ -7117,24 +7117,6 @@ class TestConfigureSharedStateUsePat:
         assert "v2" not in message.lower()
         assert "v3" not in message.lower()
 
-    def test_explicit_reconfigure_in_process_reprobes_the_gateway(self, monkeypatch):
-        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
-        calls: list[str] = []
-
-        def fake_get(url, token, **kwargs):
-            calls.append(url)
-            return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
-
-        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
-        monkeypatch.setattr(
-            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
-        )
-
-        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
-        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
-
-        assert len(calls) == 2
-
     def test_use_pat_without_pat_profile_raises(self, monkeypatch):
         cli_mod, logins, _, _ = self._stub_deps(monkeypatch, pat_token=None)
 
@@ -7529,6 +7511,7 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
             assert state["codex_models"] == ["system.ai.gpt-5"]
         # Explicit reconfiguration refreshes both requests, including within one process.
         assert len(requests) == 4
+        assert sum("parent=" in url for url in requests) == 2
 
 
 class TestConfiguredLaunchPreflightCache:
@@ -7657,6 +7640,48 @@ class TestConfiguredLaunchPreflightCache:
                 == (second["_discovery_reasons"]["gemini"])
                 == "foundation-models listing returned no endpoints"
             )
+
+    @pytest.mark.parametrize("tool", ["gemini", "antigravity"])
+    def test_required_gemini_family_retries_after_successful_empty_discovery(
+        self, preflight, monkeypatch, tool
+    ):
+        from ucode.agents import resolve_launch_model
+
+        claude, codex, _gemini, oss, reason = preflight.listing.return_value
+        preflight.listing.return_value = (claude, codex, [], oss, reason)
+        payload = {"endpoints": []}
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: (payload, None))
+        monkeypatch.setattr(cli_mod, "discover_gemini_models", db_mod.discover_gemini_models)
+        # A stamp valid for Pi's optional Gemini family must not admit a Gemini-only launch.
+        preflight.configure(tools=["pi"])
+
+        empty = preflight.configure(tools=[tool])
+
+        assert "launch_preflight" not in empty
+        with pytest.raises(RuntimeError, match="No models available"):
+            resolve_launch_model(tool, empty, None)
+        model = "databricks-gemini-3-flash"
+        payload["endpoints"] = [
+            {
+                "name": model,
+                "config": {
+                    "served_entities": [
+                        {
+                            "foundation_model": {
+                                "ai_gateway_v2_supported": True,
+                                "api_types": ["gemini/v1/generateContent"],
+                            }
+                        }
+                    ]
+                },
+            }
+        ]
+
+        recovered = preflight.configure(tools=[tool])
+
+        assert preflight.listing.call_count == preflight.probe.call_count == 3
+        assert resolve_launch_model(tool, recovered, None) == (recovered, model)
+        assert "launch_preflight" in recovered
 
     @pytest.mark.parametrize("tool", ["codex", "copilot"])
     def test_complete_empty_uc_catalog_keeps_successful_fallbacks_reusable(

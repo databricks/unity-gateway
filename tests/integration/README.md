@@ -424,24 +424,11 @@ attempt and fresh tokens on async proxy retries. This suite
 does not assert live token-fetch counts, stale-profile recovery, or launch-time
 savings; credential/profile routing is unchanged.
 
-Overlapping the model-service listing with the gateway probe is covered only by
-component tests in `../test_cli.py`: overlap, probe failure without waiting, listing
-errors, the `skip_model_discovery` and `skip_preflight` paths, and explicit reconfiguration
-refreshing the process-local probe and listing caches. The same component file covers bounded
-persisted success reuse, fresh auth and credential/workspace/profile invalidation, model-field and
-discovery-mode coverage, successfully empty optional Gemini/OSS families, malformed/expired
-stamps, retained empty-family diagnostics, and failed-refresh invalidation.
-`../test_databricks.py` checks that interrupted pagination retains usable API metadata and
-completeness reasons without marking the catalog reusable. Malformed responses and HTTP failures
-remain distinct from confirmed empty catalogs; malformed individual entries do not discard valid
-neighbors. JSON null and partial listings followed by successful family fallbacks remain retryable.
-Complete empty UC listings with successful Codex/Copilot fallbacks can be reused.
-This suite does not assert live request overlap, cache timing, or launch-time
-savings.
-Component HTTP-boundary cases also cover same-command probe reuse across auto-setup/mode changes,
-explicit refresh, and separation by credential, routing headers, and workspace selectors.
-They also cover pending workspace cleanup on warm reuse and a failed preferred Copilot catalog
-remaining retryable despite successful fallback models.
+The [component inventory](../README.md) documents probe/listing overlap and
+`TestConfiguredLaunchPreflightCache`, including required versus optional model families,
+failure recovery, workspace cleanup, and credential/routing isolation. These checks control
+HTTP and clock boundaries; this integration suite does not establish live cache timing,
+request overlap, or end-to-end startup latency.
 
 `test_ug_configure_scope.py` runs, for Claude and Codex separately (Linux/macOS only), plain
 `ug configure`, `--user`, `UG_SKIP_OS_SETTINGS=1`, and `--global` over a user-owned

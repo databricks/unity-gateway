@@ -639,6 +639,7 @@ and listing caches. The skip-preflight tests also reject starting a background w
 `TestConfiguredLaunchPreflightCache` checks persisted five-minute success reuse after fresh auth,
 credential/profile/auth-mode/workspace-ID changes, family and discovery-mode coverage,
 reuse with real successful-empty Gemini/OSS diagnostics (retained on warm launches),
+required Gemini models for Gemini/Antigravity launches when creating and reusing stamps,
 and Codex/Copilot reuse after a complete empty UC listing with successful family fallbacks,
 expired/future/malformed stamps and model data, explicit refresh, and auth/probe/listing failure
 invalidation. Partial-pagination regressions retain API metadata for Copilot and completeness
