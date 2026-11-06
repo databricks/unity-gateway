@@ -54,7 +54,6 @@ def clean_environment(home: Path) -> dict[str, str]:
         "COMSPEC",
         "LANG",
         "LC_ALL",
-        "OPENSSL_FORCE_FIPS_MODE",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "REQUESTS_CA_BUNDLE",

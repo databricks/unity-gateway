@@ -38,16 +38,6 @@ def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
     assert clean_environment(tmp_path)["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
 
 
-@pytest.mark.parametrize("mode", [None, "0", "1"])
-def test_isolated_sessions_preserve_openssl_mode(tmp_path, monkeypatch, mode):
-    if mode is None:
-        monkeypatch.delenv("OPENSSL_FORCE_FIPS_MODE", raising=False)
-    else:
-        monkeypatch.setenv("OPENSSL_FORCE_FIPS_MODE", mode)
-
-    assert clean_environment(tmp_path).get("OPENSSL_FORCE_FIPS_MODE") == mode
-
-
 def test_integration_ci_pins_a_skills_capable_databricks_cli():
     from ucode.databricks import SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION
 

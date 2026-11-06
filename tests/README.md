@@ -18,11 +18,10 @@ Integration runs a freshly installed ug wheel/release, exact real Claude/Codex
 (and optionally OpenCode) versions, and the existing real e2e workspace. It has no application imports,
 mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 
-Isolated runs preserve the host's explicit `OPENSSL_FORCE_FIPS_MODE` setting.
-`test_integration_contract.py` covers enabled, disabled, and absent values.
-
 Provider target component tests cover shared selection for Claude on Foundry and
 preservation of existing target lists for other providers and tools, including Bedrock.
+Restricted Foundry and Bedrock services share a provider-neutral missing-target error;
+component tests verify the error and the `allow_all_targets` bypass.
 
 | Category | Location | What it proves |
 | --- | --- | --- |

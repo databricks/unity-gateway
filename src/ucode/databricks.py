@@ -3200,26 +3200,19 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
                 f"which only {display} can use. Pick a Model Provider Service with an API key "
                 f"for {tool}."
             )
-    if (
+    missing_compatible_targets = (
         tool in _CLAUDE_ONLY_BEDROCK_TOOLS
         and provider_type in BEDROCK_PROVIDER_TYPES
-        and not service.get("allow_all_targets")
         and not map_claude_family_models(service.get("targets") or [])
-    ):
-        return (
-            f"Model provider service '{service_name}' exposes no Claude models — "
-            f"add Claude targets to it, enable allow_all_targets, or pick a different service."
-        )
-    if (
+    ) or (
         tool == "claude"
         and provider_type == MICROSOFT_FOUNDRY_PROVIDER_TYPE
-        and not service.get("allow_all_targets")
         and not provider_targets_for_tool(tool, service)
-    ):
+    )
+    if not service.get("allow_all_targets") and missing_compatible_targets:
         return (
-            f"Model provider service '{service_name}' exposes no Anthropic Messages targets — "
-            f"add a Foundry Claude deployment with native_api_types=['{API_ANTHROPIC_MESSAGES}'] "
-            "or pick a different service."
+            f"Model provider service '{service_name}' exposes no compatible models for {tool} — "
+            "add compatible targets, enable allow_all_targets, or pick a different service."
         )
     return None
 

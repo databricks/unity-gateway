@@ -660,7 +660,6 @@ def main() -> int:
         "PATHEXT",
         "LANG",
         "LC_ALL",
-        "OPENSSL_FORCE_FIPS_MODE",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "REQUESTS_CA_BUNDLE",

@@ -1326,7 +1326,7 @@ class TestResolveProviderService:
             "copilot", "main.schema2.bedrock-titan-svc", WS, "token"
         )
         assert service is None
-        assert "no Claude models" in error
+        assert "no compatible models for copilot" in error
 
     def test_copilot_rejects_a_subscription_relay(self, monkeypatch):
         payload = {
@@ -1355,7 +1355,7 @@ class TestResolveProviderService:
             "claude", "main.schema2.bedrock-titan-svc", WS, "token"
         )
         assert service is None
-        assert "no Claude models" in error
+        assert "no compatible models for claude" in error
 
     def test_bedrock_allow_all_targets_ok(self, monkeypatch):
         # allow_all_targets routes any model, so no explicit Claude target is needed — the model id
@@ -1432,7 +1432,7 @@ class TestResolveProviderService:
         _, claude_error = db_mod.resolve_provider_service(
             "claude", "main.schema2.gpt-oss-svc", WS, "token"
         )
-        assert "no Claude models" in claude_error
+        assert "no compatible models for claude" in claude_error
 
     def test_not_found_lists_usable(self, monkeypatch):
         self._patch(monkeypatch)
@@ -1556,6 +1556,34 @@ def test_provider_targets_preserve_other_provider_and_tool_combinations(tool, pr
 
 
 class TestServiceUsableForTool:
+    @pytest.mark.parametrize(
+        ("tool", "provider_type"),
+        [
+            ("claude", "microsoft_foundry"),
+            ("claude", "amazon_bedrock"),
+            ("claude", "bedrock_mantle"),
+            ("copilot", "amazon_bedrock"),
+            ("copilot", "bedrock_mantle"),
+            ("vscode", "amazon_bedrock"),
+            ("vscode", "bedrock_mantle"),
+        ],
+    )
+    def test_missing_compatible_targets_error(self, tool, provider_type):
+        service = {
+            "provider_type": provider_type,
+            "targets": ["gpt-5.4"],
+            "target_api_types": {"gpt-5.4": ("openai/v1/responses",)},
+        }
+
+        reason = db_mod._provider_service_unusable_reason(tool, service, "main.test.models")
+
+        assert reason == (
+            f"Model provider service 'main.test.models' exposes no compatible models for {tool} — "
+            "add compatible targets, enable allow_all_targets, or pick a different service."
+        )
+        service["allow_all_targets"] = True
+        assert db_mod._provider_service_unusable_reason(tool, service, "main.test.models") is None
+
     @pytest.mark.parametrize(
         ("targets", "target_api_types", "allow_all", "usable"),
         [
