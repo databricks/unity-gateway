@@ -1553,10 +1553,11 @@ def _configure_workspace_command(
                         configure_claude_desktop(configured, parent_schema=parent_schema)
                 else:
                     failed_tools.append(tool_name)
-            elif tool_name in selected_self_managed:
+            else:
                 failed_tools.append(tool_name)
+                management = "self-managed " if tool_name in selected_self_managed else ""
                 print_warning(
-                    f"Skipping self-managed {TOOL_SPECS[tool_name]['display']}: unavailable on "
+                    f"Skipping {management}{TOOL_SPECS[tool_name]['display']}: unavailable on "
                     "this workspace. Run `ug status` to inspect model availability."
                 )
         if not configured_tools:

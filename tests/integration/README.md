@@ -1481,7 +1481,7 @@ Tests use each runner's existing credentials and installed Claude/Codex CLIs.
 `test_ug_configure_selected_managed_agents.py` selects Claude from a Claude/Codex/Pi fixture and
 requires a real TUI file answer, unchanged Codex managed settings at the platform's path, and
 preserved unselected binaries/files. Shared MCPs/skills are outside this fixture's scope.
-Self-managed selection failures and global failure status have component coverage in
+Admin- and self-managed selection failures and global failure status have component coverage in
 `../test_cli.py::TestConfigureAgentsSelection`.
 
 The managed lanes run `managed_fixture` journeys (and `workspace_switch`) on the single managed

@@ -5798,15 +5798,23 @@ class TestConfigureAgentsSelection:
         assert "Self-managed agents: Gemini" in output
         assert "Coding Agents:" not in output
 
-    @pytest.mark.parametrize("failure", ["unavailable", "configure", "install"])
-    def test_global_selection_reports_failed_self_managed_agent(self, monkeypatch, capsys, failure):
+    @pytest.mark.parametrize(
+        ("failure", "self_managed"),
+        [("unavailable", True), ("configure", True), ("install", True), ("unavailable", False)],
+    )
+    def test_global_selection_reports_failed_selected_agent(
+        self, monkeypatch, capsys, failure, self_managed
+    ):
         state = {**MINIMAL_STATE, "available_tools": [], "self_managed_agents": ["claude"]}
+        managed = {"enabled_agents": {"codex": {}}}
+        if not self_managed:
+            managed["enabled_agents"]["claude"] = {}
         monkeypatch.setattr(cli_mod, "load_state", lambda: state)
         monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
         monkeypatch.setattr(
             cli_mod,
             "refresh_managed_config",
-            lambda *a, **k: ({"enabled_agents": {"codex": {}}}, False),
+            lambda *a, **k: (managed, False),
         )
         monkeypatch.setattr(cli_mod, "machine_wide_only", lambda: True)
         monkeypatch.setattr(cli_mod, "resolve_state", lambda managed, s, tool: s)
