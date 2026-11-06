@@ -359,10 +359,6 @@ no UG-owned `--model` option: all three spellings are forwarded to Codex in eith
 The `smart_defaults` wire schema, legacy `spend_tiers` cache reads, and recommendation
 request gating are covered by unit/component tests listed in `../README.md`. This suite
 does not yet assert live `recommendModel` request counts for configs with and without tiers.
-`../test_cli.py::TestBudgetRecommendationAtLaunch` also covers one budget read per bare
-or explicit launch after empty/error responses, one warning,
-and preserving the selected fallback or recommended model. These component checks
-do not establish live timeout or end-to-end p90 improvements.
 
 ## Dedicated-workspace CUJ5
 
