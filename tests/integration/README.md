@@ -1,8 +1,10 @@
 # Integration tests
 
 Provider target component tests filter Claude targets by Messages API metadata across
-Anthropic, Bedrock, Mantle, Foundry, and custom providers, preserving custom deployment names. They cover
-the generic empty-target error, `allow_all_targets` bypass, and custom defaults through
+Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
+metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They
+preserve multiple custom deployment names and cover provider-picker exclusion, the generic
+empty-target error, `allow_all_targets` bypass, and custom Claude defaults through
 configuration and launch with explicit overrides. Other tools retain existing filtering.
 Opaque deployment names such as `team-coding` have component coverage only; the custom-provider
 live journeys below use vendor model IDs.

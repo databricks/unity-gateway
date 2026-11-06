@@ -3198,14 +3198,11 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
 def provider_targets_for_tool(tool: str, service: dict) -> list[str]:
     """Return declared targets compatible with the tool's provider API."""
     targets = service.get("targets") or []
-    if tool == "claude":
+    if tool in ("claude", "codex"):
         # MPS requests pass through without API translation.
+        api_type = API_ANTHROPIC_MESSAGES if tool == "claude" else API_OPENAI_RESPONSES
         target_api_types = service.get("target_api_types") or {}
-        return [
-            target
-            for target in targets
-            if API_ANTHROPIC_MESSAGES in (target_api_types.get(target) or ())
-        ]
+        return [target for target in targets if api_type in (target_api_types.get(target) or ())]
     if tool in ("copilot", "vscode") and service.get("provider_type") in BEDROCK_PROVIDER_TYPES:
         return [target for target in targets if _bedrock_target_family(target) is not None]
     return targets

@@ -25,12 +25,14 @@ Integration runs a freshly installed ug wheel/release, exact real Claude/Codex
 mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 
 Provider target component tests require explicit Messages API metadata for Claude across
-Anthropic, Bedrock, Mantle, Foundry, and custom providers. They preserve custom deployment names, reject
-missing metadata or incompatible APIs, and cover the generic empty-target error and
-`allow_all_targets` bypass. Resolver, configuration, and launch tests verify custom-name
-defaults and explicit overrides without inventing a Claude family. Other tools keep their
-existing filters. Opaque names such as `team-coding` have component coverage only; custom-provider
-integration journeys use vendor model IDs.
+Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Responses API metadata for
+Codex across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They
+preserve multiple custom deployment names, reject missing metadata or incompatible APIs,
+and cover provider-picker exclusion, the generic empty-target error, and `allow_all_targets`
+bypass. Resolver, configuration, and launch tests verify custom-name Claude defaults and
+explicit overrides without inventing a Claude family. Other tools keep their existing filters.
+Opaque names such as `team-coding` have component coverage only; custom-provider integration
+journeys use vendor model IDs.
 
 | Category | Location | What it proves |
 | --- | --- | --- |
