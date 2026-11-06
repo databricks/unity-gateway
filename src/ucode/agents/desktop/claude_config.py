@@ -89,6 +89,7 @@ def render_profile(
         "modelDiscoveryEnabled": False,
         "toolSearchEnabled": True,
         "inferenceModels": models,
+        "claudeAiImport": {"enabled": True},
     }
     if custom_headers is not None:
         profile["inferenceCustomHeaders"] = dict(custom_headers)
