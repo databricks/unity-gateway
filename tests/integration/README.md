@@ -6,6 +6,15 @@ UG's profile, while missing packages, timeouts, launch errors, and query failure
 it absent. Query failures report their actual cause instead of asking users to open
 an app that is already installed. Native Cowork CI still requires completed inference.
 
+Native macOS Cowork inference is covered by `cowork-inference-macos` in
+`.github/workflows/integration.yml`, alongside the Windows job. On a disposable
+`macos-15-intel` runner it installs signed Claude Desktop 4.23118.0, configures
+installed UG through its CLI, and asserts a completed exact-answer task on
+`system.ai.claude-haiku-4-5` through macOS Accessibility. Both jobs block the
+integration gate. Apple Silicon, Code-tab, MCP, and file operations remain uncovered.
+`test_macos_cowork_harness.py` checks sanitized evidence, exact enabled controls,
+and rejection of wrong/partial/unfinished responses; it is helper coverage only.
+
 Windows Cowork desktop coverage and required integration gating are
 documented in the [main test guide](../README.md).
 

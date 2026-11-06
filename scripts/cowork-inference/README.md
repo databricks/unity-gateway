@@ -1,4 +1,4 @@
-# Windows Cowork inference test
+# Cowork desktop inference tests
 
 The `cowork-inference-windows` job in `.github/workflows/integration.yml` exercises real
 Claude Desktop inference through Unity Gateway on a disposable Windows runner.
@@ -59,5 +59,38 @@ after three days.
 The named `desktop-ci` Databricks profile contains host/auth metadata, not a
 token. No Claude.ai login is used. The test verifies the configured provider/model
 and desktop response; it does not independently trace gateway HTTP requests.
-macOS, Code-tab, MCP, file operations, and Cowork VM readiness are outside this
-test's inference-only coverage.
+Code-tab, MCP, file operations, and Cowork VM readiness are outside these
+tests' inference-only coverage.
+
+## macOS
+
+The `cowork-inference-macos` job runs the same inference journey on a disposable
+GitHub-hosted `macos-15-intel` runner. It has the same event/input guards and
+required integration gate as Windows. Apple Silicon hosted runners are not covered:
+Cowork was unavailable on the `macos-15` runner in the feasibility probe.
+No dedicated Mac is required.
+
+The macOS installer is Claude Desktop 4.23118.0, downloaded from Anthropic's official
+universal ZIP. `macos/install-desktop.sh` pins its URL and SHA256, verifies its
+code signature and Anthropic team ID, runs Gatekeeper assessment, and checks the
+installed version. Dependencies use the same approved public npm/PyPI path as Windows.
+
+`macos/ui.swift` drives the installed app through native macOS Accessibility APIs.
+The Python harness runs through Terminal to inherit the hosted image's existing
+Accessibility authorization; it does not modify TCC or macOS security settings.
+A missing permission fails the job. UG configures the app through its public CLI,
+then the test accepts gateway onboarding, opens Cowork, verifies the configured
+model, sends the prompt, and requires both the exact answer and completion marker.
+Controls wait for an enabled exact label; response assertions wait up to four minutes.
+There are no whole-test retries.
+
+Terminal receives only the required environment through an owner-only temporary
+file, which the child deletes after reading. Raw logs remain private until redacted.
+The parent bounds the run to ten minutes and terminates the child's process group;
+an always-run workflow step also stops Claude and Terminal. Artifacts contain only
+sanitized diagnostics, installer provenance, UI snapshots, and screenshots, with
+three-day retention. Configuration and credential files are never uploaded.
+
+`tests/test_macos_cowork_harness.py` checks redaction, control readiness, and rejection
+of partial, incorrect, or unfinished responses. These helper checks do not replace
+running the native macOS job.
