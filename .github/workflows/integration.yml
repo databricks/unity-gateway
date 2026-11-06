@@ -150,16 +150,12 @@ jobs:
             ${{ runner.temp }}/ug-integration/wheels/
 
   cowork-inference-windows:
-    name: Cowork inference · Windows (non-blocking)
+    name: Cowork inference · Windows
     runs-on: windows-latest
-    continue-on-error: true
     if: ${{ github.event_name != 'merge_group' && (inputs.ug_version == '' || inputs.ug_version == 'checkout') && (inputs.claude_version == '' || inputs.claude_version == '2.1.290') && (inputs.dependency == '') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     timeout-minutes: 25
     env:
       PYTHONUTF8: 1
-    permissions:
-      contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -170,9 +166,6 @@ jobs:
           python-version: '3.12'
       - name: Validate Cowork test scripts
         shell: pwsh
-        env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
         run: |
           $tokens = $null
           $errors = $null
@@ -184,8 +177,6 @@ jobs:
       - name: Download and verify the approved Claude installer
         shell: pwsh
         env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           INSTALLER_URL: https://downloads.claude.ai/releases/win32/x64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.msix
           INSTALLER_SHA256: D737861F0DA3175C6B663172AF0E602494CD99FF1B350D57DAE5910A49519FC9
         run: |
@@ -198,22 +189,18 @@ jobs:
           & ./scripts/cowork-inference/install-desktop.ps1 -InstallerPath $installer `
             -ExpectedSha256 $digest `
             -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
-      - name: Install UG with existing Windows package infrastructure
+      - name: Install UG and pinned Claude CLI
         shell: pwsh
         run: ./scripts/cowork-inference/install-dependencies.ps1
       - name: Configure Desktop with existing CI credentials
         shell: pwsh
         env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
           DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
         run: ./scripts/cowork-inference/configure.ps1
       - name: Assert Cowork inference through Windows UI Automation
         shell: pwsh
         env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
         run: |
           & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-inference.ps1 `
@@ -724,19 +711,22 @@ jobs:
   cujs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, installation-windows, headless-windows, workspace, smoke, full, antigravity, managed, dedicated-cuj-plan, dedicated-cuj]
+    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, workspace, smoke, full, antigravity, managed, dedicated-cuj-plan, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every integration job to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
+          COWORK_EXPECTED: ${{ (inputs.ug_version == '' || inputs.ug_version == 'checkout') && (inputs.claude_version == '' || inputs.claude_version == '2.1.290') && inputs.dependency == '' && 'success' || 'skipped' }}
         run: |
           python3 - <<'PY'
           import json
           import os
           results = json.loads(os.environ["RESULTS"])
-          failed = [job for job, result in results.items() if result["result"] != "success"]
+          expected = {"cowork-inference-windows": os.environ["COWORK_EXPECTED"]}
+          failed = [job for job, result in results.items()
+                    if result["result"] != expected.get(job, "success")]
           if failed:
               raise SystemExit("Integration jobs did not pass: " + ", ".join(failed))
           print("All integration jobs passed: " + ", ".join(results))

@@ -1,55 +1,17 @@
 $ErrorActionPreference = 'Stop'
-$registry = 'https://databricks.jfrog.io/artifactory/api/npm/db-npm/'
-$credentialStage = 'GitHub identity request'
-try {
-    $githubToken = (Invoke-RestMethod -Uri $env:ACTIONS_ID_TOKEN_REQUEST_URL `
-        -Headers @{ Authorization = "Bearer $env:ACTIONS_ID_TOKEN_REQUEST_TOKEN" } -TimeoutSec 30).value
-    if (-not $githubToken) { throw 'Missing GitHub identity token' }
-    Write-Output "::add-mask::$githubToken"
-    $payload = @{
-        grant_type = 'urn:ietf:params:oauth:grant-type:token-exchange'
-        subject_token_type = 'urn:ietf:params:oauth:token-type:id_token'
-        subject_token = $githubToken
-        provider_name = 'github-actions'
-    } | ConvertTo-Json
-    $credentialStage = 'JFrog token exchange'
-    $token = (Invoke-RestMethod -Uri 'https://databricks.jfrog.io/access/api/v1/oidc/token' `
-        -Method Post -ContentType 'application/json' -Body $payload -TimeoutSec 30).access_token
-    if (-not $token) { throw 'Missing JFrog access token' }
-} catch {
-    throw "Could not obtain package credentials during $credentialStage"
-}
-Write-Output "::add-mask::$token"
-$config = Join-Path $env:RUNNER_TEMP 'cowork-inference.npmrc'
-try {
-    Remove-Item Env:ACTIONS_ID_TOKEN_REQUEST_URL, Env:ACTIONS_ID_TOKEN_REQUEST_TOKEN -ErrorAction SilentlyContinue
-    $env:UG_COWORK_NPM_TOKEN = $token
-    @("registry=$registry", '//databricks.jfrog.io/artifactory/api/npm/db-npm/:_authToken=${UG_COWORK_NPM_TOKEN}') |
-        Set-Content -LiteralPath $config -Encoding utf8
-    $npm = (Get-Command npm.cmd -ErrorAction Stop).Source
-    & $npm install -g '@anthropic-ai/claude-code@2.1.290' --no-audit --fund=false `
-        --userconfig $config --fetch-retries=0 --fetch-timeout=30000
-    if ($LASTEXITCODE -ne 0) { throw 'Claude CLI installation through JFrog failed' }
-    $claude = (Get-Command claude.cmd -ErrorAction Stop).Source
-    & $claude --version
-    if ($LASTEXITCODE -ne 0) { throw 'Installed Claude CLI did not start' }
-    $encoded = $token.Split('.')[1].Replace('-', '+').Replace('_', '/')
-    $encoded = $encoded.PadRight([int]([Math]::Ceiling($encoded.Length / 4.0) * 4), '=')
-    $claims = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded)) | ConvertFrom-Json
-    $username = $claims.sub.Split('/')[-1]
-    $env:PIP_INDEX_URL = 'https://' + [Uri]::EscapeDataString($username) + ':' +
-        [Uri]::EscapeDataString($token) + '@databricks.jfrog.io/artifactory/api/pypi/db-pypi/simple'
-    $env:PIP_EXTRA_INDEX_URL = ''
-    $py = (Get-Command python.exe -ErrorAction Stop).Source
-    $runtime = Join-Path $env:RUNNER_TEMP 'desktop-ug-runtime'
-    & $py -m venv $runtime
-    if ($LASTEXITCODE -ne 0) { throw 'Could not create UG runtime' }
-    $python = Join-Path $runtime 'Scripts/python.exe'
-    & $python -m pip install --disable-pip-version-check .
-    if ($LASTEXITCODE -ne 0) { throw 'UG installation through JFrog failed' }
-    "UG_COWORK_TEST_BINARY=$(Join-Path $runtime 'Scripts/ug.exe')" | Add-Content $env:GITHUB_ENV
-} finally {
-    Remove-Item -LiteralPath $config -Force -ErrorAction SilentlyContinue
-    Remove-Item Env:UG_COWORK_NPM_TOKEN -ErrorAction SilentlyContinue
-    Remove-Item Env:PIP_INDEX_URL -ErrorAction SilentlyContinue
-}
+$npm = (Get-Command npm.cmd -ErrorAction Stop).Source
+& $npm install -g '@anthropic-ai/claude-code@2.1.290' --no-audit --fund=false `
+    --registry https://registry.npmjs.org --fetch-retries=0 --fetch-timeout=30000
+if ($LASTEXITCODE -ne 0) { throw 'Claude CLI installation failed' }
+$claude = (Get-Command claude.cmd -ErrorAction Stop).Source
+& $claude --version
+if ($LASTEXITCODE -ne 0) { throw 'Installed Claude CLI did not start' }
+$py = (Get-Command python.exe -ErrorAction Stop).Source
+$runtime = Join-Path $env:RUNNER_TEMP 'desktop-ug-runtime'
+& $py -m venv $runtime
+if ($LASTEXITCODE -ne 0) { throw 'Could not create UG runtime' }
+$python = Join-Path $runtime 'Scripts/python.exe'
+$env:PIP_EXTRA_INDEX_URL = ''
+& $python -m pip install --disable-pip-version-check --index-url https://pypi.org/simple .
+if ($LASTEXITCODE -ne 0) { throw 'UG installation failed' }
+"UG_COWORK_TEST_BINARY=$(Join-Path $runtime 'Scripts/ug.exe')" | Add-Content $env:GITHUB_ENV

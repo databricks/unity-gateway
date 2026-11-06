@@ -4,12 +4,14 @@ The `cowork-inference-windows` job in `.github/workflows/integration.yml` exerci
 Claude Desktop inference through Unity Gateway on a disposable Windows runner.
 It runs after lint for same-repository PRs, main pushes, scheduled CI, and manual
 CI dispatches. It skips merge-group runs and fork PRs, which lack the required
-credentials. Authorized fork-integration runs test the explicitly approved commit.
-The job is non-blocking during stabilization and does not participate in the
-integration gate. Runs requesting a published UG release, another Claude CLI
+credentials. Authorized fork-integration runs test the pinned commit.
+The job is required by the integration gate, which feeds the required `e2e` check.
+Runs requesting a published UG release, another Claude CLI
 version, or a dependency override skip this checkout-specific desktop test.
-Before making it blocking, measure at least 20 fresh-runner executions and
-investigate every failure; do not hide failures with whole-test retries.
+The gate accepts that explicit skip only for these unsupported dispatch inputs;
+failure, cancellation, or an unexpected skip blocks the gate.
+A [20-run fresh-Windows soak](https://github.com/databricks/unity-gateway/actions/runs/42240639887)
+passed without retries before enabling the gate. Whole-test retries are not used.
 
 The test installs a signed, SHA256-pinned Claude MSIX and drives the real app
 through Windows UI Automation. `--force-renderer-accessibility` exposes the app's
@@ -37,12 +39,11 @@ provenance comes from Microsoft's winget-pkgs catalog:
 Direct official Anthropic installer/runtime downloads were approved for these
 disposable CI tests.
 
-Python dependencies and Claude Code CLI 2.1.290 come through internal JFrog
-registries. Claude Code's native binary selection requires its npm postinstall
-script. The job exchanges GitHub OIDC identity using the existing `github-actions`
-JFrog provider and removes temporary registry credentials after installation.
-OIDC request variables are cleared before package subprocesses and are blanked
-for configuration and Desktop execution. Python 3.12 is selected explicitly.
+Python dependencies come from PyPI and Claude Code CLI 2.1.290 from public npm,
+matching the existing GitHub-hosted Windows CLI integration tests. These public
+package sources are approved for this CI job. Python 3.12 is selected explicitly;
+Claude Code's native binary selection requires its npm postinstall script.
+Package installation needs no JFrog credentials or GitHub OIDC permission.
 
 ## Evidence and limits
 

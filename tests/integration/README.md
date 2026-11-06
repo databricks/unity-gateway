@@ -1,6 +1,6 @@
 # Integration tests
 
-Windows Cowork desktop coverage and its non-blocking stabilization period are
+Windows Cowork desktop coverage and required integration gating are
 documented in the [main test guide](../README.md).
 
 Provider target component tests filter Claude targets by Messages API metadata across

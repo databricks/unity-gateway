@@ -6,8 +6,9 @@ store; absent installations, package-query failures, and timeouts leave it absen
 The native Windows Cowork inference job in `.github/workflows/integration.yml`
 exercises real installation, UG configuration before first launch, and completed
 `system.ai.claude-haiku-4-5` inference through the desktop UI. CI contract checks
-verify credential-job event guards, restricted OIDC exposure, and non-blocking
-Cowork execution during stabilization. Desktop configuration retains its component gate.
+verify workspace-credential event guards, installation without OIDC permissions,
+and required Cowork success in the integration gate. Unsupported release/version dispatches allow an
+explicit skip; failure, cancellation, and unexpected skips fail the gate.
 
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
