@@ -985,7 +985,15 @@ def test_switching_workspace_replaces_one_reserved_profile(desktop):
 @pytest.mark.parametrize("desktop", ["win32"], indirect=True)
 @pytest.mark.parametrize(
     "installation",
-    ["installed", "slow_installed", "missing", "timeout", "query_unavailable", "query_failed"],
+    [
+        "installed",
+        "slow_installed",
+        "missing",
+        "timeout",
+        "query_unavailable",
+        "query_failed",
+        "query_startup_failed",
+    ],
 )
 def test_windows_configure_claude_desktop(desktop, installation, monkeypatch, capsys):
     (desktop / "_meta.json").unlink()
@@ -1004,8 +1012,10 @@ def test_windows_configure_claude_desktop(desktop, installation, monkeypatch, ca
             return subprocess.CompletedProcess(
                 args, 2, stderr="AppX package registration unavailable"
             )
+        if installation == "query_startup_failed":
+            return subprocess.CompletedProcess(args, 1, stderr="PowerShell initialization failed")
         return subprocess.CompletedProcess(
-            args, 0 if installation in ("installed", "slow_installed") else 1
+            args, 0 if installation in ("installed", "slow_installed") else 3
         )
 
     monkeypatch.setattr(claude_desktop.subprocess_cross_os, "run", query_installed_package)
@@ -1026,6 +1036,7 @@ def test_windows_configure_claude_desktop(desktop, installation, monkeypatch, ca
         "timeout": "Checking the installed Claude Desktop package timed out after 30 seconds",
         "query_unavailable": "Could not start PowerShell",
         "query_failed": "PowerShell exit code 2): AppX package registration unavailable",
+        "query_startup_failed": "PowerShell exit code 1): PowerShell initialization failed",
     }
     assert expected[installation] in output
     if installation != "missing":

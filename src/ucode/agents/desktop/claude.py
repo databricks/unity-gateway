@@ -379,7 +379,7 @@ try {
             }
         }
     }
-    exit 1
+    exit 3
 } catch {
     [Console]::Error.WriteLine($_.Exception.Message)
     exit 2
@@ -403,7 +403,7 @@ try {
         raise ClaudeDesktopUnavailableError(
             f"Could not start PowerShell to check the installed Claude Desktop package: {exc}"
         ) from exc
-    if result.returncode not in (0, 1):
+    if result.returncode not in (0, 3):
         detail = (result.stderr or "No error details returned").strip()[:500]
         raise ClaudeDesktopUnavailableError(
             "Could not query the installed Claude Desktop package "
