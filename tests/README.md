@@ -719,6 +719,13 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 without tier rules, applying recommendations when tiers exist, and serializing the current
 API field. These are unit/component checks; live request-count coverage is not included.
 
+`test_budget_recommendation_timeout.py` covers the launch-only three-second
+`recommendModel` socket timeout, a stalled local HTTP response, warning and configured
+agent/model fallback, and preservation of the thirty-second default for other callers.
+`TestBudgetRecommendationAtLaunch` in `test_cli.py` keeps successful recommendations,
+no-tier/dry-run gating, quiet 404s, and explicit-launch fallback covered. Authentication
+keeps its existing bounds; this is not an overall launch deadline or live gateway p90.
+
 `test_usage.py`, `test_budget.py`, and `test_cli.py` cover budget usage without an
 opt-in, including the five highest usage percentages, stable ties, missing percentages
 ordered last, and the full listing with `--all`.

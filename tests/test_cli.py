@@ -8810,7 +8810,8 @@ class TestBudgetRecommendationAtLaunch:
         state = dict(MINIMAL_STATE)
         calls: list[str] = []
 
-        def fake_recommendation(workspace, token):
+        def fake_recommendation(workspace, token, *, timeout):
+            assert timeout == 3
             calls.append(workspace)
             return recommendation, reason
 
@@ -8998,14 +8999,21 @@ class TestBudgetRecommendationAtLaunch:
         assert "recommends OpenCode" in result.output
 
     def test_a_failed_read_does_not_block_the_launch(self, monkeypatch):
-        result, _calls, _cfg = self._launch(
+        result, calls, cfg = self._launch(
             monkeypatch,
-            managed={"enabled_agents": {"claude": {}}, **self.SMART_DEFAULTS},
+            managed={
+                "enabled_agents": {
+                    "claude": {"model_config": {"default_model": "system.ai.claude-opus-4-8"}}
+                },
+                **self.SMART_DEFAULTS,
+            },
             recommendation=None,
             reason="HTTP 500",
         )
         assert result.exit_code == 0, result.output
-        assert "Could not check your budget" in result.output
+        assert calls == [MINIMAL_STATE["workspace"]]
+        assert cfg.call_args.args[2] == "system.ai.claude-opus-4-8"
+        assert result.output.count("Could not check your budget") == 1
 
     def test_a_404_is_silently_ignored(self, monkeypatch):
         result, _calls, _cfg = self._launch(

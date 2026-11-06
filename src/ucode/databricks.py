@@ -2612,14 +2612,17 @@ def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list
     return [c for c in configs if isinstance(c, dict)], None
 
 
-def fetch_model_recommendation(workspace: str, token: str) -> tuple[dict, str | None]:
+def fetch_model_recommendation(
+    workspace: str, token: str, *, timeout: int = 30
+) -> tuple[dict, str | None]:
     """Ask the AI Gateway which agent and model the caller's budget tier allows.
 
     The request takes no parameters: the server matches the caller's live spend against the managed
     config's budget tiers and resolves the agent first, then that agent's model.
+    ``timeout`` bounds socket operations, not the overall launch or authentication.
     """
     url = f"{workspace_origin(workspace)}{_CODING_AGENT_CONFIGS_API_PATH}:recommendModel"
-    payload, reason = _http_post_json(url, token, {}, timeout=30)
+    payload, reason = _http_post_json(url, token, {}, timeout=timeout)
     if reason is not None:
         return {}, reason
     if not isinstance(payload, dict):
