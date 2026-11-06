@@ -1,9 +1,5 @@
 # Test suites and user journeys
 
-Picker export checks preserve explicit and wildcard imports alongside lazy-wrapper parameter parity.
-Routing-enabled startup import guards require the real session-start canary and its
-session ID, so a disabled early return cannot satisfy their import assertions.
-
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
@@ -320,6 +316,8 @@ Program Files lookup.
 Claude's native resolver tests remain in
 `test_agent_claude.py`; installation failures are covered in `test_agents_init.py`.
 These are component checks, not live Windows coverage for every agent.
+
+Picker checks preserve all prior explicit and wildcard presentation exports, typed-wrapper parameter/default parity, and selection/cancel/Left-back behavior through the public wrapper. Enabled routing import probes require the real session-start canary and session ID.
 
 `TestEnsureDatabricksCliVersion` in `test_databricks.py`
 checks that repeated launch preflights reuse a successful CLI version probe, higher

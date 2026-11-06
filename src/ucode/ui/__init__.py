@@ -30,16 +30,28 @@ _BACK = _Back()
 PICKER_VISIBLE_ROWS = 10
 
 
+_LAZY_PRESENTATION_EXPORTS = {
+    "StreamingInquirerControl": "ucode.ui.interactive_picker",
+    "merge_new_choices": "ucode.ui.interactive_picker",
+    "Window": "prompt_toolkit.layout.containers",
+    "Dimension": "prompt_toolkit.layout.dimension",
+    "InquirerControl": "questionary.prompts.common",
+    "to_formatted_text": "prompt_toolkit.formatted_text",
+    "INDICATOR_SELECTED": "questionary.constants",
+    "INDICATOR_UNSELECTED": "questionary.constants",
+}
+
+
 def __getattr__(name: str) -> Any:
     # Preserve presentation imports without loading the interactive stack on every CLI invocation.
     if name == "questionary":
         import questionary
 
         return questionary
-    if name in {"StreamingInquirerControl", "merge_new_choices"}:
-        from ucode.ui import interactive_picker
+    if module := _LAZY_PRESENTATION_EXPORTS.get(name):
+        from importlib import import_module
 
-        return getattr(interactive_picker, name)
+        return getattr(import_module(module), name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -792,6 +804,5 @@ def prompt_for_client_secret() -> str:
 # Include the lazily loaded presentation names in Python's wildcard-import contract.
 __all__ = [name for name in globals() if not name.startswith("_")] + [
     "questionary",
-    "StreamingInquirerControl",
-    "merge_new_choices",
+    *_LAZY_PRESENTATION_EXPORTS,
 ]

@@ -117,7 +117,6 @@ def test_cli_import_defers_subcommand_specific_modules() -> None:
     [
         (["--help"], False),
         (["claude", "--help"], False),
-        (["auth-token", "--help"], False),
         (["claude-router-hook", "route-first-prompt"], False),
         (["codex-router-hook", "session-start"], False),
         (["claude-router-hook", "session-start"], True),
@@ -175,6 +174,14 @@ def test_public_picker_exports_preserve_identity_and_parameters():
     exec("from ucode.ui import *", namespace)
     assert namespace["StreamingInquirerControl"] is interactive_picker.StreamingInquirerControl
     assert namespace["merge_new_choices"] is interactive_picker.merge_new_choices
+    for name in ("Window", "Dimension", "InquirerControl"):
+        assert namespace[name] is getattr(interactive_picker, name)
+    from prompt_toolkit.formatted_text import to_formatted_text
+    from questionary.constants import INDICATOR_SELECTED, INDICATOR_UNSELECTED
+
+    assert namespace["to_formatted_text"] is to_formatted_text
+    assert namespace["INDICATOR_SELECTED"] == INDICATOR_SELECTED
+    assert namespace["INDICATOR_UNSELECTED"] == INDICATOR_UNSELECTED
 
 
 def test_auth_token_helper_skips_picker_imports(tmp_path, monkeypatch) -> None:

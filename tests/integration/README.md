@@ -1,9 +1,5 @@
 # Integration tests
 
-Picker export checks preserve explicit and wildcard imports alongside lazy-wrapper parameter parity.
-Routing-enabled startup import guards require the real session-start canary and its
-session ID, so a disabled early return cannot satisfy their import assertions.
-
 The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
 service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
 It replaces the obsolete stdio-only expectation; this checks configuration, not live login.
@@ -305,15 +301,10 @@ timeout. Offline PTY checks cover this ordering.
 The shared wait also runs before CUJ4's Claude delegation sessions exit, after delegated-task
 evidence is checked, because Claude can resume a child after its first completed answer.
 
-`../test_startup_imports.py` covers the bare version fast path, deferred imports,
-metadata fallback, and other-argument dispatch as component checks.
-Fresh interpreters also guard help, token-only auth output, and enabled/disabled routing hooks from importing questionary,
-prompt_toolkit, and the interactive picker; existing keyboard/component tests cover picker behavior.
-The typed lazy picker wrapper's parameters and defaults must match its implementation.
-Installation checks still exercise real console-script help and version output; neither suite
-asserts end-to-end agent startup latency. The component suite also checks that
-version output alone cannot establish CLI health when startup dependencies are
-absent; use `--help` for the startup-import probe.
+`../test_startup_imports.py` provides startup/import component checks; see the
+[component coverage inventory](../README.md) for helper, picker, and resource cases.
+Installation tests exercise real console-script help and version output. These checks
+do not establish live agent startup or end-to-end latency.
 
 `TestEnsureDatabricksCliVersion` in `../test_databricks.py`
 checks that repeated launch preflights reuse a successful CLI version probe, higher
