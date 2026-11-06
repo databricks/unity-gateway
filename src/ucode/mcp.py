@@ -11,10 +11,9 @@ import threading
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
-import questionary
 from rich.table import Table
 
 from ucode.agents import antigravity, claude, codex, copilot, cursor, gemini, kilo, opencode
@@ -71,8 +70,12 @@ from ucode.ui import (
     scrolling_checkbox,
     spinner,
 )
-from ucode.ui.interactive_picker import CatalogChoice, picker_details
 from ucode.workspace import state_workspace_key, workspace_headers
+
+if TYPE_CHECKING:
+    import questionary
+
+    from ucode.ui.interactive_picker import CatalogChoice
 
 # Workspace-relative path fragments for the V2 AI Gateway MCP endpoints, shared by the URL-shape
 # checks (`_is_app_mcp_server`, `_mcp_server_location`) so the set stays in one place.
@@ -709,6 +712,8 @@ def _mcp_entries_only_in_other_workspaces(current_workspace: str) -> dict[str, s
 
 
 def _server_choice(name: str, checked: bool, title: str | None = None) -> questionary.Choice:
+    import questionary
+
     return questionary.Choice(
         title=title or name,
         value=name,
@@ -717,6 +722,8 @@ def _server_choice(name: str, checked: bool, title: str | None = None) -> questi
 
 
 def _add_choice(selection: str, title: str) -> questionary.Choice:
+    import questionary
+
     return questionary.Choice(title=title, value=f"{MCP_ADD_PREFIX}{selection}")
 
 
@@ -732,6 +739,8 @@ def _mcp_service_choice(
     Shared by initial and streamed rows. Configured services stay visible with their
     status. In add mode they are read-only; managed services are always read-only.
     Replace mode keeps ug's own registrations checked so they can still be removed."""
+    from ucode.ui.interactive_picker import CatalogChoice, picker_details
+
     registered_as = name.replace(".", "-")
     managed = registered_as in (managed_names or set())
     configured = registered_as in known_names or managed
@@ -2387,6 +2396,8 @@ def _prompt_for_mcp_removal(servers: list[dict]) -> list[str] | None:
     """Checklist of already-configured MCP servers to remove. Each item shows the
     registered name and the tools it's currently on. Returns the selected server
     names, ``None`` if cancelled (Ctrl-C), or ``[]`` if nothing was checked."""
+    import questionary
+
     choices: list[questionary.Choice | questionary.Separator] = []
     for server in servers:
         name = _server_name(server)
@@ -3359,6 +3370,8 @@ def _skill_schema_choice(location: str, skill_count: int, in_scope: bool) -> que
     An already-scoped schema is flagged and stays selectable; re-selecting it is a no-op, since
     adding to the MCP scope is additive (removal is ``ug skills remove --via mcp``).
     """
+    import questionary
+
     noun = "skill" if skill_count == 1 else "skills"
     scope_flag = "  (already in skill MCP)" if in_scope else ""
     return questionary.Choice(
@@ -3439,6 +3452,8 @@ def configure_skills_mcp_picker_command(agents: set[str] | None = None) -> int:
 def _prompt_for_skill_removal(locations_by_client: dict[str, list[str]]) -> list[str] | None:
     """Checklist of skill schemas to remove, each annotated with the clients it's scoped to.
     Returns the selected locations, ``None`` if cancelled (Ctrl-C), or ``[]`` if nothing checked."""
+    import questionary
+
     choices: list[questionary.Choice | questionary.Separator] = []
     ordered_locations = list(
         dict.fromkeys(

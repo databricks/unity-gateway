@@ -11,8 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-
-import questionary
+from typing import TYPE_CHECKING
 
 from ucode.databricks import get_databricks_token, workspace_org_id
 from ucode.mcp import register_schemaless_skills_connection, setup_mcp_clients
@@ -50,7 +49,9 @@ from ucode.ui import (
     prompt_yes_no,
     scrolling_checkbox,
 )
-from ucode.ui.interactive_picker import CatalogChoice, picker_details
+
+if TYPE_CHECKING:
+    import questionary
 
 # `.claude/skills` (Claude) + `.agents/skills` (the alias other agents read).
 SKILL_BASE_DIR_NAMES = (".claude/skills", ".agents/skills")
@@ -653,6 +654,8 @@ def _skill_download_choice(
     still on disk. Older workspace-only records are usable only in the same workspace.
     Installed skills remain selectable for updates; overwrite confirmation still applies.
     """
+    from ucode.ui.interactive_picker import CatalogChoice, picker_details
+
     targets = {str((root / ref.bundle_name).resolve()) for root in roots}
     records = list_downloaded() if downloads is None else downloads
     attributed: set[str] = set()
@@ -792,6 +795,8 @@ def _download_label(record: dict) -> str:
 
 def _removal_choice(record: dict, index: int) -> questionary.Choice:
     """Picker row for one downloaded skill, labeled by its scope and base (and missing dirs)."""
+    import questionary
+
     return questionary.Choice(title=_download_label(record), value=index)
 
 

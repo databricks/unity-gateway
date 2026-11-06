@@ -337,12 +337,12 @@ timeout. Offline PTY checks cover this ordering.
 The shared wait also runs before CUJ4's Claude delegation sessions exit, after delegated-task
 evidence is checked, because Claude can resume a child after its first completed answer.
 
-`../test_startup_imports.py` covers the bare version fast path, deferred imports,
-metadata fallback, and other-argument dispatch as component checks. Installation
-checks still exercise real console-script help and version output; neither suite
-asserts end-to-end agent startup latency. The component suite also checks that
-version output alone cannot establish CLI health when startup dependencies are
-absent; use `--help` for the startup-import probe.
+`../test_startup_imports.py` provides startup/import component checks; see the
+[component coverage inventory](../README.md) for helper, picker, and resource cases.
+Installation tests exercise real console-script help and version output. These checks
+do not establish live agent startup or end-to-end latency.
+The component suite also checks deferred Rich progress imports, preserved presentation
+exports, redirected progress, and terminal progress activation; no native agent is involved.
 
 `TestSpinner` in `../test_ui.py` covers waking a waiting animation thread on
 normal and exceptional exit, terminal-line cleanup, and no animation for redirected
