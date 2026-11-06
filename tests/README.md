@@ -1,5 +1,11 @@
 # Test suites and user journeys
 
+`TestLaunchManagedConfigReuse` in `test_cli.py` checks failed policy reads once per
+Claude launch through the real policy refresh and settings writer. A later launch
+retries; empty policy, self-managed launches, header ownership, and standalone
+configuration remain covered in `test_agent_claude.py`. Auth/API boundaries are
+controlled; this does not establish live latency or failed-gateway coverage.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component

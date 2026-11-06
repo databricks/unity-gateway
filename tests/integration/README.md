@@ -1,5 +1,10 @@
 # Integration tests
 
+Policy-read reuse on Claude launch is covered by the component regressions in
+`../test_cli.py` and `../test_agent_claude.py`, including failures and subsequent
+launch retries. Live journeys do not assert policy request counts or simulate
+a failed control-plane read.
+
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They
