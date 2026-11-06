@@ -561,11 +561,10 @@ Codex 0.145–0.163 who previously launched successfully must upgrade or explici
 run `ug codex --disable-smart-routing`. UG offers its usual upgrade prompt for a
 known older version and checks the result before launching. Declining, failing, or
 remaining below 0.164.0 after the upgrade keeps the routed launch blocked. This
-intentional requirement ensures native v2 provides readable delegated assignments
-and supports the conversation-reload protocol;
+intentional requirement ensures native v2 provides readable delegated assignments;
 UG does not silently disable routing. Ordinary launches still support Codex 0.145.0
 and newer. The general integration CI baseline remains 0.154.0; routing cases use
-0.165.0. The reload feature does not raise either version requirement.
+0.165.0. The gateway proxy does not raise either version requirement.
 
 An inconclusive Codex version probe is retried once with a longer timeout. If the
 version is still unknown, UG stops without offering or running an update and asks
@@ -577,16 +576,17 @@ For a routed launch, UG's `-c` overrides take precedence over saved values for
 `features.multi_agent_v2.root_agent_usage_hint_text`, and
 `features.multi_agent_v2.subagent_usage_hint_text` (set to UG's collaboration guidance).
 Custom values for these fields do not apply during that session. The saved config
-files are unchanged, as are native delegation-mode controls. Requests use the
-configured Databricks provider directly. Smart-routed launches use the native
-app-server and UG control interposer, including subagent-only presets.
+files are unchanged, as are native delegation-mode controls. Smart-routed inference
+uses a [per-session gateway proxy](docs/codex-routing-proxy.md). `$smart-router off/on`
+updates the recipe in the header and body of subsequent requests from the main agent
+and existing/new children. It does not reload conversations or interrupt commands.
+Requests already in flight retain their original attribution.
 
-`$smart-router off/on` [interrupts and reloads the conversation tree](docs/codex-routing-reload.md)
-to refresh inference attribution in body metadata and, where supported, the recipe
-header. Configure removes old persisted recipe headers that would pin attribution.
-Conversation and child IDs survive. Running commands stop; agents must inspect
-completed effects before retrying. This uses no gateway proxy or backend session
-state. The managed default remains Claude-only; Codex routing requires an explicit
+Run `ug configure` once after upgrading to migrate an old UG-managed provider
+default. The proxy uses a launch-only provider; its port and credential are never
+written to Codex settings. Subagent-only presets launch the native TUI directly;
+first-prompt routing retains its existing app-server control interposer.
+The managed default remains Claude-only; Codex routing requires an explicit
 Codex-enabled preset.
 
 ### Smart Router Orchestrator
