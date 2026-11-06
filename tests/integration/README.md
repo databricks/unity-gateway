@@ -24,8 +24,27 @@ threads and seven post-on requests across five threads. Independent mitmproxy on
 200. First-prompt model routing passed on 0.164.0; navigation and exit/relaunch
 followed by native `/resume` passed on
 0.167.0. These are selected journeys, not a full live matrix or native macOS/Windows
-validation. A separate Kimi native-assignment run was stopped after the child
-followed its parent’s delegation instruction; see [validation limits](../../docs/codex-routing-proxy.md).
+validation. Subsequent investigation confirmed the gateway's OSS converter drops
+native `agent_message` items. The proxy now translates plaintext assignments,
+follow-ups and child results for recognized Kimi/GLM/DeepSeek models; GPT messages
+stay native. Unit coverage checks content/order/recipient preservation, routing
+on/off, and rejection of encrypted-only OSS messages.
+
+`test_smart_router_codex_delivers_tasks_and_followups_to_two_kimi_children` assigns
+two explicit Kimi children different file tasks while routing is off, then turns
+routing on and sends follow-ups to the same children. It requires translated wire
+messages, each child's own answers, stable IDs, native history, and current recipe
+headers/bodies. Explicit models isolate protocol compatibility from route selection.
+The test fails on the previous package when the first child's assignment is absent
+from standard message input. The installed-wheel test passes on Codex 0.167.0
+with the conversion enabled, including all four child-owned answers.
+
+The router-selected Kimi variant of the busy-child journey also passes on Codex
+0.165.0: two Kimi children survive off, then those children and a third child
+survive on. Commands retain their original PIDs and run once. Six post-off
+requests across four threads and seven post-on requests across five threads have
+matching header/body recipes. Transcript lookup uses the owning session's first
+metadata record so copied parent history cannot hide the parent's newer answer.
 Historical tree-reload results do not validate the replacement.
 
 `test_smart_router_codex_resumes_history_after_proxy_restart` exits and relaunches

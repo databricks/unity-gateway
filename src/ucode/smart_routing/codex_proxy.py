@@ -1,4 +1,4 @@
-"""Per-launch Codex inference attribution without changing loaded conversations."""
+"""Codex request compatibility and routing attribution without reloading conversations."""
 
 from __future__ import annotations
 
@@ -21,10 +21,36 @@ from ucode.constants import (
     SMART_ROUTER_RECIPE_HEADER,
 )
 from ucode.custom_oauth import launch_token
+from ucode.databricks import classify_model_family
 from ucode.smart_routing.session_env import _read
 
 PROXY_PROVIDER = "DatabricksSmartRouter"
 PROXY_KEY_ENV = "UG_CODEX_ROUTING_PROXY_KEY"
+
+
+def _translate_oss_agent_messages(payload: dict) -> None:
+    if classify_model_family(payload.get("model", "")) != "oss":
+        return
+    items = payload.get("input")
+    if not isinstance(items, list):
+        return
+    for index, item in enumerate(items):
+        if not isinstance(item, dict) or item.get("type") != "agent_message":
+            continue
+        content = item.get("content")
+        if not isinstance(content, list) or not content:
+            raise gateway_proxy.RequestRewriteError(
+                400,
+                "This model needs plaintext Codex agent messages. Upgrade Codex and start a new session.",
+            )
+        # The gateway's OSS translator drops unknown item types, including native agent_message.
+        recipient = item.get("recipient")
+        address = (
+            [{"type": "input_text", "text": f"Recipient: {recipient}\n"}]
+            if isinstance(recipient, str) and recipient
+            else []
+        )
+        items[index] = {"type": "message", "role": "user", "content": address + content}
 
 
 class RoutingAttribution:
@@ -56,6 +82,7 @@ class RoutingAttribution:
             turn = json.loads(raw) if isinstance(raw, str) else raw
             turn["smart_router_recipe_name"] = recipe
             metadata["x-codex-turn-metadata"] = json.dumps(turn) if isinstance(raw, str) else turn
+            _translate_oss_agent_messages(payload)
         except (ValueError, TypeError, AttributeError) as exc:
             raise gateway_proxy.RequestRewriteError(400, "Invalid Codex request metadata.") from exc
         return json.dumps(payload).encode(), headers

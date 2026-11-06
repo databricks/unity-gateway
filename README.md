@@ -556,7 +556,10 @@ files are unchanged, as are native delegation-mode controls. Smart-routed infere
 uses a [per-session gateway proxy](docs/codex-routing-proxy.md). `$smart-router off/on`
 updates the recipe in the header and body of subsequent requests from the main agent
 and existing/new children. It does not reload conversations or interrupt commands.
-Requests already in flight retain their original attribution.
+Requests already in flight retain their original attribution. The proxy also translates
+Codex's plaintext agent messages for Kimi, GLM and DeepSeek so assignments,
+follow-ups and child results survive the gateway's Responses-to-Chat conversion.
+GPT requests retain native agent messages.
 
 Run `ug configure` once after upgrading to migrate an old UG-managed provider
 default. The proxy uses a launch-only provider; its port and credential are never

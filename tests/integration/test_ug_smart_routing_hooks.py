@@ -27,7 +27,11 @@ from utils.evidence import (
     read_jsonl,
 )
 from utils.harness import ANSI
-from utils.managed import MANAGED_CONFIG_FIXTURES, use_smart_routing_fixture
+from utils.managed import (
+    MANAGED_CONFIG_FIXTURES,
+    use_managed_config_fixture,
+    use_smart_routing_fixture,
+)
 from utils.request_recorder import TuiRequestRecorder, served_inference_request
 from utils.terminal import AgentTerminal, codex_command_approval_pending
 
@@ -1011,15 +1015,16 @@ def _codex_thread_ids(session) -> dict[str, str]:
                 else {}
             )
             threads[spawn.get("agent_path", "/root")] = meta["id"]
+            break  # Later metadata can belong to inherited parent history.
     return threads
 
 
 def _codex_thread_answered(session, thread_id: str, marker: str) -> bool:
     for records in agent_sessions(session, "codex").values():
-        if any(
-            row.get("type") == "session_meta" and row["payload"].get("id") == thread_id
-            for row in records
-        ):
+        metadata = next(
+            (row["payload"] for row in records if row.get("type") == "session_meta"), {}
+        )
+        if metadata.get("id") == thread_id:
             return any(marker in answer for answer in assistant_answers("codex", records))
     return False
 
@@ -1054,6 +1059,138 @@ def _assert_codex_inference_recipes(session, recorder, checkpoint, thread_ids, r
         assert fields["body_recipe"] == recipe, fields
         served_inference_request(recorder, requests, request, "codex")
     return evidence
+
+
+@pytest.mark.live
+@pytest.mark.codex
+@pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
+def test_smart_router_codex_delivers_tasks_and_followups_to_two_kimi_children(
+    live_session, workspace, tmp_path
+):
+    """Scenario: turn routing off, assign two explicit Kimi children file tasks, then turn on
+    and give the same children new tasks through followup_task.
+
+    Expected: both children receive their distinct assignments as standard message input on
+    the wire, complete their own file reads, and complete follow-ups under their original IDs.
+    Native history retains agent_message items. Recipe attribution follows both toggle states.
+    Explicit child models while routing is off isolate message delivery from router selection.
+    """
+    session = live_session
+    session.env["TMPDIR"] = str(tmp_path)
+    use_managed_config_fixture(session, "codex_smart_routing_kimi")
+    session.env["SMART_ROUTER_CONFIG_VERSION"] = "subagent_only_v1"
+    tasks = {name: FileTask(session) for name in ("alpha", "beta")}
+    with TuiRequestRecorder(workspace) as recorder:
+        session.run(
+            "configure",
+            "--workspace",
+            recorder.url,
+            "--skip-upgrade",
+            "--disable-databricks-ai-tools",
+        )
+        with AgentTerminal(
+            session, "codex", [str(session.binary), "codex"], "kimi-assignments"
+        ) as tui:
+            tui.boot()
+            _toggle_with_skill(tui, session, "codex", enabled=False, orchestration_enabled=False)
+            checkpoint = recorder.checkpoint()
+            assignments = {
+                name: task.prompt + " Do not delegate or do other work."
+                for name, task in tasks.items()
+            }
+            tui.submit(
+                "Spawn exactly two native children with the following task names and exact messages: "
+                + json.dumps(assignments)
+                + '. Set fork_turns="none" and model="system.ai.kimi-k3" on each spawn. '
+                "Do not read their files yourself. After spawning both, end your turn without waiting."
+            )
+            tui.wait_for(
+                lambda _: (
+                    len(
+                        {
+                            r.headers.get("thread-id")
+                            for r in recorder.requests_after(checkpoint)
+                            if r.method == "POST"
+                            and r.path.endswith("/responses")
+                            and r.payload.get("model") == "system.ai.kimi-k3"
+                        }
+                    )
+                    == 2
+                ),
+                "first inference from both Kimi children",
+                timeout=120,
+            )
+            for name, task in tasks.items():
+                child_requests = [
+                    r
+                    for r in recorder.requests_after(checkpoint)
+                    if r.method == "POST"
+                    and r.path.endswith("/responses")
+                    and r.payload.get("model") == "system.ai.kimi-k3"
+                    and task.filename in json.dumps(r.payload.get("input"))
+                ]
+                assert child_requests, name
+                assert all(
+                    any(
+                        item.get("type") == "message"
+                        and item.get("role") == "user"
+                        and task.filename in json.dumps(item.get("content"))
+                        for item in request.payload["input"]
+                    )
+                    for request in child_requests
+                ), f"Assignment for {name} is missing from standard message input"
+            tui.wait_for(
+                lambda _: all(
+                    task.completed(session, "codex", child=True) for task in tasks.values()
+                ),
+                "both Kimi children's own file answers",
+                timeout=120,
+            )
+            threads = _codex_thread_ids(session)
+            assert set(threads) == {"/root", "/root/alpha", "/root/beta"}, threads
+            for name, task in tasks.items():
+                assert _codex_thread_answered(session, threads[f"/root/{name}"], task.value)
+            _assert_codex_inference_recipes(
+                session, recorder, checkpoint, set(threads.values()), "DISABLED"
+            )
+
+            _toggle_with_skill(tui, session, "codex", enabled=True, orchestration_enabled=False)
+            checkpoint = recorder.checkpoint()
+            followups = {name: FileTask(session) for name in tasks}
+            tui.submit(
+                "Use followup_task for each existing child with these exact assignments: "
+                + json.dumps(
+                    {
+                        name: task.prompt + " Do not delegate or do other work."
+                        for name, task in followups.items()
+                    }
+                )
+                + ". Do not spawn new children or read their files yourself. After sending both, end your turn without waiting."
+            )
+            tui.wait_for(
+                lambda _: all(
+                    _codex_thread_answered(session, threads[f"/root/{name}"], task.value)
+                    for name, task in followups.items()
+                ),
+                "both original Kimi children complete follow-ups",
+                timeout=120,
+            )
+            assert _codex_thread_ids(session) == threads
+            _assert_codex_inference_recipes(
+                session, recorder, checkpoint, set(threads.values()), "stable"
+            )
+            for records in agent_sessions(session, "codex").values():
+                if any(
+                    row.get("type") == "session_meta"
+                    and isinstance(row.get("payload", {}).get("source"), dict)
+                    for row in records
+                ):
+                    assert any(
+                        row.get("payload", {}).get("type") == "agent_message" for row in records
+                    )
+            session.record("kimi-thread-identities.json", threads)
+            tui.exit_normally()
 
 
 @pytest.mark.live
@@ -1260,18 +1397,22 @@ def test_smart_router_codex_agent_navigation_preserves_running_child(
 @pytest.mark.codex
 @pytest.mark.managed_fixture
 @pytest.mark.codex_smart_routing
+@pytest.mark.parametrize("child_catalog", ["default", "kimi"])
 def test_smart_router_codex_proxy_updates_running_parent_and_child_inference(
-    live_session, workspace, tmp_path
+    live_session, workspace, tmp_path, child_catalog
 ):
     """Scenario: toggle off from the main agent with two children running, then on with three.
 
     Expected: every subsequent parent/child inference carries the new recipe in body metadata
     and the header. Original IDs, commands and permissions survive without any interruption
     or reload; busy children complete their own answers and newly spawned children inherit
-    the current recipe. Requires real gateway responses and a normal TUI exit.
+    the current recipe. The Kimi catalog case requires actual router-selected Kimi children.
+    Requires real gateway responses and a normal TUI exit.
     """
     session = live_session
     _select_smart_router_version(session, "codex", workspace, tmp_path, True, "subagent_orch_v1")
+    if child_catalog == "kimi":
+        use_managed_config_fixture(session, "codex_smart_routing_kimi")
     # User-owned native preferences must survive configure and both toggles.
     native_config = session.home / ".codex/config.toml"
     native_config.parent.mkdir(parents=True, exist_ok=True)
@@ -1354,6 +1495,14 @@ def test_smart_router_codex_proxy_updates_running_parent_and_child_inference(
             initial = _codex_thread_ids(session)
             assert set(initial) == {"/root", "/root/worker_a", "/root/worker_b"}, initial
             original_children = {path: tid for path, tid in initial.items() if path != "/root"}
+            if child_catalog == "kimi":
+                child_models = {
+                    request.payload["model"]
+                    for request in recorder.requests_after(checkpoint)
+                    if request.path.endswith("/responses")
+                    and request.headers.get("thread-id") in original_children.values()
+                }
+                assert child_models == {"system.ai.kimi-k3"}, child_models
             assert all(
                 not children_finished("off", {path: tid}) for path, tid in original_children.items()
             )
