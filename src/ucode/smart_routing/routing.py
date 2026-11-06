@@ -61,10 +61,9 @@ def format_subagent_message(
     """Format a routed-subagent notice without the first-prompt disclaimer."""
     lines = [
         "Using Unity Gateway Smart Router - Subagent",
+        *([f"Subagent : {subagent_name}"] if subagent_name else []),
         *(
-            [f"Subagent : {subagent_name}"]
-            if subagent_name
-            else [f"Prompt : {prompt}"]
+            [f"Prompt preview : {textwrap.shorten(prompt, width=240, placeholder='...')}"]
             if prompt
             else []
         ),

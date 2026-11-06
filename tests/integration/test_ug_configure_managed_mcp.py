@@ -6,7 +6,8 @@ the config writers, the OS-managed reconcile, and the agent binary stay real). S
 tests/AGENTS.md rule 4.
 
 An interactive `ug configure` (a PTY, so ug performs its sudo OS-managed reconcile) writes the
-managed servers into Codex's `[mcp_servers]` in managed_config.toml, additive to and separate from
+managed servers into Codex's `[mcp_servers]` in managed_config.toml. Connection-backed services
+use native HTTP OAuth with Codex's published CIMD client, additive to and separate from
 the developer's own ~/.codex/config.toml servers. A non-interactive configure has no sudo reconcile,
 so it falls back to the user-scope registration, which the real /mcp view still lists. Claude's
 `managedMcpServers` path is covered by unit tests; its integration coverage needs the managed
@@ -52,8 +53,8 @@ def test_managed_fixture_claude_mcp_lists_configured_server(live_session, worksp
 def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspace):
     """Scenario: an interactive configure with a managed MCP server writes Codex's managed file.
 
-    Expected: the server lands in the `[mcp_servers]` table of the OS-managed config with its
-    native HTTP URL and pinned Codex OAuth client, without a user-scope copy.
+    Expected: the GitHub service lands in the OS-managed `[mcp_servers]` table as native HTTP
+    OAuth with Codex's published CIMD client, without a user-scope copy or stdio transport fields.
     """
     session = live_session
     use_managed_config_fixture(session, "codex_mcp")
@@ -65,11 +66,14 @@ def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspa
         session.run(CODEX_MANAGED_CONFIG_PATH, binary=session.which("cat"), timeout=30).stdout
     )
     servers = managed.get("mcp_servers") or {}
+    entries = {name: entry for name, entry in servers.items() if "github" in name.lower()}
     url = f"{workspace.rstrip('/')}/ai-gateway/mcp-services/system.ai.github"
-    assert servers.get("system-ai-github") == {
-        "url": url,
-        "oauth_resource": url,
-        "oauth": {"client_id": "https://chatgpt.com/oauth/codex/client.json"},
+    assert entries == {
+        "system-ai-github": {
+            "url": url,
+            "oauth_resource": url,
+            "oauth": {"client_id": "https://chatgpt.com/oauth/codex/client.json"},
+        },
     }, servers
 
     personal_path = session.home / ".codex" / "config.toml"

@@ -164,6 +164,8 @@ test('a lone call ignores extra updatedInput and keeps its decision under its ow
     expect(await done.find({ type: 'Text', text: 'original Agent row' })).toBeDefined();
     expect(await done.find({ type: 'Text', text: '  ↳ Selected Model: ' })).toBeDefined();
     expect(await done.find({ type: 'Text', text: model })).toBeDefined();
+    expect(await done.find({ type: 'Text', text: /Prompt preview:/ })).toBeDefined();
+    expect(await done.find({ type: 'Text', text: /inspect the parser/ })).toBeDefined();
     expect(await done.find({ type: 'Text', text: new RegExp(`Selected for ${id}`) })).toBeDefined();
     expect(await done.find({ type: 'Text', text: /ug-smart-router:|�/ })).toBeUndefined();
     expect(JSON.stringify(await done.drawn())).toContain('"color":"green"');
@@ -178,6 +180,30 @@ test('a lone call ignores extra updatedInput and keeps its decision under its ow
   const prompt = await $.ui.mount(panel);
   expect(await prompt.find({ type: 'Text', text: /Selected Model|claude-/ })).toBeUndefined();
   await prompt.unmount();
+});
+
+test('prompt previews are bounded without changing the delegated prompt', async ($, on) => {
+  const prompt = 'Inspect this file.\n' + '🔎'.repeat(300);
+  let forwarded = '';
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', ($, e) => {
+    const { tool_input } = JSON.parse(e.init.stdin);
+    expect(tool_input.prompt).toBe(prompt);
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: 'system.ai.claude-sonnet-5', rationale: 'Selected by the router.',
+      updatedInput: { ...tool_input, subagent_type: 'ug-smart-router:worker' },
+    }) } };
+  });
+  on('tool.call', ($, e) => { forwarded = e.prompt; return { result: 'ok' }; });
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'long-prompt', ...originalInput, prompt });
+  expect(forwarded).toBe(prompt);
+  const ui = await $.ui.mount(row('long-prompt'));
+  const expected = Array.from(prompt.replace(/\s+/g, ' ').trim()).slice(0, 237).join('') + '...';
+  expect(await ui.find({ type: 'Text', text: new RegExp(expected.replace(/\./g, '\\.')) })).toBeDefined();
+  expect(JSON.stringify(await ui.drawn())).not.toContain('�');
+  expect(JSON.stringify(await ui.drawn())).not.toContain('🔎'.repeat(300));
+  await ui.unmount();
 });
 
 test('parallel cards keep call order, skip replies drawn earlier, and wait for routes still running', async ($, on) => {

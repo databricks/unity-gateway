@@ -39,6 +39,10 @@ The native component suite also covers child-ID-to-animal-name recording without
 spawn inputs. `../test_claude_mod.py` checks the generated bottom-bar command and its
 fallback to native rows. Neither is a live interactive bottom-bar check.
 
+The routed-call display also has native component coverage for a 240-character prompt
+preview, including Unicode and forwarding the original prompt unchanged. This does
+not establish live model-preference enforcement or a complete interactive diff view.
+
 Native hint-row component tests also cover ` · N subagents running` from Claude's agent
 list, excluding inactive statuses, singular wording, preservation of other hint text,
 background work after the parent turn ends, routing toggles, and hiding the count at zero.
@@ -1492,6 +1496,11 @@ one real workspace. A read-only check first proves that the workspace publishes 
 CodingAgentConfig. The test then seeds `/etc/claude-code/managed-settings.json`, runs public
 `ug configure`, and requires every pre-existing family default to survive exactly. It checks
 settings reconciliation and makes no model-inference claim.
+
+`test_managed_fixture_codex_mcp_written_to_managed_file` checks the managed GitHub service's
+exact URL, OAuth resource, and Codex CIMD client in `/etc/codex/managed_config.toml`. It rejects
+stdio fields in that native HTTP entry and a duplicate user-scope registration. This is
+configuration coverage; it does not perform an OAuth sign-in or an MCP tool call.
 
 The expected model ids in `test_ug_configure_managed.py` mirror `managed_workspace_default.json`;
 update both together. The fixtures reference real securables on the managed workspace (MPS

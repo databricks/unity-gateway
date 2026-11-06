@@ -234,6 +234,7 @@ def test_spawn_rewrite_uses_codex_model_id_for_uc_endpoint(monkeypatch, tmp_path
         "\n┌───────────────────────────────────────────────────────────────────────────┐\n"
         "│ Using Unity Gateway Smart Router - Subagent                               │\n"
         "│ Subagent : routing-smoke-test [orchestrator on]                           │\n"
+        "│ Prompt preview : encrypted                                                │\n"
         "│ Selected Model : gpt-5.6-luna                                             │\n"
         "└───────────────────────────────────────────────────────────────────────────┘"
     )
