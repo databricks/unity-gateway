@@ -556,6 +556,11 @@ files are unchanged, as are native delegation-mode controls. Requests use the
 configured Databricks provider directly. Subagent-only routing launches the native
 TUI directly; first-prompt routing uses the existing app-server interposer.
 
+An opt-in [routing-toggle reload POC](docs/codex-routing-reload-poc.md) uses that
+control path to interrupt and reload a saved root and its native children after
+`$smart-router off/on`, updating inference attribution without a gateway proxy.
+It has a separate launcher and does not change normal `ug codex` behavior.
+
 ### Smart Router Orchestrator
 
 Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration.

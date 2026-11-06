@@ -1,5 +1,16 @@
 # Test suites and user journeys
 
+`test_codex_routing_reload.py` covers the opt-in Codex reload controller with a
+controlled external transport: late children, unrelated roots, off/on recipe
+restoration, permission preservation, failed-resume reporting, held user requests,
+later approval replies, and ephemeral TUI helpers. Manual Linux/Codex 0.166.0
+checks exercised actual skill toggles, a busy child's recovery under its original
+ID, recipe fields on real requests, and unchanged sandbox settings. These are
+separate from the installed-wheel CI integration suite. See the
+[POC report](../docs/codex-routing-reload-poc.md) for evidence scope and gaps.
+Separate manual process recovery preserved the saved root/child and disabled
+attribution but reset the sandbox to read-only; that limitation remains open.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component
