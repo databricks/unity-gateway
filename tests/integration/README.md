@@ -11,16 +11,17 @@ unsolicited comparisons with the requested model; comparisons remain available w
 Native registration checks cover model-catalog guidance in routing-only and orchestration
 modes, retained host Usage notes, and unchanged descriptions when routing is off.
 
-The [Codex routing-toggle reload POC](../../docs/codex-routing-reload-poc.md) has
-component coverage in `../test_codex_routing_reload.py` and separate manual
-Linux/Codex 0.166.0 TUI validation against the explicitly selected
-`eng-ml-inference` workspace. Those checks include real skill toggles, interruption
-and recovery of the same child, captured recipe fields, and permission
-preservation. They are not installed-wheel integration tests or CI coverage.
-Separate process recovery preserved IDs and disabled attribution but reset the
-sandbox to read-only; automatic permission restoration on that path is deferred.
-Native approval dialogs, compaction, concurrent roots, and other platforms remain
-uncovered by the POC.
+`test_codex_routing_reload.py` (under `tests/`) covers reload races, held input,
+permission preservation, multiple roots, rapid toggles, reconnects, Escape, and
+bounded failure handling with controlled transports.
+
+`test_smart_router_codex_reload_updates_parent_and_existing_child_inference`
+is an installed-wheel, real-TUI journey on Codex 0.166.0. It runs the actual
+off/on skill while a child command is busy, checks stable root/child IDs and
+permissions, and asserts both recipe fields on real inference requests from
+the parent, existing child, and newly spawned children. Its recorder forwards
+requests unchanged to the selected workspace and requires successful responses.
+See [reload behavior and validation limits](../../docs/codex-routing-reload.md).
 
 Windows and macOS Cowork desktop coverage, installation detection, and required
 integration gating are documented in the [main test guide](../README.md).
@@ -1049,8 +1050,8 @@ the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only
 for routing-only cases, and both `smart-router-orchestrator` and `smart-router` when orchestration
 is enabled. Claude checks each local mod confirmation and the recorded `smart_router_recipe_name`
 on the following calculation's real gateway requests. Codex verifies saved session controls,
-a new CLI confirmation in native tool-result records, and a new assistant answer after each
-skill invocation.
+a successful tree reload and a new parent answer after each skill invocation. The
+busy-child reload journey additionally checks recipe metadata on actual inference requests.
 If Codex requests permission to read the controls, the driver approves only the exact
 public toggle command through the native dialog, leaving the sandbox intact.
 Offline cases in `../test_integration_evidence.py` cover wrong commands, non-local

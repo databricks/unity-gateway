@@ -46,15 +46,15 @@ class TestLaunchCodex:
     @pytest.mark.parametrize(
         ("installed_version", "accept_upgrade", "upgraded_version", "auto_upgrade"),
         [
-            ("0.164.0", False, None, False),
-            ("0.163.0", True, "0.164.0", False),
-            ("0.163.0", True, "0.164.0", True),
-            ("0.163.0", False, None, False),
-            ("0.163.0", True, None, False),
-            ("0.163.0", True, "0.163.0", False),
+            ("0.166.0", False, None, False),
+            ("0.165.0", True, "0.166.0", False),
+            ("0.165.0", True, "0.166.0", True),
+            ("0.165.0", False, None, False),
+            ("0.165.0", True, None, False),
+            ("0.165.0", True, "0.165.0", False),
             ("unknown", True, "unknown", False),
             ("unknown", True, "unknown", True),
-            ("0.163.0", True, "unknown", False),
+            ("0.165.0", True, "unknown", False),
         ],
         ids=[
             "supported",
@@ -113,24 +113,24 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
 
         def launch_v2(state, tool_args, **kwargs):
-            assert version == "0.164.0", "unsupported Codex reached execution"
+            assert version == "0.166.0", "unsupported Codex reached execution"
             calls.append((state, tool_args, kwargs))
             raise SystemExit(0)
 
         monkeypatch.setattr(v2, "launch_codex", launch_v2)
         state = {"workspace": WS}
 
-        allowed = installed_version == "0.164.0" or upgraded_version == "0.164.0"
+        allowed = installed_version == "0.166.0" or upgraded_version == "0.166.0"
         with pytest.raises(SystemExit if allowed else RuntimeError) as exc:
             codex.launch(state, tool_args, options=options)
 
-        needs_upgrade = installed_version == "0.163.0"
+        needs_upgrade = installed_version == "0.165.0"
         assert prompts == (
             [("Upgrade Codex if available?", True)] if needs_upgrade and not auto_upgrade else []
         )
         assert updates == ([["codex", "update"]] if needs_upgrade and accept_upgrade else [])
         if not allowed:
-            assert "requires Codex 0.164.0" in str(exc.value)
+            assert "requires Codex 0.166.0" in str(exc.value)
             if version == "unknown":
                 assert "codex --version" in str(exc.value)
             assert calls == []
@@ -182,7 +182,7 @@ class TestLaunchCodex:
 
     def test_codex_launch_normalizes_cached_bootstrap_model(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(codex, "agent_version", lambda _: "0.164.0")
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.166.0")
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
@@ -227,7 +227,7 @@ class TestLaunchCodex:
         monkeypatch.delenv("CODEX_HOME", raising=False)
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
-        monkeypatch.setattr(codex, "agent_version", lambda _: "0.164.0")
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.166.0")
         monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         if custom_home:
             monkeypatch.setenv("CODEX_HOME", str(config_home))
@@ -458,7 +458,9 @@ class TestLaunchCodex:
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
 
-    def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch):
+    def test_subagent_only_launch_enables_reload_without_first_prompt_routing(
+        self, tmp_path, monkeypatch
+    ):
         user_config = tmp_path / "config.toml"
         saved_config = (
             b"[features.multi_agent_v2]\nnon_code_mode_only = true\n"
@@ -471,23 +473,28 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(
-            v2.subprocess,
-            "Popen",
-            lambda *_args, **_kwargs: pytest.fail("subagent-only routing spawns no app-server"),
-        )
-        monkeypatch.setattr(
-            codex_interposer,
-            "start_interposer_thread",
-            lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not interpose"),
-        )
-        execd = []
+        processes = []
+        interposer_options = {}
 
-        def fake_exec(argv):
-            execd.append(argv)
-            raise SystemExit(0)
+        class Process:
+            def __init__(self, argv, **kwargs):
+                self.argv = argv
+                self.terminated = False
+                processes.append(self)
 
-        monkeypatch.setattr(v2, "exec_or_spawn", fake_exec)
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                self.terminated = True
+
+        def start_interposer(*args, **kwargs):
+            interposer_options.update(kwargs)
+            return 41002, lambda: None
+
+        monkeypatch.setattr(v2.subprocess, "Popen", Process)
+        monkeypatch.setattr(v2, "_wait_for_app_server", lambda *a, **kw: True)
+        monkeypatch.setattr(codex_interposer, "start_interposer_thread", start_interposer)
 
         with pytest.raises(SystemExit) as exc:
             v2.launch_codex(
@@ -499,9 +506,21 @@ class TestLaunchCodex:
             )
 
         assert exc.value.code == 0
-        (argv,) = execd
-        assert argv[0] == "codex"
-        assert argv[-1] == "--search"
+        argv = processes[0].argv
+        assert argv[:2] == ["codex", "app-server"]
+        assert processes[1].argv[-1] == "--search"
+        assert "--remote" in processes[1].argv
+        assert processes[0].terminated
+        assert interposer_options["workspace"] is None
+        assert interposer_options["token_provider"] is None
+        assert interposer_options["session_controls"].is_file()
+        assert interposer_options["reload_config"]["thread_unload_delay_secs"] == 0
+        assert (
+            interposer_options["reload_config"]["responses_api_metadata"][
+                "smart_router_recipe_name"
+            ]
+            == "stable"
+        )
         assert 'model="gpt-start"' in argv
         config_values = [argv[index + 1] for index, arg in enumerate(argv) if arg == "--config"]
         native_overrides = tomllib.loads("\n".join(config_values))["features"]["multi_agent_v2"]
@@ -783,7 +802,7 @@ class TestCustomCatalogModels:
 
     def test_start_model_comes_from_custom_catalog(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.164.0")
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.166.0")
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
         monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: None)
