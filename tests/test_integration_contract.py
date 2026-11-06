@@ -69,9 +69,8 @@ def test_managed_integration_ci_is_blocking():
         _ci_marker_expression(managed, "codex", smart_routing=True)
     )
     assert not baseline & routing
-    # The macOS desktop journey runs only in its own job.
     assert baseline | routing == _collect_integration_cases(
-        "(managed_fixture or workspace_switch) and codex and not soft_fail and not macos_desktop"
+        "(managed_fixture or workspace_switch) and codex and not soft_fail"
     )
     fallback = (
         "test_ug_configure_managed_models.py::test_ug_configure_managed_codex_catalog_fallback"
