@@ -1,6 +1,7 @@
 """Unit checks for interpreting terminal evidence, not live agent substitutes."""
 
 import json
+from pathlib import PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -65,41 +66,49 @@ def test_codex_approval_requires_the_exact_local_command(command, environment, m
         )
 
 
-# Codex 0.156.0's folder-trust dialog, as captured in CI run 42283317759.
-_CODEX_0_156_TRUST = """  Folder access
-  {cwd}
-
-  Trust this folder? Codex can read, edit, and run files here, ...
-
-  › 1. Trust and continue
-    2. Quit
-
-  enter continue · esc quit"""
-_CODEX_OLDER_TRUST = """> You are in {cwd}
-
-  Do you trust the contents of this directory?
-
-› 1. Yes, continue
-  2. No, quit
-
-  Press enter to continue"""
+# Codex 0.156.0 folder-trust screens captured in CI run 42283317759. Windows ConPTY rendered the
+# selection marker and the footer separator as U+FFFD.
+_TRUST_TEXT = (
+    "  Trust this folder? Codex can read, edit, and run files here, subject to your permission "
+    "settings. Folder settings can run code\n"
+    "  automatically, even without a model request. Continue only if you trust these files. "
+    "Your trust decision will be saved.\n"
+)
+_LINUX_CWD = PurePosixPath("/tmp/ug-integration-project-pf6kf82t/project with spaces")
+_LINUX_TRUST = (
+    f"  Folder access\n  {_LINUX_CWD}\n\n{_TRUST_TEXT}\n"
+    "› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit"
+)
+_WINDOWS_CWD = PureWindowsPath(
+    r"D:\a\_temp\ug-integration\ug-integration-project-da67c71c70c8\project with spaces"
+)
+_WINDOWS_TRUST = (
+    f"  Folder access\n  {_WINDOWS_CWD}\n{_TRUST_TEXT}"
+    "\ufffd 1. Trust and continue\n  2. Quit\n  enter continue \ufffd esc quit"
+)
+_OLDER_CWD = PurePosixPath("/tmp/project-parent/project with spaces")
+_OLDER_TRUST = (
+    f"> You are in {_OLDER_CWD}\n\n  Do you trust the contents of this directory?\n\n"
+    "› 1. Yes, continue\n  2. No, quit\n\n  Press enter to continue"
+)
 
 
 @pytest.mark.parametrize(
-    ("layout", "change", "shown"),
+    ("screen", "cwd", "change", "shown"),
     [
-        (_CODEX_0_156_TRUST, None, True),
-        (_CODEX_OLDER_TRUST, None, True),
-        (_CODEX_0_156_TRUST, ("project with spaces", "other project"), False),
-        (_CODEX_0_156_TRUST, ("› 1.", "  1."), False),
-        (_CODEX_0_156_TRUST, ("2. Quit", "2. Exit"), False),
-        (_CODEX_0_156_TRUST, ("Folder access", "Folder"), False),
-        (_CODEX_0_156_TRUST, ("Trust this folder?", "Trust it?"), False),
+        (_LINUX_TRUST, _LINUX_CWD, None, True),
+        (_WINDOWS_TRUST, _WINDOWS_CWD, None, True),
+        (_OLDER_TRUST, _OLDER_CWD, None, True),
+        (_LINUX_TRUST, _LINUX_CWD, ("project with spaces", "other project"), False),
+        (_WINDOWS_TRUST, _WINDOWS_CWD, ("project with spaces", "other project"), False),
+        (_LINUX_TRUST, _LINUX_CWD, ("› 1.", "  1."), False),
+        (_WINDOWS_TRUST, _WINDOWS_CWD, ("\ufffd 1.", "  1."), False),
+        (_LINUX_TRUST, _LINUX_CWD, ("2. Quit", "2. Exit"), False),
+        (_LINUX_TRUST, _LINUX_CWD, ("Folder access", "Folder"), False),
+        (_LINUX_TRUST, _LINUX_CWD, ("Trust this folder?", "Trust it?"), False),
     ],
 )
-def test_codex_trust_dialog_requires_the_test_project(tmp_path, layout, change, shown):
-    cwd = tmp_path / "project with spaces"
-    screen = layout.format(cwd=cwd)
+def test_codex_trust_dialog_requires_the_test_project(screen, cwd, change, shown):
     if change:
         screen = screen.replace(*change)
     assert codex_trust_dialog_shown(screen, cwd) is shown

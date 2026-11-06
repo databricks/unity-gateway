@@ -15,7 +15,7 @@ import signal
 import subprocess
 import threading
 import time
-from pathlib import Path
+from pathlib import PurePath
 
 import pyte
 from pyte.screens import wcwidth  # wcwidth is only a pyte dependency
@@ -25,7 +25,7 @@ from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
 SELECTED = "[›❯>]"
 
 
-def codex_trust_dialog_shown(screen: str, cwd: Path) -> bool:
+def codex_trust_dialog_shown(screen: str, cwd: PurePath) -> bool:
     """Whether Codex is asking to trust the test project, in its pre-0.156 or 0.156 layout."""
     older = (
         bool(
@@ -46,7 +46,8 @@ def codex_trust_dialog_shown(screen: str, cwd: Path) -> bool:
         bool(re.search(r"(?m)^\s*Folder access\s*$", screen))
         and bool(re.search(rf"(?m)^\s*{re.escape(str(cwd))}\s*$", screen))
         and "Trust this folder?" in screen
-        and bool(re.search(rf"(?m)^\s*{SELECTED}\s*1[.)]\s+Trust and continue\s*$", screen))
+        # Windows ConPTY captures the selection marker as U+FFFD.
+        and bool(re.search(r"(?m)^\s*[›❯>\ufffd]\s*1[.)]\s+Trust and continue\s*$", screen))
         and bool(re.search(r"(?m)^\s*2[.)]\s+Quit\s*$", screen))
     )
     return older or current
