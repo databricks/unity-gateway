@@ -4357,6 +4357,59 @@ class TestHttpGetJsonRetries:
 
         return HTTPError(url="", code=code, msg=message, hdrs=headers or {}, fp=None)
 
+    @pytest.mark.parametrize(
+        ("max_retries", "recovers", "attempts", "delays"),
+        [(0, False, 1, []), (2, False, 3, [1.25, 2.5]), (2, True, 2, [1.25])],
+    )
+    def test_truncated_response_obeys_retry_budget(
+        self, monkeypatch, max_retries, recovers, attempts, delays
+    ):
+        from http.client import IncompleteRead
+        from unittest.mock import MagicMock
+
+        truncated = MagicMock()
+        truncated.__enter__.return_value = truncated
+        # Even a valid JSON prefix is incomplete and must never be returned or cached.
+        truncated.read.side_effect = IncompleteRead(b'{"partial": true}', 100)
+        responses = [truncated, _FakeResponse({"complete": True})] if recovers else None
+        urlopen = MagicMock(side_effect=responses, return_value=truncated)
+        sleeps = []
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+
+        payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=max_retries)
+
+        assert urlopen.call_count == attempts
+        assert truncated.__exit__.call_count == (1 if recovers else attempts)
+        assert sleeps == delays
+        if recovers:
+            assert payload == {"complete": True}
+            assert reason is None
+        else:
+            assert payload is None
+            assert reason == "network error: IncompleteRead(17 bytes read, 100 more expected)"
+
+    @pytest.mark.parametrize("error_type", ["BadStatusLine", "LineTooLong"])
+    def test_retries_protocol_errors_before_response_body(self, monkeypatch, error_type):
+        import http.client
+        from unittest.mock import MagicMock
+
+        urlopen = MagicMock(
+            side_effect=[
+                getattr(http.client, error_type)("invalid HTTP response"),
+                _FakeResponse({"complete": True}),
+            ]
+        )
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda delay: None)
+
+        payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=1)
+
+        assert payload == {"complete": True}
+        assert reason is None
+        assert urlopen.call_count == 2
+
     def test_retries_429_after_retry_after_delay(self, monkeypatch):
         outcomes = iter(
             [
