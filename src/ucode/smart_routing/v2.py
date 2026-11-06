@@ -267,19 +267,32 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-def _wait_for_app_server(port: int, timeout: float) -> bool:
+def _wait_for_app_server(
+    port: int,
+    timeout: float,
+    *,
+    process: subprocess.Popen | None = None,  # noqa: TID251 - type only
+) -> bool:
+    """Wait for local readiness, stopping when the child exits or the budget expires."""
     url = f"http://{LOOPBACK_HOST}:{port}/healthz"
     end = time.monotonic() + timeout
-    while time.monotonic() < end:
+    while True:
+        remaining = end - time.monotonic()
+        if remaining <= 0 or (process is not None and process.poll() is not None):
+            return False
         try:
             with urllib.request.urlopen(  # noqa: S310
-                url, timeout=HEALTH_REQUEST_TIMEOUT_SECONDS
+                url, timeout=min(HEALTH_REQUEST_TIMEOUT_SECONDS, remaining)
             ) as response:
                 if response.status == 200:
                     return True
         except Exception:  # noqa: BLE001
-            time.sleep(HEALTH_POLL_INTERVAL_SECONDS)
-    return False
+            pass
+        # An unhealthy HTTP response needs the same pause as a refused connection; otherwise
+        # a listening server that is still initializing would be probed in a tight loop.
+        remaining = end - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(HEALTH_POLL_INTERVAL_SECONDS, remaining))
 
 
 def _switch_message(model: str, reason: str) -> str:
@@ -926,7 +939,14 @@ def launch_codex(
     )
     stop_interposer = None
     try:
-        if not _wait_for_app_server(app_port, timeout=APP_SERVER_READY_TIMEOUT_SECONDS):
+        if not _wait_for_app_server(
+            app_port, timeout=APP_SERVER_READY_TIMEOUT_SECONDS, process=app_server
+        ):
+            if (exit_code := app_server.poll()) is not None:
+                raise RuntimeError(
+                    f"Codex app-server exited with status {exit_code} before becoming ready "
+                    "for smart routing. Check `codex app-server --help` and the Codex installation."
+                )
             raise RuntimeError(
                 "Codex app-server did not become ready for smart routing; check workspace auth."
             )
