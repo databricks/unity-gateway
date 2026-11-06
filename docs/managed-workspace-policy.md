@@ -35,9 +35,12 @@ configuration, not just headers; ug preserves raw fields rather than silently re
   the next `ug configure`. Only when nothing is saved for the workspace yet (or the installed file
   changed since it was recorded) does a launch read remote policy once and record the result.
 - The installed policy's workspace is authoritative for launch and remote refresh. A different
-  workspace selected in user state or with `--workspace` causes a launch error before authentication,
-  bootstrap, cache reuse, or any remote request. This also applies to dry-run and `--skip-preflight`.
-  Without a user-selected workspace, launch uses the installed workspace. Explicit administrator
+  workspace passed with `--workspace` causes a launch error before authentication, bootstrap, cache
+  reuse, or any remote request. This also applies to dry-run and `--skip-preflight`.
+  Without a user-selected workspace, launch uses the installed workspace. A different workspace
+  saved in user state is stale (an administrator switched the machine since the user last
+  configured): launch notes the switch, selects the installed workspace, and sets the agent up again
+  for it, as on a first launch. The other workspace's saved setup is kept. Explicit administrator
   configure can replace the machine workspace; launch cannot switch it.
 - Unchanged policy does not invoke sudo or touch installed bytes/metadata.
 - Launches never install, update, or remove workspace policy, whether run as root or not, in a
@@ -56,13 +59,13 @@ configuration, not just headers; ug preserves raw fields rather than silently re
   and retains it.
 - `ug configure` sets the machine's workspace: configuring a workspace that publishes no policy
   also removes another workspace's installed policy. A launch never changes the machine's
-  workspace; selecting another workspace is refused.
+  workspace; launching with `--workspace` for another workspace is refused.
 - Fetch/authentication failures retain existing local fallback and record nothing.
 - Launch dry-run is local/offline. Configure dry-run may fetch to preview but does not install.
 
 The one file holds one active workspace for the machine. Installing another workspace replaces
-that policy for all users. Workspace URLs are canonicalized; a mismatched selection is refused,
-not used to bypass machine policy. Agent-specific Claude/Codex OS-managed settings remain separate; their existing
+that policy for all users. Workspace URLs are canonicalized; a mismatched `--workspace` is refused
+and a mismatched saved selection is replaced, never used to bypass machine policy. Agent-specific Claude/Codex OS-managed settings remain separate; their existing
 conflict restrictions can still prevent launch even when workspace-policy refresh falls back.
 
 ## Refresh metadata
