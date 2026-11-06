@@ -62,15 +62,20 @@ def main():
         with httpx.Client(
             base_url=f"http://127.0.0.1:{proxy.server_port}", timeout=10
         ) as downstream:
-            assert downstream.get("/v1/models").content == b"ok"
+            response = downstream.get("/v1/models")
+            if response.content != b"ok":
+                raise RuntimeError(f"Unexpected warm-up response: {response.content!r}")
             for _ in range(args.runs):
                 time.sleep(args.idle_seconds)
                 count = len(accepted)
                 start = time.perf_counter()
-                assert downstream.get("/v1/models").content == b"ok"
+                response = downstream.get("/v1/models")
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                if response.content != b"ok":
+                    raise RuntimeError(f"Unexpected response: {response.content!r}")
                 samples.append(
                     {
-                        "elapsed_ms": (time.perf_counter() - start) * 1000,
+                        "elapsed_ms": elapsed_ms,
                         "new_upstream_connections": len(accepted) - count,
                     }
                 )

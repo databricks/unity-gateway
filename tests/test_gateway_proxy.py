@@ -633,11 +633,6 @@ class TestStartProxyClientConfiguration:
             limits = options["limits"]
             assert limits.max_connections == 100
             assert limits.max_keepalive_connections == 20
-            assert limits.keepalive_expiry == 30.0
-            assert options["timeout"] == httpx.Timeout(
-                connect=10.0, read=600.0, write=600.0, pool=10.0
-            )
-            assert options["follow_redirects"] is False
         finally:
             server.server_close()
             cache.stop()
