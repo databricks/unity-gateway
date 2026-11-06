@@ -305,6 +305,8 @@ evidence is checked, because Claude can resume a child after its first completed
 [component coverage inventory](../README.md) for helper, picker, and resource cases.
 Installation tests exercise real console-script help and version output. These checks
 do not establish live agent startup or end-to-end latency.
+The component suite also checks deferred Rich progress imports, preserved presentation
+exports, redirected progress, and terminal progress activation; no native agent is involved.
 
 `TestEnsureDatabricksCliVersion` in `../test_databricks.py`
 checks that repeated launch preflights reuse a successful CLI version probe, higher

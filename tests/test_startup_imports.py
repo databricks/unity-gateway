@@ -23,6 +23,7 @@ _LAZY_MODULES = (
     "questionary",
     "prompt_toolkit",
     "ucode.ui.interactive_picker",
+    "rich.progress",
 )
 
 
@@ -182,6 +183,33 @@ def test_public_picker_exports_preserve_identity_and_parameters():
     assert namespace["to_formatted_text"] is to_formatted_text
     assert namespace["INDICATOR_SELECTED"] == INDICATOR_SELECTED
     assert namespace["INDICATOR_UNSELECTED"] == INDICATOR_UNSELECTED
+
+
+def test_public_progress_exports_preserve_identity():
+    from rich import progress
+
+    from ucode import ui
+    from ucode.ui import BarColumn, MofNCompleteColumn, Progress, TextColumn
+
+    namespace = {}
+    exec("from ucode.ui import *", namespace)
+    for exported in (BarColumn, MofNCompleteColumn, Progress, TextColumn):
+        assert exported is getattr(progress, exported.__name__)
+        assert exported is getattr(ui, exported.__name__)
+        assert exported is namespace[exported.__name__]
+
+
+def test_redirected_progress_bar_keeps_rich_progress_unloaded() -> None:
+    output, loaded = _modules_loaded_after(
+        "from ucode.ui import progress_bar\n"
+        "with progress_bar('Loading', 2) as advance:\n"
+        "    advance()\n"
+        "    advance()",
+        ("rich.progress",),
+    )
+
+    assert output == ""
+    assert loaded == []
 
 
 def test_auth_token_helper_skips_picker_imports(tmp_path, monkeypatch) -> None:

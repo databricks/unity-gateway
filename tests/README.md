@@ -303,6 +303,9 @@ version suffixes, fallback, and unchanged dispatch for other arguments; they do 
 claim a live agent launch or end-to-end startup timing. An isolated interpreter
 without site packages also proves that intact metadata can produce version output
 while `--help` fails on a missing CLI startup dependency.
+The same startup guards defer Rich progress imports for noninteractive commands and
+redirected progress bars while preserving named and wildcard presentation exports.
+`test_ui.py` checks that a terminal progress bar still activates, advances, and stops.
 `TestUpgrade` in `test_cli.py` covers both command names before, during, and after
 the distribution rename with mocked installer calls, including `--help` verification
 of the full CLI import path and failure recovery guidance.

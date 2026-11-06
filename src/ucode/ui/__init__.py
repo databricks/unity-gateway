@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
-from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn
 
 if TYPE_CHECKING:
     import questionary
@@ -39,6 +38,10 @@ _LAZY_PRESENTATION_EXPORTS = {
     "to_formatted_text": "prompt_toolkit.formatted_text",
     "INDICATOR_SELECTED": "questionary.constants",
     "INDICATOR_UNSELECTED": "questionary.constants",
+    "BarColumn": "rich.progress",
+    "MofNCompleteColumn": "rich.progress",
+    "Progress": "rich.progress",
+    "TextColumn": "rich.progress",
 }
 
 
@@ -326,6 +329,8 @@ def progress_bar(description: str, total: int) -> Iterator[Callable[[], None]]:
     if total <= 0 or not sys.stdout.isatty():
         yield lambda: None
         return
+
+    from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn
 
     with Progress(
         TextColumn("[dim]{task.description}[/dim]"),
