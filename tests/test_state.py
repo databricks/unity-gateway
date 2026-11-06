@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import patch
 
 import pytest
@@ -152,6 +153,98 @@ class TestSaveLoadRoundTrip:
     def test_load_state_returns_empty_when_no_workspace(self):
         result = load_state()
         assert result == {}
+
+    def test_unchanged_state_is_neither_serialized_nor_rewritten(self, monkeypatch):
+        state = {"workspace": FAKE_WS, "claude_models": {"sonnet": "model"}}
+        save_state(state)
+        before = state_mod.STATE_PATH.read_bytes()
+        os.utime(state_mod.STATE_PATH, ns=(1_000_000_000, 1_000_000_000))
+
+        def unexpected_serialization(*args, **kwargs):
+            raise AssertionError("unchanged state must not be serialized again")
+
+        monkeypatch.setattr(state_mod.json, "dumps", unexpected_serialization)
+
+        save_state(state)
+
+        assert state_mod.STATE_PATH.read_bytes() == before
+        assert state_mod.STATE_PATH.stat().st_mtime_ns == 1_000_000_000
+
+    def test_saving_empty_state_still_repairs_a_corrupt_state_file(self):
+        state_mod.STATE_PATH.write_text("not json", encoding="utf-8")
+
+        save_state({})
+
+        assert json.loads(state_mod.STATE_PATH.read_text(encoding="utf-8")) == {
+            "state_version": STATE_VERSION,
+            "current_workspace": None,
+            "workspaces": {},
+        }
+
+    @pytest.mark.parametrize("before,after", [(1, True), (1, 1.0), ([1], [True]), (0.0, -0.0)])
+    def test_equal_python_values_of_different_types_are_still_saved(self, before, after):
+        state = {"workspace": FAKE_WS, "preferences": {"setting": before}}
+        save_state(state)
+        state["preferences"]["setting"] = after
+
+        save_state(state)
+
+        saved = load_full_state()["workspaces"][FAKE_WS]["preferences"]["setting"]
+        assert type(saved) is type(after)
+        assert saved == after
+        assert json.dumps(saved) == json.dumps(after)
+
+    def test_unchanged_save_reads_external_workspace_updates(self):
+        state = {"workspace": FAKE_WS}
+        save_state(state)
+        full = load_full_state()
+        other_workspace = "https://other.databricks.com"
+        full["workspaces"][other_workspace] = {"profile": "added-externally"}
+        state_mod.STATE_PATH.write_text(json.dumps(full, indent=1), encoding="utf-8")
+        before = state_mod.STATE_PATH.read_bytes()
+        os.utime(state_mod.STATE_PATH, ns=(1_000_000_000, 1_000_000_000))
+
+        save_state(state)
+
+        assert state_mod.STATE_PATH.read_bytes() == before
+        assert state_mod.STATE_PATH.stat().st_mtime_ns == 1_000_000_000
+        assert load_full_state()["workspaces"][other_workspace]["profile"] == "added-externally"
+
+    def test_same_workspace_state_still_updates_current_workspace_selection(self):
+        state = {"workspace": FAKE_WS}
+        save_state(state)
+        save_state({"workspace": "https://other.databricks.com"})
+
+        save_state(state)
+
+        assert load_full_state()["current_workspace"] == FAKE_WS
+
+    def test_unchanged_managed_overlay_preserves_developer_values_without_rewriting(self):
+        state = {"workspace": FAKE_WS, "claude_models": {"sonnet": "developer-model"}}
+        save_state(state)
+        state["_managed_overlay"] = {"claude_models": state["claude_models"]}
+        state["claude_models"] = {"sonnet": "admin-model"}
+        before = state_mod.STATE_PATH.read_bytes()
+        os.utime(state_mod.STATE_PATH, ns=(1_000_000_000, 1_000_000_000))
+
+        save_state(state)
+
+        assert state_mod.STATE_PATH.read_bytes() == before
+        assert state_mod.STATE_PATH.stat().st_mtime_ns == 1_000_000_000
+        assert state["claude_models"] == {"sonnet": "admin-model"}
+
+    def test_same_selected_workspace_repairs_a_stale_bare_host_alias(self):
+        state = {"workspace": FAKE_WS, "workspace_id": "123", "profile": "current"}
+        save_state(state)
+        full = load_full_state()
+        full["workspaces"][FAKE_WS]["profile"] = "stale-alias"
+        state_mod.STATE_PATH.write_text(json.dumps(full), encoding="utf-8")
+
+        save_state(state)
+
+        full = load_full_state()
+        assert full["workspaces"][FAKE_WS]["profile"] == "current"
+        assert full["workspaces"][FAKE_WS]["alias_of"] == full["current_workspace_key"]
 
 
 # ---------------------------------------------------------------------------

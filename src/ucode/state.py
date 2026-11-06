@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import cast
 
-from ucode.config_io import APP_DIR, is_dry_run
+from ucode.config_io import APP_DIR, can_skip_file_write, is_dry_run
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_TIMEOUT_MS,
     CustomOAuthConfig,
@@ -113,6 +113,11 @@ def save_state(state: dict) -> None:
     if is_dry_run():
         return
     full = load_full_state()
+    previous = dict(full)
+    if isinstance(full.get("workspaces"), dict):
+        # _write_workspace_block replaces entries in this shared mapping; keep the old entries
+        # for comparison without copying or serializing every workspace's nested model catalog.
+        previous["workspaces"] = dict(full["workspaces"])
     workspace = state.get("workspace")
     if workspace:
         saved_id = state.get("workspace_id")
@@ -126,11 +131,36 @@ def save_state(state: dict) -> None:
         _write_workspace_block(full, key, block, workspace_id)
         host = split_workspace_key(key)[0] if workspace_id else key
         activate_state({"workspace": host, "workspace_id": workspace_id})
+    if key and _same_state_values(full, previous) and can_skip_file_write(STATE_PATH):
+        return
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
     except OSError as exc:
         raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
+
+
+def _same_state_values(left: object, right: object) -> bool:
+    # Python equates True with 1 and 1 with 1.0; those changes must still be persisted. Avoid
+    # JSON serialization here, which otherwise repeats for every saved workspace on each save.
+    pending = [(left, right)]
+    while pending:
+        first, second = pending.pop()
+        if first is second:
+            continue
+        if type(first) is not type(second):
+            return False
+        if isinstance(first, dict) and isinstance(second, dict):
+            if first.keys() != second.keys():
+                return False
+            pending.extend((value, second[key]) for key, value in first.items())
+        elif isinstance(first, list) and isinstance(second, list):
+            if len(first) != len(second):
+                return False
+            pending.extend(zip(first, second, strict=True))
+        elif first != second or (isinstance(first, float) and repr(first) != repr(second)):
+            return False
+    return True
 
 
 def _write_workspace_block(full: dict, key: str, block: dict, workspace_id: str | None) -> None:

@@ -1,5 +1,12 @@
 # Test suites and user journeys
 
+`test_config_io.py` and `test_state.py` cover avoiding unchanged local config/state writes:
+preserved timestamps, actual changes still written, encoding/native newline comparisons, dry-run
+output, permission-error and unreadable-file fallbacks, and unchanged handling of symlinks and
+special files at the file-type boundary. State checks cover type-sensitive updates, live reads of
+other-workspace edits, selection changes, managed overlays, and bare-host alias repair. These are
+offline component checks; they do not measure live startup or native file-watcher behavior.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component

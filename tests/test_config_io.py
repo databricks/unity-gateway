@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import tomlkit
@@ -205,6 +209,133 @@ class TestWriteHelpers:
         config_io.atomic_write_json(p, {"a": 2})
         assert json.loads(p.read_text()) == {"a": 2}
         assert not list(tmp_path.glob(".out.json.*"))
+
+    @pytest.mark.parametrize("kind", ["text", "json", "toml"])
+    def test_identical_config_does_not_touch_file_but_changes_are_written(self, tmp_path, kind):
+        path = tmp_path / f"config.{kind}"
+
+        def write(value):
+            if kind == "json":
+                write_json_file(path, {"model": value})
+            elif kind == "toml":
+                write_toml_file(path, tomlkit.parse(f'# retained comment\nmodel = "{value}"\n'))
+            else:
+                write_text_file(path, f"model={value}\n")
+
+        write("first")
+        original = path.read_bytes()
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+        before = path.stat()
+
+        write("first")
+
+        assert path.read_bytes() == original
+        assert path.stat().st_mtime_ns == before.st_mtime_ns
+        assert path.stat().st_mode == before.st_mode
+
+        write("second")
+
+        assert path.read_bytes() != original
+        assert path.stat().st_mtime_ns != before.st_mtime_ns
+        assert path.stat().st_mode == before.st_mode
+
+    def test_same_text_uses_requested_encoding_and_native_newlines(self, tmp_path):
+        path = tmp_path / "unicode.txt"
+        text = "café\nnext line\n"
+        path.write_text(text, encoding="utf-16")
+        expected = path.read_bytes()
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+
+        write_text_file(path, text, encoding="utf-16")
+
+        assert path.read_bytes() == expected
+        assert path.stat().st_mtime_ns == 1_000_000_000
+
+    def test_different_line_endings_are_rewritten_to_native_output(self, tmp_path):
+        path = tmp_path / "newlines.txt"
+        reference = tmp_path / "reference.txt"
+        reference.write_text("first\nsecond\n", encoding="utf-8")
+        expected = reference.read_bytes()
+        alternate = b"first\r\nsecond\r\n" if b"\r" not in expected else b"first\nsecond\n"
+        path.write_bytes(alternate)
+
+        write_text_file(path, "first\nsecond\n")
+
+        assert path.read_bytes() == expected
+
+    def test_unreadable_existing_file_still_uses_the_write_path(self, tmp_path, monkeypatch):
+        path = tmp_path / "write-only.txt"
+        path.write_text("same", encoding="utf-8")
+        original_open = Path.open
+        modes = []
+
+        def open_file(self, mode="r", *args, **kwargs):
+            if self == path:
+                modes.append(mode)
+                if mode == "r+b":
+                    raise PermissionError("reading forbidden")
+            return original_open(self, mode, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", open_file)
+
+        write_text_file(path, "same")
+
+        assert modes == ["r+b", "w"]
+        assert path.read_text() == "same"
+
+    def test_identical_read_only_config_keeps_the_existing_write_error(self, tmp_path, monkeypatch):
+        path = tmp_path / "read-only.txt"
+        path.write_text("same", encoding="utf-8")
+        original_open = Path.open
+
+        def open_file(self, mode="r", *args, **kwargs):
+            if self == path and mode in ("r+b", "w"):
+                raise PermissionError("writing forbidden")
+            return original_open(self, mode, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", open_file)
+
+        with pytest.raises(RuntimeError, match="Failed to write config file"):
+            write_text_file(path, "same")
+
+        assert path.read_text() == "same"
+
+    @pytest.mark.parametrize("file_kind", [stat.S_IFLNK, stat.S_IFIFO, stat.S_IFCHR])
+    def test_symlinks_and_special_files_keep_the_existing_write_path(
+        self, tmp_path, monkeypatch, file_kind
+    ):
+        path = tmp_path / "config"
+        path.write_text("same", encoding="utf-8")
+        original_lstat = Path.lstat
+        original_write = Path.write_text
+        writes = []
+
+        def lstat(self, *args, **kwargs):
+            if self == path:
+                return SimpleNamespace(st_mode=file_kind)
+            return original_lstat(self, *args, **kwargs)
+
+        def write(self, *args, **kwargs):
+            writes.append(self)
+            return original_write(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "lstat", lstat)
+        monkeypatch.setattr(Path, "write_text", write)
+
+        write_text_file(path, "same")
+
+        assert writes == [path]
+
+    def test_dry_run_prints_even_when_content_is_already_present(self, tmp_path, capsys):
+        path = tmp_path / "existing.txt"
+        path.write_text("same", encoding="utf-8")
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+        set_dry_run(True)
+
+        write_text_file(path, "same")
+
+        assert "dry run" in capsys.readouterr().out
+        assert path.stat().st_mtime_ns == 1_000_000_000
 
 
 # ---------------------------------------------------------------------------

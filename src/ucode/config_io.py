@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import TypedDict, cast
@@ -98,6 +99,15 @@ def write_text_file(path: Path, content: str, *, encoding: str = "utf-8") -> Non
         return
     ensure_parent_dir(path)
     try:
+        # Match the bytes TextIOWrapper writes, including native newline translation.
+        try:
+            expected = content.replace("\n", os.linesep).encode(encoding)
+        except (LookupError, UnicodeError):
+            # Preserve the normal writer's exception and file-opening behavior.
+            pass
+        else:
+            if can_skip_file_write(path, expected):
+                return
         path.write_text(content, encoding=encoding)
     except OSError as exc:
         raise RuntimeError(f"Failed to write config file: {path}") from exc
@@ -105,14 +115,30 @@ def write_text_file(path: Path, content: str, *, encoding: str = "utf-8") -> Non
 
 def write_json_file(path: Path, payload: dict) -> None:
     content = json.dumps(payload, indent=2) + "\n"
-    if _dry_run:
-        console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
-        return
-    ensure_parent_dir(path)
+    write_text_file(path, content)
+
+
+def can_skip_file_write(path: Path, expected: bytes | None = None) -> bool:
+    """Check an existing regular file without weakening its write-permission checks.
+
+    When ``expected`` is supplied its bytes must match exactly. State persistence also uses
+    this after comparing the parsed state, before serializing it again. Symlinks, special files,
+    and files that cannot be opened for both reading and writing retain the ordinary write path.
+    Nothing is cached: each invocation checks the current file and its permissions.
+    """
     try:
-        path.write_text(content, encoding="utf-8")
-    except OSError as exc:
-        raise RuntimeError(f"Failed to write config file: {path}") from exc
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            return False
+        if expected is not None and before.st_size != len(expected):
+            return False
+        with path.open("r+b") as handle:
+            opened = os.fstat(handle.fileno())
+            if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                return False
+            return expected is None or handle.read(len(expected) + 1) == expected
+    except OSError:
+        return False
 
 
 def deep_merge_dict(base: dict, overlay: dict) -> dict:
@@ -216,14 +242,7 @@ def read_toml_safe(path: Path) -> tomlkit.TOMLDocument:
 
 def write_toml_file(path: Path, doc: tomlkit.TOMLDocument) -> None:
     content = tomlkit.dumps(doc)
-    if _dry_run:
-        console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
-        return
-    ensure_parent_dir(path)
-    try:
-        path.write_text(content, encoding="utf-8")
-    except OSError as exc:
-        raise RuntimeError(f"Failed to write config file: {path}") from exc
+    write_text_file(path, content)
 
 
 def parse_dotenv(path: Path) -> dict[str, str]:
