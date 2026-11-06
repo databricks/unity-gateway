@@ -955,7 +955,7 @@ invoke the installed Smart Router skill to turn routing off and back on, and req
 native model/rationale row (Claude) or subagent banner (Codex), plus a correlated
 live decision only while routing is enabled. Plugin-refresh survival and native
 daemon/background dispatch remain deferred. CUJ4 covers interactive explicit-model
-bypass. Plugin generation and launch arguments are covered
+bypass. Model-first plugin agent names, catalog collisions, generation and launch arguments are covered
 by component tests in `../test_claude_smart_routing_v2.py`, not by a live registration journey.
 
 Exact candidate-model and router-name preservation in decision logs has component

@@ -885,8 +885,8 @@ class TestSubagentRouting:
         monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
         monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", orchestrator_enabled)
         selected_model = "system.ai.claude-haiku-5-5"
-        requested_agent = v2._routed_claude_agent_name("system.ai.glm-5-3-flash")
-        routed_agent = v2._routed_claude_agent_name(selected_model)
+        requested_agent = "ug-smart-router:glm-5-3-flash-77df06ea"
+        routed_agent = "ug-smart-router:claude-haiku-5-5-009ef3ad"
         # Control only the remote router response; exercise routing and the mod details together.
         monkeypatch.setattr(
             v2,
@@ -930,6 +930,58 @@ class TestSubagentRouting:
             assert f"Subagent:{routed_agent}" in "".join(notice.split())
             assert requested_agent not in notice
             assert ("[orchestrator on]" in notice) == (orchestrator_enabled == "1")
+
+    @pytest.mark.parametrize(
+        ("model", "slug", "routed_model"),
+        [
+            (
+                "system.ai.claude-opus-5-5[1m]",
+                "claude-opus-5-5-1m-6b729c71",
+                "system.ai.claude-opus-5-5[1m]",
+            ),
+            (
+                "ai_devtools_prod.default.gpt-6-luna-fast",
+                "gpt-6-luna-fast-d4cb672e",
+                "ai_devtools_prod.default.gpt-6-luna-fast",
+            ),
+            ("system.ai.glm-5-3", "glm-5-3-982d9f93", "system.ai.glm-5-3"),
+            ("system.ai.café[1m]", "caf-1m-d42c6fb4", "system.ai.café[1m]"),
+            ("system.ai.!!!", "model-977d510c", "system.ai.!!!"),
+            ("databricks-claude-opus-4-8", "claude-opus-4-8-3ec612f4", "system.ai.claude-opus-4-8"),
+            (
+                "anthropic-aigw-77df06ea-system.ai.gpt-5-6-sol",
+                "gpt-5-6-sol-b35e5c5d",
+                "anthropic-aigw-77df06ea-system.ai.gpt-5-6-sol[1m]",
+            ),
+        ],
+    )
+    def test_routed_agent_name_and_file_show_readable_model(
+        self, tmp_path, model, slug, routed_model
+    ):
+        v2._write_routed_claude_plugin(tmp_path, [model])
+
+        agent = (tmp_path / "agents" / f"{slug}.md").read_text()
+        assert f'name: "{slug}"' in agent
+        canonical = v2._canonical_claude_model_id(model)
+        assert f"description: {json.dumps(f'Smart-routed coding agent using {canonical}')}" in agent
+        assert f"model: {json.dumps(routed_model)}" in agent
+        assert v2._routed_claude_agent_name(model) == f"ug-smart-router:{slug}"
+
+    def test_distinct_catalogs_keep_distinct_agents_with_same_model_name(self, tmp_path):
+        models = ["catalog.one.gpt-6-luna-fast", "catalog.two.gpt-6-luna-fast"]
+        v2._write_routed_claude_plugin(tmp_path, models)
+
+        first = (tmp_path / "agents" / "gpt-6-luna-fast-3bb96dcf.md").read_text()
+        second = (tmp_path / "agents" / "gpt-6-luna-fast-e565987d.md").read_text()
+        assert 'model: "catalog.one.gpt-6-luna-fast"' in first
+        assert 'model: "catalog.two.gpt-6-luna-fast"' in second
+
+    def test_long_model_names_are_bounded_and_distinct(self):
+        models = ["system.ai." + "a" * 60 + suffix for suffix in ("-one", "-two")]
+        names = [v2._routed_claude_agent_slug(model) for model in models]
+
+        assert len(set(names)) == 2
+        assert all(name.startswith("a" * 36 + "-") and len(name) == 45 for name in names)
 
     def test_writes_routed_agents_as_launch_scoped_plugin(self, tmp_path):
         plugin_dir = tmp_path / "routing-plugin"

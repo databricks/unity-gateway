@@ -41,6 +41,7 @@ from ucode.constants import (
 from ucode.custom_oauth import custom_oauth_cli_enabled, launch_token
 from ucode.databricks import (
     AnthropicModelCatalog,
+    bare_model_name,
     build_auth_token_argv,
     list_anthropic_model_catalog,
     list_anthropic_models,
@@ -92,7 +93,6 @@ OAUTH_TOKEN_ENV_VAR = "OAUTH_TOKEN"
 HEALTH_REQUEST_TIMEOUT_SECONDS = 1
 HEALTH_POLL_INTERVAL_SECONDS = 0.25
 CLAUDE_ROUTE_SELECTION_TIMEOUT_S = 20.0
-CLAUDE_ROUTED_AGENT_PREFIX = "ucode-route-"
 CLAUDE_ROUTING_PLUGIN_NAME = "ug-smart-router"
 CLAUDE_ROUTED_AGENT_PROMPT = (
     "Complete the delegated task exactly as requested. Follow the parent agent's instructions and "
@@ -324,15 +324,16 @@ def _claude_model_overrides(model_ids: list[str]) -> dict[str, str]:
 
 def _routed_claude_agent_slug(model: str) -> str:
     canonical = _canonical_claude_model_id(model)
-    readable = canonical.rsplit("/", 1)[-1]
-    for prefix in ("databricks-", "system.ai."):
-        if readable.startswith(prefix):
-            readable = readable[len(prefix) :]
-            break
-    safe = "".join(character if character.isalnum() else "-" for character in readable.lower())
-    slug = "-".join(part for part in safe.split("-") if part)
+    base, separator, hint = _unwrapped_claude_model_id(canonical).partition("[")
+    readable = bare_model_name(base) + separator + hint
+    safe = "".join(
+        character if character.isascii() and character.isalnum() else "-"
+        for character in readable.lower()
+    )
+    slug = "-".join(part for part in safe.split("-") if part)[:36].rstrip("-") or "model"
+    # Keep distinct model IDs separate even when their readable names normalize identically.
     digest = hashlib.sha256(canonical.encode()).hexdigest()[:8]
-    return f"{CLAUDE_ROUTED_AGENT_PREFIX}{slug[:36]}-{digest}"
+    return f"{slug}-{digest}"
 
 
 def _routed_claude_agent_name(model: str) -> str:

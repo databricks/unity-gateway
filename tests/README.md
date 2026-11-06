@@ -806,10 +806,10 @@ keyboard selection: nothing is selected by default, selecting Codex installs onl
 Codex, and submitting an empty selection installs nothing. Rendering checks cover
 the selected and empty checkboxes. These are local component checks, not live gateway tests.
 
-`test_claude_smart_routing_v2.py` checks plugin-qualified names, exact model
-definitions, and temporary plugin loading in both routing modes. The GLM-to-Haiku
-notice regression verifies that both hook messages name the routed agent with
-orchestration on and off. It mocks the router response, not native Claude rendering.
+`test_claude_smart_routing_v2.py` checks model-first plugin-qualified names, sanitized
+names and catalog collisions, exact model definitions, and temporary plugin loading in both
+routing modes. The GLM-to-Haiku notice regression verifies that both hook messages name the
+routed agent with orchestration on and off. It mocks the router response, not native Claude rendering.
 Existing launch tests cover caller argument preservation and file removal after exit. These checks
 do not cover plugin-write/process-start failures, native plugin refresh, or daemon behavior.
 
