@@ -161,6 +161,30 @@ class _Response(io.BytesIO):
 
 
 class TestHttpChokepoints:
+    def test_empty_budget_header_snapshot_inherits_no_later_launch_headers(
+        self, selected, monkeypatch
+    ):
+        from ucode.managed_config import get_model_recommendation
+
+        sent = []
+        monkeypatch.setenv("UG_HEADERS", "X-Later: unexpected")
+
+        def urlopen(request, timeout):
+            sent.append(dict(request.header_items()))
+            return _Response(b'{"recommended_model":"model"}', request.full_url)
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        recommendation, reason = get_model_recommendation(SHARED, "tok", default_headers={})
+
+        assert reason is None and recommendation["model"] == "model"
+        assert sent == [
+            {
+                "Authorization": "Bearer tok",
+                "Accept": "application/json",
+                "Content-type": "application/json",
+            }
+        ]
+
     def _get(self, url, response):
         sent = []
 

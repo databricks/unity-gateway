@@ -474,6 +474,7 @@ def _http_send_json(
     timeout: int = 10,
     allow_empty_body: bool = False,
     headers: dict[str, str] | None = None,
+    default_headers: dict[str, str] | None = None,
 ) -> tuple[dict | list | None, str | None]:
     """Send a request that may carry a JSON body, and decode a JSON response.
 
@@ -485,9 +486,11 @@ def _http_send_json(
     empty body there is the expected result, not a decode failure.
     """
     body_bytes = json.dumps(payload).encode("utf-8") if payload is not None else None
+    # None means read the current launch context. An empty snapshot inherits nothing.
+    if default_headers is None:
+        default_headers = {**ug_headers(), **workspace_headers(url)}
     request_headers = {
-        **ug_headers(),
-        **workspace_headers(url),
+        **default_headers,
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
     }
@@ -543,10 +546,12 @@ def _http_post_json(
     *,
     timeout: int = 10,
     headers: dict[str, str] | None = None,
+    default_headers: dict[str, str] | None = None,
 ) -> tuple[dict | list | None, str | None]:
     """POST a JSON body to an endpoint. Returns (payload, None) on success,
     (None, reason) on failure. Mirrors `_http_get_json`."""
-    return _http_send_json("POST", url, token, payload, timeout=timeout, headers=headers)
+    kwargs = {"default_headers": default_headers} if default_headers is not None else {}
+    return _http_send_json("POST", url, token, payload, timeout=timeout, headers=headers, **kwargs)
 
 
 def _http_patch_json(
@@ -2612,14 +2617,17 @@ def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list
     return [c for c in configs if isinstance(c, dict)], None
 
 
-def fetch_model_recommendation(workspace: str, token: str) -> tuple[dict, str | None]:
+def fetch_model_recommendation(
+    workspace: str, token: str, *, default_headers: dict[str, str] | None = None
+) -> tuple[dict, str | None]:
     """Ask the AI Gateway which agent and model the caller's budget tier allows.
 
     The request takes no parameters: the server matches the caller's live spend against the managed
     config's budget tiers and resolves the agent first, then that agent's model.
     """
     url = f"{workspace_origin(workspace)}{_CODING_AGENT_CONFIGS_API_PATH}:recommendModel"
-    payload, reason = _http_post_json(url, token, {}, timeout=30)
+    kwargs = {"default_headers": default_headers} if default_headers is not None else {}
+    payload, reason = _http_post_json(url, token, {}, timeout=30, **kwargs)
     if reason is not None:
         return {}, reason
     if not isinstance(payload, dict):

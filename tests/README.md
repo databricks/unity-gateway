@@ -1,5 +1,11 @@
 # Test suites and user journeys
 
+Background budget reads capture the launch's routing/attribution headers before
+starting. Component regressions in `test_cli.py` and `test_workspace_selection.py`
+verify that an abandoned worker cannot inherit a later invocation's headers or
+workspace selection, and an empty snapshot stays empty. These do not simulate a
+live gateway failure.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component

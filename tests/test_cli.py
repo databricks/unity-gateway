@@ -7612,7 +7612,7 @@ class TestExplicitLaunchOverlapsBudget:
             token_calls.append((workspace, profile))
             return "fresh-token"
 
-        def recommendation(workspace, token):
+        def recommendation(workspace, token, **kwargs):
             assert authenticated.is_set()
             assert (workspace, token) == (self.WS, "fresh-token")
             budget_calls.append(threading.current_thread())
@@ -7642,6 +7642,68 @@ class TestExplicitLaunchOverlapsBudget:
         assert token_calls == [(self.WS, "selected-profile")]
         assert launched[0][1]["options"].launch_model == "system.ai.claude-haiku-4-5"
 
+    @pytest.mark.parametrize("initial_id", [None, "111"])
+    def test_abandoned_read_retains_its_headers(self, monkeypatch, initial_id):
+        import io
+
+        from ucode import managed_config, workspace
+
+        cli, launched = self._stub_launch(monkeypatch)
+        started, release = threading.Event(), threading.Event()
+        threads, sent = [], []
+        real_read = managed_config.get_model_recommendation
+        monkeypatch.setenv("UG_HEADERS", "X-Caller: launch\nAuthorization: not-the-token")
+
+        def token(host, profile):
+            workspace.activate(host, initial_id)
+            return "launch-token"
+
+        def read(host, token, **kwargs):
+            threads.append(threading.current_thread())
+            started.set()
+            assert release.wait(self.WAIT_SECONDS)
+            return real_read(host, token, **kwargs)
+
+        def probe(*args):
+            assert started.wait(self.WAIT_SECONDS)
+            raise RuntimeError("gateway failed")
+
+        class Response(io.BytesIO):
+            status = 200
+            headers = {}
+
+        def urlopen(request, timeout):
+            sent.append(dict(request.header_items()))
+            return Response(b"{}")
+
+        monkeypatch.setattr(cli, "get_databricks_token", token)
+        monkeypatch.setattr(cli, "get_model_recommendation", read)
+        monkeypatch.setattr(cli, "probe_unity_gateway_capabilities", probe)
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        try:
+            result = runner.invoke(app, ["claude"])
+            assert result.exit_code == 1
+            assert "gateway failed" in result.output
+            assert sent == [] and launched == []
+            monkeypatch.setenv("UG_HEADERS", "X-Caller: next-launch")
+            workspace.activate(self.WS, "222")
+        finally:
+            release.set()
+            for thread in threads:
+                thread.join(self.WAIT_SECONDS)
+        expected = {
+            "X-caller": "launch",
+            "Authorization": "Bearer launch-token",
+            "Accept": "application/json",
+            "Content-type": "application/json",
+        }
+        if initial_id is not None:
+            expected.update(
+                {"X-databricks-org-id": initial_id, "X-databricks-workspace-id": initial_id}
+            )
+        assert sent == [expected]
+        assert all(not thread.is_alive() for thread in threads)
+
     def test_authentication_failure_does_not_start_budget_read(self, monkeypatch):
         cli, launched = self._stub_launch(monkeypatch)
         budget_calls = []
@@ -7669,7 +7731,7 @@ class TestExplicitLaunchOverlapsBudget:
         threads = []
         warnings = []
 
-        def recommendation(workspace, token):
+        def recommendation(workspace, token, **kwargs):
             threads.append(threading.current_thread())
             started.set()
             assert release.wait(self.WAIT_SECONDS)
@@ -7773,7 +7835,7 @@ print("returned after gateway failure")
         budget_calls = []
         warning_threads = []
 
-        def recommendation(workspace, token):
+        def recommendation(workspace, token, **kwargs):
             budget_calls.append((workspace, token))
             if isinstance(failure, Exception):
                 raise failure
@@ -7810,7 +7872,7 @@ print("returned after gateway failure")
         cli, launched = self._stub_launch(monkeypatch)
         threads = []
 
-        def recommendation(workspace, token):
+        def recommendation(workspace, token, **kwargs):
             threads.append(threading.current_thread())
             return None, None
 

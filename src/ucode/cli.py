@@ -223,7 +223,7 @@ from ucode.state import (
     workspace_self_managed_agents,
 )
 from ucode.string_utils import is_valid_catalog_schema
-from ucode.ug_headers import parse_header_line
+from ucode.ug_headers import parse_header_line, ug_headers
 from ucode.ui import (
     console,
     heading,
@@ -252,6 +252,7 @@ from ucode.workspace import (
     selector_headers,
     split_workspace_key,
     state_workspace_key,
+    workspace_headers,
     workspace_key,
 )
 
@@ -3862,8 +3863,11 @@ def _launch_tool(
 
         def start_recommendation(workspace: str, token: str) -> None:
             nonlocal pending_recommendation
+            # An abandoned worker can outlive this invocation. Bind routing and attribution
+            # before the launch restores its environment or another invocation selects a workspace.
+            headers = {**ug_headers(), **workspace_headers(workspace)}
             pending_recommendation = _start_in_background(
-                get_model_recommendation, workspace, token
+                lambda: get_model_recommendation(workspace, token, default_headers=headers)
             )
 
         if (
