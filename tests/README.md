@@ -339,12 +339,6 @@ concurrent MCP writers retain coverage. These are local component checks; the co
 lock-contention benchmark in `scripts/benchmark_claude_hooks_gate.py` does not measure
 live agent startup or the production frequency of lock contention.
 
-`TestDatabricksCliResolution` in `test_databricks.py` covers concurrent version probes,
-the four-worker batch limit, PATH-order ties, shared scans, and cache invalidation
-during discovery. Once interruption or a probe failure is observed, discovery does not
-join sibling probes, start another batch, or cache partial results. These synchronized
-component checks do not establish live authentication or agent-startup latency.
-
 `TestEnsureDatabricksCliVersion` in `test_databricks.py`
 checks that repeated launch preflights reuse a successful CLI version probe, higher
 minimums recheck insufficient cached versions, and an installer invalidates discovery.
