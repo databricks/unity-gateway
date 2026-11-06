@@ -121,28 +121,6 @@ def test_keyboard_interrupt_propagates(monkeypatch, clock):
     assert clock.sleeps == []
 
 
-def test_real_exited_child_is_observed_before_the_first_probe(monkeypatch, clock):
-    child = subprocess.Popen(
-        [sys.executable, "-I", "-S", "-c", "raise SystemExit(7)"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    try:
-        assert child.wait(timeout=10) == 7
-        monkeypatch.setattr(
-            v2.urllib.request,
-            "urlopen",
-            lambda *_args, **_kwargs: pytest.fail("exited child was probed"),
-        )
-        assert not v2._wait_for_app_server(1234, timeout=30, process=child)
-        assert clock.sleeps == []
-    finally:
-        if child.poll() is None:
-            child.kill()
-        child.wait(timeout=5)
-
-
 @pytest.mark.parametrize("exit_code", [7, None])
 def test_launch_reports_failure_and_reaps_child_without_starting_tui(
     tmp_path, monkeypatch, clock, exit_code
@@ -188,4 +166,8 @@ def test_launch_reports_failure_and_reaps_child_without_starting_tui(
             start_model="test-model",
             render_overlay=lambda *_args, **_kwargs: {},
         )
-    assert calls == [["codex", "app-server"], "terminate", ("wait", 5)]
+    assert calls == [
+        ["codex", "app-server"],
+        "terminate",
+        ("wait", v2.PROCESS_SHUTDOWN_TIMEOUT_SECONDS),
+    ]

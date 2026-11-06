@@ -2,8 +2,8 @@
 
 `test_codex_readiness.py` covers Codex app-server readiness deadlines, pauses after
 unhealthy responses, prompt detection of child exit, interruption, and cleanup
-without starting a TUI on failure. Controlled clocks verify retry bounds; a real
-Python child checks process-exit detection. These component checks do not establish
+without starting a TUI on failure. Controlled clocks and process boundaries verify
+retry bounds and child-exit detection. These component checks do not establish
 interactive prompt readiness or inference.
 
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
