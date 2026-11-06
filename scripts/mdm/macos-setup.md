@@ -10,6 +10,8 @@ Unity Gateway with no sudo, signing in with their own Databricks account.
 
 A service principal is used only while the Jamf policy runs, to download the workspace policy.
 
+The same policy can also set up Claude Desktop on each Mac. See [Claude Desktop](#claude-desktop).
+
 ## How it works
 
 1. A Jamf policy runs `macos-provision.sh` as root, with the workspace URL and the service
@@ -41,6 +43,11 @@ A service principal is used only while the Jamf policy runs, to download the wor
 - Network access to the workspace URL, PyPI (`pypi.org`, `files.pythonhosted.org`), GitHub
   (`github.com`, `raw.githubusercontent.com`), `astral.sh` and `downloads.claude.ai`. Check DNS or
   proxy blocklists for these.
+- Claude Code (the `claude` CLI) installed in a shared location such as `/usr/local/bin`, **before**
+  the policy runs, if you want Claude Code configured. The provided script does this for you. If you
+  use your own script or install Claude Code another way, install it first. See
+  [Shared install locations](#shared-install-locations).
+- For Claude Desktop, the Desktop app installed on the Mac.
 - The Command Line Tools, or permission for the script to install them through `softwareupdate`
   (about 1 GB). `uv` needs `git` to install `ug`.
 
@@ -124,6 +131,79 @@ alias claude='UG_SKIP_OS_SETTINGS=1 ug claude'
 alias codex='UG_SKIP_OS_SETTINGS=1 ug codex'
 ```
 
+## Claude Desktop
+
+`ug configure --global` also sets up Claude Desktop on macOS, so the same policy covers Claude
+Code, Codex and Desktop. Run it as root, for example from the Jamf policy above. It writes:
+
+| Location | Contents |
+| --- | --- |
+| `/Library/Managed Preferences/com.anthropic.claudefordesktop.plist` | Desktop's managed settings: gateway, models, connectors |
+| `/Library/Application Support/Claude/org-plugins/ug` | The organization plugin with your workspace's skills |
+| `/Library/Application Support/UnityGateway/claude-desktop-mdm` | Helper scripts Desktop runs to sign in |
+
+Nothing is written to a user's home folder, and no service principal credential is stored on the
+Mac. Each user signs in with their own Databricks account when they open Desktop.
+
+Desktop setup is best effort. If it fails (for example, `claude` is missing from the shared
+location), `ug configure` prints `Could not configure Claude Desktop` as a warning, leaves Claude
+Code and Codex configured, and still exits 0. Check the policy log for that warning. On Windows
+and Linux, `--global` skips Desktop and prints that it supports macOS only.
+
+For the full details, see [Claude Desktop through MDM](../../docs/claude-desktop-mdm.md).
+
+### Shared install locations
+
+`ug configure --global` runs as root and writes paths that every user's Desktop and agents run. It
+refuses to continue unless the tools are in shared, protected locations:
+
+- `ug` and its Python, the Databricks CLI and `claude` are owned by root, readable and executable
+  by all users, and not writable by group or other users. Their parent folders must meet the same
+  rules. Anything in an administrator's home folder is rejected.
+- Every folder on the script's `PATH` meets the same rules. The provided script sets
+  `PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` and installs the tools under `/usr/local`.
+- `claude` is found on that `PATH`. Desktop provisioning checks for it even when your workspace
+  doesn't use Claude Code's subscription relay.
+
+If you write your own script, install Claude Code first, then run `ug configure --global`.
+
+### Verify Desktop on a test Mac
+
+As an administrator, check that the files exist:
+
+```bash
+ls "/Library/Managed Preferences/com.anthropic.claudefordesktop.plist"
+ls "/Library/Application Support/Claude/org-plugins/ug"
+```
+
+Then quit and open Desktop as a regular user and sign in when prompted. To pick up changes you
+publish later, the daily policy run updates the files. Users then fully quit and reopen Desktop
+and start a new task.
+
+### Move existing Claude projects and chats
+
+Users who already used Claude Desktop or claude.ai can copy their projects and chats into the
+managed Desktop. Import is a one-time copy that each user starts. Nothing is imported automatically.
+
+1. Make sure the Mac runs a `ug` version that enables the import setting
+   (`claudeAiImport`), and run the policy again so Desktop's managed settings include it.
+2. The user fully quits and reopens Desktop.
+3. The user goes to **Settings → Import & export → Import…**, then signs in to claude.ai and
+   fetches the export, or chooses an export ZIP they downloaded earlier.
+4. The user reviews the projects and chats and imports them.
+
+Team and Enterprise members need a workspace owner to enable member data export first. Uploaded
+project knowledge files and conversation attachments are not included. Imported project
+instructions need the user's approval, and project folders must be added again. See
+[Import existing projects and chats](../../docs/claude-desktop.md#import-existing-projects-and-chats).
+
+### Remove Desktop setup
+
+An administrator runs a plain `ug revert` on the Mac. It removes the managed plist, the
+organization plugin and the helper scripts, along with the rest of `ug`'s configuration for that
+user. A regular user who runs `ug revert` skips the machine-wide part with a warning and exits
+without error, so run it as an administrator to remove the Desktop setup. Restart Desktop afterward.
+
 ## Rotate the secret
 
 1. Generate a new secret for the service principal.
@@ -139,6 +219,8 @@ alias codex='UG_SKIP_OS_SETTINGS=1 ug codex'
 | `Token request … failed` with an HTTP 403 page | The workspace blocks the Mac's network (IP access list or private link). |
 | `Connection refused` or a timeout fetching PyPI or GitHub | A network or DNS block on the Mac. See the access list in "Before you start". |
 | `None of the coding agents enabled by your workspace configuration are available` | No enabled agent has models the service principal can use, for example Claude Code configured with non-Claude models. |
+| `Could not configure Claude Desktop: Install Claude CLI in a shared machine location…` | `claude` isn't installed in a root-owned location on the script's `PATH`. Install Claude Code first and run the policy again. |
+| `Could not configure Claude Desktop: …` (other) | Desktop setup failed, but Claude Code and Codex are configured. The message names the cause, for example an unsupported workspace or a tool in an administrator's home folder. |
 | `could not read Username for 'https://github.com'` | The `ug` repository URL in the script was cut off when pasted. |
 
 ## Security notes

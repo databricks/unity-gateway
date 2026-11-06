@@ -16,4 +16,6 @@ workspace policy at `/etc/unitygateway/managed-settings.json`. Developers then l
 
 The script authenticates `ug configure` with a short-lived token for a service principal whose
 client id and secret come in as policy parameters; neither the credentials nor the token are
-written to disk. See [macos-setup.md](macos-setup.md) for the full setup.
+written to disk. With `--global`, `ug configure` also sets up Claude Desktop on macOS; see
+[Claude Desktop](macos-setup.md#claude-desktop). Install Claude Code in a shared location before
+running it, as the script does. See [macos-setup.md](macos-setup.md) for the full setup.
