@@ -274,8 +274,17 @@ on `anthropic.claude-opus-5-5`. It requires a completed file-reading task, the s
 model, normal exit, and disabled smart routing. This replaces the Mantle headless journey and
 runs in the full Claude lanes on Linux and Windows. The Mantle service uses us-east-1.
 Override its inputs with `--claude-bedrock-mantle-provider` and `--claude-bedrock-mantle-model`.
-The Codex journeys remain headless and pin `us.openai.gpt-5.6-terra` through the allow-all runtime service and
+Codex has both headless and interactive journeys for Bedrock Runtime and Mantle.
+`test_ug_configure_codex_bedrock_runtime_mps` and
+`test_ug_configure_codex_bedrock_mantle_mps` each select their provider through the real
+configure picker, verify the saved provider, and launch the real Codex TUI without a
+provider override. Each requires a completed file-reading task, the selected model,
+normal exit, and disabled smart routing. Both run in the full Codex lanes on Linux and Windows.
+The Runtime journeys pin `us.openai.gpt-5.6-terra` through
+`main.ucode.ci_bedrock_runtime_svc_cred_all_models`; the Mantle journeys pin
 `openai.gpt-5.6-terra` through `main.ucode.ci_bedrock_mantle_svc_cred_gpt` (us-west-2).
+Override these inputs with `--codex-bedrock-runtime-provider` / `--codex-bedrock-runtime-model`
+and `--codex-bedrock-mantle-provider` / `--codex-bedrock-mantle-model`.
 
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,

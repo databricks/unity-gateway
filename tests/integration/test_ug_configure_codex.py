@@ -162,3 +162,81 @@ def test_ug_configure_codex_foundry_mps(
     _run_codex_openai_dialect_mps_cuj(
         live_session, workspace, codex_foundry_provider, codex_foundry_provider_model, "foundry"
     )
+
+
+@pytest.mark.usefixtures("unmanaged_workspace")
+def test_ug_configure_codex_bedrock_runtime_mps(
+    live_session, workspace, codex_bedrock_runtime_provider, codex_bedrock_runtime_model
+):
+    """Scenario: select the Bedrock Runtime MPS in ug configure, then launch Codex on GPT-5.6.
+
+    Expected: ug saves the provider, and an interactive launch without --provider completes
+    a file-reading task on the selected inference profile, exits normally, and leaves routing off.
+    """
+    session = live_session
+    task = FileTask(session)
+    session.record("model.json", {"model": codex_bedrock_runtime_model})
+    command = [
+        str(session.binary),
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    ]
+    with ConfigureTerminal(session, "codex", command, "configure-bedrock-provider") as configure:
+        configure.select_agent("Codex")
+        configure.choose("How should Codex get its models?", "External Models")
+        configure.choose("Select a model provider service:", codex_bedrock_runtime_provider)
+        configure.finish(timeout=240)
+    assert session.workspace_state()["provider_services"]["codex"] == codex_bedrock_runtime_provider
+    assert codex_bedrock_runtime_provider in session.run("status").stdout
+
+    command = [str(session.binary), "codex", "--", "--model", codex_bedrock_runtime_model]
+    with AgentTerminal(session, "codex", command, "bedrock-provider-session") as tui:
+        tui.boot()
+        tui.submit(task.prompt)
+        tui.wait_for_task(task, timeout=300)
+        tui.exit_normally()
+    task.assert_completed(session, "codex")
+    assert_completed_task_model(session, "codex", task.value, codex_bedrock_runtime_model)
+    session.assert_not_routed()
+
+
+@pytest.mark.usefixtures("unmanaged_workspace")
+def test_ug_configure_codex_bedrock_mantle_mps(
+    live_session, workspace, codex_bedrock_mantle_provider, codex_bedrock_mantle_model
+):
+    """Scenario: select the Bedrock Mantle MPS in ug configure, then launch Codex on GPT-5.6.
+
+    Expected: ug saves the provider, and an interactive launch without --provider completes
+    a file-reading task on the selected Mantle model, exits normally, and leaves routing off.
+    """
+    session = live_session
+    task = FileTask(session)
+    session.record("model.json", {"model": codex_bedrock_mantle_model})
+    command = [
+        str(session.binary),
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    ]
+    with ConfigureTerminal(session, "codex", command, "configure-mantle-provider") as configure:
+        configure.select_agent("Codex")
+        configure.choose("How should Codex get its models?", "External Models")
+        configure.choose("Select a model provider service:", codex_bedrock_mantle_provider)
+        configure.finish(timeout=240)
+    assert session.workspace_state()["provider_services"]["codex"] == codex_bedrock_mantle_provider
+    assert codex_bedrock_mantle_provider in session.run("status").stdout
+
+    command = [str(session.binary), "codex", "--", "--model", codex_bedrock_mantle_model]
+    with AgentTerminal(session, "codex", command, "mantle-provider-session") as tui:
+        tui.boot()
+        tui.submit(task.prompt)
+        tui.wait_for_task(task, timeout=300)
+        tui.exit_normally()
+    task.assert_completed(session, "codex")
+    assert_completed_task_model(session, "codex", task.value, codex_bedrock_mantle_model)
+    session.assert_not_routed()
