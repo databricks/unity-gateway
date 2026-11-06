@@ -145,7 +145,8 @@ jobs:
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
           version: 1.17.0
-      # Builds run without the workspace credential; only the measurement step below has it.
+      # This step receives no workspace credential. PR build code does share this job's writable
+      # filesystem, so the measurement step below runs with the PR's code trusted, as /integration-test does.
       - name: Install each build into its own environment
         run: |
           set -euo pipefail
@@ -178,7 +179,12 @@ jobs:
   report:
     name: Post latency comment
     needs: [authorize, measure]
-    if: ${{ always() && needs.authorize.result == 'success' }}
+    # A cancelled (superseded) measurement reports nothing.
+    if: ${{ always() && needs.authorize.result == 'success' && needs.measure.result != 'cancelled' }}
+    # One report at a time, so overlapping runs cannot create duplicate comments.
+    concurrency:
+      group: ug-latency-report-${{ github.event.issue.number }}
+      cancel-in-progress: false
     runs-on:
       group: databricks-protected-runner-group
       labels: linux-ubuntu-latest
@@ -207,8 +213,15 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RESULT: ${{ needs.measure.result }}
+          HEAD_SHA: ${{ needs.authorize.outputs.head_sha }}
         run: |
           set -euo pipefail
+          # A push since the request makes these numbers stale; the newer request reports instead.
+          current=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .head.sha)
+          if [ "$current" != "$HEAD_SHA" ]; then
+            echo "::notice::PR head moved to ${current:0:7}; not posting results for ${HEAD_SHA:0:7}."
+            exit 0
+          fi
           body="$RUNNER_TEMP/comment.md"
           results="$RUNNER_TEMP/results/ug-latency.json"
           # The results file was written by a job that ran PR code: the renderer treats it as data.

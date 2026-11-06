@@ -10,6 +10,7 @@ import pytest
 
 from scripts import ug_latency as lat
 
+posix_only = pytest.mark.skipif(os.name == "nt", reason="runs POSIX shell scripts")
 ROOT = Path(__file__).parent.parent
 WORKFLOW = (ROOT / ".github/workflows/ug-latency.yml").read_text()
 MEMBER_ONLY = 'contains(fromJSON(\'["MEMBER", "OWNER"]\'), github.event.comment.author_association)'
@@ -28,7 +29,7 @@ def test_summarize_reports_median_min_p90_max():
     summary = lat.summarize([4.0, 1.0, 2.0, 3.0, 10.0])
 
     assert summary is not None
-    assert (summary["n"], summary["median"], summary["min"], summary["max"]) == (5, 3.0, 1.0, 10.0)
+    assert (summary["median"], summary["min"], summary["max"]) == (3.0, 1.0, 10.0)
     assert summary["p90"] == pytest.approx(7.6)
     assert lat.summarize([]) is None
 
@@ -91,16 +92,18 @@ def test_every_requested_command_has_a_distinct_invocation():
     assert lat.EXECUTION_ORDER[-2:] == ("configure", "configure-global")
 
 
-def test_builds_alternate_who_runs_first():
-    assert [lat.run_order(i)[0] for i in range(4)] == ["before", "after", "before", "after"]
-    assert all(set(lat.run_order(i)) == {"before", "after"} for i in range(4))
-
-
 def test_isolated_environment_scopes_home_and_puts_stubs_first(tmp_path):
     base = {"PATH": "/usr/bin", "DATABRICKS_BEARER": "leak", "ANTHROPIC_API_KEY": "leak"}
-    env = lat.isolated_environment(tmp_path / "h", tmp_path / "stubs", base, "tok")
+    env = lat.isolated_environment(
+        tmp_path / "h", tmp_path / "stubs", base, "tok", bin_dir=tmp_path / "venv" / "bin"
+    )
 
-    assert env["PATH"].split(os.pathsep)[0] == str(tmp_path / "stubs")
+    # Stubs first, then the build's own bin, so `ug` on PATH is the build under test.
+    assert env["PATH"].split(os.pathsep)[:3] == [
+        str(tmp_path / "stubs"),
+        str(tmp_path / "venv" / "bin"),
+        "/usr/bin",
+    ]
     assert env["HOME"] == str(tmp_path / "h")
     assert env["CODEX_HOME"] == str(tmp_path / "h" / ".codex")
     assert env["DATABRICKS_BEARER"] == "tok"
@@ -108,6 +111,7 @@ def test_isolated_environment_scopes_home_and_puts_stubs_first(tmp_path):
     assert "DATABRICKS_BEARER" not in lat.isolated_environment(tmp_path, tmp_path, base, None)
 
 
+@posix_only
 def test_stubs_exit_zero_and_report_a_version_ug_accepts(tmp_path):
     import subprocess
 
@@ -203,13 +207,6 @@ def test_markdown_treats_the_result_file_as_untrusted():
     assert lat.render_markdown({}, None).startswith(lat.MARKER)
 
 
-def test_failure_comment_keeps_the_marker_so_it_replaces_earlier_results():
-    text = lat.render_failure("https://github.com/o/r/actions/runs/2")
-
-    assert text.startswith(lat.MARKER + "\n")
-    assert "failed" in text and "actions/runs/2" in text
-
-
 def test_duration_formatting():
     assert lat._fmt(0.1234) == "123 ms"
     assert lat._fmt(2.0) == "2.00 s"
@@ -221,19 +218,22 @@ def test_duration_formatting():
 def _fake_ug(path: Path, record: Path, *, fail_on: str | None = None) -> str:
     path.write_text(
         "#!/bin/sh\n"
-        f'echo "$HOME $*" >> "{record}"\n'
-        f'case "$*" in {fail_on or "NEVER-MATCHES"}) echo boom >&2; exit 3;; esac\n'
+        f'echo "$(basename "$0") $HOME $*" >> "{record}"\n'
+        f'case "$*" in {fail_on or "NEVER-MATCHES"}) '
+        'echo "boom $DATABRICKS_BEARER https://w.example" >&2; exit 3;; esac\n'
         "sleep 0.01\nexit 0\n"
     )
     path.chmod(0o755)
     return str(path)
 
 
+@posix_only
 def test_measure_alternates_builds_isolates_homes_and_redacts(tmp_path):
     record = tmp_path / "calls.log"
     before = _fake_ug(tmp_path / "before-ug", record)
     after = _fake_ug(tmp_path / "after-ug", record, fail_on="codex")
     logs: list[str] = []
+    checkpoints: list[list[str]] = []
 
     data = lat.measure(
         binaries={"before": before, "after": after},
@@ -244,29 +244,69 @@ def test_measure_alternates_builds_isolates_homes_and_redacts(tmp_path):
         work_dir=tmp_path / "work",
         bearer="s3cret",
         reset_global=False,
+        checkpoint=lambda partial: checkpoints.append([r["id"] for r in partial["results"]]),
         log=logs.append,
     )
 
     by_id = {r["id"]: r for r in data["results"]}
     assert [r["id"] for r in data["results"]] == ["configure-user", "claude", "codex"]
     assert by_id["configure-user"]["before"]["ok"] == by_id["configure-user"]["after"]["ok"] == 2
-    assert by_id["claude"]["comparison"] is not None
     assert by_id["codex"]["after"]["ok"] == 0
     assert by_id["codex"]["after"]["failures"] == 2
     assert by_id["codex"]["before"]["ok"] == 2
-    assert "s3cret" not in json.dumps(data) + "\n".join(logs)
-    homes = [line.split(" ", 1)[0] for line in record.read_text().splitlines()]
-    configure_homes = [
-        h
-        for h, line in zip(homes, record.read_text().splitlines(), strict=True)
-        if "--workspace" in line and "--user" in line
+    # The failing build printed the bearer and workspace; neither reaches the logs or the JSON.
+    assert "<redacted>" in "\n".join(logs)
+    for secret in ("s3cret", "https://w.example"):
+        assert secret not in json.dumps(data) + "\n".join(logs)
+    # Results are saved after every command, so a later hang keeps the earlier timings.
+    assert checkpoints[0] == [] and ["configure-user"] in checkpoints
+    assert checkpoints[-1] == ["configure-user", "claude", "codex"]
+    lines = [line.split(" ", 2) for line in record.read_text().splitlines()]
+    configure = [
+        (who, home) for who, home, rest in lines if "--workspace" in rest and "--user" in rest
     ]
-    # Every timed configure run uses its own fresh HOME (launch setup runs reuse theirs).
-    timed = [h for h in configure_homes if "configure-user" in h]
-    assert len(timed) == len(set(timed)) == 6
+    timed = configure[:6]  # configure-user runs first: 1 warmup + 2 timed per build
+    # The build that goes first alternates (before, after, then after, before ...).
+    assert [who for who, _ in timed] == [
+        "before-ug",
+        "after-ug",
+        "after-ug",
+        "before-ug",
+        "before-ug",
+        "after-ug",
+    ]
+    # Every configure run gets its own fresh HOME.
+    assert len({home for _, home in timed}) == 6
     assert not (tmp_path / "work" / "configure-user" / "before" / "run-0").exists()
 
 
+@posix_only
+def test_failed_launch_setup_is_counted_and_explained(tmp_path):
+    record = tmp_path / "calls.log"
+    good = _fake_ug(tmp_path / "good", record)
+    bad = _fake_ug(tmp_path / "bad", record, fail_on="configure*")
+
+    data = lat.measure(
+        binaries={"before": good, "after": bad},
+        workspace="https://w.example",
+        commands=["claude"],
+        iterations=2,
+        warmup=1,
+        work_dir=tmp_path / "work",
+        bearer=None,
+        reset_global=False,
+        log=lambda message: None,
+    )
+
+    after = data["results"][0]["after"]
+    assert (after["ok"], after["failures"], after["setup_failed"]) == (0, 2, True)
+    assert data["results"][0]["before"]["setup_failed"] is False
+    assert "bad" not in {line.split(" ")[0] for line in record.read_text().splitlines()[2:]}
+    text = lat.render_markdown(data)
+    assert "setup `ug configure --user` failed on after" in text
+
+
+@posix_only
 def test_main_exit_status_and_json_output(tmp_path, monkeypatch):
     record = tmp_path / "calls.log"
     good = _fake_ug(tmp_path / "good", record)
@@ -319,7 +359,9 @@ def test_render_subcommand_writes_markdown_and_failure_comment(tmp_path):
         )
         == 0
     )
-    assert "failed" in (tmp_path / "f.md").read_text()
+    failure = (tmp_path / "f.md").read_text()
+    # The marker is what makes a later run replace an earlier result with this failure.
+    assert failure.startswith(lat.MARKER + "\n") and "failed" in failure
 
 
 # --- workflow contract -------------------------------------------------------------------------
@@ -354,6 +396,68 @@ def test_workflow_only_runs_for_authorized_comments_from_the_default_branch():
     assert not re.search(r"(?m)^\s*[^#\n]*\bjq\s+-", WORKFLOW)
 
 
+@posix_only
+@pytest.mark.parametrize(
+    ("comment", "iterations"),
+    [
+        ("/ug-latency", "5"),
+        ("/ug-latency 1", "1"),
+        ("/ug-latency 15", "15"),
+        ("/ug-latency   7  ", "7"),
+        ("/ug-latency 0", None),
+        ("/ug-latency 16", None),
+        ("/ug-latency 100", None),
+        ("/ug-latency many", None),
+        ("/ug-latency 3 extra", None),
+    ],
+)
+def test_workflow_command_parser_runs_with_a_fake_gh(tmp_path, comment, iterations):
+    import subprocess
+    import textwrap
+
+    step = _job("authorize").split("Pin the base and head commits", 1)[1]
+    script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "gh.log"
+    (bin_dir / "gh").write_text(
+        "#!/bin/sh\n"
+        f'echo "$*" >> "{calls}"\n'
+        'case "$*" in\n'
+        f"  *compare/*) echo {'b' * 40};;\n"
+        f'  api\\ repos/*/pulls/*) printf "{"a" * 40}\\tmain\\towner/repo\\n";;\n'
+        "esac\n"
+    )
+    (bin_dir / "gh").chmod(0o755)
+    output = tmp_path / "output"
+    output.touch()
+    result = subprocess.run(
+        ["/bin/bash", "-c", script],
+        env={
+            "PATH": f"{bin_dir}{os.pathsep}/usr/bin{os.pathsep}/bin",
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GITHUB_OUTPUT": str(output),
+            "PR_NUMBER": "7",
+            "COMMENT_ID": "9",
+            "COMMENT_BODY": comment,
+            "GH_TOKEN": "x",
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    if iterations is None:
+        assert result.returncode == 1 and "Latency run not started" in calls.read_text()
+        assert output.read_text() == ""
+    else:
+        assert result.returncode == 0, result.stderr
+        assert output.read_text().splitlines() == [
+            f"head_sha={'a' * 40}",
+            f"base_sha={'b' * 40}",
+            f"iterations={iterations}",
+        ]
+
+
 def test_workflow_measure_job_runs_trusted_script_on_pinned_commits_without_write_access():
     measure = _job("measure")
 
@@ -386,6 +490,11 @@ def test_workflow_report_updates_one_marked_comment_with_the_trusted_renderer():
     assert "-X PATCH" in report and "-X POST" in report
     assert 'select(.user.login == \\"github-actions[bot]\\"' in report
     assert "scripts/ug_latency.py render" in report
+    # Reports are serialized, skip cancelled measurements, and skip when the PR head moved on.
+    assert "group: ug-latency-report-${{ github.event.issue.number }}" in report
+    assert "cancel-in-progress: false" in report
+    assert "needs.measure.result != 'cancelled'" in report
+    assert '"$current" != "$HEAD_SHA"' in report
     assert "ug_latency.py measure" not in report
 
 

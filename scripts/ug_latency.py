@@ -94,16 +94,14 @@ def percentile(values: Sequence[float], q: float) -> float:
 
 
 def summarize(samples: Sequence[float]) -> dict[str, float] | None:
-    """Median, min, p90, max, mean and count of the successful runs, or None without any."""
+    """Median, min, p90 and max of the successful runs, or None without any."""
     if not samples:
         return None
     return {
-        "n": float(len(samples)),
         "median": statistics.median(samples),
         "min": min(samples),
         "p90": percentile(samples, 90),
         "max": max(samples),
-        "mean": statistics.fmean(samples),
     }
 
 
@@ -156,7 +154,11 @@ def run_order(iteration: int) -> tuple[str, str]:
 
 
 def isolated_environment(
-    home: Path, stub_dir: Path, base_env: Mapping[str, str], bearer: str | None
+    home: Path,
+    stub_dir: Path,
+    base_env: Mapping[str, str],
+    bearer: str | None,
+    bin_dir: Path | None = None,
 ) -> dict[str, str]:
     keep = (
         "PATH",
@@ -170,7 +172,10 @@ def isolated_environment(
         "NO_PROXY",
     )
     env = {key: base_env[key] for key in keep if key in base_env}
-    env["PATH"] = os.pathsep.join([str(stub_dir), env.get("PATH", "")])
+    # The build's own bin directory comes next, so the `ug` that `--global` finds on PATH is the
+    # build under test and not another installation on the runner.
+    front = [str(stub_dir)] + ([str(bin_dir)] if bin_dir else [])
+    env["PATH"] = os.pathsep.join([*front, env.get("PATH", "")])
     env.update(
         {
             "HOME": str(home),
@@ -295,7 +300,17 @@ def render_markdown(data: Mapping, run_url: str | None = None) -> str:
             f"| {delta_cell} | {pct_cell} | {pair('min')} | {pair('p90')} | {pair('max')} "
             f"| {ok_b} / {ok_a} |"
         )
-        if bad_b or bad_a:
+        setup_bad = [
+            name
+            for name, side in (("before", before), ("after", after))
+            if isinstance(side, dict) and side.get("setup_failed") is True
+        ]
+        if setup_bad:
+            notes.append(
+                f"`{spec.label}`: the untimed setup `ug configure --user` failed on "
+                f"{' and '.join(setup_bad)}, so no runs were timed there (see the workflow log)."
+            )
+        elif bad_b or bad_a:
             notes.append(
                 f"`{spec.label}`: {bad_b} failed run(s) before, {bad_a} after (not timed; "
                 "see the workflow log)."
@@ -383,21 +398,59 @@ def measure(
     work_dir: Path,
     bearer: str | None,
     reset_global: bool,
+    meta: Mapping[str, object] | None = None,
+    checkpoint: Callable[[dict], None] | None = None,
     log: Callable[[str], None] = lambda message: print(message, file=sys.stderr, flush=True),
 ) -> dict:
+    """Time every command; `checkpoint` receives the payload so far after each finished command."""
     stub_dir = work_dir / "stubs"
     write_stubs(stub_dir)
-    secrets = [bearer or ""]
+    secrets = [bearer or "", workspace]
     wants_sudo = reset_global or any(SPECS[c].needs_sudo for c in commands)
     sudo_ok = passwordless_sudo() if wants_sudo else False
     if reset_global and sudo_ok:
         # `ug configure --user` refuses to run while machine-wide managed settings exist.
         reset_global_state()
     results: dict[str, dict] = {}
+
+    def payload() -> dict:
+        ordered = []
+        for command_id in commands:
+            if command_id not in results:
+                continue
+            entry = dict(results[command_id])
+            for side in binaries:
+                raw = entry[side]
+                # A launch whose untimed setup failed has no timed runs: count each as a failure.
+                failures = iterations if raw.get("setup_failed") else raw["failures"]
+                entry[side] = {
+                    "ok": len(raw["samples"]),
+                    "failures": failures,
+                    "setup_failed": bool(raw.get("setup_failed")),
+                    "summary": summarize(raw["samples"]),
+                }
+            ordered.append(entry)
+        return {
+            "version": SCHEMA_VERSION,
+            "meta": {
+                **(meta or {}),
+                "iterations": iterations,
+                "warmup": warmup,
+                "python": platform.python_version(),
+                "platform": platform.platform(),
+            },
+            "results": ordered,
+        }
+
+    def flush() -> None:
+        if checkpoint:
+            checkpoint(payload())
+
     for command_id in [c for c in EXECUTION_ORDER if c in commands]:
+        flush()  # everything finished so far survives a later hang or job timeout
         spec = SPECS[command_id]
         entry: dict = {"id": command_id, "label": spec.label, "status": "ok"}
-        sides = {side: {"samples": [], "failures": 0, "last_error": ""} for side in binaries}
+        sides = {side: {"samples": [], "failures": 0} for side in binaries}
         entry.update(sides)
         results[command_id] = entry
         if spec.needs_sudo and not sudo_ok:
@@ -412,7 +465,9 @@ def measure(
             home.mkdir(parents=True)
             homes[side] = home
             if spec.kind == "launch":
-                env = isolated_environment(home, stub_dir, os.environ, bearer)
+                env = isolated_environment(
+                    home, stub_dir, os.environ, bearer, Path(binaries[side]).parent
+                )
                 _, code, err = timed_run(setup_argv(binary, workspace), env, project)
                 if code != 0:
                     log(
@@ -433,7 +488,9 @@ def measure(
                     home = homes[side]
                 if spec.needs_sudo and reset_global:
                     reset_global_state()
-                env = isolated_environment(home, stub_dir, os.environ, bearer)
+                env = isolated_environment(
+                    home, stub_dir, os.environ, bearer, Path(binaries[side]).parent
+                )
                 argv = build_argv(binaries[side], spec, workspace)
                 elapsed, code, err = timed_run(argv, env, project)
                 label = "run" if timed else "warmup"
@@ -441,7 +498,6 @@ def measure(
                 if code != 0:
                     if timed:
                         sides[side]["failures"] += 1
-                    sides[side]["last_error"] = redact(err, secrets)
                     log(redact(err, secrets))
                 elif timed:
                     sides[side]["samples"].append(elapsed)
@@ -449,30 +505,8 @@ def measure(
                     shutil.rmtree(home, ignore_errors=True)
     if reset_global and sudo_ok:
         reset_global_state()
-    ordered = []
-    for command_id in commands:
-        entry = results[command_id]
-        for side in binaries:
-            raw = entry[side]
-            entry[side] = {
-                "samples": raw["samples"],
-                "ok": len(raw["samples"]),
-                "failures": raw["failures"],
-                "summary": summarize(raw["samples"]),
-                "last_error": raw["last_error"],
-            }
-        entry["comparison"] = compare(entry["before"]["summary"], entry["after"]["summary"])
-        ordered.append(entry)
-    return {
-        "version": SCHEMA_VERSION,
-        "meta": {
-            "iterations": iterations,
-            "warmup": warmup,
-            "python": platform.python_version(),
-            "platform": platform.platform(),
-        },
-        "results": ordered,
-    }
+    flush()
+    return payload()
 
 
 # ---------------------------------------------------------------------------------------------
@@ -545,6 +579,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("error: --reset-global is only allowed in GitHub Actions", file=sys.stderr)
         return 2
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip() or None
+
+    def save(data: dict) -> None:
+        args.output.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
     with tempfile.TemporaryDirectory(prefix="ug-latency-") as tmp:
         data = measure(
             binaries={"before": args.before, "after": args.after},
@@ -555,10 +593,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             work_dir=Path(tmp),
             bearer=bearer,
             reset_global=args.reset_global,
+            meta={"base_sha": args.base_sha, "head_sha": args.head_sha},
+            checkpoint=save,
         )
-    data["meta"]["base_sha"] = args.base_sha
-    data["meta"]["head_sha"] = args.head_sha
-    args.output.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     broken = [
         r
         for r in data["results"]
