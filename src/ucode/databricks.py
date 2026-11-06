@@ -2910,20 +2910,17 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
     return base + "?" + urlencode([("schema", loc) for loc in locations])
 
 
-# Maps the gateway routing dialect a coding tool speaks to the Model Provider
-# Service `provider_type`s it can be backed by. claude speaks Anthropic's API,
-# which the `anthropic`, `amazon_bedrock`, `bedrock_mantle`, and `microsoft_foundry` provider types
-# serve (Bedrock just exposes different model ids); codex speaks OpenAI's, which
-# the `openai`, `azure_openai`, `microsoft_foundry`, `amazon_bedrock`, and
-# `bedrock_mantle` provider types all serve (the gateway fronts them with the
-# OpenAI surface); gemini speaks Google's, served by a Gemini Enterprise
-# provider. copilot speaks Anthropic's for the Claude targets of anthropic, Bedrock and
-# microsoft_foundry services, and OpenAI's for the other targets of openai, azure_openai and
-# microsoft_foundry services, on the gateway's native route for each API. Tags are the short form produced by `_provider_type_tag`
-# (e.g. `amazon_bedrock`).
+# MPS routes preserve each tool's native API; custom providers must expose that same API.
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
-    "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle", "microsoft_foundry"),
-    "codex": ("openai", "azure_openai", "microsoft_foundry", "amazon_bedrock", "bedrock_mantle"),
+    "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle", "microsoft_foundry", "custom"),
+    "codex": (
+        "openai",
+        "azure_openai",
+        "microsoft_foundry",
+        "amazon_bedrock",
+        "bedrock_mantle",
+        "custom",
+    ),
     "gemini": ("gemini_enterprise",),
     "antigravity": ("gemini_enterprise",),
     "copilot": (

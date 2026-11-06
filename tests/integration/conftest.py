@@ -231,6 +231,16 @@ def claude_oauth_token():
 
 
 @pytest.fixture(scope="session")
+def claude_custom_provider():
+    return os.environ["UG_INTEGRATION_CLAUDE_CUSTOM_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def claude_custom_provider_model():
+    return os.environ["UG_INTEGRATION_CLAUDE_CUSTOM_PROVIDER_MODEL"]
+
+
+@pytest.fixture(scope="session")
 def claude_provider_model():
     return os.environ["UG_INTEGRATION_CLAUDE_PROVIDER_MODEL"]
 
@@ -296,6 +306,16 @@ def antigravity_provider_models():
 @pytest.fixture(scope="session")
 def codex_provider():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_custom_provider():
+    return os.environ["UG_INTEGRATION_CODEX_CUSTOM_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_custom_provider_model():
+    return os.environ["UG_INTEGRATION_CODEX_CUSTOM_PROVIDER_MODEL"]
 
 
 @pytest.fixture(scope="session")
