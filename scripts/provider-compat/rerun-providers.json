@@ -1,5 +1,4 @@
 [
-  "main.ucode.ci_bedrock_mason_filtered_models",
-  "main.ucode.ci_bedrock_runtime_svc_cred_filtered_models",
-  "main.jasmine.mps_test_ant"
+  "main.ucode.ci_foundry_claude_mps",
+  "main.ucode.ci_custom_foundry_claude_mps"
 ]
