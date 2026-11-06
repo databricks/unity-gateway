@@ -52,11 +52,19 @@ describe("syncSettings", () => {
     assert.equal(OWNED_SETTINGS_KEY, "unityGateway.ownedSettings");
   });
 
-  it("leaves a developer's own value of a developer-wins key, and owns it again once theirs matches", async () => {
+  it("leaves a developer's own value of a developer-wins key, and keeps writing its own or an unset one", async () => {
     const theirs = fake({ "chat.defaultModel": "gpt-mine" });
     await syncSettings(theirs.settings as never, theirs.state as never, { "chat.defaultModel": "system.ai.opus" }, () => {}, new Set(["chat.defaultModel"]));
     assert.deepEqual(theirs.updates, []);
     assert.equal(theirs.saved(), undefined);
+
+    // The developer picked the managed default themselves: it stays theirs when the default changes or goes.
+    const same = fake({ "chat.defaultModel": "system.ai.opus" });
+    for (const wanted of [{ "chat.defaultModel": "system.ai.opus" }, { "chat.defaultModel": "system.ai.sonnet" }, {}]) {
+      await syncSettings(same.settings as never, same.state as never, wanted, () => {}, new Set(["chat.defaultModel"]));
+    }
+    assert.deepEqual(same.updates, []);
+    assert.equal(same.saved(), undefined);
 
     const ours = fake({ "chat.defaultModel": "system.ai.sonnet" }, { "chat.defaultModel": "system.ai.sonnet" });
     await syncSettings(ours.settings as never, ours.state as never, { "chat.defaultModel": "system.ai.opus" }, () => {}, new Set(["chat.defaultModel"]));

@@ -47,7 +47,7 @@ export const syncSettings = async (
   for (const [key, value] of Object.entries(wanted)) {
     const current = settings.inspect(key)?.globalValue;
     const developers = current !== undefined && !(key in owned && same(current, owned[key]));
-    if (developerWins.has(key) && developers && !same(current, value)) {
+    if (developerWins.has(key) && developers) {
       continue;
     }
     if (!same(current, value)) {
