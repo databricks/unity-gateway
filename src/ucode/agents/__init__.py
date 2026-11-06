@@ -421,6 +421,7 @@ def resolve_provider_models(
     dict re-derived from the service's declared targets — Bedrock (provider-side slugs), Foundry
     (deployment names), API-key Anthropic, and relayed Anthropic that declares a curated allowlist
     alike — so the client uses the ids the MPS allows rather than Claude Code's defaults.
+    When no family can be inferred, ``default`` pins the first compatible target instead.
     It is None when ``provider`` is None, when
     the service declares no Claude targets (e.g. an ``allow_all`` relay), or for a non-Claude (e.g.
     codex) service. ``relayed`` is True for a credential-less Anthropic subscription relay, which the
@@ -447,7 +448,10 @@ def resolve_provider_models(
     if tool != "claude":
         return None, None, relayed
     targets = provider_targets_for_tool(tool, service)
-    return map_claude_family_models(targets) or None, None, relayed
+    models = map_claude_family_models(targets)
+    if not models and targets:
+        models = {"default": targets[0]}
+    return models or None, None, relayed
 
 
 def _newest_first(model: str) -> list[int]:

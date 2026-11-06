@@ -1,8 +1,10 @@
 # Integration tests
 
-Provider target component tests preserve existing selection for providers and tools
-outside Claude on Foundry; broader Bedrock target filtering remains out of scope.
-They also cover the shared missing-target error and `allow_all_targets` bypass.
+Provider target component tests filter Claude targets by Messages API metadata across
+Anthropic, Bedrock, Mantle, and Foundry, preserving custom deployment names. They cover
+the generic empty-target error, `allow_all_targets` bypass, and custom defaults through
+configuration and launch with explicit overrides. Other tools retain existing filtering.
+These are component checks; custom deployment names have no live integration coverage.
 
 The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
 service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.

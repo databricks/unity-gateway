@@ -2938,9 +2938,6 @@ _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
 # Copilot Chat in VS Code can use the same provider types as Copilot CLI.
 _TOOL_PROVIDER_TYPES["vscode"] = _TOOL_PROVIDER_TYPES["copilot"]
 
-# Agents that can only use a Bedrock service's Claude targets.
-_CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot", "vscode")
-
 # Provider types that expose Bedrock-style model ids (e.g.
 # `us.anthropic.claude-sonnet-4-6`, or region-less `anthropic.claude-*` on
 # Mantle) instead of the agent's canonical model names, so ucode must pin them
@@ -3173,14 +3170,7 @@ def list_tool_provider_services(
 
 
 def _provider_service_unusable_reason(tool: str, service: dict, service_name: str) -> str | None:
-    """Why ``tool`` can't route through ``service``, or None when it can.
-
-    Beyond the provider-type match, only claude (Anthropic) or codex (OpenAI) can use a relayed (subscription) service, and
-    claude and copilot can use a Bedrock service only if it has a Claude target — otherwise there's
-    no routable model id to pin — or is ``allow_all_targets``, in which case the model id comes
-    from elsewhere (the managed config's default or ``--model``). (Anthropic services use canonical
-    names, so any match is usable.)
-    """
+    """Why ``tool`` can't route through ``service``, or None when it can."""
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
         supported = ", ".join(_TOOL_PROVIDER_TYPES.get(tool, ())) or "none"
@@ -3200,16 +3190,7 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
                 f"which only {display} can use. Pick a Model Provider Service with an API key "
                 f"for {tool}."
             )
-    missing_compatible_targets = (
-        tool in _CLAUDE_ONLY_BEDROCK_TOOLS
-        and provider_type in BEDROCK_PROVIDER_TYPES
-        and not map_claude_family_models(service.get("targets") or [])
-    ) or (
-        tool == "claude"
-        and provider_type == MICROSOFT_FOUNDRY_PROVIDER_TYPE
-        and not provider_targets_for_tool(tool, service)
-    )
-    if not service.get("allow_all_targets") and missing_compatible_targets:
+    if not service.get("allow_all_targets") and not provider_targets_for_tool(tool, service):
         return (
             f"Model provider service '{service_name}' exposes no compatible models for {tool} — "
             "add compatible targets, enable allow_all_targets, or pick a different service."
@@ -3218,20 +3199,19 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
 
 
 def provider_targets_for_tool(tool: str, service: dict) -> list[str]:
-    """Return declared targets after provider-specific tool filtering."""
+    """Return declared targets compatible with the tool's provider API."""
     targets = service.get("targets") or []
-    if tool != "claude" or service.get("provider_type") != MICROSOFT_FOUNDRY_PROVIDER_TYPE:
-        return targets
-    target_api_types = service.get("target_api_types") or {}
-    return [
-        target
-        for target in targets
-        if (
-            API_ANTHROPIC_MESSAGES in target_api_types[target]
-            if target_api_types.get(target)
-            else _bedrock_target_family(target) is not None
-        )
-    ]
+    if tool == "claude":
+        # MPS requests pass through without API translation.
+        target_api_types = service.get("target_api_types") or {}
+        return [
+            target
+            for target in targets
+            if API_ANTHROPIC_MESSAGES in (target_api_types.get(target) or ())
+        ]
+    if tool in ("copilot", "vscode") and service.get("provider_type") in BEDROCK_PROVIDER_TYPES:
+        return [target for target in targets if _bedrock_target_family(target) is not None]
+    return targets
 
 
 def service_usable_for_tool(tool: str, service: dict) -> bool:
@@ -3345,13 +3325,14 @@ _CLAUDE_LAUNCH_TIER_PREFERENCE = ("sonnet", "opus", "haiku")
 
 
 def resolve_provider_launch_model(model: str | None, provider_models: dict[str, str]) -> str | None:
-    """Pick the model a provider-routed Claude session starts on, or None if it declares no tier.
+    """Pick the model a provider-routed Claude session starts on, or None if it declares none.
 
     ``provider_models`` maps the Claude families a service declares to their target ids (see
     ``map_claude_family_models``). With an explicit ``model`` (``ucode claude --model``) the user's
     choice wins: a family alias resolves to that tier's declared target (erroring when the service
     doesn't offer it), any other value is trusted as a raw target id the service allows. Without one,
-    pin the service's preferred offered tier (``_CLAUDE_LAUNCH_TIER_PREFERENCE``).
+    pin the service's preferred offered tier (``_CLAUDE_LAUNCH_TIER_PREFERENCE``), falling back
+    to ``default`` for custom deployment names with no recognizable family.
 
     We always pin a concrete offered target rather than letting Claude Code fall back to its own
     launch default: that default (observed: ``claude-sonnet-5``) isn't guaranteed to be in a curated
@@ -3362,7 +3343,9 @@ def resolve_provider_launch_model(model: str | None, provider_models: dict[str, 
         if model in ANTHROPIC_FAMILIES:
             target = provider_models.get(model)
             if not target:
-                available = ", ".join(sorted(provider_models)) or "none"
+                available = (
+                    ", ".join(sorted(set(provider_models) & set(ANTHROPIC_FAMILIES))) or "none"
+                )
                 raise RuntimeError(
                     f"This Model Provider Service does not offer a '{model}' model "
                     f"(available families: {available})."
@@ -3375,7 +3358,7 @@ def resolve_provider_launch_model(model: str | None, provider_models: dict[str, 
             for fam in _CLAUDE_LAUNCH_TIER_PREFERENCE
             if provider_models.get(fam)
         ),
-        None,
+        provider_models.get("default"),
     )
 
 

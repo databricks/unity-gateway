@@ -18,10 +18,12 @@ Integration runs a freshly installed ug wheel/release, exact real Claude/Codex
 (and optionally OpenCode) versions, and the existing real e2e workspace. It has no application imports,
 mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 
-Provider target component tests cover shared selection for Claude on Foundry and
-preservation of existing target lists for other providers and tools, including Bedrock.
-Restricted Foundry and Bedrock services share a provider-neutral missing-target error;
-component tests verify the error and the `allow_all_targets` bypass.
+Provider target component tests require explicit Messages API metadata for Claude across
+Anthropic, Bedrock, Mantle, and Foundry. They preserve custom deployment names, reject
+missing metadata or incompatible APIs, and cover the generic empty-target error and
+`allow_all_targets` bypass. Resolver, configuration, and launch tests verify custom-name
+defaults and explicit overrides without inventing a Claude family. Other tools keep their
+existing filters. These checks do not establish live custom-deployment coverage.
 
 | Category | Location | What it proves |
 | --- | --- | --- |
