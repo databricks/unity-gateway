@@ -1678,15 +1678,9 @@ selectors only after confirming the agent's intended UI changed; do not seed its
 onboarding state or relax the prompt/task assertions. Test homes are deleted after
 each case; redacted diagnostics remain. For manual interaction, configure a fresh
 home with the same installed binaries and recorded public CLI arguments.
-Definitive API errors (400/401/403/404/405/409/422, PERMISSION_DENIED) and any other
-exhausted retry limit fail the TUI wait immediately with the actual screen. A transient
-429/503 while the client is still retrying is not treated as terminal. When Codex gives
-up with `exceeded retry limit, last status: 429|503` the wait raises `RateLimited` (an
-`AssertionError`, so most tests fail as before). Only the Codex smart-routing helpers
-`_run_calculation` and `_toggle_with_skill` in `test_ug_smart_routing_hooks.py` catch it:
-they back off with `resource_exhausted_retry_delay`, re-take their before-snapshots, and
-resubmit the turn (a fresh unique marker for calculations), at most twice (three attempts)
-before failing with a rate-limit message.
+Definitive API errors and the client's exhausted retry limit fail the TUI wait
+immediately with the actual screen. A transient 429/503 while the client is still
+retrying is not treated as terminal; the suite adds no task retries of its own.
 
 ## Colima / Docker
 

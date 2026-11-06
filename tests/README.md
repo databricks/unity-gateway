@@ -876,9 +876,6 @@ forwarding, app-server initialization, and catalog fallback retain their origina
 and on/off coverage; preset-specific behavior there is not covered.
 `test_integration_evidence.py` checks native tool-result extraction for both agents,
 including collapsed-output records, and excludes user echoes and assistant claims.
-It also checks that `assert_no_terminal_api_error` raises `RateLimited` only for an exhausted
-429/503 retry limit (honoring already-retried banners) and keeps every definitive 4xx fatal; only
-the Codex smart-routing helpers retry on it, and no live retry path is executed by these checks.
 
 Dedicated regression coverage is missing for root-only Smart Router Orchestrator activation,
 compaction, retained skills in ineligible sessions,
