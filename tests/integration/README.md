@@ -314,6 +314,11 @@ asserts end-to-end agent startup latency. The component suite also checks that
 version output alone cannot establish CLI health when startup dependencies are
 absent; use `--help` for the startup-import probe.
 
+`TestSpinner` in `../test_ui.py` covers waking a waiting animation thread on
+normal and exceptional exit, terminal-line cleanup, and no animation for redirected
+output. These synchronized component checks do
+not measure live agent startup or gateway latency.
+
 `TestEnsureDatabricksCliVersion` in `../test_databricks.py`
 checks that repeated launch preflights reuse a successful CLI version probe, higher
 minimums recheck insufficient cached versions, and an installer invalidates discovery.
