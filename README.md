@@ -129,6 +129,10 @@ Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
 to select another model source; managed workspace configs control their own sources.
+`ug claude --provider <catalog>.<schema>.<name>` also supports Claude deployments on
+Microsoft Foundry. Restricted Foundry services must expose an Anthropic Messages target
+(`anthropic/v1/messages`). Deployment names are passed unchanged; use `--model <deployment>`
+when the deployment name does not identify a Claude family or the service allows all targets.
 Interactive `ug configure` also offers a **Custom Model Location** (`<catalog>.<schema>`) for
 Claude Code, Codex and Copilot alongside Databricks Hosted and External Models. The choice is saved
 with the rest of the configuration, so later `ug claude` / `ug codex` / `ug copilot` launches use it; an

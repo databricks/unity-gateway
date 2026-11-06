@@ -35,6 +35,7 @@ from urllib.parse import quote, urlencode, urlparse
 from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
+    API_ANTHROPIC_MESSAGES,
     API_GEMINI_GENERATE_CONTENT,
     API_OPENAI_RESPONSES,
     MODEL_PROVIDER_SERVICE_HEADER,
@@ -2911,7 +2912,7 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
 
 # Maps the gateway routing dialect a coding tool speaks to the Model Provider
 # Service `provider_type`s it can be backed by. claude speaks Anthropic's API,
-# which the `anthropic`, `amazon_bedrock`, and `bedrock_mantle` provider types
+# which the `anthropic`, `amazon_bedrock`, `bedrock_mantle`, and `microsoft_foundry` provider types
 # serve (Bedrock just exposes different model ids); codex speaks OpenAI's, which
 # the `openai`, `azure_openai`, `microsoft_foundry`, `amazon_bedrock`, and
 # `bedrock_mantle` provider types all serve (the gateway fronts them with the
@@ -2921,7 +2922,7 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
 # microsoft_foundry services, on the gateway's native route for each API. Tags are the short form produced by `_provider_type_tag`
 # (e.g. `amazon_bedrock`).
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
-    "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle"),
+    "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle", "microsoft_foundry"),
     "codex": ("openai", "azure_openai", "microsoft_foundry", "amazon_bedrock", "bedrock_mantle"),
     "gemini": ("gemini_enterprise",),
     "antigravity": ("gemini_enterprise",),
@@ -3209,7 +3210,32 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
             f"Model provider service '{service_name}' exposes no Claude models — "
             f"add Claude targets to it, enable allow_all_targets, or pick a different service."
         )
+    if (
+        tool == "claude"
+        and provider_type == MICROSOFT_FOUNDRY_PROVIDER_TYPE
+        and not service.get("allow_all_targets")
+        and not foundry_claude_targets(service)
+    ):
+        return (
+            f"Model provider service '{service_name}' exposes no Anthropic Messages targets — "
+            f"add a Foundry Claude deployment with native_api_types=['{API_ANTHROPIC_MESSAGES}'] "
+            "or pick a different service."
+        )
     return None
+
+
+def foundry_claude_targets(service: dict) -> list[str]:
+    targets = service.get("targets") or []
+    target_api_types = service.get("target_api_types") or {}
+    return [
+        target
+        for target in targets
+        if (
+            API_ANTHROPIC_MESSAGES in target_api_types[target]
+            if target_api_types.get(target)
+            else _bedrock_target_family(target) is not None
+        )
+    ]
 
 
 def service_usable_for_tool(tool: str, service: dict) -> bool:

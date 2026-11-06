@@ -20,7 +20,9 @@ from pathlib import Path
 from ucode.config_io import ToolSpec, is_dry_run
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT
 from ucode.databricks import (
+    MICROSOFT_FOUNDRY_PROVIDER_TYPE,
     AnthropicModelCatalog,
+    foundry_claude_targets,
     get_databricks_token,
     install_ai_tools,
     install_databricks_cli,
@@ -417,9 +419,10 @@ def resolve_provider_models(
     """Validate ``provider`` for ``tool`` and return the model ids to pin.
 
     Returns ``(provider_models, error, relayed)``. ``provider_models`` is a ``{family: model_id}``
-    dict re-derived from the service's declared targets — Bedrock (provider-side slugs), API-key
-    Anthropic, and relayed Anthropic that declares a curated allowlist alike — so the client uses the
-    ids the MPS allows rather than Claude Code's defaults. It is None when ``provider`` is None, when
+    dict re-derived from the service's declared targets — Bedrock (provider-side slugs), Foundry
+    (deployment names), API-key Anthropic, and relayed Anthropic that declares a curated allowlist
+    alike — so the client uses the ids the MPS allows rather than Claude Code's defaults.
+    It is None when ``provider`` is None, when
     the service declares no Claude targets (e.g. an ``allow_all`` relay), or for a non-Claude (e.g.
     codex) service. ``relayed`` is True for a credential-less Anthropic subscription relay, which the
     launch path wires with the relayed overlay + refresh proxy. A non-None ``error`` means the
@@ -444,7 +447,12 @@ def resolve_provider_models(
     # through Claude-family logic would be meaningless (see docstring).
     if tool != "claude":
         return None, None, relayed
-    return map_claude_family_models(service.get("targets") or []) or None, None, relayed
+    targets = (
+        foundry_claude_targets(service)
+        if service.get("provider_type") == MICROSOFT_FOUNDRY_PROVIDER_TYPE
+        else service.get("targets") or []
+    )
+    return map_claude_family_models(targets) or None, None, relayed
 
 
 def _newest_first(model: str) -> list[int]:

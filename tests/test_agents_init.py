@@ -520,6 +520,26 @@ class TestResolveProviderModels:
         assert models == {"opus": "global.anthropic.claude-opus-4-8"}
         assert relayed is False
 
+    def test_foundry_preserves_deployment_ids_and_filters_other_apis(self, monkeypatch):
+        service = {
+            "provider_type": "microsoft_foundry",
+            "targets": ["team-claude-sonnet-5-5", "claude-sonnet-99", "gpt-5-nano"],
+            "target_api_types": {
+                "team-claude-sonnet-5-5": ("anthropic/v1/messages",),
+                "claude-sonnet-99": ("openai/v1/responses",),
+                "gpt-5-nano": ("openai/v1/responses",),
+            },
+        }
+        self._patch(monkeypatch, service, None)
+
+        models, error, relayed = agents_mod.resolve_provider_models(
+            "claude", self._STATE, "main.a.foundry"
+        )
+
+        assert error is None
+        assert models == {"sonnet": "team-claude-sonnet-5-5"}
+        assert relayed is False
+
     def test_invalid_provider_returns_error(self, monkeypatch):
         self._patch(monkeypatch, None, "boom")
         models, error, relayed = agents_mod.resolve_provider_models(

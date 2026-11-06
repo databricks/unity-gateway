@@ -1,5 +1,8 @@
 # Integration tests
 
+Isolated subprocesses preserve `OPENSSL_FORCE_FIPS_MODE` when supplied by the
+runner environment, so container OpenSSL initialization uses its configured mode.
+
 The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
 service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
 It replaces the obsolete stdio-only expectation; this checks configuration, not live login.
@@ -979,6 +982,13 @@ remains uncovered.
 MPS CUJs select the existing services already used by e2e:
 
 - Claude: `main.ucode.ci_e2e_anthropic_nonrelay_mps`.
+- Claude (Microsoft Foundry): `main.ucode.ci_foundry_claude_mps`, restricted to
+  `claude-haiku-5-5` on `anthropic/v1/messages`. `test_ug_claude_fresh_foundry_mps`
+  completes a headless file task from fresh state with an explicit provider and deployment.
+  `test_ug_configure_claude_foundry_mps` selects the service through the real configure picker,
+  verifies the saved provider and Haiku default, and completes a TUI file task with plain
+  `ug claude`. Override these inputs with `--claude-foundry-provider` and
+  `--claude-foundry-provider-model`; the configure journey requires a Haiku-named deployment.
 - Claude (relayed hybrid): `main.ucode.ci_e2e_anthropic_relay_mps`, which also
   requires `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) so the relayed
   launch runs headless instead of opening a browser login.

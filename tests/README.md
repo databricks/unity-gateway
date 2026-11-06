@@ -18,6 +18,9 @@ Integration runs a freshly installed ug wheel/release, exact real Claude/Codex
 (and optionally OpenCode) versions, and the existing real e2e workspace. It has no application imports,
 mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 
+Isolated runs preserve the host's explicit `OPENSSL_FORCE_FIPS_MODE` setting.
+`test_integration_contract.py` covers enabled, disabled, and absent values.
+
 | Category | Location | What it proves |
 | --- | --- | --- |
 | Unit/component | Existing `test_*.py` files | Individual behavior; dependencies may be mocked |
@@ -871,6 +874,8 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_cuj_configuration`, `test_cuj_codex_inference`, `test_cuj_claude_inference` in `test_cuj2_mps_mcp.py` | Read the permanently preconfigured two-agent MPS/MCP config; run separate configure, Codex TUI, and Claude TUI cases | Configuration verifies both native MPS APIs, generated settings, and sandbox inclusion with web_search excluded; each TUI case records its exact MPS target header and model, paired HTTP 200 response, and a completed parent turn with a nonempty greeting answer. Request IDs correlate traffic without requiring the model to repeat them. Live sandbox execution is deferred because MAS cannot downscope the CI service principal. No workspace config CRUD is performed |
 | `test_ug_configure_claude_databricks` | Configure Databricks Hosted; execute the generated auth helper; launch plain `ug claude`, read a file, and open `/model` | Generated helper invokes `ug` with clean token stdout; assistant returns an unpredictable file value; native discovery caches `system.ai` models and the picker shows a discovered model without an opt-in flag; normal exit; reopen with working keyboard input |
 | `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task; normal exit |
+| `test_ug_configure_claude_foundry_mps` | Select Foundry MPS in the real configure picker; launch Claude without an explicit model | Saved provider and Haiku deployment default; completed TUI file task; normal exit |
+| `test_ug_claude_fresh_foundry_mps` | Launch fresh Claude with a Foundry provider and deployment name | Correct provider header; successful structured answer containing an unknown file value; no routing |
 | `test_ug_configure_claude_bedrock_mps` | Select the restricted Bedrock MPS in the real configure picker; launch Claude without an explicit model | Saved provider in status; Sonnet 4.6 is selected from the Sonnet + Haiku allow-list and completes a TUI file task; normal exit |
 | `test_ug_configure_codex_databricks` | Configure Databricks Hosted; execute the generated auth helper; open Codex TUI and read a file | Generated helper invokes `ug` with clean token stdout; completed assistant answer contains the file value; normal exit and reopen |
 | `test_ug_configure_codex_openai_mps` | Select OpenAI MPS in the real configure picker; launch Codex | Saved provider in status; completed TUI file task; normal exit |

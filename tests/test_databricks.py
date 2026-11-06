@@ -1532,6 +1532,34 @@ def test_bare_model_name(model, name):
 
 
 class TestServiceUsableForTool:
+    @pytest.mark.parametrize(
+        ("targets", "target_api_types", "allow_all", "usable"),
+        [
+            (["claude-opus-5-5"], {}, False, True),
+            (["team-coding"], {"team-coding": ("anthropic/v1/messages",)}, False, True),
+            (["gpt-5-nano"], {"gpt-5-nano": ("openai/v1/responses",)}, False, False),
+            (["claude-sonnet-5-5"], {"claude-sonnet-5-5": ("openai/v1/responses",)}, False, False),
+            ([], {}, False, False),
+            ([], {}, True, True),
+        ],
+    )
+    def test_claude_foundry_requires_anthropic_targets(
+        self, targets, target_api_types, allow_all, usable
+    ):
+        service = {
+            "provider_type": "microsoft_foundry",
+            "targets": targets,
+            "target_api_types": target_api_types,
+            "allow_all_targets": allow_all,
+        }
+        assert db_mod.service_usable_for_tool("claude", service) is usable
+        assert db_mod.service_usable_for_tool("codex", service)
+        assert db_mod.service_usable_for_tool("copilot", service)
+
+    def test_claude_still_rejects_azure_openai(self):
+        service = {"provider_type": "azure_openai", "allow_all_targets": True}
+        assert not db_mod.service_usable_for_tool("claude", service)
+
     def test_bedrock_allow_all_targets_usable_without_targets(self):
         service = {"provider_type": "amazon_bedrock", "targets": [], "allow_all_targets": True}
         assert db_mod.service_usable_for_tool("claude", service)

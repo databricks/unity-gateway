@@ -203,6 +203,16 @@ def claude_bedrock_provider():
 
 
 @pytest.fixture(scope="session")
+def claude_foundry_provider():
+    return os.environ["UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def claude_foundry_provider_model():
+    return os.environ["UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER_MODEL"]
+
+
+@pytest.fixture(scope="session")
 def claude_oauth_token():
     # Real subscription OAuth token (`claude setup-token`); the relayed launch needs it to run
     # headless. Missing means the launch would fall back to a browser login, so fail rather than
