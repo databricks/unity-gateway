@@ -288,7 +288,7 @@ def _fetch_bundles_and_write(
         refs,
         label=label,
         deadline=deadline,
-        **({"prefetch": prefetch} if prefetch is not None else {}),
+        prefetch=prefetch,
     )
     written: list[SkillRef] = []
     for ref in refs:
@@ -666,7 +666,7 @@ def _update_stale_skills(
             roots,
             label="Updating skills",
             deadline=deadline,
-            **({"prefetch": prefetch} if prefetch is not None else {}),
+            prefetch=prefetch,
         )
         record_downloads(_skill_installs(written, roots, path, workspace))
         updated += len(written)

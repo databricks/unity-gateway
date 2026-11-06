@@ -1444,6 +1444,7 @@ class TestRefreshBundlePrefetch:
 
         monkeypatch.setattr(sd, "fetch_skill_bundle", fetch)
         prefetch = sd._RefreshBundlePrefetch(WS, "token", time.monotonic() + 30)
+        running = None
         try:
             prefetch.start(ref("first"))
             running = prefetch.futures[ref("first").fqn]
@@ -1456,7 +1457,8 @@ class TestRefreshBundlePrefetch:
         finally:
             release.set()
             prefetch.close()
-            running.result(timeout=5)
+            if running is not None:
+                running.result(timeout=5)
 
     def test_prefetch_is_one_bounded_batch_deduplicated_by_fqn(self, monkeypatch):
         calls = []
