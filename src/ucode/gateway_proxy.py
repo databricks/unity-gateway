@@ -36,7 +36,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import cast
+from typing import Any, cast
 from urllib.parse import unquote
 
 import httpx
@@ -522,45 +522,27 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     body_rewriter: Callable[[str, bytes], bytes] | None = None
     bad_request_rewriter: Callable[[bytes], bytes | None] | None = None
 
-    def _relay_response(
-        self,
-        resp: httpx.Response,
-        *,
-        diagnostic_id: str | None = None,
-        started: float | None = None,
-    ) -> None:
-        # `read` decodes only these encodings; the body then goes out without Content-Encoding.
+    def _relay_response(self, resp: httpx.Response, **kwargs: Any) -> None:
+        # `read` decodes only these encodings, so the body goes out without Content-Encoding.
         encoding = resp.headers.get("content-encoding", "identity").strip().lower()
         if (
             self.bad_request_rewriter is None
             or resp.status_code != 400
             or encoding not in ("identity", "gzip", "deflate")
         ):
-            super()._relay_response(resp, diagnostic_id=diagnostic_id, started=started)
-            return
-        started = started if started is not None else time.monotonic()
+            return super()._relay_response(resp, **kwargs)
         body = resp.read()
-        rewritten = self.bad_request_rewriter(body)
-        content = body if rewritten is None else rewritten
+        body = self.bad_request_rewriter(body) or body
         try:
-            self.send_response(resp.status_code)
+            self.send_response(400)
             for key, value in resp.headers.items():
-                if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() != "content-encoding":
+                if key.lower() not in {*HOP_BY_HOP_HEADERS, "content-encoding"}:
                     self.send_header(key, value)
-            self.send_header("Content-Length", str(len(content)))
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(content)
-            self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            return
-        log_proxy_diagnostic(
-            "response_complete",
-            request_id=diagnostic_id,
-            status=resp.status_code,
-            bytes=len(content),
-            rewritten=rewritten is not None,
-            elapsed_ms=round((time.monotonic() - started) * 1000),
-        )
+            self.wfile.write(body)
+        except OSError:
+            pass
 
     def _request_body(self, body: bytes | None) -> bytes | None:
         if body and self.body_rewriter is not None:
