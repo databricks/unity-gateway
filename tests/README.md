@@ -6,6 +6,7 @@ actionable disabled-request warnings, and rejection before installation when no 
 is allowed. The admin summary excludes self-managed opt-ins from its enabled-agent list.
 Successful self-managed agents have a separate summary line.
 Error coverage includes every disabled request and unavailable self-managed selections.
+Unsupported opt-ins never receive an unusable `ug agents add` hint.
 Mixed available/unavailable selections configure the available agents and warn about skipped
 self-managed agents.
 Saved self-managed model locations bypass global availability checks, with provider precedence

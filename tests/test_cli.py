@@ -5695,14 +5695,14 @@ class TestConfigureAgentsSelection:
                 "Skipping agent(s) not enabled by your workspace configuration: "
                 f"{cli_mod.TOOL_SPECS[excluded]['display']}" in output
             )
-            assert f"Run `ug agents add {excluded}` to use them self-managed." in output
+            assert f"ug agents add {excluded}" in output
         else:
             assert "Skipping agent(s)" not in output
         if unavailable:
             assert f"Skipping self-managed {cli_mod.TOOL_SPECS[unavailable]['display']}" in output
             assert "Run `ug status` to inspect model availability." in output
 
-    @pytest.mark.parametrize("selected", [["gemini"], ["gemini", "opencode"]])
+    @pytest.mark.parametrize("selected", [["gemini", "opencode"], ["kilo"]])
     def test_managed_config_rejects_selection_without_enabled_agents(self, monkeypatch, selected):
         state = {**MINIMAL_STATE, "available_tools": []}
         monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
@@ -5716,14 +5716,18 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(cli_mod, "install_tool_binary", install)
         monkeypatch.setattr(cli_mod, "configure_selected_tools", configure)
 
-        with pytest.raises(RuntimeError, match="doesn't enable Gemini") as error:
+        with pytest.raises(RuntimeError, match="doesn't enable") as error:
             cli_mod.configure_workspace_command(
                 selected_tools=selected, workspaces=[("https://w.com", None)]
             )
 
         for tool in selected:
             assert cli_mod.TOOL_SPECS[tool]["display"] in str(error.value)
-            assert f"ug agents add {tool}" in str(error.value)
+            if tool in cli_mod._MANAGEABLE_AGENTS:
+                assert f"ug agents add {tool}" in str(error.value)
+            else:
+                assert f"ug agents add {tool}" not in str(error.value)
+                assert "Self-managed opt-in is not supported" in str(error.value)
         install.assert_not_called()
         configure.assert_not_called()
 

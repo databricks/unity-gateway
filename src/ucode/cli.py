@@ -1363,19 +1363,33 @@ def _configure_workspace_command(
                 selected_self_managed
             )
             displays = ", ".join(TOOL_SPECS[name]["display"] for name in excluded)
-            opt_ins = ", ".join(f"`ug agents add {name}`" for name in excluded)
+            opt_ins = ", ".join(
+                f"`ug agents add {name}`" for name in excluded if name in _MANAGEABLE_AGENTS
+            )
+            unsupported = ", ".join(
+                TOOL_SPECS[name]["display"] for name in excluded if name not in _MANAGEABLE_AGENTS
+            )
+            hints = []
+            if opt_ins:
+                hints.append(f"Run {opt_ins} to use those agents self-managed.")
+            if unsupported:
+                hints.append(
+                    f"Self-managed opt-in is not supported for {unsupported}; "
+                    "choose an enabled agent."
+                )
+            selection_hint = " ".join(hints)
             if not managed_tools:
                 if excluded:
                     raise RuntimeError(
                         f"Your workspace's managed config doesn't enable {displays}. "
-                        f"Run {opt_ins} to use them self-managed."
+                        f"{selection_hint}"
                     )
                 print_note("No coding agents selected — nothing to configure.")
                 return 0
             if excluded:
                 print_warning(
                     f"Skipping agent(s) not enabled by your workspace configuration: {displays}. "
-                    f"Run {opt_ins} to use them self-managed."
+                    f"{selection_hint}"
                 )
             # Unrequested agents were not attempted, so the summary must not call them failures.
             summary_managed = {
