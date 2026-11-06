@@ -670,9 +670,6 @@ An exporter you already set is left alone. Disabling tracing or `ug revert` remo
 
 ## Development
 
-See [startup latency tracking](docs/startup-latency.md) for the measurement
-contract, component baselines, and the ordered performance PR queue.
-
 ```bash
 git clone https://github.com/databricks/unity-gateway
 cd unity-gateway
