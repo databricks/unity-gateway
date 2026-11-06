@@ -25,24 +25,24 @@ $report | ConvertTo-Json |
 if ($LASTEXITCODE -ne 0) { throw 'UG configure failed' }
 $profilePath = Join-Path $env:LOCALAPPDATA 'Claude-3p/configLibrary/5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json'
 if (-not (Test-Path $profilePath)) { throw 'UG did not create its Desktop profile' }
-$profile = Get-Content -Raw $profilePath | ConvertFrom-Json
-if ($profile.inferenceProvider -ne 'gateway') { throw 'Desktop profile is not using gateway inference' }
-if ($profile.inferenceCustomHeaders.'Databricks-Model-Provider-Service') {
+$desktopProfile = Get-Content -Raw $profilePath | ConvertFrom-Json
+if ($desktopProfile.inferenceProvider -ne 'gateway') { throw 'Desktop profile is not using gateway inference' }
+if ($desktopProfile.inferenceCustomHeaders.'Databricks-Model-Provider-Service') {
     throw 'This test requires system.ai model services, not a model provider service'
 }
-$parentSchema = $profile.inferenceCustomHeaders.'Databricks-Model-Service-Parent-Schema'
+$parentSchema = $desktopProfile.inferenceCustomHeaders.'Databricks-Model-Service-Parent-Schema'
 if ($parentSchema -and $parentSchema -ne 'system.ai') {
     throw 'This test requires the system.ai model-service schema'
 }
 $targetModel = 'system.ai.claude-haiku-4-5'
-$models = @($profile.inferenceModels | Where-Object { $_.name -eq $targetModel })
+$models = @($desktopProfile.inferenceModels | Where-Object { $_.name -eq $targetModel })
 if ($models.Count -ne 1) { throw 'Expected system.ai Claude model is missing from the configured profile' }
 $label = $models[0].labelOverride
 if (-not $label) { $label = $targetModel }
-$matchingLabels = @($profile.inferenceModels | Where-Object { $_.labelOverride -eq $label -or $_.name -eq $label })
+$matchingLabels = @($desktopProfile.inferenceModels | Where-Object { $_.labelOverride -eq $label -or $_.name -eq $label })
 if ($matchingLabels.Count -ne 1) { throw 'Configured target model label is ambiguous' }
 $report.configured = $true
-$report.provider = $profile.inferenceProvider
+$report.provider = $desktopProfile.inferenceProvider
 $report.targetModel = $targetModel
 $report.targetModelLabel = $label
 $report | ConvertTo-Json |

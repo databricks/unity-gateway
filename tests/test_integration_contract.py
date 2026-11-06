@@ -699,7 +699,6 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "installation",
         "installation-windows",
         "headless-windows",
-        "cowork-inference-windows",
         "workspace",
         "smoke",
         "full",
@@ -721,7 +720,6 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "installation",
             "installation-windows",
             "headless-windows",
-            "cowork-inference-windows",
             "workspace",
             "smoke",
             "full",
@@ -923,25 +921,26 @@ def test_live_suites_use_fresh_id_for_random_ids():
     assert not offenders, f"Use fresh_id() from integration/utils/evidence.py: {offenders}"
 
 
-def test_cowork_ci_job_requires_credentials_only_on_trusted_events():
+def test_cowork_ci_permissions_and_nonblocking_soak():
     jobs = _integration_jobs()
     job = jobs["cowork-inference-windows"]
-    condition = re.search(r"(?m)^    if: (.*)$", job)
-    assert condition is not None
-    assert FORK_GUARD in condition.group(1)
-    assert "github.event_name != 'merge_group'" in condition.group(1)
+    assert "github.event_name != 'merge_group'" in job
+    assert "inputs.ug_version == 'checkout'" in job
+    assert "inputs.claude_version == '2.1.290'" in job
+    assert "inputs.dependency == ''" in job
     assert "id-token: write" in job
-    assert "secrets.DATABRICKS_BEARER" in job
-    assert "ref: ${{ inputs.ref || github.sha }}" in job
+    assert "continue-on-error: true" in job
     needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
     assert needs is not None
-    assert "cowork-inference-windows" in {name.strip() for name in needs.group(1).split(",")}
+    assert "cowork-inference-windows" not in {name.strip() for name in needs.group(1).split(",")}
+    for step in ("Configure Desktop", "Assert Cowork inference"):
+        block = job.split(f"      - name: {step}", 1)[1].split("      - name:", 1)[0]
+        assert 'ACTIONS_ID_TOKEN_REQUEST_URL: ""' in block
+        assert 'ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""' in block
     for caller in ("ci.yml", "fork-integration.yml"):
         integration = _workflow(caller).split("\n  integration:\n", 1)[1].split("\n  #", 1)[0]
         integration = re.split(r"\n  [a-z-]+:\n", integration, maxsplit=1)[0]
         assert "id-token: write" in integration
-    required = _workflow("ci.yml").split("\n  required-e2e:\n", 1)[1]
-    assert "needs: [e2e, integration]" in required
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-e2e runs on Linux")

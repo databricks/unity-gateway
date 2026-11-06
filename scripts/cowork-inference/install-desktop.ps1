@@ -14,18 +14,21 @@ try {
     $report.sha256 = $hash
     $signature = Get-AuthenticodeSignature -LiteralPath $InstallerPath
     $report.signature = $signature.Status.ToString()
+    if ($signature.Status -ne 'Valid' -or -not $signature.SignerCertificate) {
+        throw 'Expected a valid Anthropic-signed installer'
+    }
     $report.signer = $signature.SignerCertificate.Subject
     $publisher = $signature.SignerCertificate.GetNameInfo(
         [Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
-    if ($signature.Status -ne 'Valid' -or $publisher -ne 'Anthropic, PBC') {
+    if ($publisher -ne 'Anthropic, PBC') {
         throw 'Expected a valid Anthropic-signed installer'
     }
-    if (@(Get-AppxPackage -Name '*Claude*').Count -ne 0) {
+    if (@(Get-AppxPackage -Name Claude).Count -ne 0) {
         throw 'Expected a clean runner without Claude installed'
     }
 
     Add-AppxPackage -Path $InstallerPath -ErrorAction Stop
-    $packages = @(Get-AppxPackage -Name '*Claude*')
+    $packages = @(Get-AppxPackage -Name Claude)
     if ($packages.Count -ne 1) { throw 'Expected exactly one installed Claude package' }
     $package = $packages[0]
     $report.installed = $true

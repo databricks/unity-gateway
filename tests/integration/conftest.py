@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
+from utils.desktop import desktop_config_library
 from utils.evidence import fresh_id
 from utils.harness import UserSession
 from utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
@@ -189,6 +190,18 @@ def live_session(session, workspace):
 @pytest.fixture(scope="session")
 def claude_provider():
     return os.environ["UG_INTEGRATION_CLAUDE_PROVIDER"]
+
+
+@pytest.fixture
+def desktop_cli_profile(live_session, workspace):
+    # A pre-existing Desktop directory and CLI profile are user-owned scenario inputs.
+    desktop_config_library(live_session).mkdir(parents=True)
+    profile = "desktop-model-labels"
+    Path(live_session.env["DATABRICKS_CONFIG_FILE"]).write_text(
+        f"[{profile}]\nhost = {workspace}\nauth_type = databricks-cli\n",
+        encoding="utf-8",
+    )
+    return profile
 
 
 @pytest.fixture(scope="session")

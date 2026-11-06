@@ -1,5 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $registry = 'https://databricks.jfrog.io/artifactory/api/npm/db-npm/'
+$credentialStage = 'GitHub identity request'
 try {
     $githubToken = (Invoke-RestMethod -Uri $env:ACTIONS_ID_TOKEN_REQUEST_URL `
         -Headers @{ Authorization = "Bearer $env:ACTIONS_ID_TOKEN_REQUEST_TOKEN" } -TimeoutSec 30).value
@@ -11,15 +12,17 @@ try {
         subject_token = $githubToken
         provider_name = 'github-actions'
     } | ConvertTo-Json
+    $credentialStage = 'JFrog token exchange'
     $token = (Invoke-RestMethod -Uri 'https://databricks.jfrog.io/access/api/v1/oidc/token' `
         -Method Post -ContentType 'application/json' -Body $payload -TimeoutSec 30).access_token
     if (-not $token) { throw 'Missing JFrog access token' }
 } catch {
-    throw 'Could not obtain JFrog credentials through the existing github-actions OIDC provider'
+    throw "Could not obtain package credentials during $credentialStage"
 }
 Write-Output "::add-mask::$token"
 $config = Join-Path $env:RUNNER_TEMP 'cowork-inference.npmrc'
 try {
+    Remove-Item Env:ACTIONS_ID_TOKEN_REQUEST_URL, Env:ACTIONS_ID_TOKEN_REQUEST_TOKEN -ErrorAction SilentlyContinue
     $env:UG_COWORK_NPM_TOKEN = $token
     @("registry=$registry", '//databricks.jfrog.io/artifactory/api/npm/db-npm/:_authToken=${UG_COWORK_NPM_TOKEN}') |
         Set-Content -LiteralPath $config -Encoding utf8
@@ -37,9 +40,9 @@ try {
     $env:PIP_INDEX_URL = 'https://' + [Uri]::EscapeDataString($username) + ':' +
         [Uri]::EscapeDataString($token) + '@databricks.jfrog.io/artifactory/api/pypi/db-pypi/simple'
     $env:PIP_EXTRA_INDEX_URL = ''
-    $py = (Get-Command py.exe -ErrorAction Stop).Source
+    $py = (Get-Command python.exe -ErrorAction Stop).Source
     $runtime = Join-Path $env:RUNNER_TEMP 'desktop-ug-runtime'
-    & $py -3.12 -m venv $runtime
+    & $py -m venv $runtime
     if ($LASTEXITCODE -ne 0) { throw 'Could not create UG runtime' }
     $python = Join-Path $runtime 'Scripts/python.exe'
     & $python -m pip install --disable-pip-version-check .

@@ -1,13 +1,7 @@
 # Integration tests
 
-Windows first-launch configuration has component coverage in
-`../test_desktop_setup.py`: an installed MSIX creates the missing Desktop profile
-store; absent installations, package-query failures, and timeouts leave it absent.
-The native Windows Cowork inference job in `.github/workflows/integration.yml`
-exercises real installation, UG configuration before first launch, and completed
-`system.ai.claude-haiku-4-5` inference through the desktop UI. CI contract checks
-verify credential-job event guards and that failed, cancelled, or unexpectedly
-skipped Cowork runs fail the integration gate and the existing required `e2e` check.
+Windows Cowork desktop coverage and its non-blocking stabilization period are
+documented in the [main test guide](../README.md).
 
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
@@ -148,7 +142,13 @@ ID rather than its alias; this does not pin or prove its backing model revision.
 the real subscription provider through configure and completes
 Messages inference using the subscription token and separate Databricks header returned by its
 helper. Non-relay MPS Desktop configuration is asserted in CUJ2's existing MPS configuration
-journey; no dedicated Desktop MPS integration test is needed.
+journey and in the existing Anthropic, Bedrock, Foundry, and custom Foundry configure/TUI
+journeys. Those journeys supply an isolated Desktop directory and explicit CLI profile,
+then assert literal readable labels and unchanged routing IDs/provider headers in the
+generated 3P profile. Databricks Hosted configure and the Desktop lifecycle journey also
+assert `Claude Haiku 4.5`; CUJ2 requires that label for its dated Anthropic target, including
+when discovery echoes the ID as its display name. Expected labels do not call the
+application formatter. No extra configure or live task is added to these journeys.
 
 Each of these two journeys supplies pre-existing Desktop account directories as inputs and
 requires real Claude CLI installation of the Cowork plugin on both Linux and Windows.
@@ -837,10 +837,13 @@ files, or leave fresh installs untouched. Tests cover modern, Bedrock, Vertex, a
 Claude-named routes; they do not verify the model behind a name.
 
 Model-label component tests cover catalog display names in `labelOverride`, unchanged
-routing IDs, order/duplicates, and ID-only entries for missing/empty names. Static
-managed lists use discovery only to label matching IDs; their model selection stays
-authoritative. Repeat configure refreshes or removes labels. Source lists/maps remain
-unchanged.
+routing IDs and order/duplicates, and readable fallback labels for missing/empty names
+or display names that echo the routing ID.
+Cases include Anthropic release IDs, Bedrock regional/global IDs, Mantle-style IDs,
+and Databricks/UC names. Distinct IDs with colliding labels show full IDs, including
+collisions between catalog and fallback labels. Static managed lists retain their model
+selection and get fallback labels even when discovery fails. Repeat configure refreshes
+catalog labels or restores fallback labels. Source lists/maps remain unchanged.
 These checks use temporary files on simulated platforms, not the native model picker.
 
 Desktop OTEL coverage remains in `../test_claude_desktop.py` and

@@ -4,6 +4,29 @@ $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Run on a disposable GitHub Actions runner' }
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
+function Wait-Control {
+    param(
+        [Windows.Automation.AutomationElement]$Root,
+        [string[]]$Names,
+        [int]$TimeoutSeconds = 60
+    )
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        foreach ($name in $Names) {
+            $condition = [Windows.Automation.PropertyCondition]::new(
+                [Windows.Automation.AutomationElement]::NameProperty, $name)
+            $control = $Root.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
+            if ($control -and $control.Current.IsEnabled -and -not $control.Current.IsOffscreen) {
+                return $control
+            }
+        }
+        Start-Sleep -Milliseconds 500
+    } until ([DateTime]::UtcNow -ge $deadline)
+    throw "Timed out after $TimeoutSeconds seconds waiting for enabled control: $($Names -join ', ')"
+}
+
+. "$PSScriptRoot/diagnostics.ps1"
+
 $report = [ordered]@{}
 $process = $null
 $nativeLogDirectory = Join-Path $env:RUNNER_TEMP ('claude-native-' + [Guid]::NewGuid().ToString())
@@ -20,55 +43,30 @@ try {
     } until ($windows.Count -or [DateTime]::UtcNow -ge $deadline)
     if (-not $windows.Count) { throw 'Claude did not open a window' }
     $window = [Windows.Automation.AutomationElement]::FromHandle($windows[0].MainWindowHandle)
-    $condition = [Windows.Automation.PropertyCondition]::new(
-        [Windows.Automation.AutomationElement]::NameProperty, 'Get started')
-    $deadline = [DateTime]::UtcNow.AddSeconds(15)
-    do {
-        $startButton = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
-        if (-not $startButton) { Start-Sleep -Seconds 1 }
-    } until ($startButton -or [DateTime]::UtcNow -ge $deadline)
-    $report.getStartedFound = $null -ne $startButton
-    if ($startButton) {
-        $invoke = $startButton.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)
-        $invoke.Invoke()
+    $welcome = Wait-Control -Root $window -Names 'Get started', 'Continue'
+    $report.getStartedFound = $welcome.Current.Name -eq 'Get started'
+    if ($report.getStartedFound) {
+        $welcome.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
         $report.getStartedInvoked = $true
-        Start-Sleep -Seconds 8
+        $welcome = Wait-Control -Root $window -Names 'Continue'
     }
-    $continueCondition = [Windows.Automation.PropertyCondition]::new(
-        [Windows.Automation.AutomationElement]::NameProperty, 'Continue')
-    $continueButton = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $continueCondition)
-    if (-not $continueButton) { throw 'Configured gateway welcome screen has no Continue button' }
-    $continueButton.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+    $welcome.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
     $report.gatewayContinueInvoked = $true
-    Start-Sleep -Seconds 15
-    $coworkCondition = [Windows.Automation.PropertyCondition]::new(
-        [Windows.Automation.AutomationElement]::NameProperty, 'Cowork')
-    $cowork = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $coworkCondition)
-    $report.coworkControlFound = $null -ne $cowork
-    if (-not $cowork) { throw 'Cowork control is unavailable' }
-    if ($cowork) {
-        $pattern = $null
-        if ($cowork.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
-            $pattern.Invoke()
-        } elseif ($cowork.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
-            $pattern.Select()
-        } else {
-            throw 'Cowork control has no supported native activation pattern'
-        }
-        $report.coworkActivated = $true
-        Start-Sleep -Seconds 10
+    $cowork = Wait-Control -Root $window -Names 'Cowork'
+    $report.coworkControlFound = $true
+    $pattern = $null
+    if ($cowork.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+        $pattern.Invoke()
+    } elseif ($cowork.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
+        $pattern.Select()
+    } else {
+        throw 'Cowork control has no supported native activation pattern'
     }
+    $report.coworkActivated = $true
     $configuration = Get-Content (Join-Path $OutputDirectory 'configuration.json') -Raw | ConvertFrom-Json
-    $modelCondition = [Windows.Automation.PropertyCondition]::new(
-        [Windows.Automation.AutomationElement]::NameProperty, "Model: $($configuration.targetModelLabel)")
-    if (-not $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $modelCondition)) {
-        throw 'Cowork did not select the expected system.ai Claude model'
-    }
+    $null = Wait-Control -Root $window -Names "Model: $($configuration.targetModelLabel)"
     $report.model = $configuration.targetModel
-    $editorCondition = [Windows.Automation.PropertyCondition]::new(
-        [Windows.Automation.AutomationElement]::NameProperty, 'Write your prompt to Claude')
-    $editor = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $editorCondition)
-    if (-not $editor) { throw 'Cowork prompt editor is unavailable' }
+    $editor = Wait-Control -Root $window -Names 'Write your prompt to Claude'
     $prompt = 'Reply with only the digits for forty-eight thousand two hundred thirteen. Do not use tools.'
     $valuePattern = $null
     if ($editor.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$valuePattern)) {
@@ -77,11 +75,7 @@ try {
         $editor.SetFocus()
         [Windows.Forms.SendKeys]::SendWait($prompt)
     }
-    Start-Sleep -Seconds 1
-    $submitCondition = [Windows.Automation.PropertyCondition]::new(
-        [Windows.Automation.AutomationElement]::NameProperty, 'Start task')
-    $submit = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $submitCondition)
-    if (-not $submit -or -not $submit.Current.IsEnabled) { throw 'Cowork Start task is unavailable or disabled' }
+    $submit = Wait-Control -Root $window -Names 'Start task'
     $submit.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
     $report.promptSubmitted = $true
     $deadline = [DateTime]::UtcNow.AddSeconds(240)
@@ -147,12 +141,12 @@ try {
     foreach ($log in Get-ChildItem -LiteralPath $nativeLogDirectory -Filter '*.log') {
         $text = Get-Content -LiteralPath $log.FullName -Raw
         if ($text) {
-            if ($env:DATABRICKS_BEARER) { $text = $text.Replace($env:DATABRICKS_BEARER, '[REDACTED]') }
+            $text = Protect-DiagnosticText $text
             $text | Set-Content -LiteralPath (Join-Path $OutputDirectory $log.Name) -Encoding utf8
         }
     }
     $json = $report | ConvertTo-Json -Depth 8
-    if ($env:DATABRICKS_BEARER) { $json = $json.Replace($env:DATABRICKS_BEARER, '[REDACTED]') }
+    $json = Protect-DiagnosticText $json
     $json | Set-Content -LiteralPath (Join-Path $OutputDirectory 'native-launch.json') -Encoding utf8
 }
 if ($report.error) { exit 1 }
