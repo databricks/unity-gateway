@@ -674,6 +674,21 @@ model-service listing starts on a daemon thread before the gateway probe returns
 probe failure raises its own error while the listing is still blocked, that a listing error
 propagates without saving state, that `skip_model_discovery` never starts the listing but
 keeps its web-search lookup, and that the overlap reuses the process-local probe and listing
+caches. With discovery skipped, the Claude web-search lookup likewise starts on a daemon thread
+before the probe returns, a probe failure raises without waiting for it, and a launch that needs
+no Claude model starts no worker. The skip-preflight tests also reject starting a background
+worker. These component checks control the HTTP boundary with events; they do not establish
+live gateway timing, agent launch, or launch-time savings.
+
+`TestConfigureSharedStateReusesRecentGatewayCheck` in `test_cli.py` checks that a launch that
+skips model discovery reuses a recent passing gateway probe and web-search lookup without moving
+its check time, and checks again without reuse (`--refresh`, configure), after the window, for
+other credentials, after an incomplete check, and whenever discovery runs. It also verifies
+authentication on reused launches, workspace switches, and persisted invalidation before a
+failed refresh or configure probe. `TestSkipPreflightFlag`
+checks that `--refresh` turns reuse off. These component checks do not establish live gateway
+timing or launch-time savings.
+
 caches. The skip-preflight tests also reject starting a background worker. These component
 checks control the HTTP boundary with events; they do not establish live gateway timing,
 agent launch, or launch-time savings.

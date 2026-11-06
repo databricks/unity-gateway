@@ -7487,28 +7487,112 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
             cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
         assert saved == []
 
+    def _record_background_starts(self, monkeypatch, cli_mod) -> list[object]:
+        started: list[object] = []
+        start = cli_mod._start_in_background
+
+        def record(fn, *args):
+            started.append(fn)
+            return start(fn, *args)
+
+        monkeypatch.setattr(cli_mod, "_start_in_background", record)
+        return started
+
     def test_skip_model_discovery_never_starts_the_listing(self, monkeypatch):
         cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
-        started: list[object] = []
+        started = self._record_background_starts(monkeypatch, cli_mod)
         listings: list[str] = []
-        monkeypatch.setattr(cli_mod, "_start_in_background", lambda fn, *args: started.append(fn))
         monkeypatch.setattr(
             cli_mod,
             "discover_model_services",
             lambda w, t: listings.append(w) or ({}, [], [], [], None),
         )
-        monkeypatch.setattr(
-            cli_mod, "discover_codex_models", lambda w, t: (["system.ai.gpt-5"], None)
-        )
+
+        def web_search_lookup(workspace, token):
+            return ["system.ai.gpt-5"], None
+
+        monkeypatch.setattr(cli_mod, "discover_codex_models", web_search_lookup)
 
         state = cli_mod.configure_shared_state(
             self.WS, profile="DEFAULT", tools=["claude"], skip_model_discovery=True
         )
 
-        assert started == []
+        # Provider mode keeps its separate single-call web-search lookup, and only that one starts.
+        assert started == [web_search_lookup]
         assert listings == []
-        # Provider mode keeps its separate single-call web-search lookup.
         assert state["web_search_model"] == "system.ai.gpt-5"
+
+    def test_skipped_discovery_looks_up_web_search_model_while_probe_is_in_flight(
+        self, monkeypatch
+    ):
+        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+        lookup_started = threading.Event()
+
+        def web_search_lookup(workspace, token):
+            assert (workspace, token) == (self.WS, "token")
+            lookup_started.set()
+            return ["system.ai.gpt-5"], None
+
+        def probe(workspace, token):
+            # Returns only once the lookup has started, so a sequential implementation fails.
+            assert lookup_started.wait(self.WAIT_SECONDS), "lookup did not overlap the probe"
+            return MODEL_SERVICE_PROBE
+
+        monkeypatch.setattr(cli_mod, "discover_codex_models", web_search_lookup)
+        monkeypatch.setattr(cli_mod, "probe_unity_gateway_capabilities", probe)
+
+        state = cli_mod.configure_shared_state(
+            self.WS, profile="DEFAULT", tools=["claude"], skip_model_discovery=True
+        )
+
+        assert state["web_search_model"] == "system.ai.gpt-5"
+
+    def test_skipped_discovery_probe_failure_raises_without_waiting_for_lookup(self, monkeypatch):
+        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+        lookup_started = threading.Event()
+        release_lookup = threading.Event()
+        lookup_finished = threading.Event()
+        lookup_threads: list[threading.Thread] = []
+
+        def web_search_lookup(workspace, token):
+            lookup_threads.append(threading.current_thread())
+            lookup_started.set()
+            release_lookup.wait(self.WAIT_SECONDS)
+            lookup_finished.set()
+            return ["system.ai.gpt-5"], None
+
+        def probe_get(url, token, **kwargs):
+            assert lookup_started.wait(self.WAIT_SECONDS), "lookup did not overlap the probe"
+            return None, "HTTP 404 Not Found: model service unavailable"
+
+        monkeypatch.setattr(cli_mod, "discover_codex_models", web_search_lookup)
+        monkeypatch.setattr(db_mod, "_http_get_json", probe_get)
+        monkeypatch.setattr(
+            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
+        )
+
+        try:
+            with pytest.raises(RuntimeError, match="not enabled"):
+                cli_mod.configure_shared_state(
+                    self.WS, profile="DEFAULT", tools=["claude"], skip_model_discovery=True
+                )
+            assert not lookup_finished.is_set()
+            assert [thread.daemon for thread in lookup_threads] == [True]
+        finally:
+            release_lookup.set()
+            for thread in lookup_threads:
+                thread.join(self.WAIT_SECONDS)
+
+    def test_skipped_discovery_without_claude_starts_no_lookup(self, monkeypatch):
+        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+        started = self._record_background_starts(monkeypatch, cli_mod)
+
+        state = cli_mod.configure_shared_state(
+            self.WS, profile="DEFAULT", tools=["codex"], skip_model_discovery=True
+        )
+
+        assert started == []
+        assert "web_search_model" not in state
 
     def test_overlapped_listing_composes_with_process_caches(self, monkeypatch):
         cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
@@ -7543,6 +7627,149 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
             assert state["codex_models"] == ["system.ai.gpt-5"]
         # One probe and one listing page; the second configure answers from both process caches.
         assert len(requests) == 2
+
+
+class TestConfigureSharedStateReusesRecentGatewayCheck:
+    """A launch that skips model discovery reuses a recent gateway probe and web-search lookup."""
+
+    WS = "https://example.databricks.com"
+
+    @pytest.fixture
+    def launch(self, monkeypatch):
+        cli_mod, _, self.ensures, _ = TestConfigureSharedStateUsePat._stub_deps(
+            monkeypatch, pat_token=None
+        )
+        # Each call sees only what the previous launch saved, through a JSON round trip like disk.
+        saved: dict = {}
+        monkeypatch.setattr(cli_mod, "load_state", lambda: json.loads(saved.get("state", "{}")))
+        monkeypatch.setattr(
+            cli_mod, "save_state", lambda state: saved.__setitem__("state", json.dumps(state))
+        )
+        self.requests: list[str] = []
+        self.probe = MODEL_SERVICE_PROBE
+        self.probe_error: RuntimeError | None = None
+        self.web_search_models = ["system.ai.gpt-5"]
+
+        def probe(workspace, token):
+            self.requests.append("probe")
+            if self.probe_error:
+                raise self.probe_error
+            return self.probe
+
+        def web_search_lookup(workspace, token):
+            self.requests.append("web search")
+            return list(self.web_search_models), None
+
+        monkeypatch.setattr(cli_mod, "probe_unity_gateway_capabilities", probe)
+        monkeypatch.setattr(cli_mod, "discover_codex_models", web_search_lookup)
+
+        def run(*, workspace=self.WS, profile="DEFAULT", reuse=True, skip_model_discovery=True):
+            return cli_mod.configure_shared_state(
+                workspace,
+                profile=profile,
+                tools=["claude"],
+                skip_model_discovery=skip_model_discovery,
+                reuse_recent_gateway_check=reuse,
+            )
+
+        return run
+
+    def test_second_launch_reuses_the_check(self, launch, capsys):
+        first = launch()
+        second = launch()
+
+        assert sorted(self.requests) == ["probe", "web search"]
+        assert self.ensures == [(self.WS, "DEFAULT"), (self.WS, "DEFAULT")]
+        assert first["web_search_model"] == second["web_search_model"] == "system.ai.gpt-5"
+        output = _strip_ansi(capsys.readouterr().out)
+        assert output.count("Unity Gateway connected") == 2
+
+    def test_reuse_keeps_the_original_check_time(self, launch):
+        checked_at = launch()["launch_gateway_check"]["checked_at"]
+
+        assert launch()["launch_gateway_check"]["checked_at"] == checked_at
+
+    def test_refresh_and_configure_probe_again(self, launch):
+        launch()
+        launch(reuse=False)
+
+        assert sorted(self.requests) == ["probe", "probe", "web search", "web search"]
+
+    def test_expired_check_probes_again(self, launch, monkeypatch):
+        import ucode.cli as cli_mod
+
+        launch()
+        monkeypatch.setattr(cli_mod, "LAUNCH_GATEWAY_CHECK_MAX_AGE_SECONDS", 0)
+        launch()
+
+        assert sorted(self.requests) == ["probe", "probe", "web search", "web search"]
+
+    def test_other_credentials_probe_again(self, launch):
+        launch(profile="DEFAULT")
+        launch(profile="OTHER")
+
+        assert sorted(self.requests) == ["probe", "probe", "web search", "web search"]
+
+    def test_workspace_switch_probes_before_reuse(self, launch):
+        other_workspace = "https://other.databricks.com"
+        launch()
+        launch(workspace=other_workspace)
+        launch(workspace=other_workspace)
+
+        assert self.requests.count("probe") == 2
+        assert self.ensures == [
+            (self.WS, "DEFAULT"),
+            (other_workspace, "DEFAULT"),
+            (other_workspace, "DEFAULT"),
+        ]
+
+    def test_full_discovery_discards_prior_workspace_check(self, launch):
+        other_workspace = "https://other.databricks.com"
+        launch()
+        configured = launch(workspace=other_workspace, skip_model_discovery=False)
+        launch(workspace=other_workspace)
+
+        assert "launch_gateway_check" not in configured
+        assert self.requests.count("probe") == 3
+
+    @pytest.mark.parametrize("skip_model_discovery", [True, False])
+    def test_failed_refresh_discards_cached_success(self, launch, skip_model_discovery):
+        import ucode.cli as cli_mod
+
+        launch()
+        self.probe_error = RuntimeError("Unity Gateway is not enabled")
+        with pytest.raises(RuntimeError, match="not enabled"):
+            launch(reuse=False, skip_model_discovery=skip_model_discovery)
+        persisted = cli_mod.load_state()
+        self.probe_error = None
+        launch()
+
+        assert "launch_gateway_check" not in persisted
+        assert self.requests.count("probe") == 3
+
+    @pytest.mark.parametrize("failure", ["no model service", "no web-search model"])
+    def test_incomplete_check_is_not_reused(self, launch, failure):
+        if failure == "no model service":
+            self.probe = GatewayProbe(True, "reachable, no accessible model services returned")
+        else:
+            self.web_search_models = []
+        launch()
+        launch()
+
+        assert sorted(self.requests) == ["probe", "probe", "web search", "web search"]
+
+    def test_launch_with_model_discovery_always_probes(self, launch, monkeypatch):
+        import ucode.cli as cli_mod
+
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: self.requests.append("listing") or ({}, ["system.ai.gpt-5"], [], [], None),
+        )
+        launch(skip_model_discovery=False)
+        launch(skip_model_discovery=False)
+
+        assert self.requests.count("probe") == 2
 
 
 class TestConfigureNoLongerValidates:
@@ -8195,6 +8422,16 @@ class TestSkipPreflightFlag:
             result = runner.invoke(app, [tool, "--skip-preflight"])
         assert result.exit_code == 0, result.output
         assert cfg.call_args.kwargs["skip_preflight"] is True
+
+    @pytest.mark.parametrize(("args", "reuse"), [([], True), (["--refresh"], False)])
+    def test_refresh_flag_skips_recent_gateway_check(self, args, reuse):
+        cfg = MagicMock(return_value=MINIMAL_STATE)
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(cfg):
+                stack.enter_context(p)
+            result = runner.invoke(app, ["claude", *args])
+        assert result.exit_code == 0, result.output
+        assert cfg.call_args.kwargs["reuse_recent_gateway_check"] is reuse
 
     @pytest.mark.parametrize("tool", ["codex", "gemini"])
     def test_absent_flag_defaults_false(self, tool):
