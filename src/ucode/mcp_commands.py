@@ -76,4 +76,4 @@ def run(argv: list[str]) -> None:
     mcp_app = typer.Typer(add_completion=False, no_args_is_help=True)
     mcp_app.command("web-search")(mcp_web_search_cmd)
     app.add_typer(mcp_app, name="mcp")
-    app(args=argv, prog_name="ug")
+    app(args=argv)

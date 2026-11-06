@@ -333,7 +333,8 @@ evidence is checked, because Claude can resume a child after its first completed
 
 `../test_startup_imports.py` covers the bare version fast path, deferred imports
 (including the orchestrator prompt hook's), metadata fallback, and other-argument
-dispatch as component checks. Installation
+dispatch as component checks. Helper help/error parity covers both console aliases,
+including unknown options and missing option values. Installation
 checks still exercise real console-script help and version output; neither suite
 asserts end-to-end agent startup latency. The component suite also checks that
 version output alone cannot establish CLI health when startup dependencies are

@@ -188,4 +188,4 @@ def run(argv: list[str]) -> None:
         set_config_scope(load_config_scope())
 
     register(app)
-    app(args=argv, prog_name="ug")
+    app(args=argv)

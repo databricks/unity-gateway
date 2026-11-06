@@ -235,13 +235,18 @@ def test_agent_helpers_are_the_cli_hidden_helper_commands() -> None:
         "mcp web-search",
     ],
 )
-def test_agent_helper_help_matches_the_cli(command) -> None:
-    def help_text(module: str) -> str:
+@pytest.mark.parametrize("executable", ["ug", "ucode"])
+@pytest.mark.parametrize(
+    ("arguments", "expected_exit"),
+    [(["--help"], 0), (["--unknown-option"], 2), (["--host"], 2)],
+)
+def test_agent_helper_usage_matches_the_cli(command, executable, arguments, expected_exit) -> None:
+    def command_output(module: str) -> tuple[str, str]:
         result = subprocess.run(
             [
                 sys.executable,
                 "-c",
-                f"import sys\nsys.argv = ['ug', *{command.split()!r}, '--help']\n"
+                f"import sys\nsys.argv = {[executable, *command.split(), *arguments]!r}\n"
                 f"from {module} import main\nmain()",
             ],
             stdin=subprocess.DEVNULL,
@@ -251,10 +256,10 @@ def test_agent_helper_help_matches_the_cli(command) -> None:
             timeout=60,
             env={**os.environ, "COLUMNS": "100", "NO_COLOR": "1"},
         )
-        assert result.returncode == 0, result.stderr
-        return result.stdout
+        assert result.returncode == expected_exit, result.stderr
+        return result.stdout, result.stderr
 
-    assert help_text("ucode.entrypoint") == help_text("ucode.cli")
+    assert command_output("ucode.entrypoint") == command_output("ucode.cli")
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])

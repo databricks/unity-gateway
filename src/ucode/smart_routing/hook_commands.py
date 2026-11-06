@@ -261,4 +261,4 @@ def run(argv: list[str]) -> None:
     """Run `ug <hook> ...` with only the hook commands registered."""
     app = typer.Typer(add_completion=False)
     register(app)
-    app(args=argv, prog_name="ug")
+    app(args=argv)
