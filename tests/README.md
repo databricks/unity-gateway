@@ -19,11 +19,12 @@ Integration runs a freshly installed ug wheel/release, exact real Claude/Codex
 mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 
 Provider target component tests require explicit Messages API metadata for Claude across
-Anthropic, Bedrock, Mantle, and Foundry. They preserve custom deployment names, reject
+Anthropic, Bedrock, Mantle, Foundry, and custom providers. They preserve custom deployment names, reject
 missing metadata or incompatible APIs, and cover the generic empty-target error and
 `allow_all_targets` bypass. Resolver, configuration, and launch tests verify custom-name
 defaults and explicit overrides without inventing a Claude family. Other tools keep their
-existing filters. These checks do not establish live custom-deployment coverage.
+existing filters. Opaque names such as `team-coding` have component coverage only; custom-provider
+integration journeys use vendor model IDs.
 
 | Category | Location | What it proves |
 | --- | --- | --- |
@@ -880,6 +881,8 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task; normal exit |
 | `test_ug_configure_claude_foundry_mps` | Select Foundry MPS in the real configure picker; launch Claude without an explicit model | Saved provider and Haiku/Sonnet deployment defaults; completed TUI file task on Sonnet; normal exit |
 | `test_ug_claude_fresh_foundry_mps` | Launch fresh Claude with a Foundry provider and deployment name | Correct provider header; successful structured answer containing an unknown file value; no routing |
+| `test_ug_claude_fresh_custom_foundry_mps` | Launch fresh Claude through a custom MPS backed by Foundry Messages | Correct provider header; completed file-reading answer on the selected Claude deployment; no routing |
+| `test_ug_codex_fresh_custom_azure_openai_mps` | Launch fresh Codex through a custom MPS backed by Azure OpenAI Responses | Correct provider header; completed file-reading answer on the selected GPT deployment; no routing |
 | `test_ug_configure_claude_bedrock_mps` | Select the restricted Bedrock MPS in the real configure picker; launch Claude without an explicit model | Saved provider in status; Sonnet 4.6 is selected from the Sonnet + Haiku allow-list and completes a TUI file task; normal exit |
 | `test_ug_configure_codex_databricks` | Configure Databricks Hosted; execute the generated auth helper; open Codex TUI and read a file | Generated helper invokes `ug` with clean token stdout; completed assistant answer contains the file value; normal exit and reopen |
 | `test_ug_configure_codex_openai_mps` | Select OpenAI MPS in the real configure picker; launch Codex | Saved provider in status; completed TUI file task; normal exit |
