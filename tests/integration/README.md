@@ -1,10 +1,5 @@
 # Integration tests
 
-Codex catalog no-op writes, fast TOML inspection, TOML 1.1 compatibility, and preservation
-of concurrent desktop tracing settings are covered by `../test_agent_codex.py` and
-`../test_config_io.py`. These use local files and controlled process boundaries; they
-do not measure native-agent readiness or live gateway latency.
-
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They
