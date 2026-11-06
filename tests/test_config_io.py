@@ -154,11 +154,15 @@ class TestWriteHelpers:
         write_text_file(p, "hello")
         assert p.read_text() == "hello"
 
-    def test_write_text_file_dry_run_no_write(self, tmp_path):
+    def test_write_text_file_dry_run_no_write(self, tmp_path, capsys):
         set_dry_run(True)
         p = tmp_path / "out.txt"
         write_text_file(p, "hello")
         assert not p.exists()
+        output = capsys.readouterr().out
+        assert "[dry run]" in output
+        assert str(p) in output.replace("\n", "")
+        assert "hello" in output
 
     def test_write_json_file(self, tmp_path):
         p = tmp_path / "out.json"
@@ -166,11 +170,15 @@ class TestWriteHelpers:
         data = json.loads(p.read_text())
         assert data == {"a": 1}
 
-    def test_write_json_file_dry_run_no_write(self, tmp_path):
+    def test_write_json_file_dry_run_no_write(self, tmp_path, capsys):
         set_dry_run(True)
         p = tmp_path / "out.json"
         write_json_file(p, {"a": 1})
         assert not p.exists()
+        output = capsys.readouterr().out
+        assert "[dry run]" in output
+        assert str(p) in output.replace("\n", "")
+        assert '"a": 1' in output
 
     def test_write_toml_file(self, tmp_path):
         p = tmp_path / "out.toml"
@@ -179,13 +187,17 @@ class TestWriteHelpers:
         write_toml_file(p, doc)
         assert "key" in p.read_text()
 
-    def test_write_toml_file_dry_run_no_write(self, tmp_path):
+    def test_write_toml_file_dry_run_no_write(self, tmp_path, capsys):
         set_dry_run(True)
         p = tmp_path / "out.toml"
         doc = tomlkit.document()
         doc.add("key", "val")
         write_toml_file(p, doc)
         assert not p.exists()
+        output = capsys.readouterr().out
+        assert "[dry run]" in output
+        assert str(p) in output.replace("\n", "")
+        assert 'key = "val"' in output
 
     def test_write_dotenv(self, tmp_path):
         p = tmp_path / ".env"

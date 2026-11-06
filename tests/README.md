@@ -1,11 +1,5 @@
 # Test suites and user journeys
 
-Orchestrator import guards clear inherited routing flags and the version selector,
-then explicitly reject CLI and Typer imports while requiring active workflow output.
-
-`test_skills.py` exercises bundled skill discovery and installation from both
-wheel and checkout directory layouts using real temporary files. This is component coverage.
-
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
@@ -324,6 +318,8 @@ Program Files lookup.
 Claude's native resolver tests remain in
 `test_agent_claude.py`; installation failures are covered in `test_agents_init.py`.
 These are component checks, not live Windows coverage for every agent.
+
+Orchestrator probes clear inherited routing flags and selectors, explicitly reject CLI/Typer imports, and require active workflow output. Resource tests install skills from real temporary wheel and checkout layouts. Dry-run writer checks retain displayed paths and content without writes.
 
 `TestEnsureDatabricksCliVersion` in `test_databricks.py`
 checks that repeated launch preflights reuse a successful CLI version probe, higher

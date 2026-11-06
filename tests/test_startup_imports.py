@@ -112,6 +112,7 @@ def test_cli_import_defers_subcommand_specific_modules() -> None:
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 def test_orchestrator_prompt_hook_skips_cli_imports(tmp_path, monkeypatch, agent) -> None:
     # Agents run this hook before every prompt is submitted.
+    # A conflicting inherited selector verifies that the child isolates its explicit flags.
     monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_only_v0")
     session = tmp_path / "env.json"
     session.write_text("{}", encoding="utf-8")
