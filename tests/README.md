@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+`test_launch_state_reads.py` covers shared setup reading the current selection once,
+reusing a destination snapshot for MCP, Copilot, and self-managed choices, and preserving
+custom OAuth and workspace selectors. It checks that later invocations see external
+state edits. These component checks do not measure live startup latency or agent readiness.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component

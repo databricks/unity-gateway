@@ -434,7 +434,9 @@ class TestConfigureSharedStateWorkspaceIsolation:
             lambda: {"workspace": source, SELF_MANAGED_AGENTS_KEY: list(source_list)},
         )
         # workspace_self_managed_agents reads the destination workspace's own persisted list.
-        monkeypatch.setattr("ucode.cli.workspace_self_managed_agents", lambda ws: list(dest_list))
+        monkeypatch.setattr(
+            "ucode.cli.workspace_self_managed_agents", lambda ws, **kwargs: list(dest_list)
+        )
         monkeypatch.setattr("ucode.cli.normalize_workspace_url", lambda ws: ws)
         monkeypatch.setattr("ucode.cli.build_shared_base_urls", lambda ws: {})
         monkeypatch.setattr("ucode.cli.find_profile_name_for_host", lambda ws: None)

@@ -631,7 +631,9 @@ def configure_shared_state(
     # login). --skip-preflight persists exactly this and returns, trusting a prior
     # `ug configure` — it already validated auth + the AI Gateway and saved the
     # model lists (carried over by load_state, left untouched).
-    state = load_state()
+    # Nothing above writes state. Reuse this invocation's selection rather than reading and
+    # rebuilding the same agent configuration a second time.
+    state = dict(prior_state)
     state["workspace"] = workspace
     if workspace_id:
         state["workspace_id"] = workspace_id
@@ -639,10 +641,12 @@ def configure_shared_state(
         state.pop("workspace_id", None)
     # After `load_state`, which selected the previous workspace.
     activate(workspace, workspace_id)
+    destination_state = None
     if previous_key != key:
         # Model discovery below refreshes the selected workspace. MCP selections are different:
         # they are user choices, so carry the destination's saved registry across a switch.
-        destination = load_full_state().get("workspaces", {}).get(key, {})
+        destination_state = load_full_state()
+        destination = destination_state.get("workspaces", {}).get(key, {})
         # managed_mcp_servers records what the source workspace delivered to user scope.
         # Keep it until reconciliation removes registrations the destination no longer wants.
         # The server-side web search choice is likewise per workspace.
@@ -651,20 +655,18 @@ def configure_shared_state(
                 state[field] = destination[field]
             else:
                 state.pop(field, None)
-    # `state` starts from the current workspace's block, so its self-managed list belongs to the
-    # source workspace. The opt-in is per workspace: replace it with the destination's own list.
-    dest_self_managed = workspace_self_managed_agents(key)
-    if dest_self_managed:
-        state[SELF_MANAGED_AGENTS_KEY] = dest_self_managed
-    else:
-        state.pop(SELF_MANAGED_AGENTS_KEY, None)
-    if previous_key != key:
-        dest_block = load_full_state().get("workspaces", {}).get(key, {})
-        dest_catalog = dest_block.get(copilot_agent.CATALOG_STATE_KEY)
+        dest_catalog = destination.get(copilot_agent.CATALOG_STATE_KEY)
         if dest_catalog:
             state[copilot_agent.CATALOG_STATE_KEY] = dest_catalog
         else:
             state.pop(copilot_agent.CATALOG_STATE_KEY, None)
+    # `state` starts from the current workspace's block, so its self-managed list belongs to the
+    # source workspace. The opt-in is per workspace: replace it with the destination's own list.
+    dest_self_managed = workspace_self_managed_agents(key, full_state=destination_state)
+    if dest_self_managed:
+        state[SELF_MANAGED_AGENTS_KEY] = dest_self_managed
+    else:
+        state.pop(SELF_MANAGED_AGENTS_KEY, None)
     if profile:
         state["profile"] = profile
     else:

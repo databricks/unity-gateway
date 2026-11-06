@@ -389,13 +389,15 @@ def is_self_managed(state: dict, tool: str) -> bool:
     return tool in self_managed_agents(state)
 
 
-def workspace_self_managed_agents(workspace: str) -> list[str]:
+def workspace_self_managed_agents(workspace: str, *, full_state: dict | None = None) -> list[str]:
     """The self-managed list persisted for ``workspace`` specifically (empty if none).
 
     The opt-in is per workspace, so a configure that switches workspaces must read the
     destination's own list rather than carry the source workspace's forward.
+    A caller already inspecting that destination can share its snapshot for this operation.
     """
-    workspaces = load_full_state().get("workspaces", {})
+    full = load_full_state() if full_state is None else full_state
+    workspaces = full.get("workspaces", {})
     block = workspaces.get(workspace)
     host, workspace_id = split_workspace_key(workspace)
     if block is None and workspace_id:
