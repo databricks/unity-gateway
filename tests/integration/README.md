@@ -1,5 +1,8 @@
 # Integration tests
 
+The configure-scope cases in `../test_cli.py` mock installation and authentication;
+they do not validate the native Databricks CLI installer.
+
 Background budget reads capture the launch's routing/attribution headers before
 starting. Component regressions in `../test_cli.py` and `../test_workspace_selection.py`
 verify that an abandoned worker cannot inherit a later invocation's headers or

@@ -1,5 +1,8 @@
 # Test suites and user journeys
 
+Configure-scope component tests stub Databricks CLI installation alongside workspace
+authentication, so policy assertions run without requiring an installed CLI on Windows.
+
 Background budget reads capture the launch's routing/attribution headers before
 starting. Component regressions in `test_cli.py` and `test_workspace_selection.py`
 verify that an abandoned worker cannot inherit a later invocation's headers or

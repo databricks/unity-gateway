@@ -6630,6 +6630,7 @@ class TestConfigureScopeFlags:
     def _single_agent_env(manifest, *, feature_disabled=False):
         """Stub the workspace login, managed read, and on-disk checks for --agent/--agents runs."""
         with contextlib.ExitStack() as stack:
+            stack.enter_context(patch("ucode.cli.install_databricks_cli"))
             stack.enter_context(
                 patch("ucode.agents.claude._managed_settings_path", return_value=None)
             )
