@@ -424,7 +424,12 @@ def arguments(
     parser.add_argument(
         "--claude-foundry-provider-model",
         default="claude-haiku-5-5",
-        help="Claude deployment allowed by the Microsoft Foundry MPS.",
+        help="Haiku deployment used by the Microsoft Foundry headless journey.",
+    )
+    parser.add_argument(
+        "--claude-foundry-provider-default-model",
+        default="claude-sonnet-5-5",
+        help="Sonnet deployment selected by a plain launch through the Microsoft Foundry MPS.",
     )
     parser.add_argument(
         "--claude-provider-model",
@@ -754,6 +759,7 @@ def main() -> int:
             "claude_relayed_provider": args.claude_relayed_provider,
             "claude_foundry_provider": args.claude_foundry_provider,
             "claude_foundry_provider_model": args.claude_foundry_provider_model,
+            "claude_foundry_provider_default_model": args.claude_foundry_provider_default_model,
             "claude_provider_model": args.claude_provider_model,
             "claude_bedrock_allow_all_provider": args.claude_bedrock_allow_all_provider,
             "claude_bedrock_allow_all_model": args.claude_bedrock_allow_all_model,
@@ -1073,6 +1079,7 @@ def main() -> int:
                 "UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER": args.claude_relayed_provider,
                 "UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER": args.claude_foundry_provider,
                 "UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER_MODEL": args.claude_foundry_provider_model,
+                "UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER_DEFAULT_MODEL": args.claude_foundry_provider_default_model,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_PROVIDER": args.claude_bedrock_provider,
                 "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN": oauth_token,
                 "UG_INTEGRATION_CLAUDE_PROVIDER_MODEL": args.claude_provider_model,

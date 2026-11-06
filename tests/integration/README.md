@@ -983,13 +983,15 @@ remains uncovered.
 MPS CUJs select the existing services already used by e2e:
 
 - Claude: `main.ucode.ci_e2e_anthropic_nonrelay_mps`.
-- Claude (Microsoft Foundry): `main.ucode.ci_foundry_claude_mps`, restricted to
-  `claude-haiku-5-5` on `anthropic/v1/messages`. `test_ug_claude_fresh_foundry_mps`
-  completes a headless file task from fresh state with an explicit provider and deployment.
+- Claude (Microsoft Foundry): `main.ucode.ci_foundry_claude_mps` declares
+  `claude-haiku-5-5` and `claude-sonnet-5-5` on `anthropic/v1/messages`, plus
+  `gpt-5.4` on `openai/v1/responses`. `test_ug_claude_fresh_foundry_mps`
+  completes a headless file task from fresh state with an explicit provider and Haiku deployment.
   `test_ug_configure_claude_foundry_mps` selects the service through the real configure picker,
-  verifies the saved provider and Haiku default, and completes a TUI file task with plain
+  verifies the saved provider and both family defaults, and completes a Sonnet TUI file task with plain
   `ug claude`. Override these inputs with `--claude-foundry-provider` and
-  `--claude-foundry-provider-model`; the configure journey requires a Haiku-named deployment.
+  `--claude-foundry-provider-model` (Haiku), and `--claude-foundry-provider-default-model`
+  (Sonnet). Both journeys run in the full Claude lanes on Linux and Windows.
 - Claude (relayed hybrid): `main.ucode.ci_e2e_anthropic_relay_mps`, which also
   requires `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) so the relayed
   launch runs headless instead of opening a browser login.
