@@ -1,13 +1,5 @@
 # Test suites and user journeys
 
-`test_skills_state.py` covers batch attribution reconciliation with indexed
-directories and install identities. It checks intra-batch ownership changes,
-duplicate historical owners, metastore separation,
-malformed-directory recovery during collisions and renames, and orphan cleanup within and across
-batches using real temporary files. These component checks establish reconciliation
-behavior, not normalization complexity
-or live download latency.
-
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
