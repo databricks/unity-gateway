@@ -628,9 +628,23 @@ def write_tool_config(
             enabled=False,
         )
         write_toml_file(CODEX_CONFIG_PATH, doc)
-    _reconcile_managed_config(
-        state, lambda base: compose(base, include_catalog=False), relayed=relayed
-    )
+
+    def compose_managed(base: dict) -> dict:
+        selected = base.get("model_provider")
+        compose(base, include_catalog=False)
+        if machine_wide_only():
+            return base
+        # A pinned default conflicts with the session proxy's provider and makes its TUI read-only.
+        if selected is None or str(selected).casefold() in (
+            CODEX_MODEL_PROVIDER_NAME.casefold(),
+            LEGACY_CODEX_MODEL_PROVIDER_NAME.casefold(),
+        ):
+            base.pop("model_provider", None)
+        else:
+            base["model_provider"] = selected
+        return base
+
+    _reconcile_managed_config(state, compose_managed, relayed=relayed)
     # Persisted so launch() wires the relay proxy and ChatGPT login; cleared on a non-relayed run.
     if relayed:
         state["codex_relayed"] = True
@@ -1993,6 +2007,7 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
 
     binary = SPEC["binary"]
     ensure_minimum_version("codex", lambda: minimum_version_error(smart_routing_enabled=True))
+    _check_smart_routing_proxy_config()
 
     configured_model = _smart_routing_config_model(state)
     # Prefer the custom catalog if it exists.
@@ -2009,6 +2024,30 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
         start_model=start_model,
         render_overlay=_render_launch_overlay,
     )
+
+
+def _check_smart_routing_proxy_config() -> None:
+    from ucode.smart_routing.codex_proxy import PROXY_PROVIDER
+
+    path = codex_managed_config_path()
+    text = read_managed_file(path) if path else None
+    if text is None:
+        return
+    managed = _parse_managed_config(text)
+    selected = managed.get("model_provider")
+    if isinstance(selected, str) and selected.casefold() in (
+        CODEX_MODEL_PROVIDER_NAME.casefold(),
+        LEGACY_CODEX_MODEL_PROVIDER_NAME.casefold(),
+    ):
+        raise RuntimeError(
+            f"Codex settings at {path} pin UG's default provider. Run `ug configure` "
+            "to update them before starting the Smart Router gateway proxy."
+        )
+    if selected is not None or PROXY_PROVIDER in managed.get("model_providers", {}):
+        raise RuntimeError(
+            f"Codex managed settings at {path} override the Smart Router proxy provider. "
+            "Ask your administrator to allow the launch-scoped provider before enabling smart routing."
+        )
 
 
 def disable_smart_routing(state: dict) -> bool:

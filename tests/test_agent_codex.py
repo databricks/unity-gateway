@@ -1989,10 +1989,41 @@ class TestCodexManagedConfig:
         codex.write_tool_config(state)
 
         doc = read_toml_safe(managed_path)
-        assert doc["model_provider"] == "Databricks"
+        assert "model_provider" not in doc
         assert "model" not in doc
         assert "Databricks" in doc["model_providers"]
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+
+    @pytest.mark.parametrize("selected", ["Databricks", "databricks", "ucode-databricks"])
+    def test_proxy_requires_migration_of_pinned_ug_default(self, tmp_path, monkeypatch, selected):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_path.parent.mkdir(parents=True)
+        managed_path.write_text(f'model_provider = "{selected}"\napproval_policy = "on-request"\n')
+        with pytest.raises(RuntimeError, match="ug configure"):
+            codex._check_smart_routing_proxy_config()
+        codex.write_tool_config({"workspace": WS})
+        codex._check_smart_routing_proxy_config()
+        assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+        managed = read_toml_safe(managed_path)
+        assert managed["approval_policy"] == "on-request"
+        assert managed["model_providers"]["Databricks"]["base_url"].startswith(WS)
+
+    @pytest.mark.parametrize(
+        "policy",
+        [
+            'model_provider = "enterprise"',
+            '[model_providers.DatabricksSmartRouter]\nbase_url = "https://enterprise.example"',
+        ],
+    )
+    def test_proxy_does_not_override_explicit_administrator_provider(
+        self, tmp_path, monkeypatch, policy
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_path.parent.mkdir(parents=True)
+        managed_path.write_text(policy)
+        codex.write_tool_config({"workspace": WS})
+        with pytest.raises(RuntimeError, match="administrator"):
+            codex._check_smart_routing_proxy_config()
 
     def test_global_flag_writes_only_managed_config(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
@@ -2098,7 +2129,7 @@ class TestCodexManagedConfig:
         )
 
         doc = read_toml_safe(managed_path)
-        assert doc["model_provider"] == "Databricks"
+        assert "model_provider" not in doc
         # requirements.toml ignores `model` and replaces the provider entry wholesale, so
         # launch-scoped headers must come from the environment instead of `-c`.
         assert "model" not in doc
@@ -2191,7 +2222,7 @@ class TestCodexManagedConfig:
 
         for path in (config_path, managed_path):
             doc = read_toml_safe(path)
-            assert doc["model_provider"] == "Databricks"
+            assert doc.get("model_provider") == ("Databricks" if path == config_path else None)
             assert doc["model_providers"]["Databricks"]["base_url"].startswith(WS)
             assert "auth" in doc["model_providers"]["Databricks"]
 
@@ -2425,7 +2456,8 @@ class TestCodexManagedConfig:
             codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
 
         assert len(sudo_writes) == 1
-        assert read_toml_safe(managed_path)["model_provider"] == codex.CODEX_MODEL_PROVIDER_NAME
+        assert "Databricks" in read_toml_safe(managed_path)["model_providers"]
+        assert "model_provider" not in read_toml_safe(managed_path)
 
     def test_headless_configure_fails_when_the_machine_file_cannot_be_written(
         self, tmp_path, monkeypatch
@@ -2449,9 +2481,7 @@ class TestCodexManagedConfig:
         assert "sudo: a password is required" in message
         assert "as root" in message and "`--user`" in message
 
-    def test_noninteractive_repairs_conflicting_managed_config_without_prompting(
-        self, tmp_path, monkeypatch
-    ):
+    def test_noninteractive_preserves_explicit_administrator_provider(self, tmp_path, monkeypatch):
         managed_path, sudo_writes = self._sudo_counting_env(
             tmp_path, monkeypatch, non_interactive=True
         )
@@ -2464,10 +2494,11 @@ class TestCodexManagedConfig:
 
         written = read_toml_safe(managed_path)
         local_provider = read_toml_safe(codex.CODEX_CONFIG_PATH)["model_providers"]["Databricks"]
-        assert written["model_provider"] == "Databricks"
+        assert written["model_provider"] == "enterprise"
         assert written["approval_policy"] == "on-request"
-        assert written["model_providers"]["Databricks"] == local_provider
-        assert len(sudo_writes) == 1
+        assert written == {"model_provider": "enterprise", "approval_policy": "on-request"}
+        assert local_provider["base_url"].startswith(WS)
+        assert sudo_writes == []
 
     def test_invalid_managed_toml_is_not_modified(self, tmp_path, monkeypatch):
         _, managed_path = self._patch(tmp_path, monkeypatch)
@@ -2513,7 +2544,7 @@ class TestCodexManagedConfig:
     ):
         _, managed_path = self._patch(tmp_path, monkeypatch)
         managed_path.parent.mkdir(parents=True, exist_ok=True)
-        managed_path.write_text('model_provider = "enterprise"\n', encoding="utf-8")
+        managed_path.write_text('model_provider = "Databricks"\n', encoding="utf-8")
         monkeypatch.setattr(codex, "managed_writes_allowed", lambda: interactive)
 
         def deny_managed_write(*args, **kwargs):

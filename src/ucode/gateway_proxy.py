@@ -85,6 +85,14 @@ _DEFAULT_TTL_S = 3600
 # and exception class names — never headers, bodies, or credentials.
 _DIAGNOSTICS_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS"
 
+RequestRewriter = Callable[[str, bytes | None], tuple[bytes | None, Mapping[str, str]]]
+
+
+class RequestRewriteError(Exception):
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
 
 def _diagnostics_enabled() -> bool:
     return env_bool(_DIAGNOSTICS_ENV)
@@ -520,8 +528,13 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     dropped_chat_completions_fields: frozenset[str]
     path_rewriter: Callable[[str], str] | None = None
     body_rewriter: Callable[[str, bytes], bytes] | None = None
+    request_rewriter: RequestRewriter | None = None
+    rewritten_headers: Mapping[str, str] = {}
 
     def _request_body(self, body: bytes | None) -> bytes | None:
+        self.rewritten_headers = {}
+        if self.request_rewriter is not None:
+            body, self.rewritten_headers = self.request_rewriter(self.path, body)
         if body and self.body_rewriter is not None:
             body = self.body_rewriter(self.path, body)
         if not body or not self.dropped_chat_completions_fields:
@@ -588,14 +601,25 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
                 self._reject(404, "This path is not served by the Unity Gateway proxy.")
                 return
             self.path = rewritten
-        super()._handle()
+        try:
+            super()._handle()
+        except RequestRewriteError as exc:
+            self._send_json_error(exc.status, str(exc))
 
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
-        added = frozenset(name.lower() for name in self.added_headers)
+        added = frozenset(name.lower() for name in self._added_headers())
         return self.token_header, _SESSION_CREDENTIAL_HEADERS | added, "gateway"
 
     def _added_headers(self) -> dict[str, str]:
-        return dict(self.added_headers)
+        replaced = {name.lower() for name in self.rewritten_headers}
+        return {
+            **{
+                name: value
+                for name, value in self.added_headers.items()
+                if name.lower() not in replaced
+            },
+            **self.rewritten_headers,
+        }
 
     def _on_refresh_failure(self, exc: RuntimeError) -> bool:
         self.cache.report_refresh_failure(exc)
@@ -736,6 +760,7 @@ def start_gateway_auth_proxy(
     allowed_path_prefixes: tuple[str, ...] = GATEWAY_MODEL_PATH_PREFIXES,
     path_rewriter: Callable[[str], str] | None = None,
     body_rewriter: Callable[[str, bytes], bytes] | None = None,
+    request_rewriter: RequestRewriter | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start a per-session proxy for agents that only hold a static credential.
 
@@ -744,7 +769,10 @@ def start_gateway_auth_proxy(
     ``added_headers``, after removing ``dropped_chat_completions_fields`` from Chat
     Completions request bodies. ``path_rewriter`` maps an accepted request path to the
     gateway path it is forwarded to, and ``body_rewriter(path, body)`` adjusts a request
-    body for the gateway. Binds an OS-assigned port, read from ``server.server_address[1]``.
+    body for the gateway. ``request_rewriter`` snapshots dynamic body and header changes
+    once per request, including across an authentication retry. It may raise
+    ``RequestRewriteError`` to reject a request without forwarding it.
+    Binds an OS-assigned port, read from ``server.server_address[1]``.
     """
     return _start_proxy(
         workspace,
@@ -764,6 +792,7 @@ def start_gateway_auth_proxy(
             # staticmethod: a plain function on the handler class would bind as a method.
             "path_rewriter": staticmethod(path_rewriter) if path_rewriter else None,
             "body_rewriter": staticmethod(body_rewriter) if body_rewriter else None,
+            "request_rewriter": staticmethod(request_rewriter) if request_rewriter else None,
         },
         on_refresh_failure=on_refresh_failure,
     )

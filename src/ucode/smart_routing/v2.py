@@ -46,7 +46,6 @@ from ucode.databricks import (
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
 )
-from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
@@ -904,11 +903,37 @@ def launch_codex(
     overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
         SESSION_PYTHON_ENV_VAR
     ]
+    from ucode.smart_routing.codex_proxy import session_proxy
+
+    with session_proxy(state, overlay, session_env_path) as (proxy_overlay, env):
+        returncode = _run_codex(
+            state, tool_args, binary, start_model, proxy_overlay, env, available_models
+        )
+    sys.exit(returncode)
+
+
+def _wait_codex(proc) -> int:
+    while True:
+        try:
+            return proc.wait()
+        except KeyboardInterrupt:
+            # The terminal signals Codex too; keep its proxy alive until Codex exits.
+            continue
+
+
+def _run_codex(
+    state: dict,
+    tool_args: list[str],
+    binary: str,
+    start_model: str,
+    overlay: dict,
+    env: dict,
+    available_models: list[str],
+) -> int:
     config_args = codex_config_args(overlay)
     if not first_prompt_routing_enabled(agent=AGENT_CODEX):
-        # Subagent-only routing needs neither the app-server nor the interposer:
-        # the hooks ride in the CLI config, so launch the TUI directly.
-        exec_or_spawn([binary, *config_args, *tool_args])
+        return _wait_codex(subprocess_cross_os.popen([binary, *config_args, *tool_args], env=env))
+    workspace = state["workspace"]
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
 
@@ -919,7 +944,7 @@ def launch_codex(
     # preferences) and layer only ucode's gateway settings at CLI precedence.
     app_server = subprocess_cross_os.popen(
         [binary, "app-server", *config_args, "--listen", app_server_url],
-        env=os.environ.copy(),
+        env=env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -940,24 +965,14 @@ def launch_codex(
             log_path=CODEX_INTERPOSER_LOG,
         )
         tui_url = _loopback_websocket_url(tui_port)
-        provider_args = []
-        if os.name == "nt":
-            # Windows has no machine-wide Codex config for the remote TUI to inherit.
-            provider_args = codex_config_args(
-                {
-                    key: overlay[key]
-                    for key in ("model_provider", "model_providers")
-                    if key in overlay
-                }
-            )
-        tui = subprocess_cross_os.popen(
-            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
+        provider_args = codex_config_args(
+            {key: overlay[key] for key in ("model_provider", "model_providers")}
         )
-        try:
-            returncode = tui.wait()
-        except KeyboardInterrupt:
-            tui.send_signal(signal.SIGINT)
-            returncode = tui.wait()
+        tui = subprocess_cross_os.popen(
+            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args],
+            env=env,
+        )
+        return _wait_codex(tui)
     finally:
         if stop_interposer is not None:
             stop_interposer()
@@ -966,4 +981,4 @@ def launch_codex(
             app_server.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
         except Exception:  # noqa: BLE001
             app_server.kill()
-    sys.exit(returncode)
+            app_server.wait()

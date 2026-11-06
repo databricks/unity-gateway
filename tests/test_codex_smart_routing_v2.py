@@ -43,6 +43,17 @@ def test_smart_routing_switch_message_wraps_to_fixed_width():
 
 
 class TestLaunchCodex:
+    def test_terminal_interrupts_keep_proxy_owner_waiting_for_codex_exit(self):
+        outcomes = iter([KeyboardInterrupt(), KeyboardInterrupt(), 7])
+
+        def wait():
+            outcome = next(outcomes)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+        assert v2._wait_codex(SimpleNamespace(wait=wait)) == 7
+
     @pytest.mark.parametrize(
         ("installed_version", "accept_upgrade", "upgraded_version", "auto_upgrade"),
         [
@@ -249,9 +260,7 @@ class TestLaunchCodex:
                 assert path.read_text() == content
         assert codex._smart_routing_config_model({"codex_default_model": "admin"}) == "admin"
 
-    @pytest.mark.parametrize(
-        ("platform_name", "tui_has_provider"), [("posix", False), ("nt", True)]
-    )
+    @pytest.mark.parametrize(("platform_name", "tui_has_provider"), [("posix", True), ("nt", True)])
     def test_owns_app_server_interposer_and_tui_lifecycle(
         self, tmp_path, monkeypatch, platform_name, tui_has_provider
     ):
@@ -327,12 +336,12 @@ class TestLaunchCodex:
             "codex",
             "app-server",
             "--config",
-            'model_provider="Databricks"',
+            'model_provider="DatabricksSmartRouter"',
             "--config",
             'model="gpt-start"',
             "--config",
         ]
-        assert processes[0].argv[7].startswith("model_providers.Databricks={")
+        assert processes[0].argv[7].startswith("model_providers.DatabricksSmartRouter={")
         assert processes[0].argv[8] == "--config"
         hook_override = processes[0].argv[9]
         assert hook_override.startswith("hooks.PreToolUse=[{")
@@ -384,7 +393,7 @@ class TestLaunchCodex:
             assert tui_argv[:4] == [
                 "codex",
                 "--config",
-                'model_provider="Databricks"',
+                'model_provider="DatabricksSmartRouter"',
                 "--config",
             ]
             assert tui_argv[4] == processes[0].argv[7]
@@ -398,9 +407,9 @@ class TestLaunchCodex:
             "system.ai.glm-5-2",
         ]
         assert interposer_args["kwargs"]["workspace"] == WS
-        assert token_calls == [(WS, "myprof")]
-        assert interposer_args["kwargs"]["token_provider"]() == "token-2"
         assert token_calls == [(WS, "myprof"), (WS, "myprof")]
+        assert interposer_args["kwargs"]["token_provider"]() == "token-3"
+        assert token_calls == [(WS, "myprof"), (WS, "myprof"), (WS, "myprof")]
         assert interposer_args["kwargs"]["switch_message_fn"] is v2.format_routing_notice
         assert stopped == [True]
         assert processes[0].terminated is True
@@ -453,7 +462,9 @@ class TestLaunchCodex:
             )
 
         provider_arg = next(
-            arg for arg in processes[0].argv if arg.startswith("model_providers.Databricks=")
+            arg
+            for arg in processes[0].argv
+            if arg.startswith("model_providers.DatabricksSmartRouter=")
         )
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
@@ -472,22 +483,19 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr(
-            v2.subprocess,
-            "Popen",
-            lambda *_args, **_kwargs: pytest.fail("subagent-only routing spawns no app-server"),
-        )
-        monkeypatch.setattr(
             codex_interposer,
             "start_interposer_thread",
             lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not interpose"),
         )
         execd = []
 
-        def fake_exec(argv):
+        def launch_tui(argv, **kwargs):
             execd.append(argv)
-            raise SystemExit(0)
+            assert "--remote" not in argv and "app-server" not in argv
+            assert kwargs["env"]["UG_CODEX_ROUTING_PROXY_KEY"]
+            return SimpleNamespace(wait=lambda: 0)
 
-        monkeypatch.setattr(v2, "exec_or_spawn", fake_exec)
+        monkeypatch.setattr(v2.subprocess, "Popen", launch_tui)
 
         with pytest.raises(SystemExit) as exc:
             v2.launch_codex(

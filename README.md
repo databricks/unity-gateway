@@ -65,7 +65,7 @@ When Claude Code or Codex is older than the minimum version `ug` supports, `ug`
 asks before upgrading it in place. Set `UG_AUTO_UPGRADE_AGENT=1` to upgrade
 without asking, for example from a launcher that manages the agent install.
 
-Codex smart routing now requires 0.164.0, including existing managed-enabled
+Codex smart routing requires 0.164.0, including existing managed-enabled
 workspaces. See the [compatibility and upgrade note](#codex-smart-routing-compatibility)
 for upgrading or launching with `--disable-smart-routing`.
 
@@ -531,7 +531,7 @@ With first-prompt routing on, an explicit model still skips routing.
 
 ### Codex smart-routing compatibility
 
-Smart routing now requires Codex 0.164.0
+Smart routing requires Codex 0.164.0
 or newer, including workspaces that already enable managed smart routing. Users on
 Codex 0.145–0.163 who previously launched successfully must upgrade or explicitly
 run `ug codex --disable-smart-routing`. UG offers its usual upgrade prompt for a
@@ -540,7 +540,7 @@ remaining below 0.164.0 after the upgrade keeps the routed launch blocked. This
 intentional requirement ensures native v2 provides readable delegated assignments;
 UG does not silently disable routing. Ordinary launches still support Codex 0.145.0
 and newer. The general integration CI baseline remains 0.154.0; routing cases use
-0.165.0.
+0.165.0. The gateway proxy does not raise either version requirement.
 
 An inconclusive Codex version probe is retried once with a longer timeout. If the
 version is still unknown, UG stops without offering or running an update and asks
@@ -552,9 +552,21 @@ For a routed launch, UG's `-c` overrides take precedence over saved values for
 `features.multi_agent_v2.root_agent_usage_hint_text`, and
 `features.multi_agent_v2.subagent_usage_hint_text` (set to UG's collaboration guidance).
 Custom values for these fields do not apply during that session. The saved config
-files are unchanged, as are native delegation-mode controls. Requests use the
-configured Databricks provider directly. Subagent-only routing launches the native
-TUI directly; first-prompt routing uses the existing app-server interposer.
+files are unchanged, as are native delegation-mode controls. Smart-routed inference
+uses a [per-session gateway proxy](docs/codex-routing-proxy.md). `$smart-router off/on`
+updates the recipe in the header and body of subsequent requests from the main agent
+and existing/new children. It does not reload conversations or interrupt commands.
+Requests already in flight retain their original attribution. The proxy also translates
+Codex's plaintext agent messages for Kimi, GLM and DeepSeek so assignments,
+follow-ups and child results survive the gateway's Responses-to-Chat conversion.
+GPT requests retain native agent messages.
+
+Run `ug configure` once after upgrading to migrate an old UG-managed provider
+default. The proxy uses a launch-only provider; its port and credential are never
+written to Codex settings. Subagent-only presets launch the native TUI directly;
+first-prompt routing retains its existing app-server control interposer.
+The managed default remains Claude-only; Codex routing requires an explicit
+Codex-enabled preset.
 
 ### Smart Router Orchestrator
 

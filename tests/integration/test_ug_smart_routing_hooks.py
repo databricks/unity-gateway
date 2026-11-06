@@ -22,12 +22,16 @@ from utils.evidence import (
     assert_subagent_routed,
     assistant_answers,
     codex_routing_display_for_task,
+    fresh_id,
     is_child_session,
     read_jsonl,
-    tool_outputs,
 )
 from utils.harness import ANSI
-from utils.managed import MANAGED_CONFIG_FIXTURES, use_smart_routing_fixture
+from utils.managed import (
+    MANAGED_CONFIG_FIXTURES,
+    use_managed_config_fixture,
+    use_smart_routing_fixture,
+)
 from utils.request_recorder import TuiRequestRecorder, served_inference_request
 from utils.terminal import AgentTerminal, codex_command_approval_pending
 
@@ -204,7 +208,6 @@ def _toggle_with_skill(
 
     state = "on" if enabled else "off"
     invocation = f"/smart-router {state}" if agent == "claude" else f"$smart-router {state}"
-    confirmation = f"Smart Router is {state} for this session"
     if agent == "claude":
         # Claude's mod handles this locally; routing changes are checked by the next child.
         tui.submit(invocation)
@@ -228,16 +231,15 @@ def _toggle_with_skill(
     )
     assert json.loads(controls[0].read_text()) != expected
 
-    def completion_counts():
-        answers = confirmations = 0
+    def answer_count():
+        answers = 0
         for path, records in agent_sessions(session, agent).items():
             if is_child_session(agent, path, records):
                 continue
             answers += len(assistant_answers(agent, records))
-            confirmations += sum(confirmation in output for output in tool_outputs(agent, records))
-        return answers, confirmations
+        return answers
 
-    before_answers, before_confirmations = completion_counts()
+    before_answers = answer_count()
     tui.submit(invocation)
     approval_sent = False
     flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
@@ -259,11 +261,11 @@ def _toggle_with_skill(
         except PermissionError:
             # Windows denies reads while ug replaces the controls file; try again next frame.
             return False
-        answers, confirmations = completion_counts()
+        answers = answer_count()
         return (
             controls_now == expected
-            and confirmations > before_confirmations
             and answers > before_answers
+            and "esc to interrupt" not in screen.lower()
         )
 
     tui.wait_for(
@@ -456,6 +458,7 @@ CODEX_SMART_ROUTER_VERSIONS = pytest.mark.parametrize(
         (False, "subagent_only_v0"),
         (False, "subagent_only_v1"),
         (True, "subagent_orch_v0"),
+        (True, "subagent_orch_v1"),
     ],
     ids=[
         "routing-only",
@@ -463,6 +466,7 @@ CODEX_SMART_ROUTER_VERSIONS = pytest.mark.parametrize(
         "subagent_only_v0",
         "subagent_only_v1",
         "subagent_orch_v0",
+        "subagent_orch_v1",
     ],
 )
 
@@ -878,8 +882,8 @@ def test_smart_router_routes_codex_subagent_at_launch(
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
     Smart Router Orchestrator. The uniquely tagged calculation completes in a native child
     session, shows the subagent-routing banner (including [orchestrator on] when orchestration
-    is enabled), and produces one live gateway decision correlated with that child. No
-    first-prompt interposer starts.
+    is enabled), and produces one live gateway decision correlated with that child.
+    The native TUI runs without a control interposer.
     """
     session = live_session
     _select_smart_router_version(
@@ -901,7 +905,7 @@ def test_smart_router_routes_codex_subagent_at_launch(
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
-    session.assert_not_routed()
+    assert not (session.home / ".ucode/codex-v2-interposer.log").exists()
 
 
 @pytest.mark.live
@@ -916,11 +920,10 @@ def test_smart_router_skill_turns_codex_subagent_routing_off(
     Smart Router skill to turn routing off, then spawn a child in the same real TUI session.
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
-    Smart Router Orchestrator. The invocation records the CLI confirmation in the native
-    transcript and changes the saved routing controls, even with collapsed terminal output.
+    Smart Router Orchestrator. The invocation changes the saved routing controls,
+    keeps the conversation running, and produces a parent answer.
     The uniquely tagged calculation completes in a native child session, shows no
-    subagent-routing banner, and produces no live gateway decision. No first-prompt
-    interposer starts.
+    subagent-routing banner, and produces no live gateway decision. No control interposer starts.
     """
     session = live_session
     _select_smart_router_version(
@@ -945,7 +948,7 @@ def test_smart_router_skill_turns_codex_subagent_routing_off(
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
-    session.assert_not_routed()
+    assert not (session.home / ".ucode/codex-v2-interposer.log").exists()
 
 
 @pytest.mark.live
@@ -961,12 +964,13 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
     and spawn a third child in the same real TUI session.
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
-    Smart Router Orchestrator. Each invocation records the CLI confirmation in the native
-    transcript and changes the saved routing controls (off, then restored), even with collapsed
-    terminal output. Each uniquely tagged calculation completes in a native child session. The
+    Smart Router Orchestrator. Each invocation changes the saved routing controls
+    (off, then restored), keeps the conversation running, and produces a parent answer.
+    Each uniquely tagged calculation completes in a native child session. The
     first and third show the subagent-routing banner (including [orchestrator on] when
     orchestration is enabled) and produce one live gateway decision correlated with that child;
-    the second shows no banner and produces no decision. No first-prompt interposer starts.
+    the second shows no banner and produces no decision. No control interposer starts.
+    The subagent_orch_v1 case also passes the explicit --enable-smart-routing launch flag.
     """
     session = live_session
     _select_smart_router_version(
@@ -980,8 +984,14 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
+    launch_flags = (
+        ["--enable-smart-routing"] if SMART_ROUTER_CONFIG_VERSION == "subagent_orch_v1" else []
+    )
     with AgentTerminal(
-        session, "codex", [str(session.binary), "codex"], "smart-router-skill-back-on"
+        session,
+        "codex",
+        [str(session.binary), "codex", *launch_flags],
+        "smart-router-skill-back-on",
     ) as tui:
         tui.boot()
         _run_calculation(tui, session, "codex", "1+1", "2", orchestration_enabled, routed=True)
@@ -997,7 +1007,626 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
-    session.assert_not_routed()
+    assert not (session.home / ".ucode/codex-v2-interposer.log").exists()
+
+
+def _codex_thread_ids(session) -> dict[str, str]:
+    threads = {}
+    for records in agent_sessions(session, "codex").values():
+        for row in records:
+            if row.get("type") != "session_meta":
+                continue
+            meta = row["payload"]
+            source = meta.get("source")
+            spawn = (
+                source.get("subagent", {}).get("thread_spawn", {})
+                if isinstance(source, dict)
+                else {}
+            )
+            threads[spawn.get("agent_path", "/root")] = meta["id"]
+            break  # Later metadata can belong to inherited parent history.
+    return threads
+
+
+def _codex_thread_answered(session, thread_id: str, marker: str) -> bool:
+    for records in agent_sessions(session, "codex").values():
+        metadata = next(
+            (row["payload"] for row in records if row.get("type") == "session_meta"), {}
+        )
+        if metadata.get("id") == thread_id:
+            return any(marker in answer for answer in assistant_answers("codex", records))
+    return False
+
+
+def _assert_codex_inference_recipes(session, recorder, checkpoint, thread_ids, recipe):
+    requests = recorder.requests_after(checkpoint)
+    inferences = [
+        request
+        for request in requests
+        if request.method == "POST"
+        and request.path.endswith("/responses")
+        and request.headers.get("thread-id") in thread_ids
+    ]
+    assert inferences, (thread_ids, checkpoint)
+    assert {request.headers["thread-id"] for request in inferences} == set(thread_ids)
+    evidence = []
+    for request in inferences:
+        metadata = request.payload.get("client_metadata", {}).get("x-codex-turn-metadata", {})
+        metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
+        evidence.append(
+            {
+                "sequence": request.sequence,
+                "thread_id": request.headers["thread-id"],
+                "model": request.payload.get("model"),
+                "header_recipe": request.headers.get("databricks-smart-router-recipe"),
+                "body_recipe": metadata.get("smart_router_recipe_name"),
+            }
+        )
+    session.record(f"inference-recipes-after-{checkpoint}.json", evidence)
+    for request, fields in zip(inferences, evidence, strict=True):
+        assert fields["header_recipe"] == recipe, fields
+        assert fields["body_recipe"] == recipe, fields
+        served_inference_request(recorder, requests, request, "codex")
+    return evidence
+
+
+@pytest.mark.live
+@pytest.mark.codex
+@pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
+def test_smart_router_codex_delivers_tasks_and_followups_to_two_kimi_children(
+    live_session, workspace, tmp_path
+):
+    """Scenario: turn routing off, assign two explicit Kimi children file tasks, then turn on
+    and give the same children new tasks through followup_task.
+
+    Expected: both children receive their distinct assignments as standard message input on
+    the wire, complete their own file reads, and complete follow-ups under their original IDs.
+    Native history retains agent_message items. Recipe attribution follows both toggle states.
+    Explicit child models while routing is off isolate message delivery from router selection.
+    """
+    session = live_session
+    session.env["TMPDIR"] = str(tmp_path)
+    use_managed_config_fixture(session, "codex_smart_routing_kimi")
+    session.env["SMART_ROUTER_CONFIG_VERSION"] = "subagent_only_v1"
+    tasks = {name: FileTask(session) for name in ("alpha", "beta")}
+    with TuiRequestRecorder(workspace) as recorder:
+        session.run(
+            "configure",
+            "--workspace",
+            recorder.url,
+            "--skip-upgrade",
+            "--disable-databricks-ai-tools",
+        )
+        with AgentTerminal(
+            session, "codex", [str(session.binary), "codex"], "kimi-assignments"
+        ) as tui:
+            tui.boot()
+            _toggle_with_skill(tui, session, "codex", enabled=False, orchestration_enabled=False)
+            checkpoint = recorder.checkpoint()
+            assignments = {
+                name: task.prompt + " Do not delegate or do other work."
+                for name, task in tasks.items()
+            }
+            tui.submit(
+                "Spawn exactly two native children with the following task names and exact messages: "
+                + json.dumps(assignments)
+                + '. Set fork_turns="none" and model="system.ai.kimi-k3" on each spawn. '
+                "Do not read their files yourself. After spawning both, end your turn without waiting."
+            )
+            tui.wait_for(
+                lambda _: (
+                    len(
+                        {
+                            r.headers.get("thread-id")
+                            for r in recorder.requests_after(checkpoint)
+                            if r.method == "POST"
+                            and r.path.endswith("/responses")
+                            and r.payload.get("model") == "system.ai.kimi-k3"
+                        }
+                    )
+                    == 2
+                ),
+                "first inference from both Kimi children",
+                timeout=120,
+            )
+            for name, task in tasks.items():
+                child_requests = [
+                    r
+                    for r in recorder.requests_after(checkpoint)
+                    if r.method == "POST"
+                    and r.path.endswith("/responses")
+                    and r.payload.get("model") == "system.ai.kimi-k3"
+                    and task.filename in json.dumps(r.payload.get("input"))
+                ]
+                assert child_requests, name
+                assert all(
+                    any(
+                        item.get("type") == "message"
+                        and item.get("role") == "user"
+                        and task.filename in json.dumps(item.get("content"))
+                        for item in request.payload["input"]
+                    )
+                    for request in child_requests
+                ), f"Assignment for {name} is missing from standard message input"
+            tui.wait_for(
+                lambda _: all(
+                    task.completed(session, "codex", child=True) for task in tasks.values()
+                ),
+                "both Kimi children's own file answers",
+                timeout=120,
+            )
+            threads = _codex_thread_ids(session)
+            assert set(threads) == {"/root", "/root/alpha", "/root/beta"}, threads
+            for name, task in tasks.items():
+                assert _codex_thread_answered(session, threads[f"/root/{name}"], task.value)
+            _assert_codex_inference_recipes(
+                session, recorder, checkpoint, set(threads.values()), "DISABLED"
+            )
+
+            _toggle_with_skill(tui, session, "codex", enabled=True, orchestration_enabled=False)
+            checkpoint = recorder.checkpoint()
+            followups = {name: FileTask(session) for name in tasks}
+            tui.submit(
+                "Use followup_task for each existing child with these exact assignments: "
+                + json.dumps(
+                    {
+                        name: task.prompt + " Do not delegate or do other work."
+                        for name, task in followups.items()
+                    }
+                )
+                + ". Do not spawn new children or read their files yourself. After sending both, end your turn without waiting."
+            )
+            tui.wait_for(
+                lambda _: all(
+                    _codex_thread_answered(session, threads[f"/root/{name}"], task.value)
+                    for name, task in followups.items()
+                ),
+                "both original Kimi children complete follow-ups",
+                timeout=120,
+            )
+            assert _codex_thread_ids(session) == threads
+            _assert_codex_inference_recipes(
+                session, recorder, checkpoint, set(threads.values()), "stable"
+            )
+            for records in agent_sessions(session, "codex").values():
+                if any(
+                    row.get("type") == "session_meta"
+                    and isinstance(row.get("payload", {}).get("source"), dict)
+                    for row in records
+                ):
+                    assert any(
+                        row.get("payload", {}).get("type") == "agent_message" for row in records
+                    )
+            session.record("kimi-thread-identities.json", threads)
+            tui.exit_normally()
+
+
+@pytest.mark.live
+@pytest.mark.codex
+@pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
+def test_smart_router_codex_resumes_history_after_proxy_restart(live_session, workspace, tmp_path):
+    """Scenario: exit a routed Codex session, relaunch, and use the native /resume picker.
+
+    Expected: the saved conversation resumes under its original ID, remembers the previous
+    turn, and sends inference through the new proxy with matching header/body attribution.
+    """
+    session = live_session
+    _select_smart_router_version(session, "codex", workspace, tmp_path, False, "subagent_only_v1")
+    marker = fresh_id()
+    with TuiRequestRecorder(workspace) as recorder:
+        session.run(
+            "configure",
+            "--workspace",
+            recorder.url,
+            "--skip-validate",
+            "--skip-upgrade",
+            "--disable-databricks-ai-tools",
+        )
+        with AgentTerminal(
+            session, "codex", [str(session.binary), "codex"], "before-restart"
+        ) as tui:
+            tui.boot()
+            tui.submit(
+                f"Remember secret word saved-{marker}. Reply exactly saved-{marker}. Do not use tools or delegate."
+            )
+            tui.wait_for(
+                lambda _: (
+                    "/root" in _codex_thread_ids(session)
+                    and _codex_thread_answered(
+                        session, _codex_thread_ids(session)["/root"], f"saved-{marker}"
+                    )
+                ),
+                "first conversation answer",
+                timeout=120,
+            )
+            thread_id = _codex_thread_ids(session)["/root"]
+            tui.exit_normally()
+        checkpoint = recorder.checkpoint()
+        with AgentTerminal(
+            session, "codex", [str(session.binary), "codex"], "after-restart"
+        ) as tui:
+            tui.boot()
+            tui.submit("/resume")
+            tui.wait_for(
+                lambda screen: "Resume a previous session" in screen, "native resume picker"
+            )
+            tui.send("\r", "resume saved conversation")
+            tui.wait_for(
+                lambda screen: f"saved-{marker}" in screen, "saved conversation transcript"
+            )
+            tui.submit(
+                "What secret word did I ask you to remember? Reply recalled- followed by the exact secret word. Do not use tools or delegate."
+            )
+            tui.wait_for(
+                lambda _: _codex_thread_answered(session, thread_id, f"recalled-saved-{marker}"),
+                "resumed conversation remembers prior turn",
+                timeout=120,
+            )
+            evidence = _assert_codex_inference_recipes(
+                session, recorder, checkpoint, {thread_id}, "stable"
+            )
+            session.record("resumed-inference.json", evidence)
+            tui.exit_normally()
+
+
+@pytest.mark.live
+@pytest.mark.codex
+@pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
+def test_smart_router_codex_agent_navigation_preserves_running_child(
+    live_session, workspace, tmp_path
+):
+    """Scenario: open a running child and return to the main agent without a routing toggle.
+
+    Expected: navigation never reloads the tree, interrupts the command, or injects a
+    routing continuation. The original child completes its command exactly once and
+    answers under its original ID; the parent accepts another turn. Reproduces on 0.167.0.
+    """
+    session = live_session
+    _select_smart_router_version(session, "codex", workspace, tmp_path, True, "subagent_orch_v1")
+    native_config = session.home / ".codex/config.toml"
+    native_config.parent.mkdir(parents=True, exist_ok=True)
+    native_config.write_text('approval_policy = "never"\nsandbox_mode = "workspace-write"\n')
+    session.run(
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-validate",
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    )
+    marker = fresh_id()
+    gate = session.cwd / "navigation-gate.py"
+    python = session.binary.with_name("python.exe" if os.name == "nt" else "python")
+    gate.write_text(
+        "import os, time\nfrom pathlib import Path\n"
+        "root = Path(__file__).parent\n"
+        "with (root / 'command-starts').open('a') as starts: starts.write(str(os.getpid()) + '\\n')\n"
+        "deadline = time.monotonic() + 180\n"
+        "while not (root / 'release-child').exists():\n"
+        "    if time.monotonic() >= deadline: raise TimeoutError('child gate')\n"
+        "    time.sleep(0.05)\n"
+        "(root / 'command-finished').write_text(str(os.getpid()))\n"
+        f"print('child-done-{marker}')\n"
+    )
+    assignment = (
+        f"Run {json.dumps(str(python))} {json.dumps(str(gate))} with no arguments. "
+        f"Wait for it to finish, then reply child-done-{marker} as your FINAL answer and END "
+        "your turn. Do not send_message or wait for another assignment afterward."
+    )
+    (session.cwd / "assignment.txt").write_text(assignment)
+    with AgentTerminal(
+        session, "codex", [str(session.binary), "codex"], "routing-navigation"
+    ) as tui:
+
+        def select_agent(label):
+            heading = "Select an agent to watch"
+
+            def selection():
+                menu = tui.visible.partition(heading)[2]
+                return next(
+                    (line.strip() for line in menu.splitlines() if line.lstrip().startswith("›")),
+                    "",
+                )
+
+            tui.submit("/subagents")
+            tui.wait_for(lambda _: selection(), "subagent picker")
+            for _ in range(2):
+                current = selection()
+                if label in current:
+                    tui.send("\r", f"view {label}")
+                    tui.wait_for(lambda screen: heading not in screen, f"opened {label}")
+                    return
+                tui.send("\x1b[B", f"move towards {label}")
+                tui.wait_for(lambda _, before=current: selection() != before, "next subagent row")
+            raise AssertionError(f"Subagent picker does not offer {label}:\n{tui.visible}")
+
+        tui.boot()
+        tui.submit(
+            'Read assignment.txt. Spawn exactly one native child named nav_worker with fork_turns="none", '
+            "using its contents as the exact assignment. "
+            f"Root: after spawning, reply root-ready-{marker} and END your turn without waiting. "
+            "This explicit instruction overrides orchestration ownership for this navigation test."
+        )
+        tui.wait_for(
+            lambda _: (
+                (session.cwd / "command-starts").exists()
+                and "/root" in _codex_thread_ids(session)
+                and _codex_thread_answered(
+                    session, _codex_thread_ids(session)["/root"], f"root-ready-{marker}"
+                )
+            ),
+            "running child command with idle parent",
+            timeout=180,
+        )
+        initial = _codex_thread_ids(session)
+        assert set(initial) == {"/root", "/root/nav_worker"}, initial
+        starts = (session.cwd / "command-starts").read_text().splitlines()
+        assert len(starts) == 1, starts
+        interposer_log = session.home / ".ucode/codex-v2-interposer.log"
+        select_agent("nav_worker")
+        tui.wait_for(
+            lambda screen: "esc to interrupt" in screen.lower() or "unavailable" in screen.lower(),
+            "running child view",
+        )
+        assert not interposer_log.exists()
+        assert not (session.cwd / "command-finished").exists()
+        select_agent("Main")
+        tui.wait_for(lambda screen: f"root-ready-{marker}" in screen, "original parent view")
+        assert not interposer_log.exists()
+
+        (session.cwd / "release-child").write_text("release")
+        tui.wait_for(
+            lambda _: _codex_thread_answered(
+                session, initial["/root/nav_worker"], f"child-done-{marker}"
+            ),
+            "original child's final answer",
+            timeout=180,
+        )
+        assert (session.cwd / "command-starts").read_text().splitlines() == starts
+        assert (session.cwd / "command-finished").read_text() == starts[0]
+        tui.submit(f"Reply exactly parent-alive-{marker}. Do not use tools or delegate.")
+        tui.wait_for(
+            lambda _: _codex_thread_answered(session, initial["/root"], f"parent-alive-{marker}"),
+            "parent answer after navigation",
+            timeout=120,
+        )
+        assert _codex_thread_ids(session) == initial
+        assert not interposer_log.exists()
+        for records in agent_sessions(session, "codex").values():
+            assert not any(row.get("payload", {}).get("type") == "turn_aborted" for row in records)
+            assert "The controller reloaded this conversation" not in json.dumps(records)
+        session.record("navigation-thread-identities.json", initial)
+        tui.exit_normally()
+
+
+@pytest.mark.live
+@pytest.mark.codex
+@pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
+@pytest.mark.parametrize("child_catalog", ["default", "kimi"])
+def test_smart_router_codex_proxy_updates_running_parent_and_child_inference(
+    live_session, workspace, tmp_path, child_catalog
+):
+    """Scenario: toggle off from the main agent with two children running, then on with three.
+
+    Expected: every subsequent parent/child inference carries the new recipe in body metadata
+    and the header. Original IDs, commands and permissions survive without any interruption
+    or reload; busy children complete their own answers and newly spawned children inherit
+    the current recipe. The Kimi catalog case requires actual router-selected Kimi children.
+    Requires real gateway responses and a normal TUI exit.
+    """
+    session = live_session
+    _select_smart_router_version(session, "codex", workspace, tmp_path, True, "subagent_orch_v1")
+    if child_catalog == "kimi":
+        use_managed_config_fixture(session, "codex_smart_routing_kimi")
+    # User-owned native preferences must survive configure and both toggles.
+    native_config = session.home / ".codex/config.toml"
+    native_config.parent.mkdir(parents=True, exist_ok=True)
+    native_config.write_text('approval_policy = "never"\nsandbox_mode = "workspace-write"\n')
+    marker = fresh_id()
+    python = session.binary.with_name("python.exe" if os.name == "nt" else "python")
+
+    def assignment(phase, name):
+        gate = session.cwd / f"{phase}-{name}-gate.py"
+        gate.write_text(
+            "import os, time\nfrom pathlib import Path\n"
+            "root = Path(__file__).parent\n"
+            f"with (root / '{phase}-{name}-ready').open('a') as f: f.write(str(os.getpid()) + '\\n')\n"
+            "deadline = time.monotonic() + 180\n"
+            f"while not (root / 'release-{phase}').exists():\n"
+            "    if time.monotonic() >= deadline: raise TimeoutError('child gate')\n"
+            "    time.sleep(0.05)\n"
+            f"(root / '{phase}-{name}-finished').write_text(str(os.getpid()))\n"
+            f"print('child-{phase}-{name}-{marker}')\n"
+        )
+        return (
+            f"Run {json.dumps(str(python))} {json.dumps(str(gate))} with no arguments. "
+            f"Wait for the command to finish, then output child-{phase}-{name}-{marker} "
+            "as your FINAL assistant answer and END your turn. "
+            "Do not send_message or wait for another assignment afterward."
+        )
+
+    def assert_commands_survived(phase, names):
+        for name in names:
+            starts = (session.cwd / f"{phase}-{name}-ready").read_text().splitlines()
+            assert len(starts) == 1, starts
+            assert (session.cwd / f"{phase}-{name}-finished").read_text() == starts[0]
+
+    def children_ready(phase, names):
+        return all((session.cwd / f"{phase}-{name}-ready").exists() for name in names)
+
+    def children_finished(phase, threads):
+        return all(
+            _codex_thread_answered(
+                session, tid, f"child-{phase}-{path.rsplit('/', 1)[-1]}-{marker}"
+            )
+            for path, tid in threads.items()
+        )
+
+    with TuiRequestRecorder(workspace) as recorder:
+        session.run(
+            "configure",
+            "--workspace",
+            recorder.url,
+            "--skip-validate",
+            "--skip-upgrade",
+            "--disable-databricks-ai-tools",
+        )
+        with AgentTerminal(
+            session, "codex", [str(session.binary), "codex"], "routing-proxy"
+        ) as tui:
+            tui.boot()
+            checkpoint = recorder.checkpoint()
+            names = ("worker_a", "worker_b")
+            assignments = {name: assignment("off", name) for name in names}
+            (session.cwd / "off-assignments.json").write_text(json.dumps(assignments))
+            tui.submit(
+                'Read off-assignments.json. Spawn exactly two native children with fork_turns="none", '
+                "using its keys as task names and values as exact assignments. "
+                f"Root: after spawning both, reply root-started-{marker} and END your turn "
+                "without waiting for them. This explicit instruction overrides orchestration "
+                "ownership for this routing-toggle test."
+            )
+            tui.wait_for(
+                lambda _: (
+                    children_ready("off", names)
+                    and "/root" in _codex_thread_ids(session)
+                    and _codex_thread_answered(
+                        session, _codex_thread_ids(session)["/root"], f"root-started-{marker}"
+                    )
+                ),
+                "two busy native children with idle parent",
+                timeout=180,
+            )
+            initial = _codex_thread_ids(session)
+            assert set(initial) == {"/root", "/root/worker_a", "/root/worker_b"}, initial
+            original_children = {path: tid for path, tid in initial.items() if path != "/root"}
+            if child_catalog == "kimi":
+                child_models = {
+                    request.payload["model"]
+                    for request in recorder.requests_after(checkpoint)
+                    if request.path.endswith("/responses")
+                    and request.headers.get("thread-id") in original_children.values()
+                }
+                assert child_models == {"system.ai.kimi-k3"}, child_models
+            assert all(
+                not children_finished("off", {path: tid}) for path, tid in original_children.items()
+            )
+            launch_requests = [
+                request
+                for request in recorder.requests_after(checkpoint)
+                if request.path.endswith("/responses")
+                and request.headers.get("thread-id") == initial["/root"]
+            ]
+            assert launch_requests
+            metadata = launch_requests[0].payload["client_metadata"]["x-codex-turn-metadata"]
+            metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
+            recipe = metadata.get("smart_router_recipe_name")
+            assert recipe and recipe != "DISABLED"
+            session.record(
+                "recipe-launch.json",
+                _assert_codex_inference_recipes(
+                    session, recorder, checkpoint, initial.values(), recipe
+                ),
+            )
+
+            _toggle_with_skill(tui, session, "codex", enabled=False, orchestration_enabled=True)
+            off_checkpoint = recorder.checkpoint()
+            (session.cwd / "release-off").write_text("release")
+            tui.wait_for(
+                lambda _: children_finished("off", original_children),
+                "both original children completed without interruption after off",
+                timeout=180,
+            )
+            tui.wait_for(
+                lambda screen: "esc to interrupt" not in screen.lower(),
+                "parent idle after child recovery",
+                timeout=180,
+            )
+            assert_commands_survived("off", names)
+            assert _codex_thread_ids(session) == initial
+            _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
+            off_threads = _codex_thread_ids(session)
+            assert len(off_threads) == 4, off_threads
+            session.record(
+                "recipe-off.json",
+                _assert_codex_inference_recipes(
+                    session,
+                    recorder,
+                    off_checkpoint,
+                    off_threads.values(),
+                    "DISABLED",
+                ),
+            )
+
+            existing_children = {path: tid for path, tid in off_threads.items() if path != "/root"}
+            assignments = {
+                path: assignment("on", path.rsplit("/", 1)[-1]) for path in existing_children
+            }
+            (session.cwd / "on-assignments.json").write_text(json.dumps(assignments))
+            tui.submit(
+                "Read on-assignments.json. Use followup_task on EACH existing child named by a key, "
+                "with its value as the exact assignment. Do not spawn replacements. "
+                f"Root: after assigning all three, reply root-on-ready-{marker} and END your turn "
+                "without waiting for them."
+            )
+            tui.wait_for(
+                lambda _: (
+                    children_ready("on", [path.rsplit("/", 1)[-1] for path in existing_children])
+                    and _codex_thread_answered(session, initial["/root"], f"root-on-ready-{marker}")
+                ),
+                "all three existing children running before on",
+                timeout=180,
+            )
+            assert all(
+                not children_finished("on", {path: tid}) for path, tid in existing_children.items()
+            )
+            _toggle_with_skill(tui, session, "codex", enabled=True, orchestration_enabled=True)
+            on_checkpoint = recorder.checkpoint()
+            (session.cwd / "release-on").write_text("release")
+            tui.wait_for(
+                lambda _: children_finished("on", existing_children),
+                "all existing children completed without interruption after on",
+                timeout=180,
+            )
+            tui.wait_for(
+                lambda screen: "esc to interrupt" not in screen.lower(),
+                "parent idle after continuing all children",
+                timeout=180,
+            )
+            assert_commands_survived("on", [path.rsplit("/", 1)[-1] for path in existing_children])
+            _run_calculation(tui, session, "codex", "2+2", "4", True, routed=True)
+            on_threads = _codex_thread_ids(session)
+            assert len(on_threads) == 5, on_threads
+            assert all(on_threads[path] == tid for path, tid in off_threads.items())
+            session.record(
+                "recipe-on.json",
+                _assert_codex_inference_recipes(
+                    session,
+                    recorder,
+                    on_checkpoint,
+                    on_threads.values(),
+                    recipe,
+                ),
+            )
+            session.record("thread-identities.json", on_threads)
+            assert not (session.home / ".ucode/codex-v2-interposer.log").exists()
+            for records in agent_sessions(session, "codex").values():
+                assert not any(
+                    row.get("payload", {}).get("type") == "turn_aborted" for row in records
+                )
+                assert "The controller reloaded this conversation" not in json.dumps(records)
+                contexts = [row["payload"] for row in records if row.get("type") == "turn_context"]
+                assert contexts
+                assert all(
+                    context["sandbox_policy"]["type"] == "workspace-write"
+                    and context["approval_policy"] == "never"
+                    for context in contexts
+                )
+            tui.exit_normally()
 
 
 @pytest.mark.live
