@@ -582,11 +582,22 @@ files, or leave fresh installs untouched. Tests cover modern, Bedrock, Vertex, a
 Claude-named routes; they do not verify the model behind a name.
 
 Model-label component tests cover catalog display names in `labelOverride`, unchanged
-routing IDs, order/duplicates, and ID-only entries for missing/empty names. Static
-managed lists use discovery only to label matching IDs; their model selection stays
-authoritative. Repeat configure refreshes or removes labels. Source lists/maps remain
-unchanged.
+routing IDs and order/duplicates, and readable fallback labels for missing/empty names
+or display names that echo the routing ID.
+Cases include Anthropic release IDs, Bedrock regional/global IDs, Mantle-style IDs,
+and Databricks/UC names. Distinct IDs with colliding labels show full IDs, including
+collisions between catalog and fallback labels. Static managed lists retain their model
+selection and get fallback labels even when discovery fails. Repeat configure refreshes
+catalog labels or restores fallback labels. Source lists/maps remain unchanged.
 These checks use temporary files on simulated platforms, not the native model picker.
+
+Workspace-backed assertions also read the generated Desktop profile in the existing
+Databricks Hosted, Anthropic, Bedrock, Foundry, and custom Foundry configure/TUI journeys.
+They check literal expected labels and unchanged routing IDs/provider headers; expected
+labels do not call the application's formatter. The dedicated CUJ1/CUJ2 workspace checks
+compare complete hosted/Anthropic profiles, with CUJ2 requiring `Claude Haiku 4.5` for its
+dated target. The Desktop lifecycle journey checks that hosted label across reconfigure.
+These are installed-CLI/profile checks; they do not launch the native Desktop model picker.
 
 Desktop OTEL component tests cover native trace settings gated by `claude_otel_tracing`
 for static and discovered models on simulated macOS, Windows, and Linux. They verify
