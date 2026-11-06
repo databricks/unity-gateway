@@ -7723,7 +7723,7 @@ with patch.multiple(
     cli,
     resolve_workspace=lambda value: value,
     load_state=lambda: {"workspace": "https://benchmark.invalid"},
-    workspace_self_managed_agents=lambda key: [],
+    workspace_self_managed_agents=lambda key, **kwargs: [],
     ensure_databricks_auth=lambda *args, **kwargs: None,
     get_databricks_token=lambda *args: "component-token",
     probe_unity_gateway_capabilities=probe,
