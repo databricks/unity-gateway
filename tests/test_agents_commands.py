@@ -517,7 +517,7 @@ class TestUnmanagedConfigureRecordsSelfManaged:
         monkeypatch.setattr(cli_mod, "resolve_state", lambda m, s, t: s)
         monkeypatch.setattr(cli_mod, "managed_provider_service", lambda m, t: None)
         monkeypatch.setattr(cli_mod, "managed_unity_catalog_location", lambda m, t: None)
-        monkeypatch.setattr(cli_mod, "_summarize_managed_config", lambda *a: None)
+        monkeypatch.setattr(cli_mod, "_summarize_managed_config", lambda *a, **k: None)
         monkeypatch.setattr(
             cli_mod,
             "configure_selected_tools",
