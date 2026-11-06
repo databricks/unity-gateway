@@ -3929,9 +3929,8 @@ def _launch_tool(
             else {}
         )
         if provider and tool not in GEMINI_API_TOOLS:
-            provider_kwargs = {"on_resolved": provider_details.update} if tool == "codex" else {}
             provider_models, error, relayed = resolve_provider_models(
-                tool, state, provider, **provider_kwargs
+                tool, state, provider, on_resolved=provider_details.update
             )
             if error:
                 if managed is not None and provider == managed_provider_service(managed, tool):
