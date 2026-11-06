@@ -3382,52 +3382,12 @@ _PROBE_FAILED = object()
 # enough time to enumerate them; a slow workspace still degrades to partial
 # results once the budget is exceeded instead of hanging indefinitely.
 _MCP_SERVICES_WALK_DEADLINE_SECONDS = 30.0
+_MCP_SERVICES_WALK_TIMEOUT_REASON = "deadline exceeded while listing MCP services"
 # Skip UC catalogs whose schemas almost never carry user-callable functions
 # you'd want to expose as agent tools.
 _UC_FUNCTIONS_SKIP_CATALOGS = frozenset(
     {"__databricks_internal", "hive_metastore", "samples", "system"}
 )
-
-
-def _collect_concurrently[T, R](
-    items: list[T],
-    run: Callable[[T], R],
-    on_result: Callable[[R, T], None],
-    *,
-    max_workers: int,
-    should_stop: Callable[[], bool],
-) -> None:
-    """Run `run` over `items` on daemon workers that are never joined, so a slow or stuck
-    call can't block process exit. Results go to `on_result` on the calling thread until
-    every item is drained or `should_stop()` returns True."""
-    pending: queue.Queue[T] = queue.Queue()
-    for item in items:
-        pending.put(item)
-    results: queue.Queue[tuple[Any, T]] = queue.Queue()
-
-    def worker() -> None:
-        while not should_stop():
-            try:
-                item = pending.get_nowait()
-            except queue.Empty:
-                return
-            try:
-                results.put((run(item), item))
-            except Exception:  # noqa: BLE001
-                results.put((_PROBE_FAILED, item))
-
-    for _ in range(max(1, min(max_workers, len(items)))):
-        threading.Thread(target=worker, daemon=True).start()
-
-    remaining = len(items)
-    while remaining > 0 and not should_stop():
-        try:
-            result, item = results.get(timeout=_WALK_POLL_INTERVAL)
-        except queue.Empty:
-            continue
-        remaining -= 1
-        if result is not _PROBE_FAILED:
-            on_result(result, item)
 
 
 def _paginated_json_items(
@@ -3486,17 +3446,18 @@ def walk_catalog_schemas[T](
 ) -> str | None:
     """Discover every user `<catalog>.<schema>` in the workspace and probe each one in parallel.
 
-    Catalogs and their schemas are listed (skipping `skip_catalogs` and `information_schema`), then
-    each schema is probed concurrently until `deadline` (an absolute `time.monotonic()` value)
-    passes or `cancel_event` is set, so a slow workspace returns partial results instead of hanging.
+    Catalogs are listed first. Schema listings and per-schema probes then share a bounded worker
+    pool, so a service or skill can appear while other catalogs are still being enumerated.
+    Work stops at `deadline` (an absolute `time.monotonic()` value) or on cancellation.
     The caller supplies two callables and owns whatever they accumulate:
 
       - `probe(catalog, schema) -> result`: fetch one schema's data (e.g. its MCP services).
       - `collect(result, done, total)`: handle each probe result as it lands — accumulating,
-        de-duping, streaming — where `done`/`total` are the completed and total schema counts.
+        de-duping, streaming. `total` is the number of schemas discovered so far and may grow
+        while catalog listings continue.
 
-    Returns None once the probes run, or a short reason string if there are no catalogs or schemas
-    to probe."""
+    Returns None when every discovered schema was probed, or a reason when discovery is empty or
+    the deadline leaves work unfinished."""
     cancel_event = cancel_event or threading.Event()
 
     def should_stop() -> bool:
@@ -3523,49 +3484,73 @@ def walk_catalog_schemas[T](
     if time.monotonic() > deadline:
         return "deadline exceeded while listing UC catalogs"
 
-    schema_refs: list[tuple[str, str]] = []
-
-    def collect_schemas(result, catalog):
-        schemas, _ = result
-        for schema in schemas:
-            schema_name = schema.get("name")
-            if isinstance(schema_name, str) and schema_name and schema_name != "information_schema":
-                schema_refs.append((catalog, schema_name))
-
-    _collect_concurrently(
-        catalog_names,
-        lambda cat: _paginated_json_items(
-            f"https://{hostname}/api/2.1/unity-catalog/schemas",
-            token,
-            items_key="schemas",
-            extra_params={"catalog_name": cat},
-            timeout=_UC_LIST_HTTP_TIMEOUT,
-        ),
-        collect_schemas,
-        max_workers=max_workers,
-        should_stop=should_stop,
-    )
-
-    if not schema_refs:
-        if time.monotonic() > deadline:
-            return "deadline exceeded while listing UC schemas"
-        return "no UC schemas found"
-
-    schemas_total = len(schema_refs)
+    jobs: queue.Queue[tuple[str, str, str | None]] = queue.Queue()
+    results: queue.Queue[tuple[str, Any, str]] = queue.Queue()
+    finished = threading.Event()
+    worker_count = max(1, max_workers)
+    catalog_iter = iter(catalog_names)
+    catalogs_remaining = len(catalog_names)
+    schemas_total = 0
     schemas_done = 0
 
-    def collect_probe(result, _ref):
-        nonlocal schemas_done
-        schemas_done += 1
-        collect(result, schemas_done, schemas_total)
+    def worker() -> None:
+        while not finished.is_set() and not should_stop():
+            try:
+                kind, catalog, schema = jobs.get(timeout=_WALK_POLL_INTERVAL)
+            except queue.Empty:
+                continue
+            try:
+                if kind == "catalog":
+                    value = _paginated_json_items(
+                        f"https://{hostname}/api/2.1/unity-catalog/schemas",
+                        token,
+                        items_key="schemas",
+                        extra_params={"catalog_name": catalog},
+                        timeout=_UC_LIST_HTTP_TIMEOUT,
+                    )
+                else:
+                    assert schema is not None
+                    value = probe(catalog, schema)
+            except Exception:  # noqa: BLE001
+                value = _PROBE_FAILED
+            results.put((kind, value, catalog))
 
-    _collect_concurrently(
-        schema_refs,
-        lambda ref: probe(*ref),
-        collect_probe,
-        max_workers=max_workers,
-        should_stop=should_stop,
-    )
+    # Keep some catalog requests in flight while the remaining workers can probe schemas as soon
+    # as they arrive. No more than `max_workers` requests run concurrently.
+    catalog_slots = max(1, worker_count // 2)
+    for _ in range(min(catalog_slots, catalogs_remaining)):
+        jobs.put(("catalog", next(catalog_iter), None))
+    for _ in range(worker_count):
+        threading.Thread(target=worker, daemon=True).start()
+
+    try:
+        while (catalogs_remaining or schemas_done < schemas_total) and not should_stop():
+            try:
+                kind, value, catalog = results.get(timeout=_WALK_POLL_INTERVAL)
+            except queue.Empty:
+                continue
+            if kind == "catalog":
+                catalogs_remaining -= 1
+                if next_catalog := next(catalog_iter, None):
+                    jobs.put(("catalog", next_catalog, None))
+                if value is not _PROBE_FAILED:
+                    schemas, _ = value
+                    for schema in schemas:
+                        name = schema.get("name")
+                        if isinstance(name, str) and name and name != "information_schema":
+                            schemas_total += 1
+                            jobs.put(("probe", catalog, name))
+            else:
+                schemas_done += 1
+                if value is not _PROBE_FAILED:
+                    collect(value, schemas_done, schemas_total)
+    finally:
+        finished.set()
+
+    if time.monotonic() > deadline and (catalogs_remaining or schemas_done < schemas_total):
+        return "deadline exceeded while listing UC schemas"
+    if not schemas_total:
+        return "no UC schemas found"
 
     return None
 
@@ -3586,7 +3571,7 @@ def list_all_mcp_services(
     returning partial results once `deadline_seconds` is exceeded.
 
     `on_progress`, if given, is called as each schema's listing completes with
-    `(schemas_done, schemas_total, services_found)` so callers can render a live
+    `(schemas_done, schemas_discovered_so_far, services_found)` so callers can render a live
     count. `on_services`, if given, is called with each schema's newly-found service
     names (deduped against everything emitted so far) so callers can stream results
     into a picker as the walk progresses instead of waiting for the full result. Both
@@ -3618,10 +3603,10 @@ def list_all_mcp_services(
         workspace, token, deadline=deadline, probe=probe, collect=collect, cancel_event=cancel_event
     )
     if reason is not None:
+        if reason.startswith("deadline exceeded"):
+            return sorted(names), _MCP_SERVICES_WALK_TIMEOUT_REASON
         return [], reason
     if not names:
-        if time.monotonic() > deadline:
-            return [], "deadline exceeded while listing MCP services"
         return [], "no MCP services found"
     return sorted(names), None
 
