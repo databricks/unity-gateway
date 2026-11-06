@@ -1557,6 +1557,7 @@ def test_bare_model_name(model, name):
         ("codex", "bedrock_mantle"),
         ("copilot", "anthropic"),
         ("codex", "microsoft_foundry"),
+        ("codex", "custom"),
         ("copilot", "microsoft_foundry"),
     ],
 )
@@ -1575,7 +1576,8 @@ def test_provider_targets_preserve_other_tool_combinations(tool, provider_type):
 
 
 @pytest.mark.parametrize(
-    "provider_type", ["anthropic", "amazon_bedrock", "bedrock_mantle", "microsoft_foundry"]
+    "provider_type",
+    ["anthropic", "amazon_bedrock", "bedrock_mantle", "microsoft_foundry", "custom"],
 )
 def test_claude_provider_targets_use_messages_metadata_not_names(provider_type):
     service = {
@@ -1598,7 +1600,9 @@ class TestServiceUsableForTool:
         [
             ("claude", "anthropic"),
             ("claude", "microsoft_foundry"),
+            ("claude", "custom"),
             ("codex", "openai"),
+            ("codex", "custom"),
             ("copilot", "microsoft_foundry"),
             ("gemini", "gemini_enterprise"),
         ],
@@ -1615,6 +1619,7 @@ class TestServiceUsableForTool:
         [
             ("claude", "anthropic"),
             ("claude", "microsoft_foundry"),
+            ("claude", "custom"),
             ("claude", "amazon_bedrock"),
             ("claude", "bedrock_mantle"),
             ("copilot", "amazon_bedrock"),
@@ -1662,6 +1667,16 @@ class TestServiceUsableForTool:
         assert db_mod.service_usable_for_tool("claude", service) is usable
         assert db_mod.service_usable_for_tool("codex", service) is bool(targets or allow_all)
         assert db_mod.service_usable_for_tool("copilot", service) is bool(targets or allow_all)
+
+    def test_custom_responses_service_is_codex_only(self):
+        service = {
+            "provider_type": "custom",
+            "targets": ["team-coding"],
+            "target_api_types": {"team-coding": ("openai/v1/responses",)},
+        }
+        assert db_mod.service_usable_for_tool("codex", service)
+        assert not db_mod.service_usable_for_tool("claude", service)
+        assert not db_mod.service_usable_for_tool("copilot", service)
 
     def test_claude_still_rejects_azure_openai(self):
         service = {"provider_type": "azure_openai", "allow_all_targets": True}
