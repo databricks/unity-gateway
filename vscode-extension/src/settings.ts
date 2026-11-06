@@ -21,31 +21,35 @@ export const syncSettings = async (
   developerWins: ReadonlySet<string> = new Set(),
 ): Promise<void> => {
   const owned = state.get<Record<string, unknown>>(OWNED_SETTINGS_KEY) ?? {};
-  const write = async (key: string, value: unknown) => {
+  const write = async (key: string, value: unknown): Promise<boolean> => {
     try {
       // 1 is ConfigurationTarget.Global: the user settings.
       await settings.update(key, value, 1);
+      return true;
     } catch (error) {
       // A setting VS Code doesn't know, such as an agent this version doesn't have.
       log(`Could not update ${key}: ${String(error)}`);
+      return false;
     }
   };
+  // The record follows what is in the user settings, so a failed write leaves it as it was.
+  const nowOwned: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(owned)) {
-    if (!(key in wanted) && same(settings.inspect(key)?.globalValue, value)) {
-      await write(key, undefined);
+    if (!(key in wanted) && same(settings.inspect(key)?.globalValue, value) && !(await write(key, undefined))) {
+      nowOwned[key] = value;
     }
   }
-  const nowOwned: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(wanted)) {
     const current = settings.inspect(key)?.globalValue;
-    const developers = current !== undefined && !(key in owned && same(current, owned[key]));
-    if (developerWins.has(key) && developers) {
+    const ours = key in owned && same(current, owned[key]);
+    if (developerWins.has(key) && current !== undefined && !ours) {
       continue;
     }
-    if (!same(current, value)) {
-      await write(key, value);
+    if (same(current, value) || (await write(key, value))) {
+      nowOwned[key] = value;
+    } else if (ours) {
+      nowOwned[key] = owned[key];
     }
-    nowOwned[key] = value;
   }
   await state.update(OWNED_SETTINGS_KEY, Object.keys(nowOwned).length > 0 ? nowOwned : undefined);
 };

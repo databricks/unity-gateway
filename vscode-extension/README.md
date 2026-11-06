@@ -24,7 +24,8 @@ request itself.
 When the managed config names a default model for Copilot and it is one of `models`, `ug-config.json` also
 holds `defaultModel`, and the extension sets VS Code's `chat.defaultModel` to it, so new chat conversations
 start on it. A `chat.defaultModel` the developer set themselves stays, and the extension removes its own
-value once a configure drops `defaultModel`.
+value once a configure drops `defaultModel`. Deleting the extension's value only lasts until VS Code next
+starts, when the managed default is set again; to start on another model, set `chat.defaultModel` to it.
 
 The token is kept in memory until it nears expiry, and fetched again when the gateway answers 401.
 Token fetches and failed requests are logged to the **Unity Gateway** output channel.

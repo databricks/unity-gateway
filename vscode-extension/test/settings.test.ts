@@ -27,15 +27,24 @@ describe("syncSettings", () => {
     };
   };
 
-  it("writes what differs, records it, and logs a setting VS Code doesn't have", async () => {
+  it("writes what differs, records it, and logs a setting VS Code doesn't have without recording it", async () => {
     const store = fake({ a: 1, b: 2 }, undefined, ["c"]);
     const logs: string[] = [];
 
     await syncSettings(store.settings as never, store.state as never, { a: 1, b: 3, c: 4 }, (line) => logs.push(line));
 
     assert.deepEqual(store.updates, [["b", 3]]);
-    assert.deepEqual(store.saved(), { a: 1, b: 3, c: 4 });
+    assert.deepEqual(store.saved(), { a: 1, b: 3 });
     assert.ok(logs[0]?.includes("Could not update c"));
+  });
+
+  it("keeps owning a value it couldn't replace or remove", async () => {
+    const store = fake({ a: 1, b: 2 }, { a: 1, b: 2 }, ["a", "b"]);
+
+    await syncSettings(store.settings as never, store.state as never, { a: 5 }, () => {});
+
+    assert.deepEqual(store.updates, []);
+    assert.deepEqual(store.saved(), { a: 1, b: 2 });
   });
 
   it("removes what it wrote once no longer wanted, unless the developer changed it", async () => {
