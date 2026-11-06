@@ -962,7 +962,9 @@ def configure_shared_state(
                     [*claude_models.values(), *codex_models],
                     list_anthropic_model_catalog(workspace, token),
                 )
-                copilot_reason = ms_reason or claude_reason or codex_reason
+                copilot_reason = (
+                    (None if model_listing_complete else ms_reason) or claude_reason or codex_reason
+                )
         if claude_models:
             opencode_models["anthropic"] = list(claude_models.values())
         if gemini_models:

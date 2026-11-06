@@ -7620,22 +7620,33 @@ class TestConfiguredLaunchPreflightCache:
                 == "foundation-models listing returned no endpoints"
             )
 
-    def test_complete_empty_uc_catalog_keeps_successful_codex_fallback_reusable(
-        self, preflight, monkeypatch
+    @pytest.mark.parametrize("tool", ["codex", "copilot"])
+    def test_complete_empty_uc_catalog_keeps_successful_fallbacks_reusable(
+        self, preflight, monkeypatch, tool
     ):
         monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
         listing = MagicMock(return_value=({"model_services": []}, None))
         fallback = MagicMock(return_value=(["databricks-gpt-5"], None))
         monkeypatch.setattr(db_mod, "_http_get_json", listing)
         monkeypatch.setattr(cli_mod, "discover_codex_models", fallback)
+        monkeypatch.setattr(
+            cli_mod, "discover_claude_models", lambda *a: ({"sonnet": "claude-sonnet"}, None)
+        )
+        monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", lambda *a: None)
 
-        first = preflight.configure(tools=["codex"])
-        second = preflight.configure(tools=["codex"])
+        first = preflight.configure(tools=[tool])
+        second = preflight.configure(tools=[tool])
 
         assert first["launch_preflight"] == second["launch_preflight"]
         assert second["codex_models"] == ["databricks-gpt-5"]
-        assert second["oss_models"] == []
-        assert second["_discovery_reasons"]["oss"] == "model-services listing returned no models"
+        if tool == "codex":
+            assert second["oss_models"] == []
+            assert (
+                second["_discovery_reasons"]["oss"] == "model-services listing returned no models"
+            )
+        else:
+            assert second["copilot_catalog"]["models"] == ["claude-sonnet", "databricks-gpt-5"]
+            assert second["_discovery_reasons"]["copilot"] is None
         assert listing.call_count == fallback.call_count == preflight.probe.call_count == 1
 
     def test_partial_copilot_listing_keeps_api_metadata_without_reusing_failure(

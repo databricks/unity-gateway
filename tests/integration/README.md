@@ -435,6 +435,7 @@ stamps, retained empty-family diagnostics, and failed-refresh invalidation.
 completeness reasons without marking the catalog reusable. Malformed responses and HTTP failures
 remain distinct from confirmed empty catalogs; malformed individual entries do not discard valid
 neighbors. JSON null and partial listings followed by successful family fallbacks remain retryable.
+Complete empty UC listings with successful Codex/Copilot fallbacks can be reused.
 This suite does not assert live request overlap, cache timing, or launch-time
 savings.
 Component HTTP-boundary cases also cover same-command probe reuse across auto-setup/mode changes,
