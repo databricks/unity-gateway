@@ -672,13 +672,12 @@ sudo, and `ug configure`/`ug revert` requesting explicit writes. `test_agent_cod
 same write and failure for Codex. The CUJ `Session.configure` helper runs headless and so now
 writes machine-wide settings with the runner's passwordless sudo, which the `cuj` teardown reverts.
 No automated test runs a real root configure.
-`test_agent_codex.py` also covers the Codex MDM run, an explicit `--global` as root on Linux or
-macOS, against temp paths. Its `/etc/codex/requirements.toml` provider lock and
-`/etc/codex/config.toml` default model match the MDM design's example, a rerun replaces both files,
-both stay `0644` under a `077` umask, a planted symlink is replaced rather than followed,
-and the run skips `managed_config.toml` and its managed MCP servers. Non-root and Windows runs keep
-the managed file. No integration journey runs it: a real root run would lock the CI runner's Codex
-provider for every later Codex test.
+`test_agent_codex.py` also covers `ug configure --global` on Linux and macOS, run as a non-root user
+against temp paths and a faked privileged writer. Its `/etc/codex/requirements.toml` provider lock and
+`/etc/codex/config.toml` default model match the Codex MDM design's example, a rerun replaces both
+files, a denied privileged write fails the run, and the run skips `managed_config.toml` and its
+managed MCP servers. Per-user and Windows runs keep the managed file. No integration journey runs it:
+a real `--global` run would lock the CI runner's Codex provider for every later Codex test.
 
 Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 `test_managed_setup.py`, `test_databricks.py`, and `test_managed_budget.py`: parsing the

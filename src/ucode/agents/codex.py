@@ -89,7 +89,6 @@ from ucode.managed_files import (
     warn_managed_write_skipped,
 )
 from ucode.os_compatibility import subprocess_cross_os
-from ucode.os_compatibility.system_cross_os import is_admin
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.codex_hooks import (
     remove_smart_routing_hooks,
@@ -115,7 +114,7 @@ CODEX_BACKUP_PATH = APP_DIR / "codex-ucode-config.backup.toml"
 CODEX_MODEL_CATALOG_PATH = APP_DIR / "codex-model-catalog.json"
 LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
-# Where the MDM run writes UG's requirements.toml and config.toml on Linux and macOS.
+# Where `ug configure --global` writes UG's requirements.toml and config.toml on Linux and macOS.
 CODEX_SYSTEM_DIR = Path("/etc/codex")
 CODEX_MODEL_PROVIDER_NAME = "Databricks"
 LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
@@ -1138,14 +1137,14 @@ def _reconcile_managed_config(
     if managed_settings_skipped():
         # Opted out: trust whatever OS-managed file exists and leave it untouched.
         return
-    if _is_mdm_run():
-        _write_mdm_files(state)
-        return
     if path is None and machine_wide_only():
         raise RuntimeError(
             "`ug configure --global` can't configure Codex here: this platform has no "
             "machine-wide Codex settings. Run `ug configure` without --global."
         )
+    if _is_posix_global_run():
+        _write_global_files(state)
+        return
     if path is None:
         print_warning_err(
             "Machine-wide Codex settings aren't supported on this platform; skipped the managed "
@@ -1220,13 +1219,13 @@ def _as_requirements(compose: Callable[[dict], dict]) -> Callable[[dict], dict]:
     return compose_requirements
 
 
-def _is_mdm_run() -> bool:
-    """An MDM run is an explicit ``ug configure --global`` as root on Linux or macOS. It writes
+def _is_posix_global_run() -> bool:
+    """Whether this is an explicit ``ug configure --global`` on Linux or macOS. It writes
     ``requirements.toml`` and ``config.toml`` in ``/etc/codex`` instead of ``managed_config.toml``."""
-    return machine_wide_only() and current_os() in (OS.LINUX, OS.MACOS) and is_admin()
+    return machine_wide_only() and current_os() in (OS.LINUX, OS.MACOS)
 
 
-def _write_mdm_files(state: dict) -> None:
+def _write_global_files(state: dict) -> None:
     """Rebuild UG's provider lock in ``requirements.toml`` and its default model in ``config.toml``.
 
     Every user shares the provider, so its auth command names no profile, PAT, or OAuth client.
@@ -1243,28 +1242,20 @@ def _write_mdm_files(state: dict) -> None:
     }
     model = state.get("codex_default_model")
     config = {"model": model} if isinstance(model, str) else {}
-    _write_shared_file(CODEX_SYSTEM_DIR / CODEX_REQUIREMENTS_FILE, tomlkit.dumps(requirements))
-    _write_shared_file(CODEX_SYSTEM_DIR / "config.toml", tomlkit.dumps(config))
-
-
-def _write_shared_file(path: Path, text: str) -> None:
-    """Atomically replace a machine-wide file that every user's Codex reads, whatever root's umask.
-
-    The rename replaces a planted symlink itself rather than writing through it."""
-    if is_dry_run():
-        write_text_file(path, text)
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.parent.chmod(0o755)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        os.chmod(tmp_name, 0o644)
-        os.replace(tmp_name, path)
-    except BaseException:
-        os.unlink(tmp_name)
-        raise
+    # The same privileged write, through sudo when not root, as every other machine-wide file.
+    provider_keys = [["model_provider"], ["model_providers", CODEX_MODEL_PROVIDER_NAME]]
+    for tool, name, doc, owned in (
+        ("codex-requirements", CODEX_REQUIREMENTS_FILE, requirements, provider_keys),
+        ("codex-config", "config.toml", config, [["model"]]),
+    ):
+        reconcile_managed_file(
+            CODEX_SYSTEM_DIR / name,
+            tomlkit.dumps(doc),
+            tool=tool,
+            display="Codex",
+            owned_paths=owned,
+            parser=_parse_managed_config,
+        )
 
 
 MANAGED_MCP_CONFIG_KEY = "mcp_servers"
@@ -1378,7 +1369,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
         or path.name == CODEX_REQUIREMENTS_FILE
         or managed_settings_skipped()
         or not managed_writes_allowed()
-        or _is_mdm_run()
+        or _is_posix_global_run()
     ):
         return False
     if path.is_symlink():
