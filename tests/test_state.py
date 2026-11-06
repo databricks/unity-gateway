@@ -194,6 +194,21 @@ class TestSaveLoadRoundTrip:
         assert saved == after
         assert json.dumps(saved) == json.dumps(after)
 
+    def test_reordered_nested_mapping_is_still_saved(self):
+        state = {
+            "workspace": FAKE_WS,
+            "preferred_models": {"first": "sonnet", "second": "opus"},
+        }
+        save_state(state)
+        state["preferred_models"] = {"second": "opus", "first": "sonnet"}
+        os.utime(state_mod.STATE_PATH, ns=(1_000_000_000, 1_000_000_000))
+
+        save_state(state)
+
+        saved = load_full_state()["workspaces"][FAKE_WS]["preferred_models"]
+        assert list(saved) == ["second", "first"]
+        assert state_mod.STATE_PATH.stat().st_mtime_ns != 1_000_000_000
+
     def test_unchanged_save_reads_external_workspace_updates(self):
         state = {"workspace": FAKE_WS}
         save_state(state)

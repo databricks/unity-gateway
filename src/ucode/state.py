@@ -151,7 +151,8 @@ def _same_state_values(left: object, right: object) -> bool:
         if type(first) is not type(second):
             return False
         if isinstance(first, dict) and isinstance(second, dict):
-            if first.keys() != second.keys():
+            # Model preferences and picker entries can depend on insertion order.
+            if tuple(first) != tuple(second):
                 return False
             pending.extend((value, second[key]) for key, value in first.items())
         elif isinstance(first, list) and isinstance(second, list):
