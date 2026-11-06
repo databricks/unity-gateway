@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -13,6 +14,7 @@ from databricks.sdk import oauth
 from typer.testing import CliRunner
 
 import ucode.cli as cli_mod
+import ucode.custom_oauth as custom_oauth_mod
 import ucode.databricks as db_mod
 from ucode.cli import app
 from ucode.custom_oauth import (
@@ -33,6 +35,100 @@ class TestCustomOAuthLock:
                 raise ValueError("login failed")
         with _custom_oauth_lock(tmp_path, "http://127.0.0.1:8020/other-callback"):
             assert len(list(tmp_path.glob("*.lock"))) == 1
+
+
+class TestCustomOAuthCliLogin:
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch):
+        monkeypatch.setattr(
+            custom_oauth_mod, "ensure_databricks_cli_version", lambda _version: None
+        )
+        monkeypatch.setattr(custom_oauth_mod, "databricks_cli_path", lambda: "/tools/databricks")
+        monkeypatch.setattr(custom_oauth_mod, "external_bearer_configured", lambda: False)
+        self.has_auth = Mock(return_value=False)
+        self.login = Mock()
+        self.fetch_token = Mock(return_value="fresh-token")
+        monkeypatch.setattr(custom_oauth_mod, "has_valid_databricks_auth", self.has_auth)
+        monkeypatch.setattr(custom_oauth_mod, "run", self.login)
+        monkeypatch.setattr(custom_oauth_mod, "get_databricks_token", self.fetch_token)
+        self.config = custom_oauth_mod.create_custom_oauth_config("custom-client", TEST_SCOPES)
+
+    @pytest.mark.parametrize(
+        ("failure", "message"),
+        [
+            (
+                subprocess.TimeoutExpired("private-command", 180),
+                "Custom-client browser sign-in timed out after 180 seconds. "
+                "Retry and complete sign-in in the browser.",
+            ),
+            (
+                subprocess.CalledProcessError(1, "private-command"),
+                "Custom-client browser sign-in failed. Check the Databricks CLI output and retry.",
+            ),
+            (
+                OSError("private-path"),
+                "Custom-client browser sign-in could not start. Check the Databricks CLI installation and retry.",
+            ),
+        ],
+        ids=["timeout", "nonzero-exit", "unavailable-cli"],
+    )
+    def test_login_failure_is_actionable_without_subprocess_details(self, failure, message):
+        self.login.side_effect = failure
+
+        with pytest.raises(RuntimeError) as error:
+            custom_oauth_mod.ensure_custom_oauth_cli_token(WS, self.config)
+
+        assert str(error.value) == message
+        assert error.value.__cause__ is failure
+        self.fetch_token.assert_not_called()
+        assert self.login.call_count == 1
+
+    @pytest.mark.parametrize("has_auth", [False, True])
+    def test_login_and_cached_auth_return_the_selected_profiles_token(self, has_auth):
+        self.has_auth.return_value = has_auth
+
+        assert custom_oauth_mod.ensure_custom_oauth_cli_token(WS, self.config) == "fresh-token"
+
+        self.fetch_token.assert_called_once_with(WS, self.config["profile"])
+        assert self.login.call_count == (0 if has_auth else 1)
+        if not has_auth:
+            assert self.login.call_args.kwargs["timeout"] == 180
+            assert self.login.call_args.args[0][-1] == "catalog.catalogs:read"
+
+    def test_keyboard_interrupt_still_cancels_login(self):
+        self.login.side_effect = KeyboardInterrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            custom_oauth_mod.ensure_custom_oauth_cli_token(WS, self.config)
+
+        self.fetch_token.assert_not_called()
+
+    def test_configure_prints_timeout_guidance_and_exits_cleanly(self, monkeypatch):
+        self.login.side_effect = subprocess.TimeoutExpired("private-command", 180)
+        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda: None)
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *_args, **_kwargs: None)
+
+        result = runner.invoke(
+            app,
+            [
+                "configure",
+                "--agent",
+                "claude",
+                "--workspace",
+                WS,
+                "--client-id",
+                "custom-client",
+                "--scopes",
+                ",".join(TEST_SCOPES),
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "Custom-client browser sign-in timed out" in result.output
+        assert "Retry" in result.output
+        assert isinstance(result.exception, SystemExit)
+        self.fetch_token.assert_not_called()
 
 
 class TestCustomClientToken:
