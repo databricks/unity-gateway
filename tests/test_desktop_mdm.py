@@ -93,7 +93,9 @@ def test_provision_without_account_has_no_admin_credentials_or_user_writes(devic
     policy = plistlib.loads(mdm.POLICY_PATH.read_bytes())
     assert all(isinstance(value, str) for value in policy.values())
     assert policy["inferenceGatewayBaseUrl"] == f"{WORKSPACE}/ai-gateway/anthropic"
-    assert json.loads(policy["inferenceModels"]) == [{"name": "system.ai.claude-sonnet-4-6"}]
+    assert json.loads(policy["inferenceModels"]) == [
+        {"name": "system.ai.claude-sonnet-4-6", "labelOverride": "Claude Sonnet 4.6"}
+    ]
     assert policy["modelDiscoveryEnabled"] == "false"
     assert policy["toolSearchEnabled"] == "true"
     assert policy["otlpTracesEnabled"] == "true"
@@ -210,7 +212,9 @@ def test_provision_without_managed_config(device, monkeypatch, reason):
     )
     mdm.configure(WORKSPACE, "admin")
     policy = plistlib.loads(mdm.POLICY_PATH.read_bytes())
-    assert json.loads(policy["inferenceModels"]) == [{"name": "system.ai.claude-sonnet-4-6"}]
+    assert json.loads(policy["inferenceModels"]) == [
+        {"name": "system.ai.claude-sonnet-4-6", "labelOverride": "Claude Sonnet 4.6"}
+    ]
     assert not (device.source / ".mcp.json").exists()
 
 

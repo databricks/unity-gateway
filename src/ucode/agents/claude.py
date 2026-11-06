@@ -627,13 +627,13 @@ def render_overlay(
     # shows only one row per model. `ucode claude -- --model X` still overrides for
     # a single session via Claude Code's own --model flag.
     #
-    # The one exception is smart routing: `route_root_model` pins the
-    # router's per-launch pick for the root session as ANTHROPIC_MODEL. The
-    # duplicate-picker-row cost is acceptable because the whole point is to launch
-    # on the routed model rather than the family default.
+    # Routed launches and custom provider deployments need an explicit root model
+    # because their chosen target may not resolve through a family alias.
     _ = model  # API stability; no longer pinned via env.
     if route_root_model:
         env["ANTHROPIC_MODEL"] = maybe_add_gpt_1m_suffix(route_root_model)
+    elif provider and provider_models and provider_models.get("default"):
+        env["ANTHROPIC_MODEL"] = provider_models["default"]
     # A Bedrock-backed provider needs its provider-side ids pinned verbatim
     # (Claude Code's canonical names aren't routable there). These come from the
     # service's targets, already de-duped to one id per family upstream.
@@ -1062,7 +1062,8 @@ def ensure_hooks_modules_gate() -> None:
     ``tengu_plugin_hooks_modules`` gate is on, and no settings key can force it on. The only
     source is the feature cache in ``.claude.json``, so seed ``true`` there before each launch.
     A stale top-level copy of the gate is dropped. Best-effort: an unreadable file is left alone
-    and a write failure never blocks the launch."""
+    and a write failure never blocks the launch. An already-enabled cache needs no write lock;
+    updates still re-read the file under the lock to preserve other ug writers' changes."""
 
     def mutate(config: dict) -> bool:
         features = config.get("cachedGrowthBookFeatures")
@@ -1078,8 +1079,13 @@ def ensure_hooks_modules_gate() -> None:
         return True
 
     try:
-        _update_claude_config(claude_code_config_path(), mutate)
-    except RuntimeError:
+        path = claude_code_config_path()
+        config = _read_claude_config_for_rewrite(path)
+        if config is not None and not mutate(config):
+            return
+        # Never write the optimistic snapshot: another process may have changed it.
+        _update_claude_config(path, mutate)
+    except (OSError, RuntimeError):
         _debug("Could not enable the Claude Code mods gate", traceback.format_exc())
 
 

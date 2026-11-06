@@ -26,6 +26,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
 from urllib import error as urllib_error
@@ -35,6 +36,7 @@ from urllib.parse import quote, urlencode, urlparse
 from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
+    API_ANTHROPIC_MESSAGES,
     API_GEMINI_GENERATE_CONTENT,
     API_OPENAI_RESPONSES,
     MODEL_PROVIDER_SERVICE_HEADER,
@@ -414,11 +416,10 @@ def _http_get_bytes(
             if attempt == max_retries:
                 return None, reason
             retry_after = None
-        except OSError as exc:
-            # A socket read timeout raises a bare TimeoutError (an OSError), not a
-            # URLError, so it must be caught explicitly or it escapes the whole
-            # discovery flow. Surface it as a reason like every other failure.
-            _debug(f"GET {url}", f"OSError: {exc}")
+        except (OSError, HTTPException) as exc:
+            # Read timeouts, malformed headers, and truncated bodies can escape urllib
+            # without a URLError wrapper. Use the caller's existing retry budget.
+            _debug(f"GET {url}", f"{type(exc).__name__}: {exc}")
             reason = f"network error: {exc}"
             if attempt == max_retries:
                 return None, reason
@@ -2909,20 +2910,17 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
     return base + "?" + urlencode([("schema", loc) for loc in locations])
 
 
-# Maps the gateway routing dialect a coding tool speaks to the Model Provider
-# Service `provider_type`s it can be backed by. claude speaks Anthropic's API,
-# which the `anthropic`, `amazon_bedrock`, and `bedrock_mantle` provider types
-# serve (Bedrock just exposes different model ids); codex speaks OpenAI's, which
-# the `openai`, `azure_openai`, `microsoft_foundry`, `amazon_bedrock`, and
-# `bedrock_mantle` provider types all serve (the gateway fronts them with the
-# OpenAI surface); gemini speaks Google's, served by a Gemini Enterprise
-# provider. copilot speaks Anthropic's for the Claude targets of anthropic, Bedrock and
-# microsoft_foundry services, and OpenAI's for the other targets of openai, azure_openai and
-# microsoft_foundry services, on the gateway's native route for each API. Tags are the short form produced by `_provider_type_tag`
-# (e.g. `amazon_bedrock`).
+# MPS routes preserve each tool's native API; custom providers must expose that same API.
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
-    "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle"),
-    "codex": ("openai", "azure_openai", "microsoft_foundry", "amazon_bedrock", "bedrock_mantle"),
+    "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle", "microsoft_foundry", "custom"),
+    "codex": (
+        "openai",
+        "azure_openai",
+        "microsoft_foundry",
+        "amazon_bedrock",
+        "bedrock_mantle",
+        "custom",
+    ),
     "gemini": ("gemini_enterprise",),
     "antigravity": ("gemini_enterprise",),
     "copilot": (
@@ -2936,9 +2934,6 @@ _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
 }
 # Copilot Chat in VS Code can use the same provider types as Copilot CLI.
 _TOOL_PROVIDER_TYPES["vscode"] = _TOOL_PROVIDER_TYPES["copilot"]
-
-# Agents that can only use a Bedrock service's Claude targets.
-_CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot", "vscode")
 
 # Provider types that expose Bedrock-style model ids (e.g.
 # `us.anthropic.claude-sonnet-4-6`, or region-less `anthropic.claude-*` on
@@ -3172,14 +3167,7 @@ def list_tool_provider_services(
 
 
 def _provider_service_unusable_reason(tool: str, service: dict, service_name: str) -> str | None:
-    """Why ``tool`` can't route through ``service``, or None when it can.
-
-    Beyond the provider-type match, only claude (Anthropic) or codex (OpenAI) can use a relayed (subscription) service, and
-    claude and copilot can use a Bedrock service only if it has a Claude target — otherwise there's
-    no routable model id to pin — or is ``allow_all_targets``, in which case the model id comes
-    from elsewhere (the managed config's default or ``--model``). (Anthropic services use canonical
-    names, so any match is usable.)
-    """
+    """Why ``tool`` can't route through ``service``, or None when it can."""
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
         supported = ", ".join(_TOOL_PROVIDER_TYPES.get(tool, ())) or "none"
@@ -3199,17 +3187,25 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
                 f"which only {display} can use. Pick a Model Provider Service with an API key "
                 f"for {tool}."
             )
-    if (
-        tool in _CLAUDE_ONLY_BEDROCK_TOOLS
-        and provider_type in BEDROCK_PROVIDER_TYPES
-        and not service.get("allow_all_targets")
-        and not map_claude_family_models(service.get("targets") or [])
-    ):
+    if not service.get("allow_all_targets") and not provider_targets_for_tool(tool, service):
         return (
-            f"Model provider service '{service_name}' exposes no Claude models — "
-            f"add Claude targets to it, enable allow_all_targets, or pick a different service."
+            f"Model provider service '{service_name}' exposes no compatible models for {tool} — "
+            "add compatible targets, enable allow_all_targets, or pick a different service."
         )
     return None
+
+
+def provider_targets_for_tool(tool: str, service: dict) -> list[str]:
+    """Return declared targets compatible with the tool's provider API."""
+    targets = service.get("targets") or []
+    if tool in ("claude", "codex"):
+        # MPS requests pass through without API translation.
+        api_type = API_ANTHROPIC_MESSAGES if tool == "claude" else API_OPENAI_RESPONSES
+        target_api_types = service.get("target_api_types") or {}
+        return [target for target in targets if api_type in (target_api_types.get(target) or ())]
+    if tool in ("copilot", "vscode") and service.get("provider_type") in BEDROCK_PROVIDER_TYPES:
+        return [target for target in targets if _bedrock_target_family(target) is not None]
+    return targets
 
 
 def service_usable_for_tool(tool: str, service: dict) -> bool:
@@ -3323,13 +3319,14 @@ _CLAUDE_LAUNCH_TIER_PREFERENCE = ("sonnet", "opus", "haiku")
 
 
 def resolve_provider_launch_model(model: str | None, provider_models: dict[str, str]) -> str | None:
-    """Pick the model a provider-routed Claude session starts on, or None if it declares no tier.
+    """Pick the model a provider-routed Claude session starts on, or None if it declares none.
 
     ``provider_models`` maps the Claude families a service declares to their target ids (see
     ``map_claude_family_models``). With an explicit ``model`` (``ucode claude --model``) the user's
     choice wins: a family alias resolves to that tier's declared target (erroring when the service
     doesn't offer it), any other value is trusted as a raw target id the service allows. Without one,
-    pin the service's preferred offered tier (``_CLAUDE_LAUNCH_TIER_PREFERENCE``).
+    pin the service's preferred offered tier (``_CLAUDE_LAUNCH_TIER_PREFERENCE``), falling back
+    to ``default`` for custom deployment names with no recognizable family.
 
     We always pin a concrete offered target rather than letting Claude Code fall back to its own
     launch default: that default (observed: ``claude-sonnet-5``) isn't guaranteed to be in a curated
@@ -3340,7 +3337,9 @@ def resolve_provider_launch_model(model: str | None, provider_models: dict[str, 
         if model in ANTHROPIC_FAMILIES:
             target = provider_models.get(model)
             if not target:
-                available = ", ".join(sorted(provider_models)) or "none"
+                available = (
+                    ", ".join(sorted(set(provider_models) & set(ANTHROPIC_FAMILIES))) or "none"
+                )
                 raise RuntimeError(
                     f"This Model Provider Service does not offer a '{model}' model "
                     f"(available families: {available})."
@@ -3353,7 +3352,7 @@ def resolve_provider_launch_model(model: str | None, provider_models: dict[str, 
             for fam in _CLAUDE_LAUNCH_TIER_PREFERENCE
             if provider_models.get(fam)
         ),
-        None,
+        provider_models.get("default"),
     )
 
 
