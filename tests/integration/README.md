@@ -334,11 +334,6 @@ asserts end-to-end agent startup latency. The component suite also checks that
 version output alone cannot establish CLI health when startup dependencies are
 absent; use `--help` for the startup-import probe.
 
-`TestSpinner` in `../test_ui.py` covers waking a waiting animation thread on
-normal and exceptional exit, terminal-line cleanup, and no animation for redirected
-output. These synchronized component checks do
-not measure live agent startup or gateway latency.
-
 `TestEnsureDatabricksCliVersion` in `../test_databricks.py`
 checks that repeated launch preflights reuse a successful CLI version probe, higher
 minimums recheck insufficient cached versions, and an installer invalidates discovery.
@@ -483,13 +478,6 @@ Caller permission-deny preservation is covered by `TestBuildClaudeArgv` in
 `../test_agent_claude.py`, including direct, relayed, and routing configuration output.
 Native parent/child enforcement and the distinction between technical search exclusion
 and a semantic search deny are not yet covered by this integration suite.
-
-`TestEnsureHooksModulesGate` in `../test_agent_claude.py` uses real local locks to cover
-already-enabled launch gates without lock acquisition and updates that re-read after
-another writer changes the file. It also covers stale flags, dry-run, invalid/unreadable
-files, and concurrent MCP updates. The controlled benchmark in
-`scripts/benchmark_claude_hooks_gate.py` isolates lock contention; neither it nor these
-component tests establishes live Claude startup latency or production p90 improvement.
 
 OpenCode `--model` / `-m` selection is covered by unit/component tests in
 `test_cli.py` and `test_agent_opencode.py`: the shared CLI passes raw model values,
