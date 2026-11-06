@@ -473,6 +473,7 @@ SKIPPED_ON_FORK_PRS = {
     "antigravity",
     "managed",
     "managed-opencode",
+    "mdm-provision",
     "dedicated-cuj-plan",
     "dedicated-cuj",
     "cujs",

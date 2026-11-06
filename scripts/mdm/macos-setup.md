@@ -15,8 +15,10 @@ A service principal is used only while the Jamf policy runs, to download the wor
 1. A Jamf policy runs `macos-provision.sh` as root, with the workspace URL and the service
    principal's client id and secret as policy parameters.
 2. The script installs the tools under `/usr/local`, exchanges the credentials for a short-lived
-   token, and runs `ug configure --global`, which installs the workspace policy at
-   `/etc/unitygateway/managed-settings.json`. Neither the credentials nor the token are written to
+   token, and runs `ug configure --global`, which writes the workspace policy at
+   `/etc/unitygateway/managed-settings.json`, Claude Code's managed settings and header mod under
+   `/Library/Application Support/ClaudeCode/` (`managed-settings.json`, `ucode-plugins/`), and
+   Codex's `/etc/codex/managed_config.toml`. Neither the credentials nor the token are written to
    disk.
 
    `ug` must be installed in a shared path such as `/usr/local/bin`, not under root's home
@@ -103,6 +105,7 @@ After the policy runs (check the computer's **History → Policy Logs**), as a u
 ```bash
 which ug databricks claude codex                 # /usr/local/bin/...
 cat /etc/unitygateway/managed-settings.json      # your workspace's policy
+cat "/Library/Application Support/ClaudeCode/managed-settings.json" /etc/codex/managed_config.toml
 UG_SKIP_OS_SETTINGS=1 ug claude
 ```
 
