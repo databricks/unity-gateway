@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+`TestResolveProviderService` in `test_databricks.py` requires a single named GET
+when it succeeds, preserves agent compatibility validation, and checks listing
+fallback after direct-lookup failures. These controlled API checks do not establish
+live provider latency.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component

@@ -3226,16 +3226,17 @@ def resolve_provider_service(
     doesn't exist, or its provider type isn't one ``tool`` can route to (e.g.
     pointing claude at an OpenAI service).
     """
-    services, reason = list_model_provider_services(workspace, token)
-    if is_model_provider_feature_unavailable(reason):
-        return None, "Model Provider Service feature is not available yet for this workspace."
-    if reason is not None:
-        return None, f"Could not list model provider services: {reason}"
-    match = next((s for s in services if s["name"] == service_name), None)
+    # A launch already knows the full service name. Avoid a metastore-wide paginated walk on
+    # this common path; retain listing as a compatibility fallback and for useful alternatives
+    # when a service is absent.
+    match, get_reason = get_model_provider_service(service_name, workspace, token)
     if match is None:
-        # Don't conclude "not found" from a listing that may be incomplete — a named service can be
-        # fetched directly. Only when that 404s is it really absent.
-        match, get_reason = get_model_provider_service(service_name, workspace, token)
+        services, reason = list_model_provider_services(workspace, token)
+        if is_model_provider_feature_unavailable(reason):
+            return None, "Model Provider Service feature is not available yet for this workspace."
+        if reason is not None:
+            return None, f"Could not list model provider services: {reason}"
+        match = next((s for s in services if s["name"] == service_name), None)
         if match is None:
             usable = [
                 s["name"] for s in services if tool_supports_provider_type(tool, s["provider_type"])
