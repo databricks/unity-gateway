@@ -7508,8 +7508,12 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
         monkeypatch.setattr(cli_mod, "_start_in_background", record)
         return started
 
-    def test_skip_model_discovery_never_starts_the_listing(self, monkeypatch):
-        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+    @pytest.mark.parametrize("lookup_fails", [False, True])
+    def test_skip_model_discovery_never_starts_the_listing(self, monkeypatch, lookup_fails):
+        existing = {"workspace": self.WS, "web_search_model": "system.ai.saved"}
+        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(
+            monkeypatch, pat_token=None, existing_state=existing
+        )
         started = self._record_background_starts(monkeypatch, cli_mod)
         listings: list[str] = []
         monkeypatch.setattr(
@@ -7519,7 +7523,7 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
         )
 
         def web_search_lookup(workspace, token):
-            return ["system.ai.gpt-5"], None
+            return ([], "lookup unavailable") if lookup_fails else (["system.ai.gpt-5"], None)
 
         monkeypatch.setattr(cli_mod, "discover_codex_models", web_search_lookup)
 
@@ -7530,7 +7534,9 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
         # Provider mode keeps its separate single-call web-search lookup, and only that one starts.
         assert started == [web_search_lookup]
         assert listings == []
-        assert state["web_search_model"] == "system.ai.gpt-5"
+        assert state["web_search_model"] == (
+            "system.ai.saved" if lookup_fails else "system.ai.gpt-5"
+        )
 
     def test_skipped_discovery_without_claude_starts_no_lookup(self, monkeypatch):
         cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)

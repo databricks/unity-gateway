@@ -428,7 +428,8 @@ Overlapping the model-service listing, or the web-search lookup when discovery i
 the gateway probe is covered only by component tests in `../test_cli.py`: overlap, probe failure
 without waiting, listing errors, the `skip_model_discovery` and `skip_preflight` paths, and reuse
 of the process-local probe and listing caches. Overlap and probe-failure cases are parametrized
-over both discovery paths. This suite does not assert live request overlap,
+over both discovery paths. An unsuccessful skipped-discovery lookup preserves the saved
+web-search model after a successful probe. This suite does not assert live request overlap,
 probe/listing timing, or launch-time savings.
 
 `test_ug_configure_scope.py` runs, for Claude and Codex separately (Linux/macOS only), plain

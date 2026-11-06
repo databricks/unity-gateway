@@ -637,7 +637,8 @@ propagates without saving state, that `skip_model_discovery` never starts the li
 keeps its web-search lookup, and that the overlap reuses the process-local probe and listing
 caches. The overlap and probe-failure cases are parametrized over both discovery paths.
 With discovery skipped, the Claude web-search lookup likewise starts on a daemon thread
-before the probe returns, a probe failure raises without waiting for it, and a launch that needs
+before the probe returns, a probe failure raises without waiting for it, an unsuccessful
+lookup preserves an existing web-search model, and a launch that needs
 no Claude model starts no worker. The skip-preflight tests also reject starting a background
 worker. These component checks control the HTTP boundary with events; they do not establish
 live gateway timing, agent launch, or launch-time savings.
