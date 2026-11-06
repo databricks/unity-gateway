@@ -1,9 +1,5 @@
 # Integration tests
 
-See [proxy test coverage](../README.md) for local upstream connection reuse,
-reconnection, and client pool settings. Live gateway latency and production idle
-timeouts remain unmeasured.
-
 The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
 service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
 It replaces the obsolete stdio-only expectation; this checks configuration, not live login.
@@ -51,9 +47,7 @@ checks live continuation with orchestration enabled on Claude 2.1.314+: one init
 Agent/Task call, a `SendMessage` addressed by ID or name whose native result
 resolves to the original child's ID, and two completed
 hidden file tasks in the same child transcript. Continuation checks use only parent
-calls/results, allowing the child to reply through SendMessage. The follow-up prompt omits
-the session-only `notify_when_idle` option and waits for automatic child completion.
-A second spawn or child session
+calls/results, allowing the child to reply through SendMessage. A second spawn or child session
 fails the test. Select it through the runner with `--claude-version 2.1.314` and
 `-- -k test_smart_router_claude_resumes_same_subagent_with_send_message`.
 Offline evidence checks accept both recipient forms and reject a missing recipient,

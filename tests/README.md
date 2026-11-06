@@ -1,12 +1,5 @@
 # Test suites and user journeys
 
-`test_gateway_proxy_integration.py` checks upstream connection reuse after a real
-six-second pause and reconnection when the upstream closes its connection. These
-local socket tests assert request and connection counts, without elapsed-time
-thresholds. They do not measure a production gateway's handshake latency.
-`test_gateway_proxy.py` also checks that the upstream client retains its 100 total /
-20 idle connection bounds, 30-second idle expiry, request timeouts, and redirect behavior.
-
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
@@ -223,9 +216,7 @@ resolves to the child's ID), `queued` (accepted for the still-running child, `pi
 its ID), or `rejected` (a failed, undelivered send addressed to the child, as for an invented
 `notify_when_idle` option). The journey requires at least one `resumed` send and tolerates
 `queued`/`rejected` only alongside it (runs 41759864769 and 41768149986). Only parent
-SendMessage calls are checked; child replies to the parent are allowed. The follow-up
-prompt omits the session-only `notify_when_idle` option and waits for automatic child completion.
-Offline checks reject
+SendMessage calls are checked; child replies to the parent are allowed. Offline checks reject
 missing recipients, other agents (resumed, queued, or addressed), unknown result shapes,
 missing tool results, and a follow-up set with no real resume. Run it with
 Claude 2.1.314+; description-only component checks do not prove continuation.
