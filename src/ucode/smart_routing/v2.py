@@ -903,12 +903,37 @@ def launch_codex(
     overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
         SESSION_PYTHON_ENV_VAR
     ]
-    from ucode.smart_routing.codex_reload import routing_config
+    from ucode.smart_routing.codex_proxy import session_proxy
 
-    overlay["thread_unload_delay_secs"] = 0
-    overlay = routing_config(overlay, enabled=True)
+    with session_proxy(state, overlay, session_env_path) as (proxy_overlay, env):
+        returncode = _run_codex(
+            state, tool_args, binary, start_model, proxy_overlay, env, available_models
+        )
+    sys.exit(returncode)
+
+
+def _wait_codex(proc) -> int:
+    while True:
+        try:
+            return proc.wait()
+        except KeyboardInterrupt:
+            # The terminal signals Codex too; keep its proxy alive until Codex exits.
+            continue
+
+
+def _run_codex(
+    state: dict,
+    tool_args: list[str],
+    binary: str,
+    start_model: str,
+    overlay: dict,
+    env: dict,
+    available_models: list[str],
+) -> int:
     config_args = codex_config_args(overlay)
-    first_prompt = first_prompt_routing_enabled(agent=AGENT_CODEX)
+    if not first_prompt_routing_enabled(agent=AGENT_CODEX):
+        return _wait_codex(subprocess_cross_os.popen([binary, *config_args, *tool_args], env=env))
+    workspace = state["workspace"]
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
 
@@ -919,7 +944,7 @@ def launch_codex(
     # preferences) and layer only ucode's gateway settings at CLI precedence.
     app_server = subprocess_cross_os.popen(
         [binary, "app-server", *config_args, "--listen", app_server_url],
-        env=os.environ.copy(),
+        env=env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -934,32 +959,20 @@ def launch_codex(
             LOOPBACK_HOST,
             app_server_url,
             available_models=available_models,
-            workspace=workspace if first_prompt else None,
-            token_provider=(lambda: launch_token(state, workspace)) if first_prompt else None,
+            workspace=workspace,
+            token_provider=lambda: launch_token(state, workspace),
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
-            reload_config=overlay,
-            session_controls=session_env_path,
         )
         tui_url = _loopback_websocket_url(tui_port)
-        provider_args = []
-        if os.name == "nt":
-            # Windows has no machine-wide Codex config for the remote TUI to inherit.
-            provider_args = codex_config_args(
-                {
-                    key: overlay[key]
-                    for key in ("model_provider", "model_providers")
-                    if key in overlay
-                }
-            )
-        tui = subprocess_cross_os.popen(
-            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
+        provider_args = codex_config_args(
+            {key: overlay[key] for key in ("model_provider", "model_providers")}
         )
-        try:
-            returncode = tui.wait()
-        except KeyboardInterrupt:
-            tui.send_signal(signal.SIGINT)
-            returncode = tui.wait()
+        tui = subprocess_cross_os.popen(
+            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args],
+            env=env,
+        )
+        return _wait_codex(tui)
     finally:
         if stop_interposer is not None:
             stop_interposer()
@@ -969,4 +982,3 @@ def launch_codex(
         except Exception:  # noqa: BLE001
             app_server.kill()
             app_server.wait()
-    sys.exit(returncode)

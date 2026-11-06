@@ -43,6 +43,17 @@ def test_smart_routing_switch_message_wraps_to_fixed_width():
 
 
 class TestLaunchCodex:
+    def test_terminal_interrupts_keep_proxy_owner_waiting_for_codex_exit(self):
+        outcomes = iter([KeyboardInterrupt(), KeyboardInterrupt(), 7])
+
+        def wait():
+            outcome = next(outcomes)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+        assert v2._wait_codex(SimpleNamespace(wait=wait)) == 7
+
     @pytest.mark.parametrize(
         ("installed_version", "accept_upgrade", "upgraded_version", "auto_upgrade"),
         [
@@ -249,9 +260,7 @@ class TestLaunchCodex:
                 assert path.read_text() == content
         assert codex._smart_routing_config_model({"codex_default_model": "admin"}) == "admin"
 
-    @pytest.mark.parametrize(
-        ("platform_name", "tui_has_provider"), [("posix", False), ("nt", True)]
-    )
+    @pytest.mark.parametrize(("platform_name", "tui_has_provider"), [("posix", True), ("nt", True)])
     def test_owns_app_server_interposer_and_tui_lifecycle(
         self, tmp_path, monkeypatch, platform_name, tui_has_provider
     ):
@@ -327,12 +336,12 @@ class TestLaunchCodex:
             "codex",
             "app-server",
             "--config",
-            'model_provider="Databricks"',
+            'model_provider="DatabricksSmartRouter"',
             "--config",
             'model="gpt-start"',
             "--config",
         ]
-        assert processes[0].argv[7].startswith("model_providers.Databricks={")
+        assert processes[0].argv[7].startswith("model_providers.DatabricksSmartRouter={")
         assert processes[0].argv[8] == "--config"
         hook_override = processes[0].argv[9]
         assert hook_override.startswith("hooks.PreToolUse=[{")
@@ -384,7 +393,7 @@ class TestLaunchCodex:
             assert tui_argv[:4] == [
                 "codex",
                 "--config",
-                'model_provider="Databricks"',
+                'model_provider="DatabricksSmartRouter"',
                 "--config",
             ]
             assert tui_argv[4] == processes[0].argv[7]
@@ -398,9 +407,9 @@ class TestLaunchCodex:
             "system.ai.glm-5-2",
         ]
         assert interposer_args["kwargs"]["workspace"] == WS
-        assert token_calls == [(WS, "myprof")]
-        assert interposer_args["kwargs"]["token_provider"]() == "token-2"
         assert token_calls == [(WS, "myprof"), (WS, "myprof")]
+        assert interposer_args["kwargs"]["token_provider"]() == "token-3"
+        assert token_calls == [(WS, "myprof"), (WS, "myprof"), (WS, "myprof")]
         assert interposer_args["kwargs"]["switch_message_fn"] is v2.format_routing_notice
         assert stopped == [True]
         assert processes[0].terminated is True
@@ -453,14 +462,14 @@ class TestLaunchCodex:
             )
 
         provider_arg = next(
-            arg for arg in processes[0].argv if arg.startswith("model_providers.Databricks=")
+            arg
+            for arg in processes[0].argv
+            if arg.startswith("model_providers.DatabricksSmartRouter=")
         )
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
 
-    def test_subagent_only_launch_enables_reload_without_first_prompt_routing(
-        self, tmp_path, monkeypatch
-    ):
+    def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch):
         user_config = tmp_path / "config.toml"
         saved_config = (
             b"[features.multi_agent_v2]\nnon_code_mode_only = true\n"
@@ -473,28 +482,20 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        processes = []
-        interposer_options = {}
+        monkeypatch.setattr(
+            codex_interposer,
+            "start_interposer_thread",
+            lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not interpose"),
+        )
+        execd = []
 
-        class Process:
-            def __init__(self, argv, **kwargs):
-                self.argv = argv
-                self.terminated = False
-                processes.append(self)
+        def launch_tui(argv, **kwargs):
+            execd.append(argv)
+            assert "--remote" not in argv and "app-server" not in argv
+            assert kwargs["env"]["UG_CODEX_ROUTING_PROXY_KEY"]
+            return SimpleNamespace(wait=lambda: 0)
 
-            def wait(self, timeout=None):
-                return 0
-
-            def terminate(self):
-                self.terminated = True
-
-        def start_interposer(*args, **kwargs):
-            interposer_options.update(kwargs)
-            return 41002, lambda: None
-
-        monkeypatch.setattr(v2.subprocess, "Popen", Process)
-        monkeypatch.setattr(v2, "_wait_for_app_server", lambda *a, **kw: True)
-        monkeypatch.setattr(codex_interposer, "start_interposer_thread", start_interposer)
+        monkeypatch.setattr(v2.subprocess, "Popen", launch_tui)
 
         with pytest.raises(SystemExit) as exc:
             v2.launch_codex(
@@ -506,21 +507,9 @@ class TestLaunchCodex:
             )
 
         assert exc.value.code == 0
-        argv = processes[0].argv
-        assert argv[:2] == ["codex", "app-server"]
-        assert processes[1].argv[-1] == "--search"
-        assert "--remote" in processes[1].argv
-        assert processes[0].terminated
-        assert interposer_options["workspace"] is None
-        assert interposer_options["token_provider"] is None
-        assert interposer_options["session_controls"].is_file()
-        assert interposer_options["reload_config"]["thread_unload_delay_secs"] == 0
-        assert (
-            interposer_options["reload_config"]["responses_api_metadata"][
-                "smart_router_recipe_name"
-            ]
-            == "stable"
-        )
+        (argv,) = execd
+        assert argv[0] == "codex"
+        assert argv[-1] == "--search"
         assert 'model="gpt-start"' in argv
         config_values = [argv[index + 1] for index, arg in enumerate(argv) if arg == "--config"]
         native_overrides = tomllib.loads("\n".join(config_values))["features"]["multi_agent_v2"]
@@ -802,7 +791,7 @@ class TestCustomCatalogModels:
 
     def test_start_model_comes_from_custom_catalog(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.166.0")
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.164.0")
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
         monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: None)

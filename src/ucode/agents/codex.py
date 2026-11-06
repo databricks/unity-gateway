@@ -556,7 +556,6 @@ def write_tool_config(
             for key in ("model", "model_reasoning_effort"):
                 profiles[CODEX_PROFILE_NAME].pop(key, None)
         _set_provider_header(doc, None)
-        _remove_persisted_recipe(doc)
         write_toml_file(LEGACY_CODEX_CONFIG_PATH, doc)
         state = mark_tool_managed(state, "codex", LEGACY_MANAGED_KEYS)
         save_state(state)
@@ -610,7 +609,6 @@ def write_tool_config(
             else:
                 base.pop("model_catalog_json", None)
         _set_provider_header(base, None)
-        _remove_persisted_recipe(base)
         return base
 
     # `ug configure --global` writes only the machine-wide file below.
@@ -630,9 +628,23 @@ def write_tool_config(
             enabled=False,
         )
         write_toml_file(CODEX_CONFIG_PATH, doc)
-    _reconcile_managed_config(
-        state, lambda base: compose(base, include_catalog=False), relayed=relayed
-    )
+
+    def compose_managed(base: dict) -> dict:
+        selected = base.get("model_provider")
+        compose(base, include_catalog=False)
+        if machine_wide_only():
+            return base
+        # A pinned default conflicts with the session proxy's provider and makes its TUI read-only.
+        if selected is None or str(selected).casefold() in (
+            CODEX_MODEL_PROVIDER_NAME.casefold(),
+            LEGACY_CODEX_MODEL_PROVIDER_NAME.casefold(),
+        ):
+            base.pop("model_provider", None)
+        else:
+            base["model_provider"] = selected
+        return base
+
+    _reconcile_managed_config(state, compose_managed, relayed=relayed)
     # Persisted so launch() wires the relay proxy and ChatGPT login; cleared on a non-relayed run.
     if relayed:
         state["codex_relayed"] = True
@@ -1211,10 +1223,6 @@ def _as_requirements(compose: Callable[[dict], dict]) -> Callable[[dict], dict]:
         doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]["env_http_headers"] = dict(
             _LAUNCH_ROUTING_HEADER_ENV_VARS
         )
-        # App-server environment is fixed at launch; reload updates body metadata instead.
-        doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]["env_http_headers"].pop(
-            SMART_ROUTER_RECIPE_HEADER, None
-        )
         return doc
 
     return compose_requirements
@@ -1535,16 +1543,6 @@ def clear_model_preferences(state: dict) -> bool:
 
 def _set_provider_header(config: dict, provider: str | None) -> None:
     _set_routing_header(config, MODEL_PROVIDER_SERVICE_HEADER, provider)
-
-
-def _remove_persisted_recipe(config: dict) -> None:
-    # OS-managed headers outrank even thread/resume overrides, freezing attribution.
-    provider = config.get("model_providers", {}).get(CODEX_MODEL_PROVIDER_NAME, {})
-    for key in ("http_headers", "env_http_headers"):
-        headers = provider.get(key, {})
-        for name in list(headers):
-            if name.casefold() == SMART_ROUTER_RECIPE_HEADER.casefold():
-                del headers[name]
 
 
 def _set_parent_schema_header(config: dict, parent_schema: str | None) -> None:
@@ -2009,7 +2007,7 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
 
     binary = SPEC["binary"]
     ensure_minimum_version("codex", lambda: minimum_version_error(smart_routing_enabled=True))
-    _reject_managed_recipe()
+    _check_smart_routing_proxy_config()
 
     configured_model = _smart_routing_config_model(state)
     # Prefer the custom catalog if it exists.
@@ -2028,21 +2026,27 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
     )
 
 
-def _reject_managed_recipe() -> None:
+def _check_smart_routing_proxy_config() -> None:
+    from ucode.smart_routing.codex_proxy import PROXY_PROVIDER
+
     path = codex_managed_config_path()
-    if path is None or (text := read_managed_file(path)) is None:
+    text = read_managed_file(path) if path else None
+    if text is None:
         return
     managed = _parse_managed_config(text)
-    provider = managed.get("model_providers", {}).get(CODEX_MODEL_PROVIDER_NAME, {})
-    if any(
-        name.casefold() == SMART_ROUTER_RECIPE_HEADER.casefold()
-        for key in ("http_headers", "env_http_headers")
-        for name in provider.get(key, {})
+    selected = managed.get("model_provider")
+    if isinstance(selected, str) and selected.casefold() in (
+        CODEX_MODEL_PROVIDER_NAME.casefold(),
+        LEGACY_CODEX_MODEL_PROVIDER_NAME.casefold(),
     ):
         raise RuntimeError(
-            f"Codex managed settings at {path} pin the Smart Router recipe. "
-            "Run `ug configure` to remove that persisted header before using smart routing; "
-            "otherwise session toggles cannot update inference attribution."
+            f"Codex settings at {path} pin UG's default provider. Run `ug configure` "
+            "to update them before starting the Smart Router gateway proxy."
+        )
+    if selected is not None or PROXY_PROVIDER in managed.get("model_providers", {}):
+        raise RuntimeError(
+            f"Codex managed settings at {path} override the Smart Router proxy provider. "
+            "Ask your administrator to allow the launch-scoped provider before enabling smart routing."
         )
 
 
