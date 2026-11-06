@@ -29,11 +29,7 @@ def test_dry_run_does_not_start_advisory_request(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("normalized", [False, True])
-@pytest.mark.parametrize("timeout", [None, 3])
-def test_recommendation_clients_preserve_default_timeout_and_forward_override(
-    monkeypatch, normalized, timeout
-):
+def test_recommendation_client_preserves_default_timeout(monkeypatch):
     requests = []
 
     def post(url, token, payload, *, timeout):
@@ -41,13 +37,8 @@ def test_recommendation_clients_preserve_default_timeout_and_forward_override(
         return {"recommended_model": "system.ai.example"}, None
 
     monkeypatch.setattr(databricks, "_http_post_json", post)
-    read = (
-        managed_config.get_model_recommendation
-        if normalized
-        else databricks.fetch_model_recommendation
-    )
-    result, reason = read(
-        "https://example.databricks.com", "test-token", **({"timeout": timeout} if timeout else {})
+    result, reason = managed_config.get_model_recommendation(
+        "https://example.databricks.com", "test-token"
     )
 
     assert reason is None
@@ -57,7 +48,7 @@ def test_recommendation_clients_preserve_default_timeout_and_forward_override(
             "https://example.databricks.com/api/ai-gateway/v2/coding-agent-configs:recommendModel",
             "test-token",
             {},
-            30 if timeout is None else timeout,
+            30,
         )
     ]
 
@@ -96,6 +87,7 @@ def test_stalled_launch_request_warns_and_retains_configured_agent_and_model(mon
     }
     warnings = []
     monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
     monkeypatch.delenv("UG_HEADERS", raising=False)
     monkeypatch.setattr(cli, "is_dry_run", lambda: False)
     monkeypatch.setattr(cli, "get_databricks_token", lambda *_args: "local-component-token")

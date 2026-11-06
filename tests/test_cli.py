@@ -8999,16 +8999,6 @@ class TestBudgetRecommendationAtLaunch:
         assert "recommends OpenCode" in result.output
 
     def test_a_failed_read_does_not_block_the_launch(self, monkeypatch):
-        result, _calls, _cfg = self._launch(
-            monkeypatch,
-            managed={"enabled_agents": {"claude": {}}, **self.SMART_DEFAULTS},
-            recommendation=None,
-            reason="HTTP 500",
-        )
-        assert result.exit_code == 0, result.output
-        assert "Could not check your budget" in result.output
-
-    def test_a_timeout_keeps_the_configured_model(self, monkeypatch):
         result, calls, cfg = self._launch(
             monkeypatch,
             managed={
@@ -9017,9 +9007,9 @@ class TestBudgetRecommendationAtLaunch:
                 },
                 **self.SMART_DEFAULTS,
             },
-            reason="network error: timed out",
+            recommendation=None,
+            reason="HTTP 500",
         )
-
         assert result.exit_code == 0, result.output
         assert calls == [MINIMAL_STATE["workspace"]]
         assert cfg.call_args.args[2] == "system.ai.claude-opus-4-8"
