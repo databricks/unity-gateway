@@ -316,6 +316,7 @@ def _print_managed_summary(
     abridged: bool = False,
     configured_tools: list[str] | None = None,
     registered_mcps: list[str] | None = None,
+    failed_tools: list[str] | None = None,
 ) -> None:
     """Show which of the admin's settings are in force.
 
@@ -344,6 +345,7 @@ def _print_managed_summary(
             if tool in TOOL_SPECS and tool not in enabled and is_self_managed(state, tool)
         ]
         failed = [t for t in enabled if t not in configured_tools]
+        failed.extend(t for t in (failed_tools or []) if t in TOOL_SPECS and t not in failed)
         enabled = [t for t in enabled if t in configured_tools]
     if enabled:
         lines.append(
@@ -402,7 +404,11 @@ def _print_managed_summary_abridged(managed: dict, state: dict, tool: str | None
 
 
 def _summarize_managed_config(
-    managed: dict, configured_tools: list[str], registered_mcps: list[str]
+    managed: dict,
+    configured_tools: list[str],
+    registered_mcps: list[str],
+    *,
+    failed_tools: list[str] | None = None,
 ) -> None:
     """Show the resulting managed setup, listing only the agents that configured cleanly."""
     _print_managed_summary(
@@ -411,6 +417,7 @@ def _summarize_managed_config(
         tool=None,
         configured_tools=configured_tools,
         registered_mcps=registered_mcps,
+        failed_tools=failed_tools,
     )
     print_success("Configuration complete — launch with [bold cyan]ug[/bold cyan].")
 
@@ -1439,7 +1446,7 @@ def _configure_workspace_command(
             selected_self_managed = [
                 name
                 for name in selected_tools
-                if name not in managed_tools and is_self_managed(state, name)
+                if _agent_management(managed, state, name) is AgentManagement.SELF
             ]
             excluded = [
                 name
@@ -1520,6 +1527,7 @@ def _configure_workspace_command(
                 or check_gateway_endpoint(resolved, tool_name)
             ):
                 if not install_tool_binary(tool_name, strict=False):
+                    failed_tools.append(tool_name)
                     continue
                 configured = configure_selected_tools(
                     resolved,
@@ -1546,6 +1554,7 @@ def _configure_workspace_command(
                 else:
                     failed_tools.append(tool_name)
             elif tool_name in selected_self_managed:
+                failed_tools.append(tool_name)
                 print_warning(
                     f"Skipping self-managed {TOOL_SPECS[tool_name]['display']}: unavailable on "
                     "this workspace. Run `ug status` to inspect model availability."
@@ -1571,7 +1580,9 @@ def _configure_workspace_command(
                 _sync_claude_cowork_plugin(
                     state, managed_mcp_servers=resolved_mcps, sync_cowork=skills_configured
                 )
-        _summarize_managed_config(summary_managed, configured_tools, registered_mcps)
+        _summarize_managed_config(
+            summary_managed, configured_tools, registered_mcps, failed_tools=failed_tools
+        )
         _fail_machine_wide_run(failed_tools)
         return 0
 

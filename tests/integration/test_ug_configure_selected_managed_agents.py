@@ -5,6 +5,7 @@ managed_fixture hook. The workspace, installed ug/Claude, generated state, and t
 """
 
 import hashlib
+import os
 import shutil
 from pathlib import Path
 
@@ -38,7 +39,14 @@ def test_ug_configure_selected_managed_claude_leaves_other_agents_unconfigured(
     task = FileTask(session)
     codex_before = shutil.which("codex", path=session.env["PATH"])
     pi_before = shutil.which("pi", path=session.env["PATH"])
-    codex_managed = Path("/etc/codex/managed_config.toml")
+    if os.name == "nt":
+        program_data = next(
+            (value for name, value in session.env.items() if name.casefold() == "programdata"), None
+        )
+        assert program_data, "Windows session is missing ProgramData"
+        codex_managed = Path(program_data) / "OpenAI/Codex/requirements.toml"
+    else:
+        codex_managed = Path("/etc/codex/managed_config.toml")
     codex_managed_before = _snapshot(codex_managed)
 
     session.run(

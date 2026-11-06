@@ -5658,12 +5658,17 @@ class TestConfigureAgentsSelection:
         import ucode.cli as cli_mod
 
         state = {**MINIMAL_STATE, "available_tools": [], "self_managed_agents": self_managed}
+        managed = {"enabled_agents": {"claude": {}, "codex": {}, "pi": {}}}
         monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
         monkeypatch.setattr(
             cli_mod,
             "refresh_managed_config",
-            lambda s, **_k: ({"enabled_agents": {"claude": {}, "codex": {}, "pi": {}}}, False),
+            lambda s, **_k: (managed, False),
         )
+        mcp_setup = MagicMock(return_value=[])
+        skills_setup = MagicMock(return_value=True)
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", mcp_setup)
+        monkeypatch.setattr(cli_mod, "_configure_managed_skills", skills_setup)
         monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: t != unavailable)
         installed: list[str] = []
         monkeypatch.setattr(
@@ -5699,6 +5704,8 @@ class TestConfigureAgentsSelection:
         )
         assert installed == expected
         assert configured == expected
+        mcp_setup.assert_called_once_with(managed)
+        skills_setup.assert_called_once_with(managed)
         assert [call.args[2] for call in resolve.call_args_list] == [
             tool for tool in expected if tool not in self_managed
         ]
@@ -5790,6 +5797,49 @@ class TestConfigureAgentsSelection:
         output = " ".join(_strip_ansi(capsys.readouterr().out).split())
         assert "Self-managed agents: Gemini" in output
         assert "Coding Agents:" not in output
+
+    @pytest.mark.parametrize("failure", ["unavailable", "configure", "install"])
+    def test_global_selection_reports_failed_self_managed_agent(self, monkeypatch, capsys, failure):
+        state = {**MINIMAL_STATE, "available_tools": [], "self_managed_agents": ["claude"]}
+        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(
+            cli_mod,
+            "refresh_managed_config",
+            lambda *a, **k: ({"enabled_agents": {"codex": {}}}, False),
+        )
+        monkeypatch.setattr(cli_mod, "machine_wide_only", lambda: True)
+        monkeypatch.setattr(cli_mod, "resolve_state", lambda managed, s, tool: s)
+        monkeypatch.setattr(
+            cli_mod,
+            "check_gateway_endpoint",
+            lambda s, tool: not (tool == "claude" and failure == "unavailable"),
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "install_tool_binary",
+            lambda tool, **k: not (tool == "claude" and failure == "install"),
+        )
+        configured = []
+
+        def configure(s, tools, **kwargs):
+            successful = [] if tools == ["claude"] and failure == "configure" else tools
+            configured.extend(successful)
+            return {**s, "available_tools": configured, "last_configured_tools": successful}
+
+        monkeypatch.setattr(cli_mod, "configure_selected_tools", configure)
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *a: [])
+        monkeypatch.setattr(cli_mod, "_configure_managed_skills", lambda *a: True)
+
+        with pytest.raises(RuntimeError, match="could not configure Claude Code"):
+            cli_mod.configure_workspace_command(
+                selected_tools=["codex", "claude"], workspaces=[(state["workspace"], None)]
+            )
+
+        output = " ".join(_strip_ansi(capsys.readouterr().out).split())
+        assert configured == ["codex"]
+        assert "Coding Agents: Codex" in output
+        assert "Failed to configure: Claude Code" in output
 
     @pytest.mark.parametrize(
         ("model_config", "expected_provider", "expected_parent"),
