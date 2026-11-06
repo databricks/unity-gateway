@@ -396,13 +396,13 @@ with live values before and after `ug usage --all`.
 Dashboard-link component coverage in `../test_usage.py`, `../test_databricks.py`, and
 `../test_workspace_selection.py` checks the authenticated dashboard GET, workspace selector
 headers, the optional footer after limits or empty/unavailable-budget messages, literal
-URL rendering, and omission for absent URLs or failed lookups. Presentation checks cover
-the bold footer label with its external-link indicator, a blank line after the link,
-the underlined URL's target, OSC 8
-output in terminal mode, and intact long URLs at 40/80/200-column widths in both terminal
-and plain redirected output. Terminal wrapping does not insert newlines into the URL,
-preserving automatic URL detection and copying. These checks do not establish live
-dashboard access or browser navigation.
+URL rendering, and omission for absent URLs or failed lookups. One representative
+failure reason covers the optional lookup; existing budget tests cover `--all` separately.
+An explicit missing-URL case checks that no footer or extra blank line is printed.
+Presentation checks use a real Rich Console at 40 columns in terminal and redirected
+modes, covering the bold label and link indicator, trailing blank line, underlined URL's
+target and color, and intact long URLs. These checks do not establish live dashboard
+access or browser navigation.
 
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
 enforced by Ruff. These component checks do not establish native Windows coverage

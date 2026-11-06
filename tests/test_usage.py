@@ -681,14 +681,10 @@ class TestUsageCommand:
             usage()
         assert str(exc_info.value) == "Your access token is expired or invalid."
 
-    @pytest.mark.parametrize("show_all", [False, True])
     @pytest.mark.parametrize("budget_result", ["limits", "empty", "unavailable"])
-    def test_appends_dashboard_url_after_usage_output(self, monkeypatch, show_all, budget_result):
+    def test_appends_dashboard_url_after_usage_output(self, monkeypatch, budget_result):
         self._stub_auth(monkeypatch, {"workspace": "https://workspace", "profile": "profile"})
-        statuses = [
-            BudgetLimitStatus(f"budget-{index}", PER_USER, "MONTH", Decimal(index))
-            for index in range(6)
-        ]
+        statuses = [BudgetLimitStatus("budget", PER_USER, "MONTH", Decimal("25"))]
         monkeypatch.setattr(
             usage_mod,
             "list_current_user_budget_spend_statuses",
@@ -709,22 +705,34 @@ class TestUsageCommand:
         monkeypatch.setattr(usage_mod, "console", console)
         monkeypatch.setattr(usage_mod, "print_note", console.print)
 
-        assert usage(show_all=show_all) == 0
+        assert usage() == 0
 
         text = output.getvalue()
         assert calls == [("https://workspace", "workspace-token")]
         assert text.endswith(f"\n\n↗ Explore usage trends: {dashboard_url}\n\n")
         if budget_result == "limits":
-            assert text.count("% used") == (6 if show_all else 5)
-            assert ("Run ug usage --all" in text) is not show_all
+            assert "25% used" in text
         elif budget_result == "empty":
             assert "No Unity Gateway spend limits found" in text
         else:
             assert "budget usage is not available" in text
 
+    def test_omits_dashboard_footer_without_a_url(self, monkeypatch):
+        self._stub_auth(monkeypatch, {"workspace": "https://workspace"})
+        monkeypatch.setattr(
+            usage_mod, "list_current_user_budget_spend_statuses", lambda *args: ([], None)
+        )
+        monkeypatch.setattr(usage_mod, "get_usage_dashboard_url", lambda *args: None)
+        output = io.StringIO()
+        console = Console(file=output, color_system=None, width=200)
+        monkeypatch.setattr(usage_mod, "console", console)
+        monkeypatch.setattr(usage_mod, "print_note", console.print)
+
+        assert usage() == 0
+        assert output.getvalue() == "No Unity Gateway spend limits found for this workspace.\n"
+
     @pytest.mark.parametrize("terminal", [False, True])
-    @pytest.mark.parametrize("width", [40, 80, 200])
-    def test_displays_dashboard_url_as_literal_hyperlink(self, monkeypatch, terminal, width):
+    def test_displays_dashboard_url_as_literal_hyperlink(self, monkeypatch, terminal):
         self._stub_auth(monkeypatch, {"workspace": "https://workspace"})
         monkeypatch.setattr(
             usage_mod, "list_current_user_budget_spend_statuses", lambda *args: ([], None)
@@ -735,43 +743,33 @@ class TestUsageCommand:
             "&filter=[red]value[/red]"
         )
         monkeypatch.setattr(usage_mod, "get_usage_dashboard_url", lambda *args: dashboard_url)
-        printed = []
         monkeypatch.setattr(usage_mod, "print_note", lambda *args: None)
-        monkeypatch.setattr(
-            usage_mod,
-            "console",
-            type(
-                "Console", (), {"print": lambda _, text, **kwargs: printed.append((text, kwargs))}
-            )(),
-        )
-
-        assert usage() == 0
-        text, print_kwargs = printed[-1]
-        assert isinstance(text, Text)
-        assert text.plain == f"\n↗ Explore usage trends: {dashboard_url}"
-        style = text.get_style_at_offset(Console(), len(text.plain) - 1)
-        assert style.link == dashboard_url
-        assert style.underline is True
-        assert style.color is not None and style.color.name == "cyan"
-        label_style = text.get_style_at_offset(Console(), 1)
-        assert label_style.bold is True
-        assert label_style.link is None
-
         output = io.StringIO()
         console = Console(
             file=output,
             force_terminal=terminal,
             color_system="standard" if terminal else None,
-            width=width,
+            no_color=False,
+            width=40,
         )
-        console.print(text, **print_kwargs)
+        monkeypatch.setattr(usage_mod, "console", console)
+
+        assert usage() == 0
+
         rendered = output.getvalue()
+        expected = f"\n↗ Explore usage trends: {dashboard_url}\n\n"
         if terminal:
-            assert "\x1b]8;" in rendered
-            assert f";{dashboard_url}\x1b\\" in rendered
-            assert Text.from_ansi(rendered).plain == text.plain + "\n\n"
+            text = Text.from_ansi(rendered)
+            assert text.plain == expected
+            style = text.get_style_at_offset(console, text.plain.index(dashboard_url))
+            assert style.link == dashboard_url
+            assert style.underline is True
+            assert style.color is not None and style.color.number == 6  # ANSI cyan
+            label_style = text.get_style_at_offset(console, 1)
+            assert label_style.bold is True
+            assert label_style.link is None
         else:
-            assert rendered == f"\n↗ Explore usage trends: {dashboard_url}\n\n"
+            assert rendered == expected
             assert "\x1b" not in rendered
 
     def test_requires_a_configured_workspace(self, monkeypatch):

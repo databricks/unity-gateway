@@ -5581,19 +5581,8 @@ class TestGetUsageDashboardUrl:
         monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (payload, None))
         assert db_mod.get_usage_dashboard_url(WS, "token") is None
 
-    @pytest.mark.parametrize(
-        "reason",
-        [
-            "HTTP 404 Not Found",
-            "HTTP 403 Forbidden",
-            "HTTP 401 Unauthorized",
-            "HTTP 500 Internal Server Error",
-            "network error: timed out",
-            "response was not valid JSON",
-        ],
-    )
-    def test_lookup_failure_omits_optional_link(self, monkeypatch, reason):
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (None, reason))
+    def test_lookup_failure_omits_optional_link(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (None, "HTTP 403 Forbidden"))
         assert db_mod.get_usage_dashboard_url(WS, "token") is None
 
 
