@@ -591,6 +591,7 @@ def test_buffered_user_turn_receives_recovery_context_without_competing_turn(tmp
 def test_reconnected_root_is_reloaded_even_when_controls_have_not_changed(tmp_path):
     async def scenario():
         controller, engine, _, _ = make_controller(tmp_path)
+        controller.root = None
         await controller.before_tui(
             {"id": 21, "method": "thread/resume", "params": {"threadId": "root"}}
         )
@@ -606,5 +607,90 @@ def test_reconnected_root_is_reloaded_even_when_controls_have_not_changed(tmp_pa
         finally:
             watcher.cancel()
             await asyncio.gather(watcher, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("parent_metadata", ["parentThreadId", "source", "previously_observed"])
+@pytest.mark.parametrize("selected", ["child", "grandchild"])
+def test_agent_navigation_preserves_tree_and_root_settings(tmp_path, parent_metadata, selected):
+    async def scenario():
+        controller, engine, _, controls = make_controller(tmp_path)
+        controller.remember_settings({"model": "root-model", "cwd": "/root-workspace"})
+        engine.add("grandchild", "child")
+        original_settings = copy.deepcopy(controller.settings)
+        thread = {"id": selected}
+        parent = "root" if selected == "child" else "child"
+        if parent_metadata == "parentThreadId":
+            thread["parentThreadId"] = parent
+        elif parent_metadata == "source":
+            thread["source"] = {"subAgent": {"thread_spawn": {"parent_thread_id": parent}}}
+        if parent_metadata != "previously_observed":
+            controller.parents.pop(selected)
+        for identity, viewed in enumerate([thread, {"id": "root", "parentThreadId": None}], 30):
+            await controller.before_tui(
+                {"id": identity, "method": "thread/resume", "params": {"threadId": viewed["id"]}}
+            )
+            controller.observe(
+                {
+                    "id": identity,
+                    "result": {
+                        "thread": viewed,
+                        "model": "child-model" if viewed == thread else "root-model",
+                        "cwd": "/child-workspace" if viewed == thread else "/root-workspace",
+                    },
+                }
+            )
+            assert controller.root == "root"
+            assert controller.root_for(selected) == "root"
+            assert controller.settings == original_settings
+            assert not controller.reload_requested
+        assert not engine.calls
+        assert set(controller.active) == {"root", "child", "grandchild"}
+
+        controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
+        await controller.reload()
+        resumed = [call["params"] for call in engine.calls if call["method"] == "thread/resume"]
+        assert len(resumed) == 1
+        assert resumed[0]["threadId"] == "root"
+        assert resumed[0]["model"] == "root-model"
+        assert resumed[0]["cwd"] == "/root-workspace"
+        assert (
+            resumed[0]["config"]["responses_api_metadata"]["smart_router_recipe_name"] == "DISABLED"
+        )
+        interrupted = {
+            call["params"]["threadId"]
+            for call in engine.calls
+            if call["method"] == "turn/interrupt"
+        }
+        assert interrupted == {"root", "child", "grandchild"}
+
+    asyncio.run(scenario())
+
+
+def test_returning_to_known_root_does_not_request_reconnect_reload(tmp_path):
+    async def scenario():
+        controller, _, _, _ = make_controller(tmp_path)
+        for identity, method, tid in [
+            (40, "thread/start", "second-root"),
+            (41, "thread/resume", "root"),
+        ]:
+            await controller.before_tui(
+                {"id": identity, "method": method, "params": {"threadId": tid}}
+            )
+            controller.observe({"id": identity, "result": {"thread": {"id": tid}}})
+            assert not controller.reload_requested
+        assert controller.root == "root"
+        assert set(controller.conversations) == {"root", "second-root"}
+
+    asyncio.run(scenario())
+
+
+def test_viewing_known_child_does_not_override_its_configuration(tmp_path):
+    async def scenario():
+        controller, _, _, _ = make_controller(tmp_path)
+        request = {"id": 42, "method": "thread/resume", "params": {"threadId": "child"}}
+        forwarded = await controller.before_tui(copy.deepcopy(request))
+        assert forwarded == request
 
     asyncio.run(scenario())

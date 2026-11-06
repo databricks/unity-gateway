@@ -20,7 +20,15 @@ description unchanged when routing is off.
 
 `test_codex_routing_reload.py` (under `tests/`) covers reload races, held input,
 permission preservation, multiple roots, rapid toggles, reconnects, Escape, and
-bounded failure handling with controlled transports.
+bounded failure handling with controlled transports. Navigation cases preserve
+root ownership and settings while selecting children, nested descendants, and
+already tracked roots, then verify a subsequent toggle still reloads the tree.
+
+`test_smart_router_codex_agent_navigation_preserves_running_child` uses the real
+`/subagents` picker to open a busy child and return to the parent without a toggle.
+It requires no reload or interruption, exactly one completed command, stable IDs,
+a child-owned final answer, and a successful follow-up parent turn. On Linux with
+Codex 0.167.0 it reproduced the accidental reload before the fix and passed after it.
 
 `test_smart_router_codex_reload_updates_parent_and_existing_child_inference`
 is an installed-wheel, real-TUI journey. It invokes the actual skill from the
@@ -30,7 +38,9 @@ answers, and both recipe fields on every resumed parent and child request.
 New children must inherit the current recipe after each toggle. Its recorder forwards
 requests unchanged to the selected workspace and requires successful responses.
 Linux runs on Codex 0.164.0 and 0.165.0 passed, with independent mitmproxy
-verification of all requests after reload in both toggle phases.
+verification of all requests after reload in both toggle phases. After the navigation
+fix, the busy-child journey also passed on 0.167.0: its test recorder verified all
+19 requests after off and 22 after on. No independent mitmproxy rerun on 0.167.0.
 See [reload behavior and validation limits](../docs/codex-routing-reload.md).
 
 Windows Desktop detection allows up to 30 seconds for the native package query.

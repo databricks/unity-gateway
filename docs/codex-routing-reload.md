@@ -56,8 +56,11 @@ reconfiguration so it can be removed through the existing managed-write flow.
 A toggle arriving during resume causes another unload/resume before continuation.
 Escape during reload suppresses automatic continuation. A queued new user turn
 receives the recovery context instead of competing with an automatic turn.
-New roots receive current attribution; reconnecting to a loaded root forces a
-reload because native resume can otherwise ignore changed configuration.
+New roots receive current attribution. Resuming a previously untracked root
+forces a reload because native resume can otherwise ignore changed
+configuration. Selecting a child in `/subagents`, or returning to an already tracked
+root, leaves the tree running. Child navigation never changes which thread owns
+the tree or overwrites the root's settings.
 
 The transaction has a 30-second deadline and 10-second per-RPC timeout. Failure
 blocks pending input, reports the saved conversation ID, and closes the control
@@ -91,7 +94,17 @@ parent following that instruction.
 `tests/test_codex_routing_reload.py` covers late descendants, root isolation,
 off/on restoration, permission preservation, rejected settings changes, timeout
 and resume failures, held input, approval replies, rapid toggles, Escape, and
-reconnects with controlled external transports.
+reconnects with controlled external transports. Navigation regressions cover
+children and nested descendants, both parent metadata shapes, partial metadata,
+returning to a known root, and a subsequent real toggle.
+
+`test_smart_router_codex_agent_navigation_preserves_running_child` opens a busy
+child through the real `/subagents` picker and returns to the parent without invoking
+the routing skill. It requires the command to finish exactly once under the same
+child ID, no interruptions or generated reload prompts, and a working parent turn.
+On Linux with Codex 0.167.0, this failed before the navigation fix: selecting the
+child triggered a reload and a native error rejecting direct input to a subagent.
+With the fix, the same journey passed with no reload and no restarted command.
 
 The installed-wheel journey
 `test_smart_router_codex_reload_updates_parent_and_existing_child_inference`
@@ -117,6 +130,13 @@ in both header and body and received HTTP 200. Each run covered the parent and
 three children after off, then the parent and all four children after on.
 Original IDs, permissions, child-owned final answers, and normal TUI exit were
 verified. These results do not require increasing the existing version floor.
+
+After the navigation fix, both the navigation journey and the expanded busy-child
+off/on journey passed on Linux with Codex 0.167.0. The test recorder checked 19
+requests after off across four threads and 22 after on across five threads. All
+had matching header/body recipes and successful gateway responses. The reload
+transactions took 0.133s and 0.180s, excluding subsequent model work. This run
+used the test recorder; independent mitmproxy validation above covers 0.164/0.165.
 
 Mitmproxy was used only for this validation, scoped to the selected workspace
 with process-local certificate trust. It captured allowlisted recipe, model,

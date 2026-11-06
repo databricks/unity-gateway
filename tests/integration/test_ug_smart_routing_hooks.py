@@ -1068,6 +1068,137 @@ def _assert_codex_inference_recipes(
 @pytest.mark.codex
 @pytest.mark.managed_fixture
 @pytest.mark.codex_smart_routing
+def test_smart_router_codex_agent_navigation_preserves_running_child(
+    live_session, workspace, tmp_path
+):
+    """Scenario: open a running child and return to the main agent without a routing toggle.
+
+    Expected: navigation never reloads the tree, interrupts the command, or injects a
+    routing continuation. The original child completes its command exactly once and
+    answers under its original ID; the parent accepts another turn. Reproduces on 0.167.0.
+    """
+    session = live_session
+    _select_smart_router_version(session, "codex", workspace, tmp_path, True, "subagent_orch_v1")
+    native_config = session.home / ".codex/config.toml"
+    native_config.parent.mkdir(parents=True, exist_ok=True)
+    native_config.write_text('approval_policy = "never"\nsandbox_mode = "workspace-write"\n')
+    session.run(
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-validate",
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    )
+    marker = fresh_id()
+    gate = session.cwd / "navigation-gate.py"
+    python = session.binary.with_name("python.exe" if os.name == "nt" else "python")
+    gate.write_text(
+        "import os, time\nfrom pathlib import Path\n"
+        "root = Path(__file__).parent\n"
+        "with (root / 'command-starts').open('a') as starts: starts.write(str(os.getpid()) + '\\n')\n"
+        "deadline = time.monotonic() + 180\n"
+        "while not (root / 'release-child').exists():\n"
+        "    if time.monotonic() >= deadline: raise TimeoutError('child gate')\n"
+        "    time.sleep(0.05)\n"
+        "(root / 'command-finished').write_text(str(os.getpid()))\n"
+        f"print('child-done-{marker}')\n"
+    )
+    assignment = (
+        f"Run {json.dumps(str(python))} {json.dumps(str(gate))} with no arguments. "
+        f"Wait for it to finish, then reply child-done-{marker} as your FINAL answer and END "
+        "your turn. Do not send_message or wait for another assignment afterward."
+    )
+    (session.cwd / "assignment.txt").write_text(assignment)
+    with AgentTerminal(
+        session, "codex", [str(session.binary), "codex"], "routing-navigation"
+    ) as tui:
+
+        def select_agent(label):
+            heading = "Select an agent to watch"
+
+            def selection():
+                menu = tui.visible.partition(heading)[2]
+                return next(
+                    (line.strip() for line in menu.splitlines() if line.lstrip().startswith("›")),
+                    "",
+                )
+
+            tui.submit("/subagents")
+            tui.wait_for(lambda _: selection(), "subagent picker")
+            for _ in range(2):
+                current = selection()
+                if label in current:
+                    tui.send("\r", f"view {label}")
+                    tui.wait_for(lambda screen: heading not in screen, f"opened {label}")
+                    return
+                tui.send("\x1b[B", f"move towards {label}")
+                tui.wait_for(lambda _, before=current: selection() != before, "next subagent row")
+            raise AssertionError(f"Subagent picker does not offer {label}:\n{tui.visible}")
+
+        tui.boot()
+        tui.submit(
+            'Read assignment.txt. Spawn exactly one native child named nav_worker with fork_turns="none", '
+            "using its contents as the exact assignment. "
+            f"Root: after spawning, reply root-ready-{marker} and END your turn without waiting. "
+            "This explicit instruction overrides orchestration ownership for this navigation test."
+        )
+        tui.wait_for(
+            lambda _: (
+                (session.cwd / "command-starts").exists()
+                and "/root" in _codex_thread_ids(session)
+                and _codex_thread_answered(
+                    session, _codex_thread_ids(session)["/root"], f"root-ready-{marker}"
+                )
+            ),
+            "running child command with idle parent",
+            timeout=180,
+        )
+        initial = _codex_thread_ids(session)
+        assert set(initial) == {"/root", "/root/nav_worker"}, initial
+        starts = (session.cwd / "command-starts").read_text().splitlines()
+        assert len(starts) == 1, starts
+        reload_log = session.home / ".ucode/codex-v2-interposer.log"
+        select_agent("nav_worker")
+        tui.wait_for(
+            lambda screen: "esc to interrupt" in screen.lower() or "unavailable" in screen.lower(),
+            "running child view",
+        )
+        assert "[RELOAD" not in reload_log.read_text(), reload_log.read_text()
+        assert not (session.cwd / "command-finished").exists()
+        select_agent("Main")
+        tui.wait_for(lambda screen: f"root-ready-{marker}" in screen, "original parent view")
+        assert "[RELOAD" not in reload_log.read_text(), reload_log.read_text()
+
+        (session.cwd / "release-child").write_text("release")
+        tui.wait_for(
+            lambda _: _codex_thread_answered(
+                session, initial["/root/nav_worker"], f"child-done-{marker}"
+            ),
+            "original child's final answer",
+            timeout=180,
+        )
+        assert (session.cwd / "command-starts").read_text().splitlines() == starts
+        assert (session.cwd / "command-finished").read_text() == starts[0]
+        tui.submit(f"Reply exactly parent-alive-{marker}. Do not use tools or delegate.")
+        tui.wait_for(
+            lambda _: _codex_thread_answered(session, initial["/root"], f"parent-alive-{marker}"),
+            "parent answer after navigation",
+            timeout=120,
+        )
+        assert _codex_thread_ids(session) == initial
+        assert "[RELOAD" not in reload_log.read_text(), reload_log.read_text()
+        for records in agent_sessions(session, "codex").values():
+            assert not any(row.get("payload", {}).get("type") == "turn_aborted" for row in records)
+            assert "The controller reloaded this conversation" not in json.dumps(records)
+        session.record("navigation-thread-identities.json", initial)
+        tui.exit_normally()
+
+
+@pytest.mark.live
+@pytest.mark.codex
+@pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
 def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
     live_session, workspace, tmp_path
 ):
