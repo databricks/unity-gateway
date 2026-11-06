@@ -46,15 +46,15 @@ class TestLaunchCodex:
     @pytest.mark.parametrize(
         ("installed_version", "accept_upgrade", "upgraded_version", "auto_upgrade"),
         [
-            ("0.166.0", False, None, False),
-            ("0.165.0", True, "0.166.0", False),
-            ("0.165.0", True, "0.166.0", True),
-            ("0.165.0", False, None, False),
-            ("0.165.0", True, None, False),
-            ("0.165.0", True, "0.165.0", False),
+            ("0.164.0", False, None, False),
+            ("0.163.0", True, "0.164.0", False),
+            ("0.163.0", True, "0.164.0", True),
+            ("0.163.0", False, None, False),
+            ("0.163.0", True, None, False),
+            ("0.163.0", True, "0.163.0", False),
             ("unknown", True, "unknown", False),
             ("unknown", True, "unknown", True),
-            ("0.165.0", True, "unknown", False),
+            ("0.163.0", True, "unknown", False),
         ],
         ids=[
             "supported",
@@ -113,24 +113,24 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
 
         def launch_v2(state, tool_args, **kwargs):
-            assert version == "0.166.0", "unsupported Codex reached execution"
+            assert version == "0.164.0", "unsupported Codex reached execution"
             calls.append((state, tool_args, kwargs))
             raise SystemExit(0)
 
         monkeypatch.setattr(v2, "launch_codex", launch_v2)
         state = {"workspace": WS}
 
-        allowed = installed_version == "0.166.0" or upgraded_version == "0.166.0"
+        allowed = installed_version == "0.164.0" or upgraded_version == "0.164.0"
         with pytest.raises(SystemExit if allowed else RuntimeError) as exc:
             codex.launch(state, tool_args, options=options)
 
-        needs_upgrade = installed_version == "0.165.0"
+        needs_upgrade = installed_version == "0.163.0"
         assert prompts == (
             [("Upgrade Codex if available?", True)] if needs_upgrade and not auto_upgrade else []
         )
         assert updates == ([["codex", "update"]] if needs_upgrade and accept_upgrade else [])
         if not allowed:
-            assert "requires Codex 0.166.0" in str(exc.value)
+            assert "requires Codex 0.164.0" in str(exc.value)
             if version == "unknown":
                 assert "codex --version" in str(exc.value)
             assert calls == []
@@ -182,7 +182,7 @@ class TestLaunchCodex:
 
     def test_codex_launch_normalizes_cached_bootstrap_model(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(codex, "agent_version", lambda _: "0.166.0")
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.164.0")
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
@@ -227,7 +227,7 @@ class TestLaunchCodex:
         monkeypatch.delenv("CODEX_HOME", raising=False)
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
-        monkeypatch.setattr(codex, "agent_version", lambda _: "0.166.0")
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.164.0")
         monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         if custom_home:
             monkeypatch.setenv("CODEX_HOME", str(config_home))

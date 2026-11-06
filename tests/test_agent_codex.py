@@ -40,8 +40,8 @@ class TestMinimumVersion:
             ("0.145.0", False),
             ("0.148.0", False),
             ("0.163.0", False),
-            ("0.166.0", True),
-            ("0.166.0", True),
+            ("0.164.0", True),
+            ("0.165.0", True),
             ("1.0.0", True),
         ],
     )
@@ -68,7 +68,7 @@ class TestMinimumVersion:
 
     @pytest.mark.parametrize(
         ("version", "allowed"),
-        [("0.166.0", True), ("0.163.0", False), ("unknown", False), (None, False)],
+        [("0.165.0", True), ("0.163.0", False), ("unknown", False), (None, False)],
     )
     def test_smart_routing_rechecks_an_unknown_version_with_a_longer_bound(
         self, monkeypatch, version, allowed
