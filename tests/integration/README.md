@@ -1064,9 +1064,6 @@ MPS CUJs select the existing services already used by e2e:
   target (`--antigravity-provider`, `--antigravity-provider-models`).
 - Codex and Copilot (Azure OpenAI): `main.ucode.ci_azure_openai_mps`, using its `gpt-5-nano` model.
 - Codex and Copilot (Microsoft Foundry): `main.ucode.ci_foundry_mps`, using its `gpt-5-nano` model.
-  The Codex Azure OpenAI, Foundry, and custom Azure OpenAI TUI journeys configure through the request recorder and
-  assert behavior, not the model's answer: Codex finishes a turn (native `task_complete`), every
-  `/responses` request for the model got HTTP 200, and the screen shows no terminal API error.
 
 Use `--claude-provider` / `--claude-relayed-provider` / `--codex-provider` to
 reproduce another existing service. Use `--claude-provider-model` /
