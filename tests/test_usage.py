@@ -731,8 +731,14 @@ class TestUsageCommand:
         assert usage() == 0
         assert output.getvalue() == "No Unity Gateway spend limits found for this workspace.\n"
 
-    @pytest.mark.parametrize("terminal", [False, True])
-    def test_displays_dashboard_url_as_literal_hyperlink(self, monkeypatch, terminal):
+    @pytest.mark.parametrize(
+        ("terminal", "legacy_windows"),
+        [(False, False), (True, False), (True, True)],
+        ids=["redirected", "modern-terminal", "legacy-windows"],
+    )
+    def test_displays_dashboard_url_as_literal_hyperlink(
+        self, monkeypatch, terminal, legacy_windows
+    ):
         self._stub_auth(monkeypatch, {"workspace": "https://workspace"})
         monkeypatch.setattr(
             usage_mod, "list_current_user_budget_spend_statuses", lambda *args: ([], None)
@@ -750,6 +756,8 @@ class TestUsageCommand:
             force_terminal=terminal,
             color_system="standard" if terminal else None,
             no_color=False,
+            # A terminal may be legacy Windows, which intentionally omits OSC 8 links.
+            legacy_windows=legacy_windows,
             width=40,
         )
         monkeypatch.setattr(usage_mod, "console", console)
@@ -762,7 +770,9 @@ class TestUsageCommand:
             text = Text.from_ansi(rendered)
             assert text.plain == expected
             style = text.get_style_at_offset(console, text.plain.index(dashboard_url))
-            assert style.link == dashboard_url
+            assert style.link == (None if legacy_windows else dashboard_url)
+            if legacy_windows:
+                assert "\x1b]8;" not in rendered
             assert style.underline is True
             assert style.color is not None and style.color.number == 6  # ANSI cyan
             label_style = text.get_style_at_offset(console, 1)
