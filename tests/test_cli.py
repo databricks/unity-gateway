@@ -7545,6 +7545,369 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
         assert len(requests) == 2
 
 
+class TestExplicitLaunchOverlapsBudget:
+    """Explicit agents overlap the live budget read with authenticated gateway discovery."""
+
+    WS = "https://example.databricks.com"
+    WAIT_SECONDS = 5
+    MANAGED = {
+        "enabled_agents": {
+            "claude": {"model_config": {"default_model": "system.ai.claude-opus-4-8"}}
+        },
+        "smart_defaults": {"tiers": [{"spending_percentage": 0.8}]},
+    }
+
+    @classmethod
+    def _stub_launch(cls, monkeypatch, *, managed=None):
+        state = {
+            **MINIMAL_STATE,
+            "workspace": cls.WS,
+            "profile": "selected-profile",
+            "available_tools": ["claude"],
+        }
+        cli, *_ = TestConfigureSharedStateUsePat._stub_deps(
+            monkeypatch, pat_token=None, existing_state=state
+        )
+        monkeypatch.setattr(cli, "_launch_workspace_state", lambda workspace: dict(state))
+        monkeypatch.setattr(cli, "apply_pat_environment", lambda state: None)
+        monkeypatch.setattr(cli, "ensure_bootstrap_dependencies", lambda *args, **kwargs: None)
+        monkeypatch.setattr(cli, "ensure_provider_state", lambda tool: dict(state))
+        monkeypatch.setattr(
+            cli, "_fetch_managed_config", lambda state: (managed or cls.MANAGED, False)
+        )
+        monkeypatch.setattr(cli, "_skip_model_discovery", lambda *args, **kwargs: False)
+        monkeypatch.setattr(
+            cli,
+            "discover_model_services",
+            lambda workspace, token: (
+                {"opus": "system.ai.claude-opus-4-8"},
+                ["system.ai.gpt-5"],
+                [],
+                [],
+                None,
+            ),
+        )
+        monkeypatch.setattr(cli.claude_agent, "get_family_defaults", lambda *args, **kwargs: None)
+        monkeypatch.setattr(cli, "refresh_downloaded_skills_on_launch", lambda state: None)
+        monkeypatch.setattr(cli, "configure_tool", lambda tool, state, *args, **kwargs: state)
+        launched = []
+        monkeypatch.setattr(
+            cli, "launch_agent", lambda *args, **kwargs: launched.append((args, kwargs))
+        )
+        return cli, launched
+
+    def test_budget_read_overlaps_probe_and_listing_after_authentication(self, monkeypatch):
+        cli, launched = self._stub_launch(monkeypatch)
+        authenticated = threading.Event()
+        overlapping = threading.Barrier(3, timeout=self.WAIT_SECONDS)
+        budget_calls = []
+        token_calls = []
+
+        def authenticate(workspace, profile):
+            assert (workspace, profile) == (self.WS, "selected-profile")
+            authenticated.set()
+
+        def token(workspace, profile):
+            assert authenticated.is_set()
+            token_calls.append((workspace, profile))
+            return "fresh-token"
+
+        def recommendation(workspace, token):
+            assert authenticated.is_set()
+            assert (workspace, token) == (self.WS, "fresh-token")
+            budget_calls.append(threading.current_thread())
+            overlapping.wait()
+            return {"agent": "claude", "model": "system.ai.claude-haiku-4-5"}, None
+
+        def probe(workspace, token):
+            overlapping.wait()
+            return MODEL_SERVICE_PROBE
+
+        def discover(workspace, token):
+            overlapping.wait()
+            return {"opus": "system.ai.claude-opus-4-8"}, ["system.ai.gpt-5"], [], [], None
+
+        monkeypatch.setattr(cli, "ensure_databricks_auth", authenticate)
+        monkeypatch.setattr(cli, "get_databricks_token", token)
+        monkeypatch.setattr(cli, "get_model_recommendation", recommendation)
+        monkeypatch.setattr(cli, "probe_unity_gateway_capabilities", probe)
+        monkeypatch.setattr(cli, "discover_model_services", discover)
+
+        result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert len(budget_calls) == 1
+        assert budget_calls[0].daemon
+        assert budget_calls[0] is not threading.current_thread()
+        assert token_calls == [(self.WS, "selected-profile")]
+        assert launched[0][1]["options"].launch_model == "system.ai.claude-haiku-4-5"
+
+    def test_authentication_failure_does_not_start_budget_read(self, monkeypatch):
+        cli, launched = self._stub_launch(monkeypatch)
+        budget_calls = []
+
+        def authenticate(workspace, profile):
+            raise RuntimeError("auth refused")
+
+        monkeypatch.setattr(cli, "ensure_databricks_auth", authenticate)
+        monkeypatch.setattr(
+            cli, "get_model_recommendation", lambda *args: budget_calls.append(args)
+        )
+
+        result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 1
+        assert "auth refused" in result.output
+        assert budget_calls == []
+        assert launched == []
+
+    def test_probe_failure_does_not_join_budget_or_print_its_warning(self, monkeypatch):
+        cli, launched = self._stub_launch(monkeypatch)
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        threads = []
+        warnings = []
+
+        def recommendation(workspace, token):
+            threads.append(threading.current_thread())
+            started.set()
+            assert release.wait(self.WAIT_SECONDS)
+            finished.set()
+            return None, "HTTP 500 budget unavailable"
+
+        def probe(workspace, token):
+            assert started.wait(self.WAIT_SECONDS)
+            raise RuntimeError("gateway refused")
+
+        monkeypatch.setattr(cli, "get_model_recommendation", recommendation)
+        monkeypatch.setattr(cli, "probe_unity_gateway_capabilities", probe)
+        monkeypatch.setattr(cli, "print_warning", lambda message: warnings.append(message))
+        try:
+            result = runner.invoke(app, ["claude"])
+
+            assert result.exit_code == 1
+            assert "gateway refused" in result.output
+            assert not finished.is_set()
+            assert launched == []
+            assert len(threads) == 1 and threads[0].daemon
+        finally:
+            release.set()
+            for thread in threads:
+                thread.join(self.WAIT_SECONDS)
+        assert finished.is_set()
+        assert warnings == []
+
+    def test_failed_probe_process_exits_with_budget_request_still_blocked(self, tmp_path):
+        script = """
+import threading
+from contextlib import nullcontext
+from unittest.mock import patch
+from ucode import cli
+
+started = threading.Event()
+never_released = threading.Event()
+
+def budget(workspace, token):
+    started.set()
+    never_released.wait()
+
+def authenticated(workspace, token):
+    cli._start_in_background(budget, workspace, token)
+
+def probe(workspace, token):
+    assert started.wait(5), "budget worker did not start"
+    raise RuntimeError("gateway refused")
+
+with patch.multiple(
+    cli,
+    resolve_workspace=lambda value: value,
+    load_state=lambda: {"workspace": "https://benchmark.invalid"},
+    workspace_self_managed_agents=lambda key: [],
+    ensure_databricks_auth=lambda *args, **kwargs: None,
+    get_databricks_token=lambda *args: "component-token",
+    probe_unity_gateway_capabilities=probe,
+    discover_model_services=lambda *args: ({}, [], [], [], None),
+    spinner=lambda *args: nullcontext(),
+):
+    try:
+        cli.configure_shared_state(
+            "https://benchmark.invalid", profile="component", tools=["claude"],
+            on_authenticated=authenticated,
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "gateway refused"
+    else:
+        raise AssertionError("gateway failure did not propagate")
+print("returned after gateway failure")
+"""
+        env = {**os.environ, "PYTHONPATH": str(Path(cli_mod.__file__).parents[1])}
+
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=tmp_path,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "returned after gateway failure"
+
+    @pytest.mark.parametrize(
+        ("failure", "warns"),
+        [
+            (None, False),
+            ("HTTP 404 Not Found", False),
+            ("HTTP 500 budget unavailable", True),
+            (RuntimeError("budget unavailable"), True),
+            (OSError("budget unavailable"), True),
+        ],
+    )
+    def test_unavailable_budget_is_read_once_and_warns_on_main_thread(
+        self, monkeypatch, failure, warns
+    ):
+        cli, launched = self._stub_launch(monkeypatch)
+        budget_calls = []
+        warning_threads = []
+
+        def recommendation(workspace, token):
+            budget_calls.append((workspace, token))
+            if isinstance(failure, Exception):
+                raise failure
+            return None, failure
+
+        def warning(message):
+            assert "Could not check your budget" in message
+            warning_threads.append(threading.current_thread())
+
+        monkeypatch.setattr(cli, "get_model_recommendation", recommendation)
+        monkeypatch.setattr(cli, "print_warning", warning)
+
+        result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert budget_calls == [(self.WS, "token")]
+        assert warning_threads == ([threading.current_thread()] if warns else [])
+        assert len(launched) == 1
+        assert launched[0][1]["options"].launch_model is None
+
+    @pytest.mark.parametrize("skip_preflight", [False, True])
+    def test_no_tiers_do_not_schedule_budget_reads(self, monkeypatch, skip_preflight):
+        cli, launched = self._stub_launch(monkeypatch, managed={"enabled_agents": {"claude": {}}})
+        calls = []
+        monkeypatch.setattr(cli, "get_model_recommendation", lambda *args: calls.append(args))
+
+        result = runner.invoke(app, ["claude", *(["--skip-preflight"] if skip_preflight else [])])
+
+        assert result.exit_code == 0, result.output
+        assert calls == []
+        assert len(launched) == 1
+
+    def test_skip_preflight_keeps_budget_read_on_main_thread(self, monkeypatch):
+        cli, launched = self._stub_launch(monkeypatch)
+        threads = []
+
+        def recommendation(workspace, token):
+            threads.append(threading.current_thread())
+            return None, None
+
+        monkeypatch.setattr(cli, "get_model_recommendation", recommendation)
+
+        result = runner.invoke(app, ["claude", "--skip-preflight"])
+
+        assert result.exit_code == 0, result.output
+        assert threads == [threading.current_thread()]
+        assert len(launched) == 1
+
+    def test_dry_run_does_not_schedule_a_budget_read(self, monkeypatch):
+        cli, launched = self._stub_launch(monkeypatch)
+        calls = []
+        monkeypatch.setattr(cli, "is_dry_run", lambda: True)
+        monkeypatch.setattr(cli, "get_model_recommendation", lambda *args: calls.append(args))
+
+        result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert calls == []
+        assert len(launched) == 1
+
+    def test_existing_recommendation_does_not_start_another_read(self, monkeypatch):
+        cli, launched = self._stub_launch(monkeypatch)
+        calls = []
+        monkeypatch.setattr(cli, "get_model_recommendation", lambda *args: calls.append(args))
+        context = MagicMock(args=[], meta={})
+
+        cli._launch_tool(
+            "claude",
+            context,
+            managed=self.MANAGED,
+            recommendation={"agent": "claude", "model": "system.ai.claude-haiku-4-5"},
+        )
+
+        assert calls == []
+        assert launched[0][1]["options"].launch_model == "system.ai.claude-haiku-4-5"
+
+    def test_custom_oauth_reuses_its_authenticated_token(self, monkeypatch):
+        cli, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+        selected = []
+        monkeypatch.setattr(cli, "custom_oauth_cli_enabled", lambda config: config is not None)
+        monkeypatch.setattr(
+            cli,
+            "ensure_custom_oauth_cli_token",
+            lambda workspace, config, workspace_id: "custom-oauth-token",
+        )
+        monkeypatch.setattr(
+            cli,
+            "get_databricks_token",
+            lambda *args: pytest.fail("custom OAuth's authenticated token must be reused"),
+        )
+        custom = {
+            "client_id": "client",
+            "scopes": ["all-apis"],
+            "redirect_url": "http://localhost:8020",
+        }
+
+        cli.configure_shared_state(
+            self.WS,
+            tools=["claude"],
+            custom_oauth=custom,
+            on_authenticated=lambda workspace, token: selected.append((workspace, token)),
+        )
+
+        assert selected == [(self.WS, "custom-oauth-token")]
+
+    def test_callback_keeps_selected_workspace_headers(self, monkeypatch):
+        from ucode.workspace import workspace_headers
+
+        prior = {"workspace": self.WS, "workspace_id": "123", "profile": "selected"}
+        cli, *_ = TestConfigureSharedStateUsePat._stub_deps(
+            monkeypatch, pat_token=None, existing_state=prior
+        )
+        monkeypatch.setattr(cli, "ensure_databricks_auth", lambda *args, **kwargs: None)
+        selected = []
+
+        def authenticated(workspace, token):
+            selected.append((workspace, token, workspace_headers(workspace)))
+
+        cli.configure_shared_state(
+            f"{self.WS}?w=123",
+            profile="selected",
+            tools=["claude"],
+            on_authenticated=authenticated,
+        )
+
+        assert selected == [
+            (
+                self.WS,
+                "token",
+                {"X-Databricks-Org-Id": "123", "X-Databricks-Workspace-Id": "123"},
+            )
+        ]
+
+
 class TestConfigureNoLongerValidates:
     @pytest.fixture(autouse=True)
     def _no_managed_config(self, monkeypatch):

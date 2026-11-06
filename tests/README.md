@@ -704,6 +704,16 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 without tier rules, applying recommendations when tiers exist, and serializing the current
 API field. These are unit/component checks; live request-count coverage is not included.
 
+`test_cli.py::TestExplicitLaunchOverlapsBudget` covers explicit-agent budget recommendations
+overlapping the gateway probe and model discovery after authentication. Synchronized checks
+cover one read for unavailable results, warning output on the calling thread, failure before
+authentication, gateway failure without joining a daemon worker, selected workspace headers,
+custom-OAuth token reuse,
+and the no-tier, dry-run, pre-supplied recommendation, and skipped-preflight paths. These
+component tests do not establish live API overlap or production startup percentiles. A failed
+gateway probe may leave the read in flight; a child-process check confirms that the daemon
+request neither delays process exit nor renders its warning after failure.
+
 `test_usage.py`, `test_budget.py`, and `test_cli.py` cover budget usage without an
 opt-in, including the five highest usage percentages, stable ties, missing percentages
 ordered last, and the full listing with `--all`.
