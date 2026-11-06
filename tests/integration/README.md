@@ -1670,9 +1670,7 @@ decision is returned. This diagnostic coverage does not prove routing service he
 Smart-routing scenarios use checked-in model menus assigned to the explicit CI
 workspace. US `task_v3` uses GPT-6 Sol / Luna; the Canadian managed workspace uses
 GPT-5.6 Sol / Terra / Luna, since it has no GPT-6 services. Unknown Codex workspaces
-fail until a fixture is assigned. Claude uses one fixture (`claude_smart_routing`) in both
-workspaces: DeepSeek V4.1 Flash / Sonnet 5.5 / GLM 5.3 Flash plus Sonnet 4.6, which stays
-in the menu for `task_v3` compatibility.
+fail until a fixture is assigned. Claude uses Opus 4.8 / Sonnet 4.6 / Haiku 4.5.
 Direct hook inputs share the US fixture; managed TUI inputs use their workspace's
 fixture. No workspace is auto-selected or modified. All real routing, native notice,
 audit correlation, and child completion assertions remain required.
