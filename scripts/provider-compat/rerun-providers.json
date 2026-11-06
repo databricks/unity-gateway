@@ -1,3 +1,4 @@
 [
-  "main.ucode.ci_e2e_anthropic_relay_mps"
+  "main.ucode.e2e_bedrock_all_models_enabled",
+  "main.ucode.ci_custom_foundry_claude_mps"
 ]

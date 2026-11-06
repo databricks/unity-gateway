@@ -38,14 +38,16 @@ def ui(*args):
     return result.stdout
 
 
-def wait_for(label, timeout=40):
+def wait_for(label, timeout=40, require_all=False):
     deadline = time.monotonic() + timeout
     last = ""
     while time.monotonic() < deadline:
         try:
             last = ui("snapshot")
             labels = [label] if isinstance(label, str) else label
-            if any(value in row.split(" | ") for value in labels for row in last.splitlines()):
+            visible = {field for row in last.splitlines() for field in row.split(" | ")}
+            found = [value in visible for value in labels]
+            if all(found) if require_all else any(found):
                 return last
         except RuntimeError as exc:
             last = str(exc)
@@ -157,9 +159,12 @@ def main():
         time.sleep(1)
         ui("click", "Start task")
         print("Start task requested", flush=True)
-        snapshot = wait_for("Claude finished the response", timeout=240)
-        if not any("Claude responded: 48213" in row.split(" | ") for row in snapshot.splitlines()):
-            raise RuntimeError("Completed response did not match expected answer")
+        snapshot = wait_for(
+            ("Claude responded: 48213", "Claude finished the response"),
+            timeout=240,
+            require_all=True,
+        )
+        save("response-ui.txt", snapshot)
         report.update(responseAsserted=True, responseFinished=True, expectedResponse="48213")
     except Exception as exc:
         report["error"] = str(exc)
