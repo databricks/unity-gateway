@@ -2562,13 +2562,15 @@ class TestCodexManagedConfig:
         newer = "https://newer.databricks.com"
         codex.write_tool_config({**tracing, "workspace": newer})
         assert f'--host "{newer}" --port 43199' in unit_path.read_text()
+        # Unchanged launches retain enable's reload, including recovery after the initial
+        # reload failed. A changed unit reloads explicitly and must not do that work twice.
         # Unchanged launches start a stopped proxy but never restart a running one.
         assert [call.args[0][2:] for call in run.call_args_list] == [
             ["daemon-reload"],
             ["enable", "--now", codex.CODEX_OTEL_SERVICE_NAME],
             ["enable", "--now", codex.CODEX_OTEL_SERVICE_NAME],
             ["daemon-reload"],
-            ["enable", codex.CODEX_OTEL_SERVICE_NAME],
+            ["enable", "--no-reload", codex.CODEX_OTEL_SERVICE_NAME],
             ["restart", codex.CODEX_OTEL_SERVICE_NAME],
         ]
 
