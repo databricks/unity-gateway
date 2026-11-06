@@ -232,6 +232,9 @@ def _enabled_agent_payload(tool: str, agent_config: dict) -> dict:
     tracing_enabled = agent_config.get("otel_tracing_enabled")
     if isinstance(tracing_enabled, bool):
         config["tracing"] = {"enabled": tracing_enabled}
+    vscode_enabled = agent_config.get("vscode_integration_enabled")
+    if isinstance(vscode_enabled, bool):
+        config["vscode_integration"] = {"enabled": vscode_enabled}
     settings = agent_config.get("agent_native_settings")
     if isinstance(settings, dict) and settings:
         config["agent_native_settings"] = settings

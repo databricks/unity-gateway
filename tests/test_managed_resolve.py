@@ -93,6 +93,22 @@ class TestOtelTracing:
         assert resolve_state(managed, _state(), "codex")["codex_otel_tracing"] is True
 
 
+class TestVsCodeIntegration:
+    def test_disabled_vscode_overrides_copilot_state(self):
+        managed = {"enabled_agents": {"copilot": {"vscode_integration_enabled": False}}}
+        assert managed_state_overrides(managed, "copilot")["copilot_vscode_integration"] is False
+        assert resolve_state(managed, _state(), "copilot")["copilot_vscode_integration"] is False
+
+    def test_enabled_or_unset_vscode_adds_no_override(self):
+        for entry in ({"vscode_integration_enabled": True}, {}):
+            managed = {"enabled_agents": {"copilot": entry}}
+            assert "copilot_vscode_integration" not in managed_state_overrides(managed, "copilot")
+
+    def test_vscode_switch_is_copilot_only(self):
+        managed = {"enabled_agents": {"claude": {"vscode_integration_enabled": False}}}
+        assert "copilot_vscode_integration" not in managed_state_overrides(managed, "claude")
+
+
 class TestHttpHeaders:
     def test_state_override_carries_manifest_headers(self):
         for tool in ("claude", "codex"):
