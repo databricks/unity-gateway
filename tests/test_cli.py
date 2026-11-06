@@ -5794,10 +5794,12 @@ class TestConfigureAgentsSelection:
             "available_tools": [],
             "claude_models": {},
             "provider_services": {"claude": "main.default.developer"},
+            # An old opt-in must not override subsequently published admin policy.
+            "self_managed_agents": ["claude"],
         }
         managed = {"enabled_agents": {"claude": {"model_config": model_config}}}
         if self_managed:
-            state["self_managed_agents"] = ["claude"]
+            # The provider case also keeps a saved schema, proving provider precedence.
             state["model_locations"] = {"claude": expected_parent or "main.saved"}
             state["provider_services"] = {"claude": expected_provider} if expected_provider else {}
             managed = {"enabled_agents": {"codex": {}}}
@@ -5820,7 +5822,7 @@ class TestConfigureAgentsSelection:
 
         assert (
             cli_mod.configure_workspace_command(
-                selected_tools=["claude"] if self_managed else None,
+                selected_tools=["claude"],
                 workspaces=[("https://w.com", None)],
             )
             == 0

@@ -10,10 +10,11 @@ Mixed available/unavailable selections configure the available agents and warn a
 self-managed agents.
 Saved self-managed model locations bypass global availability checks, with provider precedence
 preserved; admin model sources retain their existing precedence.
+Admin enablement overrides a previously saved self-managed opt-in.
 `tests/integration/test_ug_configure_selected_managed_agents.py` uses the checked-in
 `selected_managed_agents` admin fixture enabling Claude/Codex/Pi to configure only Claude,
-check that Codex's user config and Pi's binary/files remain absent, preserve a snapshot of
-Codex's OS-managed config, and complete a real
+check that Codex's user config and Pi's generated files remain absent, preserve Pi's executable
+availability and a snapshot of Codex's OS-managed config, and complete a real
 Claude TUI file-reading task. Mixed managed/self-managed setup has component coverage only.
 No remote workspace policy is changed.
 The fixture publishes no MCPs or skills. Agent selection limits installation/direct setup;

@@ -1,7 +1,8 @@
 # Integration tests
 
 `test_ug_configure_selected_managed_agents.py` checks selected Claude setup, an unchanged
-Codex OS-managed file, absent unrequested per-user configs/Pi, and a real TUI file task.
+Codex OS-managed file, absent unrequested per-user configs, preserved Pi executable availability,
+and a real TUI file task.
 The fixture declares no MCPs or skills. See the [coverage overview](../README.md) for component
 cases, source precedence, and the scope of shared policy/MCP/skill reconciliation.
 

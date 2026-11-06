@@ -26,9 +26,9 @@ def test_ug_configure_selected_managed_claude_leaves_other_agents_unconfigured(
     """Scenario: an admin enables Claude, Codex, and Pi; the user selects only Claude.
 
     Expected: public configure creates only Claude's agent configuration, leaves Codex's
-    per-user config and Pi's binary/files absent, and preserves Codex's OS-managed file
-    (or its absence). The real Claude TUI completes a tiny file-reading task through the
-    gateway before exiting normally.
+    per-user config and Pi's generated files absent, and preserves Codex's OS-managed file
+    (or its absence) and Pi's executable availability. The real Claude TUI completes a tiny
+    file-reading task through the gateway before exiting normally.
 
     The fixture publishes no MCPs or skills; workspace-wide shared policy reconciliation
     is outside this installation/model-configuration selection check.
@@ -37,6 +37,7 @@ def test_ug_configure_selected_managed_claude_leaves_other_agents_unconfigured(
     use_managed_config_fixture(session, "selected_managed_agents")
     task = FileTask(session)
     codex_before = shutil.which("codex", path=session.env["PATH"])
+    pi_before = shutil.which("pi", path=session.env["PATH"])
     codex_managed = Path("/etc/codex/managed_config.toml")
     codex_managed_before = _snapshot(codex_managed)
 
@@ -58,7 +59,7 @@ def test_ug_configure_selected_managed_claude_leaves_other_agents_unconfigured(
         "Unselected Codex managed settings changed"
     )
     assert shutil.which("codex", path=session.env["PATH"]) == codex_before
-    assert shutil.which("pi", path=session.env["PATH"]) is None
+    assert shutil.which("pi", path=session.env["PATH"]) == pi_before
     assert not (session.home / ".ucode/pi-home/.pi/agent/models.json").exists()
     assert not (session.home / ".ucode/pi-home/.pi/agent/settings.json").exists()
 
