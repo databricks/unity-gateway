@@ -1,5 +1,10 @@
 # Integration tests
 
+The Codex desktop tracing component lifecycle in `../test_agent_codex.py` guards
+one systemd reload after a unit change, plus recovery after a failed setup.
+The service manager is controlled; no live systemd timing or desktop readiness
+claim is made by this regression.
+
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They

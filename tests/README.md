@@ -1,5 +1,11 @@
 # Test suites and user journeys
 
+`TestCodexManagedConfig::test_desktop_tracing_lifecycle` in `test_agent_codex.py`
+checks that changed Linux service units reload once before enable/restart and
+that unchanged-unit recovery retains its reload after a failed prior setup.
+These component checks inspect service-manager calls; they do not measure native
+systemd latency or desktop readiness.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component

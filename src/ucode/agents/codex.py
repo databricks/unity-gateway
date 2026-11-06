@@ -928,7 +928,9 @@ def _ensure_otel_service(workspace: str, port: int, relay_port: int | None = Non
         return
     write_text_file(path, text)
     _run_systemctl(["daemon-reload"])
-    _run_systemctl(["enable", CODEX_OTEL_SERVICE_NAME])
+    # enable normally reloads the entire user manager again. The explicit reload above
+    # already loaded the changed unit; retain enabling and the following restart only.
+    _run_systemctl(["enable", "--no-reload", CODEX_OTEL_SERVICE_NAME])
     _run_systemctl(["restart", CODEX_OTEL_SERVICE_NAME])
 
 
