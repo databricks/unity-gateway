@@ -2434,6 +2434,20 @@ class TestClaudeModelFlag:
         assert result.exit_code == 0, result.output
         assert mock_configure.call_args.kwargs["route_root_model"] == "claude-haiku-4-5"
 
+    @pytest.mark.parametrize("explicit_model", [None, "backup-coding"])
+    def test_provider_with_custom_deployment_pins_launch_model(self, monkeypatch, explicit_model):
+        argv = ["claude", "--provider", "cat.schema.svc"]
+        if explicit_model:
+            argv.extend(["--model", explicit_model])
+        result, mock_configure, _ = self._provider_launch(
+            monkeypatch, argv, {"default": "team-coding"}
+        )
+
+        assert result.exit_code == 0, result.output
+        assert mock_configure.call_args.kwargs["route_root_model"] == (
+            explicit_model or "team-coding"
+        )
+
     def test_provider_with_opus_still_defaults_to_sonnet(self, monkeypatch):
         # No --model: pin sonnet (Claude Code's default tier) whenever the service allows it, even
         # when opus is on offer — we always pin an allowed target instead of deferring to the default.
