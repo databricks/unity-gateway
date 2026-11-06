@@ -562,14 +562,14 @@ jobs:
   # sudo) allow. Linux runs tests/e2e_mdm/linux-provision.sh; macOS runs the real
   # scripts/mdm/macos-provision.sh.
   mdm-provision:
-    name: MDM provisioning · ${{ matrix.os == 'macos-14' && 'macOS' || 'Linux' }}
+    name: MDM provisioning · ${{ matrix.os == 'macos-15' && 'macOS' || 'Linux' }}
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-14]
+        os: [ubuntu-22.04, macos-15]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
