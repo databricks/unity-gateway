@@ -1,11 +1,5 @@
 # Test suites and user journeys
 
-The Claude same-child follow-up journey explicitly omits `notify_when_idle` from
-`SendMessage`, which native Claude supports only for sessions, and waits for the
-child's automatic completion notification. The journey still requires exactly one
-spawn, the same child session, and both completed file answers. It also checks that
-every native follow-up input omits the unsupported option.
-
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component
