@@ -458,6 +458,7 @@ CODEX_SMART_ROUTER_VERSIONS = pytest.mark.parametrize(
         (False, "subagent_only_v0"),
         (False, "subagent_only_v1"),
         (True, "subagent_orch_v0"),
+        (True, "subagent_orch_v1"),
     ],
     ids=[
         "routing-only",
@@ -465,6 +466,7 @@ CODEX_SMART_ROUTER_VERSIONS = pytest.mark.parametrize(
         "subagent_only_v0",
         "subagent_only_v1",
         "subagent_orch_v0",
+        "subagent_orch_v1",
     ],
 )
 
@@ -968,6 +970,7 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
     first and third show the subagent-routing banner (including [orchestrator on] when
     orchestration is enabled) and produce one live gateway decision correlated with that child;
     the second shows no banner and produces no decision. No control interposer starts.
+    The subagent_orch_v1 case also passes the explicit --enable-smart-routing launch flag.
     """
     session = live_session
     _select_smart_router_version(
@@ -981,8 +984,14 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
+    launch_flags = (
+        ["--enable-smart-routing"] if SMART_ROUTER_CONFIG_VERSION == "subagent_orch_v1" else []
+    )
     with AgentTerminal(
-        session, "codex", [str(session.binary), "codex"], "smart-router-skill-back-on"
+        session,
+        "codex",
+        [str(session.binary), "codex", *launch_flags],
+        "smart-router-skill-back-on",
     ) as tui:
         tui.boot()
         _run_calculation(tui, session, "codex", "1+1", "2", orchestration_enabled, routed=True)

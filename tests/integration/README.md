@@ -47,6 +47,12 @@ matching header/body recipes. Transcript lookup uses the owning session's first
 metadata record so copied parent history cannot hide the parent's newer answer.
 Historical tree-reload results do not validate the replacement.
 
+The Codex toggle journeys also cover `subagent_orch_v1`. Its off/on case launches
+with the explicit `--enable-smart-routing` flag and requires a routing box before
+the initial child and after re-enabling routing, plus no box or decision while off.
+This exact preset/flag journey passed on Linux with Codex 0.167.0 against
+`eng-ml-inference`; a missing-box report on native macOS remains unverified.
+
 `test_smart_router_codex_resumes_history_after_proxy_restart` exits and relaunches
 with the same routing preset, selects the saved conversation through `/resume`,
 and checks memory of the previous turn, original thread ID, successful inference,
@@ -1007,7 +1013,8 @@ PATH conflicts for the Smart Router skill have subprocess/component coverage in
 establish PowerShell command execution.
 
 The toggle journeys retain the legacy routing-only and orchestration cases and add each of
-the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only `smart-router`
+the subagent-only `SMART_ROUTER_CONFIG_VERSION` presets, including Codex `subagent_orch_v1`.
+They require only `smart-router`
 for routing-only cases, and both `smart-router-orchestrator` and `smart-router` when orchestration
 is enabled. Claude checks each local mod confirmation and the recorded `smart_router_recipe_name`
 on the following calculation's real gateway requests. Codex verifies saved session controls,
