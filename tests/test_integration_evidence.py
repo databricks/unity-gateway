@@ -2,6 +2,7 @@
 
 import json
 
+import pyte
 import pytest
 
 from tests.integration.utils import evidence
@@ -13,7 +14,29 @@ from tests.integration.utils.evidence import (
     assistant_answer_contains,
     tool_outputs,
 )
-from tests.integration.utils.terminal import codex_command_approval_pending
+from tests.integration.utils.terminal import TerminalScreen, codex_command_approval_pending
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("plain", "plain   "),
+        ("界X", "界X     "),
+        ("界X\rA", "A X     "),
+        ("界X\r\x1b[P", " X      "),
+        ("界X\r\x1b[X", "  X     "),
+        ("界X\rAB", "ABX     "),
+        ("e\u0301界Z", "é界Z    "),
+    ],
+)
+def test_terminal_screen_preserves_columns_after_wide_character_edits(output, expected):
+    replies = []
+    screen = TerminalScreen(8, 2, replies.append)
+    pyte.Stream(screen).feed(output)
+    cells = {x: screen.buffer[0][x] for x in range(8)}
+
+    assert screen.display == [expected, " " * 8]
+    assert {x: screen.buffer[0][x] for x in range(8)} == cells
 
 
 @pytest.mark.parametrize(

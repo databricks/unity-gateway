@@ -995,9 +995,9 @@ selected model and rationale and matches the decision log. The native mod applie
 that model at spawn without rewriting the reviewed tool input. Native task-header
 rendering is outside that CLI-contract check.
 
-The unit/component `../test_smart_routing_config.py` includes a 162-case Cartesian oracle over all
-three legacy routing flags (`None`, `0`, `1`) and six selector forms (`None` plus the five
-supported presets, including the internal first-prompt-and-subagent mode). It independently
+The unit/component `../test_smart_routing_config.py` checks unset, disabled, enabled, and
+conflicting combinations of the routing, orchestration, and savings flags against the
+supported presets, including first-prompt-and-subagent and savings modes. It independently
 hardcodes preset values and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.
@@ -1073,7 +1073,12 @@ configuration, each journey injects only a tracing-enabled CodingAgentConfig inp
 `claude_tracing.json` / `codex_tracing.json` fixtures) through the suite's managed-config stub; the agents, inference, OTLP export, and table
 verification remain real. Each adds the prompt's UUID as a trace-safe
 `ug_integration_marker` attribute, resolves the destination table from the workspace tracing
-configuration, waits 30 seconds, and queries that table through an existing SQL warehouse.
+configuration, waits 30 seconds, and polls that table through an existing SQL warehouse
+(a running one if any, else a serverless one). The query helper allows up to 10 minutes for
+warehouse startup or queuing and 180 seconds for execution. Caller deadlines take precedence;
+the tracing journeys retain their five-minute trace-row polling budget. Timeouts identify
+the exhausted limit. `../test_integration_sql.py` checks these limits with a controlled SQL
+API and clock; those component checks do not establish live warehouse behavior.
 The tests assert that a span with the marker arrived and identifies the requested model.
 
 Scoped discovery additionally requires Model Services
@@ -1498,6 +1503,11 @@ update both together. The fixtures reference real securables on the managed work
 `main.default.ci_e2e_anthropic_mps` / `ci_e2e_openai_mps`, MCP service `system.ai.github`, skill
 `main.default.forkable-meals`), which must keep existing.
 
+The Codex managed-MCP case requires the native HTTP `system-ai-github` entry in the OS-managed
+file, with the exact service URL, OAuth resource and Codex client ID, no mixed-in stdio fields,
+and no duplicate in the user's config. Unit tests cover the `ug mcp-proxy` fallback for
+workspaces without native OAuth. This case verifies configuration, not an MCP tool call.
+
 The `managed_fixture` journeys use `UCODE_MANAGED_CONFIG_STUB` to short-circuit only the
 managed-config HTTP read. The Claude discovery module uses `claude_mps.json`, whose Claude model
 source is `main.default.ci_e2e_anthropic_mps` with no static defaults, across all configured/fresh
@@ -1669,6 +1679,8 @@ selectors only after confirming the agent's intended UI changed; do not seed its
 onboarding state or relax the prompt/task assertions. Test homes are deleted after
 each case; redacted diagnostics remain. For manual interaction, configure a fresh
 home with the same installed binaries and recorded public CLI arguments.
+The terminal renderer preserves blank continuation cells after partial edits of wide
+Unicode characters; component tests check column positions without changing task assertions.
 Definitive API errors and the client's exhausted retry limit fail the TUI wait
 immediately with the actual screen. A transient 429/503 while the client is still
 retrying is not treated as terminal; the suite adds no task retries of its own.
@@ -1810,6 +1822,23 @@ recipe change does not require editing the test.
 Local Claude mod confirmation replaces the old saved-control-file/assistant-turn wait;
 Codex retains its CLI control-file checks. No extra TUI sessions or tasks are added.
 Clear/reload, compaction, and denied-write rollback are not independently checked.
+
+Savings gating and `subagent_orch_savings_v0` have component coverage in
+`test_smart_routing_config.py` and the pricer subprocess tests in `test_smart_routing_savings.py`.
+Native component tests check opt-in usage-file creation, opt-out preservation, resolved
+model aliases, and continued requests after a denied savings-flag read. A controlled
+local Messages API exercises real Claude main/subagent requests and token accounting.
+Those component sessions explicitly allow Agent in the default permission mode; they
+do not exercise the auto-mode safety classifier. Alias checks also accept the context
+selector retained by Claude 2.1.290.
+Native model commands and a blocked-prompt replay verify baseline capture before routing
+and preserve prior usage after later model changes. CLI off/on excludes disabled turns
+from native usage totals. Native UI component tests cover mounted-row updates after
+CLI toggles and hiding stale estimates on failed usage writes. Pricer subprocesses read
+the saved session controls. Python launch tests check separate price caches for workspaces
+sharing a host, and pricing tests keep model versions distinct.
+Live savings accumulation, display, and session off/on are not covered by the
+integration suite.
 
 Subagent-routing failures have shared warning coverage in `test_codex_routing.py`;
 the live hook journeys retain their routing assertions and include stderr when no

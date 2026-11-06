@@ -10,7 +10,6 @@ import tempfile
 from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 
-from ucode.config_io import atomic_write_json
 from ucode.constants import SMART_ROUTING_ENV_KEYS
 from ucode.smart_routing.config import resolve_environment
 
@@ -21,6 +20,8 @@ _ALLOWED_KEYS = frozenset(SMART_ROUTING_ENV_KEYS)
 
 def start_session(env: MutableMapping[str, str] | None = None) -> Path:
     """Create an empty override file and expose it to the launched harness."""
+    from ucode.config_io import atomic_write_json
+
     target = os.environ if env is None else env
     path = Path(tempfile.mkdtemp(prefix="ug-session-env-")) / "env.json"
     atomic_write_json(path, {})
@@ -73,6 +74,8 @@ def effective_environment(env: Mapping[str, str] | None = None, *, agent: str) -
 
 def set_session_environment(values: Mapping[str, str]) -> None:
     """Atomically replace the current session's allowlisted overrides."""
+    from ucode.config_io import atomic_write_json
+
     path = session_env_path()
     try:
         _read(path)

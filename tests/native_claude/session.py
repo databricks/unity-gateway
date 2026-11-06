@@ -20,7 +20,18 @@ from ucode.smart_routing.v2 import (
 
 
 class Session:
-    def __init__(self, binary, root, env, api="http://127.0.0.1:1", route_command=(), resume=None):
+    def __init__(
+        self,
+        binary,
+        root,
+        env,
+        api="http://127.0.0.1:1",
+        route_command=(),
+        options=None,
+        resume=None,
+        model="claude-sonnet-4-6",
+        hooks=None,
+    ):
         self.root = root
         root.mkdir()
         resume_args = []
@@ -38,7 +49,11 @@ class Session:
         shutil.copyfile(
             Path(__file__).parents[2] / "skills/smart-router/SKILL.md", skill / "SKILL.md"
         )
-        options = {**_claude_mod_launch_options(env), "routeCommand": list(route_command)}
+        options = {
+            **_claude_mod_launch_options(env),
+            **(options or {}),
+            "routeCommand": list(route_command),
+        }
         settings = {
             "env": {
                 **resolve_environment(env, agent=AGENT_CLAUDE),
@@ -46,6 +61,8 @@ class Session:
             },
             "pluginConfigs": {CLAUDE_ROUTING_PLUGIN_NAME: {"options": options}},
         }
+        if hooks is not None:
+            settings["hooks"] = hooks
         process_env = {
             **{
                 key: os.environ[key]
@@ -77,9 +94,12 @@ class Session:
                 "--settings",
                 json.dumps(settings),
                 "--model",
-                "claude-sonnet-4-6",
+                model,
                 "--tools",
                 "Agent",
+                # The fixture allows Agent explicitly; auto mode adds classifier requests.
+                "--permission-mode",
+                "default",
                 "--allowedTools",
                 "Agent",
                 "--plugin-dir",

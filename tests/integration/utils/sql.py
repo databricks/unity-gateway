@@ -6,9 +6,11 @@ import json
 import time
 import urllib.request
 
-# Statement Execution API returns after at most 50s (`wait_timeout`); a cold warehouse can
-# take minutes to start, so a statement is then polled until this overall budget.
-STATEMENT_DEADLINE_SECONDS = 300
+# A statement stays PENDING while its warehouse starts or queues it; that time must not
+# consume the execution budget. Callers may impose a shorter overall deadline.
+WAREHOUSE_WAIT_SECONDS = 600
+STATEMENT_RUN_SECONDS = 180
+STATEMENT_DEADLINE_SECONDS = WAREHOUSE_WAIT_SECONDS + STATEMENT_RUN_SECONDS
 # Spans reach the table asynchronously after the agent exits; poll for the row this long.
 TRACE_ROW_DEADLINE_SECONDS = 300
 TRACE_ROW_POLL_INTERVAL_SECONDS = 15
@@ -52,7 +54,7 @@ def _quote_identifier(identifier: str) -> str:
 
 
 def resolve_warehouse_id(workspace: str, bearer: str) -> str:
-    """Choose an existing warehouse, preferring one that is already running."""
+    """Choose an existing warehouse: a running one, else a serverless one (quick to start)."""
     request = urllib.request.Request(
         f"{workspace.rstrip('/')}/api/2.0/sql/warehouses",
         headers={"Authorization": f"Bearer {bearer}"},
@@ -69,7 +71,15 @@ def resolve_warehouse_id(workspace: str, bearer: str) -> str:
     running = next(
         (warehouse for warehouse in warehouses if warehouse.get("state") == "RUNNING"), None
     )
-    return str((running or warehouses[0])["id"])
+    serverless = next(
+        (
+            warehouse
+            for warehouse in warehouses
+            if warehouse.get("enable_serverless_compute") is True
+        ),
+        None,
+    )
+    return str((running or serverless or warehouses[0])["id"])
 
 
 def query_count(
@@ -98,13 +108,27 @@ def query_count(
     with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
         result = json.load(response)
 
+    statement_id = result.get("statement_id")
     deadline = started + timeout
-    while result.get("status", {}).get("state") in {"PENDING", "RUNNING"}:
-        assert time.monotonic() < deadline, (
+    running_since: float | None = None
+    while (state := result.get("status", {}).get("state")) in {"PENDING", "RUNNING"}:
+        now = time.monotonic()
+        assert now < deadline, (
             f"SQL statement did not finish within {timeout:g} seconds "
-            f"(elapsed {time.monotonic() - started:.0f}s, "
-            f"state {result.get('status', {}).get('state')})"
+            f"(elapsed {now - started:.0f}s, state {state})"
         )
+        if state == "RUNNING" and running_since is None:
+            running_since = now
+        if running_since is None:
+            assert now - started < WAREHOUSE_WAIT_SECONDS, (
+                f"SQL statement {statement_id} stayed PENDING on warehouse {warehouse_id} "
+                f"for {WAREHOUSE_WAIT_SECONDS} seconds"
+            )
+        else:
+            assert now - running_since < STATEMENT_RUN_SECONDS, (
+                f"SQL statement {statement_id} on warehouse {warehouse_id} did not finish "
+                f"within {STATEMENT_RUN_SECONDS} seconds of running"
+            )
         time.sleep(2)
         poll = urllib.request.Request(
             f"{workspace.rstrip('/')}/api/2.0/sql/statements/{result['statement_id']}",

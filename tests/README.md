@@ -247,6 +247,32 @@ Its Claude decoy catalog includes both Claude and Codex decoys; neither belongs 
 The managed Claude parent-schema journey expects numbered GPT models to carry `[1m]` in the
 picker while retaining the catalog's display label.
 
+Savings estimate coverage: `test_smart_routing_savings.py` prices the mod's token sums
+(per-entry and first-prompt baselines, unpriced or malformed entries, the pricer's single
+JSON line). `test_smart_routing_pricing.py` covers endpoint rates, distinct model versions,
+and the price cache. Launch tests keep shared-host workspace price caches separate.
+The pricer subprocess checks explicit opt-in; unset, empty, zero, and invalid values
+stay off. Preset coverage in
+`test_smart_routing_config.py` checks the savings flag, inherited-value precedence,
+restoration, and launch/session off controls. `test_smart_router.py` checks that the skill
+toggle writes all managed flags.
+`test_claude_mod.py` checks native literal setters against the flag registry. In the
+native suite, options reach the mod unchanged, configured aliases resolve to model IDs,
+and disabled sessions create no usage file even with stale savings options. A controlled
+local Messages API drives real main and subagent requests and checks exact input, output,
+and cache-token totals. These sessions explicitly allow Agent in the default permission
+mode, keeping auto-mode classifier requests out of the prepared model responses.
+Alias checks accept the context selector retained by Claude 2.1.290. Native model commands
+and a blocked-prompt replay check the pre-routing baseline and preserve earlier usage after
+a later model change. CLI off/on controls exclude disabled turns from the totals; pricer
+subprocesses honor the saved
+controls and fall back to inherited settings when the file is malformed. Native UI
+component tests check that off/on hides/restores a mounted row and failed usage writes
+hide stale estimates until a successful write. Capability tests deny the savings flag
+read and verify that startup and requests still run.
+These are native component checks, not live gateway/model or TUI coverage.
+Endpoint-price refresh failures and orchestrator-version display are not covered automatically.
+
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
 correlation remains CUJ-specific. Concurrent runs may read the same CUJ workspace.
@@ -274,6 +300,8 @@ default without routing requests, new router decisions, recipe headers, or orche
 Codex startup checks in `test_e2e_cuj_helpers.py` replay the 0.154/0.165 prompt layouts
 and delayed hook review. The driver waits for the model/directory footer before typing;
 the early startup draft is insufficient. These offline PTY checks do not run native agents.
+Terminal screen checks preserve column positions after wide Unicode characters are
+overwritten, deleted, or partially erased, including the blank continuation cells.
 
 Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,
 complete per-agent validation, session precedence, and preserving the preset selector
@@ -823,14 +851,16 @@ dialog cannot borrow the confirmation footer from a previous dialog.
 and matching prompt/compaction hook content for Claude and Codex. It also covers
 shared `SKILL.md` bundles. These are component checks, not live agent execution.
 
-`test_smart_routing_config.py` includes a 162-case Cartesian component oracle: all three legacy
-routing flags take unset, `0`, and `1`, while the selector takes unset or one of the five
-supported presets, including the customer first-prompt-and-subagent mode. It uses the named
+`test_smart_routing_config.py` checks unset, disabled, enabled, and conflicting combinations of
+the routing, orchestration, and savings flags against the supported presets, including the
+first-prompt-and-subagent and savings modes. It uses the named
 version constants but independently hardcodes each preset's settings and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.
 Absent/unknown selectors are no-ops; CLI checks cover auth, revert, and launch dispatch.
 These component checks do not establish live agent, hook, or gateway behavior.
+`test_integration_sql.py` checks cold-warehouse and query-execution time limits, including
+shorter caller deadlines, with a controlled SQL API and clock. It makes no live SQL requests.
 Three additional component cases compare the legacy flags with `subagent_only_v1`,
 `subagent_orch_v1`, and `first_prompt_and_subagent_no_orch_v0`, including first-prompt,
 subagent-routing activation, orchestration, and preservation of the chosen router name.
@@ -958,6 +988,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_case_02_*` | Launch managed Codex after configure and from fresh state | The scoped and stable catalogs, ug-launched app server, and fresh bare app server match the independently fetched admin MPS model IDs. The configured case uses real `ug revert` to remove ug's shared pointer and stable file while preserving a user setting |
 | `test_case_04_*`, `test_case_06_*` | Pass a provider or model-location override to managed Codex after configure and from fresh state | ug rejects the override before Codex starts and preserves agent-owned state |
 | `test_ug_configure_managed_codex_catalog_fallback` | Configure from an injected managed response containing a GPT model absent from Codex's bundled catalog, then inspect the picker with legacy smart routing off/on | Actionable metadata warning; conservative catalog entry for the unknown model; real Codex picker lists the custom catalog model |
+| `test_managed_fixture_codex_mcp_written_to_managed_file` | Interactive PTY configure with the managed `system.ai.github` MCP service | The OS-managed entry uses the exact service URL through native HTTP with Codex's pinned OAuth client; no duplicate server is added to the user's config. Configuration only, without an MCP tool call |
 | `test_managed_fixture_codex_http_headers_in_managed_file` | Interactive PTY configure with injected managed `http_headers` for Codex | The specified header (`x-databricks-workspace`) lands in `model_providers.Databricks.http_headers` in `/etc/codex/managed_config.toml` with the exact admin value |
 | `test_managed_claude_mps_defaults_accompany_discovery`, `test_managed_claude_parent_schema_defaults_accompany_discovery` | Configure from a stubbed config and launch Claude with MPS discovery (`main.default.ci_e2e_anthropic_mps`) and with `system.ai` Unity Catalog discovery, respectively, both on the managed workspace | Both generated settings files retain every admin-authored default alongside the source header and every independently fetched catalog model with its label; MPS pickers keep family shortcut rows separate from catalog entries; only UC Opus/Sonnet family ids gain `[1m]` |
 | `test_launcher_sessions_prompt_at_most_once` (CUJ8) | Three launcher sessions: a second writer applies a launcher's OS-managed field set on drift, then a real smart-routed `ug claude` TUI with the launcher's args and env opens `/model` and runs a task | At most two privileged writes in the first session and none after; no ug password notice after the first session, warnings, or errors; writer's picker shown; every writer field unchanged except ug-owned ones; no discovered defaults in either settings file; orchestrator on; inference served on the writer's Haiku default; `ug revert` restores the writer's file exactly |
