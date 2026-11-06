@@ -1,5 +1,11 @@
 # Integration tests
 
+`../test_codex_catalog_prefetch.py` and the CLI component suite cover scoped POSIX
+bundled-model extraction during preflight, cleanup on failure/interruption, and
+unchanged native validation. The controlled native benchmark retains both Codex
+commands but simulates gateway delay; it is not a live agent-readiness result.
+Windows keeps synchronous extraction.
+
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They
