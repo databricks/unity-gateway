@@ -760,7 +760,7 @@ and the shared upgrade flow. Codex 0.163 cannot reach execution when the upgrade
 declined, fails, or leaves the version below the routing minimum. Unrecognized
 versions stop before an upgrade prompt or updater, including automatic-update mode;
 successful and automatic upgrades of known old versions allow routing.
-The managed-launch cases in `test_cli.py` exercise Codex 0.145 and 0.163 through the
+The managed-launch cases in `test_cli.py` exercise Codex 0.156 and 0.163 through the
 real version gate: declining blocks launch, upgrading to 0.164 allows routing, and
 `--disable-smart-routing` allows an ordinary launch without invoking the updater.
 `test_codex_routing.py` checks that long Unicode assignments reach the router and hook
@@ -1073,9 +1073,9 @@ Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
 journeys for both agents, in two parallel jobs. After smoke finishes, the full
 suite runs the remaining live cases in separate agent and OS jobs, with cases
 serial inside each VM. Codex smoke and general full/managed coverage retain
-0.154.0. Separate required full and managed matrix rows use 0.165.0 only for
+0.156.0. Separate required full and managed matrix rows use 0.165.0 only for
 `codex_smart_routing` cases; CUJ4 also uses 0.165.0, while other CUJs retain
-0.154.0. The catalog-fallback routing-off case stays on the baseline version.
+0.156.0. The catalog-fallback routing-off case stays on the baseline version.
 The existing workflow contract tests collect both selections and require disjoint
 case sets whose union preserves coverage. Windows' existing native-toggle exclusions remain.
 CUJ7's five journeys collect eight cases in the required

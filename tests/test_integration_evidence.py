@@ -1,6 +1,7 @@
 """Unit checks for interpreting terminal evidence, not live agent substitutes."""
 
 import json
+from pathlib import PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -13,7 +14,11 @@ from tests.integration.utils.evidence import (
     assistant_answer_contains,
     tool_outputs,
 )
-from tests.integration.utils.terminal import codex_command_approval_pending
+from tests.integration.utils.terminal import (
+    codex_command_approval_pending,
+    codex_session_footer_shown,
+    codex_trust_dialog_shown,
+)
 
 
 @pytest.mark.parametrize(
@@ -60,6 +65,89 @@ def test_codex_approval_requires_the_exact_local_command(command, environment, m
         assert (
             codex_command_approval_pending(screen, "ug codex --disable-smart-routing") is expected
         )
+
+
+# Codex 0.156.0 folder-trust screens captured in CI run 42283317759. Windows ConPTY rendered the
+# selection marker and the footer separator as U+FFFD.
+_TRUST_TEXT = (
+    "  Trust this folder? Codex can read, edit, and run files here, subject to your permission "
+    "settings. Folder settings can run code\n"
+    "  automatically, even without a model request. Continue only if you trust these files. "
+    "Your trust decision will be saved.\n"
+)
+_LINUX_CWD = PurePosixPath("/tmp/ug-integration-project-pf6kf82t/project with spaces")
+_LINUX_TRUST = (
+    f"  Folder access\n  {_LINUX_CWD}\n\n{_TRUST_TEXT}\n"
+    "› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit"
+)
+_WINDOWS_CWD = PureWindowsPath(
+    r"D:\a\_temp\ug-integration\ug-integration-project-da67c71c70c8\project with spaces"
+)
+_WINDOWS_TRUST = (
+    f"  Folder access\n  {_WINDOWS_CWD}\n{_TRUST_TEXT}"
+    "\ufffd 1. Trust and continue\n  2. Quit\n  enter continue \ufffd esc quit"
+)
+_OLDER_CWD = PurePosixPath("/tmp/project-parent/project with spaces")
+_OLDER_TRUST = (
+    f"> You are in {_OLDER_CWD}\n\n  Do you trust the contents of this directory?\n\n"
+    "› 1. Yes, continue\n  2. No, quit\n\n  Press enter to continue"
+)
+
+
+@pytest.mark.parametrize(
+    ("screen", "cwd", "change", "shown"),
+    [
+        (_LINUX_TRUST, _LINUX_CWD, None, True),
+        (_WINDOWS_TRUST, _WINDOWS_CWD, None, True),
+        (_OLDER_TRUST, _OLDER_CWD, None, True),
+        (_LINUX_TRUST, _LINUX_CWD, ("project with spaces", "other project"), False),
+        (_WINDOWS_TRUST, _WINDOWS_CWD, ("project with spaces", "other project"), False),
+        (_LINUX_TRUST, _LINUX_CWD, ("› 1.", "  1."), False),
+        (_WINDOWS_TRUST, _WINDOWS_CWD, ("\ufffd 1.", "  1."), False),
+        (_LINUX_TRUST, _LINUX_CWD, ("2. Quit", "2. Exit"), False),
+        (_LINUX_TRUST, _LINUX_CWD, ("Folder access", "Folder"), False),
+        (_LINUX_TRUST, _LINUX_CWD, ("Trust this folder?", "Trust it?"), False),
+    ],
+)
+def test_codex_trust_dialog_requires_the_test_project(screen, cwd, change, shown):
+    if change:
+        screen = screen.replace(*change)
+    assert codex_trust_dialog_shown(screen, cwd) is shown
+
+
+# Codex 0.156.0's ready screen captured in CI run 42294239789; its footer ends in a warning badge.
+_FOOTER_CWD = PurePosixPath("/tmp/ug-integration-project-jhrdmhry/project with spaces")
+_CODEX_0_156_READY = (
+    "╭───────────────────────────────────────────╮\n"
+    "│ >_ OpenAI Codex (v0.156.0)                │\n"
+    "│                                           │\n"
+    "│ model:     GPT-5.6-Sol   /model to change │\n"
+    "│ directory: /tmp/…/project with spaces     │\n"
+    "╰───────────────────────────────────────────╯\n"
+    "\n"
+    "  Tip: Use /feedback to send logs to the maintainers when something looks off.\n"
+    "\n"
+    "\n"
+    "› Ask Codex to do anything\n"
+    "\n"
+    "  GPT-5.6-Sol default · /tmp/ug-integration-project-jhrdmhry/project with spaces                                   ⚠ 1 warning · f2 to view"
+)
+
+
+@pytest.mark.parametrize(
+    ("change", "shown"),
+    [
+        (None, True),
+        (("                                   ⚠ 1 warning · f2 to view", ""), True),
+        (("⚠ 1 warning", "⚠ 2 warnings"), True),
+        (("⚠ 1 warning · f2 to view", "something else"), False),
+        (("project with spaces    ", "other project    "), False),
+        (("GPT-5.6-Sol default · ", ""), False),
+    ],
+)
+def test_codex_session_footer_accepts_the_warning_badge(change, shown):
+    screen = _CODEX_0_156_READY.replace(*change) if change else _CODEX_0_156_READY
+    assert codex_session_footer_shown(screen, _FOOTER_CWD) is shown
 
 
 class _Session:
