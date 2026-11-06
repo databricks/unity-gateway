@@ -14,6 +14,91 @@ from ucode.smart_routing import codex_proxy
 from ucode.smart_routing.codex_proxy import RoutingAttribution
 
 
+@pytest.mark.parametrize(
+    "model", ["system.ai.kimi-k3", "system.ai.glm-5-2", "system.ai.deepseek-v4"]
+)
+@pytest.mark.parametrize("disabled", [False, True])
+def test_oss_receives_assignments_followups_and_child_results(tmp_path, model, disabled):
+    controls = tmp_path / "env.json"
+    atomic_write_json(controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if disabled else {})
+    messages = [
+        {"type": "message", "role": "user", "content": "original parent task"},
+        {
+            "type": "agent_message",
+            "recipient": "/root/worker",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "Message Type: NEW_TASK\nSender: /root\nPayload:\nRead café λ.txt",
+                }
+            ],
+        },
+        {"type": "function_call_output", "call_id": "read", "output": "file value"},
+        {
+            "type": "agent_message",
+            "recipient": "/root/worker",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "Message Type: NEW_TASK\nSender: /root\nPayload:\nFollow-up task",
+                }
+            ],
+        },
+        {
+            "type": "agent_message",
+            "recipient": "/root",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "Message Type: FINAL_ANSWER\nSender: /root/worker\nPayload:\nDone",
+                }
+            ],
+        },
+    ]
+    body, headers = RoutingAttribution(controls, "stable")(
+        "/responses", json.dumps({"model": model, "input": messages}).encode()
+    )
+    translated = json.loads(body)["input"]
+    assert translated[0] == messages[0]
+    assert translated[2] == messages[2]
+    for index in (1, 3, 4):
+        assert translated[index] == {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": f"Recipient: {messages[index]['recipient']}\n"},
+                *messages[index]["content"],
+            ],
+        }
+    assert headers["Databricks-Smart-Router-Recipe"] == ("DISABLED" if disabled else "stable")
+
+
+@pytest.mark.parametrize("model", ["gpt-6-sol", "system.ai.gpt-6-luna", "custom.provider"])
+def test_other_models_keep_native_agent_messages(tmp_path, model):
+    controls = tmp_path / "env.json"
+    atomic_write_json(controls, {})
+    item = {"type": "agent_message", "recipient": "/root", "encrypted_content": "opaque"}
+    body, _ = RoutingAttribution(controls, "stable")(
+        "/responses", json.dumps({"model": model, "input": [item]}).encode()
+    )
+    assert json.loads(body)["input"] == [item]
+
+
+def test_encrypted_only_oss_assignment_fails_instead_of_disappearing(tmp_path):
+    controls = tmp_path / "env.json"
+    atomic_write_json(controls, {})
+    with pytest.raises(RequestRewriteError, match="plaintext Codex agent messages"):
+        RoutingAttribution(controls, "stable")(
+            "/responses",
+            json.dumps(
+                {
+                    "model": "system.ai.kimi-k3",
+                    "input": [{"type": "agent_message", "encrypted_content": "opaque"}],
+                }
+            ).encode(),
+        )
+
+
 @pytest.mark.parametrize("metadata_shape", ["missing", "string", "object"])
 @pytest.mark.parametrize(
     "path", ["/ai-gateway/mlflow/v1/responses", "/ai-gateway/mlflow/v1/responses/compact?x=1"]
