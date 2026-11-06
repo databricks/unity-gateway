@@ -856,6 +856,56 @@ class TestCodexRevertLegacySharedConfig:
 
 
 class TestCodexAppCatalog:
+    def test_publish_catalog_preserves_newer_toml_syntax(self):
+        shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
+        shared_path.parent.mkdir()
+        original = "# User settings\nfeatures = {\nshell_tool = true,\n}\n"
+        shared_path.write_text(original, encoding="utf-8")
+        catalog = {"models": [{"slug": "first-model"}]}
+
+        codex.sync_app_model_catalog(catalog)
+
+        assert original in shared_path.read_text(encoding="utf-8")
+        assert read_toml_safe(shared_path) == {
+            "features": {"shell_tool": True},
+            "model_catalog_json": str(codex.CODEX_MODEL_CATALOG_PATH),
+        }
+        assert json.loads(codex.CODEX_MODEL_CATALOG_PATH.read_text(encoding="utf-8")) == catalog
+
+    def test_unchanged_catalog_skips_editable_parse_and_file_replacement(self, monkeypatch):
+        catalog = {"models": [{"slug": "first-model"}]}
+        codex.sync_app_model_catalog(catalog)
+        path = codex.CODEX_MODEL_CATALOG_PATH
+        marker = 1_000_000_000
+        os.utime(path, ns=(marker, marker))
+        config_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
+        original = config_path.read_bytes()
+        monkeypatch.setattr(
+            codex,
+            "_read_app_config",
+            lambda: pytest.fail("unchanged settings need no format-preserving parse"),
+        )
+
+        codex.sync_app_model_catalog(catalog)
+
+        assert path.stat().st_mtime_ns == marker
+        assert json.loads(path.read_text(encoding="utf-8")) == catalog
+        assert config_path.read_bytes() == original
+
+    def test_detach_without_ug_reference_skips_editable_parse(self, monkeypatch):
+        path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
+        path.parent.mkdir()
+        original = '# Keep this comment\nmodel_catalog_json = "/my/catalog.json"\n'
+        path.write_text(original, encoding="utf-8")
+        monkeypatch.setattr(
+            codex,
+            "_read_app_config",
+            lambda: pytest.fail("unmanaged settings need no format-preserving parse"),
+        )
+
+        assert codex.detach_app_model_catalog() is False
+        assert path.read_text(encoding="utf-8") == original
+
     def test_publish_refresh_and_reattach_preserve_settings_and_report_restart(self, capsys):
         shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
         shared_path.parent.mkdir()
@@ -2527,6 +2577,67 @@ class TestCodexManagedConfig:
 
         with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="sudo denied"):
             codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+    @pytest.mark.parametrize(
+        "replacement",
+        [
+            '# Removed the otel table\nmodel = "user-model"\n',
+            '[otel]\nenvironment = "user"\n',
+            '[otel]\ntrace_exporter = "console"\n',
+            'otel = "not a table"\n',
+        ],
+        ids=["table-removed", "exporter-removed", "custom-exporter", "scalar-table"],
+    )
+    def test_desktop_tracing_removal_rechecks_concurrent_settings(self, monkeypatch, replacement):
+        path = codex._legacy_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "[otel.trace_exporter.otlp-http]\n"
+            'endpoint = "http://127.0.0.1:43199/v1/traces"\nprotocol = "binary"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(codex, "current_os", lambda: codex.OS.LINUX)
+        monkeypatch.setattr(codex, "_service_port", lambda flag: 43199 if flag == "port" else None)
+        monkeypatch.setattr(
+            codex, "_remove_otel_service", lambda: path.write_text(replacement, encoding="utf-8")
+        )
+
+        assert codex._sync_desktop_tracing(None) is False
+        assert path.read_text(encoding="utf-8") == replacement
+
+    @pytest.mark.parametrize("replacement_kind", ["custom", "ours", "scalar"])
+    def test_desktop_tracing_setup_rechecks_concurrent_settings(
+        self, monkeypatch, capsys, replacement_kind
+    ):
+        path = codex._legacy_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('[otel]\nenvironment = "user"\n', encoding="utf-8")
+        replacement = {
+            "custom": '# Concurrent choice\n[otel]\ntrace_exporter = "console"\n',
+            "ours": (
+                "# Concurrent UG setup\n[otel.trace_exporter.otlp-http]\n"
+                'endpoint = "http://127.0.0.1:43199/v1/traces"\nprotocol = "binary"\n'
+            ),
+            "scalar": 'otel = "not a table"\n',
+        }[replacement_kind]
+        monkeypatch.setattr(codex, "current_os", lambda: codex.OS.LINUX)
+        monkeypatch.setattr(codex, "_service_port", lambda flag: None)
+        monkeypatch.setattr(codex, "_allocate_otel_port", lambda: 43199)
+        monkeypatch.setattr(
+            codex,
+            "_ensure_otel_service",
+            lambda *args: path.write_text(replacement, encoding="utf-8"),
+        )
+
+        assert codex._sync_desktop_tracing(WS) is False
+        assert path.read_text(encoding="utf-8") == replacement
+        output = capsys.readouterr().err
+        if replacement_kind == "ours":
+            assert output == ""
+        elif replacement_kind == "custom":
+            assert "already sets otel.trace_exporter" in output
+        else:
+            assert "is not a table" in output
 
     @pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
     def test_desktop_tracing_lifecycle(self, tmp_path, monkeypatch):

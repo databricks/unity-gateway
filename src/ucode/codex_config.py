@@ -10,7 +10,7 @@ from pathlib import Path
 import tomlkit
 from tomlkit.items import Item
 
-from ucode.config_io import read_json_safe, read_toml_safe
+from ucode.config_io import read_json_safe, read_toml_values_safe
 from ucode.managed_files import OS, current_os, windows_codex_managed_settings_path
 from ucode.ui import print_warning
 
@@ -66,7 +66,7 @@ def custom_catalog_path() -> Path | None:
     for path in paths:
         if not path.is_file():
             continue
-        settings = read_toml_safe(path)
+        settings = read_toml_values_safe(path)
         catalog_ref = settings.get("model_catalog_json")
         if not isinstance(catalog_ref, str) or not catalog_ref.strip():
             continue

@@ -1,5 +1,13 @@
 # Test suites and user journeys
 
+Codex startup config checks in `test_agent_codex.py` verify unchanged catalogs avoid
+replacement and settings edits, while changed catalogs preserve user comments and
+report restart requirements. Desktop tracing rechecks settings after service operations
+so another writer's exporter is preserved. `test_config_io.py` covers fast read-only TOML
+inspection, missing/malformed/unreadable files, and newer TOML syntax accepted by the
+existing writer without rereading the file. These are component checks; they do not
+establish native-agent readiness or gateway latency.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component
