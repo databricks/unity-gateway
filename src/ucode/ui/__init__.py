@@ -6,7 +6,6 @@ import itertools
 import sys
 import textwrap
 import threading
-import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import timedelta
@@ -307,7 +306,9 @@ def spinner(message: str | Callable[[], str]):
             # doesn't leave stale characters behind.
             sys.stdout.write(f"\r\033[2m{frame}\033[0m {current_message()}\033[K")
             sys.stdout.flush()
-            time.sleep(0.1)
+            # Wake as soon as the operation finishes instead of adding the remaining
+            # frame interval to every interactive startup phase.
+            stop_event.wait(0.1)
         sys.stdout.write("\r\033[K")
         sys.stdout.flush()
 
