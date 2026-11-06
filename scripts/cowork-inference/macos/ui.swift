@@ -42,10 +42,16 @@ let labelAttributes = ["AXTitle", "AXDescription", "AXValue", "AXHelp"]
 guard let operation = arguments.first else { fail("Expected snapshot, click, or type") }
 
 if operation == "snapshot" {
-    for element in controls {
-        print((["AXRole"] + labelAttributes + ["AXEnabled", "AXSelected"]).map {
+    let rows = controls.map { element in
+        (["AXRole"] + labelAttributes + ["AXEnabled", "AXSelected"]).map {
             field(element, $0)
-        }.joined(separator: " | "))
+        }
+    }
+    do {
+        let data = try JSONSerialization.data(withJSONObject: rows)
+        FileHandle.standardOutput.write(data)
+    } catch {
+        fail("Could not encode Accessibility snapshot: \(error)")
     }
     exit(0)
 }

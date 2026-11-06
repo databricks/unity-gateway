@@ -25,7 +25,7 @@ Native macOS Cowork inference is covered by `cowork-inference-macos` in
 installed UG through its CLI, and asserts a completed exact-answer task on
 `system.ai.claude-haiku-4-5` through macOS Accessibility. Both jobs block the
 integration gate. Apple Silicon, Code-tab, MCP, and file operations remain uncovered.
-`test_macos_cowork_harness.py` checks sanitized evidence, exact enabled controls,
+`test_macos_cowork_harness.py` checks sanitized evidence, multiline prompt fields, exact enabled controls,
 and rejection of wrong/partial/unfinished responses; it is helper coverage only.
 
 Windows first-launch configuration has component coverage in
