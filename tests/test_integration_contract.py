@@ -958,7 +958,7 @@ def test_cowork_ci_permissions_and_required_gate():
 )
 def test_required_e2e_enforces_integration_result(event, integration_result, passes):
     required = _workflow("ci.yml").split("\n  required-e2e:\n", 1)[1]
-    script = textwrap.dedent(required.split("        run: |\n", 1)[1])
+    script = required.split("        run: ", 1)[1].strip()
     result = subprocess.run(
         ["/bin/bash", "-c", script],
         env={
