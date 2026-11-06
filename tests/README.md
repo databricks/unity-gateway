@@ -646,14 +646,6 @@ caches. The skip-preflight tests also reject starting a background worker. These
 checks control the HTTP boundary with events; they do not establish live gateway timing,
 agent launch, or launch-time savings.
 
-`TestConfigureSharedStateOverlapsFamilyFallbacks` in `test_cli.py` covers concurrent
-Claude/Gemini/Codex fallbacks when UC discovery omits those families, requested-family
-scoping, preservation of UC results and per-family diagnostics, caller-thread state writes,
-selected-workspace headers, and failure without waiting for another family. A barrier
-requires actual overlap without a timing threshold. These are controlled component checks;
-`scripts/benchmark_model_fallbacks.py` measures the same path with synthetic read delays,
-not live gateway or complete agent startup latency.
-
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,
 the four-worker limit, active and queued cancellation, isolated worker errors, and

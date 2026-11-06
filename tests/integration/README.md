@@ -436,13 +436,6 @@ errors, the `skip_model_discovery` and `skip_preflight` paths, and reuse of the 
 probe and listing caches. This suite does not assert live request overlap, probe/listing timing, or
 launch-time savings.
 
-Missing-family discovery overlap is covered by
-`TestConfigureSharedStateOverlapsFamilyFallbacks` in `../test_cli.py`: concurrent reads,
-requested-family and populated-family scoping, selected-workspace headers, diagnostics,
-caller-thread state writes, and failure propagation. The accompanying
-`scripts/benchmark_model_fallbacks.py` uses controlled read delays. These component checks
-do not establish live fallback frequency, gateway timing, or end-to-end startup p90.
-
 `test_ug_configure_scope.py` runs, for Claude and Codex separately (Linux/macOS only), plain
 `ug configure`, `--user`, `UG_SKIP_OS_SETTINGS=1`, and `--global` over a user-owned
 `~/.claude/settings.json` or `~/.codex/config.toml`. It checks which of the per-user ug file
