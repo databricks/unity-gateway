@@ -3753,7 +3753,14 @@ class TestSystemModelServiceProbe:
         assert calls[1].endswith("?page_size=50")
         assert db_mod.cached_model_service_entries(WS) is None
 
-    @pytest.mark.parametrize("reason", ["HTTP 401 Unauthorized", "HTTP 403: Invalid Token"])
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            "HTTP 401 Unauthorized",
+            "HTTP 403: Invalid Token",
+            db_mod.WorkspaceSelectionReason("Selected workspace rejected the access token"),
+        ],
+    )
     def test_rejected_token_fails_without_unscoped_request(self, monkeypatch, reason):
         calls = []
 

@@ -7140,7 +7140,7 @@ class TestConfigureSharedStateUsePat:
         second = cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
 
         assert first["codex_models"] == second["codex_models"] == ["system.ai.gpt-5"]
-        # Main now overlaps initial discovery with the probe; either can populate the cache first.
+        # Concurrent discovery and probing may each request the first page.
         assert 1 <= initial_calls <= 2
         assert len(calls) == initial_calls
 
