@@ -155,7 +155,8 @@ export function register(on: On, options: PluginOptions): void {
   // The installed smart-router skill already supplies the slash command.
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
     const action = e.args.trim();
-    if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off'};
+    if (action === 'explain' || action.startsWith('explain ')) return next(e);
+    if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off|explain on|off|latest'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
     if (action === 'off') {
       // The mod compiler keeps $ within one file, so bind these before Isaac's guard.
@@ -169,8 +170,9 @@ export function register(on: On, options: PluginOptions): void {
     return next(e);
   });
   registerIsaacFeedback(on, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string);
-  on('command.run', {command: 'smart-router'}, async ($, e) => {
+  on('command.run', {command: 'smart-router'}, async ($, e, next) => {
     const action = e.args.trim();
+    if (action !== 'on' && action !== 'off') return next(e);
     try {
       await setRouting($, options, action === 'on', true);
       showStatusBand();

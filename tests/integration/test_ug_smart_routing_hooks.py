@@ -299,7 +299,7 @@ def test_smart_routing_claude_route_subagent_hook(
     subagent routing or each supported selector.
 
     Expected: the shared Python client calls the real router and returns only the
-    spawn-ready model and rationale, leaving the mod's reviewed tool input intact.
+    spawn-ready model, rationale and optional explanation, leaving the mod's reviewed tool input intact.
     One decision is audited for the session. This checks the mod's CLI protocol;
     no native mod or agent decides to spawn.
     """
@@ -331,7 +331,13 @@ def test_smart_routing_claude_route_subagent_hook(
     output = json.loads(result.stdout)
     assert output["model"] in CLAUDE_MODELS, output
     assert isinstance(output["rationale"], str), output
-    assert set(output) == {"model", "rationale"}, output
+    assert {"model", "rationale"} <= set(output) <= {"model", "rationale", "explanation"}, output
+    if "explanation" in output:
+        explanation = output["explanation"]
+        assert isinstance(explanation, dict), output
+        assert {model["id"] for model in explanation["models"]} == {
+            model.removeprefix("system.ai.").removesuffix("[1m]") for model in CLAUDE_MODELS
+        }, explanation
 
     decisions_path = session.home / ".ucode" / "claude-smart-routing-decisions.jsonl"
     assert decisions_path.is_file(), f"hook wrote no routing decision record: {decisions_path}"
@@ -345,6 +351,7 @@ def test_smart_routing_claude_route_subagent_hook(
 
     assert row["requested_model"] == output["model"], row
     assert row["rationale"] == output["rationale"], row
+    assert row.get("explanation") == output.get("explanation"), row
 
 
 @pytest.mark.live

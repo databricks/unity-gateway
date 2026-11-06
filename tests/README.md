@@ -1,5 +1,12 @@
 # Test suites and user journeys
 
+Routing explanation component tests cover opt-in native panes, per-model selection,
+optional numeric estimates, missing or invalid diagnostics, and preservation of the
+selected model and reviewed tool input. Python tests cover optional metadata transport
+and audit records; native tests exercise the command and pane controls. These checks do
+not establish deployed-service explanation availability. See the Claude mod guide for
+the optional service response contract.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component
