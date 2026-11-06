@@ -1793,22 +1793,6 @@ against a local HTTP MCP peer, checking concurrent session isolation, credential
 headers, EOF/reset disconnect diagnostics, crash recovery, local authentication, idle
 shutdown, and sign-in output with native line endings. These component checks do not establish live gateway or native Windows coverage.
 
-`../test_skills_download.py` covers shared-source refresh across project installs
-using temporary files and controlled fetches. It checks freshness, repair, collisions,
-attribution, and failure recovery; live skill API latency remains unmeasured.
-
-`test_ug_configure_managed_skills.py::test_ug_codex_repairs_shared_project_skill_downloads`
-uses the managed workspace's real `main.default.forkable-meals` skill. It adds the
-skill to three projects through public CLI commands, removes one agent copy in
-two projects, then completes a Codex TUI file task on the first normal launch.
-Both partial installations must be restored byte for byte, the current copy
-must retain its modification times, and source attribution must survive.
-Production debug logs must show exactly one successful metadata read and one
-successful bundle-root directory read for the shared source during launch. Its admin
-CodingAgentConfig input uses the existing `codex_skills_by_location` fixture;
-downloads and inference remain live. Select the case in the managed Codex lane
-with `-- -k test_ug_codex_repairs_shared_project_skill_downloads`.
-
 Desktop connector component checks cover `toolSearchEnabled: true`, native stdio registration,
 removal of plugin MCP declarations on repeated setup, preserved skills/hooks, registration before
 the first Cowork session, last-connector removal, and profile rollback on plugin failure.

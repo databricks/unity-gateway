@@ -1,20 +1,5 @@
 # Test suites and user journeys
 
-`test_skills_download.py` verifies that a launch refresh fetches shared skill
-metadata and bundles once per sweep across project installations, while retaining
-per-install freshness, missing-directory repair, collision protection, attribution,
-and retries in the next sweep after a failed fetch. These are component checks.
-The launch-orchestration case also verifies an immediate second launch makes no
-auth or skill API calls.
-
-`integration/test_ug_configure_managed_skills.py::test_ug_codex_repairs_shared_project_skill_downloads`
-installs the real `main.default.forkable-meals` skill in three projects through
-`ug skills add`, deletes one agent copy from two installations, and checks that
-the first Codex launch repairs both. Production debug logs must show one successful
-metadata read and one successful bundle-root directory read. The journey preserves the current
-installation and attribution and completes a real TUI file task. Only the admin
-CodingAgentConfig input uses the existing managed fixture; skill APIs stay live.
-
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
