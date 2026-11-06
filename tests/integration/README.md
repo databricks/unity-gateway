@@ -415,10 +415,6 @@ tests in `../test_claude_search_discovery.py`, including legacy catalog fallback
 an explicit model override, and no available GPT model. Live search remains
 outside this integration suite.
 
-`TestHttpGetJsonRetries` in `../test_databricks.py` covers malformed HTTP responses, discarded truncated bodies,
-bounded retry recovery, and failure reasons on exhaustion. This is component coverage;
-the live journeys still fail when the gateway cannot supply a complete response.
-
 CLI token memoization and capability-gated `--no-browser` re-auth are covered by
 component tests in `../test_databricks.py` and `../test_mcp_web_search.py`, including
 wall/monotonic expiry across suspend or clock rollback, forced refresh, concurrent

@@ -1,10 +1,5 @@
 # Test suites and user journeys
 
-`TestHttpGetJsonRetries` in `test_databricks.py` covers malformed HTTP responses and truncated bodies:
-partial data is discarded, optional retries retain their existing budget/backoff, and
-exhaustion returns a network-error reason. These component checks do not establish live
-gateway availability or relief from workspace rate limits.
-
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
