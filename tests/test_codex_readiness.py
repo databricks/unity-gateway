@@ -63,10 +63,10 @@ def test_request_and_retry_wait_share_the_remaining_deadline(monkeypatch, clock)
 
     monkeypatch.setattr(v2.urllib.request, "urlopen", get)
 
-    assert not v2._wait_for_app_server(1234, timeout=0.075)
-    assert timeouts == pytest.approx([0.075, 0.025])
-    assert clock.sleeps == pytest.approx([0.05])
-    assert clock.now == pytest.approx(0.075)
+    assert not v2._wait_for_app_server(1234, timeout=0.4)
+    assert timeouts == pytest.approx([0.4, 0.15])
+    assert clock.sleeps == pytest.approx([0.25])
+    assert clock.now == pytest.approx(0.4)
 
 
 def test_short_remaining_deadline_bounds_the_sleep(monkeypatch, clock):
@@ -108,7 +108,7 @@ def test_child_exit_during_startup_stops_retrying(monkeypatch, clock):
         1234, timeout=30, process=SimpleNamespace(poll=lambda: next(polls))
     )
     assert len(requests) == 1
-    assert clock.sleeps == [0.05]
+    assert clock.sleeps == [0.25]
 
 
 def test_keyboard_interrupt_propagates(monkeypatch, clock):
