@@ -559,8 +559,7 @@ jobs:
             ${{ runner.temp }}/ug-integration/wheels/
 
   # Creates a user and writes /etc and /usr/local, which hosted runners (ephemeral, passwordless
-  # sudo) allow. Linux runs tests/e2e_mdm/linux-provision.sh; macOS runs the real
-  # scripts/mdm/macos-provision.sh.
+  # sudo) allow. Each OS runs its own script from scripts/mdm/.
   mdm-provision:
     name: MDM provisioning · ${{ matrix.os == 'macos-15' && 'macOS' || 'Linux' }}
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}

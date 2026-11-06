@@ -26,9 +26,7 @@ ROOT = HERE.parent.parent
 USER = "ugmdm"
 HOME = Path("/Users" if DARWIN else "/home") / USER
 SUDOERS = Path("/etc/sudoers.d") / f"ug-mdm-e2e-{USER}"
-PROVISION_SCRIPT = (
-    ROOT / "scripts/mdm/macos-provision.sh" if DARWIN else HERE / "linux-provision.sh"
-)
+PROVISION_SCRIPT = ROOT / "scripts/mdm" / ("macos-provision.sh" if DARWIN else "linux-provision.sh")
 MACHINE_WIDE_ROOTS = (
     Path("/etc/unitygateway"),
     Path("/etc/claude-code"),

@@ -31,8 +31,8 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 ## MDM provisioning E2E
 
 `e2e_mdm/` runs the MDM flow on a disposable Linux or macOS host: a fresh admin user with passwordless
-sudo runs the provisioning script (`e2e_mdm/linux-provision.sh`, a twin of
-`scripts/mdm/macos-provision.sh`, or the macOS script itself), the machine-wide files are checked, the
+sudo runs the platform's provisioning script (`scripts/mdm/linux-provision.sh` or
+`scripts/mdm/macos-provision.sh`), the machine-wide files are checked, the
 user's sudo is removed, and `UG_SKIP_OS_SETTINGS=1 ug claude` / `ug codex` run headless. Nothing may
 ask for a password (`sudo -n`, no stdin, no tty, and a `SUDO_ASKPASS` trap that records any prompt), and
 the launches must leave every machine-wide file byte- and stat-identical and write only user-owned
@@ -43,7 +43,7 @@ excluded from the default `pytest` run. Inputs: `UG_MDM_E2E_WORKSPACE`, `UG_MDM_
 `UG_MDM_E2E_CLIENT_SECRET`, and `UG_INSTALL_SPEC` to install the checkout instead of `main`. The
 service principal's token uses the scopes the provisioning script requests. Run it with
 `pytest -c tests/e2e_mdm/pytest.ini --confcutdir=tests/e2e_mdm --rootdir=. tests/e2e_mdm`.
-`test_mdm_provision_scripts.py`, in the default run, fails when the Linux twin's install, token
+`test_mdm_provision_scripts.py`, in the default run, fails when the Linux script's install, token
 request or `ug configure` lines stop matching the macOS script's.
 
 `test_budget.py` covers the workspace-authenticated spend-status client in
