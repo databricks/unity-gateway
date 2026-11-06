@@ -1,5 +1,9 @@
 # Integration tests
 
+`../test_launch_state_reads.py` checks scoped reuse of state reads, destination choices,
+custom OAuth, workspace selectors, and external edits between invocations using controlled
+setup boundaries. No live integration journey measures the latency saved by these reads.
+
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They
