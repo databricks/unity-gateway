@@ -82,8 +82,8 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
     """The state keys to layer over local state so ``tool``'s writer sees managed settings.
 
     Each agent reads models from a different shape, so the manifest's list has to be translated.
-    Supported tracing flags and harness-native settings are also mapped to the state key each
-    writer consumes.
+    Supported tracing flags, Copilot's VS Code switch and harness-native settings are also mapped
+    to the state key each writer consumes.
     """
     overrides: dict[str, object] = {}
     models = _manifest_models(managed, tool)
@@ -111,6 +111,8 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
         overrides[f"{tool}_http_headers"] = http_headers
     if tool in OTEL_TRACING_TOOLS and managed_otel_tracing_enabled(managed, tool):
         overrides[f"{tool}_otel_tracing"] = True
+    if tool == "copilot" and _agent_entry(managed, tool).get("vscode_integration_enabled") is False:
+        overrides["copilot_vscode_integration"] = False
     settings = _as_dict(_agent_entry(managed, tool).get("agent_native_settings"))
     if tool in SETTINGS_PASSTHROUGH_TOOLS and settings:
         overrides[f"{tool}_settings_passthrough"] = settings
