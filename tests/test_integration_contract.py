@@ -111,6 +111,22 @@ def _ci_marker_expression(job, agent, *, smart_routing=False):
     )
 
 
+def test_codex_desktop_macos_ci_is_blocking_and_installs_a_pinned_app():
+    jobs = _integration_jobs()
+    job = jobs["codex-desktop-macos"]
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert needs is not None
+    assert "codex-desktop-macos" in {name.strip() for name in needs.group(1).split(",")}
+    assert "runs-on: macos-latest" in job
+    assert "continue-on-error:" not in job
+    assert re.search(r"(?m)^      CHATGPT_APP_SHA256: [0-9a-f]{64}$", job)
+    assert "codex-app-prod/ChatGPT-darwin-arm64-${CHATGPT_APP_VERSION}.zip" in job
+    assert "shasum -a 256 -c" in job
+    assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+    }
+
+
 def test_soft_fail_ci_is_non_blocking_on_both_platforms():
     jobs = _integration_jobs()
     job = jobs["soft-fail"]
@@ -473,6 +489,7 @@ SKIPPED_ON_FORK_PRS = {
     "antigravity",
     "managed",
     "managed-opencode",
+    "codex-desktop-macos",
     "dedicated-cuj-plan",
     "dedicated-cuj",
     "cujs",
@@ -703,6 +720,7 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "full",
         "antigravity",
         "managed",
+        "codex-desktop-macos",
         "dedicated-cuj-plan",
         "dedicated-cuj",
     ],
@@ -724,6 +742,7 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "full",
             "antigravity",
             "managed",
+            "codex-desktop-macos",
             "dedicated-cuj-plan",
             "dedicated-cuj",
         )
