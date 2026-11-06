@@ -465,7 +465,8 @@ Explicit-agent budget recommendation overlap is covered by synchronized componen
 `../test_cli.py::TestExplicitLaunchOverlapsBudget`. They preserve authentication ordering,
 single reads for unavailable recommendations, main-thread warnings, selected workspace headers,
 custom-OAuth token reuse,
-and failure/skip behavior. Bare `ug` still reads the recommendation before choosing its agent.
+and failure/skip behavior, including process exit through the real launch orchestration while
+a budget worker is blocked. Bare `ug` still reads the recommendation before choosing its agent.
 No native journey currently measures this overlap or its effect on launch p50/p90.
 
 `test_ug_configure_scope.py` runs, for Claude and Codex separately (Linux/macOS only), plain

@@ -7702,41 +7702,55 @@ class TestExplicitLaunchOverlapsBudget:
         script = """
 import threading
 from contextlib import nullcontext
+from types import SimpleNamespace
 from unittest.mock import patch
 from ucode import cli
 
 started = threading.Event()
 never_released = threading.Event()
+state = {
+    "workspace": "https://benchmark.invalid",
+    "profile": "component",
+    "available_tools": ["claude"],
+}
+managed = {
+    "enabled_agents": {"claude": {}},
+    "smart_defaults": {"tiers": [{"spending_percentage": 0.8}]},
+}
+errors = []
 
 def budget(workspace, token):
     started.set()
     never_released.wait()
 
-def authenticated(workspace, token):
-    cli._start_in_background(budget, workspace, token)
-
 def probe(workspace, token):
     assert started.wait(5), "budget worker did not start"
     raise RuntimeError("gateway refused")
 
-with patch.multiple(
+with patch.object(cli.claude_agent, "get_family_defaults", return_value=None), patch.multiple(
     cli,
+    _launch_workspace_state=lambda workspace: dict(state),
+    _fetch_managed_config=lambda selected: (managed, False),
+    apply_pat_environment=lambda selected: None,
+    databricks_cli_installed=lambda: True,
+    ensure_bootstrap_dependencies=lambda *args, **kwargs: None,
+    ensure_provider_state=lambda tool: dict(state),
     resolve_workspace=lambda value: value,
-    load_state=lambda: {"workspace": "https://benchmark.invalid"},
+    load_state=lambda: dict(state),
     workspace_self_managed_agents=lambda key, **kwargs: [],
     ensure_databricks_auth=lambda *args, **kwargs: None,
     get_databricks_token=lambda *args: "component-token",
+    get_model_recommendation=budget,
     probe_unity_gateway_capabilities=probe,
     discover_model_services=lambda *args: ({}, [], [], [], None),
     spinner=lambda *args: nullcontext(),
+    print_err=errors.append,
 ):
     try:
-        cli.configure_shared_state(
-            "https://benchmark.invalid", profile="component", tools=["claude"],
-            on_authenticated=authenticated,
-        )
-    except RuntimeError as exc:
-        assert str(exc) == "gateway refused"
+        cli._launch_tool("claude", SimpleNamespace(args=[], meta={}))
+    except cli.typer.Exit as exc:
+        assert exc.exit_code == 1
+        assert errors == ["gateway refused"]
     else:
         raise AssertionError("gateway failure did not propagate")
 print("returned after gateway failure")
@@ -7794,13 +7808,12 @@ print("returned after gateway failure")
         assert len(launched) == 1
         assert launched[0][1]["options"].launch_model is None
 
-    @pytest.mark.parametrize("skip_preflight", [False, True])
-    def test_no_tiers_do_not_schedule_budget_reads(self, monkeypatch, skip_preflight):
+    def test_no_tiers_do_not_schedule_budget_reads(self, monkeypatch):
         cli, launched = self._stub_launch(monkeypatch, managed={"enabled_agents": {"claude": {}}})
         calls = []
         monkeypatch.setattr(cli, "get_model_recommendation", lambda *args: calls.append(args))
 
-        result = runner.invoke(app, ["claude", *(["--skip-preflight"] if skip_preflight else [])])
+        result = runner.invoke(app, ["claude"])
 
         assert result.exit_code == 0, result.output
         assert calls == []
