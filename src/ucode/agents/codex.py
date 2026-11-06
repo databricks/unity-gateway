@@ -17,10 +17,8 @@ import tomllib
 from collections.abc import Callable
 from pathlib import Path
 from subprocess import CalledProcessError, TimeoutExpired, list2cmdline
+from typing import TYPE_CHECKING as _TYPE_CHECKING
 from xml.sax.saxutils import escape
-
-import tomlkit
-from tomlkit.exceptions import ParseError
 
 from ucode.codex_config import (
     catalog_slugs,
@@ -108,6 +106,10 @@ from ucode.workspace import workspace_headers, workspace_id_args
 from .args import LaunchOptions
 from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
 from .request_tags import request_tags_header_value
+
+if _TYPE_CHECKING:
+    import tomlkit as tomlkit
+    from tomlkit.exceptions import ParseError as ParseError
 
 CODEX_CONFIG_DIR = Path.home() / ".codex"
 CODEX_PROFILE_NAME = "ucode"
@@ -660,6 +662,9 @@ def _is_gpt_family(model: str) -> bool:
 
 
 def _parse_managed_config(text: str) -> dict:
+    import tomlkit
+    from tomlkit.exceptions import ParseError
+
     try:
         return tomlkit.parse(text)
     except ParseError as exc:
@@ -711,6 +716,8 @@ def managed_config_status(state: dict) -> tuple[Path | None, str, str]:
 
 
 def revert_managed_config() -> str:
+    import tomlkit
+
     return revert_managed_file(
         "codex",
         display="Codex",
@@ -1151,6 +1158,8 @@ def _reconcile_managed_config(
     state: dict, compose: Callable[[dict], dict], relayed: bool = False
 ) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
+    import tomlkit
+
     path = codex_managed_config_path()
     if path is not None and path.name == CODEX_REQUIREMENTS_FILE:
         compose = _as_requirements(compose)
@@ -1287,6 +1296,9 @@ def _read_user_config_for_rewrite(path: Path) -> tomlkit.TOMLDocument | None:
     """Read ``path`` for a full rewrite: an empty document when absent, the parsed document when
     present and valid, and ``None`` when present but unparseable — so a caller never overwrites a
     config it could not read."""
+    import tomlkit
+    from tomlkit.exceptions import ParseError
+
     if not path.exists():
         return tomlkit.document()
     try:
@@ -1302,6 +1314,8 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     ``remove`` names that were actually present (so callers can report only real removals).
 
     If the file exists but can't be parsed, defer entries to the per-server ``codex`` CLI."""
+    import tomlkit
+
     from ucode.mcp import add_codex_mcp_server, remove_codex_mcp_server
 
     path = user_mcp_config_path()
@@ -1341,6 +1355,8 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
     True when the managed file is the delivery mechanism, False when it cannot be used (unsupported
     platform, or a run that may not write it), so the caller routes those servers to the user-scope
     registration instead."""
+    import tomlkit
+
     path = codex_managed_config_path()
     if (
         path is None
@@ -1644,6 +1660,9 @@ def _is_ucode_catalog_reference(value: object) -> bool:
 
 
 def _read_app_config() -> tomlkit.TOMLDocument:
+    import tomlkit
+    from tomlkit.exceptions import ParseError
+
     path = _legacy_config_path()
     try:
         return tomlkit.parse(path.read_text(encoding="utf-8"))
@@ -1658,15 +1677,21 @@ def _read_app_config_values() -> dict:
     path = _legacy_config_path()
     try:
         content = path.read_text(encoding="utf-8")
-        try:
-            return tomllib.loads(content)
-        except tomllib.TOMLDecodeError:
-            # Keep accepting newer TOML syntax supported by the existing settings writer.
-            return tomlkit.parse(content).unwrap()
     except FileNotFoundError:
         return {}
-    except (OSError, UnicodeError, ParseError) as exc:
+    except (OSError, UnicodeError) as exc:
         raise RuntimeError(f"Cannot update Codex App settings at {path}: {exc}") from exc
+    try:
+        return tomllib.loads(content)
+    except tomllib.TOMLDecodeError:
+        import tomlkit
+        from tomlkit.exceptions import ParseError
+
+        # Keep accepting newer TOML syntax supported by the existing settings writer.
+        try:
+            return tomlkit.parse(content).unwrap()
+        except ParseError as exc:
+            raise RuntimeError(f"Cannot update Codex App settings at {path}: {exc}") from exc
 
 
 def detach_app_model_catalog() -> bool:
@@ -2083,3 +2108,26 @@ def validate_cmd(binary: str) -> list[str]:
         "--skip-git-repo-check",
         "say hi in 5 words or less",
     ]
+
+
+_LAZY_TOML_EXPORTS = {"tomlkit": "tomlkit", "ParseError": "tomlkit.exceptions"}
+
+
+def __getattr__(name: str):
+    # Keep existing named exports available without loading TOML writers during import.
+    if module := _LAZY_TOML_EXPORTS.get(name):
+        from importlib import import_module
+
+        loaded = import_module(module)
+        value = loaded if name == module else getattr(loaded, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | _LAZY_TOML_EXPORTS.keys())
+
+
+# Preserve the existing wildcard-import surface as well as named exports.
+__all__ = [name for name in globals() if not name.startswith("_")] + list(_LAZY_TOML_EXPORTS)
