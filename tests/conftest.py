@@ -126,13 +126,6 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # The test interpreter lives in a developer's checkout; tests of the check itself override this.
     monkeypatch.setattr("ucode.cli._require_shared_installation", lambda: None)
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
-    # `ug configure` sets this for the rest of the process, like `_explicit_managed_command`.
-    monkeypatch.setattr(codex_mod, "_explicit_configure", False)
-    monkeypatch.setattr(
-        codex_mod,
-        "CODEX_SYSTEM_REQUIREMENTS_PATH",
-        tmp_path / "etc" / "codex" / "requirements.toml",
-    )
     # Launch seeds Claude's feature cache in `.claude.json`; never touch the developer's copy.
     monkeypatch.setattr(claude_mod, "CLAUDE_CODE_CONFIG_PATH", tmp_path / ".claude.json")
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
