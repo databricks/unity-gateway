@@ -558,6 +558,39 @@ jobs:
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
 
+  # Creates a user and writes /etc and /usr/local, which hosted runners (ephemeral, passwordless
+  # sudo) allow. Linux runs tests/e2e_mdm/linux-provision.sh; macOS runs the real
+  # scripts/mdm/macos-provision.sh.
+  mdm-provision:
+    name: MDM provisioning · ${{ matrix.os == 'macos-14' && 'macOS' || 'Linux' }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: 0.13.5
+          enable-cache: ${{ inputs.ref == '' }}
+      - name: Provision as an admin, demote the user, launch Claude and Codex
+        shell: bash
+        env:
+          UG_MDM_E2E: '1'
+          UG_MDM_E2E_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
+          UG_MDM_E2E_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
+          UG_MDM_E2E_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
+          UG_INSTALL_SPEC: ${{ github.workspace }}
+        run: |
+          uv run --no-project --python 3.12 --with pytest pytest \
+            -c tests/e2e_mdm/pytest.ini --confcutdir=tests/e2e_mdm --rootdir=. tests/e2e_mdm -v
+
   dedicated-cuj-plan:
     name: Plan E2E CUJs
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
@@ -642,7 +675,7 @@ jobs:
   cujs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, installation-windows, headless-windows, workspace, smoke, full, antigravity, managed, dedicated-cuj-plan, dedicated-cuj]
+    needs: [installation, installation-windows, headless-windows, workspace, smoke, full, antigravity, managed, mdm-provision, dedicated-cuj-plan, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

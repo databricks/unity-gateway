@@ -2,8 +2,9 @@
 #
 # macOS MDM provisioning script, written for Jamf Pro policies: install
 # ug, the Databricks CLI, Claude Code and Codex machine-wide and run
-# `ug configure` as root, which installs the workspace policy at
-# /etc/unitygateway/managed-settings.json.
+# `ug configure` as root, which writes the workspace policy at
+# /etc/unitygateway/managed-settings.json and the Claude Code and Codex
+# managed settings.
 # Users then launch with no sudo:
 #
 #   UG_SKIP_OS_SETTINGS=1 ug claude    (or: ug codex)
@@ -12,6 +13,9 @@
 #   $4  Databricks workspace URL, starting with https://
 #   $5  Service principal OAuth client id
 #   $6  Service principal OAuth client secret
+#
+# Set UG_INSTALL_SPEC to a uv tool spec to install ug from somewhere other
+# than the repository's main branch, e.g. a local checkout.
 #
 # The token is used for this run only; developers sign in with their own
 # OAuth. Needs access to PyPI, GitHub, astral.sh and downloads.claude.ai.
@@ -25,6 +29,7 @@ PREFIX=/usr/local/unity-gateway
 CLAUDE_RELEASES=https://downloads.claude.ai/claude-code-releases
 CODEX_RELEASES=https://github.com/openai/codex/releases/latest/download
 UG_REPO=https://github.com/databricks/unity-gateway
+UG_INSTALL_SPEC="${UG_INSTALL_SPEC:-git+$UG_REPO}"
 UV_URL=https://astral.sh/uv/install.sh
 CLI_URL=https://raw.githubusercontent.com
 CLI_URL="$CLI_URL/databricks/setup-cli/main/install.sh"
@@ -53,7 +58,7 @@ if ! command -v uv >/dev/null; then
   curl -LsSf "$UV_URL" \
     | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
 fi
-uv tool install --force "git+$UG_REPO"
+uv tool install --force "$UG_INSTALL_SPEC"
 
 if [ ! -x /usr/local/bin/databricks ]; then
   curl -fsSL "$CLI_URL" | sh

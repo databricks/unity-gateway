@@ -19,7 +19,7 @@ from ucode.databricks import (
 from ucode.ui import normalize_workspace_url
 
 # Live suites have their own configuration and must be selected explicitly.
-collect_ignore = ["integration", "e2e_cuj", "native_claude", "connector_behavior"]
+collect_ignore = ["integration", "e2e_cuj", "e2e_mdm", "native_claude", "connector_behavior"]
 
 
 @pytest.fixture(autouse=True)
