@@ -638,10 +638,11 @@ keeps its web-search lookup, and that explicit reconfiguration refreshes the pro
 and listing caches. The skip-preflight tests also reject starting a background worker.
 `TestConfiguredLaunchPreflightCache` checks persisted five-minute success reuse after fresh auth,
 credential/profile/auth-mode/workspace-ID changes, family and discovery-mode coverage,
-reuse when optional Gemini/OSS families are successfully empty,
+reuse with real successful-empty Gemini/OSS diagnostics (retained on warm launches),
 expired/future/malformed stamps and model data, explicit refresh, and auth/probe/listing failure
-invalidation. Partial-pagination regressions in `test_databricks.py` retain useful models while
-leaving incomplete listings retryable and uncached. These component checks control HTTP and clock
+invalidation. Partial-pagination regressions retain API metadata for Copilot and completeness
+diagnostics for unbucketed Claude while leaving incomplete listings retryable. Typed empty results
+stay distinct from malformed responses and HTTP failures. These component checks control HTTP and clock
 boundaries; they do not establish live gateway timing, agent launch, or launch-time savings.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled

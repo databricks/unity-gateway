@@ -553,6 +553,26 @@ class TestModelTokenLimits:
 
 
 class TestDiscoverModelServices:
+    def test_complete_empty_listing_has_typed_reason(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "_get_model_services_page", lambda *args: ({}, None))
+
+        claude, codex, gemini, oss, reason = db_mod.discover_model_services(WS, "token")
+
+        assert (claude, codex, gemini, oss) == ({}, [], [], [])
+        assert reason == "model-services listing returned no models"
+        assert isinstance(reason, db_mod.EmptyModelDiscoveryReason)
+
+    @pytest.mark.parametrize("payload", [[], {"model_services": None}, {"model_services": [None]}])
+    def test_malformed_listing_is_not_successful_empty(self, monkeypatch, payload):
+        monkeypatch.setattr(db_mod, "_get_model_services_page", lambda *args: (payload, None))
+
+        entries, reason = db_mod.list_model_service_entries(WS, "token")
+
+        assert entries == []
+        assert type(reason) is str
+        assert "invalid" in reason
+        assert db_mod.cached_model_service_entries(WS) is None
+
     def test_buckets_families_by_name(self, monkeypatch):
         payload = {
             "model_services": [
@@ -758,6 +778,11 @@ class TestDiscoverModelServices:
             db_mod.ModelServiceEntry("system.ai.gte-large-en", ("mlflow/v1/embeddings",))
         ]
         assert db_mod.cached_model_service_entries(WS) == entries
+        assert db_mod.latest_model_service_listing(WS) == db_mod.ModelServiceListing(
+            tuple(entries), None
+        )
+        db_mod.clear_model_services_cache()
+        assert db_mod.latest_model_service_listing(WS) is None
 
     def test_failed_listing_is_not_cached(self, monkeypatch):
         monkeypatch.setattr(
@@ -766,6 +791,7 @@ class TestDiscoverModelServices:
 
         assert db_mod.list_model_service_entries(WS, "token") == ([], "HTTP 503")
         assert db_mod.cached_model_service_entries(WS) is None
+        assert db_mod.latest_model_service_listing(WS) == db_mod.ModelServiceListing((), "HTTP 503")
 
     def test_partial_listing_keeps_models_and_reports_incomplete_discovery(self, monkeypatch):
         pages = iter(
@@ -773,8 +799,14 @@ class TestDiscoverModelServices:
                 (
                     {
                         "model_services": [
-                            _model_service("system.ai.claude-opus-4-8"),
-                            _model_service("system.ai.gpt-5"),
+                            {
+                                **_model_service("system.ai.claude-opus-4-8"),
+                                "supported_api_types": ["anthropic/v1/messages"],
+                            },
+                            {
+                                **_model_service("system.ai.gpt-5"),
+                                "supported_api_types": ["openai/v1/responses"],
+                            },
                         ],
                         "next_page_token": "more",
                     },
@@ -790,6 +822,35 @@ class TestDiscoverModelServices:
         assert claude == {"opus": "system.ai.claude-opus-4-8"}
         assert codex == ["system.ai.gpt-5"]
         assert (gemini, oss) == ([], [])
+        assert reason == "HTTP 503"
+        assert type(reason) is str
+        assert db_mod.cached_model_service_entries(WS) is None
+        listing = db_mod.latest_model_service_listing(WS)
+        assert listing is not None
+        assert listing.reason == "HTTP 503"
+        assert listing.entries == (
+            db_mod.ModelServiceEntry("system.ai.claude-opus-4-8", ("anthropic/v1/messages",)),
+            db_mod.ModelServiceEntry("system.ai.gpt-5", ("openai/v1/responses",)),
+        )
+
+    def test_unbucketed_claude_keeps_partial_listing_reason(self, monkeypatch):
+        pages = iter(
+            [
+                (
+                    {
+                        "model_services": [_model_service("system.ai.claude-opus-4-8")],
+                        "next_page_token": "more",
+                    },
+                    None,
+                ),
+                (None, "HTTP 503"),
+            ]
+        )
+        monkeypatch.setattr(db_mod, "_get_model_services_page", lambda *args: next(pages))
+
+        models, reason = db_mod.discover_claude_models_unbucketed(WS, "token")
+
+        assert models == ["system.ai.claude-opus-4-8"]
         assert reason == "HTTP 503"
         assert db_mod.cached_model_service_entries(WS) is None
 
@@ -2077,6 +2138,47 @@ class TestModelVersionSortKey:
 
 
 class TestDiscoverGeminiModels:
+    @pytest.mark.parametrize("case", ["no-endpoints", "v1-only", "other-api"])
+    def test_successful_empty_discovery_has_typed_reason(self, monkeypatch, case):
+        payload = _foundation_models_payload([] if case == "no-endpoints" else ["gemini"])
+        if case != "no-endpoints":
+            model = payload["endpoints"][0]["config"]["served_entities"][0]["foundation_model"]
+            if case == "v1-only":
+                model["ai_gateway_v2_supported"] = False
+            else:
+                model["api_types"] = ["openai/v1/responses"]
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (payload, None))
+
+        models, reason = db_mod.discover_gemini_models(WS, "token")
+
+        assert models == []
+        assert isinstance(reason, db_mod.EmptyModelDiscoveryReason)
+        expected = {
+            "no-endpoints": "foundation-models listing returned no endpoints",
+            "v1-only": (
+                "no endpoint exposes api_type `gemini/v1/generateContent` with "
+                "`ai_gateway_v2_supported=true` (workspace has v1-only endpoints)"
+            ),
+            "other-api": "no endpoint exposes api_type `gemini/v1/generateContent`",
+        }
+        assert reason == expected[case]
+
+    @pytest.mark.parametrize(
+        ("payload", "error"),
+        [(None, "HTTP 503"), ([], None), ({"endpoints": None}, None)],
+    )
+    def test_errors_are_not_successful_empty_discovery(self, monkeypatch, payload, error):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (payload, error))
+
+        models, reason = db_mod.discover_gemini_models(WS, "token")
+
+        assert models == []
+        assert type(reason) is str
+        if error:
+            assert reason == error
+        else:
+            assert "invalid" in reason
+
     def test_returns_newest_flash_first(self, monkeypatch):
         payload = _foundation_models_payload(
             [

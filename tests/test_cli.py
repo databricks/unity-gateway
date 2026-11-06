@@ -7602,7 +7602,8 @@ class TestConfiguredLaunchPreflightCache:
             [],
             None,
         )
-        monkeypatch.setattr(cli_mod, "discover_gemini_models", lambda *a: ([], None))
+        monkeypatch.setattr(cli_mod, "discover_gemini_models", db_mod.discover_gemini_models)
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: ({"endpoints": []}, None))
 
         first = preflight.configure(tools=[tool])
         second = preflight.configure(tools=[tool])
@@ -7612,6 +7613,62 @@ class TestConfiguredLaunchPreflightCache:
         assert preflight.authentication.call_count == preflight.token.call_count == 2
         for field in {"gemini_models", "oss_models"} & set(second["launch_preflight"]["fields"]):
             assert second[field] == []
+        if tool != "codex":
+            assert (
+                first["_discovery_reasons"]["gemini"]
+                == (second["_discovery_reasons"]["gemini"])
+                == "foundation-models listing returned no endpoints"
+            )
+
+    def test_complete_empty_uc_catalog_keeps_successful_codex_fallback_reusable(
+        self, preflight, monkeypatch
+    ):
+        monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
+        listing = MagicMock(return_value=({"model_services": []}, None))
+        fallback = MagicMock(return_value=(["databricks-gpt-5"], None))
+        monkeypatch.setattr(db_mod, "_http_get_json", listing)
+        monkeypatch.setattr(cli_mod, "discover_codex_models", fallback)
+
+        first = preflight.configure(tools=["codex"])
+        second = preflight.configure(tools=["codex"])
+
+        assert first["launch_preflight"] == second["launch_preflight"]
+        assert second["codex_models"] == ["databricks-gpt-5"]
+        assert second["oss_models"] == []
+        assert second["_discovery_reasons"]["oss"] == "model-services listing returned no models"
+        assert listing.call_count == fallback.call_count == preflight.probe.call_count == 1
+
+    def test_partial_copilot_listing_keeps_api_metadata_without_reusing_failure(
+        self, preflight, monkeypatch
+    ):
+        monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
+        monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", lambda *a: None)
+        requests = []
+
+        def get_page(url, token, **kwargs):
+            requests.append(url)
+            if "page_token=" in url:
+                return None, "HTTP 503"
+            return {
+                "model_services": [
+                    {"name": "system.ai.gpt-5", "supported_api_types": ["openai/v1/responses"]},
+                    {
+                        "name": "system.ai.gpt-4-1",
+                        "supported_api_types": ["gemini/v1/generateContent"],
+                    },
+                ],
+                "next_page_token": "more",
+            }, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get_page)
+
+        for _ in range(2):
+            state = preflight.configure(tools=["copilot"])
+            assert state["copilot_catalog"]["models"] == ["system.ai.gpt-5"]
+            assert state["_discovery_reasons"]["copilot"] == "HTTP 503"
+            assert "launch_preflight" not in state
+        assert sum("page_token=" not in url for url in requests) == 2
+        assert preflight.probe.call_count == 2
 
     @pytest.mark.parametrize("age", [300, 301, -1])
     def test_expired_or_future_stamp_rechecks(self, preflight, age):
@@ -7631,7 +7688,10 @@ class TestConfiguredLaunchPreflightCache:
             {"verified_at": True},
             {"verified_at": float("nan")},
             {"verified_at": float("inf")},
+            {"verified_at": 10**400},
             {"fields": [["claude_models"]]},
+            {"empty_family_reasons": []},
+            {"empty_family_reasons": {"gemini": {}}},
         ],
     )
     def test_malformed_stamp_rechecks(self, preflight, change):
@@ -7742,8 +7802,11 @@ class TestConfiguredLaunchPreflightCache:
         assert state["web_search_model"] == "system.ai.gpt-5"
         assert "launch_preflight" not in preflight.load()
 
-    @pytest.mark.parametrize("failure", ["authentication", "token", "probe", "listing"])
-    def test_failed_refresh_invalidates_prior_success(self, preflight, failure):
+    @pytest.mark.parametrize(
+        ("failure", "probe_calls"),
+        [("authentication", 2), ("token", 2), ("probe", 3), ("listing", 3)],
+    )
+    def test_failed_refresh_invalidates_prior_success(self, preflight, failure, probe_calls):
         preflight.configure()
         operation = getattr(preflight, failure)
         operation.side_effect = RuntimeError("refresh failed")
@@ -7755,7 +7818,7 @@ class TestConfiguredLaunchPreflightCache:
 
         preflight.configure()
 
-        assert preflight.probe.call_count >= 2
+        assert preflight.probe.call_count == probe_calls
         assert "launch_preflight" in preflight.load()
 
     @pytest.mark.parametrize("failed", ["probe", "listing", "empty"])
@@ -8149,13 +8212,16 @@ class TestConfigureSharedStateCopilotCatalog:
         sonnet = "system.ai.claude-sonnet-4-6"
 
         def discover(workspace, token):
-            if listed is not None:
-                db_mod._MODEL_SERVICES_CACHE[workspace] = [
-                    db_mod.ModelServiceEntry(model) for model in listed
-                ]
             return ({"sonnet": sonnet}, [], [], [], None) if listed else ({}, [], [], [], reason)
 
         monkeypatch.setattr(cli_mod, "discover_model_services", discover)
+        monkeypatch.setattr(
+            cli_mod,
+            "latest_model_service_listing",
+            lambda workspace: db_mod.ModelServiceListing(
+                tuple(db_mod.ModelServiceEntry(model) for model in (listed or [])), reason
+            ),
+        )
         monkeypatch.setattr(cli_mod, "discover_claude_models", lambda w, t: ({}, reason))
         monkeypatch.setattr(cli_mod, "discover_codex_models", lambda w, t: ([], reason))
         return cli_mod.configure_shared_state(self.WS, tools=["copilot"])

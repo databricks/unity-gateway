@@ -2243,6 +2243,10 @@ def model_token_limits(model_id: str) -> dict[str, int] | None:
     return None
 
 
+class EmptyModelDiscoveryReason(str):
+    """A successful complete listing with no eligible models, retaining its diagnostic text."""
+
+
 @dataclass(frozen=True)
 class ModelServiceEntry:
     """One ``system.ai.*`` model service and the API types it advertises.
@@ -2252,6 +2256,14 @@ class ModelServiceEntry:
 
     id: str
     api_types: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ModelServiceListing:
+    """Entries and completeness of the latest listing, including usable partial metadata."""
+
+    entries: tuple[ModelServiceEntry, ...]
+    reason: str | None
 
 
 def _model_service_api_types(service: dict) -> tuple[str, ...]:
@@ -2315,6 +2327,9 @@ def _get_model_services_page(
 # persisted: a long-lived process is not a thing here, and a new model appearing mid-command is not
 # worth a second walk. Failures are never cached, so a transient error still retries.
 _MODEL_SERVICES_CACHE: dict[str, list[ModelServiceEntry]] = {}
+# Metadata consumers need the entries from the latest attempt even when it was incomplete.
+# This snapshot never satisfies a listing request, so transient failures remain retryable.
+_MODEL_SERVICES_LAST_LISTING: dict[str, ModelServiceListing] = {}
 
 # Same idea for the Model Provider Service listing (a different endpoint). It is workspace-wide and
 # filtered per agent afterwards, so `ucode setup` would otherwise re-list it once per MPS-capable
@@ -2329,9 +2344,15 @@ def cached_model_service_entries(workspace: str) -> list[ModelServiceEntry] | No
     return list(cached) if cached is not None else None
 
 
+def latest_model_service_listing(workspace: str) -> ModelServiceListing | None:
+    """The last returned listing and its reason, without making a request or implying success."""
+    return _MODEL_SERVICES_LAST_LISTING.get(workspace)
+
+
 def clear_model_services_cache() -> None:
     """Forget cached model-service listings (used by tests, and after a workspace switch)."""
     _MODEL_SERVICES_CACHE.clear()
+    _MODEL_SERVICES_LAST_LISTING.clear()
     _MODEL_PROVIDER_SERVICES_CACHE.clear()
 
 
@@ -2376,7 +2397,7 @@ def list_model_service_entries(
     ``page_size`` (the endpoint 499s without one) and returns the de-duplicated
     entries sorted by id. Returns (entries, reason); reason is None on complete success,
     otherwise it describes an empty or incomplete listing. Partial results remain usable
-    but are not cached. Scoping matters: the unscoped metastore listing walks every schema
+    but subsequent listings retry them. Scoping matters: the unscoped metastore listing walks every schema
     across dozens of ~2s pages (~50s on a busy workspace) only to keep the same
     ``system.ai.*`` subset — see ``_MODEL_SERVICE_PARENT_SCHEMA``.
 
@@ -2386,6 +2407,7 @@ def list_model_service_entries(
     if use_cache:
         cached = _MODEL_SERVICES_CACHE.get(workspace)
         if cached is not None:
+            _MODEL_SERVICES_LAST_LISTING[workspace] = ModelServiceListing(tuple(cached), None)
             return list(cached), None
 
     origin = workspace_origin(workspace)
@@ -2405,15 +2427,27 @@ def list_model_service_entries(
         if payload is None:
             last_reason = reason or "model-services listing failed"
             break
-        data = cast(dict, payload) if isinstance(payload, dict) else {}
-        for service in data.get("model_services", []):
+        if not isinstance(payload, dict):
+            last_reason = "model-services listing returned an invalid response"
+            break
+        data = payload
+        services = data.get("model_services", [])
+        if not isinstance(services, list) or any(
+            not isinstance(service, dict) for service in services
+        ):
+            last_reason = "model-services listing returned invalid model entries"
+            break
+        for service in services:
             if isinstance(service, dict):
                 model_id = _model_service_id(service)
                 if model_id and model_id not in entries:
                     entries[model_id] = ModelServiceEntry(
                         model_id, _model_service_api_types(service)
                     )
-        page_token = data.get("next_page_token") or None
+        page_token = data.get("next_page_token")
+        if page_token is not None and not isinstance(page_token, str):
+            last_reason = "model-services listing returned an invalid page token"
+            break
         if not page_token:
             last_reason = None
             break
@@ -2425,11 +2459,17 @@ def list_model_service_entries(
         last_reason = f"model-services listing exceeded {max_pages} pages"
 
     listed = [entries[model_id] for model_id in sorted(entries)]
+    result_reason = (
+        last_reason
+        if listed
+        else last_reason or EmptyModelDiscoveryReason("model-services listing returned no models")
+    )
+    _MODEL_SERVICES_LAST_LISTING[workspace] = ModelServiceListing(tuple(listed), result_reason)
     if listed:
         if use_cache and last_reason is None:
             _MODEL_SERVICES_CACHE[workspace] = list(listed)
         return listed, last_reason
-    return [], last_reason or "model-services listing returned no models"
+    return [], result_reason
 
 
 def _is_not_found_reason(reason: str | None) -> bool:
@@ -2511,7 +2551,7 @@ def discover_claude_models_unbucketed(workspace: str, token: str) -> tuple[list[
     ids, reason = list_model_services(workspace, token)
     if not ids:
         return [], reason
-    return [m for m in ids if "claude-" in m.lower()], None
+    return [m for m in ids if "claude-" in m.lower()], reason
 
 
 def discover_model_services(
@@ -3818,34 +3858,51 @@ def discover_endpoints_with_api_type(
     if payload is None:
         return [], reason
 
-    data = cast(dict, payload) if isinstance(payload, dict) else {}
-    endpoints = data.get("endpoints", [])
+    invalid_reason = "foundation-models listing returned an invalid response"
+    if not isinstance(payload, dict):
+        return [], invalid_reason
+    endpoints = payload.get("endpoints", [])
+    if not isinstance(endpoints, list):
+        return [], invalid_reason
     out: list[str] = []
     saw_endpoint_without_v2 = False
     for ep in endpoints:
+        if not isinstance(ep, dict) or not isinstance(ep.get("config", {}), dict):
+            return [], invalid_reason
         name = ep.get("name", "")
         entities = ep.get("config", {}).get("served_entities", [])
+        if not isinstance(entities, list):
+            return [], invalid_reason
         api_types: set[str] = set()
         any_v2 = False
         for se in entities:
+            if not isinstance(se, dict) or not isinstance(se.get("foundation_model", {}), dict):
+                return [], invalid_reason
             fm = se.get("foundation_model", {})
+            advertised = fm.get("api_types", [])
+            if not isinstance(advertised, list) or any(
+                not isinstance(api, str) for api in advertised
+            ):
+                return [], invalid_reason
             if fm.get("ai_gateway_v2_supported") is True:
                 any_v2 = True
-                api_types.update(fm.get("api_types", []))
+                api_types.update(advertised)
         if not any_v2 and entities:
             saw_endpoint_without_v2 = True
         if api_type in api_types:
+            if not isinstance(name, str) or not name:
+                return [], invalid_reason
             out.append(name)
     if out:
         return sorted(out, key=sort_key), None
     if not endpoints:
-        return [], "foundation-models listing returned no endpoints"
+        return [], EmptyModelDiscoveryReason("foundation-models listing returned no endpoints")
     if saw_endpoint_without_v2:
-        return [], (
+        return [], EmptyModelDiscoveryReason(
             f"no endpoint exposes api_type `{api_type}` with "
             "`ai_gateway_v2_supported=true` (workspace has v1-only endpoints)"
         )
-    return [], f"no endpoint exposes api_type `{api_type}`"
+    return [], EmptyModelDiscoveryReason(f"no endpoint exposes api_type `{api_type}`")
 
 
 def _fetch_endpoints_with_api_type(workspace: str, token: str, api_type: str) -> list[str]:

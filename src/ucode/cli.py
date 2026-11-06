@@ -78,9 +78,9 @@ from ucode.custom_oauth import (
 )
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
+    EmptyModelDiscoveryReason,
     apply_pat_environment,
     build_shared_base_urls,
-    cached_model_service_entries,
     clear_gateway_probe_cache,
     clear_model_services_cache,
     databricks_cli_installed,
@@ -96,6 +96,7 @@ from ucode.databricks import (
     get_databricks_token,
     install_databricks_cli,
     is_model_provider_feature_unavailable,
+    latest_model_service_listing,
     list_anthropic_model_catalog,
     list_profile_entries,
     list_tool_provider_services,
@@ -602,13 +603,18 @@ def _can_reuse_launch_preflight(state: dict, identity: str, fields: set[str]) ->
         return False
     verified_at = stamp.get("verified_at")
     covered = stamp.get("fields")
+    empty_reasons = stamp.get("empty_family_reasons", {})
+    now = time.time()
     return (
         stamp.get("identity") == identity
         and type(verified_at) in (int, float)
-        and 0 <= time.time() - verified_at < _LAUNCH_PREFLIGHT_TTL_SECONDS
+        and now - _LAUNCH_PREFLIGHT_TTL_SECONDS < verified_at <= now
         and isinstance(covered, list)
         and all(isinstance(field, str) for field in covered)
         and fields.issubset(covered)
+        and isinstance(empty_reasons, dict)
+        and empty_reasons.keys() <= {"gemini", "oss"}
+        and all(isinstance(reason, str) for reason in empty_reasons.values())
         and _has_preflight_models(state, fields)
     )
 
@@ -877,6 +883,7 @@ def configure_shared_state(
             "codex": None,
             "oss": None,
             "copilot": None,
+            **state[_LAUNCH_PREFLIGHT_STATE_KEY].get("empty_family_reasons", {}),
         }
         return state
     state.pop(_LAUNCH_PREFLIGHT_STATE_KEY, None)
@@ -941,8 +948,9 @@ def configure_shared_state(
             if want_oss:
                 oss_models, oss_reason = ms_oss, ms_reason
             if want_copilot:
+                listing = latest_model_service_listing(workspace)
                 copilot_models = copilot_agent.catalog_from_listings(
-                    cached_model_service_entries(workspace),
+                    listing.entries if listing is not None else None,
                     [*claude_models.values(), *codex_models],
                     list_anthropic_model_catalog(workspace, token),
                 )
@@ -986,9 +994,14 @@ def configure_shared_state(
         "oss": oss_reason,
         "copilot": copilot_reason,
     }
+    empty_reasons = {
+        family: str(reason)
+        for family, reason in reasons.items()
+        if family in {"gemini", "oss"} and isinstance(reason, EmptyModelDiscoveryReason)
+    }
     if (
         model_service_probe.resource_available
-        and not any(reasons.values())
+        and not any(reason for family, reason in reasons.items() if family not in empty_reasons)
         and _has_preflight_models(state, discovery_fields)
         and (not skip_model_discovery or not want_claude or web_search_model is not None)
     ):
@@ -997,13 +1010,13 @@ def configure_shared_state(
             "identity": preflight_identity,
             "verified_at": time.time(),
             "fields": sorted(discovery_fields),
+            "empty_family_reasons": empty_reasons,
         }
     save_state(state)
     # Scrub MCP entries that ucode wrote for the previous workspace so the new
     # workspace's agent configs aren't stale.
     _purge_after_workspace_switch(state, workspace, previous_key, key)
-    # Diagnostic reasons are transient — attach after save_state so they don't
-    # land on disk but are available to the caller for this run.
+    # Failure reasons are transient. Only confirmed optional-family absence accompanies a stamp.
     state["_discovery_reasons"] = reasons
     return state
 
@@ -1779,8 +1792,9 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
         opencode_models["oss"] = oss_models
     live["opencode_models"] = opencode_models
     if "copilot" in tools:
+        listing = latest_model_service_listing(workspace)
         copilot_models = copilot_agent.catalog_from_listings(
-            cached_model_service_entries(workspace),
+            listing.entries if listing is not None else None,
             [*claude_models.values(), *codex_models],
             gateway_listing,
         )

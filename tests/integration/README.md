@@ -430,9 +430,10 @@ errors, the `skip_model_discovery` and `skip_preflight` paths, and explicit reco
 refreshing the process-local probe and listing caches. The same component file covers bounded
 persisted success reuse, fresh auth and credential/workspace/profile invalidation, model-field and
 discovery-mode coverage, successfully empty optional Gemini/OSS families, malformed/expired
-stamps, and failed-refresh invalidation.
-`../test_databricks.py` checks that interrupted pagination retains usable models without caching an
-incomplete catalog. This suite does not assert live request overlap, cache timing, or launch-time
+stamps, retained empty-family diagnostics, and failed-refresh invalidation.
+`../test_databricks.py` checks that interrupted pagination retains usable API metadata and
+completeness reasons without marking the catalog reusable. Malformed responses and HTTP failures
+remain distinct from confirmed empty catalogs. This suite does not assert live request overlap, cache timing, or launch-time
 savings.
 
 `test_ug_configure_scope.py` runs, for Claude and Codex separately (Linux/macOS only), plain
