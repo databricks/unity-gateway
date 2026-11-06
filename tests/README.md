@@ -1,8 +1,5 @@
 # Test suites and user journeys
 
-Fresh-process helper checks exercise both explicit-host credentials and saved user scope,
-workspace/profile selection, and a real temporary PAT profile without loading agent builders.
-
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
@@ -301,6 +298,8 @@ The `auth-token` and `otel-headers` helpers that agents run go from the entry po
 bearer: they print it without loading `ucode.cli` or the agent modules, and their `--help` output
 matches the full CLI's. `TestAuthTokenCommand`, `TestOtelHeadersCommand`, and the custom-OAuth
 command tests cover their behavior through the CLI registration. No live token mint is timed.
+
+Helper probes run with an empty PATH and stub only external profile discovery inside the child; saved workspace/profile/user scope and temporary PAT-file reading remain real. Both ug and ucode retain help prefixes, and preceding global options still delegate to the full CLI.
 
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.

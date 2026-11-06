@@ -120,7 +120,7 @@ def test_cli_import_defers_subcommand_specific_modules() -> None:
 @pytest.mark.parametrize("saved", [False, True], ids=["explicit-host", "saved-pat"])
 def test_agent_helper_entrypoint_skips_the_cli(tmp_path, command, expected, saved) -> None:
     workspace = "https://ws.example"
-    environment = {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
+    environment = {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path), "PATH": ""}
     arguments = ["--host", workspace]
     if saved:
         app_dir = tmp_path / ".ucode"
@@ -145,6 +145,14 @@ def test_agent_helper_entrypoint_skips_the_cli(tmp_path, command, expected, save
         "import os, sys\n"
         f"os.environ.update({environment!r})\n"
         f"sys.argv = {['ug', command, *arguments]!r}\n"
+    )
+    if saved:
+        # Only external profile discovery is stubbed; the temporary PAT file is read normally.
+        probe += (
+            "import ucode.databricks as db\n"
+            "db.list_profile_entries = lambda: [{'name': 'SAVED', 'auth_type': 'pat'}]\n"
+        )
+    probe += (
         "from ucode.entrypoint import main\n"
         "try:\n    main()\nexcept SystemExit as exc:\n    assert not exc.code, exc.code\n"
     )
@@ -168,13 +176,14 @@ def test_agent_helpers_are_the_cli_hidden_helper_commands() -> None:
 
 
 @pytest.mark.parametrize("command", ["auth-token", "otel-headers"])
-def test_agent_helper_help_matches_the_cli(command) -> None:
+@pytest.mark.parametrize("executable", ["ug", "ucode"])
+def test_agent_helper_help_matches_the_cli(command, executable) -> None:
     def help_text(module: str) -> str:
         result = subprocess.run(
             [
                 sys.executable,
                 "-c",
-                f"import sys\nsys.argv = ['ug', {command!r}, '--help']\n"
+                f"import sys\nsys.argv = [{executable!r}, {command!r}, '--help']\n"
                 f"from {module} import main\nmain()",
             ],
             stdin=subprocess.DEVNULL,
@@ -304,6 +313,7 @@ def test_version_entrypoint_falls_back_to_telemetry(monkeypatch, capsys, flag) -
         [],
         ["--help"],
         ["--dry-run", "--version"],
+        ["--header", "X-Test: yes", "auth-token"],
         ["--version", "foo"],
         ["--version", "--help"],
         ["-V", "claude"],
