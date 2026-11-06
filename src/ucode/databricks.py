@@ -3214,7 +3214,7 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
         tool == "claude"
         and provider_type == MICROSOFT_FOUNDRY_PROVIDER_TYPE
         and not service.get("allow_all_targets")
-        and not foundry_claude_targets(service)
+        and not provider_targets_for_tool(tool, service)
     ):
         return (
             f"Model provider service '{service_name}' exposes no Anthropic Messages targets — "
@@ -3224,8 +3224,11 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
     return None
 
 
-def foundry_claude_targets(service: dict) -> list[str]:
+def provider_targets_for_tool(tool: str, service: dict) -> list[str]:
+    """Return declared targets after provider-specific tool filtering."""
     targets = service.get("targets") or []
+    if tool != "claude" or service.get("provider_type") != MICROSOFT_FOUNDRY_PROVIDER_TYPE:
+        return targets
     target_api_types = service.get("target_api_types") or {}
     return [
         target

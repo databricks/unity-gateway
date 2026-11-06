@@ -1531,6 +1531,30 @@ def test_bare_model_name(model, name):
     assert db_mod.bare_model_name(model) == name
 
 
+@pytest.mark.parametrize(
+    ("tool", "provider_type"),
+    [
+        ("claude", "anthropic"),
+        ("claude", "amazon_bedrock"),
+        ("claude", "bedrock_mantle"),
+        ("codex", "microsoft_foundry"),
+        ("copilot", "microsoft_foundry"),
+    ],
+)
+def test_provider_targets_preserve_other_provider_and_tool_combinations(tool, provider_type):
+    targets = ["claude-sonnet-5-5", "gpt-5.4"]
+    service = {
+        "provider_type": provider_type,
+        "targets": targets,
+        "target_api_types": {
+            "claude-sonnet-5-5": ("anthropic/v1/messages",),
+            "gpt-5.4": ("openai/v1/responses",),
+        },
+    }
+
+    assert db_mod.provider_targets_for_tool(tool, service) == targets
+
+
 class TestServiceUsableForTool:
     @pytest.mark.parametrize(
         ("targets", "target_api_types", "allow_all", "usable"),

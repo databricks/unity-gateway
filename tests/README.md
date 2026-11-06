@@ -21,6 +21,9 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 Isolated runs preserve the host's explicit `OPENSSL_FORCE_FIPS_MODE` setting.
 `test_integration_contract.py` covers enabled, disabled, and absent values.
 
+Provider target component tests cover shared selection for Claude on Foundry and
+preservation of existing target lists for other providers and tools, including Bedrock.
+
 | Category | Location | What it proves |
 | --- | --- | --- |
 | Unit/component | Existing `test_*.py` files | Individual behavior; dependencies may be mocked |

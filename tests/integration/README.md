@@ -3,6 +3,9 @@
 Isolated subprocesses preserve `OPENSSL_FORCE_FIPS_MODE` when supplied by the
 runner environment, so container OpenSSL initialization uses its configured mode.
 
+Provider target component tests preserve existing selection for providers and tools
+outside Claude on Foundry; broader Bedrock target filtering remains out of scope.
+
 The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
 service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
 It replaces the obsolete stdio-only expectation; this checks configuration, not live login.

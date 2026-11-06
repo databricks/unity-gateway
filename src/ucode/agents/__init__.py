@@ -20,13 +20,12 @@ from pathlib import Path
 from ucode.config_io import ToolSpec, is_dry_run
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT
 from ucode.databricks import (
-    MICROSOFT_FOUNDRY_PROVIDER_TYPE,
     AnthropicModelCatalog,
-    foundry_claude_targets,
     get_databricks_token,
     install_ai_tools,
     install_databricks_cli,
     map_claude_family_models,
+    provider_targets_for_tool,
     resolve_provider_service,
 )
 from ucode.env import env_bool
@@ -447,11 +446,7 @@ def resolve_provider_models(
     # through Claude-family logic would be meaningless (see docstring).
     if tool != "claude":
         return None, None, relayed
-    targets = (
-        foundry_claude_targets(service)
-        if service.get("provider_type") == MICROSOFT_FOUNDRY_PROVIDER_TYPE
-        else service.get("targets") or []
-    )
+    targets = provider_targets_for_tool(tool, service)
     return map_claude_family_models(targets) or None, None, relayed
 
 
