@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, it } from "node:test";
-import { OWNED_SETTINGS_FILE, OWNED_SETTINGS_KEY, syncSettings, writeOwnedSettingsFile } from "../src/settings";
+import { OWNED_SETTINGS_KEY, syncSettings } from "../src/settings";
 
 describe("syncSettings", () => {
   const fake = (global: Record<string, unknown>, owned?: Record<string, unknown>, failing: string[] = []) => {
@@ -34,11 +31,10 @@ describe("syncSettings", () => {
     const store = fake({ a: 1, b: 2 }, undefined, ["c"]);
     const logs: string[] = [];
 
-    const owned = await syncSettings(store.settings as never, store.state as never, { a: 1, b: 3, c: 4 }, (line) => logs.push(line));
+    await syncSettings(store.settings as never, store.state as never, { a: 1, b: 3, c: 4 }, (line) => logs.push(line));
 
     assert.deepEqual(store.updates, [["b", 3]]);
     assert.deepEqual(store.saved(), { a: 1, b: 3, c: 4 });
-    assert.deepEqual(owned, { a: 1, b: 3, c: 4 });
     assert.ok(logs[0]?.includes("Could not update c"));
   });
 
@@ -74,19 +70,5 @@ describe("syncSettings", () => {
     const unset = fake({});
     await syncSettings(unset.settings as never, unset.state as never, { "chat.defaultModel": "system.ai.opus" }, () => {}, new Set(["chat.defaultModel"]));
     assert.deepEqual(unset.updates, [["chat.defaultModel", "system.ai.opus"]]);
-  });
-});
-
-describe("writeOwnedSettingsFile", () => {
-  it("keeps a copy of the record for ug, and removes it once the extension owns nothing", () => {
-    const folder = join(mkdtempSync(join(tmpdir(), "ug-owned-")), "databricks.unity-gateway");
-    const path = join(folder, OWNED_SETTINGS_FILE);
-
-    writeOwnedSettingsFile(folder, { "chat.defaultModel": "system.ai.opus" });
-    assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { "chat.defaultModel": "system.ai.opus" });
-
-    writeOwnedSettingsFile(folder, {});
-    assert.equal(existsSync(path), false);
-    writeOwnedSettingsFile(folder, {});
   });
 });
