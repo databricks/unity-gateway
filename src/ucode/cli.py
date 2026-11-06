@@ -878,6 +878,7 @@ def configure_shared_state(
         and _can_reuse_launch_preflight(state, preflight_identity, discovery_fields)
     ):
         save_state(state)
+        _purge_after_workspace_switch(state, workspace, previous_key, key)
         state["_discovery_reasons"] = {
             "claude": None,
             "gemini": None,
@@ -957,13 +958,17 @@ def configure_shared_state(
                 oss_models, oss_reason = ms_oss, ms_reason
             if want_copilot:
                 listing = latest_model_service_listing(workspace)
+                preferred_catalog = list_anthropic_model_catalog(workspace, token)
                 copilot_models = copilot_agent.catalog_from_listings(
                     listing.entries if listing is not None else None,
                     [*claude_models.values(), *codex_models],
-                    list_anthropic_model_catalog(workspace, token),
+                    preferred_catalog,
                 )
                 copilot_reason = (
-                    (None if model_listing_complete else ms_reason) or claude_reason or codex_reason
+                    (None if model_listing_complete else ms_reason)
+                    or claude_reason
+                    or codex_reason
+                    or (preferred_catalog.error_msg if preferred_catalog is not None else None)
                 )
         if claude_models:
             opencode_models["anthropic"] = list(claude_models.values())

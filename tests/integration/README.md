@@ -440,6 +440,8 @@ This suite does not assert live request overlap, cache timing, or launch-time
 savings.
 Component HTTP-boundary cases also cover same-command probe reuse across auto-setup/mode changes,
 explicit refresh, and separation by credential, routing headers, and workspace selectors.
+They also cover pending workspace cleanup on warm reuse and a failed preferred Copilot catalog
+remaining retryable despite successful fallback models.
 
 `test_ug_configure_scope.py` runs, for Claude and Codex separately (Linux/macOS only), plain
 `ug configure`, `--user`, `UG_SKIP_OS_SETTINGS=1`, and `--global` over a user-owned

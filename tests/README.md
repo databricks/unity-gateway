@@ -650,6 +650,8 @@ boundaries; they do not establish live gateway timing, agent launch, or launch-t
 The same launch cases preserve a verified process-local probe across auto-setup and discovery-mode
 changes; explicit configure/refresh still probes again. HTTP-boundary checks bind probe reuse to
 effective routing and workspace-selector headers as well as the credential.
+Warm reuse still performs workspace cleanup deferred by global configure, and a failed preferred
+Copilot catalog keeps its usable fallback retryable. The PAT fixture restores its bearer environment.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,

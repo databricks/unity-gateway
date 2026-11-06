@@ -7540,6 +7540,8 @@ class TestConfiguredLaunchPreflightCache:
 
         from ucode import state as state_mod
 
+        # ensure_pat_bearer writes directly; register its original value for fixture teardown.
+        monkeypatch.setenv("DATABRICKS_BEARER", os.environ.get("DATABRICKS_BEARER", ""))
         TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token="pat-token")
         monkeypatch.setattr(cli_mod, "load_state", state_mod.load_state)
         monkeypatch.setattr(cli_mod, "save_state", real_save_state)
@@ -7561,6 +7563,13 @@ class TestConfiguredLaunchPreflightCache:
         monkeypatch.setattr(cli_mod, "get_databricks_token", token)
         monkeypatch.setattr(cli_mod, "probe_unity_gateway_capabilities", probe)
         monkeypatch.setattr(cli_mod, "discover_model_services", listing)
+        monkeypatch.setattr(
+            cli_mod,
+            "list_anthropic_model_catalog",
+            lambda *a: db_mod.AnthropicModelCatalog(
+                ["system.ai.claude-opus-4-8", "system.ai.gpt-5"], {}
+            ),
+        )
         monkeypatch.setattr(cli_mod.time, "time", lambda: now[0])
 
         def configure(**overrides):
@@ -7592,6 +7601,35 @@ class TestConfiguredLaunchPreflightCache:
         assert preflight.authentication.call_count == preflight.token.call_count == 2
         assert preflight.probe.call_count == preflight.listing.call_count == 1
         assert "current-token" not in json.dumps(preflight.load())
+
+    def test_warm_launch_runs_cleanup_deferred_by_global_workspace_switch(
+        self, preflight, monkeypatch
+    ):
+        preflight.configure(workspace="https://previous.databricks.com")
+        with monkeypatch.context() as global_scope:
+            global_scope.setattr(cli_mod, "machine_wide_only", lambda: True)
+            preflight.configure(reuse_preflight=False, force_login=True)
+        assert cli_mod.user_mcp_reconcile_pending()
+        purge = MagicMock()
+        monkeypatch.setattr(cli_mod, "purge_cross_workspace_mcp_residue", purge)
+
+        state = preflight.configure()
+
+        assert preflight.probe.call_count == preflight.listing.call_count == 2
+        purge.assert_called_once_with(state, self.WS)
+
+    def test_failed_preferred_copilot_catalog_keeps_fallback_retryable(
+        self, preflight, monkeypatch
+    ):
+        preferred = MagicMock(return_value=db_mod.AnthropicModelCatalog([], {}, "HTTP 503"))
+        monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", preferred)
+
+        for _ in range(2):
+            state = preflight.configure(tools=["copilot"])
+            assert state["copilot_catalog"]["models"]
+            assert "launch_preflight" not in state
+            assert state["_discovery_reasons"]["copilot"] == "HTTP 503"
+        assert preferred.call_count == preflight.listing.call_count == 2
 
     @pytest.mark.parametrize("tool", ["codex", "pi", "opencode"])
     def test_successful_empty_optional_families_are_reused(self, preflight, monkeypatch, tool):
