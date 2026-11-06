@@ -142,7 +142,10 @@ def main():
         print("Cowork selected", flush=True)
         snapshot = wait_for("Write your prompt to Claude", timeout=60)
         save("cowork-ui.txt", snapshot)
-        expected_labels = {f"Model: {model_label}", f"Model: {model_label} Extended"}
+        expected_labels = {
+            f"Model: {model_label}{suffix}"
+            for suffix in ("", " Extended", " Low", " Medium", " High", " Max")
+        }
         if not any(expected_labels.intersection(row.split(" | ")) for row in snapshot.splitlines()):
             raise RuntimeError("Cowork did not select the configured model")
         ui("type", "Write your prompt to Claude", PROMPT)

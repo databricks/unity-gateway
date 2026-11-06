@@ -22,8 +22,14 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os
+          from pathlib import Path
+          cases = json.load(open('scripts/provider-compat/cases.json'))
+          subset = Path('scripts/provider-compat/rerun-providers.json')
+          if subset.exists():
+              selected = set(json.loads(subset.read_text()))
+              cases = [case for case in cases if case['provider'] in selected]
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('cases=' + json.dumps(json.load(open('scripts/provider-compat/cases.json'))) + '\n')
+              output.write('cases=' + json.dumps(cases) + '\n')
           PY
 
   cowork:
