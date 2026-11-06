@@ -16,6 +16,7 @@ from tests.integration.utils.evidence import (
 )
 from tests.integration.utils.terminal import (
     codex_command_approval_pending,
+    codex_session_footer_shown,
     codex_trust_dialog_shown,
 )
 
@@ -112,6 +113,41 @@ def test_codex_trust_dialog_requires_the_test_project(screen, cwd, change, shown
     if change:
         screen = screen.replace(*change)
     assert codex_trust_dialog_shown(screen, cwd) is shown
+
+
+# Codex 0.156.0's ready screen captured in CI run 42294239789; its footer ends in a warning badge.
+_FOOTER_CWD = PurePosixPath("/tmp/ug-integration-project-jhrdmhry/project with spaces")
+_CODEX_0_156_READY = (
+    "╭───────────────────────────────────────────╮\n"
+    "│ >_ OpenAI Codex (v0.156.0)                │\n"
+    "│                                           │\n"
+    "│ model:     GPT-5.6-Sol   /model to change │\n"
+    "│ directory: /tmp/…/project with spaces     │\n"
+    "╰───────────────────────────────────────────╯\n"
+    "\n"
+    "  Tip: Use /feedback to send logs to the maintainers when something looks off.\n"
+    "\n"
+    "\n"
+    "› Ask Codex to do anything\n"
+    "\n"
+    "  GPT-5.6-Sol default · /tmp/ug-integration-project-jhrdmhry/project with spaces                                   ⚠ 1 warning · f2 to view"
+)
+
+
+@pytest.mark.parametrize(
+    ("change", "shown"),
+    [
+        (None, True),
+        (("                                   ⚠ 1 warning · f2 to view", ""), True),
+        (("⚠ 1 warning", "⚠ 2 warnings"), True),
+        (("⚠ 1 warning · f2 to view", "something else"), False),
+        (("project with spaces    ", "other project    "), False),
+        (("GPT-5.6-Sol default · ", ""), False),
+    ],
+)
+def test_codex_session_footer_accepts_the_warning_badge(change, shown):
+    screen = _CODEX_0_156_READY.replace(*change) if change else _CODEX_0_156_READY
+    assert codex_session_footer_shown(screen, _FOOTER_CWD) is shown
 
 
 class _Session:

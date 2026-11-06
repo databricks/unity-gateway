@@ -53,6 +53,19 @@ def codex_trust_dialog_shown(screen: str, cwd: PurePath) -> bool:
     return older or current
 
 
+def codex_session_footer_shown(screen: str, cwd: PurePath) -> bool:
+    """Whether Codex's prompt has its model/directory footer, which its startup draft lacks."""
+    return bool(
+        re.search(
+            rf"(?m)^[ \t]*[›❯>][ \t]+[^\n]*\n(?:[ \t]*\n)*"
+            rf"[ \t]*\S[^\n]* · [^\n]*{re.escape(cwd.name)}(?: · [^\n]*)?"
+            # Codex 0.156 appends a warning badge after the directory.
+            r"(?:[ \t]+⚠[ \t]+\d+ warnings? · f2 to view)?$",
+            screen,
+        )
+    )
+
+
 def codex_command_approval_pending(screen: str, expected_command: str) -> bool:
     prompt = "Would you like to run the following command?"
     if prompt not in screen:
@@ -459,12 +472,6 @@ class AgentTerminal(TerminalProcess):
                 self.send("\r", "continue with Skip selected")
                 handled.add("update-notice")
                 continue
-            # Codex's own prompt when a newer release than the pinned one exists.
-            if "Update available" in text and "esc skip" in text and "codex-update" not in handled:
-                ready_since = None
-                self.send("\x1b", "skip the Codex update")
-                handled.add("codex-update")
-                continue
             # These are interactions with ordinary UI choices, not pre-written
             # onboarding state. Only the test's disposable project is trusted.
             dialogs = [
@@ -552,11 +559,7 @@ class AgentTerminal(TerminalProcess):
                 + text
             )
             # Codex's startup draft precedes hook review and lacks the model/directory footer.
-            if self.agent == "codex" and not re.search(
-                rf"(?m)^[ \t]*[›❯>][ \t]+[^\n]*\n(?:[ \t]*\n)*"
-                rf"[ \t]*\S[^\n]* · [^\n]*{re.escape(self.session.cwd.name)}(?: · [^\n]*)?$",
-                text,
-            ):
+            if self.agent == "codex" and not codex_session_footer_shown(text, self.session.cwd):
                 ready_since = None
                 continue
             title = {
