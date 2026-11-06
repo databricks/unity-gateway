@@ -177,6 +177,14 @@ describe("readConfig", () => {
     assert.equal(readConfig(JSON.stringify({ ...config, headers: ["X-Team"] })).headers, undefined);
   });
 
+  it("keeps a default model only when it is one of the models", () => {
+    const base = { workspace: "https://ws", authCommand: "ug auth-token", models: [{ id: "system.ai.opus", api: "completions" }, { id: "system.ai.sonnet", api: "unknown" }] };
+    assert.equal(readConfig(JSON.stringify({ ...base, defaultModel: "system.ai.opus" })).defaultModel, "system.ai.opus");
+    for (const defaultModel of ["system.ai.sonnet", "", 3, null]) {
+      assert.equal(readConfig(JSON.stringify({ ...base, defaultModel })).defaultModel, undefined, JSON.stringify(defaultModel));
+    }
+  });
+
   it("gives no models for a missing or malformed file", () => {
     const none = { workspace: "", authCommand: "", models: [], provider: "" };
     for (const text of [undefined, "", "{", "[]", "null", '"text"']) {

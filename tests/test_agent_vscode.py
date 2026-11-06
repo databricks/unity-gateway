@@ -348,6 +348,20 @@ class TestCopilotModels:
             _printed(capsys)
         )
 
+    @pytest.mark.parametrize("default", [GPT, "gpt-6-luna"])
+    def test_passes_the_managed_default_model_as_the_catalog_names_it(self, code, default):
+        assert vscode.configure(self._state(copilot_default_model=default))
+
+        assert code.config["defaultModel"] == self.GPT
+
+    @pytest.mark.parametrize(
+        "managed", [{}, {"copilot_default_model": "system.ai.claude-opus-5-5"}]
+    )
+    def test_passes_no_default_model_the_catalog_lacks(self, code, managed):
+        assert vscode.configure(self._state(**managed))
+
+        assert "defaultModel" not in code.config
+
     def test_writes_the_managed_headers_without_the_ones_ug_sets(self, code):
         state = self._state(
             copilot_http_headers={
@@ -357,13 +371,11 @@ class TestCopilotModels:
                 "databricks-model-provider-service": "main.default.other",
                 "X-Bad": 3,
             },
-            copilot_default_model="claude-sonnet-5-5",
         )
 
         assert vscode.configure(state)
 
         assert code.config["headers"] == {"X-Team": "ml"}
-        assert "defaultModel" not in code.config
 
 
 class TestRevert:
