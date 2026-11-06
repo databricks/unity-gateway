@@ -1974,6 +1974,7 @@ class TestCodexManagedConfig:
         # Deterministic managed path + a mocked sudo writer that writes straight to disk, so the test
         # can read the TOML back and NO real sudo/`/etc` write ever happens.
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
+        monkeypatch.setattr(codex, "CODEX_SYSTEM_DIR", managed_path.parent)
 
         def fake_write_managed(path, text, **kwargs):
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -1994,7 +1995,7 @@ class TestCodexManagedConfig:
         assert "Databricks" in doc["model_providers"]
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
 
-    def test_global_flag_writes_only_managed_config(self, tmp_path, monkeypatch):
+    def test_global_flag_writes_only_machine_wide_files(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
         desktop: list = []
         monkeypatch.setattr(codex, "_sync_desktop_tracing", lambda *a: desktop.append(a))
@@ -2007,8 +2008,11 @@ class TestCodexManagedConfig:
 
         codex.write_tool_config(state)
 
-        assert read_toml_safe(managed_path)["model_provider"] == "Databricks"
-        assert "model_catalog_json" not in read_toml_safe(managed_path)
+        # On Linux and macOS, --global writes /etc/codex/requirements.toml, not managed_config.toml.
+        requirements = read_toml_safe(managed_path.parent / "requirements.toml")
+        assert requirements["model_provider"] == "Databricks"
+        assert "model_catalog_json" not in requirements
+        assert not managed_path.exists()
         assert not config_path.exists()
         assert not codex.CODEX_MODEL_CATALOG_PATH.exists()
         assert desktop == []
@@ -2111,6 +2115,90 @@ class TestCodexManagedConfig:
         profile = read_toml_safe(config_path)
         assert profile["model"] == "gpt-5"
         assert "env_http_headers" not in profile["model_providers"]["Databricks"]
+
+    def _patch_global(self, tmp_path, monkeypatch, *, os_=managed_files.OS.LINUX, global_=True):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "current_os", lambda: os_)
+        monkeypatch.setattr(codex, "machine_wide_only", lambda: global_)
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/usr/local/bin/ug")
+        monkeypatch.setattr(codex, "ucode_user_agent", lambda *_: "ucode/test")
+        return managed_path.parent
+
+    GLOBAL_STATE = {
+        "workspace": WS,
+        "profile": "dev",
+        "use_pat": True,
+        "codex_http_headers": {"X-Team": "eng"},
+        "codex_default_model": "system.ai.gpt-5",
+    }
+    # The UG-owned entries of the Codex MDM design's §3.3 example requirements.toml.
+    GLOBAL_REQUIREMENTS = {
+        "model_provider": "Databricks",
+        "model_providers": {
+            "Databricks": {
+                "name": "Databricks AI Gateway",
+                "base_url": f"{WS}/ai-gateway/codex/v1",
+                "wire_api": "responses",
+                "http_headers": {"User-Agent": "ucode/test", "X-Team": "eng"},
+                "env_http_headers": {
+                    "Databricks-Model-Provider-Service": "UG_CODEX_MODEL_PROVIDER_SERVICE",
+                    "Databricks-Model-Service-Parent-Schema": "UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA",
+                    "Databricks-Smart-Router-Recipe": "UG_CODEX_SMART_ROUTER_RECIPE",
+                    "Databricks-Ai-Gateway-Request-Tags": "UG_CODEX_REQUEST_TAGS",
+                },
+                "auth": {
+                    "command": "/usr/local/bin/ug",
+                    "args": ["auth-token", "--host", WS, "--browser-login"],
+                    "timeout_ms": 180000,
+                    "refresh_interval_ms": 900000,
+                },
+            }
+        },
+    }
+
+    def test_global_run_writes_provider_lock_and_default_model(self, tmp_path, monkeypatch):
+        # Not root: the run goes through the privileged managed-file writer (faked by _patch).
+        system_dir = self._patch_global(tmp_path, monkeypatch)
+        # Per-launch headers belong in env_http_headers only.
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", "team=eng")
+        system_dir.mkdir(parents=True)
+        (system_dir / "requirements.toml").write_text("stale = 1\n", encoding="utf-8")
+        (system_dir / "config.toml").write_text('stale = 1\nmodel = "old"\n', encoding="utf-8")
+
+        for _ in range(2):
+            codex.write_tool_config(dict(self.GLOBAL_STATE), provider="cat.s.mps")
+            assert read_toml_safe(system_dir / "requirements.toml") == self.GLOBAL_REQUIREMENTS
+            assert read_toml_safe(system_dir / "config.toml") == {"model": "system.ai.gpt-5"}
+        assert codex.reconcile_managed_mcp({}, {"github": {"command": "ug"}}) is False
+        assert not (system_dir / "managed_config.toml").exists()
+
+        codex.write_tool_config({"workspace": WS})
+        assert read_toml_safe(system_dir / "config.toml") == {}
+
+    def test_global_run_fails_when_the_privileged_write_is_denied(self, tmp_path, monkeypatch):
+        system_dir = self._patch_global(tmp_path, monkeypatch)
+
+        def deny(path, text, **kwargs):
+            raise managed_files.ManagedFileWriteUnavailable(f"Could not update {path}")
+
+        monkeypatch.setattr(codex, "reconcile_managed_file", deny)
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="requirements.toml"):
+            codex.write_tool_config(dict(self.GLOBAL_STATE))
+        assert not (system_dir / "managed_config.toml").exists()
+
+    @pytest.mark.parametrize(
+        ("os_", "global_"), [(managed_files.OS.LINUX, False), (managed_files.OS.WINDOWS, True)]
+    )
+    def test_per_user_or_windows_run_keeps_managed_config(
+        self, tmp_path, monkeypatch, os_, global_
+    ):
+        system_dir = self._patch_global(tmp_path, monkeypatch, os_=os_, global_=global_)
+
+        codex.write_tool_config(dict(self.GLOBAL_STATE))
+
+        assert read_toml_safe(system_dir / "managed_config.toml")["model_provider"] == "Databricks"
+        assert not (system_dir / "requirements.toml").exists()
+        assert not (system_dir / "config.toml").exists()
 
     @pytest.mark.parametrize("opt_out", ["env", "user_scope"])
     def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch, opt_out):
@@ -2953,11 +3041,9 @@ class TestCodexReconcileManagedMcp:
         codex.reconcile_managed_mcp({}, {"stdio-now-http": http, "same": http})
         assert set(read_toml_safe(user_path)["mcp_servers"]) == {"same", "mine"}
 
-    def test_global_flag_keeps_user_entry_and_skips_the_conflicting_server(
-        self, monkeypatch, tmp_path, capsys
-    ):
-        import tomllib
-
+    def test_global_flag_writes_no_managed_mcp_and_keeps_user_entry(self, monkeypatch, tmp_path):
+        # On Linux and macOS --global writes requirements.toml and config.toml, never
+        # managed_config.toml, so managed MCP servers aren't written there (mcp.py warns instead).
         user_path = tmp_path / "config.toml"
         original = '[mcp_servers.stdio-now-http]\ncommand = "/opt/ug"\nargs = []\n'
         user_path.write_text(original, encoding="utf-8")
@@ -2967,15 +3053,14 @@ class TestCodexReconcileManagedMcp:
         managed_files.set_machine_wide_only(True)
         http = codex.managed_mcp_http_entry("u", "client")
 
-        codex.reconcile_managed_mcp({}, {"stdio-now-http": http, "other": http})
+        assert codex.reconcile_managed_mcp({}, {"stdio-now-http": http, "other": http}) is False
 
         assert user_path.read_text(encoding="utf-8") == original
-        assert set(tomllib.loads(captured["text"])["mcp_servers"]) == {"other"}
-        assert "stdio-now-http" in " ".join(capsys.readouterr().err.split())
+        assert captured == {}
 
     @pytest.mark.parametrize("machine_wide_only", [False, True])
-    def test_denied_write_fails_only_a_global_run(self, monkeypatch, machine_wide_only):
-        # Without --global the caller falls back to user scope; `--global` has none, so it fails.
+    def test_denied_write_returns_false(self, monkeypatch, machine_wide_only):
+        # Without --global the caller falls back to user scope; --global writes no managed MCP.
         self._wire(monkeypatch, None, {})
 
         def deny(*a, **k):
@@ -2985,11 +3070,7 @@ class TestCodexReconcileManagedMcp:
         managed_files.set_machine_wide_only(machine_wide_only)
         servers = {"system-ai-github": codex.managed_mcp_entry(self.ARGV)}
 
-        if machine_wide_only:
-            with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="sudo denied"):
-                codex.reconcile_managed_mcp({}, servers)
-        else:
-            assert codex.reconcile_managed_mcp({}, servers) is False
+        assert codex.reconcile_managed_mcp({}, servers) is False
 
     def test_empty_map_clears_table_preserving_model_keys(self, monkeypatch):
         import tomllib
