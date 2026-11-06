@@ -2,11 +2,12 @@
 
 `test_config_io.py` and `test_state.py` cover avoiding unchanged local config/state writes:
 preserved timestamps, actual changes still written, encoding/native newline comparisons, dry-run
-output, permission-error and unreadable-file fallbacks, and unchanged handling of symlinks and
+output, real POSIX read-only/write-only permission fallbacks (non-root runs), and handling of symlinks and
 special files at the file-type boundary. State checks cover type-sensitive updates, live reads of
 other-workspace edits, selection changes, managed overlays, and bare-host alias repair. These are
 offline component checks; nested mapping reordering still persists. They do not measure live
-startup or native file-watcher behavior.
+startup or native file-watcher behavior. The two POSIX permission cases do not run on Windows
+or with administrator rights.
 
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected

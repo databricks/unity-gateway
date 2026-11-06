@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import cast
 
-from ucode.config_io import APP_DIR, can_skip_file_write, is_dry_run
+from ucode.config_io import APP_DIR, is_dry_run, is_writable_regular_file
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_TIMEOUT_MS,
     CustomOAuthConfig,
@@ -131,7 +131,7 @@ def save_state(state: dict) -> None:
         _write_workspace_block(full, key, block, workspace_id)
         host = split_workspace_key(key)[0] if workspace_id else key
         activate_state({"workspace": host, "workspace_id": workspace_id})
-    if key and _same_state_values(full, previous) and can_skip_file_write(STATE_PATH):
+    if key and _same_state_values(full, previous) and is_writable_regular_file(STATE_PATH):
         return
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)

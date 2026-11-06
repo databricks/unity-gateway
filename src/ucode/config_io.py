@@ -118,14 +118,22 @@ def write_json_file(path: Path, payload: dict) -> None:
     write_text_file(path, content)
 
 
-def can_skip_file_write(path: Path, expected: bytes | None = None) -> bool:
-    """Check an existing regular file without weakening its write-permission checks.
+def can_skip_file_write(path: Path, expected: bytes) -> bool:
+    """Whether a writable regular file already contains exactly ``expected`` bytes."""
+    return _check_writable_regular_file(path, expected)
 
-    When ``expected`` is supplied its bytes must match exactly. State persistence also uses
-    this after comparing the parsed state, before serializing it again. Symlinks, special files,
-    and files that cannot be opened for both reading and writing retain the ordinary write path.
-    Nothing is cached: each invocation checks the current file and its permissions.
+
+def is_writable_regular_file(path: Path) -> bool:
+    """Check file type and access after the caller has established content equality.
+
+    State persistence compares parsed values first, avoiding another serialization.
+    Symlinks, special files, and files that cannot be opened for reading and writing
+    return False. Each call checks the current file; nothing is cached.
     """
+    return _check_writable_regular_file(path, None)
+
+
+def _check_writable_regular_file(path: Path, expected: bytes | None) -> bool:
     try:
         before = path.lstat()
         if not stat.S_ISREG(before.st_mode):

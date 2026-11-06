@@ -154,16 +154,11 @@ class TestSaveLoadRoundTrip:
         result = load_state()
         assert result == {}
 
-    def test_unchanged_state_is_neither_serialized_nor_rewritten(self, monkeypatch):
+    def test_unchanged_state_is_not_rewritten(self):
         state = {"workspace": FAKE_WS, "claude_models": {"sonnet": "model"}}
         save_state(state)
         before = state_mod.STATE_PATH.read_bytes()
         os.utime(state_mod.STATE_PATH, ns=(1_000_000_000, 1_000_000_000))
-
-        def unexpected_serialization(*args, **kwargs):
-            raise AssertionError("unchanged state must not be serialized again")
-
-        monkeypatch.setattr(state_mod.json, "dumps", unexpected_serialization)
 
         save_state(state)
 

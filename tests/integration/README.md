@@ -2,10 +2,11 @@
 
 Unchanged local config/state persistence has offline component coverage in
 `../test_config_io.py` and `../test_state.py`: timestamps, changed values, encoding/newlines,
-dry-run, controlled permission/file-type boundaries, state type distinctions, external workspace
+dry-run, real POSIX permission checks under a non-root user, controlled file-type boundaries,
+state type distinctions, external workspace
 edits, selection changes, managed overlays, nested mapping reordering, and alias repair. No
-integration claim is made for native file watchers, OS permission behavior, or end-to-end launch
-latency.
+integration claim is made for native file watchers or end-to-end launch latency. Permission
+cases are platform-specific component checks and do not run on Windows or as administrator.
 
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API

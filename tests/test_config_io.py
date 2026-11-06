@@ -28,6 +28,7 @@ from ucode.config_io import (
     write_text_file,
     write_toml_file,
 )
+from ucode.os_compatibility.system_cross_os import is_admin
 
 
 @pytest.fixture(autouse=True)
@@ -263,40 +264,37 @@ class TestWriteHelpers:
 
         assert path.read_bytes() == expected
 
-    def test_unreadable_existing_file_still_uses_the_write_path(self, tmp_path, monkeypatch):
+    @pytest.mark.skipif(
+        os.name == "nt" or is_admin(), reason="POSIX permissions under a non-root user"
+    )
+    def test_unreadable_existing_file_still_uses_the_write_path(self, tmp_path):
         path = tmp_path / "write-only.txt"
         path.write_text("same", encoding="utf-8")
-        original_open = Path.open
-        modes = []
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+        permissions = stat.S_IMODE(path.stat().st_mode)
+        path.chmod(0o200)
+        try:
+            write_text_file(path, "same")
+        finally:
+            path.chmod(permissions)
 
-        def open_file(self, mode="r", *args, **kwargs):
-            if self == path:
-                modes.append(mode)
-                if mode == "r+b":
-                    raise PermissionError("reading forbidden")
-            return original_open(self, mode, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "open", open_file)
-
-        write_text_file(path, "same")
-
-        assert modes == ["r+b", "w"]
         assert path.read_text() == "same"
+        assert path.stat().st_mtime_ns != 1_000_000_000
 
-    def test_identical_read_only_config_keeps_the_existing_write_error(self, tmp_path, monkeypatch):
+    @pytest.mark.skipif(
+        os.name == "nt" or is_admin(), reason="POSIX permissions under a non-root user"
+    )
+    def test_identical_read_only_config_keeps_the_existing_write_error(self, tmp_path):
         path = tmp_path / "read-only.txt"
         path.write_text("same", encoding="utf-8")
-        original_open = Path.open
-
-        def open_file(self, mode="r", *args, **kwargs):
-            if self == path and mode in ("r+b", "w"):
-                raise PermissionError("writing forbidden")
-            return original_open(self, mode, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "open", open_file)
-
-        with pytest.raises(RuntimeError, match="Failed to write config file"):
-            write_text_file(path, "same")
+        permissions = stat.S_IMODE(path.stat().st_mode)
+        path.chmod(0o400)
+        try:
+            with pytest.raises(RuntimeError, match="Failed to write config file") as error:
+                write_text_file(path, "same")
+            assert isinstance(error.value.__cause__, PermissionError)
+        finally:
+            path.chmod(permissions)
 
         assert path.read_text() == "same"
 
