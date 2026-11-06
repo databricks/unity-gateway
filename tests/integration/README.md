@@ -266,9 +266,15 @@ The Claude Bedrock journeys use Unity Catalog service-credential auth
 `us.anthropic.claude-sonnet-5-5` from the restricted
 `main.ucode.ci_bedrock_runtime_svc_cred_filtered_models` service (Sonnet 5.5 + Opus 5.5, us-west-2).
 The headless journeys pin Sonnet 5.5 through the allow-all
-`main.ucode.ci_bedrock_runtime_svc_cred_all_models`, Opus 5.5 through the filtered service, and
-`anthropic.claude-opus-5-5` through `main.ucode.ci_bedrock_mantle_svc_cred_claude`. Mantle serves
-Claude only in us-east-1, so that service is the one us-east-1 exception. The Codex journeys pin `us.openai.gpt-5.6-terra` through the allow-all runtime service and
+`main.ucode.ci_bedrock_runtime_svc_cred_all_models`, and Opus 5.5 through the filtered service.
+`test_ug_configure_claude_bedrock_mantle_mps` selects
+`main.ucode.ci_bedrock_mantle_svc_cred_claude` through the real configure picker, verifies the
+saved provider and Claude provider header, then launches the real TUI without a provider override
+on `anthropic.claude-opus-5-5`. It requires a completed file-reading task, the selected response
+model, normal exit, and disabled smart routing. This replaces the Mantle headless journey and
+runs in the full Claude lanes on Linux and Windows. The Mantle service uses us-east-1.
+Override its inputs with `--claude-bedrock-mantle-provider` and `--claude-bedrock-mantle-model`.
+The Codex journeys remain headless and pin `us.openai.gpt-5.6-terra` through the allow-all runtime service and
 `openai.gpt-5.6-terra` through `main.ucode.ci_bedrock_mantle_svc_cred_gpt` (us-west-2).
 
 This suite runs the **installed product** through subprocesses, against the same
