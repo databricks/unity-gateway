@@ -336,12 +336,23 @@ def _print_managed_summary(
         lines.append(f"[bold]Agent:[/bold] [green]{TOOL_SPECS[tool]['display']}[/green]")
     enabled = [t for t in (managed.get("enabled_agents") or {}) if t in TOOL_SPECS]
     failed: list[str] = []
+    self_managed: list[str] = []
     if configured_tools is not None:
+        self_managed = [
+            tool
+            for tool in configured_tools
+            if tool in TOOL_SPECS and tool not in enabled and is_self_managed(state, tool)
+        ]
         failed = [t for t in enabled if t not in configured_tools]
         enabled = [t for t in enabled if t in configured_tools]
     if enabled:
         lines.append(
             f"[bold]Coding Agents:[/bold] {', '.join(TOOL_SPECS[t]['display'] for t in enabled)}"
+        )
+    if self_managed:
+        lines.append(
+            "[bold]Self-managed agents:[/bold] "
+            + ", ".join(TOOL_SPECS[tool]["display"] for tool in self_managed)
         )
     if failed:
         lines.append(
@@ -1433,6 +1444,11 @@ def _configure_workspace_command(
                         configure_claude_desktop(configured, parent_schema=parent_schema)
                 else:
                     failed_tools.append(tool_name)
+            elif tool_name in selected_self_managed:
+                print_warning(
+                    f"Skipping self-managed {TOOL_SPECS[tool_name]['display']}: unavailable on "
+                    "this workspace. Run `ug status` to inspect model availability."
+                )
         if not configured_tools:
             if selected_tools is not None:
                 raise RuntimeError(

@@ -4,12 +4,16 @@ Managed-config selection cases in `tests/test_cli.py` check default all-enabled 
 explicit enabled subsets, existing self-managed opt-ins without admin model/provider overrides,
 actionable disabled-request warnings, and rejection before installation when no requested agent
 is allowed. The admin summary excludes self-managed opt-ins from its enabled-agent list.
+Successful self-managed agents have a separate summary line.
 Error coverage includes every disabled request and unavailable self-managed selections.
+Mixed available/unavailable selections configure the available agents and warn about skipped
+self-managed agents.
 Saved self-managed model locations bypass global availability checks, with provider precedence
 preserved; admin model sources retain their existing precedence.
 `tests/integration/test_ug_configure_selected_managed_agents.py` uses the checked-in
 `selected_managed_agents` admin fixture enabling Claude/Codex/Pi to configure only Claude,
-check that Codex's generated config and Pi's binary/files remain absent, and complete a real
+check that Codex's user config and Pi's binary/files remain absent, preserve a snapshot of
+Codex's OS-managed config, and complete a real
 Claude TUI file-reading task. Mixed managed/self-managed setup has component coverage only.
 No remote workspace policy is changed.
 The fixture publishes no MCPs or skills. Agent selection limits installation/direct setup;

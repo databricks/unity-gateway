@@ -5620,26 +5620,26 @@ class TestConfigureAgentsSelection:
         assert picked_for == ["claude"]
 
     @pytest.mark.parametrize(
-        ("selected", "expected", "excluded", "self_managed"),
+        ("selected", "expected", "excluded", "self_managed", "unavailable"),
         [
-            (None, ["claude", "codex", "pi"], None, []),
-            (["claude"], ["claude"], None, []),
-            (["codex", "claude"], ["claude", "codex"], None, []),
-            (["claude", "gemini"], ["claude"], "Gemini", []),
-            (["gemini"], ["gemini"], None, ["gemini"]),
-            (["claude", "gemini"], ["claude", "gemini"], None, ["gemini"]),
+            (None, ["claude", "codex", "pi"], None, [], None),
+            (["codex", "claude"], ["claude", "codex"], None, [], None),
+            (["claude", "gemini"], ["claude"], "gemini", [], None),
+            (["gemini"], ["gemini"], None, ["gemini"], None),
+            (["claude", "gemini"], ["claude", "gemini"], None, ["gemini"], None),
+            (["claude", "gemini"], ["claude"], None, ["gemini"], "gemini"),
         ],
         ids=[
             "all-enabled",
-            "claude-only",
             "requested-subset",
             "disabled-request-excluded",
             "self-managed",
             "mixed-management",
+            "unavailable-self-managed",
         ],
     )
     def test_managed_config_applies_selected_enabled_agents_without_picker(
-        self, monkeypatch, capsys, selected, expected, excluded, self_managed
+        self, monkeypatch, capsys, selected, expected, excluded, self_managed, unavailable
     ):
         import ucode.cli as cli_mod
 
@@ -5650,7 +5650,7 @@ class TestConfigureAgentsSelection:
             "refresh_managed_config",
             lambda s, **_k: ({"enabled_agents": {"claude": {}, "codex": {}, "pi": {}}}, False),
         )
-        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: True)
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: t != unavailable)
         installed: list[str] = []
         monkeypatch.setattr(
             cli_mod,
@@ -5692,12 +5692,15 @@ class TestConfigureAgentsSelection:
         output = " ".join(_strip_ansi(capsys.readouterr().out).split())
         if excluded:
             assert (
-                f"Skipping agent(s) not enabled by your workspace configuration: {excluded}"
-                in output
+                "Skipping agent(s) not enabled by your workspace configuration: "
+                f"{cli_mod.TOOL_SPECS[excluded]['display']}" in output
             )
-            assert "Run `ug agents add gemini` to use them self-managed." in output
+            assert f"Run `ug agents add {excluded}` to use them self-managed." in output
         else:
             assert "Skipping agent(s)" not in output
+        if unavailable:
+            assert f"Skipping self-managed {cli_mod.TOOL_SPECS[unavailable]['display']}" in output
+            assert "Run `ug status` to inspect model availability." in output
 
     @pytest.mark.parametrize("selected", [["gemini"], ["gemini", "opencode"]])
     def test_managed_config_rejects_selection_without_enabled_agents(self, monkeypatch, selected):
@@ -5755,6 +5758,20 @@ class TestConfigureAgentsSelection:
         # The rich panel wraps lines, so match on the labels and names rather than exact spacing.
         assert "Coding Agents:" in out and "Claude Code" in out
         assert "Failed to configure:" in out and "Codex" in out
+
+    def test_managed_summary_labels_self_managed_selection(self, capsys, monkeypatch):
+        monkeypatch.setattr(
+            cli_mod,
+            "load_state",
+            lambda: {"workspace": "https://w.com", "self_managed_agents": ["gemini"]},
+        )
+        monkeypatch.setattr(cli_mod, "records_for_scope", lambda scope: [])
+
+        cli_mod._summarize_managed_config({"enabled_agents": {}}, ["gemini"], [])
+
+        output = " ".join(_strip_ansi(capsys.readouterr().out).split())
+        assert "Self-managed agents: Gemini" in output
+        assert "Coding Agents:" not in output
 
     @pytest.mark.parametrize(
         ("model_config", "expected_provider", "expected_parent"),

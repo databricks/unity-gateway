@@ -1,19 +1,9 @@
 # Integration tests
 
-Managed-config selection cases in `tests/test_cli.py` check default all-enabled setup,
-explicit enabled subsets, existing self-managed opt-ins without admin model/provider overrides,
-actionable disabled-request warnings, and rejection before installation when no requested agent
-is allowed. The admin summary excludes self-managed opt-ins from its enabled-agent list.
-Error coverage includes every disabled request and unavailable self-managed selections.
-Saved self-managed model locations bypass global availability checks, with provider precedence
-preserved; admin model sources retain their existing precedence.
-`tests/integration/test_ug_configure_selected_managed_agents.py` uses the checked-in
-`selected_managed_agents` admin fixture enabling Claude/Codex/Pi to configure only Claude,
-check that Codex's generated config and Pi's binary/files remain absent, and complete a real
-Claude TUI file-reading task. Mixed managed/self-managed setup has component coverage only.
-No remote workspace policy is changed.
-The fixture publishes no MCPs or skills. Agent selection limits installation/direct setup;
-workspace-wide policy, MCP, and shared-skill reconciliation remains unchanged.
+`test_ug_configure_selected_managed_agents.py` checks selected Claude setup, an unchanged
+Codex OS-managed file, absent unrequested per-user configs/Pi, and a real TUI file task.
+The fixture declares no MCPs or skills. See the [coverage overview](../README.md) for component
+cases, source precedence, and the scope of shared policy/MCP/skill reconciliation.
 
 The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
 service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
