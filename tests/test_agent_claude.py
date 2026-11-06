@@ -8,6 +8,7 @@ import os
 import shlex
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, Mock
@@ -563,6 +564,19 @@ class TestRenderOverlay:
             "Databricks-Model-Provider-Service: main.bob.bedrock-svc"
             in env["ANTHROPIC_CUSTOM_HEADERS"]
         )
+
+    @pytest.mark.parametrize("explicit_model", [None, "backup-coding"])
+    def test_custom_provider_default_preserves_explicit_model(self, explicit_model):
+        overlay, _ = claude.render_overlay(
+            WS,
+            None,
+            provider="main.default.custom",
+            provider_models={"default": "team-coding"},
+            route_root_model=explicit_model,
+        )
+
+        assert overlay["env"]["ANTHROPIC_MODEL"] == (explicit_model or "team-coding")
+        assert not any(key.startswith("ANTHROPIC_DEFAULT_") for key in overlay["env"])
 
     def test_non_relayed_provider_pins_tier_via_anthropic_model(self):
         # A non-relayed api-key Anthropic MPS launched on a specific tier: the tier
@@ -2052,7 +2066,18 @@ class TestWriteToolConfigManagedSettings:
             assert written["companyPolicy"] == "keep"
         assert (["modelPicker"] in updated["managed_configs"]["claude"]["keys"]) is with_catalog
 
-    def test_managed_file_keeps_provider_model_pins(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("models", "env_key", "expected"),
+        [
+            (
+                {"opus": "us.anthropic.claude-opus-4-6"},
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "us.anthropic.claude-opus-4-6",
+            ),
+            ({"default": "team-coding"}, "ANTHROPIC_MODEL", "team-coding"),
+        ],
+    )
+    def test_managed_file_keeps_provider_model_pins(self, monkeypatch, models, env_key, expected):
         private_writes: list = []
         managed_writes: list = []
         self._patch(monkeypatch, private_writes, managed_writes)
@@ -2062,11 +2087,11 @@ class TestWriteToolConfigManagedSettings:
             state,
             None,
             provider="main.default.bedrock",
-            provider_models={"opus": "us.anthropic.claude-opus-4-6"},
+            provider_models=models,
         )
 
         env = json.loads(managed_writes[0][1])["env"]
-        assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "us.anthropic.claude-opus-4-6"
+        assert env[env_key] == expected
 
     def test_managed_file_prunes_static_picker_when_switching_to_provider(self, monkeypatch):
         private_writes: list = []
@@ -4964,15 +4989,141 @@ class TestEnsureHooksModulesGate:
         claude.ensure_hooks_modules_gate()
 
         assert path.read_text() == original
+        assert not path.with_name(path.name + claude.CLAUDE_CONFIG_LOCK_SUFFIX).exists()
 
-    def test_unparseable_file_is_not_clobbered(self, tmp_path, monkeypatch):
+    def test_already_enabled_gate_does_not_wait_for_held_lock(self, tmp_path, monkeypatch):
+        from ucode.os_compatibility.file_lock_cross_os import (
+            acquire_exclusive_file_lock,
+            release_file_lock,
+        )
+
         path = tmp_path / ".claude.json"
-        path.write_text("{ not json")
+        original = json.dumps({"cachedGrowthBookFeatures": {"tengu_plugin_hooks_modules": True}})
+        path.write_text(original)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+        # An accidental lock attempt fails immediately, so the regression has no speed threshold.
+        monkeypatch.setattr(claude, "CLAUDE_CONFIG_LOCK_TIMEOUT_SECONDS", 0)
+        acquire = Mock(wraps=acquire_exclusive_file_lock)
+        monkeypatch.setattr(claude, "acquire_exclusive_file_lock", acquire)
+
+        with path.with_name(path.name + claude.CLAUDE_CONFIG_LOCK_SUFFIX).open("a+b") as held:
+            acquire_exclusive_file_lock(held, timeout=0)
+            try:
+                claude.ensure_hooks_modules_gate()
+                acquire.assert_not_called()
+            finally:
+                release_file_lock(held)
+
+        assert path.read_text() == original
+
+    def test_enabled_gate_still_removes_stale_top_level_copy(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "tengu_plugin_hooks_modules": False,
+                    "cachedGrowthBookFeatures": {"tengu_plugin_hooks_modules": True},
+                    "numStartups": 7,
+                }
+            )
+        )
         monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         claude.ensure_hooks_modules_gate()
 
-        assert path.read_text() == "{ not json"
+        assert json.loads(path.read_text()) == {
+            "cachedGrowthBookFeatures": {"tengu_plugin_hooks_modules": True},
+            "numStartups": 7,
+        }
+        assert path.with_name(path.name + claude.CLAUDE_CONFIG_LOCK_SUFFIX).exists()
+
+    @pytest.mark.parametrize("enabled_by_writer", [False, True])
+    def test_rechecks_config_after_waiting_for_writer(
+        self, tmp_path, monkeypatch, enabled_by_writer
+    ):
+        from ucode.os_compatibility.file_lock_cross_os import (
+            acquire_exclusive_file_lock,
+            release_file_lock,
+        )
+
+        path = tmp_path / ".claude.json"
+        path.write_text('{"cachedGrowthBookFeatures": {"tengu_plugin_hooks_modules": false}}')
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+        waiting = threading.Event()
+
+        def acquire(lock_file, *, timeout):
+            waiting.set()
+            acquire_exclusive_file_lock(lock_file, timeout=timeout)
+
+        monkeypatch.setattr(claude, "acquire_exclusive_file_lock", acquire)
+        newer = {
+            "cachedGrowthBookFeatures": {
+                "tengu_plugin_hooks_modules": enabled_by_writer,
+                "another_feature": "preserved",
+            },
+            "numStartups": 8,
+            "mcpServers": {"other": {"type": "http", "url": "https://example.com"}},
+        }
+        original = json.dumps(newer)
+        worker = threading.Thread(target=claude.ensure_hooks_modules_gate, daemon=True)
+        with path.with_name(path.name + claude.CLAUDE_CONFIG_LOCK_SUFFIX).open("a+b") as held:
+            acquire_exclusive_file_lock(held, timeout=0)
+            worker.start()
+            try:
+                assert waiting.wait(5), "gate updater did not reach the held lock"
+                path.write_text(original)
+            finally:
+                release_file_lock(held)
+                worker.join(timeout=10)
+        assert not worker.is_alive()
+        newer["cachedGrowthBookFeatures"]["tengu_plugin_hooks_modules"] = True
+        assert json.loads(path.read_text()) == newer
+        if enabled_by_writer:
+            assert path.read_text() == original
+
+    @pytest.mark.parametrize("already_enabled", [False, True])
+    def test_dry_run_never_locks_or_changes_file(self, tmp_path, monkeypatch, already_enabled):
+        from ucode import config_io
+
+        path = tmp_path / ".claude.json"
+        original = json.dumps(
+            {"cachedGrowthBookFeatures": {"tengu_plugin_hooks_modules": already_enabled}}
+        )
+        path.write_text(original)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+        monkeypatch.setattr(config_io, "_dry_run", True)
+        preview = Mock(wraps=claude.write_json_file)
+        monkeypatch.setattr(claude, "write_json_file", preview)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert path.read_text() == original
+        assert not path.with_name(path.name + claude.CLAUDE_CONFIG_LOCK_SUFFIX).exists()
+        if already_enabled:
+            preview.assert_not_called()
+        else:
+            preview.assert_called_once_with(
+                path, {"cachedGrowthBookFeatures": {"tengu_plugin_hooks_modules": True}}
+            )
+
+    @pytest.mark.parametrize("content", [b"{ not json", b"[]", b"null", b"\xff"])
+    def test_unparseable_file_is_not_clobbered(self, tmp_path, monkeypatch, content):
+        path = tmp_path / ".claude.json"
+        path.write_bytes(content)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert path.read_bytes() == content
+
+    def test_unreadable_file_is_not_clobbered(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.mkdir()
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert path.is_dir()
 
     @pytest.mark.parametrize(
         ("target", "error"),

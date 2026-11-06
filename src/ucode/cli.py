@@ -2222,8 +2222,8 @@ def _sync_claude_cowork_plugin(
 
     mcp_servers = [*user_mcp_servers, *managed_mcp_servers]
     configure_claude_code_plugin(mcp_servers)
-    if sync_cowork and "claude" in configured_tools:
-        configure_claude_cowork(current_state, mcp_servers)
+    if "claude" in configured_tools:
+        configure_claude_cowork(current_state, mcp_servers, sync_plugin=sync_cowork)
 
 
 def _configure_optional_setup(state: dict, tools: list[str]) -> None:
@@ -3913,7 +3913,7 @@ def _launch_tool(
             )
         # Validate the provider service before launching — it must exist, be a
         # provider type this tool can route to (e.g. claude can't use an OpenAI
-        # or Foundry service), and, for Claude on Bedrock, expose Claude models to pin.
+        # service), and expose compatible targets for multi-vendor providers.
         # Gemini is exempt: it validates the service and resolves its target in a single
         # lookup via resolve_gemini_provider_model (below), and uses no family model map.
         provider_models = None
