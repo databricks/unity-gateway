@@ -1882,6 +1882,8 @@ def status() -> int:
                     "enabled" if effective_state.get(f"{tool}_otel_tracing") else "disabled",
                 )
             )
+        if tool == AGENT_COPILOT and effective_state.get("copilot_vscode_integration") is False:
+            rows.append(("VS Code", "off (workspace-managed)"))
         if tool in MCP_CLIENTS:
             # High-level overview: just a count per agent. `ug mcp list` (see the note below) shows
             # the per-server detail and live connection status, so status stays scannable. The shared

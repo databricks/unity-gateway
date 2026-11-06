@@ -77,6 +77,13 @@ def _full_manifest() -> dict:
                 "otel_tracing_enabled": False,
                 "model_config": {"default_model": "system.ai.gpt-5-6"},
             },
+            "copilot": {
+                "vscode_integration_enabled": False,
+                "model_config": {
+                    "default_model": "system.ai.claude-opus-4-8",
+                    "model_services": ["system.ai.claude-opus-4-8"],
+                },
+            },
             "opencode": {
                 "model_config": {
                     "default_model": "system.ai.claude-opus-4-8",

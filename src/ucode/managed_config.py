@@ -169,6 +169,7 @@ class AgentConfig:
     models: AgentModels | None = None
     smart_routing_enabled: bool = False
     otel_tracing_enabled: bool | None = None
+    vscode_integration_enabled: bool | None = None
     # Harness-native settings delivered verbatim into the agent's managed settings file.
     settings: dict | None = None
 
@@ -185,7 +186,8 @@ class AgentConfig:
             http_headers=headers or None,
             models=agent_models,
             smart_routing_enabled=smart_routing.get("enabled") is True,
-            otel_tracing_enabled=_tracing_enabled(config_dict.get("tracing")),
+            otel_tracing_enabled=_enabled_flag(config_dict.get("tracing")),
+            vscode_integration_enabled=_enabled_flag(config_dict.get("vscode_integration")),
             settings=_as_dict(config_dict.get("agent_native_settings")) or None,
         )
 
@@ -201,6 +203,8 @@ class AgentConfig:
             result["model_config"] = model_config
         if self.otel_tracing_enabled is not None:
             result["otel_tracing_enabled"] = self.otel_tracing_enabled
+        if self.vscode_integration_enabled is not None:
+            result["vscode_integration_enabled"] = self.vscode_integration_enabled
         if self.settings:
             result["agent_native_settings"] = self.settings
         return result
@@ -437,9 +441,10 @@ def _str_list(value: object) -> list[str]:
     return out
 
 
-def _tracing_enabled(tracing: object) -> bool | None:
-    """Return ``TracingConfig.enabled`` as a tri-state value."""
-    value = _as_dict(tracing).get("enabled")
+def _enabled_flag(message: object) -> bool | None:
+    """Return the ``enabled`` of a ``{enabled: bool}`` message such as ``TracingConfig`` as a
+    tri-state value."""
+    value = _as_dict(message).get("enabled")
     return value if isinstance(value, bool) else None
 
 

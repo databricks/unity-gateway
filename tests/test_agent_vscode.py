@@ -715,6 +715,40 @@ def test_no_vscode_and_a_dry_run_leave_vscode_alone(monkeypatch, capsys, skip):
     assert ("VS Code isn't changed" in capsys.readouterr().out) == (skip == "dry_run")
 
 
+MANAGED_OFF = {**STATE, "copilot_vscode_integration": False}
+
+
+@pytest.mark.parametrize("no_vscode", [False, True])
+def test_managed_vscode_off_removes_an_earlier_setup(code, capsys, no_vscode):
+    vscode.configure(STATE)
+    agents_mod.request_vscode_with_copilot(not no_vscode)
+
+    agents_mod.configure_vscode(MANAGED_OFF, provider=None, parent_schema=None)
+
+    assert code.calls[-1] == ("--uninstall-extension", vscode.EXTENSION_ID)
+    assert not code.folder.exists()
+    assert "the VS Code extension was removed" in _printed(capsys)
+
+
+def test_managed_vscode_off_skips_vscode_without_an_earlier_setup(code, capsys):
+    agents_mod.configure_vscode(MANAGED_OFF, provider=None, parent_schema=None)
+
+    assert code.calls == []
+    assert "turns off GitHub Copilot in VS Code, so VS Code was skipped" in _printed(capsys)
+
+
+def test_managed_vscode_off_changes_nothing_in_a_dry_run(code, monkeypatch, capsys):
+    vscode.configure(STATE)
+    calls = len(code.calls)
+    monkeypatch.setattr(config_io, "_dry_run", True)
+
+    agents_mod.configure_vscode(MANAGED_OFF, provider=None, parent_schema=None)
+
+    assert len(code.calls) == calls
+    assert code.folder.exists()
+    assert "VS Code isn't changed" in capsys.readouterr().out
+
+
 def test_configure_passes_copilot_its_model_source_and_no_vscode(monkeypatch):
     calls: list[dict] = []
     monkeypatch.setattr("ucode.cli.install_databricks_cli", lambda: None)
@@ -819,6 +853,18 @@ def test_configure_keeps_copilots_source_when_the_new_one_fails(monkeypatch, sou
     assert seen == []
     assert state["provider_services"] == {"copilot": "old.default.mps"}
     assert "model_locations" not in state
+
+
+def test_managed_configure_hands_copilot_the_vscode_switch(monkeypatch):
+    seen = _stub_workspace_setup(
+        monkeypatch,
+        dict(STATE),
+        {"enabled_agents": {"copilot": {"vscode_integration_enabled": False}}},
+    )
+
+    cli_mod.configure_workspace_command(selected_tools=None, workspaces=[(WS, None)])
+
+    assert seen[0]["copilot_vscode_integration"] is False
 
 
 @pytest.mark.parametrize(
