@@ -501,7 +501,9 @@ def _decimal(value: object) -> float | None:
         return None
 
 
-def get_model_recommendation(workspace: str, token: str) -> tuple[dict | None, str | None]:
+def get_model_recommendation(
+    workspace: str, token: str, *, default_headers: dict[str, str] | None = None
+) -> tuple[dict | None, str | None]:
     """Fetch the agent and model the caller's budget tier allows, normalized for the launch path.
 
     Returns ``(recommendation, reason)`` where the recommendation is ``{"agent", "model",
@@ -509,7 +511,8 @@ def get_model_recommendation(workspace: str, token: str) -> tuple[dict | None, s
     normalized independently: an agent this build doesn't recognize is dropped rather than failing
     the read, and a model can arrive without an agent.
     """
-    payload, reason = fetch_model_recommendation(workspace, token)
+    kwargs = {"default_headers": default_headers} if default_headers is not None else {}
+    payload, reason = fetch_model_recommendation(workspace, token, **kwargs)
     if reason is not None:
         return None, reason
     agent = AGENT_ENUM_TO_TOOL.get(_str(payload.get("recommended_agent")) or "")
