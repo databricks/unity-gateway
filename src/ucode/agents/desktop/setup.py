@@ -149,11 +149,12 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
             "Add a Claude model to your model source and run ug configure again."
         )
 
-    display_names = {
-        model_id: catalog.model_id_to_display_name.get(model_id)
-        or model_picker_label(claude_model_name(model_id))
-        for model_id in model_ids
-    }
+    display_names = {}
+    for model_id in model_ids:
+        label = catalog.model_id_to_display_name.get(model_id)
+        if not label or label == model_id:
+            label = model_picker_label(claude_model_name(model_id))
+        display_names[model_id] = label
     label_counts = Counter(display_names.values())
     display_names = {
         model_id: model_id if label_counts[label] > 1 else label

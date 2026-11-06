@@ -354,7 +354,7 @@ When the catalog provides a display name, UG writes it as
 [`labelOverride`](https://claude.com/docs/third-party/claude-desktop/configuration#models).
 For example, `system.ai.claude-sonnet-5` can appear as `Claude Sonnet 5` in the
 picker. The `name` field remains the exact model ID sent to the gateway. Missing
-or empty display names use UG's model-name formatter. For example,
+or empty display names, or display names equal to the model ID, use UG's model-name formatter. For example,
 `us.anthropic.claude-sonnet-4-5-20250929-v1:0` becomes `Claude Sonnet 4.5`.
 Distinct model IDs with the same label show their full IDs to keep routes distinguishable.
 For admin static lists, UG fetches the catalog only to attach matching display names;

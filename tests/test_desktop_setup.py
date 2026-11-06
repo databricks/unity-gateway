@@ -604,13 +604,16 @@ def test_configure_refreshes_model_labels_from_discovery(desktop, monkeypatch):
         ("main.models.claude-sonnet-5-desktop", "Claude Sonnet 5 Desktop"),
     ],
 )
-def test_provider_models_get_readable_labels_when_discovery_omits_names(
-    desktop, monkeypatch, model_id, label
+@pytest.mark.parametrize("echoed_id", [False, True])
+def test_provider_models_get_readable_labels_when_discovery_names_are_missing_or_ids(
+    desktop, monkeypatch, model_id, label, echoed_id
 ):
     monkeypatch.setattr(
         desktop_setup,
         "list_anthropic_model_catalog",
-        lambda *args, **kwargs: AnthropicModelCatalog([model_id], {}),
+        lambda *args, **kwargs: AnthropicModelCatalog(
+            [model_id], {model_id: model_id} if echoed_id else {}
+        ),
     )
 
     desktop_setup.configure_claude_desktop(
