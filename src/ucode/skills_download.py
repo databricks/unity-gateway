@@ -6,8 +6,9 @@ import os
 import shutil
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -57,6 +58,7 @@ SKILL_BASE_DIR_NAMES = (".claude/skills", ".agents/skills")
 
 # Parallel skill fetches per schema; writes stay sequential (they prompt).
 _MAX_FETCH_WORKERS = 8
+type _BundleResult = tuple[dict[str, bytes] | None, str | None]
 
 # The launch-time refresh runs at most once per interval and gives up after the budget, so a slow
 # Unity Catalog can't hold up a launch for long.
@@ -190,7 +192,13 @@ def _skill_installs(
 
 
 def _fetch_bundles(
-    workspace: str, token: str, refs: list[SkillRef], *, label: str, deadline: float | None = None
+    workspace: str,
+    token: str,
+    refs: list[SkillRef],
+    *,
+    label: str,
+    deadline: float | None = None,
+    prefetch: _RefreshBundlePrefetch | None = None,
 ) -> dict[str, tuple[dict[str, bytes] | None, str | None]]:
     """Fetch every skill's bundle concurrently, keyed by FQN.
 
@@ -203,20 +211,35 @@ def _fetch_bundles(
         return {}
     results: dict[str, tuple[dict[str, bytes] | None, str | None]] = {}
     timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
-    pool = ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(refs)))
-    futures = {
-        pool.submit(
-            fetch_skill_bundle, workspace, token, ref.catalog, ref.schema, ref.securable_name
-        ): ref.fqn
-        for ref in refs
-    }
+
+    pool = None
+    if prefetch is not None:
+        # Normal reads share the prefetch pool: the two phases never exceed one fetch batch.
+        futures = {prefetch.submit(ref): ref.fqn for ref in refs}
+    else:
+        pool = ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(refs)))
+        futures = {
+            pool.submit(
+                fetch_skill_bundle, workspace, token, ref.catalog, ref.schema, ref.securable_name
+            ): ref.fqn
+            for ref in refs
+        }
     try:
         with progress_bar(label, len(refs)) as advance, suppress(TimeoutError):
             for future in as_completed(futures, timeout=timeout):
-                results[futures[future]] = future.result()
+                try:
+                    results[futures[future]] = future.result()
+                except TimeoutError:
+                    # A queued read may notice expiry before starting. Keep collecting other
+                    # already-completed results; only the iterator's timeout ends the whole batch.
+                    continue
                 advance()
     finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+        else:
+            for future in futures:
+                future.cancel()
     return results
 
 
@@ -252,13 +275,21 @@ def _fetch_bundles_and_write(
     *,
     label: str,
     deadline: float | None = None,
+    prefetch: _RefreshBundlePrefetch | None = None,
 ) -> list[SkillRef]:
     """Fetch each ref's bundle concurrently, write it into ``roots``, and return those that
     reached disk. A per-skill fetch failure or disk error warns and skips only that skill;
     one still fetching at ``deadline`` is skipped silently."""
     if not refs:
         return []
-    bundles = _fetch_bundles(workspace, token, refs, label=label, deadline=deadline)
+    bundles = _fetch_bundles(
+        workspace,
+        token,
+        refs,
+        label=label,
+        deadline=deadline,
+        prefetch=prefetch,
+    )
     written: list[SkillRef] = []
     for ref in refs:
         if ref.fqn not in bundles:
@@ -459,6 +490,60 @@ def reconcile_managed_skills(managed: dict) -> tuple[list[str], list[str]]:
 # --- Launch-time refresh ---------------------------------------------------
 
 
+class _RefreshBundlePrefetch:
+    """Read one bounded batch while metadata resolves; only the caller may write results.
+
+    Collision and rename checks still run after all metadata has been collected. A speculative
+    result never authorizes a write. At most eight prefetched bundles are retained without copying
+    their bytes, using the same worker pool as later ordinary reads. Bundle sizes, as in normal
+    fetching, are not capped; each retained result is released after its last possible destination.
+    """
+
+    def __init__(self, workspace: str, token: str, deadline: float) -> None:
+        self.workspace = workspace
+        self.token = token
+        self.deadline = deadline
+        self.futures: dict[str, Future[_BundleResult]] = {}
+        self._refs: dict[str, SkillRef] = {}
+        self._pool = ThreadPoolExecutor(max_workers=_MAX_FETCH_WORKERS)
+
+    def start(self, ref: SkillRef) -> None:
+        if (
+            ref.fqn in self.futures
+            or len(self.futures) >= _MAX_FETCH_WORKERS
+            or time.monotonic() >= self.deadline
+        ):
+            return
+        self._refs[ref.fqn] = ref
+        self.futures[ref.fqn] = self._pool.submit(self._fetch, ref)
+
+    def submit(self, ref: SkillRef) -> Future[_BundleResult]:
+        """Reuse a speculative read or start an ordinary read on the same worker pool."""
+        future = self.futures.get(ref.fqn)
+        # Separate installations can observe an upstream edit during the metadata sweep. Never
+        # label earlier prefetched bytes with the later ref's update_time or bundle name.
+        if future is not None and self._refs[ref.fqn] == ref:
+            return future
+        return self._pool.submit(self._fetch, ref)
+
+    def _fetch(self, ref: SkillRef) -> _BundleResult:
+        if time.monotonic() >= self.deadline:
+            raise TimeoutError
+        return fetch_skill_bundle(
+            self.workspace, self.token, ref.catalog, ref.schema, ref.securable_name
+        )
+
+    def release(self, fqn: str) -> None:
+        self._refs.pop(fqn, None)
+        if (future := self.futures.pop(fqn, None)) is not None:
+            future.cancel()
+
+    def close(self) -> None:
+        self._pool.shutdown(wait=False, cancel_futures=True)
+        self.futures.clear()
+        self._refs.clear()
+
+
 def _eligible_launch_refresh_records(records: list[dict], workspace: str) -> list[dict]:
     """The current workspace's own (non-managed) downloads, which a launch may refresh.
 
@@ -477,7 +562,12 @@ def _eligible_launch_refresh_records(records: list[dict], workspace: str) -> lis
 
 
 def _refs_needing_refresh(
-    workspace: str, token: str, records: list[dict], deadline: float
+    workspace: str,
+    token: str,
+    records: list[dict],
+    deadline: float,
+    *,
+    on_stale: Callable[[SkillRef], None] | None = None,
 ) -> list[tuple[dict, SkillRef]]:
     """Pair each record to re-download with its current skill: one whose UC source is newer than
     its download, or one whose on-disk copy is only partly present and needs restoring to mirror UC.
@@ -506,6 +596,8 @@ def _refs_needing_refresh(
                 is_newer = stored is None or (current is not None and current > stored)
                 if is_newer or _record_dirs_missing(record):
                     pairs.append((record, ref))
+                    if on_stale is not None:
+                        on_stale(ref)
         except TimeoutError:
             pass  # out of budget: act on whatever resolved in time
     finally:
@@ -537,7 +629,12 @@ def _reject_renames_onto_existing_skills(
 
 
 def _update_stale_skills(
-    workspace: str, token: str, pairs: list[tuple[dict, SkillRef]], deadline: float
+    workspace: str,
+    token: str,
+    pairs: list[tuple[dict, SkillRef]],
+    deadline: float,
+    *,
+    prefetch: _RefreshBundlePrefetch | None = None,
 ) -> int:
     """Re-download each stale skill into its own base and refresh its manifest record.
 
@@ -553,6 +650,7 @@ def _update_stale_skills(
         pairs_by_base.setdefault(os.path.normpath(record["base"]), []).append((record, ref))
 
     updated = 0
+    remaining_installs = Counter(ref.fqn for _, ref in pairs)
     for base, base_pairs in pairs_by_base.items():
         if time.monotonic() >= deadline:
             break
@@ -562,10 +660,21 @@ def _update_stale_skills(
             _reject_renames_onto_existing_skills(base_pairs, roots)
         )
         written = _fetch_bundles_and_write(
-            workspace, token, refs, roots, label="Updating skills", deadline=deadline
+            workspace,
+            token,
+            refs,
+            roots,
+            label="Updating skills",
+            deadline=deadline,
+            prefetch=prefetch,
         )
         record_downloads(_skill_installs(written, roots, path, workspace))
         updated += len(written)
+        if prefetch is not None:
+            for _, ref in base_pairs:
+                remaining_installs[ref.fqn] -= 1
+                if remaining_installs[ref.fqn] == 0:
+                    prefetch.release(ref.fqn)
     return updated
 
 
@@ -596,8 +705,14 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
             print_note("Checking Unity Catalog for downloaded skill updates...")
             token = get_databricks_token(workspace, state.get("profile"))
             deadline = time.monotonic() + SKILL_UPDATE_BUDGET_SECONDS
-            pairs = _refs_needing_refresh(workspace, token, present, deadline)
-            updated = _update_stale_skills(workspace, token, pairs, deadline)
+            prefetch = _RefreshBundlePrefetch(workspace, token, deadline)
+            try:
+                pairs = _refs_needing_refresh(
+                    workspace, token, present, deadline, on_stale=prefetch.start
+                )
+                updated = _update_stale_skills(workspace, token, pairs, deadline, prefetch=prefetch)
+            finally:
+                prefetch.close()
             if updated:
                 print_success(f"Updated {updated} downloaded skill(s) from Unity Catalog.")
     except Exception as exc:  # noqa: BLE001 - a skill refresh must never block a launch

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import Future
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -1363,7 +1364,246 @@ class TestRefsNeedingRefresh:
         assert time.monotonic() - start < 1.0
 
 
+class TestRefreshBundlePrefetch:
+    def test_expired_queued_read_does_not_drop_an_already_completed_bundle(self, monkeypatch):
+        ready = Future()
+        ready.set_result(({"SKILL.md": b"fresh"}, None))
+        expired = Future()
+        expired.set_exception(TimeoutError())
+        prefetch = sd._RefreshBundlePrefetch(WS, "token", time.monotonic() + 30)
+        monkeypatch.setattr(
+            prefetch, "submit", lambda skill: ready if skill.securable_name == "ready" else expired
+        )
+        # Completed futures are unordered: force the expired one first to cover that valid order.
+        monkeypatch.setattr(sd, "as_completed", lambda futures, timeout: iter([expired, ready]))
+        try:
+            assert sd._fetch_bundles(
+                WS, "token", [ref("ready"), ref("expired")], label="test", prefetch=prefetch
+            ) == {ref("ready").fqn: ({"SKILL.md": b"fresh"}, None)}
+        finally:
+            prefetch.close()
+
+    def test_prefetch_and_ordinary_reads_share_the_worker_limit(self, monkeypatch):
+        monkeypatch.setattr(sd, "_MAX_FETCH_WORKERS", 2)
+        release = threading.Event()
+        prefetched_started = threading.Barrier(3, timeout=5)
+        ordinary_submitted = threading.Event()
+        ordinary_started = threading.Event()
+        results = []
+
+        def fetch(*args):
+            if args[-1] in {"first", "second"}:
+                prefetched_started.wait()
+                assert release.wait(5)
+            else:
+                ordinary_started.set()
+            return {"SKILL.md": b"content"}, None
+
+        monkeypatch.setattr(sd, "fetch_skill_bundle", fetch)
+        prefetch = sd._RefreshBundlePrefetch(WS, "token", time.monotonic() + 30)
+        submit = prefetch.submit
+
+        def observed_submit(skill):
+            future = submit(skill)
+            ordinary_submitted.set()
+            return future
+
+        monkeypatch.setattr(prefetch, "submit", observed_submit)
+        reader = threading.Thread(
+            target=lambda: results.append(
+                sd._fetch_bundles(WS, "token", [ref("third")], label="test", prefetch=prefetch)
+            )
+        )
+        try:
+            prefetch.start(ref("first"))
+            prefetch.start(ref("second"))
+            prefetched_started.wait()
+            reader.start()
+            assert ordinary_submitted.wait(5)
+            assert not ordinary_started.is_set(), "ordinary reads started a second download pool"
+        finally:
+            release.set()
+            if reader.ident is not None:
+                reader.join(5)
+            prefetch.close()
+        assert not reader.is_alive()
+        assert ordinary_started.is_set()
+        assert results == [{ref("third").fqn: ({"SKILL.md": b"content"}, None)}]
+
+    def test_close_cancels_queued_reads_and_drops_completed_results(self, monkeypatch):
+        monkeypatch.setattr(sd, "_MAX_FETCH_WORKERS", 1)
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+
+        def fetch(*args):
+            calls.append(args[-1])
+            started.set()
+            assert release.wait(5)
+            return {"SKILL.md": b"content"}, None
+
+        monkeypatch.setattr(sd, "fetch_skill_bundle", fetch)
+        prefetch = sd._RefreshBundlePrefetch(WS, "token", time.monotonic() + 30)
+        running = None
+        try:
+            prefetch.start(ref("first"))
+            running = prefetch.futures[ref("first").fqn]
+            assert started.wait(5)
+            queued = prefetch.submit(ref("second"))
+            prefetch.close()
+            assert queued.cancelled()
+            assert prefetch.futures == {}
+            assert calls == ["first"]
+        finally:
+            release.set()
+            prefetch.close()
+            if running is not None:
+                running.result(timeout=5)
+
+    def test_prefetch_is_one_bounded_batch_deduplicated_by_fqn(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            sd,
+            "fetch_skill_bundle",
+            lambda *args: calls.append(args[-1]) or ({"SKILL.md": b"content"}, None),
+        )
+        prefetch = sd._RefreshBundlePrefetch(WS, "token", time.monotonic() + 30)
+        try:
+            for index in range(sd._MAX_FETCH_WORKERS + 5):
+                prefetch.start(ref(str(index)))
+                prefetch.start(ref(str(index)))
+            for future in prefetch.futures.values():
+                assert future.result(timeout=2) == ({"SKILL.md": b"content"}, None)
+            assert len(prefetch.futures) == sd._MAX_FETCH_WORKERS
+            assert sorted(calls) == [str(index) for index in range(sd._MAX_FETCH_WORKERS)]
+        finally:
+            prefetch.close()
+
+    def test_bundle_bytes_are_reused_without_copying_or_refetching(self, monkeypatch):
+        calls = []
+        files = {"SKILL.md": b"content" * 1024}
+        monkeypatch.setattr(
+            sd,
+            "fetch_skill_bundle",
+            lambda *args: calls.append(args[-1]) or (files, None),
+        )
+        prefetch = sd._RefreshBundlePrefetch(WS, "token", time.monotonic() + 30)
+        try:
+            prefetch.start(ref("first"))
+            assert prefetch.futures[ref("first").fqn].result(timeout=2)[0] is files
+            prefetch.start(ref("second"))
+            bundles = sd._fetch_bundles(
+                WS,
+                "token",
+                [ref("first"), ref("second")],
+                label="test",
+                deadline=prefetch.deadline,
+                prefetch=prefetch,
+            )
+            assert bundles[ref("first").fqn][0] is files
+            assert bundles[ref("second").fqn][0] is files
+            assert calls == ["first", "second"]
+        finally:
+            prefetch.close()
+
+    def test_expired_budget_starts_no_prefetch(self, monkeypatch):
+        monkeypatch.setattr(sd, "fetch_skill_bundle", lambda *args: pytest.fail("expired read"))
+        prefetch = sd._RefreshBundlePrefetch(WS, "token", time.monotonic() - 1)
+        try:
+            prefetch.start(ref("triage"))
+            assert prefetch.futures == {}
+        finally:
+            prefetch.close()
+
+
 class TestUpdateStaleSkills:
+    def test_later_metadata_version_does_not_reuse_earlier_prefetched_content(
+        self, tmp_path, monkeypatch
+    ):
+        first, second = tmp_path / "first", tmp_path / "second"
+        old = _skill("triage", "2026-01-01T00:00:00Z")
+        new = SkillRef(
+            old.catalog,
+            old.schema,
+            old.securable_name,
+            "renamed",
+            uc_update_time="2026-09-01T00:00:00Z",
+        )
+        for base in (first, second):
+            base.mkdir()
+            roots = skill_dir_roots(str(base))
+            write_skill(roots, old, {"SKILL.md": b"previous local copy"})
+            skills_state.record_downloads(sd._skill_installs([old], roots, str(base), WS))
+        contents = iter([b"old remote version", b"new remote version"])
+        monkeypatch.setattr(
+            sd, "fetch_skill_bundle", lambda *args: ({"SKILL.md": next(contents)}, None)
+        )
+        prefetch = sd._RefreshBundlePrefetch(WS, "token", time.monotonic() + 30)
+        try:
+            prefetch.start(old)
+            prefetch.futures[old.fqn].result(timeout=5)
+            assert (
+                sd._update_stale_skills(
+                    WS,
+                    "token",
+                    [
+                        ({"base": str(first), "bundle_name": old.bundle_name}, old),
+                        ({"base": str(second), "bundle_name": old.bundle_name}, new),
+                    ],
+                    prefetch.deadline,
+                    prefetch=prefetch,
+                )
+                == 2
+            )
+            for family in sd.SKILL_BASE_DIR_NAMES:
+                assert (first / family / "triage/SKILL.md").read_bytes() == b"old remote version"
+                assert (second / family / "renamed/SKILL.md").read_bytes() == b"new remote version"
+                assert not (second / family / "triage").exists()
+            by_base = {record["base"]: record for record in skills_state.list_downloaded()}
+            assert by_base[str(first)]["uc_update_time"] == old.uc_update_time
+            assert by_base[str(second)]["uc_update_time"] == new.uc_update_time
+            assert by_base[str(second)]["bundle_name"] == new.bundle_name
+        finally:
+            prefetch.close()
+
+    def test_prefetched_source_is_released_after_its_last_base(self, tmp_path, monkeypatch):
+        first, second = tmp_path / "first", tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+        skill = _skill("triage", "2026-09-01T00:00:00Z")
+        calls = []
+        monkeypatch.setattr(
+            sd,
+            "fetch_skill_bundle",
+            lambda *args: calls.append(args[-1]) or ({"SKILL.md": b"fresh"}, None),
+        )
+        prefetch = sd._RefreshBundlePrefetch(WS, "token", time.monotonic() + 30)
+        observed = []
+        real_write = sd.write_skill
+
+        def write(roots, ref, files):
+            observed.append(set(prefetch.futures))
+            real_write(roots, ref, files)
+
+        monkeypatch.setattr(sd, "write_skill", write)
+        try:
+            prefetch.start(skill)
+            updated = sd._update_stale_skills(
+                WS,
+                "token",
+                [({"base": str(base)}, skill) for base in (first, second)],
+                prefetch.deadline,
+                prefetch=prefetch,
+            )
+            assert updated == 2
+            assert calls == ["triage"]
+            assert observed == [{skill.fqn}, {skill.fqn}]
+            assert prefetch.futures == {}
+            for base in (first, second):
+                assert (base / ".claude/skills/triage/SKILL.md").read_bytes() == b"fresh"
+        finally:
+            prefetch.close()
+
     def test_overwrites_both_roots_and_refreshes_record(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
         monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: home))
@@ -1514,8 +1754,138 @@ def _record_download(home, monkeypatch, *, uc_update_time="2026-01-01T00:00:00Z"
 
 
 class TestRefreshOnLaunch:
+    def test_metadata_failure_never_writes_an_inflight_prefetch(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        _record_download(home, monkeypatch)
+        slow = _skill("slow", "2026-01-01T00:00:00Z")
+        roots = skill_dir_roots(None)
+        write_skill(roots, slow, {"SKILL.md": b"unchanged"})
+        skills_state.record_downloads(sd._skill_installs([slow], roots, None, WS))
+        monkeypatch.setattr(sd, "get_databricks_token", lambda *args: "token")
+        started, release, finished = (threading.Event() for _ in range(3))
+
+        def get(workspace, token, fqn):
+            if fqn == slow.fqn:
+                assert started.wait(5)
+                raise RuntimeError("metadata failed")
+            return _skill("triage", "2026-09-01T00:00:00Z")
+
+        def fetch(*args):
+            started.set()
+            try:
+                assert release.wait(5)
+                return {"SKILL.md": b"fresh"}, None
+            finally:
+                finished.set()
+
+        monkeypatch.setattr(sd, "get_skill", get)
+        monkeypatch.setattr(sd, "fetch_skill_bundle", fetch)
+        try:
+            sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+            assert started.is_set() and not finished.is_set()
+            assert (home / ".claude/skills/triage/SKILL.md").read_bytes() == b"old"
+        finally:
+            release.set()
+            assert finished.wait(5)
+        assert (home / ".claude/skills/triage/SKILL.md").read_bytes() == b"old"
+        assert skills_state.list_downloaded()[0]["uc_update_time"] == "2026-01-01T00:00:00Z"
+
     def test_interval_is_one_day(self):
         assert sd.SKILL_UPDATE_CHECK_INTERVAL == timedelta(hours=24)
+
+    def test_prefetch_overlaps_metadata_without_writing_before_validation(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "home"
+        _record_download(home, monkeypatch)
+        slow = _skill("slow", "2026-01-01T00:00:00Z")
+        roots = skill_dir_roots(None)
+        write_skill(roots, slow, {"SKILL.md": b"unchanged"})
+        skills_state.record_downloads(sd._skill_installs([slow], roots, None, WS))
+        monkeypatch.setattr(sd, "get_databricks_token", lambda *a: "token")
+        fetched = threading.Event()
+        metadata_finished = threading.Event()
+        caller = threading.current_thread()
+        real_write = sd.write_skill
+
+        def get(workspace, token, fqn):
+            if fqn == slow.fqn:
+                assert fetched.wait(2), "bundle fetch waited for every metadata read"
+                assert (home / ".claude/skills/triage/SKILL.md").read_bytes() == b"old"
+                metadata_finished.set()
+                return slow
+            return _skill("triage", "2026-09-01T00:00:00Z")
+
+        def fetch(*args):
+            assert args[-1] == "triage"
+            fetched.set()
+            return {"SKILL.md": b"fresh"}, None
+
+        def write(*args):
+            assert metadata_finished.is_set()
+            assert threading.current_thread() is caller
+            real_write(*args)
+
+        monkeypatch.setattr(sd, "get_skill", get)
+        monkeypatch.setattr(sd, "fetch_skill_bundle", fetch)
+        monkeypatch.setattr(sd, "write_skill", write)
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+        assert metadata_finished.is_set()
+        assert (home / ".claude/skills/triage/SKILL.md").read_bytes() == b"fresh"
+        assert (home / ".agents/skills/triage/SKILL.md").read_bytes() == b"fresh"
+        assert (home / ".claude/skills/slow/SKILL.md").read_bytes() == b"unchanged"
+
+    def test_unchanged_records_do_not_prefetch_bundles(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        _record_download(home, monkeypatch)
+        monkeypatch.setattr(sd, "get_databricks_token", lambda *args: "token")
+        monkeypatch.setattr(sd, "get_skill", lambda *args: _skill("triage", "2026-01-01T00:00:00Z"))
+        monkeypatch.setattr(sd, "fetch_skill_bundle", lambda *args: pytest.fail("unchanged bundle"))
+
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+        assert (home / ".claude/skills/triage/SKILL.md").read_bytes() == b"old"
+
+    def test_prefetched_bundle_does_not_override_a_rename_collision(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        _record_download(home, monkeypatch)
+        authored = home / ".claude/skills/authored/SKILL.md"
+        authored.parent.mkdir()
+        authored.write_bytes(b"user authored")
+        monkeypatch.setattr(sd, "get_databricks_token", lambda *args: "token")
+        monkeypatch.setattr(sd, "get_skill", lambda *args: ref("triage", "authored"))
+        # Missing recorded update_time requires one refresh even when UC omits its own timestamp.
+        records = skills_state.list_downloaded()
+        records[0].pop("uc_update_time")
+        monkeypatch.setattr(sd, "list_downloaded", lambda: records)
+        monkeypatch.setattr(sd, "fetch_skill_bundle", lambda *args: ({"SKILL.md": b"new"}, None))
+
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+        assert authored.read_bytes() == b"user authored"
+        assert (home / ".claude/skills/triage/SKILL.md").read_bytes() == b"old"
+        assert skills_state.list_downloaded()[0]["bundle_name"] == "triage"
+
+    def test_prefetch_failure_preserves_the_download_without_fetching_twice(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "home"
+        _record_download(home, monkeypatch)
+        monkeypatch.setattr(sd, "get_databricks_token", lambda *args: "token")
+        monkeypatch.setattr(sd, "get_skill", lambda *args: _skill("triage", "2026-09-01T00:00:00Z"))
+        calls = []
+        monkeypatch.setattr(
+            sd,
+            "fetch_skill_bundle",
+            lambda *args: calls.append(args[-1]) or (None, "HTTP 503"),
+        )
+
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+        assert calls == ["triage"]
+        assert (home / ".claude/skills/triage/SKILL.md").read_bytes() == b"old"
+        assert skills_state.list_downloaded()[0]["uc_update_time"] == "2026-01-01T00:00:00Z"
 
     def test_rate_limited_skips_network(self, monkeypatch):
         skills_state.set_last_update_check(datetime.now(UTC))
@@ -1570,8 +1940,8 @@ class TestRefreshOnLaunch:
         )
         monkeypatch.setattr(
             sd,
-            "_fetch_bundles",
-            lambda *a, **k: {"main.default.triage": ({"SKILL.md": b"fresh"}, None)},
+            "fetch_skill_bundle",
+            lambda *a, **k: ({"SKILL.md": b"fresh"}, None),
         )
 
         sd.refresh_downloaded_skills_on_launch({"workspace": WS})
@@ -1589,8 +1959,8 @@ class TestRefreshOnLaunch:
         )
         monkeypatch.setattr(
             sd,
-            "_fetch_bundles",
-            lambda *a, **k: {"main.default.triage": ({"SKILL.md": b"fresh"}, None)},
+            "fetch_skill_bundle",
+            lambda *a, **k: ({"SKILL.md": b"fresh"}, None),
         )
         messages: list[str] = []
         monkeypatch.setattr(sd, "print_success", messages.append)
