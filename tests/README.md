@@ -313,6 +313,14 @@ requested routed subagent. A separate Claude-only test covers the status band an
 automatic orchestrator delegation. Routing-disabled coverage is deferred until a separately
 preconfigured workspace is assigned.
 
+The `auth-token` and `otel-headers` helpers that agents run go from the entry point to
+`ucode.agent_helpers`. `test_startup_imports.py` runs both in a fresh interpreter with a supplied
+bearer: they print it without loading `ucode.cli` or the agent modules, and their `--help` output
+matches the full CLI's. `TestAuthTokenCommand`, `TestOtelHeadersCommand`, and the custom-OAuth
+command tests cover their behavior through the CLI registration. No live token mint is timed.
+
+Helper probes run with an empty PATH and stub only external profile discovery inside the child; saved workspace/profile/user scope and temporary PAT-file reading remain real. Both ug and ucode retain help prefixes, and preceding global options still delegate to the full CLI.
+
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.
 `test_startup_imports.py` guards the bare `--version` / `-V` fast path and deferred

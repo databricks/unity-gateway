@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import zipfile
@@ -107,6 +108,95 @@ def test_cli_import_defers_subcommand_specific_modules() -> None:
     _, loaded = _modules_loaded_after("import ucode.cli\nimport ucode.agents.claude", _LAZY_MODULES)
 
     assert loaded == []
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("auth-token", "helper-bearer"),
+        ("otel-headers", '{"Authorization": "Bearer helper-bearer"}'),
+    ],
+)
+@pytest.mark.parametrize("saved", [False, True], ids=["explicit-host", "saved-pat"])
+def test_agent_helper_entrypoint_skips_the_cli(tmp_path, command, expected, saved) -> None:
+    workspace = "https://ws.example"
+    environment = {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path), "PATH": ""}
+    arguments = ["--host", workspace]
+    if saved:
+        app_dir = tmp_path / ".ucode"
+        app_dir.mkdir(exist_ok=True)
+        app_dir.joinpath("state.json").write_text(
+            json.dumps(
+                {
+                    "state_version": 3,
+                    "config_scope": "user",
+                    "current_workspace": workspace,
+                    "workspaces": {workspace: {"profile": "SAVED", "use_pat": True}},
+                }
+            )
+        )
+        profile = tmp_path / ".databrickscfg"
+        profile.write_text(f"[SAVED]\nhost = {workspace}\ntoken = helper-bearer\n")
+        environment.update(DATABRICKS_CONFIG_FILE=str(profile), DATABRICKS_BEARER="")
+        arguments = []
+    else:
+        environment["DATABRICKS_BEARER"] = "helper-bearer"
+    probe = (
+        "import os, sys\n"
+        f"os.environ.update({environment!r})\n"
+        f"sys.argv = {['ug', command, *arguments]!r}\n"
+    )
+    if saved:
+        # Only external profile discovery is stubbed; the temporary PAT file is read normally.
+        probe += (
+            "import ucode.databricks as db\n"
+            "db.list_profile_entries = lambda: [{'name': 'SAVED', 'auth_type': 'pat'}]\n"
+        )
+    probe += (
+        "from ucode.entrypoint import main\n"
+        "try:\n    main()\nexcept SystemExit as exc:\n    assert not exc.code, exc.code\n"
+    )
+    if saved:
+        probe += "from ucode.managed_files import config_scope\nassert config_scope() == 'user'\n"
+
+    output, loaded = _modules_loaded_after(probe, ("ucode.cli", "ucode.agents", *_LAZY_MODULES))
+
+    assert output == expected
+    assert loaded == []
+
+
+def test_agent_helpers_are_the_cli_hidden_helper_commands() -> None:
+    from typer.main import get_command
+
+    from ucode import agent_helpers, cli
+
+    commands = get_command(cli.app).commands
+    assert entrypoint._AGENT_HELPER_COMMANDS == set(agent_helpers.COMMANDS)
+    assert all(commands[name].hidden for name in agent_helpers.COMMANDS)
+
+
+@pytest.mark.parametrize("command", ["auth-token", "otel-headers"])
+@pytest.mark.parametrize("executable", ["ug", "ucode"])
+def test_agent_helper_help_matches_the_cli(command, executable) -> None:
+    def help_text(module: str) -> str:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                f"import sys\nsys.argv = [{executable!r}, {command!r}, '--help']\n"
+                f"from {module} import main\nmain()",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+            env={**os.environ, "COLUMNS": "100", "NO_COLOR": "1"},
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    assert help_text("ucode.entrypoint") == help_text("ucode.cli")
 
 
 @pytest.mark.parametrize("reported_version", ["1.2.3", "1.2.3.post4", "1.2.3+abc123"])
@@ -223,6 +313,7 @@ def test_version_entrypoint_falls_back_to_telemetry(monkeypatch, capsys, flag) -
         [],
         ["--help"],
         ["--dry-run", "--version"],
+        ["--header", "X-Test: yes", "auth-token"],
         ["--version", "foo"],
         ["--version", "--help"],
         ["-V", "claude"],

@@ -25,7 +25,7 @@ from rich.text import Text
 from typer import _click
 from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
-from ucode import custom_oauth
+from ucode import agent_helpers, custom_oauth
 from ucode.agents import (
     GEMINI_API_TOOLS,
     MODEL_LOCATION_TOOLS,
@@ -249,7 +249,6 @@ from ucode.workspace import (
     activate,
     pin,
     resolve_workspace,
-    selector_headers,
     split_workspace_key,
     state_workspace_key,
     workspace_key,
@@ -2927,110 +2926,7 @@ def claude_desktop_auth_cmd(
         sys.stdout.write(json.dumps(credential, separators=(",", ":")) + "\n")
 
 
-@app.command("auth-token", hidden=True)
-def auth_token_cmd(
-    host: Annotated[
-        str | None, typer.Option("--host", help="Workspace URL. Defaults to the saved workspace.")
-    ] = None,
-    profile: Annotated[
-        str | None, typer.Option("--profile", help="Databricks CLI profile.")
-    ] = None,
-    use_pat: Annotated[
-        bool, typer.Option("--use-pat", help="Read the profile's static PAT instead of OAuth.")
-    ] = False,
-    force_refresh: Annotated[
-        bool,
-        typer.Option("--force-refresh", help="Force the Databricks CLI to mint a new token."),
-    ] = False,
-    browser_login: Annotated[bool, typer.Option("--browser-login", hidden=True)] = False,
-    client_id: Annotated[
-        str | None,
-        typer.Option(
-            "--client-id", hidden=True, help="Experimental: custom public OAuth client ID."
-        ),
-    ] = None,
-    redirect_url: Annotated[
-        str | None,
-        typer.Option(
-            "--redirect-url",
-            hidden=True,
-            help="Registered OAuth callback URL. Defaults to http://localhost:8020.",
-        ),
-    ] = None,
-    scopes: Annotated[
-        str | None,
-        typer.Option(
-            "--scopes",
-            hidden=True,
-            help="Comma-separated OAuth scopes for the custom client.",
-        ),
-    ] = None,
-) -> None:
-    """Print a Databricks bearer token to stdout, then exit.
-
-    This is the cross-platform helper invoked by Claude Code's `apiKeyHelper`
-    and Codex's auth command on every token refresh. It is not meant for
-    interactive use. All token logic (DATABRICKS_BEARER short-circuit, PAT
-    profiles, OAuth refresh) lives in `get_databricks_token`, so the same
-    binary works on macOS, Linux, and Windows without any POSIX shell."""
-    import sys
-
-    if client_id is not None and use_pat:
-        print_err("--client-id cannot be combined with --use-pat.")
-        raise typer.Exit(1)
-    if redirect_url is not None and client_id is None:
-        print_err("--redirect-url requires --client-id.")
-        raise typer.Exit(1)
-    if scopes is not None and client_id is None:
-        print_err("--scopes requires --client-id.")
-        raise typer.Exit(1)
-    if client_id is not None and scopes is None:
-        print_err("--scopes is required with --client-id.")
-        raise typer.Exit(1)
-    state = load_state()
-    explicit_host = bool(host and host.strip())
-    workspace = host or state.get("workspace")
-    if not workspace:
-        print_err("No workspace configured. Run `ug configure` first.")
-        raise typer.Exit(1)
-    if profile is None and not explicit_host:
-        profile = state.get("profile")
-    if client_id is None and (use_pat or state.get("use_pat")):
-        # --use-pat explicitly means "serve the profile's static PAT". Fail
-        # closed if it can't be read rather than falling through to OAuth —
-        # `auth token` cannot serve a PAT-only profile, so that path would
-        # surface a misleading stale-login error instead of the real cause.
-        if not ensure_pat_bearer(profile):
-            print_err(
-                f"--use-pat: no personal access token available for profile "
-                f"'{profile or '<none>'}'. Add a `token = <PAT>` entry under "
-                f"[{profile or 'your-profile'}] in ~/.databrickscfg, or re-run "
-                "`ug configure` without --use-pat to use OAuth."
-            )
-            raise typer.Exit(1)
-    try:
-        if client_id is not None:
-            assert scopes is not None
-            token = custom_oauth.get_custom_client_token(
-                workspace,
-                client_id=client_id,
-                redirect_url=(
-                    redirect_url if redirect_url is not None else custom_oauth.DEFAULT_REDIRECT_URL
-                ),
-                scopes=scopes.split(","),
-                profile=profile,
-                force_refresh=force_refresh,
-            )
-        else:
-            token = get_databricks_token(
-                workspace, profile, force_refresh=force_refresh, browser_login=browser_login
-            )
-    except RuntimeError as exc:
-        print_err(str(exc))
-        raise typer.Exit(1) from None
-    # Write the bare token (with trailing newline) to stdout — nothing else may
-    # land on stdout or the consuming agent will treat it as part of the token.
-    sys.stdout.write(token + "\n")
+agent_helpers.register(app)
 
 
 @app.command("otel-proxy", hidden=True)
@@ -3063,53 +2959,6 @@ def otel_proxy_cmd(
     except (OSError, RuntimeError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
-
-
-@app.command("otel-headers", hidden=True)
-def otel_headers_cmd(
-    host: Annotated[
-        str | None, typer.Option("--host", help="Workspace URL. Defaults to the saved workspace.")
-    ] = None,
-    profile: Annotated[
-        str | None, typer.Option("--profile", help="Databricks CLI profile.")
-    ] = None,
-    use_pat: Annotated[
-        bool, typer.Option("--use-pat", help="Read the profile's static PAT instead of OAuth.")
-    ] = False,
-    force_refresh: Annotated[
-        bool,
-        typer.Option("--force-refresh", help="Force the Databricks CLI to mint a new token."),
-    ] = False,
-    workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
-) -> None:
-    """Print fresh OTLP export headers as JSON to stdout, then exit."""
-    import json
-    import sys
-
-    state = load_state()
-    workspace = host or state.get("workspace")
-    if not workspace:
-        print_err("No workspace configured. Run `ug configure` first.")
-        raise typer.Exit(1)
-    profile = profile or state.get("profile")
-    if use_pat or state.get("use_pat"):
-        if not ensure_pat_bearer(profile):
-            print_err(
-                f"--use-pat: no personal access token available for profile "
-                f"'{profile or '<none>'}'. Add a `token = <PAT>` entry under "
-                f"[{profile or 'your-profile'}] in ~/.databrickscfg, or re-run "
-                "`ug configure` without --use-pat to use OAuth."
-            )
-            raise typer.Exit(1)
-    try:
-        with redirect_stdout(sys.stderr):
-            token = get_databricks_token(workspace, profile, force_refresh=force_refresh)
-    except RuntimeError as exc:
-        print_err(str(exc))
-        raise typer.Exit(1) from None
-    sys.stdout.write(
-        json.dumps({"Authorization": f"Bearer {token}", **selector_headers(workspace_id)}) + "\n"
-    )
 
 
 def _oauth_token_is_fresh(token: str, buffer_seconds: float = 120) -> bool:

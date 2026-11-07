@@ -96,9 +96,15 @@ def set_user_mcp_reconcile_pending(pending: bool) -> None:
 
 def load_state() -> dict:
     """Load the current workspace's state as a flat dict."""
+    ws_state = load_saved_state()
+    return hydrate_state(ws_state) if ws_state else ws_state
+
+
+def load_saved_state() -> dict:
+    """Activate saved workspace state without importing agent configuration builders."""
     ws_state = current_workspace_state(load_full_state())
     activate_state(ws_state)
-    return hydrate_state(ws_state) if ws_state else ws_state
+    return ws_state
 
 
 def save_state(state: dict) -> None:

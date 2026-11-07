@@ -2,8 +2,9 @@
 
 Launchers such as isaac run ``ug --version`` on every start. Importing ``ucode.cli`` (Typer, Rich,
 questionary, every subcommand module) costs far more than printing the version, so a bare version
-request is answered here without importing it. The per-agent MCP proxy also skips agent setup
-imports. Other invocations go to ``ucode.cli.main``.
+request is answered here without importing it. Token helpers that agents run on every session
+start and refresh go to ``ucode.agent_helpers``, which skips the full CLI. Every other invocation
+goes to ``ucode.cli.main``.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ import sys
 
 _DISTRIBUTION = "unity_gateway"
 _VERSION_ARGV = (["--version"], ["-V"])
+# `ucode.agent_helpers.COMMANDS`, named here so other invocations never import that module.
+_AGENT_HELPER_COMMANDS = frozenset({"auth-token", "otel-headers"})
 
 
 def _read_installed_version() -> str | None:
@@ -66,6 +69,11 @@ def main() -> None:
 
             version = ug_version()
         print(version)
+        return
+    if sys.argv[1:2] and sys.argv[1] in _AGENT_HELPER_COMMANDS:
+        from ucode.agent_helpers import run
+
+        run(sys.argv[1:])
         return
 
     if sys.argv[1:2] == ["mcp-proxy"]:
