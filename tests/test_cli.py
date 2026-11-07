@@ -2668,6 +2668,91 @@ class TestGeminiProviderLaunch:
         mock_rpm.assert_not_called()
 
 
+class TestGeminiModelOptionLaunch:
+    """`ug gemini --model` without a provider: the launch uses it, and only if discovery found it."""
+
+    # An admin default the workspace serves but discovery doesn't list.
+    MANAGED_DEFAULT = {
+        "enabled_agents": {
+            "gemini": {"model_config": {"default_model": "system.ai.gemini-3-5-pro"}}
+        }
+    }
+
+    @staticmethod
+    def _launch(monkeypatch, *args, managed=None):
+        state = dict(
+            MINIMAL_STATE,
+            available_tools=["gemini"],
+            gemini_models=["system.ai.gemini-3-5-flash", "system.ai.gemini-3-1-pro"],
+        )
+        monkeypatch.setattr("ucode.cli.ensure_bootstrap_dependencies", lambda *a, **k: None)
+        monkeypatch.setattr("ucode.cli.load_state", lambda: state)
+        monkeypatch.setattr("ucode.cli.ensure_provider_state", lambda t: state)
+        monkeypatch.setattr("ucode.cli.configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr("ucode.cli._fetch_managed_config", lambda s: (managed, False))
+        monkeypatch.setattr("ucode.cli._fetch_budget_recommendation", lambda s, m: None)
+        configure = MagicMock(return_value=state)
+        launch = MagicMock()
+        monkeypatch.setattr("ucode.cli.configure_tool", configure)
+        monkeypatch.setattr("ucode.cli.launch_agent", launch)
+        return runner.invoke(app, ["gemini", *args]), configure, launch
+
+    def test_discovered_model_is_configured_and_pinned_for_the_launch(self, monkeypatch):
+        result, configure, launch = self._launch(
+            monkeypatch, "--model", "system.ai.gemini-3-1-pro", "-p", "hi"
+        )
+
+        assert result.exit_code == 0, result.output
+        assert configure.call_args.args[2] == "system.ai.gemini-3-1-pro"
+        assert launch.call_args.kwargs["options"].user_pinned_model == "system.ai.gemini-3-1-pro"
+
+    def test_undiscovered_model_fails_before_anything_is_configured(self, monkeypatch):
+        result, configure, launch = self._launch(
+            monkeypatch, "--model", "system.ai.no-such-model", "-p", "hi"
+        )
+
+        assert result.exit_code == 1
+        output = _strip_ansi(result.output)
+        assert "Gemini CLI model 'system.ai.no-such-model' is not configured" in output
+        assert "system.ai.gemini-3-5-flash, system.ai.gemini-3-1-pro" in output
+        configure.assert_not_called()
+        launch.assert_not_called()
+
+    def test_forwarded_model_flag_is_left_to_gemini(self, monkeypatch):
+        result, configure, launch = self._launch(monkeypatch, "-m", "system.ai.custom", "-p", "hi")
+
+        assert result.exit_code == 0, result.output
+        assert configure.call_args.args[2] == "system.ai.gemini-3-5-flash"
+        assert launch.call_args.args[2] == ["-m", "system.ai.custom", "-p", "hi"]
+        assert launch.call_args.kwargs["options"].user_pinned_model is None
+
+    @pytest.mark.parametrize(
+        ("args", "configured", "pinned"),
+        [
+            (
+                ("--model", "system.ai.gemini-3-1-pro"),
+                "system.ai.gemini-3-1-pro",
+                "system.ai.gemini-3-1-pro",
+            ),
+            (
+                ("--model", "system.ai.gemini-3-5-pro"),
+                "system.ai.gemini-3-5-pro",
+                "system.ai.gemini-3-5-pro",
+            ),
+            ((), "system.ai.gemini-3-5-pro", None),
+        ],
+        ids=["model-option-outranks-admin-default", "admin-default-accepted", "no-model-option"],
+    )
+    def test_managed_default(self, monkeypatch, args, configured, pinned):
+        result, configure, launch = self._launch(
+            monkeypatch, *args, "-p", "hi", managed=self.MANAGED_DEFAULT
+        )
+
+        assert result.exit_code == 0, result.output
+        assert configure.call_args.args[2] == configured
+        assert launch.call_args.kwargs["options"].user_pinned_model == pinned
+
+
 class TestMcpSubcommands:
     def test_web_search_subcommand_help(self):
         result = runner.invoke(app, ["mcp", "web-search", "--help"])
