@@ -4357,6 +4357,59 @@ class TestHttpGetJsonRetries:
 
         return HTTPError(url="", code=code, msg=message, hdrs=headers or {}, fp=None)
 
+    @pytest.mark.parametrize(
+        ("max_retries", "recovers", "attempts", "delays"),
+        [(0, False, 1, []), (2, False, 3, [1.25, 2.5]), (2, True, 2, [1.25])],
+    )
+    def test_truncated_response_obeys_retry_budget(
+        self, monkeypatch, max_retries, recovers, attempts, delays
+    ):
+        from http.client import IncompleteRead
+        from unittest.mock import MagicMock
+
+        truncated = MagicMock()
+        truncated.__enter__.return_value = truncated
+        # Even a valid JSON prefix is incomplete and must never be returned or cached.
+        truncated.read.side_effect = IncompleteRead(b'{"partial": true}', 100)
+        responses = [truncated, _FakeResponse({"complete": True})] if recovers else None
+        urlopen = MagicMock(side_effect=responses, return_value=truncated)
+        sleeps = []
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+
+        payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=max_retries)
+
+        assert urlopen.call_count == attempts
+        assert truncated.__exit__.call_count == (1 if recovers else attempts)
+        assert sleeps == delays
+        if recovers:
+            assert payload == {"complete": True}
+            assert reason is None
+        else:
+            assert payload is None
+            assert reason == "network error: IncompleteRead(17 bytes read, 100 more expected)"
+
+    @pytest.mark.parametrize("error_type", ["BadStatusLine", "LineTooLong"])
+    def test_retries_protocol_errors_before_response_body(self, monkeypatch, error_type):
+        import http.client
+        from unittest.mock import MagicMock
+
+        urlopen = MagicMock(
+            side_effect=[
+                getattr(http.client, error_type)("invalid HTTP response"),
+                _FakeResponse({"complete": True}),
+            ]
+        )
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda delay: None)
+
+        payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=1)
+
+        assert payload == {"complete": True}
+        assert reason is None
+        assert urlopen.call_count == 2
+
     def test_retries_429_after_retry_after_delay(self, monkeypatch):
         outcomes = iter(
             [
@@ -5787,6 +5840,47 @@ class TestCodingAgentConfigCrudClients:
         monkeypatch.setattr(db_mod, "_http_delete", lambda *a, **k: (None, "HTTP 404 Not Found"))
         reason = db_mod.delete_coding_agent_config(WS, "tok", "coding-agent-configs/abc")
         assert reason == "HTTP 404 Not Found"
+
+
+class TestGetUsageDashboardUrl:
+    def test_fetches_published_url_with_workspace_token(self, monkeypatch):
+        dashboard_url = f"{WS}/dashboardsv3/dashboard/published?o=123"
+        requests = []
+
+        def urlopen(request, timeout):
+            requests.append((request, timeout))
+            return _FakeResponse({"dashboard_id": "dashboard", "dashboard_url": dashboard_url})
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+
+        assert db_mod.get_usage_dashboard_url(WS, "workspace-token") == dashboard_url
+        assert len(requests) == 1
+        request, timeout = requests[0]
+        assert request.full_url == f"{WS}/api/ai-gateway/v2/usage-analytics-dashboard"
+        assert request.get_method() == "GET"
+        assert request.get_header("Authorization") == "Bearer workspace-token"
+        assert timeout == 10
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            None,
+            [],
+            {},
+            {"dashboard_id": "dashboard"},
+            {"dashboard_url": None},
+            {"dashboard_url": ""},
+            {"dashboard_url": "  "},
+            {"dashboard_url": 123},
+        ],
+    )
+    def test_omits_link_without_a_nonempty_url(self, monkeypatch, payload):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (payload, None))
+        assert db_mod.get_usage_dashboard_url(WS, "token") is None
+
+    def test_lookup_failure_omits_optional_link(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (None, "HTTP 403 Forbidden"))
+        assert db_mod.get_usage_dashboard_url(WS, "token") is None
 
 
 class TestListWorkspaceBudgets:

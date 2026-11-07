@@ -26,6 +26,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
 from urllib import error as urllib_error
@@ -415,11 +416,10 @@ def _http_get_bytes(
             if attempt == max_retries:
                 return None, reason
             retry_after = None
-        except OSError as exc:
-            # A socket read timeout raises a bare TimeoutError (an OSError), not a
-            # URLError, so it must be caught explicitly or it escapes the whole
-            # discovery flow. Surface it as a reason like every other failure.
-            _debug(f"GET {url}", f"OSError: {exc}")
+        except (OSError, HTTPException) as exc:
+            # Read timeouts, malformed headers, and truncated bodies can escape urllib
+            # without a URLError wrapper. Use the caller's existing retry budget.
+            _debug(f"GET {url}", f"{type(exc).__name__}: {exc}")
             reason = f"network error: {exc}"
             if attempt == max_retries:
                 return None, reason
@@ -689,6 +689,22 @@ def list_workspace_budgets(workspace: str, token: str) -> tuple[list[dict], str 
     if not budgets:
         return [], "workspace budget listing returned no budgets"
     return budgets, None
+
+
+def get_usage_dashboard_url(workspace: str, token: str) -> str | None:
+    """Return the caller's published usage dashboard URL, if available.
+
+    This optional link must not prevent displaying spend limits when the dashboard
+    is absent, inaccessible, or temporarily unavailable.
+    """
+    url = f"https://{workspace_hostname(workspace)}/api/ai-gateway/v2/usage-analytics-dashboard"
+    payload, reason = _http_get_json(url, token)
+    if reason is not None or not isinstance(payload, dict):
+        return None
+    dashboard_url = payload.get("dashboard_url")
+    if isinstance(dashboard_url, str) and dashboard_url.strip():
+        return dashboard_url.strip()
+    return None
 
 
 def get_current_user_name(workspace: str, token: str) -> str | None:
