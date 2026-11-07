@@ -1,11 +1,19 @@
-"""Gemini CLI agent: writes ~/.gemini/.env and runs with periodic token refresh."""
+"""Gemini CLI agent: writes ~/.gemini/ucode.env and launches behind a local refresh proxy.
+
+Gemini CLI reads its API key once at startup and never re-reads it, so a token handed to it
+directly expires mid-session. The CLI instead holds a per-session secret, and ug's
+gateway-auth proxy forwards to the workspace's Gemini route with a fresh Databricks token.
+"""
 
 from __future__ import annotations
 
 import os
 import re
+import secrets
 import signal
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 from ucode.agent_updates import latest_version_below
@@ -20,6 +28,7 @@ from ucode.config_io import (
     write_dotenv,
     write_json_file,
 )
+from ucode.constants import LOOPBACK_HOST
 from ucode.databricks import (
     TOKEN_REFRESH_INTERVAL_SECONDS,
     build_tool_base_url,
@@ -42,6 +51,8 @@ GEMINI_ENV_PATH = GEMINI_CONFIG_DIR / "ucode.env"
 GEMINI_BACKUP_PATH = APP_DIR / "gemini-ucode-env.backup"
 GEMINI_HOME_DIR = APP_DIR / ".gemini-home"
 GEMINI_SETTINGS_PATH = GEMINI_HOME_DIR / ".gemini" / "settings.json"
+GEMINI_PROXY_LOG_PATH = APP_DIR / "logs" / "gemini-proxy.log"
+GEMINI_GATEWAY_PATH = "/ai-gateway/gemini/"
 
 SPEC: ToolSpec = {
     "binary": "gemini",
@@ -251,14 +262,47 @@ def _refresh_forever(state: dict, stop_event: threading.Event) -> None:
             continue
 
 
+def _token_provider(state: dict) -> Callable[[bool], str]:
+    workspace, profile = state["workspace"], state.get("profile")
+    return lambda force_refresh: get_databricks_token(
+        workspace, profile, force_refresh=force_refresh
+    )
+
+
+def _log_proxy_failure(exc: BaseException) -> None:
+    # Gemini CLI owns the terminal, so failures go to a file instead of stderr.
+    try:
+        GEMINI_PROXY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with GEMINI_PROXY_LOG_PATH.open("a", encoding="utf-8") as log:
+            log.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} token refresh failed: {exc}\n")
+    except OSError:
+        pass
+
+
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
     provider = get_provider_service(state, "gemini")
     token = _refresh_token_once(state)
     model = _launch_model(state, provider)
     if not model:
         raise RuntimeError("No Gemini model is configured.")
-    env = build_runtime_env(state["workspace"], model, token, provider=provider)
 
+    # Only Gemini launches need the proxy (and its `httpx` import).
+    from ucode import gateway_proxy
+
+    workspace = state["workspace"]
+    session_secret = secrets.token_urlsafe(32)
+    server, cache, client = gateway_proxy.start_gateway_auth_proxy(
+        workspace,
+        _token_provider(state),
+        session_secret=session_secret,
+        added_headers={},
+        sign_in_hint=f"Run `databricks auth login --host {workspace}`, then restart `ug gemini`.",
+        on_refresh_failure=_log_proxy_failure,
+        allowed_path_prefixes=(GEMINI_GATEWAY_PATH,),
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    # Keeps ucode.env current for anything outside this session that reads it.
     stop_event = threading.Event()
     refresher = threading.Thread(
         target=_refresh_forever,
@@ -267,15 +311,26 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     )
     refresher.start()
 
-    proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
     try:
-        returncode = proc.wait()
-    except KeyboardInterrupt:
-        proc.send_signal(signal.SIGINT)
-        returncode = proc.wait()
+        env = build_runtime_env(workspace, model, token, provider=provider)
+        port = server.server_address[1]
+        env["GOOGLE_GEMINI_BASE_URL"] = (
+            f"http://{LOOPBACK_HOST}:{port}{GEMINI_GATEWAY_PATH.rstrip('/')}"
+        )
+        env["GEMINI_API_KEY"] = session_secret
+        proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
+        try:
+            returncode = proc.wait()
+        except KeyboardInterrupt:
+            proc.send_signal(signal.SIGINT)
+            returncode = proc.wait()
     finally:
         stop_event.set()
         refresher.join(timeout=1)
+        cache.stop()
+        server.shutdown()
+        server.server_close()
+        client.close()
 
     raise SystemExit(returncode)
 

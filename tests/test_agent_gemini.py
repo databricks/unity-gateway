@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
+from ucode import gateway_proxy
 from ucode.agents import gemini
+from ucode.agents.args import LaunchOptions
 from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
@@ -265,3 +268,137 @@ class TestWriteUserMcpServers:
         assert doc["security"] == {"x": 1}  # untouched
         assert "mine" not in doc["mcpServers"]
         assert doc["mcpServers"]["svc"] == {"command": "ug", "args": ["mcp-proxy", "u"]}
+
+
+class TestLaunch:
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gemini, "GEMINI_ENV_PATH", tmp_path / "ucode.env")
+        monkeypatch.setattr(gemini, "GEMINI_BACKUP_PATH", tmp_path / "backup")
+        monkeypatch.setattr(gemini, "GEMINI_PROXY_LOG_PATH", tmp_path / "logs" / "proxy.log")
+        monkeypatch.setattr(gemini, "save_state", lambda s: None)
+        monkeypatch.setattr(gemini, "agent_version", lambda binary: "0.44.1")
+        self.mints: list[tuple[str | None, bool]] = []
+
+        def fake_token(workspace, profile=None, *, force_refresh=False):
+            self.mints.append((profile, force_refresh))
+            return f"dbx-token-{len(self.mints)}"
+
+        monkeypatch.setattr(gemini, "get_databricks_token", fake_token)
+        self.server, self.cache, self.client = MagicMock(), MagicMock(), MagicMock()
+        self.server.server_address = ("127.0.0.1", 4321)
+        self.proxy: dict = {}
+
+        def fake_proxy(workspace, token_provider, **kwargs):
+            self.proxy = {"workspace": workspace, "token_provider": token_provider, **kwargs}
+            return self.server, self.cache, self.client
+
+        monkeypatch.setattr(gateway_proxy, "start_gateway_auth_proxy", fake_proxy)
+
+    def _launch(self, monkeypatch, state=None, *, wait=None):
+        captured: dict = {}
+
+        def fake_popen(argv, env):
+            captured["argv"], captured["env"] = argv, env
+            proc = MagicMock()
+            proc.wait.side_effect = wait or (lambda: 0)
+            return proc
+
+        monkeypatch.setattr(gemini.subprocess_cross_os, "popen", fake_popen)
+        state = state or {"workspace": WS, "profile": "dev", "gemini_models": ["gemini-2"]}
+        with pytest.raises(SystemExit) as exc:
+            gemini.launch(state, ["-p", "hi"], options=LaunchOptions())
+        return captured, exc.value.code
+
+    def test_gemini_talks_to_local_proxy_with_session_secret(self, monkeypatch):
+        captured, code = self._launch(monkeypatch)
+
+        assert code == 0
+        assert captured["argv"] == ["gemini", "-p", "hi"]
+        env = captured["env"]
+        assert env["GOOGLE_GEMINI_BASE_URL"] == "http://127.0.0.1:4321/ai-gateway/gemini"
+        assert env["GEMINI_API_KEY"] == self.proxy["session_secret"]
+        assert not env["GEMINI_API_KEY"].startswith("dbx-token")
+        assert env["GEMINI_API_KEY_AUTH_MECHANISM"] == "bearer"
+        assert env["GEMINI_MODEL"] == "gemini-2"
+        assert self.proxy["workspace"] == WS
+        assert self.proxy["allowed_path_prefixes"] == ("/ai-gateway/gemini/",)
+
+    def test_each_launch_gets_its_own_session_secret(self, monkeypatch):
+        self._launch(monkeypatch)
+        first = self.proxy["session_secret"]
+        self._launch(monkeypatch)
+        assert self.proxy["session_secret"] != first
+
+    def test_proxy_mints_tokens_for_the_session_profile(self, monkeypatch):
+        self._launch(monkeypatch)
+        self.mints.clear()
+
+        token = self.proxy["token_provider"](True)
+
+        assert token == "dbx-token-1"
+        assert self.mints == [("dev", True)]
+
+    def test_env_file_keeps_the_databricks_token_not_the_secret(self, monkeypatch):
+        self._launch(monkeypatch)
+
+        written = gemini.parse_dotenv(gemini.GEMINI_ENV_PATH)
+        assert written["GEMINI_API_KEY"] == "dbx-token-1"
+        assert written["GOOGLE_GEMINI_BASE_URL"] == f"{WS}/ai-gateway/gemini"
+
+    def test_provider_header_still_sent_by_gemini(self, monkeypatch):
+        state = {
+            "workspace": WS,
+            "gemini_models": ["gemini-2"],
+            "provider_services": {"gemini": "cat.sch.svc"},
+        }
+        gemini.GEMINI_ENV_PATH.write_text('GEMINI_MODEL="gemini-3.5-flash"\n')
+
+        captured, _ = self._launch(monkeypatch, state)
+
+        env = captured["env"]
+        assert env["GEMINI_MODEL"] == "gemini-3.5-flash"
+        assert "Databricks-Model-Provider-Service:cat.sch.svc" in env["GEMINI_CLI_CUSTOM_HEADERS"]
+
+    def test_returns_gemini_exit_code_and_stops_proxy(self, monkeypatch):
+        _, code = self._launch(monkeypatch, wait=lambda: 3)
+
+        assert code == 3
+        self.cache.stop.assert_called_once()
+        self.server.shutdown.assert_called_once()
+        self.server.server_close.assert_called_once()
+        self.client.close.assert_called_once()
+
+    def test_stops_proxy_when_gemini_fails_to_start(self, monkeypatch):
+        monkeypatch.setattr(
+            gemini.subprocess_cross_os,
+            "popen",
+            MagicMock(side_effect=FileNotFoundError("gemini")),
+        )
+        with pytest.raises(FileNotFoundError):
+            gemini.launch(
+                {"workspace": WS, "gemini_models": ["gemini-2"]}, [], options=LaunchOptions()
+            )
+
+        self.cache.stop.assert_called_once()
+        self.server.shutdown.assert_called_once()
+        self.client.close.assert_called_once()
+
+    def test_ctrl_c_is_forwarded_and_proxy_stops(self, monkeypatch):
+        results = iter([KeyboardInterrupt(), 130])
+
+        def wait():
+            result = next(results)
+            if isinstance(result, BaseException):
+                raise result
+            return result
+
+        _, code = self._launch(monkeypatch, wait=wait)
+
+        assert code == 130
+        self.server.shutdown.assert_called_once()
+
+    def test_refresh_failure_is_logged_to_file(self):
+        gemini._log_proxy_failure(RuntimeError("expired"))
+
+        assert "token refresh failed: expired" in gemini.GEMINI_PROXY_LOG_PATH.read_text()
