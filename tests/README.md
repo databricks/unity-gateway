@@ -1,11 +1,5 @@
 # Test suites and user journeys
 
-`TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
-normal and exceptional exit, clearing the terminal line, and leaving redirected
-output free of animation threads. These component
-checks use thread synchronization rather than elapsed-time thresholds; they do not
-establish end-to-end agent startup latency.
-
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
 unchanged token values, delayed rejections, and recovery after refresh failure.
@@ -334,14 +328,6 @@ Program Files lookup.
 Claude's native resolver tests remain in
 `test_agent_claude.py`; installation failures are covered in `test_agents_init.py`.
 These are component checks, not live Windows coverage for every agent.
-
-`TestEnsureHooksModulesGate` in `test_agent_claude.py` checks that an enabled Claude
-feature cache avoids the config write lock, including while another writer holds it.
-Updates re-read after acquiring the real lock, preserve concurrent changes, and remove
-stale top-level flags. Dry-run, invalid/unreadable files, modes, write failures, and
-concurrent MCP writers retain coverage. These are local component checks; the controlled
-lock-contention benchmark in `scripts/benchmark_claude_hooks_gate.py` does not measure
-live agent startup or the production frequency of lock contention.
 
 `TestEnsureDatabricksCliVersion` in `test_databricks.py`
 checks that repeated launch preflights reuse a successful CLI version probe, higher
