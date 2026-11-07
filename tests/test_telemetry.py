@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import zipfile
 from importlib.metadata import PackageNotFoundError, version
 from unittest.mock import patch
 
@@ -18,8 +19,27 @@ class TestUcodeVersion:
         assert telemetry.ug_version() == version("unity-gateway")
 
     def test_missing_metadata_does_not_block_launch(self):
-        with patch.object(telemetry, "version", side_effect=PackageNotFoundError):
+        with (
+            patch("ucode.entrypoint._read_installed_version", return_value=None),
+            patch("importlib.metadata.version", side_effect=PackageNotFoundError),
+        ):
             assert telemetry.ug_version.__wrapped__() == "unknown"
+
+    def test_plain_metadata_does_not_use_standard_discovery(self):
+        expected = version("unity-gateway")
+        with patch("importlib.metadata.version", side_effect=AssertionError("unexpected lookup")):
+            assert telemetry.ug_version.__wrapped__() == expected
+
+    def test_archive_metadata_uses_standard_discovery(self, tmp_path, monkeypatch):
+        archive = tmp_path / "installed.zip"
+        with zipfile.ZipFile(archive, "w") as package:
+            package.writestr(
+                "unity_gateway-2.3.4.dist-info/METADATA",
+                "Name: unity-gateway\nVersion: 2.3.4\n",
+            )
+        monkeypatch.setattr(sys, "path", [str(archive)])
+
+        assert telemetry.ug_version.__wrapped__() == "2.3.4"
 
 
 class TestAgentVersion:

@@ -14,7 +14,6 @@ from concurrent.futures import Future
 from contextlib import contextmanager, redirect_stdout
 from dataclasses import asdict
 from enum import StrEnum
-from importlib import metadata
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -5574,6 +5573,8 @@ def upgrade_cmd() -> None:
 
 def _installed_cli_distribution() -> str:
     """Return the uv tool identity, preferring the post-cutover distribution."""
+    from importlib import metadata
+
     for distribution_name in ("unity-gateway", "ucode"):
         try:
             metadata.version(distribution_name)
