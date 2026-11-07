@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import tomllib
 from pathlib import Path
-from typing import TypedDict, cast
-
-import tomlkit
-import tomlkit.exceptions
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from ucode.ui import console
+
+if TYPE_CHECKING:
+    import tomlkit
 
 
 class ToolSpec(TypedDict):
@@ -206,6 +207,9 @@ def apply_json_mcp_diff(
 def read_toml_safe(path: Path) -> tomlkit.TOMLDocument:
     # See read_json_safe: keep `path.exists()` inside the try so a PermissionError on a locked
     # parent directory is treated as an empty document rather than propagating.
+    import tomlkit
+    import tomlkit.exceptions
+
     try:
         if not path.exists():
             return tomlkit.document()
@@ -214,7 +218,32 @@ def read_toml_safe(path: Path) -> tomlkit.TOMLDocument:
         return tomlkit.document()
 
 
+def read_toml_values_safe(path: Path) -> dict:
+    """Read TOML values without constructing a format-preserving document.
+
+    Use this for inspection only; edits still use ``read_toml_safe`` so the user's
+    comments and formatting survive. Missing, unreadable or malformed files are empty.
+    Fall back to tomlkit for newer TOML syntax unsupported by this Python's tomllib.
+    """
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return {}
+    try:
+        return tomllib.loads(content)
+    except tomllib.TOMLDecodeError:
+        import tomlkit
+        import tomlkit.exceptions
+
+        try:
+            return tomlkit.parse(content).unwrap()
+        except tomlkit.exceptions.TOMLKitError:
+            return {}
+
+
 def write_toml_file(path: Path, doc: tomlkit.TOMLDocument) -> None:
+    import tomlkit
+
     content = tomlkit.dumps(doc)
     if _dry_run:
         console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")

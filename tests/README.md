@@ -1,5 +1,11 @@
 # Test suites and user journeys
 
+`test_lazy_toml.py` runs fresh interpreters to keep TOML writers out of CLI import
+and standard read-only app settings, verify writer activation for serialization,
+and preserve named/wildcard exports and discoverability. Existing Codex/config tests
+retain editing, malformed-file and newer-TOML fallback coverage. These are component
+checks, not native-agent readiness or gateway latency measurements.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component

@@ -6,13 +6,15 @@ import os
 from collections.abc import Mapping
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING as _TYPE_CHECKING
 
-import tomlkit
-from tomlkit.items import Item
-
-from ucode.config_io import read_json_safe, read_toml_safe
+from ucode.config_io import read_json_safe, read_toml_values_safe
 from ucode.managed_files import OS, current_os, windows_codex_managed_settings_path
 from ucode.ui import print_warning
+
+if _TYPE_CHECKING:
+    import tomlkit as tomlkit
+    from tomlkit.items import Item
 
 CODEX_PROFILE_NAME = "ucode"
 DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / f"{CODEX_PROFILE_NAME}.config.toml"
@@ -66,7 +68,7 @@ def custom_catalog_path() -> Path | None:
     for path in paths:
         if not path.is_file():
             continue
-        settings = read_toml_safe(path)
+        settings = read_toml_values_safe(path)
         catalog_ref = settings.get("model_catalog_json")
         if not isinstance(catalog_ref, str) or not catalog_ref.strip():
             continue
@@ -112,19 +114,26 @@ def catalog_slugs(
 
 
 def _toml_item(value: object) -> Item:
-    if isinstance(value, Mapping):
-        inline = tomlkit.inline_table()
-        for key, child in value.items():
-            inline[str(key)] = _toml_item(child)
-        return inline
-    if isinstance(value, list):
-        array = tomlkit.array()
-        for child in value:
-            array.append(_toml_item(child))
-        return array
-    if isinstance(value, Item):
-        return value
-    return tomlkit.item(value)
+    import tomlkit
+    from tomlkit.items import Item
+
+    def convert(item: object) -> Item:
+        if isinstance(item, Mapping):
+            inline = tomlkit.inline_table()
+            for key, child in item.items():
+                inline[str(key)] = convert(child)
+            return inline
+        if isinstance(item, list):
+            array = tomlkit.array()
+            for child in item:
+                array.append(convert(child))
+            return array
+        if isinstance(item, Item):
+            return item
+        return tomlkit.item(item)
+
+    # Import once per rendered value, rather than again for every nested table/array item.
+    return convert(value)
 
 
 def _toml_value(value: object) -> str:
@@ -148,3 +157,26 @@ def codex_config_args(config: dict) -> list[str]:
         else:
             args.extend(["--config", f"{key}={_toml_value(value)}"])
     return args
+
+
+_LAZY_TOML_EXPORTS = {"tomlkit": "tomlkit", "Item": "tomlkit.items"}
+
+
+def __getattr__(name: str):
+    # Keep existing named exports available without loading TOML writers during import.
+    if module := _LAZY_TOML_EXPORTS.get(name):
+        from importlib import import_module
+
+        loaded = import_module(module)
+        value = loaded if name == module else getattr(loaded, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | _LAZY_TOML_EXPORTS.keys())
+
+
+# Preserve the existing wildcard-import surface as well as named exports.
+__all__ = [name for name in globals() if not name.startswith("_")] + list(_LAZY_TOML_EXPORTS)

@@ -13,13 +13,12 @@ import socket
 import sys
 import tempfile
 import threading
+import tomllib
 from collections.abc import Callable
 from pathlib import Path
 from subprocess import CalledProcessError, TimeoutExpired, list2cmdline
+from typing import TYPE_CHECKING as _TYPE_CHECKING
 from xml.sax.saxutils import escape
-
-import tomlkit
-from tomlkit.exceptions import ParseError
 
 from ucode.codex_config import (
     catalog_slugs,
@@ -37,6 +36,7 @@ from ucode.config_io import (
     prune_key_paths,
     read_json_safe,
     read_toml_safe,
+    read_toml_values_safe,
     write_json_file,
     write_text_file,
     write_toml_file,
@@ -106,6 +106,10 @@ from ucode.workspace import workspace_headers, workspace_id_args
 from .args import LaunchOptions
 from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
 from .request_tags import request_tags_header_value
+
+if _TYPE_CHECKING:
+    import tomlkit as tomlkit
+    from tomlkit.exceptions import ParseError as ParseError
 
 CODEX_CONFIG_DIR = Path.home() / ".codex"
 CODEX_PROFILE_NAME = "ucode"
@@ -227,7 +231,7 @@ def has_ucode_config() -> bool:
         return True
     if not LEGACY_CODEX_CONFIG_PATH.exists():
         return False
-    doc = read_toml_safe(LEGACY_CODEX_CONFIG_PATH)
+    doc = read_toml_values_safe(LEGACY_CODEX_CONFIG_PATH)
     profiles = doc.get("profiles")
     return (
         doc.get("profile") == CODEX_PROFILE_NAME
@@ -434,7 +438,7 @@ def _remove_legacy_ucode_profile() -> None:
     if path == CODEX_CONFIG_PATH or not path.exists():
         return
 
-    if _has_legacy_ucode_entries(read_toml_safe(path)):
+    if _has_legacy_ucode_entries(read_toml_values_safe(path)):
         backup_existing_file(path, _legacy_backup_path())
         _strip_legacy_ucode_entries(path)
 
@@ -658,6 +662,9 @@ def _is_gpt_family(model: str) -> bool:
 
 
 def _parse_managed_config(text: str) -> dict:
+    import tomlkit
+    from tomlkit.exceptions import ParseError
+
     try:
         return tomlkit.parse(text)
     except ParseError as exc:
@@ -709,6 +716,8 @@ def managed_config_status(state: dict) -> tuple[Path | None, str, str]:
 
 
 def revert_managed_config() -> str:
+    import tomlkit
+
     return revert_managed_file(
         "codex",
         display="Codex",
@@ -971,6 +980,13 @@ def _desktop_trace_exporter(port: int) -> dict:
     return _otel_proxy_overlay(f"http://{LOOPBACK_HOST}:{port}/v1/traces")["otel"]["trace_exporter"]
 
 
+def _desktop_otel_settings(config: dict) -> dict:
+    otel = config.get("otel", {})
+    if not isinstance(otel, dict):
+        raise RuntimeError(f"otel in {_legacy_config_path()} is not a table")
+    return otel
+
+
 def _sync_desktop_tracing(workspace: str | None) -> bool:
     """Point Codex desktop's trace exporter at ug's login service; None removes both.
 
@@ -980,10 +996,7 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
     if current_os() == OS.OTHER or is_dry_run():
         return False
     try:
-        doc = _read_app_config()
-        otel = doc.setdefault("otel", {})
-        if not isinstance(otel, dict):
-            raise RuntimeError(f"otel in {_legacy_config_path()} is not a table")
+        otel = _desktop_otel_settings(_read_app_config_values())
         # ug's own unit records the port, so only an exporter at that port is ug's.
         port = _service_port("port")
         ours = port is not None and otel.get("trace_exporter") == _desktop_trace_exporter(port)
@@ -992,6 +1005,12 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
             if not relay_port:  # the Codex app's relay still needs the service
                 _remove_otel_service()
             if ours:
+                doc = _read_app_config()
+                otel = _desktop_otel_settings(doc)
+                # Service operations can outlast another writer's settings update. Remove only
+                # the exporter this invocation owns, even if it disappeared or changed meanwhile.
+                if port is None or otel.get("trace_exporter") != _desktop_trace_exporter(port):
+                    return False
                 del otel["trace_exporter"]
                 if not otel:
                     del doc["otel"]
@@ -1013,6 +1032,16 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
         _ensure_otel_service(workspace, port, relay_port)
         if ours:
             return False
+        doc = _read_app_config()
+        otel = _desktop_otel_settings(doc)
+        if "trace_exporter" in otel:
+            if otel["trace_exporter"] != _desktop_trace_exporter(port):
+                print_warning_err(
+                    f"{_legacy_config_path()} already sets otel.trace_exporter; "
+                    "skipped desktop tracing."
+                )
+            return False
+        otel = doc.setdefault("otel", {})
         otel["trace_exporter"] = _desktop_trace_exporter(port)
         write_toml_file(_legacy_config_path(), doc)
         print_warning_err("Restart the Codex app server once to start exporting desktop traces.")
@@ -1129,6 +1158,8 @@ def _reconcile_managed_config(
     state: dict, compose: Callable[[dict], dict], relayed: bool = False
 ) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
+    import tomlkit
+
     path = codex_managed_config_path()
     if path is not None and path.name == CODEX_REQUIREMENTS_FILE:
         compose = _as_requirements(compose)
@@ -1265,6 +1296,9 @@ def _read_user_config_for_rewrite(path: Path) -> tomlkit.TOMLDocument | None:
     """Read ``path`` for a full rewrite: an empty document when absent, the parsed document when
     present and valid, and ``None`` when present but unparseable — so a caller never overwrites a
     config it could not read."""
+    import tomlkit
+    from tomlkit.exceptions import ParseError
+
     if not path.exists():
         return tomlkit.document()
     try:
@@ -1280,6 +1314,8 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     ``remove`` names that were actually present (so callers can report only real removals).
 
     If the file exists but can't be parsed, defer entries to the per-server ``codex`` CLI."""
+    import tomlkit
+
     from ucode.mcp import add_codex_mcp_server, remove_codex_mcp_server
 
     path = user_mcp_config_path()
@@ -1319,6 +1355,8 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
     True when the managed file is the delivery mechanism, False when it cannot be used (unsupported
     platform, or a run that may not write it), so the caller routes those servers to the user-scope
     registration instead."""
+    import tomlkit
+
     path = codex_managed_config_path()
     if (
         path is None
@@ -1342,7 +1380,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
             f"Cannot safely update Codex managed settings at {path}: {exc}. ucode did not modify "
             "the file. Repair it or contact your administrator."
         ) from exc
-    user = read_toml_safe(user_mcp_config_path()).get(MANAGED_MCP_CONFIG_KEY)
+    user = read_toml_values_safe(user_mcp_config_path()).get(MANAGED_MCP_CONFIG_KEY)
     if machine_wide_only() and isinstance(user, dict):
         # `ug configure --global` can't remove the user's same-name entry of the other transport,
         # and Codex can't start with both, so leave that server out of the managed file instead.
@@ -1438,7 +1476,7 @@ _BUILTIN_WEB_SEARCH_UNSUPPORTED_PROVIDER_TYPE = "amazon_bedrock"
 
 def _web_search_mcp_configured(state: dict, url: str) -> bool:
     """Whether Codex already has the web_search MCP service under any name, in user or managed config."""
-    user = read_toml_safe(user_mcp_config_path()).get(MANAGED_MCP_CONFIG_KEY)
+    user = read_toml_values_safe(user_mcp_config_path()).get(MANAGED_MCP_CONFIG_KEY)
     if isinstance(user, dict):
         for name, entry in user.items():
             args = entry.get("args") if isinstance(entry, dict) else None
@@ -1492,7 +1530,7 @@ def _smart_routing_config_model(state: dict) -> str | None:
         return model
 
     for path in config_precedence_paths():
-        model = read_toml_safe(path).get("model")
+        model = read_toml_values_safe(path).get("model")
         if isinstance(model, str) and model.strip():
             return model
     return None
@@ -1511,6 +1549,10 @@ def clear_model_preferences(state: dict) -> bool:
     if smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CODEX):
         return False
     if isinstance(state.get("codex_default_model"), str):
+        return False
+    if not {"model", "model_reasoning_effort"}.intersection(
+        read_toml_values_safe(CODEX_CONFIG_PATH)
+    ):
         return False
     doc = read_toml_safe(CODEX_CONFIG_PATH)
     changed = False
@@ -1618,6 +1660,9 @@ def _is_ucode_catalog_reference(value: object) -> bool:
 
 
 def _read_app_config() -> tomlkit.TOMLDocument:
+    import tomlkit
+    from tomlkit.exceptions import ParseError
+
     path = _legacy_config_path()
     try:
         return tomlkit.parse(path.read_text(encoding="utf-8"))
@@ -1627,6 +1672,28 @@ def _read_app_config() -> tomlkit.TOMLDocument:
         raise RuntimeError(f"Cannot update Codex App settings at {path}: {exc}") from exc
 
 
+def _read_app_config_values() -> dict:
+    """Inspect app settings cheaply; preserve their formatting only when editing."""
+    path = _legacy_config_path()
+    try:
+        content = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"Cannot update Codex App settings at {path}: {exc}") from exc
+    try:
+        return tomllib.loads(content)
+    except tomllib.TOMLDecodeError:
+        import tomlkit
+        from tomlkit.exceptions import ParseError
+
+        # Keep accepting newer TOML syntax supported by the existing settings writer.
+        try:
+            return tomlkit.parse(content).unwrap()
+        except ParseError as exc:
+            raise RuntimeError(f"Cannot update Codex App settings at {path}: {exc}") from exc
+
+
 def detach_app_model_catalog() -> bool:
     """Remove only a shared catalog reference owned by ucode.
 
@@ -1634,9 +1701,9 @@ def detach_app_model_catalog() -> bool:
     validates the catalog again."""
     if is_dry_run() or machine_wide_only():
         return False
-    doc = _read_app_config()
-    if not _is_ucode_catalog_reference(doc.get("model_catalog_json")):
+    if not _is_ucode_catalog_reference(_read_app_config_values().get("model_catalog_json")):
         return False
+    doc = _read_app_config()
     doc.pop("model_catalog_json", None)
     write_toml_file(_legacy_config_path(), doc)
     _print_app_catalog_restart_notice()
@@ -1667,11 +1734,12 @@ def sync_app_model_catalog(catalog: dict) -> None:
     """Publish a validated catalog without overwriting unreadable app settings."""
     if is_dry_run():
         return
-    doc = _read_app_config()
+    values = _read_app_config_values()
     catalog_changed = read_json_safe(CODEX_MODEL_CATALOG_PATH) != catalog
-    _write_model_catalog(CODEX_MODEL_CATALOG_PATH, catalog)
+    if catalog_changed:
+        _write_model_catalog(CODEX_MODEL_CATALOG_PATH, catalog)
 
-    existing = doc.get("model_catalog_json")
+    existing = values.get("model_catalog_json")
     if existing is not None and not _is_ucode_catalog_reference(existing):
         print_warning_err(
             f"Codex App already uses the custom model catalog {existing}; leaving it unchanged."
@@ -1679,7 +1747,7 @@ def sync_app_model_catalog(catalog: dict) -> None:
         return
 
     catalog_path = str(CODEX_MODEL_CATALOG_PATH)
-    provider = doc.get("model_provider")
+    provider = values.get("model_provider")
     if provider not in (None, CODEX_MODEL_PROVIDER_NAME, LEGACY_CODEX_MODEL_PROVIDER_NAME):
         print_warning_err(
             f"Codex App uses the custom provider {provider}; leaving its model catalog unmanaged."
@@ -1688,6 +1756,7 @@ def sync_app_model_catalog(catalog: dict) -> None:
 
     reference_changed = existing != catalog_path
     if reference_changed:
+        doc = _read_app_config()
         if catalog_path is None:
             doc.pop("model_catalog_json", None)
         else:
@@ -1905,7 +1974,7 @@ def launch(
     # `--profile`, `--config` is accepted by runtime, utility, and server
     # commands, so every invocation keeps the same Databricks settings without
     # classifying Codex subcommands or probing and retrying the real command.
-    profile_doc = read_toml_safe(CODEX_CONFIG_PATH)
+    profile_doc = read_toml_values_safe(CODEX_CONFIG_PATH)
     if not profile_doc:
         raise RuntimeError(
             f"Cannot launch Codex with the ucode profile because {CODEX_CONFIG_PATH} "
@@ -2039,3 +2108,26 @@ def validate_cmd(binary: str) -> list[str]:
         "--skip-git-repo-check",
         "say hi in 5 words or less",
     ]
+
+
+_LAZY_TOML_EXPORTS = {"tomlkit": "tomlkit", "ParseError": "tomlkit.exceptions"}
+
+
+def __getattr__(name: str):
+    # Keep existing named exports available without loading TOML writers during import.
+    if module := _LAZY_TOML_EXPORTS.get(name):
+        from importlib import import_module
+
+        loaded = import_module(module)
+        value = loaded if name == module else getattr(loaded, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | _LAZY_TOML_EXPORTS.keys())
+
+
+# Preserve the existing wildcard-import surface as well as named exports.
+__all__ = [name for name in globals() if not name.startswith("_")] + list(_LAZY_TOML_EXPORTS)

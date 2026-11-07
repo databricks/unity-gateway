@@ -17,6 +17,7 @@ from ucode.config_io import (
     prune_key_paths,
     read_json_safe,
     read_toml_safe,
+    read_toml_values_safe,
     restore_file,
     set_dry_run,
     write_dotenv,
@@ -254,6 +255,56 @@ class TestReadHelpers:
         p.write_text("[[[ broken", encoding="utf-8")
         doc = read_toml_safe(p)
         assert dict(doc) == {}
+
+    def test_read_toml_values_preserves_types_without_modifying_file(self, tmp_path):
+        path = tmp_path / "settings.toml"
+        original = (
+            '# User comment\n[provider]\nname = "Databricks"\nenabled = true\nlimits = [1, 2]\n'
+        )
+        path.write_text(original, encoding="utf-8")
+
+        values = read_toml_values_safe(path)
+
+        assert values == {"provider": {"name": "Databricks", "enabled": True, "limits": [1, 2]}}
+        assert type(values) is dict
+        assert type(values["provider"]) is dict
+        assert path.read_text(encoding="utf-8") == original
+
+    @pytest.mark.parametrize("content", [None, b'key = "unfinished', b"\xff"])
+    def test_read_toml_values_missing_malformed_or_non_utf8(self, tmp_path, content):
+        path = tmp_path / "settings.toml"
+        if content is not None:
+            path.write_bytes(content)
+
+        assert read_toml_values_safe(path) == {}
+
+    def test_read_toml_values_unreadable_file(self, tmp_path, monkeypatch):
+        def deny_read(*args, **kwargs):
+            raise PermissionError("unreadable")
+
+        monkeypatch.setattr(type(tmp_path), "read_text", deny_read)
+
+        assert read_toml_values_safe(tmp_path / "settings.toml") == {}
+
+    def test_read_toml_values_accepts_newer_syntax_without_rereading(self, tmp_path, monkeypatch):
+        path = tmp_path / "settings.toml"
+        original = '# Keep the inline table\nprovider = {\nname = "Databricks",\n}\n'
+        path.write_text(original, encoding="utf-8")
+        original_read = type(path).read_text
+        reads = []
+
+        def read_once(target, **kwargs):
+            reads.append(target)
+            return original_read(target, **kwargs)
+
+        monkeypatch.setattr(type(path), "read_text", read_once)
+
+        values = read_toml_values_safe(path)
+
+        assert values == {"provider": {"name": "Databricks"}}
+        assert type(values["provider"]) is dict
+        assert reads == [path]
+        assert path.read_bytes() == original.encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
