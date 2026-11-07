@@ -1395,3 +1395,14 @@ installed plugin to contain no duplicate servers. Reconfigure comparisons includ
 added through `ug mcp add`, while retaining the original model/authentication-field assertions.
 These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
+
+## Auto session controls
+
+`test_smart_routing_config.py` covers explicit exposure values, legacy precedence,
+unknown-version no-op behavior, restoration, and capability/activity separation.
+`test_claude_auto_picker.py` exercises validated session writes, feedback checks,
+trimmed 15/16-character feedback boundaries, safe launch guards, and Claude-only
+rejection of legacy controls while Codex session toggles remain usable. Native options
+cover exposure with activity disabled. Inherited Auto capability cannot select an
+unregistered preset. The Auto preset is not
+registered; native picker behavior and live routing are not covered by this layer.

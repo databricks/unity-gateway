@@ -11,31 +11,37 @@ from ucode.constants import (
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
+    SMART_ROUTING_ENV_KEYS,
 )
 from ucode.smart_routing import config, orchestrator, session_env, v2
 
 _EXPECTED_PRESETS = {
     config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
+        "EXPOSE_AUTO_IN_MODEL_PICKER": "0",
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     },
     config.SUBAGENT_ONLY_V0: {
+        "EXPOSE_AUTO_IN_MODEL_PICKER": "0",
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     },
     config.SUBAGENT_ONLY_V1: {
+        "EXPOSE_AUTO_IN_MODEL_PICKER": "0",
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     },
     config.SUBAGENT_ORCH_V0: {
+        "EXPOSE_AUTO_IN_MODEL_PICKER": "0",
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
     },
     config.SUBAGENT_ORCH_V1: {
+        "EXPOSE_AUTO_IN_MODEL_PICKER": "0",
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
@@ -43,11 +49,74 @@ _EXPECTED_PRESETS = {
 }
 
 
+@pytest.mark.parametrize("version", sorted(config._VERSIONS))
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+def test_picker_exposure_overrides_shell_and_is_not_an_activity_flag(version, agent):
+    source = {
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version,
+        "EXPOSE_AUTO_IN_MODEL_PICKER": "1",
+    }
+    expected = "0"
+    assert (
+        config.resolve_environment(source, agent=agent)["EXPOSE_AUTO_IN_MODEL_PICKER"] == expected
+    )
+    original = source.copy()
+    previous = v2.override_smart_routing(False, source, agent=agent)
+    assert source["EXPOSE_AUTO_IN_MODEL_PICKER"] == expected
+    assert all(source[key] == "0" for key in config.SMART_ROUTING_ENV_KEYS)
+    v2.restore_smart_routing_env(previous, source)
+    assert source == original
+
+
+@pytest.mark.parametrize("value", [None, "", "true", True])
+def test_picker_exposure_requires_an_explicit_binary_value(value):
+    agents = {
+        agent: flags.copy()
+        for agent, flags in config._VERSIONS[config.SUBAGENT_ORCH_V0_CLAUDE_ONLY].items()
+    }
+    if value is None:
+        agents[AGENT_CLAUDE].pop("EXPOSE_AUTO_IN_MODEL_PICKER")
+    else:
+        agents[AGENT_CLAUDE]["EXPOSE_AUTO_IN_MODEL_PICKER"] = value
+    with pytest.raises(ValueError, match="EXPOSE_AUTO_IN_MODEL_PICKER"):
+        config._validate_versions({"invalid_v0": agents})
+
+
+def test_exposure_alone_does_not_enable_routing_or_orchestration():
+    env = {"EXPOSE_AUTO_IN_MODEL_PICKER": "1"}
+    assert not v2.smart_routing_enabled(env, default=False, agent=AGENT_CLAUDE)
+    assert not orchestrator.feature_enabled(env, agent=AGENT_CLAUDE)
+
+
+def test_session_off_preserves_auto_picker_capability(tmp_path):
+    import json
+
+    controls = tmp_path / "controls.json"
+    controls.write_text(json.dumps(dict.fromkeys(config.SMART_ROUTING_ENV_KEYS, "0")))
+    env = {
+        "UCODE_AUTO_PICKER_CONFIG": config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY,
+        "EXPOSE_AUTO_IN_MODEL_PICKER": "1",
+        session_env.SESSION_ENV_VAR: str(controls),
+    }
+    effective = session_env.effective_environment(env, agent=AGENT_CLAUDE)
+    assert effective["EXPOSE_AUTO_IN_MODEL_PICKER"] == "1"
+    assert all(effective[key] == "0" for key in config.SMART_ROUTING_ENV_KEYS)
+
+
 @pytest.mark.parametrize(
-    "selector", [None, "", "   ", "unsupported_version", " unsupported_version "]
+    "selector",
+    [
+        None,
+        "",
+        "   ",
+        "unsupported_version",
+        " unsupported_version ",
+        config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY,
+    ],
 )
 def test_absent_or_unknown_selector_is_a_no_op(selector):
     applied = {
+        "EXPOSE_AUTO_IN_MODEL_PICKER": "1",
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
@@ -221,7 +290,8 @@ def test_enabled_version_keeps_a_known_version(agent, version):
 
     previous = config.apply_enabled_version(applied, agent=agent)
 
-    assert applied == config.resolve_environment(inherited, agent=agent)
+    expected = config.resolve_environment(inherited, agent=agent)
+    assert applied == expected
     v2.restore_smart_routing_env(previous, applied)
     assert applied == inherited
 
@@ -258,6 +328,7 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
         config._VERSIONS[config.SUBAGENT_ORCH_V0],
         AGENT_CODEX,
         {
+            "EXPOSE_AUTO_IN_MODEL_PICKER": "0",
             "ENABLE_SMART_ROUTING_V2": "0",
             "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
             "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
@@ -265,6 +336,7 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
     )
     source = {"SMART_ROUTER_CONFIG_VERSION": "subagent_orch_v0"}
     expected = {
+        "EXPOSE_AUTO_IN_MODEL_PICKER": "0",
         "ENABLE_SMART_ROUTING_V2": "0",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": enabled,
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": enabled,
@@ -338,3 +410,16 @@ def test_enabled_version_routes_ignores_uncovered_agent():
 
     assert config.enabled_version_routes(env, agent="opencode") is False
     assert config.enabled_version_routes({}, agent="opencode") is False
+
+
+def test_enabled_version_with_inherited_auto_capability():
+    inherited = {
+        "UCODE_AUTO_PICKER_CONFIG": config.SUBAGENT_ORCH_AUTO_PICKER_V0_CLAUDE_ONLY,
+        "EXPOSE_AUTO_IN_MODEL_PICKER": "1",
+        **dict.fromkeys(SMART_ROUTING_ENV_KEYS, "1"),
+    }
+    applied = inherited.copy()
+    previous = config.apply_enabled_version(applied, agent=AGENT_CLAUDE)
+    assert applied == _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0]
+    v2.restore_smart_routing_env(previous, applied)
+    assert applied == inherited

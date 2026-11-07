@@ -53,10 +53,18 @@ Restore the inherited environment on every exit.
 `--enable-smart-routing` and managed smart routing turn routing on only through
 `apply_enabled_version` in `config.py`: keep a known version, otherwise select
 `DEFAULT_ENABLED_VERSION` (an unknown selector is replaced for that launch). Neither may rewrite
-already-resolved version flags.
+already-resolved version flags, except for Auto launch enablement: the Auto preset
+exposes the picker with activity off, and explicit/managed enablement activates subagent
+routing and orchestration together. Do not enable main-request routing for Auto.
+Only select Auto from a consumed capability marker when its preset is registered.
+The marker carries the launch capability into helper subprocesses; it is not a separate
+user-facing feature flag. Session controls must check the calling agent.
 
-Every new `smart_routing` or `smart_router` environment variable must be registered in
+Every new smart-routing activity environment variable must be registered in
 `SMART_ROUTING_ENV_KEYS` in the same change, including orchestration controls.
+`EXPOSE_AUTO_IN_MODEL_PICKER` is a launch capability, not activity: register it in
+`config.py::_CONFIG_ENV_KEYS` for complete preset validation and restoration, while
+session off controls continue changing only `SMART_ROUTING_ENV_KEYS`.
 Pass Claude's resolved launch baseline through native `pluginConfigs` options in the existing
 launch settings. Keep the TypeScript static; toggles must not write configuration files. An explicit toggle
 may delegate the session-control write to UG's CLI, which validates and replaces that file
@@ -87,7 +95,7 @@ If a new parameter needs nonbinary values, add parameter-specific validation and
 1. Add a complete mapping to `_VERSIONS` with an explicit suffix, such as `new_mode_v0`.
    For a changed existing mode, add `existing_mode_v1` rather than changing its `_v0` behavior.
    Do not add unsuffixed names or version aliases.
-2. Define every key in `SMART_ROUTING_ENV_KEYS`; never rely on the caller's
+2. Define every key in `_CONFIG_ENV_KEYS` (activity plus picker exposure); never rely on the caller's
    inherited environment to fill missing values.
 3. Update the version table and examples in `README.md` and any affected bundled-skill docs.
 4. Extend `tests/test_smart_routing_config.py` for the new mode, precedence over legacy flags,
