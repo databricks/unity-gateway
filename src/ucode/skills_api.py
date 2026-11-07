@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
@@ -255,8 +255,8 @@ def list_skill_files(
 ) -> tuple[list[str], str | None]:
     """List a skill bundle's files, as paths relative to the skill directory.
 
-    Walks the skill's Files API directory tree concurrently (one wave of
-    sibling directories per level). Takes the securable leaf, the only name
+    Walks the skill's Files API directory tree concurrently, starting descendants
+    as soon as their parent finishes. Takes the securable leaf, the only name
     the Files API resolves. A non-None reason indicates the listing call
     itself failed; the returned path order is non-deterministic.
     """
@@ -265,23 +265,33 @@ def list_skill_files(
     skill_prefix = f"/{SKILL_FILES_API_PREFIX}/{catalog}/{schema}/{securable}/"
 
     relative_paths: list[str] = []
-    pending = [f"{SKILL_FILES_API_PREFIX}/{catalog}/{schema}/{securable}"]
-    while pending:
-        futures = [
-            _files_api_pool.submit(_list_skill_directory, dirs_base, directory, token, skill_prefix)
-            for directory in pending
-        ]
-        pending = []
-        try:
-            for future in as_completed(futures):
+    futures = {
+        _files_api_pool.submit(
+            _list_skill_directory,
+            dirs_base,
+            f"{SKILL_FILES_API_PREFIX}/{catalog}/{schema}/{securable}",
+            token,
+            skill_prefix,
+        )
+    }
+    try:
+        while futures:
+            completed, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for future in completed:
+                futures.remove(future)
                 files, subdirs, reason = future.result()
                 if reason:
                     return [], reason
                 relative_paths.extend(files)
-                pending.extend(subdirs)
-        finally:
-            for future in futures:
-                future.cancel()
+                futures.update(
+                    _files_api_pool.submit(
+                        _list_skill_directory, dirs_base, directory, token, skill_prefix
+                    )
+                    for directory in subdirs
+                )
+    finally:
+        for future in futures:
+            future.cancel()
     return relative_paths, None
 
 
