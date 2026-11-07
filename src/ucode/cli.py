@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """CLI entry point for ``ug``."""
 
-from __future__ import annotations
+# Keep annotations evaluated: Typer reads each callback twice while building the
+# command tree. Postponed annotations would re-evaluate every Option declaration.
 
 import json
 import os
