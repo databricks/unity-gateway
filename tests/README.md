@@ -1,5 +1,11 @@
 # Test suites and user journeys
 
+`test_gateway_proxy_integration.py` exercises the loopback proxy over local sockets.
+Its SSE scenario checks response order and verifies a nonzero TCP_NODELAY flag on the accepted
+proxy socket across Linux and BSD/macOS, avoiding timing thresholds while preventing Nagle buffering of small
+frames when a client delays acknowledgements. This is component coverage; it does
+not establish live gateway or agent streaming latency.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component

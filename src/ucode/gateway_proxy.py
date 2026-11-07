@@ -268,6 +268,9 @@ def _request_model(body: bytes | None) -> str | None:
 
 
 class _ProxyHandler(BaseHTTPRequestHandler):
+    # Small SSE frames must not wait for a previous frame's delayed ACK.
+    disable_nagle_algorithm = True
+
     # Set by the server factory.
     cache: TokenCache
     client: httpx.Client

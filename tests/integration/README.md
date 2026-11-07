@@ -13,6 +13,10 @@ The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
 service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
 It replaces the obsolete stdio-only expectation; this checks configuration, not live login.
 
+`../test_gateway_proxy_integration.py` checks local proxy SSE response order and
+nonzero TCP_NODELAY on the accepted socket, including BSD/macOS flag values. These component checks avoid timing thresholds
+and do not establish live gateway or agent streaming latency.
+
 Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
 before numbered reuse, stable names during routing and in parallel cards, and unchanged
 execution inputs and row controls. They cover a lone call's decision under its Agent row,
