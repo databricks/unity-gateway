@@ -5,6 +5,19 @@ const FEEDBACK_PANE = 'smart-router-feedback';
 const FEEDBACK_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 type FeedbackCategory = 'smart-routing' | 'other';
 
+export type SmartRouterCommand = { action: 'on' | 'off'; feedbackId?: string };
+
+// `off --feedback-id <id>` names the reason Isaac already saved for Omnigent's switch.
+export function parseSmartRouterCommand(args: string): SmartRouterCommand | undefined {
+  const [action, option, feedbackId, ...rest] = args.trim().split(/\s+/);
+  if (action !== 'on' && action !== 'off') return undefined;
+  if (option === undefined) return { action };
+  if (action === 'off' && option === '--feedback-id' && FEEDBACK_ID.test(feedbackId ?? '') && !rest.length) {
+    return { action, feedbackId: feedbackId.toLowerCase() };
+  }
+  return undefined;
+}
+
 function feedbackSuffix(feedbackId: string): string {
   return feedbackId ? ` Feedback ID: ${feedbackId}` : '';
 }
@@ -163,6 +176,18 @@ async function openFeedbackForm(
   return false;
 }
 
+async function turnOffWithSavedFeedback(
+  disableRouting: NonNullable<FeedbackState['disableRouting']>, feedbackId: string,
+): Promise<{ text: string }> {
+  try {
+    // UG's CLI turns routing off only if Isaac saved this ID as smart routing feedback for this session.
+    await disableRouting(['--smart-router-feedback-id', feedbackId]);
+  } catch {
+    return { text: 'Could not turn Smart Router off with that feedback ID. Smart Router is still on.' };
+  }
+  return { text: 'Smart Router is off' };
+}
+
 export function registerIsaacFeedback(
   on: On, state: FeedbackState, isaacExecutable: string, isaacFeedbackDirectory: string,
 ): void {
@@ -223,7 +248,8 @@ export function registerIsaacFeedback(
   });
 
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
-    if (e.args.trim() !== 'off') return next(e);
+    const command = parseSmartRouterCommand(e.args);
+    if (command?.action !== 'off') return next(e);
     const feedbackRequired = envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'));
     if (!feedbackRequired) return next(e);
     if (state.submitted) return { text: 'Feedback is being prepared.' };
@@ -232,6 +258,7 @@ export function registerIsaacFeedback(
         throw new Error('Smart Router controls are unavailable.');
       }
       if (!await state.readRoutingEnabled()) return {text: 'Smart Router is off'};
+      if (command.feedbackId) return await turnOffWithSavedFeedback(state.disableRouting, command.feedbackId);
       state.submitted = false;
       state.reason = '';
       state.category = 'smart-routing';
