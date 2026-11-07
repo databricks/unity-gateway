@@ -82,6 +82,7 @@ from ucode.databricks import (
     databricks_cli_installed,
     discover_claude_models,
     discover_codex_models,
+    discover_gemini_and_codex_models,
     discover_gemini_models,
     discover_model_services,
     ensure_databricks_auth,
@@ -816,6 +817,7 @@ def configure_shared_state(
         assert model_services_discovery is not None
         with spinner("Fetching available models..."):
             ms_claude, ms_codex, ms_gemini, ms_oss, ms_reason = model_services_discovery.result()
+            shared_codex_discovery = None
             if want_claude:
                 claude_models, claude_reason = ms_claude, ms_reason
                 if not claude_models:
@@ -823,10 +825,19 @@ def configure_shared_state(
             if want_gemini:
                 gemini_models, gemini_reason = ms_gemini, ms_reason
                 if not gemini_models:
-                    gemini_models, gemini_reason = discover_gemini_models(workspace, token)
+                    if want_codex and not ms_codex:
+                        # These two families use the same listing. Share its successful response
+                        # within this discovery rather than paying for a second identical GET.
+                        (gemini_models, gemini_reason), shared_codex_discovery = (
+                            discover_gemini_and_codex_models(workspace, token)
+                        )
+                    else:
+                        gemini_models, gemini_reason = discover_gemini_models(workspace, token)
             if want_codex:
                 codex_models, codex_reason = ms_codex, ms_reason
-                if not codex_models:
+                if shared_codex_discovery is not None:
+                    codex_models, codex_reason = shared_codex_discovery
+                elif not codex_models:
                     codex_models, codex_reason = discover_codex_models(workspace, token)
             if want_oss:
                 oss_models, oss_reason = ms_oss, ms_reason

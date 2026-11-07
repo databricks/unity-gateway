@@ -1,5 +1,14 @@
 # Test suites and user journeys
 
+`TestSharedFoundationModels` in `test_databricks.py` and
+`TestConfigureSharedFoundationListing` in `test_cli.py` cover sharing one successful
+foundation-models response when Gemini and Codex both need fallback discovery.
+They preserve family filtering/order/diagnostics, retry the second family after a failed
+or malformed first read, and require fresh results across repeated or concurrent operations.
+`test_workspace_selection.py` checks the selected workspace and bearer on each new request.
+`scripts/benchmark_foundation_listing.py` measures controlled request delays and counts;
+it does not establish live gateway or native-agent latency.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component

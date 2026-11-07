@@ -3824,10 +3824,22 @@ def discover_endpoints_with_api_type(
     describes why the list is empty. `sort_key` overrides the default
     alphabetical ordering of the returned names.
     """
+    payload, reason = _foundation_model_listing(workspace, token)
+    return _endpoints_with_api_type(payload, reason, api_type, sort_key=sort_key)
+
+
+def _foundation_model_listing(workspace: str, token: str) -> tuple[dict | list | None, str | None]:
     hostname = workspace_hostname(workspace)
-    payload, reason = _http_get_json(
-        f"https://{hostname}/api/2.0/serving-endpoints:foundation-models", token
-    )
+    return _http_get_json(f"https://{hostname}/api/2.0/serving-endpoints:foundation-models", token)
+
+
+def _endpoints_with_api_type(
+    payload: dict | list | None,
+    reason: str | None,
+    api_type: str,
+    *,
+    sort_key=None,
+) -> tuple[list[str], str | None]:
     if payload is None:
         return [], reason
 
@@ -3881,6 +3893,29 @@ def discover_codex_models(workspace: str, token: str) -> tuple[list[str], str | 
     return discover_endpoints_with_api_type(
         workspace, token, API_OPENAI_RESPONSES, sort_key=model_version_sort_key
     )
+
+
+def discover_gemini_and_codex_models(
+    workspace: str, token: str
+) -> tuple[tuple[list[str], str | None], tuple[list[str], str | None]]:
+    """Resolve both fallback families from one operation-local foundation listing.
+
+    Keep no cache: subsequent calls, credentials and workspace selections always fetch again.
+    A failed or malformed first read still lets Codex attempt its own read, as sequential
+    discovery did.
+    """
+    payload, reason = _foundation_model_listing(workspace, token)
+    gemini = _endpoints_with_api_type(
+        payload, reason, API_GEMINI_GENERATE_CONTENT, sort_key=model_version_sort_key
+    )
+    codex = (
+        _endpoints_with_api_type(
+            payload, reason, API_OPENAI_RESPONSES, sort_key=model_version_sort_key
+        )
+        if isinstance(payload, dict) and isinstance(payload.get("endpoints"), list)
+        else discover_codex_models(workspace, token)
+    )
+    return gemini, codex
 
 
 def fetch_gemini_models(workspace: str, token: str) -> list[str]:
