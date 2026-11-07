@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -4758,6 +4759,134 @@ class TestDatabricksCliResolution:
 
         db_mod._discover_databricks_clis(use_cache=False)
         assert len(iter_calls) == 2
+
+    def test_discover_overlaps_distinct_version_probes(self, monkeypatch):
+        paths = [f"/path/{i}/databricks" for i in range(4)]
+        started = threading.Barrier(len(paths))
+        last_finished = threading.Event()
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: paths)
+
+        def probe(path):
+            # All four must be running before any can complete. The first PATH entry finishes
+            # after the last, so an equal version must still retain PATH precedence.
+            started.wait(timeout=5)
+            if path == paths[-1]:
+                last_finished.set()
+            else:
+                assert last_finished.wait(timeout=5)
+            return (1, 2, 3)
+
+        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", probe)
+
+        assert db_mod._discover_databricks_clis() == [(path, (1, 2, 3)) for path in paths]
+
+    @pytest.mark.parametrize("error_type", [KeyboardInterrupt, RuntimeError])
+    def test_failed_probe_does_not_wait_for_other_probes_or_start_next_batch(
+        self, monkeypatch, error_type
+    ):
+        paths = [f"/path/{i}/databricks" for i in range(8)]
+        first_batch_started = threading.Barrier(4, timeout=5)
+        release_workers = threading.Event()
+        finished = {path: threading.Event() for path in paths}
+        returned = threading.Event()
+        calls = []
+        errors = []
+        failure = error_type("stop discovery")
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: paths)
+
+        def probe(path):
+            calls.append(path)
+            try:
+                first_batch_started.wait()
+                if path == paths[0]:
+                    raise failure
+                assert release_workers.wait(timeout=5)
+                return (1, 2, 3)
+            finally:
+                finished[path].set()
+
+        def discover():
+            try:
+                db_mod._discover_databricks_clis()
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                returned.set()
+
+        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", probe)
+        caller = threading.Thread(target=discover, daemon=True)
+        caller.start()
+        try:
+            # The caller must propagate the failure while the other probes are still blocked.
+            # Always release/reap them below, including when this regression fails.
+            propagated_before_release = returned.wait(timeout=5)
+            other_probes_blocked = all(not finished[path].is_set() for path in paths[1:4])
+        finally:
+            release_workers.set()
+            caller.join(timeout=5)
+            for path in paths[:4]:
+                assert finished[path].wait(timeout=5)
+
+        assert propagated_before_release
+        assert other_probes_blocked
+        assert not caller.is_alive()
+        assert errors == [failure]
+        assert set(calls) == set(paths[:4])
+        assert db_mod._DISCOVERED_DATABRICKS_CLIS_ORDERED is None
+
+    @pytest.mark.parametrize("invalidate", [False, True])
+    def test_discovery_callers_share_scan_and_invalidation_waits(self, monkeypatch, invalidate):
+        fetch_started = threading.Event()
+        release_fetch = threading.Event()
+        second_waiting = threading.Event()
+        lock = threading.Lock()
+        requests_lock = threading.Lock()
+        requests = 0
+        probes = []
+
+        class ObservedLock:
+            def __enter__(self):
+                nonlocal requests
+                with requests_lock:
+                    requests += 1
+                    if requests == 2:
+                        second_waiting.set()
+                lock.acquire()
+
+            def __exit__(self, *args):
+                lock.release()
+
+        def probe(path):
+            probes.append(path)
+            fetch_started.set()
+            assert release_fetch.wait(timeout=5)
+            return (1, len(probes), 0)
+
+        monkeypatch.setattr(db_mod, "_DATABRICKS_CLI_DISCOVERY_LOCK", ObservedLock())
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: ["/path/databricks"])
+        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", probe)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(db_mod._discover_databricks_clis)
+            try:
+                assert fetch_started.wait(timeout=5)
+                second = pool.submit(
+                    clear_databricks_cli_cache if invalidate else db_mod._discover_databricks_clis
+                )
+                assert second_waiting.wait(timeout=5)
+            finally:
+                release_fetch.set()
+            assert first.result(timeout=5) == [("/path/databricks", (1, 1, 0))]
+            second_result = second.result(timeout=5)
+
+        if invalidate:
+            # Invalidation after this scan started must still clear its eventual result.
+            assert second_result is None
+            assert db_mod._discover_databricks_clis() == [("/path/databricks", (1, 2, 0))]
+            assert len(probes) == 2
+        else:
+            assert second_result is first.result()
+            assert len(probes) == 1
 
     # -- _select_databricks_cli -----------------------------------------------
 
