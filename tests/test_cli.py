@@ -1829,7 +1829,7 @@ class TestSubcommandRouting:
         }
         with (
             patch(
-                "ucode.cli.load_full_state",
+                "ucode.state.load_full_state",
                 return_value={"workspaces": {"https://example.com": {"custom_oauth": custom}}},
             ),
             patch("ucode.custom_oauth.get_databricks_token") as default_token,
@@ -2749,8 +2749,8 @@ class TestAuthTokenCommand:
             monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", selector)
         previous = dict(os.environ)
         with (
-            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
-            patch("ucode.cli.get_databricks_token", return_value="tok-123") as fetch,
+            patch("ucode.agent_helpers.load_saved_state", return_value={"workspace": "https://ws"}),
+            patch("ucode.agent_helpers.get_databricks_token", return_value="tok-123") as fetch,
         ):
             args = ["auth-token", "--browser-login"] if browser_login else ["auth-token"]
             result = runner.invoke(app, args)
@@ -2765,8 +2765,10 @@ class TestAuthTokenCommand:
 
     def test_host_and_profile_override_state(self):
         with (
-            patch("ucode.cli.load_state", return_value={"workspace": "https://saved"}),
-            patch("ucode.cli.get_databricks_token", return_value="tok") as fetch,
+            patch(
+                "ucode.agent_helpers.load_saved_state", return_value={"workspace": "https://saved"}
+            ),
+            patch("ucode.agent_helpers.get_databricks_token", return_value="tok") as fetch,
         ):
             result = runner.invoke(
                 app, ["auth-token", "--host", "https://override", "--profile", "prod"]
@@ -2778,15 +2780,15 @@ class TestAuthTokenCommand:
 
     def test_force_refresh_is_forwarded(self):
         with (
-            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
-            patch("ucode.cli.get_databricks_token", return_value="tok") as fetch,
+            patch("ucode.agent_helpers.load_saved_state", return_value={"workspace": "https://ws"}),
+            patch("ucode.agent_helpers.get_databricks_token", return_value="tok") as fetch,
         ):
             result = runner.invoke(app, ["auth-token", "--force-refresh"])
         assert result.exit_code == 0
         fetch.assert_called_once_with("https://ws", None, force_refresh=True, browser_login=False)
 
     def test_errors_without_workspace(self):
-        with patch("ucode.cli.load_state", return_value={}):
+        with patch("ucode.agent_helpers.load_saved_state", return_value={}):
             result = runner.invoke(app, ["auth-token"])
         assert result.exit_code == 1
         # The error goes to stderr, never stdout.
@@ -2802,9 +2804,9 @@ class TestAuthTokenCommand:
         monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
         monkeypatch.setattr("ucode.databricks.resolve_pat_token", lambda p: "dapi-pat")
         with (
-            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
+            patch("ucode.agent_helpers.load_saved_state", return_value={"workspace": "https://ws"}),
             patch(
-                "ucode.cli.get_databricks_token",
+                "ucode.agent_helpers.get_databricks_token",
                 side_effect=lambda w, p, **_kwargs: os.environ.get("DATABRICKS_BEARER", ""),
             ),
         ):
@@ -2818,9 +2820,9 @@ class TestAuthTokenCommand:
         monkeypatch.setenv("DATABRICKS_BEARER", "")
         monkeypatch.setattr("ucode.databricks.resolve_pat_token", lambda p: "dapi-pat")
         with (
-            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
+            patch("ucode.agent_helpers.load_saved_state", return_value={"workspace": "https://ws"}),
             patch(
-                "ucode.cli.get_databricks_token",
+                "ucode.agent_helpers.get_databricks_token",
                 side_effect=lambda w, p, **_kwargs: os.environ.get("DATABRICKS_BEARER", ""),
             ),
         ):
@@ -2834,8 +2836,8 @@ class TestAuthTokenCommand:
         monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
         monkeypatch.setattr("ucode.databricks.resolve_pat_token", lambda p: None)
         with (
-            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
-            patch("ucode.cli.get_databricks_token", return_value="oauth-tok") as fetch,
+            patch("ucode.agent_helpers.load_saved_state", return_value={"workspace": "https://ws"}),
+            patch("ucode.agent_helpers.get_databricks_token", return_value="oauth-tok") as fetch,
         ):
             result = runner.invoke(app, ["auth-token", "--use-pat", "--profile", "p"])
         assert result.exit_code == 1
@@ -2848,9 +2850,9 @@ class TestAuthTokenCommand:
         monkeypatch.setenv("DATABRICKS_BEARER", "ci-bearer")
         monkeypatch.setattr("ucode.databricks.resolve_pat_token", lambda p: "dapi-pat")
         with (
-            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
+            patch("ucode.agent_helpers.load_saved_state", return_value={"workspace": "https://ws"}),
             patch(
-                "ucode.cli.get_databricks_token",
+                "ucode.agent_helpers.get_databricks_token",
                 side_effect=lambda w, p, **_kwargs: os.environ.get("DATABRICKS_BEARER", ""),
             ),
         ):
@@ -2873,10 +2875,10 @@ class TestOtelHeadersCommand:
         tokens = iter(["first-token", "refreshed-token"])
         with (
             patch(
-                "ucode.cli.load_state",
+                "ucode.agent_helpers.load_saved_state",
                 return_value={"workspace": "https://other.example", "profile": "other"},
             ),
-            patch("ucode.cli.get_databricks_token", side_effect=token),
+            patch("ucode.agent_helpers.get_databricks_token", side_effect=token),
         ):
             for expected in ("first-token", "refreshed-token"):
                 result = runner.invoke(
@@ -2895,9 +2897,9 @@ class TestOtelHeadersCommand:
 
     def test_failed_refresh_emits_no_header_or_token(self):
         with (
-            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.agent_helpers.load_saved_state", return_value={}),
             patch(
-                "ucode.cli.get_databricks_token",
+                "ucode.agent_helpers.get_databricks_token",
                 side_effect=RuntimeError("Reauthenticate with Databricks CLI"),
             ),
         ):
@@ -2917,8 +2919,8 @@ class TestOtelHeadersCommand:
 
     def test_prints_only_the_authorization_header_json(self):
         with (
-            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
-            patch("ucode.cli.get_databricks_token", return_value="tok-123") as fetch,
+            patch("ucode.agent_helpers.load_saved_state", return_value={"workspace": "https://ws"}),
+            patch("ucode.agent_helpers.get_databricks_token", return_value="tok-123") as fetch,
         ):
             result = runner.invoke(app, ["otel-headers"])
 
@@ -2927,7 +2929,7 @@ class TestOtelHeadersCommand:
         fetch.assert_called_once_with("https://ws", None, force_refresh=False)
 
     def test_errors_without_workspace(self):
-        with patch("ucode.cli.load_state", return_value={}):
+        with patch("ucode.agent_helpers.load_saved_state", return_value={}):
             result = runner.invoke(app, ["otel-headers"])
 
         assert result.exit_code == 1

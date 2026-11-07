@@ -1,5 +1,9 @@
 # Integration tests
 
+Component startup probes preserve non-ASCII UTF-8 hook payloads with a cp1252 text wrapper.
+Proxy dispatch checks keep the existing argparse path free of Typer imports. These checks do
+not establish live Windows agent routing or MCP latency.
+
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They
@@ -347,8 +351,10 @@ timeout. Offline PTY checks cover this ordering.
 The shared wait also runs before CUJ4's Claude delegation sessions exit, after delegated-task
 evidence is checked, because Claude can resume a child after its first completed answer.
 
-`../test_startup_imports.py` covers the bare version fast path, deferred imports,
-metadata fallback, and other-argument dispatch as component checks. Installation
+`../test_startup_imports.py` covers the bare version fast path, deferred imports
+(including the orchestrator prompt hook's), metadata fallback, and other-argument
+dispatch as component checks. Helper help/error parity covers both console aliases,
+including unknown options and missing option values. Installation
 checks still exercise real console-script help and version output; neither suite
 asserts end-to-end agent startup latency. The component suite also checks that
 version output alone cannot establish CLI health when startup dependencies are

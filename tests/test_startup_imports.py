@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import zipfile
@@ -106,6 +107,188 @@ def test_installed_version_matches_importlib_metadata() -> None:
 def test_cli_import_defers_subcommand_specific_modules() -> None:
     _, loaded = _modules_loaded_after("import ucode.cli\nimport ucode.agents.claude", _LAZY_MODULES)
 
+    assert loaded == []
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("auth-token", "helper-bearer"),
+        ("otel-headers", '{"Authorization": "Bearer helper-bearer"}'),
+    ],
+)
+def test_agent_helper_entrypoint_skips_the_cli(tmp_path, command, expected) -> None:
+    probe = (
+        "import os, sys\n"
+        f"os.environ.update(HOME={str(tmp_path)!r}, USERPROFILE={str(tmp_path)!r}, "
+        "DATABRICKS_BEARER='helper-bearer')\n"
+        f"sys.argv = ['ug', {command!r}, '--host', 'https://ws.example']\n"
+        "from ucode.entrypoint import main\n"
+        "try:\n    main()\nexcept SystemExit as exc:\n    assert not exc.code, exc.code"
+    )
+
+    output, loaded = _modules_loaded_after(probe, ("ucode.cli", "ucode.agents", *_LAZY_MODULES))
+
+    assert output == expected
+    assert loaded == []
+
+
+@pytest.mark.parametrize(
+    ("command", "event", "payload", "artifact"),
+    [
+        (
+            "claude-router-hook",
+            "session-start",
+            {"session_id": "s1"},
+            "claude-smart-routing-canary.json",
+        ),
+        (
+            "claude-router-hook",
+            "record-subagent",
+            {"session_id": "s1"},
+            "claude-smart-routing-audit.jsonl",
+        ),
+        (
+            "codex-router-hook",
+            "session-start",
+            {"session_id": "s1"},
+            "codex-smart-routing-canary.json",
+        ),
+        (
+            "codex-router-hook",
+            "record-subagent",
+            {"session_id": "s1"},
+            "codex-smart-routing-audit.jsonl",
+        ),
+    ],
+)
+def test_router_hook_records_skip_the_cli(tmp_path, command, event, payload, artifact) -> None:
+    # Agents run these at session start and before every subagent starts.
+    payload = {**payload, "session_id": "s1-東京"}
+    session = tmp_path / "env.json"
+    session.write_text("{}", encoding="utf-8")
+    probe = (
+        "import io, os, sys\n"
+        f"os.environ.update(HOME={str(tmp_path)!r}, USERPROFILE={str(tmp_path)!r}, "
+        "ENABLE_SMART_ROUTING_SUBAGENT_ONLY='1', "
+        f"UCODE_SESSION_ENV_FILE={str(session)!r})\n"
+        f"sys.argv, sys.stdin = ['ug', {command!r}, {event!r}], io.TextIOWrapper(io.BytesIO({json.dumps(payload, ensure_ascii=False)!r}.encode('utf-8')), encoding='cp1252')\n"
+        "from ucode.entrypoint import main\n"
+        "try:\n    main()\nexcept SystemExit as exc:\n    assert not exc.code, exc.code"
+    )
+    deferred = ("ucode.cli", "ucode.databricks", "ucode.smart_routing.v2", "ucode.ui")
+
+    output, loaded = _modules_loaded_after(probe, (*deferred, *_LAZY_MODULES))
+
+    assert output == ""
+    assert loaded == []
+    recorded = json.loads((tmp_path / ".ucode" / artifact).read_text(encoding="utf-8"))
+    assert recorded["session_id"] == payload["session_id"]
+
+
+def test_web_search_server_initializes_without_the_cli(tmp_path) -> None:
+    # Claude Code starts this server with every session that uses ug's web search.
+    request = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    probe = (
+        "import io, os, sys\n"
+        f"os.environ.update(HOME={str(tmp_path)!r}, USERPROFILE={str(tmp_path)!r})\n"
+        "sys.argv = ['ug', 'mcp', 'web-search', '--managed-by-ucode']\n"
+        f"sys.stdin = io.StringIO({json.dumps(request)!r} + '\\n')\n"
+        "from ucode.entrypoint import main\n"
+        "try:\n    main()\nexcept SystemExit as exc:\n    assert not exc.code, exc.code"
+    )
+    deferred = ("ucode.cli", "ucode.databricks", "ucode.ui", "ucode.workspace")
+
+    output, loaded = _modules_loaded_after(probe, (*deferred, *_LAZY_MODULES))
+
+    assert json.loads(output)["result"]["serverInfo"]["name"] == "ucode-web-search"
+    assert loaded == []
+
+
+def test_agent_helpers_are_the_cli_hidden_helper_commands() -> None:
+    from importlib import import_module
+
+    from typer.main import get_command
+
+    from ucode import cli
+
+    root = get_command(cli.app)
+    for module in set(entrypoint._AGENT_HELPERS.values()):
+        names = {name for name, owner in entrypoint._AGENT_HELPERS.items() if owner == module}
+        assert names == set(import_module(module).COMMANDS)
+    for path in entrypoint._AGENT_HELPERS:
+        *groups, name = path.split()
+        command = root
+        for group in groups:
+            command = command.commands[group]
+        # `ug mcp web-search` is listed under `ug mcp`; the others are hidden helpers.
+        assert command.commands[name].hidden is not bool(groups)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "auth-token",
+        "otel-headers",
+        "claude-router-hook",
+        "codex-router-hook",
+        "mcp web-search",
+    ],
+)
+@pytest.mark.parametrize("executable", ["ug", "ucode"])
+@pytest.mark.parametrize(
+    ("arguments", "expected_exit"),
+    [(["--help"], 0), (["--unknown-option"], 2), (["--host"], 2)],
+)
+def test_agent_helper_usage_matches_the_cli(command, executable, arguments, expected_exit) -> None:
+    def command_output(module: str) -> tuple[str, str]:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                f"import sys\nsys.argv = {[executable, *command.split(), *arguments]!r}\n"
+                f"from {module} import main\nmain()",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+            env={**os.environ, "COLUMNS": "100", "NO_COLOR": "1"},
+        )
+        assert result.returncode == expected_exit, result.stderr
+        return result.stdout, result.stderr
+
+    assert command_output("ucode.entrypoint") == command_output("ucode.cli")
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_orchestrator_prompt_hook_skips_cli_imports(tmp_path, agent) -> None:
+    # Agents run this hook before every prompt is submitted.
+    session = tmp_path / "env.json"
+    session.write_text("{}", encoding="utf-8")
+    probe = (
+        "import os\n"
+        "os.environ.update(ENABLE_SMART_ROUTER_ORCHESTRATOR='1', "
+        f"ENABLE_SMART_ROUTING_SUBAGENT_ONLY='1', UCODE_SESSION_ENV_FILE={str(session)!r})\n"
+        "from ucode.smart_routing import orchestrator\n"
+        "hook = orchestrator.hook_output({'hook_event_name': 'UserPromptSubmit'}, "
+        f"agent={agent!r})\n"
+        "print('is on for this session' in hook['hookSpecificOutput']['additionalContext'])"
+    )
+    deferred = (
+        "importlib.metadata",
+        "rich",
+        "tomlkit",
+        "ucode.databricks",
+        "ucode.smart_routing.v2",
+        "ucode.ui",
+        *_LAZY_MODULES,
+    )
+
+    output, loaded = _modules_loaded_after(probe, deferred)
+
+    assert output == "True"
     assert loaded == []
 
 

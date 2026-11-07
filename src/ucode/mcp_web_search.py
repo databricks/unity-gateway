@@ -21,9 +21,7 @@ from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
-from ucode.databricks import get_databricks_token
 from ucode.ug_headers import ug_headers
-from ucode.workspace import WORKSPACE_ID_ENV_VAR, pin, workspace_headers
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "ucode-web-search"
@@ -33,6 +31,13 @@ MANAGED_ENTRY_FLAG = "--managed-by-ucode"
 EXTERNAL_PROVIDER_OVERRIDE_FLAG = "--external-provider-override"
 AUTOMATIC_PROVIDER = "external-if-safe"
 _MAX_CONCURRENT_SEARCHES = 4
+
+
+def get_databricks_token(workspace: str, profile: str | None = None) -> str:
+    # Agents wait for `initialize`; the Databricks client loads with the first search.
+    from ucode.databricks import get_databricks_token as fetch_token
+
+    return fetch_token(workspace, profile)
 
 
 def external_provider_selected() -> bool:
@@ -120,6 +125,8 @@ def _call_responses_api(query: str) -> dict[str, Any]:
     """POST to the Databricks Codex (Responses API) gateway and return the
     parsed JSON payload. Raises RuntimeError on any failure with a message
     suitable for surfacing as a tool error."""
+    from ucode.workspace import WORKSPACE_ID_ENV_VAR, pin, workspace_headers
+
     workspace = os.environ.get("DATABRICKS_HOST", "").strip()
     model = os.environ.get("UCODE_WEB_SEARCH_MODEL", "").strip()
     profile = os.environ.get("DATABRICKS_CONFIG_PROFILE", "").strip() or None

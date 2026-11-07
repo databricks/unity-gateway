@@ -25,7 +25,7 @@ from rich.text import Text
 from typer import _click
 from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
-from ucode import custom_oauth
+from ucode import agent_helpers, custom_oauth, mcp_commands
 from ucode.agents import (
     GEMINI_API_TOOLS,
     MODEL_LOCATION_TOOLS,
@@ -188,14 +188,9 @@ from ucode.skills_download import (
 from ucode.skills_list import configured_skill_counts_by_agent, list_configured_skills_command
 from ucode.skills_state import records_for_scope
 from ucode.smart_routing import config as smart_routing_config
+from ucode.smart_routing import hook_commands
 from ucode.smart_routing import v2 as smart_routing_v2
-from ucode.smart_routing.claude_hooks import (
-    FIRST_PROMPT_SOCKET_ENV,
-    ROUTE_FIRST_PROMPT_EVENT,
-    ROUTE_SUBAGENT_MOD_EVENT,
-)
 from ucode.smart_routing.session_env import (
-    effective_environment,
     session_env_path,
     set_session_environment,
 )
@@ -249,7 +244,6 @@ from ucode.workspace import (
     activate,
     pin,
     resolve_workspace,
-    selector_headers,
     split_workspace_key,
     state_workspace_key,
     workspace_key,
@@ -2539,30 +2533,7 @@ def mcp_list(
         raise typer.Exit(130) from None
 
 
-@mcp_app.command("web-search")
-def mcp_web_search_cmd(
-    managed_by_ucode: Annotated[
-        bool, typer.Option("--managed-by-ucode", help="Identify a ug-generated registration.")
-    ] = False,
-    external_provider_override: Annotated[
-        bool, typer.Option("--external-provider-override", hidden=True)
-    ] = False,
-    show_capabilities: Annotated[
-        bool, typer.Option("--capabilities", help="Print the launcher contract as JSON and exit.")
-    ] = False,
-) -> None:
-    """Run the web_search MCP server over stdio. Invoked as a subprocess by Claude Code."""
-    import json
-
-    from ucode.mcp_web_search import capabilities, serve
-
-    if show_capabilities:
-        print(json.dumps(capabilities()))
-        return
-    serve(
-        managed_by_ucode=managed_by_ucode,
-        external_provider_override=external_provider_override,
-    )
+mcp_app.command("web-search")(mcp_commands.mcp_web_search_cmd)
 
 
 def _stdin_is_interactive() -> bool:
@@ -2827,36 +2798,7 @@ def skills_remove(
         raise typer.Exit(130) from None
 
 
-@app.command("mcp-proxy", hidden=True)
-def mcp_proxy_cmd(
-    url: Annotated[
-        str,
-        typer.Option("--url", help="Databricks streamable-HTTP MCP endpoint to forward to."),
-    ],
-    host: Annotated[
-        str | None,
-        typer.Option(
-            "--host", help="Workspace URL for token minting. Defaults to the saved workspace."
-        ),
-    ] = None,
-    profile: Annotated[
-        str | None, typer.Option("--profile", help="Databricks CLI profile.")
-    ] = None,
-    use_pat: Annotated[
-        bool,
-        typer.Option(
-            "--use-pat",
-            help="Authenticate with the profile's static personal access token (from "
-            "~/.databrickscfg) instead of OAuth. Set automatically for workspaces configured "
-            "with `ug configure --profile <name> --use-pat`.",
-        ),
-    ] = False,
-    workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
-) -> None:
-    """Bridge a coding agent's stdio MCP transport to a Databricks MCP endpoint."""
-    from ucode.mcp_proxy_runtime import run_proxy
-
-    run_proxy(url, host, profile, use_pat, workspace_id)
+app.command("mcp-proxy", hidden=True)(mcp_commands.mcp_proxy_cmd)
 
 
 @app.command("cowork-hook", hidden=True)
@@ -2927,110 +2869,7 @@ def claude_desktop_auth_cmd(
         sys.stdout.write(json.dumps(credential, separators=(",", ":")) + "\n")
 
 
-@app.command("auth-token", hidden=True)
-def auth_token_cmd(
-    host: Annotated[
-        str | None, typer.Option("--host", help="Workspace URL. Defaults to the saved workspace.")
-    ] = None,
-    profile: Annotated[
-        str | None, typer.Option("--profile", help="Databricks CLI profile.")
-    ] = None,
-    use_pat: Annotated[
-        bool, typer.Option("--use-pat", help="Read the profile's static PAT instead of OAuth.")
-    ] = False,
-    force_refresh: Annotated[
-        bool,
-        typer.Option("--force-refresh", help="Force the Databricks CLI to mint a new token."),
-    ] = False,
-    browser_login: Annotated[bool, typer.Option("--browser-login", hidden=True)] = False,
-    client_id: Annotated[
-        str | None,
-        typer.Option(
-            "--client-id", hidden=True, help="Experimental: custom public OAuth client ID."
-        ),
-    ] = None,
-    redirect_url: Annotated[
-        str | None,
-        typer.Option(
-            "--redirect-url",
-            hidden=True,
-            help="Registered OAuth callback URL. Defaults to http://localhost:8020.",
-        ),
-    ] = None,
-    scopes: Annotated[
-        str | None,
-        typer.Option(
-            "--scopes",
-            hidden=True,
-            help="Comma-separated OAuth scopes for the custom client.",
-        ),
-    ] = None,
-) -> None:
-    """Print a Databricks bearer token to stdout, then exit.
-
-    This is the cross-platform helper invoked by Claude Code's `apiKeyHelper`
-    and Codex's auth command on every token refresh. It is not meant for
-    interactive use. All token logic (DATABRICKS_BEARER short-circuit, PAT
-    profiles, OAuth refresh) lives in `get_databricks_token`, so the same
-    binary works on macOS, Linux, and Windows without any POSIX shell."""
-    import sys
-
-    if client_id is not None and use_pat:
-        print_err("--client-id cannot be combined with --use-pat.")
-        raise typer.Exit(1)
-    if redirect_url is not None and client_id is None:
-        print_err("--redirect-url requires --client-id.")
-        raise typer.Exit(1)
-    if scopes is not None and client_id is None:
-        print_err("--scopes requires --client-id.")
-        raise typer.Exit(1)
-    if client_id is not None and scopes is None:
-        print_err("--scopes is required with --client-id.")
-        raise typer.Exit(1)
-    state = load_state()
-    explicit_host = bool(host and host.strip())
-    workspace = host or state.get("workspace")
-    if not workspace:
-        print_err("No workspace configured. Run `ug configure` first.")
-        raise typer.Exit(1)
-    if profile is None and not explicit_host:
-        profile = state.get("profile")
-    if client_id is None and (use_pat or state.get("use_pat")):
-        # --use-pat explicitly means "serve the profile's static PAT". Fail
-        # closed if it can't be read rather than falling through to OAuth —
-        # `auth token` cannot serve a PAT-only profile, so that path would
-        # surface a misleading stale-login error instead of the real cause.
-        if not ensure_pat_bearer(profile):
-            print_err(
-                f"--use-pat: no personal access token available for profile "
-                f"'{profile or '<none>'}'. Add a `token = <PAT>` entry under "
-                f"[{profile or 'your-profile'}] in ~/.databrickscfg, or re-run "
-                "`ug configure` without --use-pat to use OAuth."
-            )
-            raise typer.Exit(1)
-    try:
-        if client_id is not None:
-            assert scopes is not None
-            token = custom_oauth.get_custom_client_token(
-                workspace,
-                client_id=client_id,
-                redirect_url=(
-                    redirect_url if redirect_url is not None else custom_oauth.DEFAULT_REDIRECT_URL
-                ),
-                scopes=scopes.split(","),
-                profile=profile,
-                force_refresh=force_refresh,
-            )
-        else:
-            token = get_databricks_token(
-                workspace, profile, force_refresh=force_refresh, browser_login=browser_login
-            )
-    except RuntimeError as exc:
-        print_err(str(exc))
-        raise typer.Exit(1) from None
-    # Write the bare token (with trailing newline) to stdout — nothing else may
-    # land on stdout or the consuming agent will treat it as part of the token.
-    sys.stdout.write(token + "\n")
+agent_helpers.register(app)
 
 
 @app.command("otel-proxy", hidden=True)
@@ -3065,160 +2904,7 @@ def otel_proxy_cmd(
         raise typer.Exit(1) from None
 
 
-@app.command("otel-headers", hidden=True)
-def otel_headers_cmd(
-    host: Annotated[
-        str | None, typer.Option("--host", help="Workspace URL. Defaults to the saved workspace.")
-    ] = None,
-    profile: Annotated[
-        str | None, typer.Option("--profile", help="Databricks CLI profile.")
-    ] = None,
-    use_pat: Annotated[
-        bool, typer.Option("--use-pat", help="Read the profile's static PAT instead of OAuth.")
-    ] = False,
-    force_refresh: Annotated[
-        bool,
-        typer.Option("--force-refresh", help="Force the Databricks CLI to mint a new token."),
-    ] = False,
-    workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
-) -> None:
-    """Print fresh OTLP export headers as JSON to stdout, then exit."""
-    import json
-    import sys
-
-    state = load_state()
-    workspace = host or state.get("workspace")
-    if not workspace:
-        print_err("No workspace configured. Run `ug configure` first.")
-        raise typer.Exit(1)
-    profile = profile or state.get("profile")
-    if use_pat or state.get("use_pat"):
-        if not ensure_pat_bearer(profile):
-            print_err(
-                f"--use-pat: no personal access token available for profile "
-                f"'{profile or '<none>'}'. Add a `token = <PAT>` entry under "
-                f"[{profile or 'your-profile'}] in ~/.databrickscfg, or re-run "
-                "`ug configure` without --use-pat to use OAuth."
-            )
-            raise typer.Exit(1)
-    try:
-        with redirect_stdout(sys.stderr):
-            token = get_databricks_token(workspace, profile, force_refresh=force_refresh)
-    except RuntimeError as exc:
-        print_err(str(exc))
-        raise typer.Exit(1) from None
-    sys.stdout.write(
-        json.dumps({"Authorization": f"Bearer {token}", **selector_headers(workspace_id)}) + "\n"
-    )
-
-
-def _oauth_token_is_fresh(token: str, buffer_seconds: float = 120) -> bool:
-    import base64
-    import binascii
-    import json
-    import time
-
-    try:
-        payload = token.split(".")[1]
-        payload += "=" * (-len(payload) % 4)
-        expires_at = float(json.loads(base64.urlsafe_b64decode(payload))["exp"])
-    except (IndexError, KeyError, TypeError, ValueError, binascii.Error, json.JSONDecodeError):
-        return False
-    return time.time() < expires_at - buffer_seconds
-
-
-def _router_hook_token(host: str, profile: str | None, use_pat: bool) -> str | None:
-    # The launch-time OAUTH_TOKEN is never refreshed, so a long session must not reuse it expired.
-    if use_pat and not ensure_pat_bearer(profile):
-        return None
-    token = os.environ.get("DATABRICKS_BEARER", "").strip()
-    if token:
-        return token
-    token = os.environ.get("OAUTH_TOKEN", "").strip()
-    if _oauth_token_is_fresh(token):
-        return token
-    # Refresh through the same client the launch used, including CLI-backed custom OAuth.
-    state = {**load_full_state().get("workspaces", {}).get(host, {}), "profile": profile}
-    try:
-        return custom_oauth.launch_token(state, host, force_refresh=True)
-    except RuntimeError:
-        return None
-
-
-@app.command("codex-router-hook", hidden=True)
-def codex_router_hook_cmd(
-    event: str,
-    host: Annotated[str | None, typer.Option("--host")] = None,
-    profile: Annotated[str | None, typer.Option("--profile")] = None,
-    use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
-    model: Annotated[list[str] | None, typer.Option("--model")] = None,
-    workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
-) -> None:
-    """Run a Codex smart-routing lifecycle hook."""
-    if host and workspace_id:
-        pin(host, workspace_id)
-    import json
-    import sys
-
-    if not smart_routing_v2.smart_routing_enabled(
-        effective_environment(agent=AGENT_CODEX), default=False, agent=AGENT_CODEX
-    ):
-        return
-
-    from ucode.smart_routing.codex_routing import (
-        record_session_start,
-        record_subagent_start,
-        route_pre_tool_use,
-    )
-
-    try:
-        payload = json.loads(sys.stdin.buffer.read() or b"{}")
-    except ValueError:
-        return
-    if not isinstance(payload, dict):
-        return
-    if event == "session-start":
-        record_session_start(payload)
-        return
-    if event == "record-subagent":
-        record = record_subagent_start(payload)
-        matched = record.get("matches_router_decision")
-        if matched is True:
-            sys.stdout.write(
-                json.dumps(
-                    {
-                        "systemMessage": "Smart Routing verified. "
-                        f"Subagent is using {record.get('model')}."
-                    }
-                )
-            )
-        elif matched is False:
-            sys.stdout.write(
-                json.dumps(
-                    {
-                        "systemMessage": "Smart Routing mismatch: router requested "
-                        f"{record.get('requested_model')}, but Codex started "
-                        f"{record.get('model')}."
-                    }
-                )
-            )
-        # When matched is None the harness didn't report the subagent model —
-        # the PreToolUse hook already injected the routed model, so emit nothing.
-        return
-    if event != "route-subagent" or not host:
-        return
-    token = _router_hook_token(host, profile, use_pat)
-    if not token:
-        return
-    output = route_pre_tool_use(
-        payload,
-        workspace=host,
-        token=token,
-        available_models=model or [],
-        audit_decision=True,
-    )
-    if output is not None:
-        sys.stdout.write(json.dumps(output))
+hook_commands.register(app)
 
 
 @app.command("smart-router-describe", hidden=True)
@@ -3229,106 +2915,6 @@ def smart_router_describe_cmd() -> None:
     config and launch flags are not reflected.
     """
     sys.stdout.write(json.dumps(asdict(smart_routing_v2.describe_routing())) + "\n")
-
-
-@app.command("claude-router-hook", hidden=True)
-def claude_router_hook_cmd(
-    event: str,
-    host: Annotated[str | None, typer.Option("--host")] = None,
-    profile: Annotated[str | None, typer.Option("--profile")] = None,
-    use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
-    model: Annotated[list[str] | None, typer.Option("--model")] = None,
-    socket_path: Annotated[str | None, typer.Option("--socket")] = None,
-    workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
-) -> None:
-    """Run a Claude Code smart-routing lifecycle hook."""
-    if host and workspace_id:
-        pin(host, workspace_id)
-    import json
-    import sys
-
-    if not smart_routing_v2.smart_routing_enabled(
-        effective_environment(agent=AGENT_CLAUDE), default=False, agent=AGENT_CLAUDE
-    ):
-        return
-
-    from ucode.smart_routing.claude_routing import (
-        record_session_start,
-        record_subagent_start,
-    )
-
-    try:
-        payload = json.loads(sys.stdin.read() or "{}")
-    except ValueError:
-        return
-    if not isinstance(payload, dict):
-        return
-    if event == ROUTE_FIRST_PROMPT_EVENT:
-        if not socket_path:
-            socket_path = os.environ.get(FIRST_PROMPT_SOCKET_ENV)
-        if not socket_path:
-            return
-        from pathlib import Path
-
-        from ucode.smart_routing.claude_pty import (
-            first_prompt_hook_output,
-            request_first_prompt_route,
-        )
-
-        response = request_first_prompt_route(
-            Path(socket_path),
-            payload,
-            timeout=smart_routing_v2.CLAUDE_ROUTE_SELECTION_TIMEOUT_S + 5.0,
-        )
-        output = first_prompt_hook_output(response)
-        if output is not None:
-            sys.stdout.write(json.dumps(output))
-        return
-    if event == "session-start":
-        record_session_start(payload)
-        return
-    if event == "record-subagent":
-        record = record_subagent_start(payload)
-        matched = record.get("matches_router_decision")
-        if matched is True:
-            sys.stdout.write(
-                json.dumps(
-                    {
-                        "systemMessage": "Smart Routing verified. "
-                        f"Subagent is using {record.get('model')}."
-                    }
-                )
-            )
-        elif matched is False:
-            sys.stdout.write(
-                json.dumps(
-                    {
-                        "systemMessage": "Smart Routing mismatch: router requested "
-                        f"{record.get('requested_model')}, but Claude Code started "
-                        f"{record.get('model')}."
-                    }
-                )
-            )
-        # When matched is None the harness didn't report the subagent model —
-        # routing already injected the selected model, so emit nothing.
-        return
-    if event not in {"route-subagent", ROUTE_SUBAGENT_MOD_EVENT} or not host:
-        return
-    token = _router_hook_token(host, profile, use_pat)
-    if not token:
-        return
-    output = smart_routing_v2.route_claude_subagent(
-        payload,
-        workspace=host,
-        token=token,
-        available_models=model or [],
-        audit_decision=True,
-        # Hooks persisted by earlier UG versions still call route-subagent and expect a
-        # PreToolUse response; the mod's route-subagent-mod event takes the plain details.
-        hook_output=event == "route-subagent",
-    )
-    if output is not None:
-        sys.stdout.write(json.dumps(output))
 
 
 def _auto_configure_tool(

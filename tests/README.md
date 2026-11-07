@@ -313,6 +313,24 @@ requested routed subagent. A separate Claude-only test covers the status band an
 automatic orchestrator delegation. Routing-disabled coverage is deferred until a separately
 preconfigured workspace is assigned.
 
+The `auth-token` and `otel-headers` helpers that agents run go from the entry point to
+`ucode.agent_helpers`. `test_startup_imports.py` runs both in a fresh interpreter with a supplied
+bearer: they print it without loading `ucode.cli` or the agent modules, and their `--help` output
+matches the full CLI's. Both `ug` and `ucode` preserve help/error prefixes; usage
+parity compares exit status, stdout and stderr for help, unknown options and missing
+option values. `TestAuthTokenCommand`, `TestOtelHeadersCommand`, and the custom-OAuth
+command tests cover their behavior through the CLI registration. No live token mint is timed.
+The `claude-router-hook` and `codex-router-hook` commands go to
+`ucode.smart_routing.hook_commands` the same way: their session and subagent records run in a fresh
+interpreter, write the routing canary or audit row, and skip the CLI, Databricks client, UI, and
+smart-routing launch modules. Routing events keep their `TestSubcommandRouting` coverage; no live
+router call is made. The record probes preserve non-ASCII UTF-8 session IDs even when stdin's
+text wrapper uses cp1252. `ug mcp web-search` goes to `ucode.mcp_commands`: the
+web-search server answers `initialize` in a fresh interpreter without the CLI, Databricks client,
+UI, or workspace modules, and its help matches the full CLI's. `ug mcp-proxy` retains the dedicated
+argparse dispatcher; `test_mcp_proxy_cli.py` checks that relays do not import Typer. Search and proxy
+behavior stays in `test_mcp_web_search*.py` and `test_mcp_proxy.py`.
+
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.
 `test_startup_imports.py` guards the bare `--version` / `-V` fast path and deferred
@@ -320,7 +338,11 @@ command-specific imports in fresh interpreters. Component tests cover metadata l
 version suffixes, fallback, and unchanged dispatch for other arguments; they do not
 claim a live agent launch or end-to-end startup timing. An isolated interpreter
 without site packages also proves that intact metadata can produce version output
-while `--help` fails on a missing CLI startup dependency.
+while `--help` fails on a missing CLI startup dependency. The Smart Router Orchestrator
+prompt hook, which agents run before every prompt, is checked for Claude and Codex in a
+fresh interpreter: it returns the enabled workflow without loading Rich, TOML, package
+metadata, the Databricks client, or smart-routing launch code. This is an import guard,
+not a hook-latency measurement.
 `TestUpgrade` in `test_cli.py` covers both command names before, during, and after
 the distribution rename with mocked installer calls, including `--help` verification
 of the full CLI import path and failure recovery guidance.
