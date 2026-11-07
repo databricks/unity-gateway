@@ -68,6 +68,7 @@ from ucode.smart_routing.claude_hooks import (
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
 from ucode.smart_routing.config import apply_config, apply_enabled_version, resolve_environment
+from ucode.smart_routing.isaac_feedback import isaac_feedback_directory
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_note, print_warning
 
@@ -365,7 +366,7 @@ def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
             else ""
         ),
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
-        "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
+        "isaacFeedbackDirectory": str(isaac_feedback_directory()),
     }
 
 

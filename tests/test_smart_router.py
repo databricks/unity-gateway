@@ -163,3 +163,90 @@ def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch, write_step, 
     assert runner.invoke(cli.app, ["codex", "--enable-smart-routing"], env=env).exit_code == 0
     assert runner.invoke(cli.app, hook_args, input=payload, env=env).exit_code == 0
     route.assert_called_once()
+
+
+FEEDBACK_ID = "4f0c7a52-1b9e-4c3d-8a6f-2e5d9c0b1a73"
+CLAUDE_SESSION_ID = "6c1f2d3e-4a5b-4c6d-8e7f-901234567890"
+
+
+def _saved_report(**changes):
+    request = {"category": "smart-routing", "session_id": CLAUDE_SESSION_ID, "message": "x"}
+    report = {"schema_version": 1, "feedback_id": FEEDBACK_ID, "request": request}
+    for key, value in changes.items():
+        (request if key in request else report)[key] = value
+    return report
+
+
+@pytest.mark.parametrize(
+    "report,environment,feedback_id,turned_off",
+    [
+        (_saved_report(), {}, FEEDBACK_ID, True),
+        (_saved_report(), {}, FEEDBACK_ID.upper(), True),
+        # Isaac enforces the reason rules when it saves the report.
+        (_saved_report(message=""), {}, FEEDBACK_ID, True),
+        # Without Isaac's feedback rule, an off needs no reason at all.
+        (None, {"ISAAC_SMART_ROUTER_FEEDBACK": "0"}, FEEDBACK_ID, True),
+        (_saved_report(), {"ISAAC_LAUNCH_MODE": None}, FEEDBACK_ID, False),
+        (_saved_report(), {"CLAUDE_CODE_SESSION_ID": None}, FEEDBACK_ID, False),
+        (None, {}, FEEDBACK_ID, False),
+        (_saved_report(), {}, "11111111-1111-4111-8111-111111111111", False),
+        (_saved_report(), {}, "../escape", False),
+        (_saved_report(session_id="another-session"), {}, FEEDBACK_ID, False),
+        (_saved_report(category="other"), {}, FEEDBACK_ID, False),
+        (_saved_report(schema_version=2), {}, FEEDBACK_ID, False),
+        (_saved_report(feedback_id="11111111-1111-4111-8111-111111111111"), {}, FEEDBACK_ID, False),
+        (["not", "a", "report"], {}, FEEDBACK_ID, False),
+    ],
+)
+def test_feedback_id_turns_routing_off_only_for_this_sessions_saved_report(
+    tmp_path, monkeypatch, report, environment, feedback_id, turned_off
+):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    if report is not None:
+        receipt = tmp_path / ".isaac" / "feedback" / FEEDBACK_ID / "receipt.json"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(json.dumps(report))
+    session_file = tmp_path / "env.json"
+    session_file.write_text("{}")
+    env = {
+        session_env.SESSION_ENV_VAR: str(session_file),
+        "ISAAC_SMART_ROUTER_FEEDBACK": "1",
+        "ISAAC_LAUNCH_MODE": "omni",
+        "CLAUDE_CODE_SESSION_ID": CLAUDE_SESSION_ID,
+        **environment,
+    }
+
+    result = runner.invoke(
+        cli.app,
+        ["claude", "--disable-smart-routing", "--smart-router-feedback-id", feedback_id],
+        env=env,
+    )
+
+    assert result.exit_code == (0 if turned_off else 2), result.output
+    assert ("Smart Router is off" in result.output) == turned_off
+    saved = json.loads(session_file.read_text())
+    assert saved == (dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0") if turned_off else {})
+
+
+def test_unreadable_saved_report_keeps_routing_on(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # A directory where the receipt belongs must fail fast instead of hanging the toggle.
+    (tmp_path / ".isaac" / "feedback" / FEEDBACK_ID / "receipt.json").mkdir(parents=True)
+    session_file = tmp_path / "env.json"
+    session_file.write_text("{}")
+    env = {
+        session_env.SESSION_ENV_VAR: str(session_file),
+        "ISAAC_SMART_ROUTER_FEEDBACK": "1",
+        "ISAAC_LAUNCH_MODE": "omni",
+        "CLAUDE_CODE_SESSION_ID": CLAUDE_SESSION_ID,
+    }
+
+    result = runner.invoke(
+        cli.app,
+        ["claude", "--disable-smart-routing", "--smart-router-feedback-id", FEEDBACK_ID],
+        env=env,
+    )
+
+    assert result.exit_code == 2
+    assert f"Isaac has no saved feedback {FEEDBACK_ID}" in " ".join(result.output.split())
+    assert json.loads(session_file.read_text()) == {}
