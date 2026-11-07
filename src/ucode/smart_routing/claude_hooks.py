@@ -9,9 +9,7 @@ from __future__ import annotations
 
 import shlex
 
-from ucode.databricks import build_auth_token_argv
 from ucode.smart_routing import hooks
-from ucode.workspace import workspace_id_args
 
 ROUTING_HOOK_COMMAND_MARKER = "claude-router-hook"
 ROUTE_FIRST_PROMPT_EVENT = "route-first-prompt"
@@ -68,6 +66,10 @@ def _routing_hook_groups(state: dict) -> dict[str, list[dict]]:
 
 def routing_hook_argv(state: dict, event: str) -> list[str]:
     """Build the shared CLI command for a lifecycle hook or native mod request."""
+    # Launch-only: the hook commands import this module for its event names.
+    from ucode.databricks import build_auth_token_argv
+    from ucode.workspace import workspace_id_args
+
     workspace = str(state.get("workspace") or "")
     argv = [
         build_auth_token_argv(workspace, state.get("profile"), use_pat=bool(state.get("use_pat")))[

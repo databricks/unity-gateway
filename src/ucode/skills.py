@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
-from importlib.metadata import distribution
 from pathlib import Path
 
 _SKILL_ROOTS = {"claude": ".claude/skills", "codex": ".codex/skills"}
@@ -17,10 +16,13 @@ SMART_ROUTER_ORCHESTRATOR_SKILL = "smart-router-orchestrator"
 
 
 def _skills_source() -> Path:
-    installed = Path(str(distribution("unity-gateway").locate_file("skills")))
+    # The wheel installs `skills` beside the `ucode` package; a checkout keeps it at the repo root.
+    # Located by path because the per-prompt orchestrator hook can't afford importlib.metadata.
+    package_parent = Path(__file__).resolve().parents[1]
+    installed = package_parent / "skills"
     if installed.is_dir():
         return installed
-    return Path(__file__).resolve().parents[2] / "skills"
+    return package_parent.parent / "skills"
 
 
 def _validate_skill_name(skill_name: str) -> None:

@@ -18,7 +18,7 @@ from ucode.constants import (
     AGENT_CODEX,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
 )
-from ucode.smart_routing.config import resolve_environment
+from ucode.smart_routing.config import resolve_environment, smart_routing_enabled
 from ucode.smart_routing.hooks import sync_managed_hooks
 from ucode.smart_routing.session_env import effective_environment, session_env_path
 
@@ -60,8 +60,6 @@ def feature_enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool
 
 
 def enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
-    from ucode.smart_routing.v2 import smart_routing_enabled
-
     source = os.environ if env is None else env
     if not feature_enabled(source, agent=agent):
         return False
