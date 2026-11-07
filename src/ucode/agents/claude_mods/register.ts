@@ -10,7 +10,7 @@ import {
   RECIPE_FIELD,
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
-import { createIsaacFeedbackState, registerIsaacFeedback } from './isaac-feedback.ts';
+import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedback } from './isaac-feedback.ts';
 import { isRoutingEnabled } from './routing-state.ts';
 
 type Environment = Record<string, string | undefined>;
@@ -83,7 +83,8 @@ async function writeSessionControls(
   }
   const flag = enabled ? ENABLE_ROUTING_FLAG : DISABLE_ROUTING_FLAG;
   const args = [python, '-m', CLI_MODULE, CLI_AGENT, flag, ...sessionControlArgs];
-  const result = await $.process.run(args);
+  // Claude doesn't pass its session ID to mod processes; the CLI checks feedback IDs against it.
+  const result = await $.process.run(args, { env: { CLAUDE_CODE_SESSION_ID: await $.session.id() } });
   if (result.exitCode !== 0) {
     throw new Error(`Smart Router controls exited ${result.exitCode}: ${result.stderr.trim()}`);
   }
@@ -168,10 +169,13 @@ export function register(on: On, options: PluginOptions): void {
 
   // The installed smart-router skill already supplies the slash command.
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
-    const action = e.args.trim();
-    if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off'};
+    const command = parseSmartRouterCommand(e.args);
+    // Only Omnigent's switch saves the off reason through Isaac before it sends a feedback ID.
+    if (!command || (command.feedbackId && await $.env.get('ISAAC_LAUNCH_MODE') !== 'omni')) {
+      return {text: 'Usage: /smart-router on|off'};
+    }
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
-    if (action === 'off') {
+    if (command.action === 'off') {
       // The mod compiler keeps $ within one file, so bind these before Isaac's guard.
       feedback.readRoutingEnabled = async () => isRoutingEnabled(await readEnvironment($));
       feedback.disableRouting = async (sessionControlArgs) => {
@@ -184,7 +188,7 @@ export function register(on: On, options: PluginOptions): void {
   });
   registerIsaacFeedback(on, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string);
   on('command.run', {command: 'smart-router'}, async ($, e) => {
-    const action = e.args.trim();
+    const action = parseSmartRouterCommand(e.args)?.action;
     try {
       await setRouting($, options, action === 'on', true);
       showStatusBand();

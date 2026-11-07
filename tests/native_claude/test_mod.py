@@ -194,6 +194,45 @@ def test_orchestrator_instructions_follow_native_toggles(native_binary, tmp_path
         shutil.rmtree(controls.parent)
 
 
+def test_omnigent_feedback_id_turns_routing_off_only_with_this_sessions_saved_report(
+    native_binary, tmp_path
+):
+    """Scenario: Omnigent's switch has Isaac save the off reason, then types its feedback ID."""
+    env = {
+        "ENABLE_SMART_ROUTING_V2": "0",
+        "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
+        "ISAAC_LAUNCH_MODE": "omni",
+        "ISAAC_SMART_ROUTER_FEEDBACK": "1",
+        "PYTHONPATH": str(Path(__file__).parents[2] / "src"),
+    }
+    controls = session_env.start_session(env)
+    root = tmp_path / "omni"
+    feedback_id = str(uuid4())
+    receipt = root / ".isaac" / "feedback" / feedback_id / "receipt.json"
+
+    def save_report(session_id):
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        report = {"category": "smart-routing", "session_id": session_id}
+        receipt.write_text(
+            json.dumps({"schema_version": 1, "feedback_id": feedback_id, "request": report})
+        )
+
+    try:
+        with Session(native_binary, root, env) as session:
+            command = f"/smart-router off --feedback-id {feedback_id}"
+            unsaved = session.send(command)
+            assert "Smart Router is still on" in unsaved["result"]
+            save_report(str(uuid4()))
+            assert "Smart Router is still on" in session.send(command)["result"]
+            assert json.loads(controls.read_text()) == {}
+
+            save_report(unsaved["session_id"])
+            assert "Smart Router is off" in session.send(command)["result"]
+            assert json.loads(controls.read_text())["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "0"
+    finally:
+        shutil.rmtree(controls.parent)
+
+
 def test_native_process_inherits_settings_and_runs_python_cli(native_binary, tmp_path):
     # The child checks launch settings before replacing itself with the real disabled router.
     script = (

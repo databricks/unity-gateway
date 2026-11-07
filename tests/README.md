@@ -949,6 +949,13 @@ A denied control-file read or write fails both toggle commands with native-appro
 guidance and leaves the saved controls byte-for-byte unchanged. Write coverage includes
 raw temporary-file errors and wrapped mkdir/replace errors, read-only filesystems,
 and full-disk failures, which report their cause without permission guidance.
+`--smart-router-feedback-id` turns routing off only for a saved Isaac smart-routing report
+about the current Claude session in an Omnigent pane; a missing, unreadable, other-session,
+other-category, other-schema or mismatched report, or a non-UUID ID, exits 2 with the
+controls unchanged. `native_claude/test_mod.py` runs `/smart-router off --feedback-id`
+through Claude, the mod and the real CLI: an unsaved report and another session's report keep
+routing on, this session's report turns it off. `mod_tests/register.test.ts` pins the
+replies, the CLI arguments and session ID, the rollback, and the usage reply outside Omnigent.
 
 `test_integration_evidence.py` checks that the Codex approval driver accepts only the
 exact local command. Other commands or environments are rejected, and an incomplete

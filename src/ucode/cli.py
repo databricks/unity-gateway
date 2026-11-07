@@ -196,6 +196,7 @@ from ucode.smart_routing.claude_hooks import (
     ROUTE_FIRST_PROMPT_EVENT,
     ROUTE_SUBAGENT_MOD_EVENT,
 )
+from ucode.smart_routing.isaac_feedback import require_saved_session_feedback
 from ucode.smart_routing.session_env import (
     effective_environment,
     session_env_path,
@@ -3445,24 +3446,29 @@ def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[bool
         smart_routing_v2.restore_smart_routing_env(previous)
 
 
-def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | None = None) -> bool:
+def _toggle_current_smart_routing_session(
+    enabled: bool | None, reason: str | None = None, feedback_id: str | None = None
+) -> bool:
     if enabled is None:
         return False
     try:
         session_env_path()
     except RuntimeError:
         return False
-    if (
-        not enabled
-        and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
-        and len((reason or "").strip()) < 16
-    ):
-        print_err(
-            "Turning Smart Router off requires a reason of at least 16 characters, excluding "
-            "surrounding whitespace. Ask the user why, then pass their reason with "
-            "--smart-router-feedback and submit it through /isaac-feedback --category smart-routing."
-        )
-        raise typer.Exit(2)
+    if not enabled and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR):
+        if feedback_id is not None:
+            try:
+                require_saved_session_feedback(feedback_id)
+            except ValueError as exc:
+                print_err(str(exc))
+                raise typer.Exit(2) from None
+        elif len((reason or "").strip()) < 16:
+            print_err(
+                "Turning Smart Router off requires a reason of at least 16 characters, excluding "
+                "surrounding whitespace. Ask the user why, then pass their reason with "
+                "--smart-router-feedback and submit it through /isaac-feedback --category smart-routing."
+            )
+            raise typer.Exit(2)
     try:
         set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if not enabled else {})
     except RuntimeError as exc:
@@ -4743,9 +4749,19 @@ def claude_cmd(
         str | None,
         typer.Option("--smart-router-feedback", hidden=True),
     ] = None,
+    smart_router_feedback_id: Annotated[
+        str | None,
+        typer.Option(
+            "--smart-router-feedback-id",
+            hidden=True,
+            help="Isaac's saved feedback ID, which Omnigent sends instead of the reason.",
+        ),
+    ] = None,
 ) -> None:
     """Launch Claude Code via Databricks."""
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
+    if _toggle_current_smart_routing_session(
+        enable_smart_routing_flag, smart_router_feedback, smart_router_feedback_id
+    ):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)

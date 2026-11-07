@@ -103,6 +103,7 @@ function engine(on: On, env: Record<string, string | undefined>, agents: AgentIn
   const clock = mock.clock(on);
   env.UCODE_SMART_ROUTER_PYTHON = '/ug/python';
   env.UCODE_SESSION_ENV_FILE = '/session/env.json';
+  on('session.id', () => ({ value: 'session-1' }));
   on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }));
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: ['theirs'] }));
   on('prompt.submit', ($, e) => ({ text: e.text }));
@@ -294,4 +295,62 @@ test('subagent routing guidance preserves the host description and is absent whe
   expect(routed).toBe(`${host}\n\n${ROUTING_GUIDANCE}`);
   env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY = '0';
   expect((await describe()).description).toBe(host);
+});
+
+const FEEDBACK_ID = '4f0c7a52-1b9e-4c3d-8a6f-2e5d9c0b1a73';
+const REJECTED_FEEDBACK = 'Could not turn Smart Router off with that feedback ID. Smart Router is still on.';
+
+// Omnigent's switch has Isaac save the off reason first, then sends its ID; UG's CLI checks the
+// saved report and exits 2 when it isn't this session's smart routing feedback.
+function omnigentPane(on: On, { launchMode = 'omni', cliExitCode = 0 } = {}) {
+  const { env } = setup(on);
+  Object.assign(env, {
+    ISAAC_LAUNCH_MODE: launchMode,
+    ISAAC_SMART_ROUTER_FEEDBACK: '1',
+    UCODE_SMART_ROUTER_PYTHON: '/ug/python',
+    UCODE_SESSION_ENV_FILE: '/session/env.json',
+  });
+  const runs: { argv: readonly string[]; env: unknown }[] = [];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', ($, e) => {
+    runs.push({ argv: e.argv, env: e.init?.env });
+    return { value: { exitCode: cliExitCode, stdout: '', stderr: cliExitCode ? 'not this session' : '' } };
+  });
+  return { env, runs };
+}
+
+test('an Omnigent feedback ID turns routing off through the CLI check without the form', { options: ROUTED }, async ($, on) => {
+  const { env, runs } = omnigentPane(on);
+
+  const reply = await $.command.run({ command: 'smart-router', args: `off --feedback-id ${FEEDBACK_ID.toUpperCase()}` });
+
+  expect(reply.text).toBe('Smart Router is off');
+  expect(runs).toEqual([{
+    argv: ['/ug/python', '-m', 'ucode.cli', 'claude', '--disable-smart-routing', '--smart-router-feedback-id', FEEDBACK_ID],
+    env: { CLAUDE_CODE_SESSION_ID: 'session-1' },
+  }]);
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
+});
+
+test('a feedback ID the CLI rejects keeps routing on', { options: ROUTED }, async ($, on) => {
+  const { env } = omnigentPane(on, { cliExitCode: 2 });
+
+  const reply = await $.command.run({ command: 'smart-router', args: `off --feedback-id ${FEEDBACK_ID}` });
+
+  expect(reply.text).toBe(REJECTED_FEEDBACK);
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
+  expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!)).toEqual({ caller_field: 'keep' });
+});
+
+test('a feedback ID outside Omnigent or in a malformed command gets the usage reply', { options: ROUTED }, async ($, on) => {
+  const { env, runs } = omnigentPane(on, { launchMode: 'direct' });
+
+  for (const args of [`off --feedback-id ${FEEDBACK_ID}`, 'off --feedback-id not-a-uuid', `on --feedback-id ${FEEDBACK_ID}`, 'off now']) {
+    expect((await $.command.run({ command: 'smart-router', args })).text).toBe('Usage: /smart-router on|off');
+  }
+  env.ISAAC_LAUNCH_MODE = 'omni';
+  expect((await $.command.run({ command: 'smart-router', args: `off --feedback-id ${FEEDBACK_ID} extra` })).text)
+    .toBe('Usage: /smart-router on|off');
+  expect(runs).toEqual([]);
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
 });
