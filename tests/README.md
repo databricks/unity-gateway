@@ -1,5 +1,13 @@
 # Test suites and user journeys
 
+`test_databricks.py` covers the bounded `system.ai` gateway probe, complete-page
+reuse by model discovery, uncached pagination, complete/paginated credential transitions,
+cache-hit credential switches, token-checked metadata access, immediate token
+and workspace-selection rejection, one retry budget for persistent transient scoped
+failures, and unscoped fallback
+when system models are unavailable. These are
+component checks; they do not establish live gateway or agent launch latency.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component

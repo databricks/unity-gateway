@@ -7101,7 +7101,9 @@ class TestConfigureSharedStateUsePat:
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
         response_iter = iter(responses)
         monkeypatch.setattr(
-            db_mod, "_http_get_json", lambda url, token, **kwargs: next(response_iter)
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kwargs: ({}, None) if "parent=" in url else next(response_iter),
         )
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
@@ -7141,7 +7143,9 @@ class TestConfigureSharedStateUsePat:
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
         response_iter = iter(responses)
         monkeypatch.setattr(
-            db_mod, "_http_get_json", lambda url, token, **kwargs: next(response_iter)
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kwargs: ({}, None) if "parent=" in url else next(response_iter),
         )
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
@@ -7168,11 +7172,16 @@ class TestConfigureSharedStateUsePat:
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
         )
+        monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
 
-        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
-        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
+        first = cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
+        initial_calls = len(calls)
+        second = cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
 
-        assert len(calls) == 1
+        assert first["codex_models"] == second["codex_models"] == ["system.ai.gpt-5"]
+        # Concurrent discovery and probing may each request the first page.
+        assert 1 <= initial_calls <= 2
+        assert len(calls) == initial_calls
 
     def test_use_pat_without_pat_profile_raises(self, monkeypatch):
         cli_mod, logins, _, _ = self._stub_deps(monkeypatch, pat_token=None)
@@ -7929,7 +7938,9 @@ class TestConfigureSharedStateCopilotCatalog:
             cli_mod, "load_full_state", lambda: {"workspaces": {self.WS: dest_block}}
         )
         if listed is not None:
-            db_mod._MODEL_SERVICES_CACHE[self.WS] = [db_mod.ModelServiceEntry(m) for m in listed]
+            db_mod._MODEL_SERVICES_CACHE[self.WS] = db_mod._CachedModelServices(
+                "token", [db_mod.ModelServiceEntry(m) for m in listed]
+            )
         reason = None if listed else "HTTP 503"
         sonnet = "system.ai.claude-sonnet-4-6"
         monkeypatch.setattr(

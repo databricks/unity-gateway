@@ -739,7 +739,7 @@ class TestDiscoverModelServices:
         assert ids == ["system.ai.gpt-5"]
         assert calls["n"] == 3  # two failures, third succeeds
 
-    def test_entries_keep_the_advertised_api_types(self, monkeypatch):
+    def test_entries_keep_api_types_and_bind_cache_to_credential(self, monkeypatch):
         service = {
             **_model_service("system.ai.gte-large-en"),
             "supported_api_types": ["mlflow/v1/embeddings", 3],
@@ -748,7 +748,14 @@ class TestDiscoverModelServices:
         monkeypatch.setattr(
             db_mod,
             "_get_model_services_page",
-            lambda url, token: ({"model_services": [service]}, None),
+            lambda url, token: (
+                {
+                    "model_services": [service]
+                    if token == "token"
+                    else [_model_service("system.ai.gpt-5")]
+                },
+                None,
+            ),
         )
 
         entries, reason = db_mod.list_model_service_entries(WS, "token")
@@ -757,7 +764,13 @@ class TestDiscoverModelServices:
         assert entries == [
             db_mod.ModelServiceEntry("system.ai.gte-large-en", ("mlflow/v1/embeddings",))
         ]
-        assert db_mod.cached_model_service_entries(WS) == entries
+        assert db_mod.cached_model_service_entries(WS, "token") == entries
+        assert db_mod.cached_model_service_entries(WS, "other-token") is None
+        # Changing credentials through discovery alone must evict the previous catalog too.
+        other_entries, reason = db_mod.list_model_service_entries(WS, "other-token")
+        assert reason is None
+        assert other_entries == [db_mod.ModelServiceEntry("system.ai.gpt-5")]
+        assert db_mod.cached_model_service_entries(WS, "token") is None
 
     def test_failed_listing_is_not_cached(self, monkeypatch):
         monkeypatch.setattr(
@@ -765,7 +778,7 @@ class TestDiscoverModelServices:
         )
 
         assert db_mod.list_model_service_entries(WS, "token") == ([], "HTTP 503")
-        assert db_mod.cached_model_service_entries(WS) is None
+        assert db_mod.cached_model_service_entries(WS, "token") is None
 
 
 class TestModelServiceExists:
@@ -3895,7 +3908,179 @@ class TestListDatabricksApps:
         assert not isinstance(exc.value, db_mod.PermissionDeniedError)
 
 
+class TestSystemModelServiceProbe:
+    def test_complete_scoped_page_supplies_discovery_with_metadata(self, monkeypatch):
+        calls = []
+        payload = {
+            "model_services": [
+                {"name": "model-services/system.ai.gpt-5", "supported_api_types": ["RESPONSES"]},
+                {"name": "system.ai.claude-sonnet-4-5"},
+                {"name": "system.ai.gpt-5"},
+                {"name": "other.models.private"},
+                None,
+            ]
+        }
+
+        def get(url, token, **kwargs):
+            calls.append((url, token, kwargs))
+            return payload, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+        probe = db_mod.probe_unity_gateway_capabilities("http://127.0.0.1:54321", "token")
+        entries, reason = db_mod.list_model_service_entries("http://127.0.0.1:54321", "token")
+
+        assert probe.resource_available
+        assert reason is None
+        assert entries == [
+            db_mod.ModelServiceEntry("system.ai.claude-sonnet-4-5"),
+            db_mod.ModelServiceEntry("system.ai.gpt-5", ("RESPONSES",)),
+        ]
+        assert calls == [
+            (
+                "http://127.0.0.1:54321/api/2.1/unity-catalog/model-services"
+                "?parent=schemas%2Fsystem.ai&page_size=100",
+                "token",
+                {"max_retries": 2},
+            )
+        ]
+
+    def test_paginated_probe_stays_bounded_and_does_not_cache_incomplete_listing(self, monkeypatch):
+        calls = []
+
+        def get(url, token, **kwargs):
+            calls.append(url)
+            if "page_token=" in url:
+                return {"model_services": [{"name": "system.ai.gpt-5"}]}, None
+            return {
+                "model_services": [{"name": "system.ai.claude-sonnet-4-5"}],
+                "next_page_token": "next",
+            }, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token").resource_available
+        # Static-model and provider launches need only the probe, regardless of page count.
+        assert len(calls) == 1
+        assert db_mod.cached_model_service_entries(WS, "token") is None
+
+        entries, reason = db_mod.list_model_service_entries(WS, "token")
+        assert reason is None
+        assert [entry.id for entry in entries] == [
+            "system.ai.claude-sonnet-4-5",
+            "system.ai.gpt-5",
+        ]
+        assert len(calls) == 3
+
+    @pytest.mark.parametrize(
+        ("payload", "reason"),
+        [
+            ({"model_services": []}, None),
+            ({"next_page_token": "empty-page"}, None),
+            ({"model_services": [{"name": "other.models.private"}]}, None),
+            ({"model_services": "invalid"}, None),
+            ([], None),
+            (None, "HTTP 403 Forbidden: PERMISSION_DENIED"),
+            (None, "HTTP 404 Not Found"),
+        ],
+    )
+    def test_unavailable_system_models_fall_back_to_unscoped_probe(
+        self, monkeypatch, payload, reason
+    ):
+        calls = []
+
+        def get(url, token, **kwargs):
+            calls.append(url)
+            if "parent=" in url:
+                return payload, reason
+            return {"model_services": [{"name": "custom.models.agent"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token").resource_available
+        assert len(calls) == 2
+        assert "parent=schemas%2Fsystem.ai" in calls[0]
+        assert calls[1].endswith("?page_size=50")
+        assert db_mod.cached_model_service_entries(WS, "token") is None
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            "HTTP 401 Unauthorized",
+            "HTTP 403: Invalid Token",
+            db_mod.WorkspaceSelectionReason("Selected workspace rejected the access token"),
+        ],
+    )
+    def test_rejected_token_fails_without_unscoped_request(self, monkeypatch, reason):
+        calls = []
+
+        def get(url, token, **kwargs):
+            calls.append(url)
+            return None, reason
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+        with pytest.raises(RuntimeError, match="rejected the access token"):
+            db_mod.probe_unity_gateway_capabilities(WS, "token")
+        assert len(calls) == 1
+
+    @pytest.mark.parametrize("status", [499, 503, None])
+    def test_transient_failure_uses_only_the_scoped_retry_budget(self, monkeypatch, status):
+        calls = []
+
+        def urlopen(request, timeout=None):
+            calls.append(request.full_url)
+            if status is None:
+                raise TimeoutError("connection timed out")
+            raise TestHttpGetJsonRetries._http_error(status, "Unavailable")
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda delay: None)
+
+        with pytest.raises(RuntimeError, match="Could not verify"):
+            db_mod.probe_unity_gateway_capabilities(WS, "token")
+
+        assert len(calls) == db_mod._MODEL_SERVICE_PROBE_MAX_RETRIES + 1
+        assert all("parent=schemas%2Fsystem.ai" in url for url in calls)
+        assert db_mod.cached_model_service_entries(WS, "token") is None
+
+    @pytest.mark.parametrize("second_is_paginated", [False, True])
+    def test_new_credential_reprobes_and_replaces_complete_listing(
+        self, monkeypatch, second_is_paginated
+    ):
+        calls = []
+
+        def get(url, token, **kwargs):
+            calls.append(token)
+            if token == "second" and second_is_paginated:
+                if "page_token=" in url:
+                    return {"model_services": [{"name": "system.ai.second-extra"}]}, None
+                return {
+                    "model_services": [{"name": "system.ai.second"}],
+                    "next_page_token": "next",
+                }, None
+            return {"model_services": [{"name": f"system.ai.{token}"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+        db_mod.probe_unity_gateway_capabilities(WS, "first")
+        db_mod.probe_unity_gateway_capabilities(WS, "first")
+        db_mod.probe_unity_gateway_capabilities(WS, "second")
+        assert calls == ["first", "second"]
+        expected_second = [db_mod.ModelServiceEntry("system.ai.second")]
+        if second_is_paginated:
+            expected_second.append(db_mod.ModelServiceEntry("system.ai.second-extra"))
+        assert db_mod.list_model_service_entries(WS, "second") == (expected_second, None)
+
+        # A cached probe for the first credential must not expose the second one's listing.
+        before_cached_probe = len(calls)
+        db_mod.probe_unity_gateway_capabilities(WS, "first")
+        assert len(calls) == before_cached_probe
+        expected_first = [db_mod.ModelServiceEntry("system.ai.first")]
+        assert db_mod.list_model_service_entries(WS, "first") == (expected_first, None)
+        assert db_mod.cached_model_service_entries(WS, "first") == expected_first
+
+
 class TestProbeUnityGatewayCapabilities:
+    @pytest.fixture(autouse=True)
+    def _unscoped_fallback(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "_probe_system_model_services", lambda workspace, token: None)
+
     def test_probe_preserves_workspace_scheme_and_port(self, monkeypatch):
         calls = []
 

@@ -2294,6 +2294,13 @@ def _model_service_id(service: dict) -> str | None:
     return name or None
 
 
+def _model_service_entry(service: object) -> ModelServiceEntry | None:
+    if not isinstance(service, dict):
+        return None
+    model_id = _model_service_id(service)
+    return ModelServiceEntry(model_id, _model_service_api_types(service)) if model_id else None
+
+
 # The model-services metastore listing REQUIRES a bounded `page_size`:
 # unparameterized or large-page requests (verified against
 # eng-ml-agent-platform.staging 2026-06-14) return `HTTP 499` with an empty
@@ -2325,13 +2332,25 @@ def _get_model_services_page(
     return payload, reason
 
 
-# Successful model-service listings for this process, keyed by workspace. The listing is a paginated
+# Successful listings for this process, keyed by workspace and bound to the token. The listing is a paginated
 # walk of the whole metastore catalog, and several callers want different views of the same result
 # (`discover_model_services` buckets it per family, `discover_claude_models_unbucketed` keeps the raw
 # Claude ids), so a single `ucode setup` run would otherwise page it twice. Cached per process, not
 # persisted: a long-lived process is not a thing here, and a new model appearing mid-command is not
 # worth a second walk. Failures are never cached, so a transient error still retries.
-_MODEL_SERVICES_CACHE: dict[str, list[ModelServiceEntry]] = {}
+class _CachedModelServices(NamedTuple):
+    token: str
+    entries: list[ModelServiceEntry]
+
+
+_MODEL_SERVICES_CACHE: dict[str, _CachedModelServices] = {}
+
+
+def _discard_model_services_for_other_token(workspace: str, token: str) -> None:
+    cached = _MODEL_SERVICES_CACHE.get(workspace)
+    if cached is not None and cached.token != token:
+        _MODEL_SERVICES_CACHE.pop(workspace, None)
+
 
 # Same idea for the Model Provider Service listing (a different endpoint). It is workspace-wide and
 # filtered per agent afterwards, so `ucode setup` would otherwise re-list it once per MPS-capable
@@ -2340,10 +2359,10 @@ _MODEL_SERVICES_CACHE: dict[str, list[ModelServiceEntry]] = {}
 _MODEL_PROVIDER_SERVICES_CACHE: dict[tuple[str, str], list[dict]] = {}
 
 
-def cached_model_service_entries(workspace: str) -> list[ModelServiceEntry] | None:
-    """The model services this process already listed for ``workspace``, without a request."""
+def cached_model_service_entries(workspace: str, token: str) -> list[ModelServiceEntry] | None:
+    """Model services already listed with this workspace and credential, without a request."""
     cached = _MODEL_SERVICES_CACHE.get(workspace)
-    return list(cached) if cached is not None else None
+    return list(cached.entries) if cached is not None and cached.token == token else None
 
 
 def clear_model_services_cache() -> None:
@@ -2397,13 +2416,14 @@ def list_model_service_entries(
     across dozens of ~2s pages (~50s on a busy workspace) only to keep the same
     ``system.ai.*`` subset — see ``_MODEL_SERVICE_PARENT_SCHEMA``.
 
-    A successful result is memoized per workspace for the life of the process; pass
-    ``use_cache=False`` to force a fresh walk.
+    A successful result is memoized per workspace and credential for the life of the process;
+    pass ``use_cache=False`` to force a fresh walk.
     """
+    _discard_model_services_for_other_token(workspace, token)
     if use_cache:
         cached = _MODEL_SERVICES_CACHE.get(workspace)
-        if cached is not None:
-            return list(cached), None
+        if cached is not None and cached.token == token:
+            return list(cached.entries), None
 
     origin = workspace_origin(workspace)
     entries: dict[str, ModelServiceEntry] = {}
@@ -2426,12 +2446,9 @@ def list_model_service_entries(
             break
         data = cast(dict, payload) if isinstance(payload, dict) else {}
         for service in data.get("model_services", []):
-            if isinstance(service, dict):
-                model_id = _model_service_id(service)
-                if model_id and model_id not in entries:
-                    entries[model_id] = ModelServiceEntry(
-                        model_id, _model_service_api_types(service)
-                    )
+            entry = _model_service_entry(service)
+            if entry is not None and entry.id not in entries:
+                entries[entry.id] = entry
         page_token = data.get("next_page_token") or None
         if not page_token:
             last_reason = None
@@ -2443,7 +2460,7 @@ def list_model_service_entries(
     listed = [entries[model_id] for model_id in sorted(entries)]
     if listed:
         if use_cache:
-            _MODEL_SERVICES_CACHE[workspace] = list(listed)
+            _MODEL_SERVICES_CACHE[workspace] = _CachedModelServices(token, list(listed))
         return listed, None
     return [], last_reason or "model-services listing returned no models"
 
@@ -3911,7 +3928,44 @@ _MODEL_SERVICE_EMPTY_DETAIL = (
 )
 
 
+def _probe_system_model_services(workspace: str, token: str) -> GatewayProbe | None:
+    """Prove access with one system.ai page, reusing a complete page for discovery."""
+    params = {"parent": _MODEL_SERVICE_PARENT_SCHEMA, "page_size": str(_MODEL_SERVICES_PAGE_SIZE)}
+    payload, reason = _http_get_json(
+        f"{workspace_origin(workspace)}/api/2.1/unity-catalog/model-services?{urlencode(params)}",
+        token,
+        max_retries=_MODEL_SERVICE_PROBE_MAX_RETRIES,
+    )
+    if payload is None:
+        if reason is not None and (
+            isinstance(reason, WorkspaceSelectionReason)
+            or _looks_like_definitive_auth_failure(reason)
+            or _looks_like_transient_failure(reason)
+        ):
+            return GatewayProbe(False, reason)
+        return None
+    data = payload if isinstance(payload, dict) else {}
+    services = data.get("model_services")
+    if not isinstance(services, list):
+        return None
+    entries: dict[str, ModelServiceEntry] = {}
+    for service in services:
+        entry = _model_service_entry(service)
+        if entry is not None and entry.id not in entries:
+            entries[entry.id] = entry
+    if not entries:
+        return None
+    if not data.get("next_page_token"):
+        _MODEL_SERVICES_CACHE[workspace] = _CachedModelServices(
+            token, [entries[model_id] for model_id in sorted(entries)]
+        )
+    return GatewayProbe(True, "reachable, accessible model service returned", True)
+
+
 def _probe_model_services(workspace: str, token: str) -> GatewayProbe:
+    scoped_probe = _probe_system_model_services(workspace, token)
+    if scoped_probe is not None:
+        return scoped_probe
     base = f"{workspace_origin(workspace)}/api/2.1/unity-catalog/model-services"
     page_token: str | None = None
     for page in range(_MODEL_SERVICE_PROBE_MAX_PAGES):
@@ -3973,6 +4027,8 @@ def clear_gateway_probe_cache() -> None:
 
 def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe:
     """Return the model service probe, raising if model service access can't be verified."""
+    # A cached probe or partial response must not leave another credential's catalog active.
+    _discard_model_services_for_other_token(workspace, token)
     cache_key = (workspace, token)
     cached = _GATEWAY_PROBE_CACHE.get(cache_key)
     if cached is not None:

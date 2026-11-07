@@ -832,7 +832,7 @@ def configure_shared_state(
                 oss_models, oss_reason = ms_oss, ms_reason
             if want_copilot:
                 copilot_models = copilot_agent.catalog_from_listings(
-                    cached_model_service_entries(workspace),
+                    cached_model_service_entries(workspace, token),
                     [*claude_models.values(), *codex_models],
                     list_anthropic_model_catalog(workspace, token),
                 )
@@ -1757,7 +1757,7 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
     live["opencode_models"] = opencode_models
     if "copilot" in tools:
         copilot_models = copilot_agent.catalog_from_listings(
-            cached_model_service_entries(workspace),
+            cached_model_service_entries(workspace, token),
             [*claude_models.values(), *codex_models],
             gateway_listing,
         )
