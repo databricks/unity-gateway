@@ -359,6 +359,7 @@ def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
         "unset": [key for key in SMART_ROUTING_ENV_KEYS if key not in source],
         "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
         "routeCommand": [],
+        "logsCommand": [],
         "orchestratorInstructions": (
             orchestrator.CLAUDE_AGENT_DESCRIPTION
             if orchestrator.enabled(source, agent=AGENT_CLAUDE)
@@ -409,6 +410,13 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
                     "title": "Subagent router",
                     "description": "CLI argument list for a subagent routing decision",
                 },
+                "logsCommand": {
+                    "type": "string",
+                    "multiple": True,
+                    "default": [],
+                    "title": "Smart Router logs reader",
+                    "description": "CLI argument list for reading session routing logs",
+                },
                 **{
                     key: {"type": "string", "title": key, "description": "Original routing flag"}
                     for key in SMART_ROUTING_ENV_KEYS
@@ -455,6 +463,7 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
         "extra-body.ts",
         "isaac-feedback.ts",
         "routing-state.ts",
+        "routing-logs.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
         "subagent-statusline.py",
@@ -783,9 +792,11 @@ def launch_claude(
             session_path = _prepare_smart_router_session("claude")
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
+            route_command = routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT)
             mod_options = {
                 **_claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env}),
-                "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),
+                "routeCommand": route_command,
+                "logsCommand": [route_command[0], "smart-router-logs"],
             }
             settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
                 "options"

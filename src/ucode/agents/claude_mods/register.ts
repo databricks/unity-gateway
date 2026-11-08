@@ -12,6 +12,7 @@ import {
 import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, registerIsaacFeedback } from './isaac-feedback.ts';
 import { isRoutingEnabled } from './routing-state.ts';
+import { registerRoutingLogs } from './routing-logs.ts';
 
 type Environment = Record<string, string | undefined>;
 
@@ -153,9 +154,10 @@ export function register(on: On, options: PluginOptions): void {
   });
 
   // The installed smart-router skill already supplies the slash command.
+  registerRoutingLogs(on, options, launchedEnabled);
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
     const action = e.args.trim();
-    if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off'};
+    if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off|logs'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
     if (action === 'off') {
       // The mod compiler keeps $ within one file, so bind these before Isaac's guard.

@@ -335,6 +335,9 @@ class TestV2Launch:
         command = captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"][
             "routeCommand"
         ]
+        assert captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"][
+            "logsCommand"
+        ] == ["/bin/ug", "smart-router-logs"]
         assert command == [
             "/bin/ug",
             "claude-router-hook",
@@ -510,6 +513,7 @@ class TestV2Launch:
         assert settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME] == {
             "options": {
                 **v2._claude_mod_launch_options({**os.environ, **settings["env"]}),
+                "logsCommand": ["/bin/ug", "smart-router-logs"],
                 "routeCommand": [
                     "/bin/ug",
                     "claude-router-hook",
