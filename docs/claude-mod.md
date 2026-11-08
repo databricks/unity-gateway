@@ -46,6 +46,13 @@ drawn inline: the selected model, reason, and routing time live in the `/smart-r
 pane, not in the transcript. Nothing is drawn above the prompt and nothing is logged.
 Disabled routing, command failures, and invalid responses keep the original call;
 failures also log a diagnostic.
+Opening a decision in the `/smart-router logs` detail view also shows the gateway's
+routing explanation when the record carries one and it validates: the summary, dim
+task-understanding bullets, and a candidate list with each model's reason and the
+selected model highlighted, plus a numbers toggle for quality estimate, routing score,
+and estimated cost. An explanation that fails validation, or a record without one,
+keeps today's rationale and plain candidate list; an invalid explanation logs one
+debug line and never changes the rest of the view.
 
 In eligible Smart Router Orchestrator launches, `tool.describe` replaces the native
 Agent/Task delegation advice with the orchestrator's instructions. It changes only the
