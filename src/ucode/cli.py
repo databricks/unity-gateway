@@ -3683,11 +3683,6 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
     return tool == "claude" and tool_args[0].startswith("-")
 
 
-def _smart_routing_requested(tool: str, smart_routing_enabled: bool) -> bool:
-    """Whether smart routing is on for a tool that supports it (Claude Code and Codex)."""
-    return smart_routing_enabled and tool in CAN_USE_CACHED_CONFIG_AGENTS
-
-
 def _launch_options(
     tool: str,
     tool_args: list[str],
@@ -3703,7 +3698,10 @@ def _launch_options(
         # Pinned models for providers are resolved above through the provider-specific launch path.
         user_pinned_model=user_pinned_model if provider is None else None,
         launch_smart_routing=(
-            _smart_routing_requested(tool, smart_routing_enabled)
+            # Smart routing is enabled globally.
+            smart_routing_enabled
+            # Only Claude Code and Codex currently support smart routing.
+            and tool in CAN_USE_CACHED_CONFIG_AGENTS
             # Route a supported interactive launch shape.
             and _should_launch_smart_routing(
                 tool,
@@ -4236,7 +4234,7 @@ def _launch_tool(
         print_section(_launch_title(tool))
         if provider:
             print_kv("Provider", provider)
-        if _smart_routing_requested(tool, smart_routing_enabled):
+        if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled:
             print_note(
                 f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
                 "`/hooks` and trust the ug routing hooks if prompted."
