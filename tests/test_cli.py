@@ -4358,6 +4358,23 @@ class TestRevert:
         assert "ug state retained" in result.output
         assert "Fix the Claude Desktop error and run ug revert again" in result.output
 
+    def test_skipped_desktop_mdm_revert_still_completes(self):
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.agents.desktop.setup.revert_desktop", return_value="skipped"),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.claude_agent.revert_managed_settings", return_value="unchanged"),
+            patch("ucode.cli.codex_agent.revert_managed_config", return_value="unchanged"),
+            patch("ucode.cli.restore_file", return_value=False),
+            patch("ucode.cli.revert_legacy_shared_config", return_value=False),
+            patch("ucode.cli.clear_state") as clear_state,
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        clear_state.assert_called_once_with()
+        assert "Claude Desktop profile: skipped" in result.output
+
     def test_vscode_revert_failure_is_reported_and_the_rest_still_reverts(self):
         with (
             patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
@@ -6711,6 +6728,7 @@ class TestConfigureScopeFlags:
     def test_global_scope_proceeds_with_managed_config(self):
         with (
             self._single_agent_env({"enabled_agents": {}}),
+            patch("ucode.agents.desktop.mdm.configure"),
             patch(
                 "ucode.cli.configure_single_tool", side_effect=lambda _tool, state, **_kw: state
             ) as mock_single,
@@ -6939,7 +6957,10 @@ class TestConfigureScopeFlags:
             patch("ucode.cli._configure_managed_mcp_servers"),
             patch("ucode.cli.reconcile_managed_skills") as mock_skills,
             patch("ucode.cli.restore_workspace_mcp_servers") as mock_restore,
-            patch("ucode.agents.desktop.setup._configure_desktop") as mock_desktop,
+            patch(
+                "ucode.agents.desktop.setup._configure_claude_desktop_user_level"
+            ) as mock_desktop,
+            patch("ucode.agents.desktop.mdm.configure"),
             patch("ucode.agents.desktop.setup.configure_cowork") as mock_cowork,
         ):
             cli_mod._configure_workspace_command(
@@ -7024,13 +7045,17 @@ class TestConfigureSharedStateUsePat:
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {})
         return cli_mod, logins, ensures, saved
 
-    def test_use_pat_exports_bearer_and_skips_login(self, monkeypatch):
+    @pytest.mark.parametrize("global_desktop", [False, True])
+    def test_use_pat_exports_bearer_and_skips_login(self, monkeypatch, global_desktop):
         import os as os_mod
 
         cli_mod, logins, ensures, saved = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        monkeypatch.setattr(cli_mod, "machine_wide_only", lambda: global_desktop)
+        if global_desktop:
+            monkeypatch.setattr(cli_mod.sys, "platform", "darwin")
 
         state = cli_mod.configure_shared_state(
-            self.WS, profile="DEFAULT", force_login=True, use_pat=True
+            self.WS, profile="DEFAULT", tools=["claude"], force_login=True, use_pat=True
         )
 
         assert logins == []

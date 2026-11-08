@@ -5042,8 +5042,9 @@ def configure(
         bool,
         typer.Option(
             "--global",
-            help="Write only the machine-wide Claude Code and Codex managed settings, with sudo, "
-            "and no per-user settings. Without --global or --user, both are written.",
+            help="Write only machine-wide Claude Code/Codex settings and, on macOS, provision Claude "
+            "Desktop through MDM, requesting sudo when needed. Leave per-user agent settings alone. "
+            "Desktop MDM requires a shared runtime; without --global, Desktop writes only user-level files.",
         ),
     ] = False,
     user_scope: Annotated[

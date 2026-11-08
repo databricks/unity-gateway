@@ -161,32 +161,42 @@ through the real Claude CLI before configuration; its registry entry and install
 survive installation, reconfiguration, and revert unchanged. Revert also removes UG's marketplace
 registration and generated user source. Root-file preservation is covered by component tests;
 the integration journeys do not inspect OS-managed directories.
-`test_desktop_marketplace.py` covers ordinary default/`--user` configuration writing
-only the user source, no elevation, preservation of the registered legacy root source,
-one registration when switching an earlier root source to user scope, explicit cache
-refresh, content versions (including asset-only skill updates), downloaded workspace
-skills/assets, previous-account cleanup,
-malformed marketplace metadata (including missing or nonstring directory paths),
-equivalent path aliases, source-switch failure recovery
-for both current and legacy-only plugin identities, preserved nonlocal registrations,
-and retained user source/state after refresh failures. Legacy uninstall errors and timeouts
-warn while preserving the updated plugin and native connectors; retry removes the legacy
-registration and preserves unrelated plugins. Explicit global skips ordinary
-Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
-Overlapping installer/state checks and duplicate simulated-OS cases are consolidated;
-user installation, persisted account state and registered-source preservation remain covered.
-Unreferenced root-path sentinels and an ineffective temporary-directory alias test were
-removed; content updates and empty-payload cache refresh now share one lifecycle test.
-Equivalent registered-directory aliases remain covered separately.
-Dry-run preservation covers both fresh and already-configured installations.
-Root bundle writer checks belong to the separate MDM follow-up.
-The [component inventory](../README.md) records the isolated native CLI marketplace-add
-spot check; it does not establish Desktop GUI behavior or failure recovery.
-Temporary filesystem destinations are real; external Claude registry/cache operations
-and platform privilege boundaries are simulated. These checks do not establish native
-Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
-`test_desktop_configure_cli.py` also checks explicit-global selection versus default and
-`--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers.
+Desktop source placement, native-command simulation, root publication, CLI scope and
+organization-plugin contents, per-user OAuth bindings, and machine-file removal have
+[component coverage](../README.md). These checks use temporary destinations and simulate
+external workspace, ownership, and Claude registration boundaries.
+MDM recovery ledgers, cross-file restoration, interrupted/account-switch cleanup, and
+deferred uninstall are outside this release. Their MDM-only component tests were removed
+with that behavior; ordinary user-plugin and bundle recovery coverage is unchanged.
+Standalone Desktop-only provisioning and its argument tests were removed in favor of
+`configure --global`. Existing auth/MCP/tracing commands are unchanged; MDM-specific
+saved-PAT coexistence tests were removed with that separate behavior change.
+CLI-agent scope unit coverage isolates Desktop prerequisites; Desktop scope components
+exercise macOS Desktop validation. Shared Claude PAT handling is tested against the global
+Desktop OAuth branch. Command-local scope checks isolate machine prerequisites on macOS;
+failure checks cover runtime prerequisites and publication, warning while CLI setup succeeds.
+Global Claude/Codex auth-routing components cover external bearers, bearer commands, and
+normal login. MDM delegates token retrieval to the existing helper; no live service-principal
+authentication is exercised by these component checks.
+These checks replace external authentication and do not exercise native macOS failures.
+Other component regressions cover MCP-only requests bypassing Desktop provisioning,
+intermediate runtime symlink trust, and Databricks/Claude CLI validation before MDM
+authentication or publication. Desktop checks no longer block ordinary CLI setup. Omitted-agent selection and the
+rejection of `--global --mcp` before Desktop publication also have component
+coverage; these are not native macOS integration checks.
+
+MDM component checks assert connectors/tool search in the managed plist and skills/hooks
+in a required root organization plugin with matching version metadata. Provisioning and
+updates leave user profiles and plugin registrations untouched. Plain `ug revert`
+attempts both user and machine cleanup. Component checks cover sudo denial without
+blocking user cleanup, retained state, retry, MDM-only installations, and no elevation
+when nothing is installed. Foreign-policy preservation and binary-plist update/removal
+also have component coverage. Root-start rejection tests were replaced with on-demand
+elevation and caller-owned staging checks; actual sudo prompts still need native Mac validation.
+The earlier LaunchAgent and per-user cache-sync behavior and its tests were removed; ordinary user-cache tests remain.
+Native organization-plugin loading, restart-based updates, fresh-user timing, plist precedence,
+and GUI skill/tool invocation remain unverified by these Linux/Windows journeys.
+Follow the [MDM rollout checklist](../../docs/claude-desktop-mdm.md) before fleet rollout.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.web_search and allow
@@ -433,6 +443,18 @@ by usage percentage, `--all` without an opt-in, short IDs on every entry,
 resource-name ID extraction, unavailable usage, and errors.
 CUJ5 compares a known personal limit's displayed spend, threshold, and percentage
 with live values before and after `ug usage --all`.
+
+Dashboard-link component coverage in `../test_usage.py`, `../test_databricks.py`, and
+`../test_workspace_selection.py` checks the authenticated dashboard GET, workspace selector
+headers, the optional footer after limits or empty/unavailable-budget messages, literal
+URL rendering, and omission for absent URLs or failed lookups. One representative
+failure reason covers the optional lookup; existing budget tests cover `--all` separately.
+An explicit missing-URL case checks that no footer or extra blank line is printed.
+Presentation checks use a real Rich Console at 40 columns with explicit modern-terminal,
+legacy-Windows, and redirected modes. Modern terminals emit the hyperlink target; legacy
+Windows output keeps the full styled URL without OSC 8 links. Checks also cover the bold
+label and link indicator, trailing blank line, URL color, and intact long URLs. These
+checks do not establish native Windows console behavior or live dashboard navigation.
 
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
 enforced by Ruff. These component checks do not establish native Windows coverage
