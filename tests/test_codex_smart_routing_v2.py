@@ -5,6 +5,7 @@ import os
 import subprocess
 import tomllib
 from types import SimpleNamespace
+from unittest.mock import ANY
 
 import pytest
 
@@ -111,6 +112,7 @@ class TestLaunchCodex:
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: "gpt-start")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
+        monkeypatch.setattr(codex, "custom_catalog_path", lambda: None)
 
         def launch_v2(state, tool_args, **kwargs):
             assert version == "0.164.0", "unsupported Codex reached execution"
@@ -144,6 +146,10 @@ class TestLaunchCodex:
                     "binary": "codex",
                     "start_model": "gpt-start",
                     "render_overlay": codex._render_launch_overlay,
+                    "provider": None,
+                    "model_catalog_path": None,
+                    # Candidate selection is covered by the routing-model tests.
+                    "available_models": ANY,
                 },
             )
         ]
@@ -320,6 +326,7 @@ class TestLaunchCodex:
                 binary="codex",
                 start_model="gpt-start",
                 render_overlay=codex.render_overlay,
+                available_models=["system.ai.gpt-5-6-sol", "system.ai.glm-5-2"],
             )
 
         assert exc.value.code == 7
@@ -450,6 +457,7 @@ class TestLaunchCodex:
                 binary="codex",
                 start_model="gpt-start",
                 render_overlay=codex.render_overlay,
+                available_models=["system.ai.gpt-5-6-sol"],
             )
 
         provider_arg = next(
@@ -457,6 +465,101 @@ class TestLaunchCodex:
         )
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
+
+    @staticmethod
+    def _patch_routed_launch(monkeypatch, processes):
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
+
+        class FakeProcess:
+            def __init__(self, argv, **kwargs):
+                self.argv = argv
+                processes.append(self)
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                pass
+
+            def send_signal(self, _signal):
+                pass
+
+        monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_k: "token")
+        monkeypatch.setattr(v2, "_free_port", lambda: 41001)
+        monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
+        interposer = {}
+
+        def start_interposer(*_args, **kwargs):
+            interposer.update(kwargs)
+            return 41002, lambda: None
+
+        monkeypatch.setattr(codex_interposer, "start_interposer_thread", start_interposer)
+        return interposer
+
+    def test_provider_launch_carries_provider_header_and_candidates(self, monkeypatch):
+        # A gated routed launch on a Model Provider Service sends its requests through the
+        # provider (MPS header in the app-server's provider block) and offers the router only
+        # the provider's own models.
+        processes = []
+        self._patch_routed_launch(monkeypatch, processes)
+
+        with pytest.raises(SystemExit):
+            v2.launch_codex(
+                {"workspace": WS},
+                [],
+                binary="codex",
+                start_model="gpt-5-6-codex",
+                render_overlay=codex.render_overlay,
+                provider="cat.schema.svc",
+                available_models=["gpt-5-6-codex"],
+            )
+
+        provider_arg = next(
+            arg for arg in processes[0].argv if arg.startswith("model_providers.Databricks=")
+        )
+        assert "Databricks-Model-Provider-Service" in provider_arg
+        assert "cat.schema.svc" in provider_arg
+
+    @pytest.mark.parametrize(
+        ("configured_model", "expected"),
+        [("outside-provider", "system.ai.gpt-5-6-sol"), ("provider-second", "provider-second")],
+    )
+    def test_provider_launch_uses_validated_catalog(
+        self, tmp_path, monkeypatch, configured_model, expected
+    ):
+        cached_catalog = tmp_path / "cached.json"
+        cached_catalog.write_text('{"models": [{"slug": "cached"}]}', encoding="utf-8")
+        (tmp_path / "config.toml").write_text(
+            f'model = "{configured_model}"\nmodel_catalog_json = "{cached_catalog}"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", tmp_path / "ucode.config.toml")
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "app-catalog.json")
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: tmp_path / "managed.toml")
+        catalog = {"models": [{"slug": "system.ai.gpt-5-6-sol"}, {"slug": "provider-second"}]}
+        monkeypatch.setattr(codex, "_fetch_codex_model_catalog", lambda *a, **k: catalog)
+        monkeypatch.setattr(codex, "validate_codex_catalog", lambda b, c: None)
+        processes = []
+        interposer = self._patch_routed_launch(monkeypatch, processes)
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.164.0")
+
+        with pytest.raises(SystemExit):
+            codex.launch(
+                {"workspace": WS, "_codex_launch_provider": "cat.schema.svc"},
+                [],
+                options=LaunchOptions(launch_smart_routing=True),
+            )
+
+        catalog_path = codex._model_catalog_path(WS, "provider:cat.schema.svc")
+        assert json.loads(catalog_path.read_text()) == catalog
+        assert json.loads(codex.CODEX_MODEL_CATALOG_PATH.read_text()) == catalog
+        assert f"model_catalog_json={json.dumps(str(catalog_path))}" in processes[0].argv
+        assert processes[1].argv[-2:] == ["--model", expected]
+        assert interposer["available_models"] == ["system.ai.gpt-5-6-sol", "provider-second"]
 
     def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch):
         user_config = tmp_path / "config.toml"
@@ -496,6 +599,7 @@ class TestLaunchCodex:
                 binary="codex",
                 start_model="gpt-start",
                 render_overlay=codex.render_overlay,
+                available_models=["system.ai.gpt-5-6-sol"],
             )
 
         assert exc.value.code == 0
@@ -622,6 +726,7 @@ class TestLaunchCodex:
                 binary="codex",
                 start_model="gpt-5.6-luna",
                 render_overlay=codex.render_overlay,
+                available_models=["system.ai.gpt-5-6-luna"],
             )
 
         assert exc.value.code == 0
@@ -727,7 +832,7 @@ class TestCustomCatalogModels:
             "system.ai.gpt-5-6-luna",
         ]
 
-    def test_launch_prefers_catalog_over_cached_models(self, tmp_path, monkeypatch, capsys):
+    def test_launch_uses_custom_catalog_and_candidates(self, tmp_path, monkeypatch, capsys):
         self._settings(
             tmp_path,
             monkeypatch,
@@ -770,6 +875,7 @@ class TestCustomCatalogModels:
                 binary="codex",
                 start_model="gpt-6-astra",
                 render_overlay=codex.render_overlay,
+                available_models=["gpt-6-astra", "gpt-6-b"],
             )
 
         assert interposer_kwargs["available_models"] == ["gpt-6-astra", "gpt-6-b"]
@@ -803,6 +909,7 @@ class TestCustomCatalogModels:
             )
 
         assert calls[0]["start_model"] == "gpt-6-astra"
+        assert calls[0]["available_models"] == ["gpt-6-astra", "gpt-6-b"]
 
 
 def test_interposer_startup_failure_is_propagated(monkeypatch):

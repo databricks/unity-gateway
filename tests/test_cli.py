@@ -885,7 +885,7 @@ class TestSubcommandRouting:
 
         assert options.launch_smart_routing is expected
 
-    @pytest.mark.parametrize(("tool", "expected"), [("claude", True), ("codex", False)])
+    @pytest.mark.parametrize(("tool", "expected"), [("claude", True), ("codex", True)])
     def test_external_models_gate_allows_provider_routing(self, tool, expected, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
         options = cli_mod._launch_options(
@@ -2476,9 +2476,7 @@ class TestClaudeModelFlag:
         result = runner.invoke(app, argv)
         return result, mock_configure, mock_launch
 
-    def test_codex_provider_rejected_with_smart_routing(self, monkeypatch):
-        # The external-models gate covers Claude only.
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
+    def test_codex_provider_rejected_with_smart_routing_without_gate(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
         result, configure, launch = self._provider_launch(
             monkeypatch, ["codex", "--provider", "cat.schema.svc"], None

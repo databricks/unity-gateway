@@ -3684,11 +3684,9 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
     return tool == "claude" and tool_args[0].startswith("-")
 
 
-def _smart_routing_supported(tool: str, provider: str | None) -> bool:
-    """Smart routing with a Model Provider Service: Claude only, behind the external-models gate."""
-    return not provider or (
-        tool == "claude" and os.environ.get(ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR) == "1"
-    )
+def _smart_routing_supported(provider: str | None) -> bool:
+    """Smart routing with a Model Provider Service requires the external-models gate."""
+    return not provider or os.environ.get(ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR) == "1"
 
 
 def _launch_options(
@@ -3711,7 +3709,7 @@ def _launch_options(
             # Only Claude Code and Codex currently support smart routing.
             and tool in CAN_USE_CACHED_CONFIG_AGENTS
             # Model Provider Services require the external-models gate.
-            and _smart_routing_supported(tool, provider)
+            and _smart_routing_supported(provider)
             # Route a supported interactive launch shape.
             and _should_launch_smart_routing(
                 tool,
@@ -4016,7 +4014,7 @@ def _launch_tool(
         if (
             tool in CAN_USE_CACHED_CONFIG_AGENTS
             and smart_routing_enabled
-            and not _smart_routing_supported(tool, provider)
+            and not _smart_routing_supported(provider)
         ):
             raise RuntimeError(
                 f"{TOOL_SPECS[tool]['display']} smart routing cannot be enabled with "
@@ -4070,7 +4068,7 @@ def _launch_tool(
                 or (
                     bool(provider)
                     and smart_routing_enabled
-                    and _smart_routing_supported(tool, provider)
+                    and _smart_routing_supported(provider)
                     and _should_launch_smart_routing(
                         tool,
                         ctx.args,
@@ -4269,7 +4267,7 @@ def _launch_tool(
         if (
             tool in CAN_USE_CACHED_CONFIG_AGENTS
             and smart_routing_enabled
-            and _smart_routing_supported(tool, provider)
+            and _smart_routing_supported(provider)
         ):
             print_note(
                 f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "

@@ -16,6 +16,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 from subprocess import CalledProcessError, TimeoutExpired, list2cmdline
+from typing import NoReturn
 from xml.sax.saxutils import escape
 
 import tomlkit
@@ -27,6 +28,7 @@ from ucode.codex_config import (
     codex_config_precedence_paths,
     codex_managed_config_path,
     custom_catalog_models,
+    custom_catalog_path,
 )
 from ucode.config_io import (
     APP_DIR,
@@ -1851,17 +1853,6 @@ def launch(
     options: LaunchOptions,
 ) -> None:
     relayed = bool(state.get("codex_relayed"))
-    if options.launch_smart_routing:
-        if relayed:
-            raise RuntimeError(
-                "Smart routing can't be used with a ChatGPT subscription relay. Re-run with "
-                "`--disable-smart-routing` or pick another provider."
-            )
-        _launch_smart_routing(state, tool_args)
-        return
-    clear_model_preferences(state)
-    binary = SPEC["binary"]
-    workspace = state.get("workspace")
     launch_provider = state.get("_codex_launch_provider")
     transient_provider = (
         launch_provider.strip()
@@ -1879,11 +1870,29 @@ def launch(
     provider = transient_provider or (
         None if parent_schema else get_provider_service(state, "codex")
     )
-    if workspace and (provider or parent_schema):
+    routed = False
+    if options.launch_smart_routing:
+        if relayed:
+            raise RuntimeError(
+                "Smart routing can't be used with a ChatGPT subscription relay. Re-run with "
+                "`--disable-smart-routing` or pick another provider."
+            )
+        routed = True
+        from ucode.agents import ensure_minimum_version
+
+        ensure_minimum_version("codex", lambda: minimum_version_error(smart_routing_enabled=True))
+        if provider and not state.get("workspace"):
+            raise RuntimeError(
+                "Smart routing needs a configured workspace; run `ug configure codex` first."
+            )
+    binary = SPEC["binary"]
+    workspace = state.get("workspace")
+    if workspace and (provider or parent_schema) and (not routed or provider):
         _reject_managed_model_catalog()
     token = None
     otel_tracing = bool(workspace and state.get("codex_otel_tracing"))
-    if workspace:
+    if workspace and (not routed or provider):
+        # A routed launch without a provider mints its token in launch_codex instead.
         token = _launch_token(state, workspace)
         if not relayed:  # Codex authenticates with its ChatGPT login, not this token.
             os.environ["OAUTH_TOKEN"] = token
@@ -1901,6 +1910,33 @@ def launch(
             workspace=workspace,
         )
         return
+    updating = tool_args[:1] == ["update"]
+    catalog: tuple[Path | None, list[str]] | None = None
+    if (
+        workspace
+        and token
+        # A routed parent-schema launch keeps its custom-catalog handling; only the
+        # ordinary launch and a routed provider launch discover an MPS catalog here.
+        and (provider or (parent_schema and not routed))
+        and not updating
+        and not relayed
+    ):
+        catalog = _resolve_launch_catalog(
+            workspace, token, provider=provider, parent_schema=parent_schema, binary=binary
+        )
+    if routed:
+        if provider and catalog is None:
+            print_warning_err(
+                "Smart routing is off for this launch because the provider's models "
+                "could not be listed."
+            )
+            # Fall through to the ordinary launch below; the discovery above already
+            # detached the app catalog it could not replace.
+        else:
+            _launch_smart_routing(
+                state, tool_args, binary=binary, provider=provider, catalog=catalog
+            )
+    clear_model_preferences(state)
     # Layer ucode's named profile as ordinary config overrides. Unlike
     # `--profile`, `--config` is accepted by runtime, utility, and server
     # commands, so every invocation keeps the same Databricks settings without
@@ -1915,51 +1951,20 @@ def launch(
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
     _export_launch_routing_headers(profile_doc)
     _add_launch_headers(profile_doc)
-    updating = tool_args[:1] == ["update"]
     launches_session_on_mps = bool(workspace and token and provider) and not (updating or relayed)
     if launches_session_on_mps:
         profile_doc.update(_bedrock_runtime_web_search_overlay(state, workspace, token, provider))
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")
-    if workspace and token and (provider or parent_schema) and not updating and not relayed:
-        try:
-            if provider is not None:
-                catalog_source = CodexCatalogSource.PROVIDER
-                catalog_identifier = provider
-                catalog_scope = f"provider:{provider}"
-            elif parent_schema is not None:
-                catalog_source = CodexCatalogSource.PARENT_SCHEMA
-                catalog_identifier = parent_schema
-                catalog_scope = f"parent:{parent_schema}"
-            else:
-                raise RuntimeError("Codex model discovery requires a provider or parent schema.")
-            catalog = _fetch_codex_model_catalog(
-                workspace,
-                token,
-                source=catalog_source,
-                identifier=catalog_identifier,
-            )
-            validate_codex_catalog(binary, catalog)
-        except CodexMpsModelCatalogUnavailable:
-            detach_app_model_catalog()
-        except RuntimeError:
-            # A failed discovery/validation must not leave a previous workspace's
-            # catalog active in independently launched app servers.
-            _detach_app_catalog_after_failure()
-            raise
-        else:
-            catalog_path = _model_catalog_path(workspace, catalog_scope)
-            _write_model_catalog(catalog_path, catalog)
-            sync_app_model_catalog(catalog)
-            profile_doc["model_catalog_json"] = str(catalog_path)
-            # Codex otherwise boots on its bundled default model (e.g. gpt-5.6-sol),
-            # which an MPS's allowlist doesn't route, so the first request 403s. Pin
-            # the MPS's primary (first) target unless the user chose a model or a
-            # managed default already applies.
-            if not profile_doc.get("model") and not _tool_args_select_model(tool_args):
-                slugs = catalog_slugs(catalog)
-                if slugs:
-                    profile_doc["model"] = slugs[0]
+    elif catalog is not None:
+        catalog_path, slugs = catalog
+        profile_doc["model_catalog_json"] = str(catalog_path)
+        # Codex otherwise boots on its bundled default model (e.g. gpt-5.6-sol),
+        # which an MPS's allowlist doesn't route, so the first request 403s. Pin
+        # the MPS's primary (first) target unless the user chose a model or a
+        # managed default already applies.
+        if not profile_doc.get("model") and not _tool_args_select_model(tool_args) and slugs:
+            profile_doc["model"] = slugs[0]
     relay = None
     if relayed and workspace and not updating:
         _ensure_chatgpt_login(binary)
@@ -1987,27 +1992,85 @@ def launch(
     )
 
 
-def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
-    """Launch the Codex TUI through the smart-routing interposer."""
-    from ucode.agents import ensure_minimum_version
+def _resolve_launch_catalog(
+    workspace: str,
+    token: str,
+    *,
+    provider: str | None,
+    parent_schema: str | None,
+    binary: str,
+) -> tuple[Path | None, list[str]]:
+    """Discover, validate, and publish the launch's MPS model catalog.
 
-    binary = SPEC["binary"]
-    ensure_minimum_version("codex", lambda: minimum_version_error(smart_routing_enabled=True))
+    Returns the per-launch catalog path and its slugs, or ``(None, [])`` when the
+    catalog route is unavailable and the launch degrades to Codex's default catalog."""
+    if provider is not None:
+        catalog_source = CodexCatalogSource.PROVIDER
+        catalog_identifier = provider
+        catalog_scope = f"provider:{provider}"
+    else:
+        catalog_source = CodexCatalogSource.PARENT_SCHEMA
+        catalog_identifier = parent_schema
+        catalog_scope = f"parent:{parent_schema}"
+    try:
+        catalog = _fetch_codex_model_catalog(
+            workspace,
+            token,
+            source=catalog_source,
+            identifier=catalog_identifier,
+        )
+        validate_codex_catalog(binary, catalog)
+    except CodexMpsModelCatalogUnavailable:
+        detach_app_model_catalog()
+        return None, []
+    except RuntimeError:
+        # A failed discovery/validation must not leave a previous workspace's
+        # catalog active in independently launched app servers.
+        _detach_app_catalog_after_failure()
+        raise
+    catalog_path = _model_catalog_path(workspace, catalog_scope)
+    _write_model_catalog(catalog_path, catalog)
+    sync_app_model_catalog(catalog)
+    return catalog_path, catalog_slugs(catalog)
 
+
+def _launch_smart_routing(
+    state: dict,
+    tool_args: list[str],
+    *,
+    binary: str,
+    provider: str | None,
+    catalog: tuple[Path | None, list[str]] | None,
+) -> NoReturn:
+    """Launch routed Codex over the model catalog ``launch()`` resolved for it."""
+    if provider:
+        # A routed provider launch routes only the provider's models, discovered and
+        # validated by launch() and offered to the router exactly as the provider
+        # lists them.
+        catalog_path, models = catalog or (None, [])
+    else:
+        # Prefer the custom catalog if it exists.
+        catalog_path = custom_catalog_path()
+        models = custom_catalog_models() or routing_models(state)
     configured_model = _smart_routing_config_model(state)
-    # Prefer the custom catalog if it exists.
-    models = custom_catalog_models() or routing_models(state)
-    start_model = (
-        configured_model
-        or (codex_model_id(models[0]) if models else None)
-        or APP_SERVER_SMART_ROUTING_STARTING_MODEL
-    )
+    if provider and configured_model not in models:
+        configured_model = None
+    if models:
+        # Provider launches route provider slugs verbatim; the cached UC services of a
+        # custom catalog route through Codex's bundled model ids.
+        first_model = models[0] if provider else codex_model_id(models[0])
+    else:
+        first_model = None
+    start_model = configured_model or first_model or APP_SERVER_SMART_ROUTING_STARTING_MODEL
     smart_routing_v2.launch_codex(
         state,
         tool_args,
         binary=binary,
         start_model=start_model,
         render_overlay=_render_launch_overlay,
+        provider=provider,
+        available_models=models,
+        model_catalog_path=catalog_path,
     )
 
 
