@@ -19,6 +19,7 @@ from typing import NoReturn, TextIO
 from ucode import claude_answer_delivery, config_io
 from ucode.codex_config import (
     codex_config_args,
+    custom_catalog_models,
     custom_catalog_path,
 )
 from ucode.config_io import (
@@ -65,7 +66,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_first_prompt_hook,
     sync_smart_routing_hooks,
 )
-from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks
+from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
 from ucode.smart_routing.config import apply_config, apply_enabled_version, resolve_environment
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_note, print_warning
@@ -830,6 +831,12 @@ def launch_claude(
     sys.exit(returncode)
 
 
+# TODO: Replace with /codex/v1/models once /codex/v1/models can send GPT models as well.
+def _cached_routing_models(state: dict) -> list[str]:
+    """Return the persisted UC model-service ids usable by Codex routing."""
+    return routing_models(state)
+
+
 def _v2_hooks(state: dict, available_models: list[str]) -> dict:
     # Codex combines hook sources itself; copying user hooks here would register them twice.
     doc = {
@@ -848,10 +855,7 @@ def launch_codex(
     binary: str,
     start_model: str | None,
     render_overlay: Callable[..., dict],
-    available_models: list[str],
-    provider: str | None = None,
 ) -> NoReturn:
-    """Launch a routed Codex session over ``available_models``, through ``provider`` if set."""
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -863,6 +867,8 @@ def launch_codex(
         )
 
     os.environ[OAUTH_TOKEN_ENV_VAR] = launch_token(state, workspace)
+    catalog_models = custom_catalog_models()
+    available_models = catalog_models or _cached_routing_models(state)
     if not available_models:
         print_warning(
             "Smart routing model metadata is unavailable; automatic model switching is unavailable. "
@@ -876,11 +882,9 @@ def launch_codex(
         use_pat=bool(state.get("use_pat")),
         custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
         managed_http_headers=state.get("codex_http_headers"),
-        provider=provider,
     )
     catalog_path = custom_catalog_path()
-    if catalog_path is not None and provider is None:
-        # A custom catalog lists cached UC services, not the provider's models.
+    if catalog_path is not None:
         overlay["model_catalog_json"] = str(catalog_path)
     overlay["hooks"] = _v2_hooks(state, available_models)
     overlay["features.hooks"] = True
