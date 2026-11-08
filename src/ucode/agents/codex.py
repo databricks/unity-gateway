@@ -1881,6 +1881,9 @@ def launch(
                 "Smart routing can't be used with a ChatGPT subscription relay. Re-run with "
                 "`--disable-smart-routing` or pick another provider."
             )
+        # parent_schema is deliberately not passed: routed launches have never carried a UC
+        # parent schema, and adding one would change routed `--model-location` launches outside
+        # the ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS gate.
         _launch_smart_routing(state, tool_args, provider=provider)
         return
     clear_model_preferences(state)
