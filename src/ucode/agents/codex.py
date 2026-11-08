@@ -2029,13 +2029,13 @@ def _launch_smart_routing(state: dict, tool_args: list[str], *, provider: str | 
         # A routed provider launch routes only the provider's models, passed to the router
         # exactly as the provider returns them.
         models = _provider_routing_models(state, workspace, provider)
-        first_model = models[0] if models else None
     else:
         # Prefer the custom catalog if it exists.
         models = custom_catalog_models() or routing_models(state)
-        first_model = codex_model_id(models[0]) if models else None
     start_model = (
-        _smart_routing_config_model(state) or first_model or APP_SERVER_SMART_ROUTING_STARTING_MODEL
+        _smart_routing_config_model(state)
+        or (codex_model_id(models[0]) if models else None)
+        or APP_SERVER_SMART_ROUTING_STARTING_MODEL
     )
     smart_routing_v2.launch_codex(
         state,
