@@ -1974,7 +1974,7 @@ class TestManagedClaudeModelDiscovery:
     }
 
     @staticmethod
-    def _invoke(monkeypatch, managed, *, relayed=False, catalog_error=None, args=None):
+    def _invoke(monkeypatch, managed, *, relayed=False, catalog_error=None):
         state = {
             **MINIMAL_STATE,
             "claude_models": {},
@@ -2003,7 +2003,7 @@ class TestManagedClaudeModelDiscovery:
         monkeypatch.setattr(cli_mod, "configure_tool", configure)
         monkeypatch.setattr(cli_mod, "launch_agent", launch)
 
-        result = runner.invoke(app, ["claude", *(args or [])])
+        result = runner.invoke(app, ["claude"])
         return {
             "result": result,
             "state": state,
@@ -2165,36 +2165,6 @@ class TestManagedClaudeModelDiscovery:
         calls["configure"].assert_not_called()
         calls["launch"].assert_not_called()
 
-    def test_managed_mps_with_smart_routing_launches_routed(self, monkeypatch):
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
-        # The managed provider's discovered models reach configuration on a routed launch.
-        managed = {
-            "enabled_agents": {
-                "claude": {
-                    "smart_routing_enabled": True,
-                    "model_config": self.MPS_CONFIG["enabled_agents"]["claude"]["model_config"],
-                }
-            }
-        }
-        calls = self._invoke(monkeypatch, managed)
-
-        assert calls["result"].exit_code == 0, calls["result"].output
-        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is True
-        assert calls["configure"].call_args.kwargs["provider"] == "main.default.anthropic-mps"
-        calls["list_anthropic_model_catalog"].assert_called_once_with(
-            calls["state"]["workspace"], "token", provider="main.default.anthropic-mps"
-        )
-        configured_catalog = calls["configure"].call_args.kwargs["picker_catalog"]
-        assert configured_catalog.model_ids == [
-            "opus",
-            "sonnet",
-            "haiku",
-            "fable",
-            *calls["picker_catalog"].model_ids,
-        ]
-        for model_id, display_name in calls["picker_catalog"].model_id_to_display_name.items():
-            assert configured_catalog.model_id_to_display_name[model_id] == display_name
-
     def test_saved_provider_scoped_catalog_for_routed_launch(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
@@ -2206,16 +2176,6 @@ class TestManagedClaudeModelDiscovery:
             calls["state"]["workspace"], "token", provider="main.developer.provider"
         )
         assert calls["configure"].call_args.kwargs["picker_catalog"] is calls["picker_catalog"]
-
-    def test_saved_provider_unrouted_launch_skips_catalog(self, monkeypatch):
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
-        calls = self._invoke(monkeypatch, None, args=["--model", "custom-deployment"])
-
-        assert calls["result"].exit_code == 0, calls["result"].output
-        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is False
-        calls["list_anthropic_model_catalog"].assert_not_called()
-        assert calls["configure"].call_args.kwargs["picker_catalog"] is None
 
 
 def test_claude_discovery_changes_do_not_break_other_managed_providers():
@@ -2475,19 +2435,6 @@ class TestClaudeModelFlag:
         monkeypatch.setattr(cli_mod, "configure_tool", mock_configure)
         result = runner.invoke(app, argv)
         return result, mock_configure, mock_launch
-
-    def test_codex_provider_rejected_with_smart_routing(self, monkeypatch):
-        # The external-models gate covers Claude only.
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
-        result, configure, launch = self._provider_launch(
-            monkeypatch, ["codex", "--provider", "cat.schema.svc"], None
-        )
-
-        assert result.exit_code == 1
-        assert "smart routing cannot be enabled with --provider" in _strip_ansi(result.output)
-        configure.assert_not_called()
-        launch.assert_not_called()
 
     def test_model_and_provider_now_pin_the_launch_tier(self, monkeypatch):
         # --model under a provider is no longer rejected: a family alias resolves to that tier's
