@@ -1844,11 +1844,13 @@ def _run_codex(
         exec_or_spawn([*base_argv, *tool_args])
 
 
-def _launch_provider_and_schema(state: dict) -> tuple[str | None, str | None]:
-    """This launch's Model Provider Service and UC parent schema, in launch-state precedence.
-
-    Launch-scoped admin routing wins over persisted developer configuration. A transient provider
-    is most specific; otherwise a transient UC parent must suppress a saved provider."""
+def launch(
+    state: dict,
+    tool_args: list[str],
+    *,
+    options: LaunchOptions,
+) -> None:
+    relayed = bool(state.get("codex_relayed"))
     launch_provider = state.get("_codex_launch_provider")
     transient_provider = (
         launch_provider.strip()
@@ -1861,29 +1863,17 @@ def _launch_provider_and_schema(state: dict) -> tuple[str | None, str | None]:
         if isinstance(launch_parent_schema, str) and launch_parent_schema.strip()
         else None
     )
+    # Launch-scoped admin routing wins over persisted developer configuration. A transient provider
+    # is most specific; otherwise a transient UC parent must suppress a saved provider.
     provider = transient_provider or (
         None if parent_schema else get_provider_service(state, "codex")
     )
-    return provider, parent_schema
-
-
-def launch(
-    state: dict,
-    tool_args: list[str],
-    *,
-    options: LaunchOptions,
-) -> None:
-    relayed = bool(state.get("codex_relayed"))
-    provider, parent_schema = _launch_provider_and_schema(state)
     if options.launch_smart_routing:
         if relayed:
             raise RuntimeError(
                 "Smart routing can't be used with a ChatGPT subscription relay. Re-run with "
                 "`--disable-smart-routing` or pick another provider."
             )
-        # parent_schema is deliberately not passed: routed launches have never carried a UC
-        # parent schema, and adding one would change routed `--model-location` launches outside
-        # the ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS gate.
         _launch_smart_routing(state, tool_args, provider=provider)
         return
     clear_model_preferences(state)
@@ -1998,11 +1988,7 @@ def launch(
 
 
 def _provider_routing_models(state: dict, workspace: str, provider: str) -> list[str]:
-    """The provider's own models, the only candidates a routed provider launch may select.
-
-    Reuses the non-routed provider launch's Codex catalog discovery: any other model id would
-    403 against the Model Provider Service's allowlist. Discovery failures block the launch —
-    routing without the provider's models would send unroutable model ids."""
+    """The provider's models; any other model id would be rejected by the provider."""
     catalog = _fetch_codex_model_catalog(
         workspace,
         _launch_token(state, workspace),

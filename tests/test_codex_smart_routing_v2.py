@@ -325,6 +325,7 @@ class TestLaunchCodex:
                 binary="codex",
                 start_model="gpt-start",
                 render_overlay=codex.render_overlay,
+                available_models=["system.ai.gpt-5-6-sol", "system.ai.glm-5-2"],
             )
 
         assert exc.value.code == 7
@@ -455,6 +456,7 @@ class TestLaunchCodex:
                 binary="codex",
                 start_model="gpt-start",
                 render_overlay=codex.render_overlay,
+                available_models=["system.ai.gpt-5-6-sol"],
             )
 
         provider_arg = next(
@@ -583,6 +585,7 @@ class TestLaunchCodex:
                 binary="codex",
                 start_model="gpt-start",
                 render_overlay=codex.render_overlay,
+                available_models=["system.ai.gpt-5-6-sol"],
             )
 
         assert exc.value.code == 0
@@ -709,6 +712,7 @@ class TestLaunchCodex:
                 binary="codex",
                 start_model="gpt-5.6-luna",
                 render_overlay=codex.render_overlay,
+                available_models=["system.ai.gpt-5-6-luna"],
             )
 
         assert exc.value.code == 0
@@ -814,7 +818,7 @@ class TestCustomCatalogModels:
             "system.ai.gpt-5-6-luna",
         ]
 
-    def test_launch_prefers_catalog_over_cached_models(self, tmp_path, monkeypatch, capsys):
+    def test_launch_uses_custom_catalog_and_candidates(self, tmp_path, monkeypatch, capsys):
         self._settings(
             tmp_path,
             monkeypatch,
@@ -857,6 +861,7 @@ class TestCustomCatalogModels:
                 binary="codex",
                 start_model="gpt-6-astra",
                 render_overlay=codex.render_overlay,
+                available_models=["gpt-6-astra", "gpt-6-b"],
             )
 
         assert interposer_kwargs["available_models"] == ["gpt-6-astra", "gpt-6-b"]
@@ -890,6 +895,7 @@ class TestCustomCatalogModels:
             )
 
         assert calls[0]["start_model"] == "gpt-6-astra"
+        assert calls[0]["available_models"] == ["gpt-6-astra", "gpt-6-b"]
 
 
 def test_interposer_startup_failure_is_propagated(monkeypatch):
