@@ -82,12 +82,11 @@ See [the mod guide](../docs/claude-mod.md).
 
 Native mod component tests cover stable random animal labels, 100 distinct names before
 numbered reuse, unchanged execution inputs and row controls, and pending-to-completed
-name stability. They cover a lone call's decision under its Agent row and parallel calls
-drawn as cards above the parent's next reply in call order (replies drawn before routing
-never used, calls still routing waiting for a later reply, cards kept across a turn that
-ends while a background agent runs and dropped on abort), distinct IDs for identical tasks,
-nothing above the prompt, pending row and turn-spinner routing timers, and disabled/failed
-routing. They do not establish live
+name stability. They cover the pending row and turn-spinner routing timers, the row
+returning to its original rendering once routing completes with no selection line drawn
+inline and no card above the next reply (lone and parallel calls, replies drawn before or
+after routing), distinct IDs for identical tasks, nothing above the prompt, and
+disabled/failed routing. They do not establish live
 parallel-agent TUI or gateway coverage.
 
 The bottom-bar regression in the native mod suite checks the spawn's returned child ID

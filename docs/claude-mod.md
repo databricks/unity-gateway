@@ -25,8 +25,8 @@ Forks and resumed agents keep their native model. This preserves
 auto mode's review of the tool input instead of invalidating it with a routing rewrite.
 The display label uses a random animal from a list of 100, without repeats until the list
 is exhausted; later cycles append `2`, `3`, and so on. Each call keeps its name while
-the plugin is loaded. Animal names are display labels for routing rows, parallel
-decision cards and the bottom panel. Claude's messages retain the agent's native name
+the plugin is loaded. Animal names are display labels for routing rows and the bottom
+panel. Claude's messages retain the agent's native name
 or type; routing does not inject a name into the reviewed call.
 The native bottom subagent panel uses Claude's `subagentStatusLine` extension, outside
 `ui.render`. After a routed spawn succeeds, the mod saves its animal name against the
@@ -40,18 +40,10 @@ The mapping is removed with the launch directory, not written to user settings.
 The matching Agent row shows a spinner and elapsed seconds while the router answers. Claude
 hides that row once a second Agent call joins it, so while any call is routing, the turn's
 spinner line also reads `Selecting a model… Ns` or `Selecting models for N agents… Ns`,
-timed from the oldest waiting call; Claude's own glyph and counters stay.
-A lone call's decision is drawn under its Agent row: `↳ Selected Model:` in green with its
-routing time, then the indented `Reason:`. Claude folds parallel Agent rows into its own
-"Running N agents" block, which raises no render hook, so calls that were routing at the same
-time are drawn instead as cards (bold task, selected model, rationale) above the parent's
-next reply, in call order. A reply is claimed by its message id on its first block drawn after
-routing; the message that issued the calls is drawn before routing finishes and is never used,
-a call still routing waits for a later reply, and a call whose routing failed draws no card.
-Cards survive a turn that ends while the reply waits on a background agent and are dropped
-only when the turn is aborted. Nothing is drawn above the prompt and nothing is logged.
-Decisions are kept for the session; a plugin reload clears them from the screen, and the
-routing decision audit log is unchanged.
+timed from the oldest waiting call; Claude's own glyph and counters stay. Once routing
+completes, the row renders as the original Agent row with its animal name and nothing is
+drawn inline: the selected model, reason, and routing time live in the `/smart-router logs`
+pane, not in the transcript. Nothing is drawn above the prompt and nothing is logged.
 Disabled routing, command failures, and invalid responses keep the original call;
 failures also log a diagnostic.
 
