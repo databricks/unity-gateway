@@ -867,8 +867,9 @@ Existing launch tests cover caller argument preservation and file removal after 
 do not cover plugin-write/process-start failures, native plugin refresh, or daemon behavior.
 
 `test_claude_smart_routing_v2.py` checks that the decision log retains the exact candidate
-models and router name sent in the request. `test_codex_routing.py` checks that
-Codex decisions carry the same request metadata. These use mocked HTTP responses.
+models and router name sent in the request. A provider-backed modelPicker's bare provider IDs
+(e.g. `claude-opus-5-5`) reach `routes:select` verbatim as route options. `test_codex_routing.py`
+checks that Codex decisions carry the same request metadata. These use mocked HTTP responses.
 
 `test_claude_pty_replay.py` drives `run_claude_pty` against fake TUIs. One models Claude Code
 2.1.295 and later, which keep a hook-blocked prompt in the input box: `/model` must run as a
@@ -918,6 +919,10 @@ managed default), that those launches
 skip the routed launch path (no Smart Router skills or hooks) and the hook-review note, and that
 Claude, routing versions, `--disable-smart-routing`, plain launches, and native subcommands do
 not warn. The live Codex managed-default journey also requires the workspace warning text.
+A Model Provider Service keeps Claude Code routed (its provider catalog feeds the routing
+model picker) while Codex stays unrouted: `test_provider_routes_claude_but_not_codex`, the
+Codex+provider rejection, and the managed Claude MPS + workspace smart-routing launch case
+in `test_cli.py` cover this; a live routed provider launch is not executed.
 
 The toggle integration journeys retain the legacy routing-only and orchestration cases and
 add the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only

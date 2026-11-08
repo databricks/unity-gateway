@@ -697,6 +697,53 @@ class TestSubagentRouting:
             "router_name": "task_v2",
         }
 
+    def test_provider_picker_bare_ids_reach_routes_select(self, tmp_path, monkeypatch):
+        """A provider-backed modelPicker's bare provider IDs are sent to routes:select verbatim."""
+        path = tmp_path / "managed-settings.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "modelPicker": {
+                        "options": [
+                            {"model": "claude-opus-5-5", "label": "Opus"},
+                            {"model": "claude-sonnet-5-5", "label": "Sonnet"},
+                        ]
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: path)
+
+        catalog = v2._model_picker_catalog()
+        assert catalog is not None
+        assert catalog.model_ids == ["claude-opus-5-5", "claude-sonnet-5-5"]
+
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["body"] = json.loads(request.data)
+            first_option = captured["body"]["route_options"][0]
+            return io.BytesIO(
+                json.dumps({"route_selection": [{"route_option": first_option}]}).encode()
+            )
+
+        monkeypatch.setattr(routing.urllib.request, "urlopen", fake_urlopen)
+        decision, error = routing.select_route(
+            "https://example.com",
+            "secret-token",
+            "inspect the parser",
+            routing.route_options_for(catalog.model_ids, "claude"),
+            router_name=routing.configured_router_name(),
+        )
+
+        assert error is None
+        assert decision is not None
+        assert decision.model == "claude-opus-5-5"
+        assert captured["body"]["route_options"] == [
+            {"model": "claude-opus-5-5", "harness": "claude"},
+            {"model": "claude-sonnet-5-5", "harness": "claude"},
+        ]
+
     def test_routes_agent_prompt_with_initialized_model_menu(self, tmp_path, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "0")
         captured = {}

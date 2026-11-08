@@ -3702,8 +3702,9 @@ def _launch_options(
             smart_routing_enabled
             # Only Claude Code and Codex currently support smart routing.
             and tool in CAN_USE_CACHED_CONFIG_AGENTS
-            # Smart routing does not currently support Model Provider Services.
-            and provider is None
+            # Smart routing supports Model Provider Services on Claude Code (its provider
+            # catalog feeds the routing model picker); other tools stay unrouted with one.
+            and (provider is None or tool == "claude")
             # Route a supported interactive launch shape.
             and _should_launch_smart_routing(
                 tool,
@@ -4004,8 +4005,14 @@ def _launch_tool(
         if provider and parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
-        # guard too, or routing would be persisted as on while a provider is active.
-        if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and provider:
+        # guard too, or routing would be persisted as on while a provider is active. Claude is
+        # exempt: its provider catalog feeds the routing model picker sent to routes:select.
+        if (
+            tool != "claude"
+            and tool in CAN_USE_CACHED_CONFIG_AGENTS
+            and smart_routing_enabled
+            and provider
+        ):
             raise RuntimeError(
                 f"{TOOL_SPECS[tool]['display']} smart routing cannot be enabled with "
                 "--provider. Launch without a Model Provider Service and try again."
@@ -4243,7 +4250,11 @@ def _launch_tool(
         print_section(_launch_title(tool))
         if provider:
             print_kv("Provider", provider)
-        if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and not provider:
+        if (
+            tool in CAN_USE_CACHED_CONFIG_AGENTS
+            and smart_routing_enabled
+            and (not provider or tool == "claude")
+        ):
             print_note(
                 f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
                 "`/hooks` and trust the ug routing hooks if prompted."
