@@ -65,6 +65,7 @@ from ucode.constants import (
     AGENT_CODEX,
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
+    ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -3683,6 +3684,14 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
     return tool == "claude" and tool_args[0].startswith("-")
 
 
+def _smart_routing_supported(provider: str | None) -> bool:
+    """Whether smart routing can run with this Model Provider Service selection.
+
+    Routing over a provider's models is gated until every provider type is supported.
+    """
+    return not provider or os.environ.get(ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR) == "1"
+
+
 def _launch_options(
     tool: str,
     tool_args: list[str],
@@ -3702,6 +3711,8 @@ def _launch_options(
             smart_routing_enabled
             # Only Claude Code and Codex currently support smart routing.
             and tool in CAN_USE_CACHED_CONFIG_AGENTS
+            # Model Provider Services require the external-models gate.
+            and _smart_routing_supported(provider)
             # Route a supported interactive launch shape.
             and _should_launch_smart_routing(
                 tool,
@@ -4001,6 +4012,17 @@ def _launch_tool(
             }
         if provider and parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
+        # Checked after the managed config settles `provider`: an admin-set provider must trip this
+        # guard too, or routing would be persisted as on while a provider is active.
+        if (
+            tool in CAN_USE_CACHED_CONFIG_AGENTS
+            and smart_routing_enabled
+            and not _smart_routing_supported(provider)
+        ):
+            raise RuntimeError(
+                f"{TOOL_SPECS[tool]['display']} smart routing cannot be enabled with "
+                "--provider. Launch without a Model Provider Service and try again."
+            )
         # Validate the provider service before launching — it must exist, be a
         # provider type this tool can route to (e.g. claude can't use an OpenAI
         # service), and expose compatible targets for multi-vendor providers.
@@ -4234,7 +4256,11 @@ def _launch_tool(
         print_section(_launch_title(tool))
         if provider:
             print_kv("Provider", provider)
-        if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled:
+        if (
+            tool in CAN_USE_CACHED_CONFIG_AGENTS
+            and smart_routing_enabled
+            and _smart_routing_supported(provider)
+        ):
             print_note(
                 f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
                 "`/hooks` and trust the ug routing hooks if prompted."

@@ -918,9 +918,11 @@ managed default), that those launches
 skip the routed launch path (no Smart Router skills or hooks) and the hook-review note, and that
 Claude, routing versions, `--disable-smart-routing`, plain launches, and native subcommands do
 not warn. The live Codex managed-default journey also requires the workspace warning text.
-A Model Provider Service does not block smart routing for Claude Code or Codex: the shared
-launch-policy table and the managed Claude MPS + workspace smart-routing launch case in
-`test_cli.py` cover this; a live routed provider launch is not executed.
+A Model Provider Service blocks smart routing unless `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS=1`:
+the shared launch-policy table covers the default, and
+`test_external_models_gate_allows_provider_routing` plus the managed Claude MPS + workspace
+smart-routing launch case in `test_cli.py` cover the gate; a live routed provider launch is not
+executed.
 
 The toggle integration journeys retain the legacy routing-only and orchestration cases and
 add the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only

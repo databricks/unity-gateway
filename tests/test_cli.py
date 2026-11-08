@@ -868,8 +868,7 @@ class TestSubcommandRouting:
             (["fix this"], True, None, None, True),
             (["fix this"], False, None, None, False),
             (["update"], False, None, None, False),
-            # A Model Provider Service does not block routing.
-            ([], True, None, "catalog.schema.service", True),
+            ([], False, None, "catalog.schema.service", False),
         ],
     )
     def test_codex_and_claude_share_smart_routing_policy(
@@ -885,6 +884,20 @@ class TestSubcommandRouting:
         )
 
         assert options.launch_smart_routing is expected
+
+    @pytest.mark.parametrize("tool", ["codex", "claude"])
+    def test_external_models_gate_allows_provider_routing(self, tool, monkeypatch):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
+        options = cli_mod._launch_options(
+            tool,
+            [],
+            smart_routing_enabled=True,
+            explicit_prompt=False,
+            user_pinned_model=None,
+            provider="catalog.schema.service",
+        )
+
+        assert options.launch_smart_routing is True
 
     @pytest.mark.parametrize(
         ("tool", "tool_args", "model"),
@@ -2154,6 +2167,7 @@ class TestManagedClaudeModelDiscovery:
         calls["launch"].assert_not_called()
 
     def test_managed_mps_with_smart_routing_launches_routed(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
         # A managed Claude MPS plus workspace smart routing stays routed: the provider's
         # discovered models feed the routing model picker sent to routes:select.
         managed = {
