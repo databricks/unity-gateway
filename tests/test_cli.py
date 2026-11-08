@@ -885,8 +885,8 @@ class TestSubcommandRouting:
 
         assert options.launch_smart_routing is expected
 
-    @pytest.mark.parametrize("tool", ["codex", "claude"])
-    def test_external_models_gate_allows_provider_routing(self, tool, monkeypatch):
+    @pytest.mark.parametrize(("tool", "expected"), [("codex", False), ("claude", True)])
+    def test_external_models_gate_allows_provider_routing(self, tool, expected, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
         options = cli_mod._launch_options(
             tool,
@@ -897,7 +897,7 @@ class TestSubcommandRouting:
             provider="catalog.schema.service",
         )
 
-        assert options.launch_smart_routing is True
+        assert options.launch_smart_routing is expected
 
     @pytest.mark.parametrize(
         ("tool", "tool_args", "model"),
@@ -1974,7 +1974,7 @@ class TestManagedClaudeModelDiscovery:
     }
 
     @staticmethod
-    def _invoke(monkeypatch, managed, *, relayed=False, catalog_error=None):
+    def _invoke(monkeypatch, managed, *, relayed=False, catalog_error=None, args=None):
         state = {
             **MINIMAL_STATE,
             "claude_models": {},
@@ -1988,7 +1988,6 @@ class TestManagedClaudeModelDiscovery:
         monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
         monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (managed, False))
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a: "token")
-        monkeypatch.setattr(cli_mod, "get_provider_service", lambda *_a: "main.developer.provider")
         monkeypatch.setattr(cli_mod, "configure_shared_state", shared)
         resolve_provider = MagicMock(return_value=(None, None, relayed))
         monkeypatch.setattr(cli_mod, "resolve_provider_models", resolve_provider)
@@ -2004,7 +2003,7 @@ class TestManagedClaudeModelDiscovery:
         monkeypatch.setattr(cli_mod, "configure_tool", configure)
         monkeypatch.setattr(cli_mod, "launch_agent", launch)
 
-        result = runner.invoke(app, ["claude"])
+        result = runner.invoke(app, ["claude", *(args or [])])
         return {
             "result": result,
             "state": state,
@@ -2168,8 +2167,7 @@ class TestManagedClaudeModelDiscovery:
 
     def test_managed_mps_with_smart_routing_launches_routed(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
-        # A managed Claude MPS plus workspace smart routing stays routed: the provider's
-        # discovered models feed the routing model picker sent to routes:select.
+        # The managed provider's discovered models reach configuration on a routed launch.
         managed = {
             "enabled_agents": {
                 "claude": {
@@ -2183,6 +2181,65 @@ class TestManagedClaudeModelDiscovery:
         assert calls["result"].exit_code == 0, calls["result"].output
         assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is True
         assert calls["configure"].call_args.kwargs["provider"] == "main.default.anthropic-mps"
+        calls["list_anthropic_model_catalog"].assert_called_once_with(
+            calls["state"]["workspace"], "token", provider="main.default.anthropic-mps"
+        )
+        configured_catalog = calls["configure"].call_args.kwargs["picker_catalog"]
+        assert configured_catalog.model_ids == [
+            "opus",
+            "sonnet",
+            "haiku",
+            "fable",
+            *calls["picker_catalog"].model_ids,
+        ]
+        for model_id, display_name in calls["picker_catalog"].model_id_to_display_name.items():
+            assert configured_catalog.model_id_to_display_name[model_id] == display_name
+
+    @pytest.mark.parametrize("routing_enabled", [True, False])
+    def test_saved_provider_scoped_catalog_for_routed_launch(self, monkeypatch, routing_enabled):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1" if routing_enabled else "0")
+        calls = self._invoke(monkeypatch, None)
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is routing_enabled
+        assert calls["configure"].call_args.kwargs["provider"] == "main.developer.provider"
+        if routing_enabled:
+            calls["list_anthropic_model_catalog"].assert_called_once_with(
+                calls["state"]["workspace"], "token", provider="main.developer.provider"
+            )
+            assert calls["configure"].call_args.kwargs["picker_catalog"] is calls["picker_catalog"]
+            assert (
+                calls["launch"].call_args.args[1]["_claude_launch_picker_models"]
+                == calls["picker_catalog"].model_ids
+            )
+        else:
+            calls["list_anthropic_model_catalog"].assert_not_called()
+            assert calls["configure"].call_args.kwargs["picker_catalog"] is None
+
+    def test_saved_provider_subagent_only_pinned_launch_fetches_catalog(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "0")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+        calls = self._invoke(monkeypatch, None, args=["--model", "custom-deployment"])
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is True
+        calls["list_anthropic_model_catalog"].assert_called_once_with(
+            calls["state"]["workspace"], "token", provider="main.developer.provider"
+        )
+        assert calls["configure"].call_args.kwargs["picker_catalog"] is calls["picker_catalog"]
+
+    @pytest.mark.parametrize("args", [["update"], ["--model", "custom-deployment"]])
+    def test_saved_provider_unrouted_launch_skips_catalog(self, monkeypatch, args):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        calls = self._invoke(monkeypatch, None, args=args)
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is False
+        calls["list_anthropic_model_catalog"].assert_not_called()
+        assert calls["configure"].call_args.kwargs["picker_catalog"] is None
 
 
 def test_claude_discovery_changes_do_not_break_other_managed_providers():
@@ -2442,6 +2499,18 @@ class TestClaudeModelFlag:
         monkeypatch.setattr(cli_mod, "configure_tool", mock_configure)
         result = runner.invoke(app, argv)
         return result, mock_configure, mock_launch
+
+    def test_codex_provider_rejected_with_smart_routing_and_external_models_gate(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        result, configure, launch = self._provider_launch(
+            monkeypatch, ["codex", "--provider", "cat.schema.svc"], None
+        )
+
+        assert result.exit_code == 1
+        assert "smart routing cannot be enabled with --provider" in _strip_ansi(result.output)
+        configure.assert_not_called()
+        launch.assert_not_called()
 
     def test_model_and_provider_now_pin_the_launch_tier(self, monkeypatch):
         # --model under a provider is no longer rejected: a family alias resolves to that tier's

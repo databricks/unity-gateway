@@ -3684,12 +3684,11 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
     return tool == "claude" and tool_args[0].startswith("-")
 
 
-def _smart_routing_supported(provider: str | None) -> bool:
-    """Whether smart routing can run with this Model Provider Service selection.
-
-    Routing over a provider's models is gated until every provider type is supported.
-    """
-    return not provider or os.environ.get(ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR) == "1"
+def _smart_routing_supported(tool: str, provider: str | None) -> bool:
+    """Allow provider smart routing only for Claude with the external-models gate."""
+    return not provider or (
+        tool == "claude" and os.environ.get(ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR) == "1"
+    )
 
 
 def _launch_options(
@@ -3711,8 +3710,8 @@ def _launch_options(
             smart_routing_enabled
             # Only Claude Code and Codex currently support smart routing.
             and tool in CAN_USE_CACHED_CONFIG_AGENTS
-            # Model Provider Services require the external-models gate.
-            and _smart_routing_supported(provider)
+            # Only Claude supports Model Provider Services behind the external-models gate.
+            and _smart_routing_supported(tool, provider)
             # Route a supported interactive launch shape.
             and _should_launch_smart_routing(
                 tool,
@@ -4017,7 +4016,7 @@ def _launch_tool(
         if (
             tool in CAN_USE_CACHED_CONFIG_AGENTS
             and smart_routing_enabled
-            and not _smart_routing_supported(provider)
+            and not _smart_routing_supported(tool, provider)
         ):
             raise RuntimeError(
                 f"{TOOL_SPECS[tool]['display']} smart routing cannot be enabled with "
@@ -4068,6 +4067,17 @@ def _launch_tool(
             and (
                 bool(managed_parent_schema or managed_provider)
                 or (managed is None and bool(explicit_provider or parent_schema))
+                or (
+                    bool(provider)
+                    and smart_routing_enabled
+                    and _smart_routing_supported(tool, provider)
+                    and _should_launch_smart_routing(
+                        tool,
+                        ctx.args,
+                        explicit_prompt=explicit_prompt,
+                        model=model or forwarded_model,
+                    )
+                )
             )
         )
         if should_fetch_claude_picker_catalog:
@@ -4259,7 +4269,7 @@ def _launch_tool(
         if (
             tool in CAN_USE_CACHED_CONFIG_AGENTS
             and smart_routing_enabled
-            and _smart_routing_supported(provider)
+            and _smart_routing_supported(tool, provider)
         ):
             print_note(
                 f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
