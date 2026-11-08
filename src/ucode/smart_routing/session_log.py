@@ -84,6 +84,7 @@ def append_decision(
             "routing_ms": routing_ms,
             "rationale": decision.rationale,
             "raw_rationale": decision.raw_rationale,
+            **({"explanation": decision.explanation} if decision.explanation is not None else {}),
         }
         line = (json.dumps(record, ensure_ascii=True) + "\n").encode("utf-8")
         LOG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
