@@ -3688,15 +3688,6 @@ def _smart_routing_requested(tool: str, smart_routing_enabled: bool) -> bool:
     return smart_routing_enabled and tool in CAN_USE_CACHED_CONFIG_AGENTS
 
 
-def _smart_routing_supported(tool: str, provider: str | None) -> bool:
-    """Whether smart routing is supported for this tool with the given Model Provider Service.
-
-    Claude Code routes over its provider catalog, which feeds the routing model picker.
-    Other tools support smart routing only without a provider.
-    """
-    return not provider or tool == "claude"
-
-
 def _launch_options(
     tool: str,
     tool_args: list[str],
@@ -3713,7 +3704,6 @@ def _launch_options(
         user_pinned_model=user_pinned_model if provider is None else None,
         launch_smart_routing=(
             _smart_routing_requested(tool, smart_routing_enabled)
-            and _smart_routing_supported(tool, provider)
             # Route a supported interactive launch shape.
             and _should_launch_smart_routing(
                 tool,
@@ -4013,15 +4003,6 @@ def _launch_tool(
             }
         if provider and parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
-        # Checked after the managed config settles `provider`: an admin-set provider must trip this
-        # guard too, or routing would be persisted as on while a provider is active.
-        routing_requested = _smart_routing_requested(tool, smart_routing_enabled)
-        routing_supported = _smart_routing_supported(tool, provider)
-        if routing_requested and not routing_supported:
-            raise RuntimeError(
-                f"{TOOL_SPECS[tool]['display']} smart routing cannot be enabled with "
-                "--provider. Launch without a Model Provider Service and try again."
-            )
         # Validate the provider service before launching — it must exist, be a
         # provider type this tool can route to (e.g. claude can't use an OpenAI
         # service), and expose compatible targets for multi-vendor providers.
@@ -4255,7 +4236,7 @@ def _launch_tool(
         print_section(_launch_title(tool))
         if provider:
             print_kv("Provider", provider)
-        if routing_requested and routing_supported:
+        if _smart_routing_requested(tool, smart_routing_enabled):
             print_note(
                 f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
                 "`/hooks` and trust the ug routing hooks if prompted."

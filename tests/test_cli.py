@@ -868,6 +868,8 @@ class TestSubcommandRouting:
             (["fix this"], True, None, None, True),
             (["fix this"], False, None, None, False),
             (["update"], False, None, None, False),
+            # A Model Provider Service does not block routing.
+            ([], True, None, "catalog.schema.service", True),
         ],
     )
     def test_codex_and_claude_share_smart_routing_policy(
@@ -880,27 +882,6 @@ class TestSubcommandRouting:
             explicit_prompt=explicit_prompt,
             user_pinned_model=model,
             provider=provider,
-        )
-
-        assert options.launch_smart_routing is expected
-
-    @pytest.mark.parametrize(
-        ("tool", "expected"),
-        [
-            # Claude's provider catalog feeds the routing model picker, so it stays routed.
-            ("claude", True),
-            # Codex has no provider-backed routing candidate path and stays unrouted.
-            ("codex", False),
-        ],
-    )
-    def test_provider_routes_claude_but_not_codex(self, tool, expected):
-        options = cli_mod._launch_options(
-            tool,
-            [],
-            smart_routing_enabled=True,
-            explicit_prompt=False,
-            user_pinned_model=None,
-            provider="catalog.schema.service",
         )
 
         assert options.launch_smart_routing is expected
@@ -2504,29 +2485,6 @@ class TestClaudeModelFlag:
         )
         assert result.exit_code == 1
         assert "does not offer a 'opus' model" in result.output
-
-    def test_smart_routing_claude_provider_launch_is_routed(self, monkeypatch):
-        # Claude's provider catalog feeds the routing model picker, so the routed
-        # launch is allowed and reaches launch_agent with routing on.
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
-        result, _, mock_launch = self._provider_launch(
-            monkeypatch,
-            ["claude", "--provider", "cat.schema.svc"],
-            {"sonnet": "claude-sonnet-5"},
-        )
-        assert result.exit_code == 0, result.output
-        assert mock_launch.call_args.kwargs["options"].launch_smart_routing is True
-
-    def test_smart_routing_codex_provider_launch_is_rejected(self, monkeypatch):
-        # Codex has no provider-backed routing candidate path and stays rejected.
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
-        result, _, _ = self._provider_launch(
-            monkeypatch,
-            ["codex", "--provider", "cat.schema.svc"],
-            None,
-        )
-        assert result.exit_code == 1
-        assert "smart routing cannot be enabled with --provider" in result.output
 
     def test_model_forwarded_to_claude_for_relayed_provider(self, monkeypatch):
         # Relayed = a subscription: --model rides Claude Code's own flag, not gateway env.
