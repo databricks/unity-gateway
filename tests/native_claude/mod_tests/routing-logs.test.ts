@@ -276,3 +276,19 @@ test('unrouted launch declines logs and usage includes logs', { options: { ENABL
   expect((await $.command.run(command)).text).toContain('was not enabled');
   expect((await $.command.run({ command: 'smart-router', args: 'wrong' })).text).toBe('Usage: /smart-router on|off|logs');
 });
+
+test('a UG route agent type is not shown as the prompt label', { options }, async ($, on) => {
+  const routed = JSON.stringify({ ...decision, decision: { ...decision.decision,
+    original: { model: null, subagent_type: 'ug-smart-router:ucode-route-claude-haiku-5-5-009ef3ad' } } });
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('process.run', ($, e) => ({ value: { exitCode: 0, stderr: '',
+    stdout: e.argv.includes('--decision') ? routed : JSON.stringify({ v: 1, decisions: records }) } }));
+  await $.command.run(command);
+  const ui = await $.ui.mount(pane);
+  await ui.press({ key: 'd1' });
+  const tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain('"Prompt"');
+  expect(tree).not.toContain('ucode-route-');
+  await ui.unmount();
+});

@@ -49,7 +49,10 @@ function parseDecision(raw: string, id: string): Detail {
     id,
     failed: false,
     prompt: typeof prompt?.preview === 'string' ? prompt.preview : '(prompt not recorded)',
-    subagent: typeof original?.subagent_type === 'string' ? original.subagent_type : null,
+    // UG's own route agents (`ucode-route-<model>`) name a model, not a task type, and
+    // would contradict the selected model, so only other subagent types are shown.
+    subagent: typeof original?.subagent_type === 'string' && !/(^|:)ucode-route-/.test(original.subagent_type)
+      ? original.subagent_type : null,
     selected: d.selected_model,
     requested: typeof d.requested_model === 'string' ? d.requested_model : null,
     routing_ms: d.routing_ms,
