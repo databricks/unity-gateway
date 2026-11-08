@@ -5,6 +5,7 @@ import os
 import subprocess
 import tomllib
 from types import SimpleNamespace
+from unittest.mock import ANY
 
 import pytest
 
@@ -146,7 +147,8 @@ class TestLaunchCodex:
                     "start_model": "gpt-start",
                     "render_overlay": codex._render_launch_overlay,
                     "provider": None,
-                    "available_models": None,
+                    # Candidate selection is covered by the routing-model tests.
+                    "available_models": ANY,
                 },
             )
         ]

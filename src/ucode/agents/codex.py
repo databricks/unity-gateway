@@ -1874,18 +1874,18 @@ def launch(
     options: LaunchOptions,
 ) -> None:
     relayed = bool(state.get("codex_relayed"))
+    provider, parent_schema = _launch_provider_and_schema(state)
     if options.launch_smart_routing:
         if relayed:
             raise RuntimeError(
                 "Smart routing can't be used with a ChatGPT subscription relay. Re-run with "
                 "`--disable-smart-routing` or pick another provider."
             )
-        _launch_smart_routing(state, tool_args)
+        _launch_smart_routing(state, tool_args, provider=provider)
         return
     clear_model_preferences(state)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
-    provider, parent_schema = _launch_provider_and_schema(state)
     if workspace and (provider or parent_schema):
         _reject_managed_model_catalog()
     token = None
@@ -2009,7 +2009,7 @@ def _provider_routing_models(state: dict, workspace: str, provider: str) -> list
     return catalog_slugs(catalog)
 
 
-def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
+def _launch_smart_routing(state: dict, tool_args: list[str], *, provider: str | None) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
     from ucode.agents import ensure_minimum_version
 
@@ -2017,24 +2017,22 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
     ensure_minimum_version("codex", lambda: minimum_version_error(smart_routing_enabled=True))
 
     workspace = state.get("workspace")
-    provider, _ = _launch_provider_and_schema(state)
-    if workspace and provider:
-        _reject_managed_model_catalog()
-    configured_model = _smart_routing_config_model(state)
-    # Prefer the custom catalog if it exists.
-    models = custom_catalog_models() or routing_models(state)
     if provider:
         if not workspace:
             raise RuntimeError(
                 "Smart routing needs a configured workspace; run `ug configure codex` first."
             )
+        _reject_managed_model_catalog()
         # A routed provider launch routes only the provider's models, passed to the router
         # exactly as the provider returns them.
         models = _provider_routing_models(state, workspace, provider)
+        first_model = models[0] if models else None
+    else:
+        # Prefer the custom catalog if it exists.
+        models = custom_catalog_models() or routing_models(state)
+        first_model = codex_model_id(models[0]) if models else None
     start_model = (
-        configured_model
-        or (models[0] if provider else (codex_model_id(models[0]) if models else None))
-        or APP_SERVER_SMART_ROUTING_STARTING_MODEL
+        _smart_routing_config_model(state) or first_model or APP_SERVER_SMART_ROUTING_STARTING_MODEL
     )
     smart_routing_v2.launch_codex(
         state,
@@ -2043,7 +2041,7 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
         start_model=start_model,
         render_overlay=_render_launch_overlay,
         provider=provider,
-        available_models=models if provider else None,
+        available_models=models,
     )
 
 
