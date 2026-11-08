@@ -99,6 +99,7 @@ class RoutingDecision:
     route_options: tuple[tuple[str, str | None], ...] = ()
     router_name: str = ""
     raw_rationale: str | None = None
+    explanation: dict[str, Any] | None = None
 
     def display_message(
         self,
@@ -260,6 +261,33 @@ def select_route(
     raw_rationale = payload.get("rationale")
     raw_rationale = raw_rationale if isinstance(raw_rationale, str) else ""
     rationale = format_rationale(payload["route_selection"][0], raw_rationale)
+    params = payload["route_selection"][0].get("params")
+    explanation = params.get("routing_explanation") if isinstance(params, dict) else None
+    try:
+        if isinstance(explanation, str):
+            explanation = json.loads(explanation) if len(explanation) <= 65536 else None
+        if (
+            not isinstance(explanation, dict)
+            or len(json.dumps(explanation, allow_nan=False).encode("utf-8")) > 65536
+        ):
+            explanation = None
+        if explanation is not None:
+            models = explanation.get("models")
+            offered_models = {
+                unwrap_anthropic_gateway_model(model)
+                .removeprefix("system.ai.")
+                .removesuffix("[1m]")
+                for model, _ in offered_routes
+            }
+            if (
+                not isinstance(models, list)
+                or len(models) != len(offered_models)
+                or any(not isinstance(item, dict) for item in models)
+                or {item.get("id") for item in models} != offered_models
+            ):
+                explanation = None
+    except (TypeError, ValueError, RecursionError):
+        explanation = None
     return (
         RoutingDecision(
             model=model,
@@ -267,6 +295,7 @@ def select_route(
             route_options=offered_routes,
             router_name=router_name,
             raw_rationale=raw_rationale if rationale != raw_rationale else None,
+            explanation=explanation,
         ),
         None,
     )

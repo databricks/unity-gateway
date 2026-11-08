@@ -998,6 +998,104 @@ class TestSubagentRouting:
         assert json.loads(user_settings.read_text()) == {"model": "haiku"}
 
 
+class TestRoutingExplanation:
+    OFFERED = [
+        ("system.ai.claude-opus-4-8", "claude"),
+        ("system.ai.claude-sonnet-5", "claude"),
+    ]
+    MODELS = [
+        {"id": "claude-opus-4-8", "reason": "big task"},
+        {"id": "claude-sonnet-5", "reason": "small task"},
+    ]
+
+    def _select(self, monkeypatch, payload, offered=None):
+        monkeypatch.setattr(
+            routing.urllib.request,
+            "urlopen",
+            lambda request, timeout: io.BytesIO(json.dumps(payload).encode()),
+        )
+        return routing.select_route(
+            "https://example.com",
+            "token",
+            "inspect the parser",
+            offered or self.OFFERED,
+            router_name="stable",
+        )
+
+    @staticmethod
+    def _payload(explanation):
+        return {
+            "route_selection": [
+                {
+                    "route_option": {"model": "system.ai.claude-opus-4-8", "harness": "claude"},
+                    "params": {"routing_explanation": explanation},
+                }
+            ]
+        }
+
+    def test_dict_explanation_is_kept_and_selection_is_unchanged(self, monkeypatch):
+        decision, error = self._select(monkeypatch, self._payload({"models": self.MODELS}))
+        assert error is None
+        assert decision.model == "system.ai.claude-opus-4-8"
+        assert decision.explanation == {"models": self.MODELS}
+
+    def test_json_string_explanation_is_parsed(self, monkeypatch):
+        decision, _ = self._select(monkeypatch, self._payload(json.dumps({"models": self.MODELS})))
+        assert decision.explanation == {"models": self.MODELS}
+
+    def test_unwrapped_offered_models_must_cover_the_explanation(self, monkeypatch):
+        offered = [("anthropic-aigw-77df06ea-system.ai.claude-opus-4-8[1m]", "claude")]
+        payload = {
+            "route_selection": [
+                {
+                    "route_option": {
+                        "model": "anthropic-aigw-77df06ea-system.ai.claude-opus-4-8[1m]",
+                        "harness": "claude",
+                    },
+                    "params": {"routing_explanation": {"models": [{"id": "claude-opus-4-8"}]}},
+                }
+            ]
+        }
+        decision, error = self._select(monkeypatch, payload, offered)
+        assert error is None
+        assert decision.explanation == {"models": [{"id": "claude-opus-4-8"}]}
+
+    @pytest.mark.parametrize(
+        "explanation",
+        [
+            {"models": [{"id": "claude-opus-4-8"}]},
+            {"models": [{"id": "unknown"}] * len(MODELS)},
+            {"models": ["claude-opus-4-8", "claude-sonnet-5"]},
+            {"models": [{"id": "claude-opus-4-8"}] * len(MODELS)},
+            {"models": "everything"},
+            [],
+            "not json",
+        ],
+    )
+    def test_mismatched_or_malformed_explanations_are_dropped(self, monkeypatch, explanation):
+        decision, error = self._select(monkeypatch, self._payload(explanation))
+        assert error is None
+        assert decision.model == "system.ai.claude-opus-4-8"
+        assert decision.explanation is None
+
+    def test_oversized_explanations_are_dropped(self, monkeypatch):
+        explanation = {"models": self.MODELS, "detail": "x" * 65537}
+        decision, _ = self._select(monkeypatch, self._payload(explanation))
+        assert decision.explanation is None
+        string = json.dumps({"models": self.MODELS}) + " " + "x" * 65536
+        decision, _ = self._select(monkeypatch, self._payload(string))
+        assert decision.explanation is None
+
+    def test_missing_params_leave_no_explanation(self, monkeypatch):
+        payload = {
+            "route_selection": [
+                {"route_option": {"model": "system.ai.claude-opus-4-8", "harness": "claude"}}
+            ]
+        }
+        decision, _ = self._select(monkeypatch, payload)
+        assert decision.explanation is None
+
+
 @requires_pty
 class TestPtyFlow:
     def test_does_not_launch_when_socket_startup_fails(self, tmp_path, monkeypatch):
