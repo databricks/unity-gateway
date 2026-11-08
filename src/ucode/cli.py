@@ -3370,6 +3370,9 @@ def _auto_configure_tool(
 
 
 CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
+# Agents whose routed launch carries a Model Provider Service: provider header +
+# provider-scoped routing candidates.
+SMART_ROUTING_PROVIDER_AGENTS = frozenset({"claude", "codex"})
 
 
 @contextmanager
@@ -3685,9 +3688,10 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
 
 
 def _smart_routing_supported(tool: str, provider: str | None) -> bool:
-    """Allow provider smart routing only for Claude with the external-models gate."""
+    """Allow provider smart routing for gate-enabled agents with the external-models gate."""
     return not provider or (
-        tool == "claude" and os.environ.get(ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR) == "1"
+        tool in SMART_ROUTING_PROVIDER_AGENTS
+        and os.environ.get(ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR) == "1"
     )
 
 
@@ -3710,7 +3714,8 @@ def _launch_options(
             smart_routing_enabled
             # Only Claude Code and Codex currently support smart routing.
             and tool in CAN_USE_CACHED_CONFIG_AGENTS
-            # Only Claude supports Model Provider Services behind the external-models gate.
+            # Only gate-enabled agents support Model Provider Services behind the
+            # external-models gate.
             and _smart_routing_supported(tool, provider)
             # Route a supported interactive launch shape.
             and _should_launch_smart_routing(

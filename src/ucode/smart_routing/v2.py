@@ -855,7 +855,15 @@ def launch_codex(
     binary: str,
     start_model: str | None,
     render_overlay: Callable[..., dict],
+    provider: str | None = None,
+    available_models: list[str] | None = None,
 ) -> NoReturn:
+    """Launch a routed Codex session.
+
+    ``provider`` puts the launch on a Model Provider Service: the overlay's provider block carries
+    its routing header, so every request the app-server sends (routed model choices included)
+    goes through it. When ``available_models`` is given it replaces the cached routing
+    candidates, as with a provider's own models."""
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -867,8 +875,8 @@ def launch_codex(
         )
 
     os.environ[OAUTH_TOKEN_ENV_VAR] = launch_token(state, workspace)
-    catalog_models = custom_catalog_models()
-    available_models = catalog_models or _cached_routing_models(state)
+    if available_models is None:
+        available_models = custom_catalog_models() or _cached_routing_models(state)
     if not available_models:
         print_warning(
             "Smart routing model metadata is unavailable; automatic model switching is unavailable. "
@@ -882,9 +890,11 @@ def launch_codex(
         use_pat=bool(state.get("use_pat")),
         custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
         managed_http_headers=state.get("codex_http_headers"),
+        provider=provider,
     )
     catalog_path = custom_catalog_path()
-    if catalog_path is not None:
+    if catalog_path is not None and provider is None:
+        # A custom catalog lists cached UC services, not the provider's models.
         overlay["model_catalog_json"] = str(catalog_path)
     overlay["hooks"] = _v2_hooks(state, available_models)
     overlay["features.hooks"] = True

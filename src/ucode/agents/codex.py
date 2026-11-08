@@ -1844,6 +1844,29 @@ def _run_codex(
         exec_or_spawn([*base_argv, *tool_args])
 
 
+def _launch_provider_and_schema(state: dict) -> tuple[str | None, str | None]:
+    """This launch's Model Provider Service and UC parent schema, in launch-state precedence.
+
+    Launch-scoped admin routing wins over persisted developer configuration. A transient provider
+    is most specific; otherwise a transient UC parent must suppress a saved provider."""
+    launch_provider = state.get("_codex_launch_provider")
+    transient_provider = (
+        launch_provider.strip()
+        if isinstance(launch_provider, str) and launch_provider.strip()
+        else None
+    )
+    launch_parent_schema = state.get("_codex_launch_parent_schema")
+    parent_schema = (
+        launch_parent_schema.strip()
+        if isinstance(launch_parent_schema, str) and launch_parent_schema.strip()
+        else None
+    )
+    provider = transient_provider or (
+        None if parent_schema else get_provider_service(state, "codex")
+    )
+    return provider, parent_schema
+
+
 def launch(
     state: dict,
     tool_args: list[str],
@@ -1862,23 +1885,7 @@ def launch(
     clear_model_preferences(state)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
-    launch_provider = state.get("_codex_launch_provider")
-    transient_provider = (
-        launch_provider.strip()
-        if isinstance(launch_provider, str) and launch_provider.strip()
-        else None
-    )
-    launch_parent_schema = state.get("_codex_launch_parent_schema")
-    parent_schema = (
-        launch_parent_schema.strip()
-        if isinstance(launch_parent_schema, str) and launch_parent_schema.strip()
-        else None
-    )
-    # Launch-scoped admin routing wins over persisted developer configuration. A transient provider
-    # is most specific; otherwise a transient UC parent must suppress a saved provider.
-    provider = transient_provider or (
-        None if parent_schema else get_provider_service(state, "codex")
-    )
+    provider, parent_schema = _launch_provider_and_schema(state)
     if workspace and (provider or parent_schema):
         _reject_managed_model_catalog()
     token = None
@@ -1987,6 +1994,21 @@ def launch(
     )
 
 
+def _provider_routing_models(state: dict, workspace: str, provider: str) -> list[str]:
+    """The provider's own models, the only candidates a routed provider launch may select.
+
+    Reuses the non-routed provider launch's Codex catalog discovery: any other model id would
+    403 against the Model Provider Service's allowlist. Discovery failures block the launch —
+    routing without the provider's models would send unroutable model ids."""
+    catalog = _fetch_codex_model_catalog(
+        workspace,
+        _launch_token(state, workspace),
+        source=CodexCatalogSource.PROVIDER,
+        identifier=provider,
+    )
+    return catalog_slugs(catalog)
+
+
 def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
     from ucode.agents import ensure_minimum_version
@@ -1994,12 +2016,24 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
     binary = SPEC["binary"]
     ensure_minimum_version("codex", lambda: minimum_version_error(smart_routing_enabled=True))
 
+    workspace = state.get("workspace")
+    provider, _ = _launch_provider_and_schema(state)
+    if workspace and provider:
+        _reject_managed_model_catalog()
     configured_model = _smart_routing_config_model(state)
     # Prefer the custom catalog if it exists.
     models = custom_catalog_models() or routing_models(state)
+    if provider:
+        if not workspace:
+            raise RuntimeError(
+                "Smart routing needs a configured workspace; run `ug configure codex` first."
+            )
+        # A routed provider launch routes only the provider's models, passed to the router
+        # exactly as the provider returns them.
+        models = _provider_routing_models(state, workspace, provider)
     start_model = (
         configured_model
-        or (codex_model_id(models[0]) if models else None)
+        or (models[0] if provider else (codex_model_id(models[0]) if models else None))
         or APP_SERVER_SMART_ROUTING_STARTING_MODEL
     )
     smart_routing_v2.launch_codex(
@@ -2008,6 +2042,8 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
         binary=binary,
         start_model=start_model,
         render_overlay=_render_launch_overlay,
+        provider=provider,
+        available_models=models if provider else None,
     )
 
 

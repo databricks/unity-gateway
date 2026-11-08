@@ -918,13 +918,18 @@ managed default), that those launches
 skip the routed launch path (no Smart Router skills or hooks) and the hook-review note, and that
 Claude, routing versions, `--disable-smart-routing`, plain launches, and native subcommands do
 not warn. The live Codex managed-default journey also requires the workspace warning text.
-With `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS=1`, Claude can route through a Model Provider
-Service; Codex remains unrouted in the launch policy and rejects provider launches with routing
-enabled. Component tests in `test_cli.py` mock dispatch and check managed and saved Claude
-providers' scoped catalog discovery and the catalog passed to configuration. They also preserve
-unrouted saved-provider behavior, including pinned-model launches in first-prompt routing mode and
-native subcommands; subagent-only routing still discovers the catalog with a pinned model. These
-tests do not verify catalog delivery to the router or a live routed provider launch.
+With `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS=1`, Claude and Codex can route through a Model
+Provider Service; without the gate both still reject provider launches with routing enabled.
+Component tests in `test_cli.py` mock dispatch and check managed and saved Claude providers'
+scoped catalog discovery and the catalog passed to configuration, plus a routed Codex provider
+launch that threads the provider through launch state. They also preserve unrouted saved-provider
+behavior, including pinned-model launches in first-prompt routing mode and native subcommands;
+subagent-only routing still discovers the catalog with a pinned model. `test_codex_smart_routing_v2.py`
+checks the routed Codex provider launch end to end at the component level: the provider's Codex
+model catalog (the non-routed provider launch's discovery path) becomes the only routing
+candidates and the start model, the provider header rides the routed overlay's provider block,
+and a stale cached custom catalog is skipped. These tests do not verify catalog delivery to the
+router or a live routed provider launch.
 
 The toggle integration journeys retain the legacy routing-only and orchestration cases and
 add the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only
