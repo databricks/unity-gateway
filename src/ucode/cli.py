@@ -3231,6 +3231,45 @@ def smart_router_describe_cmd() -> None:
     sys.stdout.write(json.dumps(asdict(smart_routing_v2.describe_routing())) + "\n")
 
 
+class LogHarness(StrEnum):
+    """Which agent harness's session log to read."""
+
+    claude = "claude"
+    codex = "codex"
+
+
+@app.command("smart-router-logs", hidden=True)
+def smart_router_logs_cmd(
+    session: Annotated[str, typer.Option("--session")],
+    harness: Annotated[LogHarness, typer.Option("--harness")] = LogHarness.claude,
+    decision: Annotated[str | None, typer.Option("--decision")] = None,
+    as_json: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Print a session's recorded smart-routing decisions as JSON on stdout."""
+    from ucode.smart_routing import session_log
+
+    if not as_json:
+        print_err("Only JSON output is supported for now; pass --json.")
+        raise typer.Exit(2)
+    records = session_log.read_decisions(harness, session)
+    if decision is not None:
+        record = next((r for r in records if r.get("decision_id") == decision), None)
+        if record is None:
+            sys.stdout.write(
+                json.dumps({"v": 1, "error": "decision not found"}, ensure_ascii=True) + "\n"
+            )
+            raise typer.Exit(1)
+        sys.stdout.write(json.dumps({"v": 1, "decision": record}, ensure_ascii=True) + "\n")
+        return
+    sys.stdout.write(
+        json.dumps(
+            {"v": 1, "decisions": [session_log.overview(record) for record in records]},
+            ensure_ascii=True,
+        )
+        + "\n"
+    )
+
+
 @app.command("claude-router-hook", hidden=True)
 def claude_router_hook_cmd(
     event: str,

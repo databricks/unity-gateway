@@ -109,3 +109,43 @@ def append_decision(
                 release_file_lock(log)
     except (OSError, TypeError, ValueError):
         pass
+
+
+def read_decisions(harness: str, session_id: str) -> list[dict[str, Any]]:
+    """Return a session's decision records in chronological file order."""
+    path = session_log_path(harness, session_id)
+    if path is None:
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    records: list[dict[str, Any]] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("v") != SCHEMA_VERSION or record.get("type") != "decision":
+            continue
+        records.append(record)
+    return records
+
+
+def overview(record: dict[str, Any]) -> dict[str, Any]:
+    """Return the summary fields a UI pane shows for one decision record."""
+    prompt = record.get("prompt")
+    preview = prompt.get("preview") if isinstance(prompt, dict) else None
+    return {
+        "decision_id": record.get("decision_id"),
+        "at": record.get("at"),
+        "kind": record.get("kind"),
+        "preview": preview,
+        "selected_model": record.get("selected_model"),
+        "routing_ms": record.get("routing_ms"),
+    }
