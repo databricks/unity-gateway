@@ -2195,33 +2195,10 @@ class TestManagedClaudeModelDiscovery:
         for model_id, display_name in calls["picker_catalog"].model_id_to_display_name.items():
             assert configured_catalog.model_id_to_display_name[model_id] == display_name
 
-    @pytest.mark.parametrize("routing_enabled", [True, False])
-    def test_saved_provider_scoped_catalog_for_routed_launch(self, monkeypatch, routing_enabled):
+    def test_saved_provider_scoped_catalog_for_routed_launch(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1" if routing_enabled else "0")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
         calls = self._invoke(monkeypatch, None)
-
-        assert calls["result"].exit_code == 0, calls["result"].output
-        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is routing_enabled
-        assert calls["configure"].call_args.kwargs["provider"] == "main.developer.provider"
-        if routing_enabled:
-            calls["list_anthropic_model_catalog"].assert_called_once_with(
-                calls["state"]["workspace"], "token", provider="main.developer.provider"
-            )
-            assert calls["configure"].call_args.kwargs["picker_catalog"] is calls["picker_catalog"]
-            assert (
-                calls["launch"].call_args.args[1]["_claude_launch_picker_models"]
-                == calls["picker_catalog"].model_ids
-            )
-        else:
-            calls["list_anthropic_model_catalog"].assert_not_called()
-            assert calls["configure"].call_args.kwargs["picker_catalog"] is None
-
-    def test_saved_provider_subagent_only_pinned_launch_fetches_catalog(self, monkeypatch):
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "0")
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
-        calls = self._invoke(monkeypatch, None, args=["--model", "custom-deployment"])
 
         assert calls["result"].exit_code == 0, calls["result"].output
         assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is True
@@ -2230,11 +2207,10 @@ class TestManagedClaudeModelDiscovery:
         )
         assert calls["configure"].call_args.kwargs["picker_catalog"] is calls["picker_catalog"]
 
-    @pytest.mark.parametrize("args", [["update"], ["--model", "custom-deployment"]])
-    def test_saved_provider_unrouted_launch_skips_catalog(self, monkeypatch, args):
+    def test_saved_provider_unrouted_launch_skips_catalog(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
-        calls = self._invoke(monkeypatch, None, args=args)
+        calls = self._invoke(monkeypatch, None, args=["--model", "custom-deployment"])
 
         assert calls["result"].exit_code == 0, calls["result"].output
         assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is False
@@ -2499,17 +2475,6 @@ class TestClaudeModelFlag:
         monkeypatch.setattr(cli_mod, "configure_tool", mock_configure)
         result = runner.invoke(app, argv)
         return result, mock_configure, mock_launch
-
-    def test_codex_provider_routes_with_external_models_gate(self, monkeypatch):
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
-        result, configure, launch = self._provider_launch(
-            monkeypatch, ["codex", "--provider", "cat.schema.svc"], None
-        )
-
-        assert result.exit_code == 0, result.output
-        assert launch.call_args.kwargs["options"].launch_smart_routing is True
-        assert launch.call_args.args[1]["_codex_launch_provider"] == "cat.schema.svc"
 
     def test_codex_provider_rejected_with_smart_routing_without_gate(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")

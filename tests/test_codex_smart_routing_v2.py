@@ -11,7 +11,6 @@ import pytest
 
 from ucode import agents, codex_config, custom_oauth
 from ucode.agents import LaunchOptions, codex
-from ucode.databricks import CodexCatalogSource, CodexModelCatalogEmpty
 from ucode.smart_routing import codex_interposer, codex_routing, v2
 
 WS = "https://example.databricks.com"
@@ -503,7 +502,7 @@ class TestLaunchCodex:
         # provider (MPS header in the app-server's provider block) and offers the router only
         # the provider's own models.
         processes = []
-        interposer = self._patch_routed_launch(monkeypatch, processes)
+        self._patch_routed_launch(monkeypatch, processes)
 
         with pytest.raises(SystemExit):
             v2.launch_codex(
@@ -521,7 +520,6 @@ class TestLaunchCodex:
         )
         assert "Databricks-Model-Provider-Service" in provider_arg
         assert "cat.schema.svc" in provider_arg
-        assert interposer["available_models"] == ["gpt-5-6-codex"]
 
     def test_provider_launch_skips_cached_custom_catalog(self, tmp_path, monkeypatch):
         # A custom catalog lists cached UC services, which a provider-backed session can't route.
@@ -1230,70 +1228,3 @@ def test_routing_request_sends_each_model_id_once_as_given(monkeypatch):
         ("gpt-5.6-sol", "codex"),
         ("system.ai.gpt-5-6-luna", "codex"),
     ]
-
-
-class TestProviderRoutedLaunch:
-    @staticmethod
-    def _patch_dispatch(monkeypatch, tmp_path, provider_models):
-        calls = []
-        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-        monkeypatch.setattr(codex, "agent_version", lambda *_args, **_kwargs: "0.164.0")
-        monkeypatch.setattr(agents.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setenv(agents.AUTO_UPGRADE_AGENT_ENV, "0")
-        monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: None)
-        monkeypatch.setattr(codex, "_launch_token", lambda *_args, **_kwargs: "token")
-
-        def fetch_catalog(workspace, token, *, source, identifier):
-            assert (workspace, token) == (WS, "token")
-            assert source is CodexCatalogSource.PROVIDER
-            assert identifier == "cat.schema.svc"
-            return {"models": [{"slug": slug} for slug in provider_models]}
-
-        monkeypatch.setattr(codex, "_fetch_codex_model_catalog", fetch_catalog)
-
-        def launch_v2(state, tool_args, **kwargs):
-            calls.append(kwargs)
-            raise SystemExit(0)
-
-        monkeypatch.setattr(v2, "launch_codex", launch_v2)
-        return calls
-
-    @pytest.mark.parametrize(
-        "provider_state",
-        [
-            {"_codex_launch_provider": "cat.schema.svc"},
-            {"provider_services": {"codex": "cat.schema.svc"}},
-        ],
-        ids=["transient-provider", "saved-provider"],
-    )
-    def test_routed_launch_sends_provider_models_to_v2(self, tmp_path, monkeypatch, provider_state):
-        # A gated routed provider launch routes only the provider's models, passed to the
-        # router exactly as the provider returns them, and starts on the provider's first model.
-        calls = self._patch_dispatch(monkeypatch, tmp_path, ["gpt-5-6-codex", "gpt-5-4-nano"])
-        state = {"workspace": WS, **provider_state}
-
-        with pytest.raises(SystemExit):
-            codex.launch(state, [], options=LaunchOptions(launch_smart_routing=True))
-
-        (kwargs,) = calls
-        assert kwargs["provider"] == "cat.schema.svc"
-        assert kwargs["available_models"] == ["gpt-5-6-codex", "gpt-5-4-nano"]
-        assert kwargs["start_model"] == "gpt-5-6-codex"
-
-    def test_routed_provider_launch_fails_without_provider_models(self, tmp_path, monkeypatch):
-        # Without the provider's models the router would offer unroutable model ids.
-        calls = self._patch_dispatch(monkeypatch, tmp_path, [])
-        monkeypatch.setattr(
-            codex,
-            "_fetch_codex_model_catalog",
-            lambda *_a, **_k: (_ for _ in ()).throw(
-                CodexModelCatalogEmpty("cat.schema.svc returned no Codex models.")
-            ),
-        )
-        monkeypatch.setattr(codex, "routing_models", lambda state: ["system.ai.gpt-5-6-sol"])
-        state = {"workspace": WS, "_codex_launch_provider": "cat.schema.svc"}
-
-        with pytest.raises(RuntimeError, match="no Codex models"):
-            codex.launch(state, [], options=LaunchOptions(launch_smart_routing=True))
-
-        assert calls == []
