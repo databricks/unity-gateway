@@ -3691,6 +3691,30 @@ def _smart_routing_supported(tool: str, provider: str | None) -> bool:
     )
 
 
+def _routes_launch(
+    tool: str,
+    tool_args: list[str],
+    *,
+    smart_routing_enabled: bool,
+    explicit_prompt: bool,
+    model: str | None,
+    provider: str | None,
+) -> bool:
+    """Whether this launch is smart-routed."""
+    return (
+        # Smart routing is enabled globally.
+        smart_routing_enabled
+        # Only Claude Code and Codex currently support smart routing.
+        and tool in CAN_USE_CACHED_CONFIG_AGENTS
+        # Model Provider Services require the external-models gate.
+        and _smart_routing_supported(tool, provider)
+        # Route a supported interactive launch shape.
+        and _should_launch_smart_routing(
+            tool, tool_args, explicit_prompt=explicit_prompt, model=model
+        )
+    )
+
+
 def _launch_options(
     tool: str,
     tool_args: list[str],
@@ -3705,20 +3729,13 @@ def _launch_options(
         launch_model=launch_model,
         # Pinned models for providers are resolved above through the provider-specific launch path.
         user_pinned_model=user_pinned_model if provider is None else None,
-        launch_smart_routing=(
-            # Smart routing is enabled globally.
-            smart_routing_enabled
-            # Only Claude Code and Codex currently support smart routing.
-            and tool in CAN_USE_CACHED_CONFIG_AGENTS
-            # Model Provider Services require the external-models gate.
-            and _smart_routing_supported(tool, provider)
-            # Route a supported interactive launch shape.
-            and _should_launch_smart_routing(
-                tool,
-                tool_args,
-                explicit_prompt=explicit_prompt,
-                model=user_pinned_model,
-            )
+        launch_smart_routing=_routes_launch(
+            tool,
+            tool_args,
+            smart_routing_enabled=smart_routing_enabled,
+            explicit_prompt=explicit_prompt,
+            model=user_pinned_model,
+            provider=provider,
         ),
     )
 
@@ -4069,13 +4086,13 @@ def _launch_tool(
                 or (managed is None and bool(explicit_provider or parent_schema))
                 or (
                     bool(provider)
-                    and smart_routing_enabled
-                    and _smart_routing_supported(tool, provider)
-                    and _should_launch_smart_routing(
+                    and _routes_launch(
                         tool,
                         ctx.args,
+                        smart_routing_enabled=smart_routing_enabled,
                         explicit_prompt=explicit_prompt,
                         model=model or forwarded_model,
+                        provider=provider,
                     )
                 )
             )
