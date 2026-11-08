@@ -154,8 +154,7 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
     if (!rows.length) children.push(Text({ dimColor: true, children: ['No routed subagents in this session yet.'] }));
     for (const row of rows) {
       const model = shortModel(row.selected_model);
-      const seconds = `${(row.routing_ms / 1000).toFixed(1)}s`;
-      const room = Math.max(1, e.props.bodyColumns - model.length - seconds.length - 11);
+      const room = Math.max(1, e.props.bodyColumns - model.length - 4);
       const preview = (row.preview || '(prompt not recorded)').replace(/\s+/g, ' ');
       const label = preview.length > room ? preview.slice(0, Math.max(0, room - 1)) + '…' : preview;
       children.push(Button({
@@ -165,9 +164,8 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
           $.ui.invalidate('ui.render');
         },
         children: [
-          `${new Date(row.at * 1000).toTimeString().slice(0, 5)}  ${label}  `,
+          `${label}  `,
           Text({ color: 'green', bold: true, children: [model] }),
-          Text({ dimColor: true, children: [`  ${seconds}`] }),
         ],
       }));
     }

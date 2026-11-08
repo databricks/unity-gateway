@@ -41,12 +41,12 @@ test('opens and refreshes session rows newest first', { options }, async ($, on)
   const ui = await $.ui.mount(pane);
   const tree = JSON.stringify(await ui.drawn());
   expect(tree).toContain('2 routed prompts this session');
-  expect(tree).toMatch(/\d{2}:\d{2}/);
+  expect(tree).not.toMatch(/\d{2}:\d{2}/);
   expect(tree.indexOf('(prompt not recorded)')).toBeLessThan(tree.indexOf('older task'));
   expect(tree).toContain('claude-sonnet');
   expect(tree).toContain('fast');
-  expect(tree).toContain('1.4s');
-  expect(tree).toContain('0.3s');
+  expect(tree).not.toContain('1.4s');
+  expect(tree).not.toContain('0.3s');
   expect(tree).toContain('green');
   await $.command.run(command);
   expect(JSON.stringify(await ui.drawn())).toContain('No routed subagents in this session yet.');
