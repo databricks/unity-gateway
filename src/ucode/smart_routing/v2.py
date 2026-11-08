@@ -58,7 +58,7 @@ from ucode.skills import (
     install_skill,
     uninstall_agent_skill,
 )
-from ucode.smart_routing import claude_routing, orchestrator, routing
+from ucode.smart_routing import claude_routing, orchestrator, routing, session_log
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     ROUTE_SUBAGENT_MOD_EVENT,
@@ -547,6 +547,7 @@ def route_claude_subagent(
     ``hook_output`` returns the legacy PreToolUse hook response instead, with its plain-text
     notice, for hooks that earlier UG versions persisted in settings files.
     """
+    started = time.monotonic()
     route = routing.resolve_spawn_route(
         payload,
         is_spawn_agent=claude_routing.is_spawn_agent_tool,
@@ -556,6 +557,7 @@ def route_claude_subagent(
         default_task_label="Claude Code subagent task",
         model_id_mapper=lambda model: model,
     )
+    routing_ms = round((time.monotonic() - started) * 1000)
     if route is None:
         return None
     if audit_decision:
@@ -565,6 +567,14 @@ def route_claude_subagent(
             route.task,
             route.decision,
             route.routed_model,
+        )
+        session_log.append_decision(
+            AGENT_CLAUDE,
+            payload,
+            route.task,
+            route.decision,
+            route.routed_model,
+            routing_ms=routing_ms,
         )
     if hook_output:
         updated_input = {
