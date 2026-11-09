@@ -1167,10 +1167,10 @@ gpt-oss from the Responses provider to the MLflow provider (providers, selector,
 and managed `pi_models`). They also pin the MLflow provider's compat flags, its base URL for
 state saved without one, and the Vertex environment pinning, which applies only with the
 Gemini provider `write_tool_config` renders and warns whenever it rewrites an inherited switch.
-`test_databricks.py` covers the shared GPT, Gemini
-and MLflow limit tables and Claude version parsing. These render `models.json` only; they do
-not establish that the gateway accepts the levels or limits, which was checked manually on
-Pi 1.5.0 for a subset.
+`test_databricks.py` covers the shared GPT, Gemini and MLflow limit tables and Claude version
+parsing; `test_cli.py` and `test_agents_init.py` cover Pi-only OSS discovery, availability and
+status inventory. These render `models.json` only; they do not establish that the gateway
+accepts the levels or limits, which was checked manually on Pi 1.5.0 for a subset.
 
 Shared native transcript parsing is checked by `test_integration_agent_helpers.py` and
 `test_integration_evidence.py`. These component checks protect existing journey evidence;
