@@ -77,7 +77,7 @@ class TestKillLogging:
             assert proc.stdout.readline().strip() == "ready"
             proc.send_signal(signal.SIGTERM)
             # Same exit status as an unhandled SIGTERM, so callers see no change.
-            assert proc.wait(timeout=10) == -signal.SIGTERM
+            assert proc.wait(timeout=30) == -signal.SIGTERM
         finally:
             if proc.poll() is None:
                 proc.kill()
@@ -115,7 +115,7 @@ class TestKillLogging:
                 assert time.monotonic() < deadline, "helper never called the CLI"
                 time.sleep(0.05)
             proc.send_signal(signal.SIGTERM)
-            assert proc.wait(timeout=10) == -signal.SIGTERM
+            assert proc.wait(timeout=30) == -signal.SIGTERM
         finally:
             if proc.poll() is None:
                 proc.kill()
