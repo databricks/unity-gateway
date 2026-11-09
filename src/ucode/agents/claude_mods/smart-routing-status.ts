@@ -62,9 +62,7 @@ export const registerStatusBand = (on: On): void => {
       routingReports.notification(e.turnId)
     }
     if (band.isVisible) band.isHideArmed = true
-    const context = ['task-notification', 'peer', 'peer-send-message'].includes(e.origin?.kind)
-      ? routingReports.notificationContext() : undefined
-    return next(context ? {...e, context: [...(e.context ?? []), context]} : e)
+    return next(e)
   })
 
   // The prompt hint row always carries the state as a plain tail, so it stays visible after

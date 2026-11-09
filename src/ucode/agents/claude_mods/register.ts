@@ -1,6 +1,6 @@
 import type { EngineInterface, On, PluginOptions, TurnStepChunk } from 'claude-code';
 import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
-import { endSubagentRoutingTurn, registerSubagentRouting, REPORT_REJECTED, routingReports } from './subagent-routing.ts';
+import { endSubagentRoutingTurn, registerSubagentRouting, routingReports } from './subagent-routing.ts';
 import {
   CLI_AGENT,
   CLI_MODULE,
@@ -35,8 +35,7 @@ async function readEnvironment($: EngineInterface): Promise<Environment> {
   };
 }
 
-async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
-  if (!options.orchestratorInstructions) return false;
+async function readSessionEnvironment($: EngineInterface): Promise<Environment> {
   const current = await readEnvironment($);
   const sessionFile = await $.env.get('UCODE_SESSION_ENV_FILE');
   if (sessionFile) {
@@ -53,6 +52,12 @@ async function readOrchestratorState($: EngineInterface, options: PluginOptions)
       // Match the routing hooks' inherited-environment fallback for unreadable controls.
     }
   }
+  return current;
+}
+
+async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
+  if (!options.orchestratorInstructions) return false;
+  const current = await readSessionEnvironment($);
   return isRoutingEnabled(current) && current.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1';
 }
 
@@ -145,52 +150,58 @@ export function register(on: On, options: PluginOptions): void {
     }
     const model = routingReports.model(e.agentId);
     const request = model ? {...e, model} : e;
-    if (!routingReports.active(e.turnId)) return yield* next(request);
-    // Buffer the response so invalid reporting text never reaches either consumer.
+    const routing = Boolean(options.routeCommand?.length) && isRoutingEnabled(await readSessionEnvironment($));
+    if (!routing && !routingReports.active(e.turnId)) return yield* next(request);
+    // A spawn can follow prose in the same response; inspect the complete step before publishing it.
     const stream = next(request);
     const chunks: TurnStepChunk[] = [];
-    let text = '';
-    let overflow = false;
+    let item;
     try {
-      let item = await stream.next();
+      item = await stream.next();
       while (!item.done) {
-        const chunk = item.value;
-        if (chunk.kind === 'text') {
-          if (text.length + chunk.text.length > 65536) overflow = true;
-          if (!overflow) text += chunk.text;
-          if (!chunks.some(c => c.kind === 'text')) chunks.push(chunk);
-        } else if (chunk.kind !== 'thinking') chunks.push(chunk);
+        chunks.push(item.value);
         item = await stream.next();
       }
-      const answer = text || overflow ? (overflow ? REPORT_REJECTED : routingReports.render(text, e.agentId)) : '';
-      for (const chunk of chunks) yield chunk.kind === 'text' ? {...chunk, text: answer} : chunk;
-      return {...item.value, answer};
-    } catch {
+    } catch (error) {
+      if (!routingReports.active(e.turnId)) throw error;
       const stop = chunks.find(chunk => chunk.kind === 'stop');
       yield {kind: 'text', index: 0, text: REPORT_INTERRUPTED};
       return {turnId: e.turnId, index: e.index, answer: REPORT_INTERRUPTED,
         toolUses: [], stopReason: null, usage: stop?.usage ?? null};
     }
-  }).catch(async function* ($, e, next) {
-    if (!routingReports.active(e.turnId)) return yield* next(e);
-    yield {kind: 'text', index: 0, text: REPORT_INTERRUPTED};
-    return {turnId: e.turnId, index: e.index, answer: REPORT_INTERRUPTED,
-      toolUses: [], stopReason: null, usage: null};
-  });
-
-  on('classic.Stop', async ($, e, next) => {
-    const result = await next(e);
-    if (!routingReports.active() || e.stop_hook_active || result.block || result.preventContinuation
-        || e.last_assistant_message !== REPORT_REJECTED) return result;
-    return {...result, block: 'Return only a JSON child reference using the actual agent ID from the '
-      + 'Smart Router launch receipt: {"child_id":"<agent ID>","view":"result"}. '
-      + 'Use view "status" if it is still running, or an array for multiple children. '
-      + 'UG renders the answer and identity; do not add prose, model names, or extra fields.'};
+    const spawning = routing && item.value.toolUses.some(tool =>
+      (tool.name === 'Agent' || tool.name === 'Task') && tool.input.subagent_type !== 'fork');
+    const reporting = routingReports.active(e.turnId);
+    if (!spawning && !reporting) {
+      yield* chunks;
+      return item.value;
+    }
+    const answer = reporting ? routingReports.render(e.turnId, e.agentId) : '';
+    const report = {kind: 'text' as const,
+      index: chunks.find(chunk => chunk.kind === 'text')?.index
+        ?? Math.max(-1, ...chunks.map(chunk => 'index' in chunk ? chunk.index : -1)) + 1,
+      text: answer};
+    let written = false;
+    for (const chunk of chunks) {
+      if (answer && !written && (chunk.kind === 'text' || chunk.kind === 'stop')) {
+        yield report;
+        written = true;
+      }
+      if (chunk.kind !== 'text' && chunk.kind !== 'thinking') yield chunk;
+    }
+    if (answer && !written) yield report;
+    return {...item.value, answer};
   });
 
   on('tool.describe', {tool: ['Agent', 'Task']}, async ($, e, next) => {
     const instructions = options.orchestratorInstructions as string;
-    if (!await readOrchestratorState($, options)) return next(e);
+    if (!await readOrchestratorState($, options)) {
+      if (!options.routeCommand?.length || !isRoutingEnabled(await readSessionEnvironment($))) return next(e);
+      return next({...e, description: e.description + '\n\nSmart Router selects the execution model for each task-role subagent. '
+        + 'If the user requests a model outside this tool\'s built-in model choices, launch a general-purpose subagent '
+        + 'without the model argument; the router selects an available model. Do not refuse a requested spawn '
+        + 'because that model name is absent here. The launch receipt identifies the model actually used.'});
+    }
     // Preserve the host's waiting and follow-up mechanics without its ownership policy.
     const notes = e.description.split('\n## Usage notes\n')[1]?.split('\n## ')[0].trim() || continuationNote(e.description);
     return next({...e, description: `${instructions}\n\n## Usage notes\n\n${notes}`});

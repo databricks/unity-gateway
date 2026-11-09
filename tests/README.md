@@ -3,10 +3,13 @@
 `native_claude/test_mod.py` checks routed parent reports in the real Claude
 process against a controlled provider: incorrect model claims must be absent
 from streamed assistant messages and saved transcripts, for both foreground and
-background children, followed by a corrected reference and the saved child answer.
+background children. The provider emits incorrect prose before spawn and on every
+parent continuation; the saved child answer must still be delivered without a
+format correction or Stop-hook retry.
 `native_claude/mod_tests/subagent-routing.test.ts` checks
-structured report rendering, selected-versus-launched model validation, recorded
-child answers, split chunks, parallel and early completion, invalid references,
+automatic report rendering, selected-versus-launched model validation, recorded
+child answers, split chunks, no-text steps with stop events, parallel and early
+completion, stale references,
 failed handback/resume rollback, unchanged tool inputs and ordinary main-only replies.
 These are deterministic
 component checks; they do not establish live router or provider behavior.

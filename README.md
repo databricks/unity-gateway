@@ -540,15 +540,14 @@ An explicit `--model`, from `ug claude --model` or a launcher such as Omnigent, 
 subagent routing when first-prompt routing is off; the main session stays on that model.
 With first-prompt routing on, an explicit model still skips routing.
 
-After Claude launches a routed subagent, UG renders the parent's report from the
-child's launch record. The parent returns `{"child_id":"<agent-id>","view":"status"}`
-or uses `"view":"result"` to quote the completed child's answer; an array reports
-multiple children. UG supplies the animal name, launched model and completion
-state. Parent-written prose and extra fields are rejected before display or
-transcript storage. Where the host permits Stop hooks, UG requests one format
-correction. This deliberately replaces free-form parent summaries for that
-delegated request. Tool calls remain available, background completion keeps
-the same reporting contract, and a new user request restores ordinary replies.
+When a model response launches a subagent, UG buffers that step and removes
+premature model claims before displaying or storing them. After launch, UG renders
+the parent's report directly from that request's child records: animal name,
+verified model, completion state and the recorded child answer. No special parent
+output format or Stop-hook retry is required. This replaces free-form parent
+summaries for that delegated request. Tool calls remain available, background
+completion follows the same path, and a fresh main-agent request replies normally.
+Routing-enabled responses are buffered until each model step completes.
 
 ### Codex smart-routing compatibility
 

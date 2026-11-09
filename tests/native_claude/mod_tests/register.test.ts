@@ -282,3 +282,18 @@ test('the continuation note keeps the fork exception when the host offers forks'
   expect(description).toContain('starts a fresh agent with no memory of prior runs (except subagent_type: "fork"), so the prompt');
   expect(description).not.toContain('Policy');
 });
+
+
+test('subagent routing explains model selection without altering native tool guidance', {options: ROUTED}, async ($, on) => {
+  const {env} = setup(on);
+  on('tool.describe', ($, e) => ({description: e.description}));
+  const host = 'Native tool instructions and permissions.';
+  const describe = () => $.tool.describe({tool: 'Agent', description: host});
+  const routed = (await describe()).description;
+  expect(routed.startsWith(host + '\n\n')).toBe(true);
+  expect(routed).toContain('Smart Router selects the execution model');
+  expect(routed).toContain('without the model argument');
+  expect(routed).toContain('Do not refuse a requested spawn');
+  env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY = '0';
+  expect((await describe()).description).toBe(host);
+});

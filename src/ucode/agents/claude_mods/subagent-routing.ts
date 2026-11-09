@@ -6,9 +6,6 @@ type RoutingRecord = {
   parentAgentId?: string
 }
 
-const isObject = (value: unknown): value is Record<string, any> =>
-  Boolean(value && typeof value === 'object' && !Array.isArray(value))
-
 const safeText = (value: unknown, limit: number): string | undefined => {
   if (typeof value !== 'string') return undefined
   const clean = value
@@ -26,7 +23,6 @@ const canonicalModel = (model: string): string => {
   return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
 }
 
-export const REPORT_REJECTED = 'Smart Router report rejected: use a child reference with view "status" or "result".'
 const REPORT_UNAVAILABLE = 'Smart Router report unavailable: the child model could not be verified.'
 
 function createReports() {
@@ -34,16 +30,20 @@ function createReports() {
   const completions = new Map<string, TurnCompleteInput>()
   const handbacks = new Map<string, string>()
   const turns = new Map<string | undefined, string>()
-  const reporting = new Set<string>()
+  const reporting = new Map<string, Set<string>>()
   const pendingReports = new Map<string, string | undefined>()
   const pendingNotifications = new Set<string>()
+  const include = (turnId: string, childId: string) => {
+    if (!reporting.has(turnId)) reporting.set(turnId, new Set())
+    reporting.get(turnId)!.add(childId)
+  }
   return {
     step(turnId: string, agentId?: string) {
       turns.set(agentId, turnId)
       for (const [childId, parentId] of pendingReports) {
         if (parentId === agentId) {
           pendingReports.delete(childId)
-          reporting.add(turnId)
+          include(turnId, childId)
         }
       }
     },
@@ -51,7 +51,7 @@ function createReports() {
       children.set(record.spawned!.agentId, record)
       if (record.spawned!.background) pendingNotifications.add(record.spawned!.agentId)
       const turnId = turns.get(record.parentAgentId)
-      if (turnId) reporting.add(turnId)
+      if (turnId) include(turnId, record.spawned!.agentId)
     },
     completed(event: TurnCompleteInput) {
       reporting.delete(event.turnId)
@@ -78,7 +78,7 @@ function createReports() {
       return (succeeded: boolean) => {
         if (succeeded) {
           const turnId = child && turns.get(child.parentAgentId)
-          if (turnId) reporting.add(turnId)
+          if (turnId) include(turnId, agentId)
           if (child?.spawned?.background) pendingNotifications.add(agentId)
           return
         }
@@ -95,16 +95,9 @@ function createReports() {
         const child = children.get(agentId)
         if (!completions.has(agentId) || child?.parentAgentId !== undefined) continue
         pendingNotifications.delete(agentId)
-        if (turnId) reporting.add(turnId)
+        if (turnId) include(turnId, agentId)
         else pendingReports.set(agentId, undefined)
       }
-    },
-    notificationContext() {
-      const references = [...pendingReports].filter(([, parentId]) => parentId === undefined)
-        .map(([child_id]) => ({child_id, view: completions.has(child_id) ? 'result' : 'status'}))
-      return references.length ? 'Report the routed children with only this JSON: '
-        + JSON.stringify(references.length === 1 ? references[0] : references)
-        + '. UG renders their identity and recorded answers. Do not add prose or model names.' : undefined
     },
     active(turnId = turns.get(undefined)) { return Boolean(turnId && reporting.has(turnId)) },
     model(agentId?: string) {
@@ -113,29 +106,18 @@ function createReports() {
       return child && resolved && canonicalModel(resolved) === canonicalModel(child.model)
         ? resolved : child?.model
     },
-    render(text: string, parentAgentId?: string): string {
-      let input: unknown
-      try { input = JSON.parse(text) } catch { return REPORT_REJECTED }
-      const references = Array.isArray(input) ? input : [input]
-      if (!references.length || references.length > children.size) return REPORT_REJECTED
-      const used = new Set<string>()
+    render(turnId: string, parentAgentId?: string): string {
       const output: string[] = []
-      for (const reference of references) {
-        if (!isObject(reference) || Object.keys(reference).length !== 2
-            || typeof reference.child_id !== 'string'
-            || (reference.view !== 'status' && reference.view !== 'result')
-            || used.has(reference.child_id)) return REPORT_REJECTED
-        const child = children.get(reference.child_id)
-        if (!child || child.parentAgentId !== parentAgentId) return REPORT_REJECTED
-        const completion = completions.get(reference.child_id)
+      for (const childId of reporting.get(turnId) ?? []) {
+        const child = children.get(childId)
+        if (!child || child.parentAgentId !== parentAgentId) continue
+        const completion = completions.get(childId)
         const actual = completion?.usage?.model || child.spawned?.model
         if (!actual || canonicalModel(actual) !== canonicalModel(child.model)) return REPORT_UNAVAILABLE
-        used.add(reference.child_id)
         const state = !completion ? 'Running' : completion.isAborted ? 'Interrupted'
           : completion.reason === 'answer' ? 'Finished' : 'Failed'
         const heading = `${child.name} · ${actual} · ${state}`
-        if (reference.view === 'result') {
-          if (state !== 'Finished' || !completion?.answer) return 'Smart Router report unavailable: the child has no completed answer.'
+        if (state === 'Finished' && completion?.answer) {
           output.push(`${heading}\n\nChild answer:\n${completion.answer.split('\n').map(line => `> ${line}`).join('\n')}`)
         } else output.push(heading)
       }
@@ -321,10 +303,8 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       launched_model: record.spawned.model ?? null,
     })
     return { ...result, context: [...(result.context ?? []),
-      `Smart Router launch: ${identity}. Report this child using only `
-      + `{"child_id":${JSON.stringify(record.spawned.agentId)},"view":"status"} or view "result" for its completed answer. `
-      + 'For multiple children return an array of these references. Do not add prose, fences, names, or model fields. '
-      + 'UG renders the verified identity and recorded child answer. Tool calls remain available.',
+      `Smart Router launch: ${identity}. UG automatically reports this child's verified identity, `
+      + 'status and recorded answer. Continue using tools as needed; no reporting format is required.',
     ] }
   })
 

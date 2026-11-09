@@ -23,10 +23,14 @@ name and permissions. The routing response contains only `model` and `rationale`
 the model retains Claude's `[1m]` context hint for eligible GPT models.
 New native launches offer task roles without generated model-specific agent types.
 Smart Router chooses the execution model independently of the requested role or name.
+In subagent-only mode, the native tool description explains that a requested model
+outside the built-in choices does not prevent a general-purpose launch; the router
+selects an available execution model.
 After a successful spawn, the Agent/Task result carries model-visible context with the
 child ID, router-selected model, and model reported by Claude's spawn result. The parent
-must use that record when describing the child; a requested model in user text, tool
-arguments, or an agent name is not evidence of which model launched. Missing host model
+report is rendered directly from that request's owned child records, without parsing
+model-written references. Spawn-step prose is buffered and suppressed before
+streaming or transcript storage. Missing host model
 information remains explicitly unknown. Denials and tool errors retain their original
 results without a success annotation. If Claude reports a different model than the route,
 the routing row also shows `Launched Model` separately. This is host launch metadata,

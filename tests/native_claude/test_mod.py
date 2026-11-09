@@ -280,24 +280,6 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
             answer = "Probe finished."
             if request["model"] == "claude-sonnet-4-6":
                 answer = false_claim
-                if self.server.parent_answers:
-
-                    def strings(value):
-                        if isinstance(value, str):
-                            yield value
-                        elif isinstance(value, dict):
-                            for item in value.values():
-                                yield from strings(item)
-                        elif isinstance(value, list):
-                            for item in value:
-                                yield from strings(item)
-
-                    for text in strings(request.get("messages", [])):
-                        if "Smart Router launch: " in text:
-                            receipt, _ = json.JSONDecoder().raw_decode(
-                                text.split("Smart Router launch: ", 1)[1]
-                            )
-                            answer = json.dumps({"child_id": receipt["agent_id"], "view": "result"})
                 if not tool_call:
                     self.server.parent_answers += 1
             block = (
@@ -362,6 +344,29 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
                 ),
                 ("message_stop", {"type": "message_stop"}),
             ]
+            if tool_call:
+                for _, event in events:
+                    if event["type"].startswith("content_block_"):
+                        event["index"] = 1
+                events[1:1] = [
+                    (
+                        "content_block_start",
+                        {
+                            "type": "content_block_start",
+                            "index": 0,
+                            "content_block": {"type": "text", "text": ""},
+                        },
+                    ),
+                    (
+                        "content_block_delta",
+                        {
+                            "type": "content_block_delta",
+                            "index": 0,
+                            "delta": {"type": "text_delta", "text": false_claim},
+                        },
+                    ),
+                    ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+                ]
             body = "".join(
                 f"event: {name}\ndata: {json.dumps(value)}\n\n" for name, value in events
             ).encode()
@@ -440,6 +445,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     "DISABLE_AUTOUPDATER": "1",
                     "CLAUDE_CODE_MAX_RETRIES": "0",
                     "CLAUDE_CODE_AUTO_MODE_SERVER": "1",
+                    "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
                     "CLAUDE_CODE_ELEGANT_MEADOW": "1",
                     "AUTOMODE_DECISION_LOG": "1",
                 },
@@ -493,7 +499,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     for block in event.get("message", {}).get("content", [])
                     if block.get("type") == "text"
                 ]
-                assert rejection in parent_answers, parent_answers
+                assert not any(rejection in answer for answer in parent_answers), parent_answers
                 assert any(
                     "Child answer:\n> Probe finished." in answer for answer in parent_answers
                 ), parent_answers
@@ -502,7 +508,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     path.read_text() for path in (root / "config/projects").glob("*/*.jsonl")
                 )
                 assert false_claim not in saved
-                assert rejection in saved.replace('\\"', '"')
+                assert rejection not in saved.replace('\\"', '"')
                 child_request = json.dumps(child_requests[0])
                 assert original["prompt"] in child_request
                 assert "Routed prompt" not in child_request

@@ -523,7 +523,8 @@ async function collectParentTurn($: any, turnId: string, index = 1) {
   };
 }
 
-test('main parent resolves split child reports after reverse and early completion, then resets on a fresh prompt', async ($, on) => {
+test('parent reports recorded answers despite arbitrary prose, then resets on a fresh prompt', async ($, on) => {
+  on('env.get', ($, e) => ({value: e.name === 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY' ? '1' : undefined}));
   const selectedModels: Record<string, string> = {
     'call-a': 'claude-sonnet-5',
     'call-b': 'claude-opus-4-8',
@@ -537,10 +538,7 @@ test('main parent resolves split child reports after reverse and early completio
     model: 'sonnet',
     run_in_background: true,
   }));
-  let report = JSON.stringify([
-    { child_id: 'child-call-a', view: 'status' },
-    { child_id: 'child-call-b', view: 'result' },
-  ]);
+  let report = 'I used the requested model instead of the routed model.';
   const toolChunk = { kind: 'tool' as const, index: 2, id: 'read-one', name: 'Read' };
   const toolInputChunk = {
     kind: 'input' as const, index: 2, json: JSON.stringify({ file_path: 'README.md' }),
@@ -618,10 +616,11 @@ test('main parent resolves split child reports after reverse and early completio
       }
       const split = Math.floor(report.length / 2);
       yield thinkingChunk;
-      yield { kind: 'text', index: 1, text: report.slice(0, split) };
+      if (report) yield { kind: 'text', index: 1, text: report.slice(0, split) };
       yield toolChunk;
       yield toolInputChunk;
-      yield { kind: 'text', index: 3, text: report.slice(split) };
+      if (report) yield { kind: 'text', index: 3, text: report.slice(split) };
+      yield {kind: 'stop', stopReason: 'tool_use', usage: null};
       return {
         turnId: event.turnId, index: event.index, answer: report,
         toolUses: [toolUse], stopReason: 'tool_use', usage: null,
@@ -666,6 +665,10 @@ test('main parent resolves split child reports after reverse and early completio
   expect(handbacks).toEqual([{
     tool: 'SubagentHandback', agentId: 'child-call-b', tool_use_id: 'handback-b', message: handedBackAnswer,
   }]);
+  reportReady = true;
+  const running = await collectParentTurn($, 'parent-report', 1);
+  expect(running.text).toMatch(/ · claude-opus-4-8 · Running$/);
+  expect(running.text).not.toContain('Child answer:');
   await $.turn.complete({
     agentId: 'child-call-b', turnId: 'child-turn-b', answer: 'Original answer from child B',
     reason: 'answer', isAborted: false, durationMs: 1,
@@ -696,12 +699,21 @@ test('main parent resolves split child reports after reverse and early completio
   expect(parent.text).toMatch(/^[A-Z][a-z]+(?: \d+)? · claude-opus-4-8 · Finished$/m);
   expect(parent.text).toContain('Child answer:\n> ' + handedBackAnswer);
   expect(parent.text).not.toContain('Original answer from child B');
-  expect(parent.text.indexOf('claude-sonnet-5')).toBeLessThan(parent.text.indexOf('claude-opus-4-8'));
+  expect(parent.text).not.toContain(report);
+  expect(parent.text).toContain('Child answer:\n> Answer from child A');
   expect(parent.chunks.find((chunk) => chunk.kind === 'tool')).toEqual(toolChunk);
   expect(parent.chunks.find((chunk) => chunk.kind === 'input')).toEqual(toolInputChunk);
   expect(parent.chunks.some((chunk) => chunk.kind === 'thinking')).toBe(false);
   expect(parent.text).not.toContain('private thought');
   expect(parent.result.toolUses).toEqual([toolUse]);
+
+  report = '';
+  const noText = await collectParentTurn($, 'parent-report', 2);
+  expect(noText.text).toContain('Child answer:\n> ' + handedBackAnswer);
+  expect(noText.result.answer).toBe(noText.text);
+  expect(noText.chunks[noText.chunks.length - 1].kind).toBe('stop');
+  expect(noText.chunks[noText.chunks.length - 2].kind).toBe('text');
+  expect(noText.result.toolUses).toEqual([toolUse]);
 
   report = JSON.stringify([
     { child_id: 'child-call-a', view: 'result' },
@@ -757,10 +769,7 @@ test('main parent resolves split child reports after reverse and early completio
     text: 'A background task update', wait: false, origin: { kind: 'task-notification' },
   } as any);
   const forwardedNotification = submittedPrompts.find((event) => event.text === 'A background task update');
-  const forwardedNotificationContext = forwardedNotification.context.join('\n');
-  expect(forwardedNotificationContext).toContain('"child_id":"child-call-a"');
-  expect(forwardedNotificationContext).toContain('"child_id":"child-call-b"');
-  expect(forwardedNotificationContext).toContain('"view":"result"');
+  expect(forwardedNotification.context).toBeUndefined();
   const notification = await collectParentTurn($, 'notification-turn', 0);
   expect(notification.text).toMatch(/^[A-Z][a-z]+(?: \d+)? · claude-sonnet-5 · Finished$/m);
   expect(notification.text).toBe(notification.result.answer);
@@ -794,17 +803,17 @@ test('main parent resolves split child reports after reverse and early completio
   });
 });
 
-test('invalid reports and stale or mismatched child references never reach the parent stream', async ($, on) => {
+test('parent prose and stale references cannot override mismatched launch records', async ($, on) => {
+  on('env.get', ($, e) => ({value: e.name === 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY' ? '1' : undefined}));
   const selected = 'claude-sonnet-5';
   const actual = 'claude-opus-4-8';
-  const rejected = 'Smart Router report rejected: use a child reference with view "status" or "result".';
   const unavailable = 'Smart Router report unavailable: the child model could not be verified.';
   const interrupted = 'Smart Router report interrupted: the model response did not complete.';
   const partialWrongText = 'I started a Luna subagent and it found the answer.';
   const frames: Array<{ text: string; expected: string; streamError?: boolean }> = [
-    { text: 'I started a Fox subagent.', expected: rejected },
-    { text: JSON.stringify({ child_id: 'child-one', view: 'status', model: actual }), expected: rejected },
-    { text: JSON.stringify({ child_id: 'old-child', view: 'status' }), expected: rejected },
+    { text: 'I started a Fox subagent.', expected: unavailable },
+    { text: JSON.stringify({ child_id: 'child-one', view: 'status', model: actual }), expected: unavailable },
+    { text: JSON.stringify({ child_id: 'old-child', view: 'status' }), expected: unavailable },
     { text: JSON.stringify({ child_id: 'child-one', view: 'status' }), expected: unavailable },
     { text: JSON.stringify({ child_id: 'child-one', view: 'result' }), expected: unavailable },
     { text: partialWrongText, expected: interrupted, streamError: true },
@@ -931,4 +940,27 @@ test('invalid reports and stale or mismatched child references never reach the p
     turnId: 'queued-user-turn', answer: queuedTurn.text, reason: 'answer',
     isAborted: false, durationMs: 1,
   });
+});
+
+
+test('a spawn step suppresses premature identity prose while keeping reviewed tool inputs', async ($, on) => {
+  on('env.get', ($, e) => ({value: e.name === 'UCODE_SESSION_ENV_FILE' ? '/controls.json' : '0'}));
+  on('fs.read', () => ({value: JSON.stringify({ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1'})}));
+  const claim = 'I am using the requested model.';
+  const tools = [{name: 'Agent', input: originalInput}, {name: 'Read', input: {file_path: 'README.md'}}];
+  on('turn.step', async function* ($, e) {
+    yield {kind: 'thinking', index: 0, text: claim};
+    yield {kind: 'text', index: 1, text: claim};
+    yield {kind: 'tool', index: 2, id: 'spawn', name: 'Agent'};
+    yield {kind: 'input', index: 2, json: JSON.stringify(originalInput)};
+    yield {kind: 'tool', index: 3, id: 'read', name: 'Read'};
+    yield {kind: 'input', index: 3, json: JSON.stringify(tools[1].input)};
+    return {turnId: e.turnId, index: e.index, answer: claim, toolUses: tools, stopReason: 'tool_use', usage: null};
+  });
+  const spawn = await collectParentTurn($, 'before-spawn', 0);
+  expect(spawn.text).toBe('');
+  expect(spawn.result.answer).toBe('');
+  expect(spawn.result.toolUses).toEqual(tools);
+  expect(spawn.chunks.map(chunk => chunk.kind)).toEqual(['tool', 'input', 'tool', 'input']);
+  expect(spawn.chunks[1].json).toBe(JSON.stringify(originalInput));
 });
