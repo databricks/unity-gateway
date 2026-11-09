@@ -176,16 +176,26 @@ ug configure --agents claude,codex
 ug configure --workspace https://first.databricks.com
 ug configure --profile DEFAULT --agents claude,codex
 ug configure --user
+ug configure --agent claude --model-location main.models
+ug configure --agents claude,codex --provider main.default.anthropic
 ```
+
+`--model-location <catalog>.<schema>` and `--provider <catalog>.<schema>.<name>` pick the model
+source without the interactive picker, so a script can configure it. `--model-location` applies to
+Claude Code, Codex, and Copilot (CLI and VS Code); `--provider` also applies to Gemini CLI. Either
+needs `--agent`/`--agents`, and they cannot be combined. Cursor may share the run but takes no
+source. The choice is saved for later launches, and each one replaces the other. A bad Copilot
+source fails before anything is saved. A managed config that enables agents names the source itself
+and rejects both flags.
 
 By default, `ug configure` writes both the per-user settings and the machine-wide Claude Code and
 Codex managed settings with sudo, with or without a terminal: run headless as root (or with
 passwordless sudo), since a write that can't be authorized fails the command.
 `--global` writes only the machine-wide managed settings and leaves every per-user setting alone:
 `~/.claude/ucode-settings.json`, `~/.codex/ucode.config.toml` and `~/.codex/config.toml`, user MCP
-servers, skills, Databricks AI Tools, Claude Desktop, and Cowork. Only Claude Code and Codex
-(0.134.0 or newer) have machine-wide settings; other agents are skipped with a note, so a run that
-names only them does nothing. It fails for `--mcp`, `--enable-databricks-ai-tools`, a subscription
+servers, skills, Databricks AI Tools, and Desktop/Cowork user settings. Claude Code and Codex
+(0.134.0 or newer) have machine-wide CLI settings; macOS also supports Desktop MDM provisioning.
+Other CLI agents are skipped with a note, so a run that names only them does nothing. It fails for `--mcp`, `--enable-databricks-ai-tools`, a subscription
 relay, and `UG_SKIP_OS_SETTINGS`. It also fails when `ug` or its Python is in a user's home folder
 (checked through symlinks), since every user's agents run them: install ug in a shared location
 first, as `scripts/mdm/macos-provision.sh` does with `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR`, and
@@ -206,10 +216,21 @@ machine-wide: run `ug configure` without `--user`, or ask your administrator to 
 For Claude Desktop, default `ug configure` and `--user` both write only the user's
 3P JSON profile, generated marketplace, and native Cowork registration/cache. They leave
 root files untouched. Explicit `--global` skips those user-level Desktop writers; machine
-policy and plugin provisioning are separate macOS MDM work. CLI-agent scope handling is
+policy and plugin provisioning use the macOS MDM path. CLI-agent scope handling is
 unchanged. If Desktop has not initialized a Cowork account directory, ordinary configure
 skips plugin setup until that directory exists. See
 [Desktop plugin installation](docs/claude-desktop.md#cowork-workspace-skills-and-mcp-servers).
+
+For macOS MDM deployment, run `ug configure --agents claude --global --workspace <url>`
+with a preinstalled shared runtime. Machine writes request sudo when needed. This publishes Desktop's managed plist with
+connectors/tool search and an organization plugin containing skills/hooks. Desktop loads
+the plugin directly; no LaunchAgent or per-user marketplace refresh is installed.
+It leaves Desktop's user profile and marketplace source unchanged. Windows and Linux skip
+Desktop under `--global`.
+Desktop provisioning failures warn without failing CLI setup. Ordinary `ug revert` attempts
+user and MDM cleanup, requesting sudo for machine files when needed.
+Provisioning credentials stay separate from users' Desktop authentication.
+See [MDM prerequisites, deployment, and validation](docs/claude-desktop-mdm.md).
 
 ### Hosts that serve several workspaces
 

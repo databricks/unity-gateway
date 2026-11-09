@@ -6,7 +6,9 @@ import os
 import re
 import shutil
 import sys
+from collections import Counter
 
+from ucode.agents.copilot import claude_model_name
 from ucode.agents.desktop.claude import (
     claude_desktop_directory,
     revert_claude_desktop,
@@ -18,8 +20,9 @@ from ucode.agents.desktop.cowork import configure_code, configure_cowork, revert
 from ucode.config_io import is_dry_run
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_SCHEMA_HEADER
 from ucode.databricks import build_tool_base_url, get_databricks_token, list_anthropic_model_catalog
-from ucode.managed_files import machine_wide_only
+from ucode.managed_files import ManagedFileWriteUnavailable, machine_wide_only
 from ucode.state import get_provider_service
+from ucode.string_utils import model_picker_label
 from ucode.ui import print_note, print_success, print_warning
 from ucode.workspace import workspace_headers, workspace_id_args
 
@@ -29,17 +32,29 @@ _CLAUDE_MODEL_PATTERN = re.compile(r"\bclaude-", re.IGNORECASE)
 def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -> None:
     if sys.platform not in ("darwin", "win32", "linux"):
         return
-    if machine_wide_only():
-        # Desktop profiles live in the user's own Claude-3p configLibrary.
-        print_note(
-            "Skipped Claude Desktop: `ug configure --global` writes only machine-wide settings."
-        )
-        return
-    if is_dry_run():
-        print_note("Would configure Claude Desktop alongside Claude Code.")
-        return
     try:
-        _configure_desktop(state, parent_schema=parent_schema)
+        if machine_wide_only():
+            if sys.platform != "darwin":
+                print_note(
+                    "Skipped Claude Desktop: --global MDM provisioning currently supports macOS only."
+                )
+                return
+            from ucode.agents.desktop import mdm
+
+            if state.get("use_pat") or state.get("custom_oauth"):
+                raise RuntimeError(
+                    "Desktop MDM provisioning does not support PAT/custom OAuth profiles."
+                )
+            mdm.configure(state["workspace"], state.get("profile"))
+            if not is_dry_run():
+                print_success(
+                    "Claude Desktop MDM deployment configured. Users authenticate when they open Desktop."
+                )
+            return
+        if is_dry_run():
+            print_note("Would configure Claude Desktop alongside Claude Code.")
+            return
+        _configure_claude_desktop_user_level(state, parent_schema=parent_schema)
     except Exception as exc:  # noqa: BLE001 -- Desktop must not block Claude Code setup
         print_warning(f"Could not configure Claude Desktop: {exc}. Claude Code setup is unchanged.")
 
@@ -103,7 +118,7 @@ def revert_claude_code_plugin() -> str:
         return "failed"
 
 
-def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
+def _configure_claude_desktop_user_level(state: dict, *, parent_schema: str | None) -> None:
     directory = claude_desktop_directory()
     if directory is None:
         raise RuntimeError("Claude Desktop profile configuration is unavailable on this platform.")
@@ -124,48 +139,10 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
     if not isinstance(profile, str) or not profile:
         raise RuntimeError("Select an explicit Databricks CLI profile and run ug configure again.")
 
-    provider = None if parent_schema else get_provider_service(state, "claude")
-    static_models = (
-        state.get("claude_static_models") if not provider and not parent_schema else None
-    )
-    token = get_databricks_token(workspace, profile)
-    catalog = list_anthropic_model_catalog(
-        workspace, token, provider=provider, parent_schema=parent_schema
-    )
-    if static_models:
-        model_ids = static_models
-        display_names = catalog.model_id_to_display_name
-    else:
-        if not catalog.model_ids:
-            raise RuntimeError(catalog.error_msg or "Gateway model discovery returned no models.")
-        model_ids = catalog.model_ids
-        display_names = catalog.model_id_to_display_name
-
-    model_ids = [model_id for model_id in model_ids if _CLAUDE_MODEL_PATTERN.search(model_id)]
-    if not model_ids:
-        raise RuntimeError(
-            "No Claude-family models found for Desktop. "
-            "Add a Claude model to your model source and run ug configure again."
-        )
-
-    headers = {"x-databricks-use-coding-agent-mode": "true"}
-    if provider:
-        headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
-    elif parent_schema:
-        headers[MODEL_SERVICE_PARENT_SCHEMA_HEADER] = parent_schema
-    for name, value in {
-        **(state.get("claude_http_headers") or {}),
-        **workspace_headers(workspace),
-    }.items():
-        existing = next((key for key in headers if key.casefold() == name.casefold()), None)
-        if existing:
-            del headers[existing]
-        headers[name] = value
+    settings = resolve_gateway_profile(state, parent_schema=parent_schema)
 
     write_claude_desktop_profile(
-        model_ids=model_ids,
-        model_id_to_display_name=display_names,
-        base_url=build_tool_base_url("claude", workspace.rstrip("/")),
+        **settings,
         helper_command=os.path.abspath(sys.executable),
         helper_args=[
             "-m",
@@ -177,10 +154,6 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
             profile,
             *(["--relay", "--claude-binary", claude_binary] if claude_binary else []),
         ],
-        custom_headers=headers,
-        otel_endpoint=(
-            f"{workspace.rstrip('/')}/ai-gateway/otel" if state.get("claude_otel_tracing") else None
-        ),
         otel_headers_command=[
             os.path.abspath(sys.executable),
             "-m",
@@ -197,14 +170,100 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
     print_success("Claude Desktop gateway profile configured. Quit and reopen Claude Desktop.")
 
 
+def resolve_gateway_profile(
+    state: dict, *, parent_schema: str | None = None, token: str | None = None
+) -> dict:
+    workspace = state["workspace"]
+    profile = state.get("profile")
+    provider = None if parent_schema else get_provider_service(state, "claude")
+    static_models = (
+        state.get("claude_static_models") if not provider and not parent_schema else None
+    )
+    token = token if token is not None else get_databricks_token(workspace, profile)
+    catalog = list_anthropic_model_catalog(
+        workspace, token, provider=provider, parent_schema=parent_schema
+    )
+    if static_models:
+        model_ids = static_models
+    else:
+        if not catalog.model_ids:
+            raise RuntimeError(catalog.error_msg or "Gateway model discovery returned no models.")
+        model_ids = catalog.model_ids
+
+    model_ids = [model_id for model_id in model_ids if _CLAUDE_MODEL_PATTERN.search(model_id)]
+    if not model_ids:
+        raise RuntimeError(
+            "No Claude-family models found for Desktop. "
+            "Add a Claude model to your model source and run ug configure again."
+        )
+
+    display_names = {}
+    for model_id in model_ids:
+        label = catalog.model_id_to_display_name.get(model_id)
+        if not label or label == model_id:
+            label = model_picker_label(claude_model_name(model_id))
+        display_names[model_id] = label
+    label_counts = Counter(display_names.values())
+    display_names = {
+        model_id: model_id if label_counts[label] > 1 else label
+        for model_id, label in display_names.items()
+    }
+
+    headers = {"x-databricks-use-coding-agent-mode": "true"}
+    if provider:
+        headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
+    elif parent_schema:
+        headers[MODEL_SERVICE_PARENT_SCHEMA_HEADER] = parent_schema
+    for name, value in {
+        **(state.get("claude_http_headers") or {}),
+        **workspace_headers(workspace),
+    }.items():
+        existing = next((key for key in headers if key.casefold() == name.casefold()), None)
+        if existing:
+            del headers[existing]
+        headers[name] = value
+
+    return {
+        "model_ids": model_ids,
+        "model_id_to_display_name": display_names,
+        "base_url": build_tool_base_url("claude", workspace.rstrip("/")),
+        "custom_headers": headers,
+        "otel_endpoint": (
+            f"{workspace.rstrip('/')}/ai-gateway/otel" if state.get("claude_otel_tracing") else None
+        ),
+    }
+
+
+def revert_claude_desktop_mdm() -> str:
+    if sys.platform != "darwin":
+        return "unchanged"
+    from ucode.agents.desktop import mdm
+
+    try:
+        return "removed" if mdm.remove() else "unchanged"
+    except ManagedFileWriteUnavailable as exc:
+        print_warning(
+            f"Claude Desktop MDM is installed machine-wide; an administrator must run "
+            f"`ug revert` to remove it ({exc})."
+        )
+        return "skipped"
+    except Exception as exc:  # noqa: BLE001 -- Preserve other revert operations on failure
+        print_warning(
+            f"Could not revert Claude Desktop MDM: {exc}. Fix it, then run ug revert again."
+        )
+        return "failed"
+
+
 def revert_desktop() -> str:
     if sys.platform not in ("darwin", "win32", "linux") or is_dry_run():
         return "unchanged"
-    results = [revert_claude_code_plugin(), revert_claude_cowork()]
+    results = [revert_claude_code_plugin(), revert_claude_cowork(), revert_claude_desktop_mdm()]
     if claude_desktop_directory() is None:
         if "failed" in results:
             return "failed"
-        return "removed" if "removed" in results else "unchanged"
+        if "removed" in results:
+            return "removed"
+        return "skipped" if "skipped" in results else "unchanged"
     try:
         result = revert_claude_desktop()
     except Exception as exc:  # noqa: BLE001 -- Preserve other revert operations on failure
@@ -215,4 +274,4 @@ def revert_desktop() -> str:
         return "failed"
     if "removed" in (native_result, *results):
         return "removed"
-    return "unchanged"
+    return "skipped" if "skipped" in results else "unchanged"

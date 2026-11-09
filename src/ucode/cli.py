@@ -223,7 +223,7 @@ from ucode.state import (
     user_mcp_reconcile_pending,
     workspace_self_managed_agents,
 )
-from ucode.string_utils import is_valid_catalog_schema
+from ucode.string_utils import is_valid_catalog_schema, is_valid_catalog_schema_name
 from ucode.ug_headers import parse_header_line
 from ucode.ui import (
     console,
@@ -924,6 +924,77 @@ def _configure_shared_workspace_states(
     return states
 
 
+_PROVIDER_TOOLS = ("claude", "codex", "gemini", AGENT_COPILOT)
+
+
+def _reject_unsupported_model_source(
+    tools: list[str], *, model_location: str | None, provider: str | None
+) -> None:
+    """Reject ``--model-location`` / ``--provider`` for agents that can't use that source.
+
+    Checked before any install or login, so a bad combination fails fast.
+    """
+    if model_location is None and provider is None:
+        return
+    flag = "--model-location" if model_location is not None else "--provider"
+    supported = MODEL_LOCATION_TOOLS if model_location is not None else _PROVIDER_TOOLS
+    unsupported = [tool for tool in tools if tool not in supported]
+    if unsupported or not tools:
+        names = ", ".join(
+            TOOL_SPECS[tool]["display"] if tool in TOOL_SPECS else tool.title()
+            for tool in unsupported
+        )
+        allowed = ", ".join(TOOL_SPECS[tool]["display"] for tool in supported)
+        raise RuntimeError(
+            f"`{flag}` isn't supported for {names or 'the selected agents'}. Supported: {allowed}."
+        )
+
+
+def _check_copilot_model_source(
+    state: dict, *, model_location: str | None, provider: str | None
+) -> None:
+    """Resolve the Copilot source the way `ug copilot` will, before anything is written or saved.
+
+    A bad source fails here instead of leaving Copilot configured and the source unsaved.
+    """
+    if provider is not None:
+        copilot_agent.provider_service_catalog(state, provider, None)
+    elif model_location is not None:
+        copilot_agent.location_catalog(state, model_location)
+
+
+def _reject_managed_model_source(
+    managed: dict | None, *, model_location: str | None, provider: str | None
+) -> None:
+    """Reject source flags when the managed config enables agents, so it controls the source.
+
+    A managed config that enables no agents leaves the developer's own setup in charge, on both
+    the ``--agent`` and ``--agents`` paths.
+    """
+    _reject_managed_launch_source_options(
+        managed if managed_enabled_tools(managed or {}) else None,
+        provider=provider,
+        parent_schema=model_location,
+    )
+
+
+def _save_headless_model_source(
+    state: dict, tools: list[str], *, model_location: str | None, provider: str | None
+) -> dict:
+    """Persist ``--model-location`` / ``--provider`` for agents that just configured with it.
+
+    Saved only after a successful configure, so a source that fails to resolve never replaces
+    one that works. Each choice clears the other source, as the interactive picker does.
+    """
+    if (model_location is None and provider is None) or not tools:
+        return state
+    for tool in tools:
+        state = set_provider_service(state, tool, provider)
+        state = set_model_location(state, tool, model_location)
+    save_state(state)
+    return state
+
+
 def _refresh_configured_policy(state: dict) -> ManagedConfigResult:
     """Read and install the workspace policy for an explicit configure.
 
@@ -1009,6 +1080,8 @@ def _setup_single_agent(
     use_pat: bool = False,
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    model_location: str | None = None,
+    provider: str | None = None,
     claude_server_side_web_search: bool | None = None,
 ) -> dict:
     """Log in, discover the agent's models, and write its config, then print the summary.
@@ -1017,6 +1090,11 @@ def _setup_single_agent(
     ``ug configure --agent`` path: admin-enabled applies the admin config, a disabled agent is
     rejected). ``ug agents add`` passes ``apply_managed=False`` to set up a self-managed agent
     standalone, independent of the managed config.
+
+    ``model_location`` (``<catalog>.<schema>``) and ``provider`` (``<catalog>.<schema>.<name>``)
+    are the headless equivalents of the interactive model-source picker. When set, the choice is
+    persisted to state for later launches once the agent configures; a managed config that enables
+    agents rejects them (see :func:`_reject_managed_model_source`).
     """
     previous_workspace = state_workspace_key(load_state())
     states = _configure_shared_workspace_states(
@@ -1046,7 +1124,18 @@ def _setup_single_agent(
             state = resolve_state(managed, state, tool)
             if not managed_provider_service(managed, tool):
                 parent_schema = managed_unity_catalog_location(managed, tool)
-    state = configure_single_tool(tool, state, parent_schema=parent_schema, with_vscode=True)
+    _reject_managed_model_source(managed, model_location=model_location, provider=provider)
+    if model_location is not None or provider is not None:
+        # The flag names this agent's source outright.
+        parent_schema = model_location
+    if tool == AGENT_COPILOT:
+        _check_copilot_model_source(state, model_location=model_location, provider=provider)
+    state = configure_single_tool(
+        tool, state, parent_schema=parent_schema, provider=provider, with_vscode=True
+    )
+    state = _save_headless_model_source(
+        state, [tool], model_location=model_location, provider=provider
+    )
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])
     if apply_managed and tool == "claude":
@@ -1250,7 +1339,8 @@ def configure_workspace_command(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
-    copilot_source: tuple[str | None, str | None] | None = None,
+    model_location: str | None = None,
+    provider: str | None = None,
     claude_server_side_web_search: bool | None = None,
 ) -> int:
     """Configure a workspace while sharing one lazy privileged settings session.
@@ -1258,9 +1348,6 @@ def configure_workspace_command(
     Agent setup and managed MCP reconciliation can update the same machine-wide Claude/Codex
     files at different points in the flow. Keeping one command-scoped worker means every changed
     file is handled under the same sudo authentication; a no-op configure never starts it.
-
-    ``copilot_source`` is the ``(provider service, model location)`` pair Copilot gets its models
-    from instead of the Databricks-hosted ones.
     """
     with managed_write_session():
         return _configure_workspace_command(
@@ -1271,7 +1358,8 @@ def configure_workspace_command(
             databricks_ai_tools_enabled=databricks_ai_tools_enabled,
             custom_oauth=custom_oauth,
             offer_optional_setup=offer_optional_setup,
-            copilot_source=copilot_source,
+            model_location=model_location,
+            provider=provider,
             claude_server_side_web_search=claude_server_side_web_search,
         )
 
@@ -1285,7 +1373,8 @@ def _configure_workspace_command(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
-    copilot_source: tuple[str | None, str | None] | None = None,
+    model_location: str | None = None,
+    provider: str | None = None,
     claude_server_side_web_search: bool | None = None,
 ) -> int:
     if tool is not None and selected_tools is not None:
@@ -1308,6 +1397,8 @@ def _configure_workspace_command(
             use_pat=use_pat,
             databricks_ai_tools_enabled=databricks_ai_tools_enabled,
             custom_oauth=custom_oauth,
+            model_location=model_location,
+            provider=provider,
             claude_server_side_web_search=claude_server_side_web_search,
         )
         return 0
@@ -1332,11 +1423,7 @@ def _configure_workspace_command(
     refuse_user_scope_over_managed_config(state.get("workspace"), managed)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     if managed is not None and managed_tools:
-        if copilot_source is not None:
-            raise RuntimeError(
-                "--provider and --model-location can't be used on a workspace with a managed "
-                "configuration; its admin chooses the models."
-            )
+        _reject_managed_model_source(managed, model_location=model_location, provider=provider)
         refuse_user_scope_over_managed_files(managed_tools)
         managed_tools = _machine_wide_tools(managed_tools)
         if not managed_tools:
@@ -1408,7 +1495,13 @@ def _configure_workspace_command(
     tools_to_check = selected_tools or (
         list(MACHINE_WIDE_TOOLS) if machine_wide_only() else list(TOOL_SPECS)
     )
+    # A model location or provider routes through the same gateway without system.ai models, so
+    # `configure_single_tool`'s availability check doesn't apply to it; skip it here as well.
+    source_flag_set = model_location is not None or provider is not None
     for tool_name in tools_to_check:
+        if source_flag_set:
+            available_on_workspace.append(tool_name)
+            continue
         with spinner(f"Checking {TOOL_SPECS[tool_name]['display']} availability..."):
             if check_gateway_endpoint(state, tool_name):
                 available_on_workspace.append(tool_name)
@@ -1447,22 +1540,29 @@ def _configure_workspace_command(
     if offer_provider:
         for tool_name in picked:
             state = _maybe_select_provider_service(tool_name, state)
-    if copilot_source is not None:
-        provider_service, model_location = copilot_source
-        # Resolve the source the way `ug copilot` will, so a bad one fails here instead of being
-        # saved over a working one.
-        if provider_service:
-            copilot_agent.provider_service_catalog(state, provider_service, None)
-        else:
-            copilot_agent.location_catalog(state, str(model_location))
-        # Saved, so `ug copilot` launches on the same models VS Code gets.
-        state = set_provider_service(state, AGENT_COPILOT, provider_service)
-        state = set_model_location(state, AGENT_COPILOT, model_location)
+    if AGENT_COPILOT in picked:
+        _check_copilot_model_source(state, model_location=model_location, provider=provider)
 
+    source_kwargs: dict = {}
+    if model_location is not None:
+        source_kwargs["parent_schemas"] = dict.fromkeys(picked, model_location)
+    elif provider is not None:
+        source_kwargs["providers"] = dict.fromkeys(picked, provider)
     if offer_optional_setup:
-        state = configure_selected_tools(state, picked, install_ai_tools=False)
+        state = configure_selected_tools(state, picked, install_ai_tools=False, **source_kwargs)
     else:
-        state = configure_selected_tools(state, picked)
+        state = configure_selected_tools(state, picked, **source_kwargs)
+    # Only agents that configured this run keep the new source (see the summary below for why
+    # available_tools is only the fallback).
+    configured_now = state.get("last_configured_tools")
+    if configured_now is None:
+        configured_now = state.get("available_tools") or []
+    state = _save_headless_model_source(
+        state,
+        [tool_name for tool_name in picked if tool_name in configured_now],
+        model_location=model_location,
+        provider=provider,
+    )
 
     # No managed config here: undo what a prior managed workspace left behind (its MCP servers and
     # skills), so switching workspaces doesn't strand the old registry and skills. Cowork is synced
@@ -4900,16 +5000,19 @@ def configure(
         str | None,
         typer.Option(
             "--provider",
-            help="With --agents copilot: give the Copilot CLI and VS Code the models of this Model "
-            "Provider Service (`<catalog>.<schema>.<name>`) instead of the Databricks-hosted ones.",
+            help="Route through a Unity Catalog Model Provider Service "
+            "(`<catalog>.<schema>.<name>`) instead of Databricks-hosted models. Applies with "
+            "--agent or --agents for claude, codex, gemini, or copilot (Copilot CLI and VS "
+            "Code). Cannot be combined with --model-location.",
         ),
     ] = None,
     model_location: Annotated[
         str | None,
         typer.Option(
             "--model-location",
-            help="With --agents copilot: give the Copilot CLI and VS Code the model services in this "
-            "Unity Catalog schema (`<catalog>.<schema>`) instead of the Databricks-hosted ones.",
+            help="Discover models from a Unity Catalog schema (`<catalog>.<schema>`, e.g. "
+            "main.default) instead of system.ai. Applies with --agent or --agents for claude, "
+            "codex, or copilot (Copilot CLI and VS Code). Cannot be combined with --provider.",
         ),
     ] = None,
     no_vscode: Annotated[
@@ -4944,8 +5047,9 @@ def configure(
         bool,
         typer.Option(
             "--global",
-            help="Write only the machine-wide Claude Code and Codex managed settings, with sudo, "
-            "and no per-user settings. Without --global or --user, both are written.",
+            help="Write only machine-wide Claude Code/Codex settings and, on macOS, provision Claude "
+            "Desktop through MDM, requesting sudo when needed. Leave per-user agent settings alone. "
+            "Desktop MDM requires a shared runtime; without --global, Desktop writes only user-level files.",
         ),
     ] = False,
     user_scope: Annotated[
@@ -4995,24 +5099,35 @@ def configure(
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
+        if model_location is not None and provider is not None:
+            raise RuntimeError("--model-location and --provider cannot be combined.")
+        if model_location is not None and not is_valid_catalog_schema(model_location):
+            raise RuntimeError("--model-location must be <catalog>.<schema>, e.g. main.default.")
+        if provider is not None and not is_valid_catalog_schema_name(provider):
+            raise RuntimeError(
+                "--provider must be <catalog>.<schema>.<name>, e.g. main.default.anthropic."
+            )
+        if model_location is not None and agent is None and agents is None:
+            raise RuntimeError("--model-location requires --agent or --agents.")
+        if provider is not None and agent is None and agents is None:
+            raise RuntimeError("--provider requires --agent or --agents.")
+        if model_location is not None or provider is not None:
+            # Cursor is MCP-only: it may share the run, but it has no models to take a source.
+            requested = (
+                [normalize_tool(agent)]
+                if agent is not None
+                else [
+                    normalize_tool(name)
+                    for name in (raw.strip().lower() for raw in (agents or "").split(","))
+                    if name and name != "cursor"
+                ]
+            )
+            _reject_unsupported_model_source(
+                requested, model_location=model_location, provider=provider
+            )
         install_databricks_cli()
         if agent is not None and agents is not None:
             raise RuntimeError("Use either --agent or --agents, not both.")
-        if provider is not None or model_location is not None:
-            requested_agents = [a.strip().lower() for a in (agents or "").split(",") if a.strip()]
-            # Both flags choose Copilot's models alone, so another model agent in the same run
-            # would silently keep the workspace's own. Cursor has no models to choose.
-            if AGENT_COPILOT not in requested_agents or [
-                a for a in requested_agents if a not in (AGENT_COPILOT, "cursor")
-            ]:
-                raise RuntimeError(
-                    "--provider and --model-location work only with `--agents copilot`. "
-                    "Configure the other agents in a separate run."
-                )
-            if provider is not None and model_location is not None:
-                raise RuntimeError("--provider and --model-location cannot be used together.")
-            if model_location is not None and not is_valid_catalog_schema(model_location):
-                raise RuntimeError("--model-location must be `<catalog>.<schema>`.")
         # --workspaces / --profiles are deprecated aliases of the singular flags.
         if workspace is not None and workspaces is not None:
             raise RuntimeError("Use either --workspace or --workspaces, not both.")
@@ -5042,8 +5157,10 @@ def configure(
             skip_kwargs["databricks_ai_tools_enabled"] = enable_databricks_ai_tools
         if custom_oauth is not None:
             skip_kwargs["custom_oauth"] = custom_oauth
-        if provider is not None or model_location is not None:
-            skip_kwargs["copilot_source"] = (provider, model_location)
+        if model_location is not None:
+            skip_kwargs["model_location"] = model_location
+        if provider is not None:
+            skip_kwargs["provider"] = provider
         if enable_server_side_web_search is not None:
             skip_kwargs["claude_server_side_web_search"] = enable_server_side_web_search
         # Set True only in the fully-interactive branch below; gates the optional
