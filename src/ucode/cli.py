@@ -196,7 +196,10 @@ from ucode.smart_routing.claude_hooks import (
     ROUTE_FIRST_PROMPT_EVENT,
     ROUTE_SUBAGENT_MOD_EVENT,
 )
-from ucode.smart_routing.isaac_feedback import require_saved_session_feedback
+from ucode.smart_routing.isaac_feedback import (
+    FEEDBACK_ID_REJECTED_EXIT_CODE,
+    require_saved_session_feedback,
+)
 from ucode.smart_routing.session_env import (
     effective_environment,
     session_env_path,
@@ -3461,7 +3464,7 @@ def _toggle_current_smart_routing_session(
                 require_saved_session_feedback(feedback_id)
             except ValueError as exc:
                 print_err(str(exc))
-                raise typer.Exit(2) from None
+                raise typer.Exit(FEEDBACK_ID_REJECTED_EXIT_CODE) from None
         elif len((reason or "").strip()) < 16:
             print_err(
                 "Turning Smart Router off requires a reason of at least 16 characters, excluding "

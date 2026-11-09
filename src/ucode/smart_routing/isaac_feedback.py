@@ -15,6 +15,8 @@ _ISAAC_LAUNCH_MODE_ENV_VAR = "ISAAC_LAUNCH_MODE"
 _CLAUDE_SESSION_ID_ENV_VAR = "CLAUDE_CODE_SESSION_ID"
 # Isaac refuses larger receipts too.
 _MAX_RECEIPT_BYTES = 2 * 1024 * 1024
+# The Claude mod's constants.ts copies this. Exit 2 is the reason rule's and click's usage errors'.
+FEEDBACK_ID_REJECTED_EXIT_CODE = 3
 
 
 def require_saved_session_feedback(feedback_id: str) -> None:

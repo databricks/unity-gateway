@@ -222,7 +222,7 @@ def test_feedback_id_turns_routing_off_only_for_this_sessions_saved_report(
         env=env,
     )
 
-    assert result.exit_code == (0 if turned_off else 2), result.output
+    assert result.exit_code == (0 if turned_off else 3), result.output
     assert ("Smart Router is off" in result.output) == turned_off
     saved = json.loads(session_file.read_text())
     assert saved == (dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0") if turned_off else {})
@@ -247,6 +247,6 @@ def test_unreadable_saved_report_keeps_routing_on(tmp_path, monkeypatch):
         env=env,
     )
 
-    assert result.exit_code == 2
+    assert result.exit_code == 3
     assert f"Isaac has no saved feedback {FEEDBACK_ID}" in " ".join(result.output.split())
     assert json.loads(session_file.read_text()) == {}

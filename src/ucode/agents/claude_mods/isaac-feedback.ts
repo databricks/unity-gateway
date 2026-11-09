@@ -1,5 +1,5 @@
 import type { EngineInterface, On } from 'claude-code';
-import { CLI_REJECTED_EXIT_CODE, envBool, ROUTING_UPDATE_FAILED_REPLY } from './constants.ts';
+import { envBool, FEEDBACK_ID_REJECTED_EXIT_CODE, ROUTING_UPDATE_FAILED_REPLY } from './constants.ts';
 
 const FEEDBACK_PANE = 'smart-router-feedback';
 const FEEDBACK_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -190,7 +190,7 @@ async function turnOffWithSavedFeedback(
     const failure = error as { exitCode?: number; stderr?: string } | undefined;
     if (failure?.stderr) $.ui.log(failure.stderr.split(/\s+/).join(' '));
     return {
-      text: failure?.exitCode === CLI_REJECTED_EXIT_CODE
+      text: failure?.exitCode === FEEDBACK_ID_REJECTED_EXIT_CODE
         ? 'Could not turn Smart Router off with that feedback ID. Smart Router is still on.'
         : ROUTING_UPDATE_FAILED_REPLY,
     };
