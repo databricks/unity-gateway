@@ -8,7 +8,7 @@ default:
     @just --list
 
 # Everything the CI lint gate runs. Run this before pushing.
-lint: ruff-check ruff-format-check ty
+lint: ruff-check ruff-format-check ty ownership-check
 
 # Lint without fixing (CI-equivalent).
 ruff-check:
@@ -17,6 +17,11 @@ ruff-check:
 # Verify formatting without writing files (CI-equivalent).
 ruff-format-check:
     uv run ruff format --check src/ tests/
+
+# The admin docs' generated ownership tables match src/ucode/ownership/*.toml. The table's
+# parity with the agents' code is checked by tests/test_ownership.py in the test job.
+ownership-check:
+    uv run python -m ucode.ownership --check docs/admin-managed-settings.md
 
 # Type-check the package.
 ty:

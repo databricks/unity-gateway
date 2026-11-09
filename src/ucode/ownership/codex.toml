@@ -1,0 +1,99 @@
+# Ownership tables for Codex's machine-wide files.
+#
+# `ug configure --global` (with a published agent configuration) writes two files:
+#   /etc/codex/requirements.toml  = agent_native_requirements + UG's gateway lock (enforced)
+#   /etc/codex/config.toml        = agent_native_settings + UG's default model (defaults)
+# `requirement` entries cover agent_native_requirements; `setting` entries cover
+# agent_native_settings. Every key not listed passes through unchanged.
+#
+# Fields are the same as in claude.toml. One extra class:
+#   shared_table  The admin and UG both add named entries to the table. The admin's entries
+#                 that use a name UG registers are dropped.
+#
+# After editing, regenerate the admin docs:
+#   uv run python -m ucode.ownership --write docs/admin-managed-settings.md
+
+agent = "codex"
+display = "Codex"
+
+[[requirement]]
+path = "model_provider"
+class = "reserved"
+note = "Unity Gateway locks the provider to the gateway."
+
+[[requirement]]
+path = "model_providers"
+class = "reserved"
+note = "Unity Gateway defines the gateway provider."
+
+[[requirement]]
+path = "model_catalog_json"
+class = "reserved"
+in_managed_file = false
+note = "`ug codex` builds a model catalog for each developer, and a required one would replace it."
+
+[[requirement]]
+path = "models.new_thread"
+class = "reserved"
+in_managed_file = false
+note = "The default model comes from `default_models.default_model`."
+
+[[requirement]]
+path = "config_server"
+class = "reserved"
+in_managed_file = false
+note = "It would let another server outrank Unity Gateway's requirements."
+
+[[requirement]]
+path = "otel.trace_exporter"
+class = "conditionally_reserved"
+feature = "tracing"
+in_managed_file = false
+note = "It would replace the exporter `ug codex` points at its tracing proxy."
+
+[[requirement]]
+path = "allow_managed_hooks_only"
+class = "conditionally_reserved"
+feature = "smart_routing"
+in_managed_file = false
+note = "It turns off smart routing's hooks."
+
+[[requirement]]
+path = "features.hooks"
+class = "conditionally_reserved"
+feature = "smart_routing"
+in_managed_file = false
+note = "It turns off smart routing's hooks."
+
+[[requirement]]
+path = "mcp_servers"
+class = "shared_table"
+note = "When you set an allowlist, Unity Gateway adds its own MCP servers to it."
+
+[[setting]]
+path = "model_provider"
+class = "reserved"
+in_managed_file = false
+note = "Set in requirements, so here it would have no effect."
+
+[[setting]]
+path = "model_providers.Databricks"
+class = "reserved"
+in_managed_file = false
+note = "Set in requirements, so here it would have no effect."
+
+[[setting]]
+path = "model"
+class = "reserved"
+note = "The default model comes from `default_models.default_model`."
+
+[[setting]]
+path = "model_catalog_json"
+class = "reserved"
+in_managed_file = false
+note = "Model catalogs are built for each developer."
+
+[[setting]]
+path = "mcp_servers"
+class = "shared_table"
+note = "Unity Gateway registers its own MCP servers for each developer; your entries with the same names are dropped."
