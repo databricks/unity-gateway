@@ -8,6 +8,7 @@ import {
   DISABLED_RECIPE,
   ENABLE_ROUTING_FLAG,
   RECIPE_FIELD,
+  ROUTING_UPDATE_FAILED_REPLY,
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedback } from './isaac-feedback.ts';
@@ -81,7 +82,11 @@ async function writeSessionControls(
   // Claude doesn't pass its session ID to mod processes; the CLI checks feedback IDs against it.
   const result = await $.process.run(args, { env: { CLAUDE_CODE_SESSION_ID: await $.session.id() } });
   if (result.exitCode !== 0) {
-    throw new Error(`Smart Router controls exited ${result.exitCode}: ${result.stderr.trim()}`);
+    const stderr = result.stderr.trim();
+    // Callers tell a refused feedback ID from other failures by the exit code.
+    throw Object.assign(new Error(`Smart Router controls exited ${result.exitCode}: ${stderr}`), {
+      exitCode: result.exitCode, stderr,
+    });
   }
 }
 
@@ -180,7 +185,7 @@ export function register(on: On, options: PluginOptions): void {
       showStatusBand();
       $.ui.invalidate('ui.render');
     } catch {
-      return {text: 'Could not update Smart Router. Check the recipe, CLAUDE_CODE_EXTRA_BODY, and environment permissions; retry or restart through UG.'};
+      return {text: ROUTING_UPDATE_FAILED_REPLY};
     }
     return {text: `Smart Router is ${action}`};
   });

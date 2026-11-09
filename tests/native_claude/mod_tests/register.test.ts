@@ -289,7 +289,7 @@ const REJECTED_FEEDBACK = 'Could not turn Smart Router off with that feedback ID
 
 // Omnigent's switch has Isaac save the off reason first, then sends its ID; UG's CLI checks the
 // saved report and exits 2 when it isn't this session's smart routing feedback.
-function omnigentPane(on: On, { launchMode = 'omni', cliExitCode = 0 } = {}) {
+function omnigentPane(on: On, { launchMode = 'omni', cliExitCode = 0, cliStderr = '' } = {}) {
   const { env } = setup(on);
   Object.assign(env, {
     ISAAC_LAUNCH_MODE: launchMode,
@@ -301,9 +301,11 @@ function omnigentPane(on: On, { launchMode = 'omni', cliExitCode = 0 } = {}) {
   on('session.id', () => ({ value: 'session-1' }));
   on('process.run', ($, e) => {
     runs.push({ argv: e.argv, env: e.init?.env });
-    return { value: { exitCode: cliExitCode, stdout: '', stderr: cliExitCode ? 'not this session' : '' } };
+    return { value: { exitCode: cliExitCode, stdout: '', stderr: cliStderr } };
   });
-  return { env, runs };
+  const logs: string[] = [];
+  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
+  return { env, runs, logs };
 }
 
 test('an Omnigent feedback ID turns routing off through the CLI check without the form', { options: ROUTED }, async ($, on) => {
@@ -319,14 +321,28 @@ test('an Omnigent feedback ID turns routing off through the CLI check without th
   expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
 });
 
-test('a feedback ID the CLI rejects keeps routing on', { options: ROUTED }, async ($, on) => {
-  const { env } = omnigentPane(on, { cliExitCode: 2 });
+test('a feedback ID the CLI rejects keeps routing on and shows the CLI reason', { options: ROUTED }, async ($, on) => {
+  // The CLI's console wraps long errors at 80 columns.
+  const cliStderr = `ERROR Feedback ${FEEDBACK_ID} is not smart routing feedback for this\nClaude session.\n`;
+  const { env, logs } = omnigentPane(on, { cliExitCode: 2, cliStderr });
 
   const reply = await $.command.run({ command: 'smart-router', args: `off --feedback-id ${FEEDBACK_ID}` });
 
   expect(reply.text).toBe(REJECTED_FEEDBACK);
+  expect(logs).toEqual([`ERROR Feedback ${FEEDBACK_ID} is not smart routing feedback for this Claude session.`]);
   expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
   expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!)).toEqual({ caller_field: 'keep' });
+});
+
+test('a feedback ID off that fails for another reason gets the update failure reply', { options: ROUTED }, async ($, on) => {
+  const cliStderr = 'ERROR Could not write /session/env.json: Permission denied';
+  const { env, logs } = omnigentPane(on, { cliExitCode: 1, cliStderr });
+
+  const reply = await $.command.run({ command: 'smart-router', args: `off --feedback-id ${FEEDBACK_ID}` });
+
+  expect(reply.text).toContain('Could not update Smart Router');
+  expect(logs).toEqual([cliStderr]);
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
 });
 
 test('a feedback ID outside Omnigent or in a malformed command gets the usage reply', { options: ROUTED }, async ($, on) => {
