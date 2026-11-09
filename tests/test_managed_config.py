@@ -166,7 +166,12 @@ class TestNormalize:
             "system.ai.claude-haiku-4-5",
         ]
 
-    def test_sources_are_carried_as_the_static_list(self):
+    @pytest.mark.parametrize("gate", ["1", None])
+    def test_sources_are_carried_as_the_static_list_behind_the_gate(self, monkeypatch, gate):
+        if gate:
+            monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", gate)
+        else:
+            monkeypatch.delenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", raising=False)
         raw = {
             "enabled_agents": [
                 {
@@ -184,10 +189,12 @@ class TestNormalize:
             ]
         }
         claude = normalize_managed_config(raw)["enabled_agents"]["claude"]
-        assert claude["model_config"]["model_services"] == [
-            "main.anthropic.byok.claude-opus-5-5",
-            "system.ai.kimi-k3",
-        ]
+        expected = (
+            ["main.anthropic.byok.claude-opus-5-5", "system.ai.kimi-k3"]
+            if gate
+            else ["system.ai.claude-haiku-4-5"]
+        )
+        assert claude["model_config"]["model_services"] == expected
 
     def test_unity_catalog_location_is_carried(self):
         raw = {

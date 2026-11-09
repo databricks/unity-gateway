@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import NamedTuple, cast
 
 import ucode.config_io as config_io
+from ucode.constants import ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR
 from ucode.databricks import (
     fetch_managed_coding_agent_configs,
     fetch_model_recommendation,
@@ -129,17 +130,19 @@ class AgentModels:
         }
         # The model source is a server-enforced oneof; keep the one present, precedence
         # model_provider_service > unity_catalog_location > sources/model_services. `sources` may
-        # mix 3-part model services and 4-part MPS model refs; both are used as-is.
+        # mix 3-part model services and 4-part MPS model refs; both are used as-is. Gated on
+        # ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS=1 while external models roll out.
+        sources = (
+            _str_list(models_dict.get("sources"))
+            if os.environ.get(ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR) == "1"
+            else []
+        )
         provider = _str(models_dict.get("model_provider_service"))
         location = None if provider else _str(models_dict.get("unity_catalog_location"))
         model_services = (
             None
             if provider or location
-            else (
-                _str_list(models_dict.get("sources"))
-                or _str_list(models_dict.get("model_services"))
-                or None
-            )
+            else (sources or _str_list(models_dict.get("model_services")) or None)
         )
 
         if not (overall_default or slots or provider or location or model_services):
