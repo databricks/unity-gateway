@@ -4895,6 +4895,22 @@ class TestClaudeCodeConfigPath:
         current.unlink()
         assert claude.claude_code_config_path() == legacy
 
+    def test_directory_at_current_path_uses_legacy_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        current = tmp_path / ".config.json"
+        current.mkdir()
+        (tmp_path / ".claude.json").write_text("{}")
+
+        assert claude.claude_code_config_path() == tmp_path / ".claude.json"
+        claude.ensure_hooks_modules_gate()
+        assert current.is_dir()
+        assert (
+            json.loads((tmp_path / ".claude.json").read_text())["cachedGrowthBookFeatures"][
+                claude.CLAUDE_HOOKS_MODULES_GATE
+            ]
+            is True
+        )
+
 
 class TestWriteUserMcpServers:
     """Batched user-scope `mcpServers` writes for the workspace-managed reconcile path."""
