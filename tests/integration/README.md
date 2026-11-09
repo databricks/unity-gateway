@@ -514,8 +514,8 @@ there and the runner's frozen package set (`installed.txt`) is installed from th
 `scripts/mdm` does. Its managed auth helper must point at that installation. For Codex, `--global`
 must also write the `/etc/codex/requirements.toml` provider lock (gateway URL, and that
 installation's `ug auth-token --host <workspace> --browser-login`). Not covered: the lock being
-enforced (CI pins Codex 0.154.0, and the lock needs 0.156), and removing it, since `ug revert`
-doesn't remove it yet. The suite uses the runner's passwordless sudo and does not count password
+enforced (CI pins Codex 0.154.0, and the lock needs 0.156), and asserting that the cleanup
+`ug revert` removes it (`../test_agent_codex.py` covers that revert). The suite uses the runner's passwordless sudo and does not count password
 prompts.
 
 The sudo-session regression checks live in `../test_managed_files.py` and `../test_cli.py`.

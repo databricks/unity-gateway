@@ -1974,7 +1974,6 @@ class TestCodexManagedConfig:
         # Deterministic managed path + a mocked sudo writer that writes straight to disk, so the test
         # can read the TOML back and NO real sudo/`/etc` write ever happens.
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
-        monkeypatch.setattr(codex, "CODEX_SYSTEM_DIR", managed_path.parent)
 
         def fake_write_managed(path, text, **kwargs):
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -2182,6 +2181,19 @@ class TestCodexManagedConfig:
         with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="requirements.toml"):
             codex.write_tool_config(dict(self.GLOBAL_STATE))
         assert not (system_dir / "managed_config.toml").exists()
+
+    def test_revert_also_removes_the_global_lock_files(self, monkeypatch):
+        reverted = []
+
+        def fake_revert(tool, **kwargs):
+            reverted.append(tool)
+            return "removed" if tool == "codex-requirements" else "unchanged"
+
+        monkeypatch.setattr(codex, "revert_managed_file", fake_revert)
+
+        # managed_config.toml was unchanged, but the provider lock was not: report that.
+        assert codex.revert_managed_config() == "removed"
+        assert reverted == ["codex", "codex-requirements", "codex-config"]
 
     @pytest.mark.parametrize(
         ("os_", "global_"), [(managed_files.OS.LINUX, False), (managed_files.OS.WINDOWS, True)]

@@ -114,8 +114,6 @@ CODEX_BACKUP_PATH = APP_DIR / "codex-ucode-config.backup.toml"
 CODEX_MODEL_CATALOG_PATH = APP_DIR / "codex-model-catalog.json"
 LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
-# Where `ug configure --global` writes UG's requirements.toml and config.toml on Linux and macOS.
-CODEX_SYSTEM_DIR = Path("/etc/codex")
 CODEX_MODEL_PROVIDER_NAME = "Databricks"
 LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
 # The Codex app relay's own provider in ~/.codex/config.toml, apart from the managed `Databricks`.
@@ -711,12 +709,17 @@ def managed_config_status(state: dict) -> tuple[Path | None, str, str]:
 
 
 def revert_managed_config() -> str:
-    return revert_managed_file(
-        "codex",
-        display="Codex",
-        parser=_parse_managed_config,
-        dumper=tomlkit.dumps,
-    )
+    """Revert managed_config.toml and the requirements.toml and config.toml `--global` writes."""
+    results = [
+        revert_managed_file(
+            tool,
+            display="Codex",
+            parser=_parse_managed_config,
+            dumper=tomlkit.dumps,
+        )
+        for tool in ("codex", "codex-requirements", "codex-config")
+    ]
+    return next((result for result in results if result != "unchanged"), "unchanged")
 
 
 def _otel_service_path() -> Path:
@@ -1142,14 +1145,14 @@ def _reconcile_managed_config(
             "`ug configure --global` can't configure Codex here: this platform has no "
             "machine-wide Codex settings. Run `ug configure` without --global."
         )
-    if _is_posix_global_run():
-        _write_global_files(state)
     if path is None:
         print_warning_err(
             "Machine-wide Codex settings aren't supported on this platform; skipped the managed "
             "config."
         )
         return
+    if _is_posix_global_run():
+        _write_global_files(state, path.parent)
     if path.is_symlink():
         raise RuntimeError(
             f"Refusing to use Codex managed settings through symlink {path}. Replace it with a "
@@ -1224,7 +1227,7 @@ def _is_posix_global_run() -> bool:
     return machine_wide_only() and current_os() in (OS.LINUX, OS.MACOS)
 
 
-def _write_global_files(state: dict) -> None:
+def _write_global_files(state: dict, system_dir: Path) -> None:
     """Rebuild UG's provider lock in ``requirements.toml`` and its default model in ``config.toml``.
 
     Every user shares the provider, so its auth command names no profile, PAT, or OAuth client.
@@ -1248,7 +1251,7 @@ def _write_global_files(state: dict) -> None:
         ("codex-config", "config.toml", config, [["model"]]),
     ):
         reconcile_managed_file(
-            CODEX_SYSTEM_DIR / name,
+            system_dir / name,
             tomlkit.dumps(doc),
             tool=tool,
             display="Codex",
