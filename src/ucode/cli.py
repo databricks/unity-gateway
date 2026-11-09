@@ -25,7 +25,7 @@ from rich.text import Text
 from typer import _click
 from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
-from ucode import custom_oauth
+from ucode import auth_token_log, custom_oauth, token_cache
 from ucode.agents import (
     GEMINI_API_TOOLS,
     MODEL_LOCATION_TOOLS,
@@ -2928,8 +2928,10 @@ def claude_desktop_auth_cmd(
 
 
 # Pi kills its `!command` apiKey after 10s and discards stderr; leave room for interpreter
-# startup so a slow CLI fails with ug's error rather than pi's.
+# startup so a slow CLI fails with ug's error, which is logged, rather than pi's.
 AUTH_TOKEN_CLI_BUDGET_SECONDS = 7.0
+# Nobody waits on the background refresher (`--refresh-cache`), but it must not linger.
+AUTH_TOKEN_BACKGROUND_BUDGET_SECONDS = 30.0
 
 
 @app.command("auth-token", hidden=True)
@@ -2948,6 +2950,15 @@ def auth_token_cmd(
         typer.Option("--force-refresh", help="Force the Databricks CLI to mint a new token."),
     ] = False,
     browser_login: Annotated[bool, typer.Option("--browser-login", hidden=True)] = False,
+    refresh_cache: Annotated[
+        bool,
+        typer.Option(
+            "--refresh-cache",
+            hidden=True,
+            help="Re-read the token through the Databricks CLI into ug's cache and print "
+            "nothing. Started in the background when a cached token is due for a re-check.",
+        ),
+    ] = False,
     client_id: Annotated[
         str | None,
         typer.Option(
@@ -2979,12 +2990,17 @@ def auth_token_cmd(
     profiles, OAuth refresh) lives in `get_databricks_token`, so the same
     binary works on macOS, Linux, and Windows without any POSIX shell.
 
-    The CLI call is bounded by ``AUTH_TOKEN_CLI_BUDGET_SECONDS`` unless ``--browser-login`` asks
-    for an interactive sign-in."""
+    CLI-minted OAuth tokens are cached in ``ucode.token_cache``; ``ucode.entrypoint`` serves a hit
+    for the plain ``--host H [--profile P]`` form before this module is imported. A miss bounds
+    the CLI to ``AUTH_TOKEN_CLI_BUDGET_SECONDS`` (unless ``--browser-login`` asks for an
+    interactive sign-in) and logs failures to ``~/.ucode/auth-token-errors.log``."""
     import sys
 
     if client_id is not None and use_pat:
         print_err("--client-id cannot be combined with --use-pat.")
+        raise typer.Exit(1)
+    if client_id is not None and refresh_cache:
+        print_err("--client-id cannot be combined with --refresh-cache.")
         raise typer.Exit(1)
     if redirect_url is not None and client_id is None:
         print_err("--redirect-url requires --client-id.")
@@ -3019,6 +3035,9 @@ def auth_token_cmd(
     try:
         if client_id is not None:
             assert scopes is not None
+            auth_token_log.set_stage(
+                "fetching a custom OAuth client token", host=workspace, profile=profile
+            )
             token = custom_oauth.get_custom_client_token(
                 workspace,
                 client_id=client_id,
@@ -3030,20 +3049,47 @@ def auth_token_cmd(
                 force_refresh=force_refresh,
             )
         else:
-            # Headless helper: bound the CLI call unless a person may be signing in through the
-            # browser (--browser-login), and skip the `auth login --no-browser` fallback, whose
-            # URL nobody sees here.
-            token = get_databricks_token(
-                workspace,
-                profile,
-                force_refresh=force_refresh,
-                browser_login=browser_login,
-                budget_seconds=None if browser_login else AUTH_TOKEN_CLI_BUDGET_SECONDS,
-                allow_reauth=False,
-            )
+            # token_cache is a no-op when DATABRICKS_BEARER(_COMMAND) owns auth, including the
+            # bearer the --use-pat branch just exported, so only CLI-minted OAuth tokens are cached.
+            # A served entry that is due for a re-check starts the background refresher.
+            skip_cache = force_refresh or refresh_cache
+            cached = None if skip_cache else token_cache.serve(workspace, profile)
+            if cached:
+                token = cached
+            else:
+                auth_token_log.set_stage(
+                    "waiting for `databricks auth token`", host=workspace, profile=profile
+                )
+                if browser_login:
+                    budget = None
+                elif refresh_cache:
+                    budget = AUTH_TOKEN_BACKGROUND_BUDGET_SECONDS
+                else:
+                    budget = AUTH_TOKEN_CLI_BUDGET_SECONDS
+                # Headless helper: skip the `auth login --no-browser` fallback, whose URL
+                # nobody sees here, and bound the CLI unless a person may be signing in.
+                token = get_databricks_token(
+                    workspace,
+                    profile,
+                    force_refresh=force_refresh,
+                    browser_login=browser_login,
+                    budget_seconds=budget,
+                    allow_reauth=False,
+                )
+                token_cache.write(workspace, profile, token)
     except RuntimeError as exc:
-        print_err(str(exc))
+        message = str(exc)
+        # A failed background refresh failed no request: its caller was already served the
+        # cached token. Label it so the log says so.
+        auth_token_log.log_failure(
+            workspace,
+            profile,
+            f"background refresh failed: {message}" if refresh_cache else message,
+        )
+        print_err(message)
         raise typer.Exit(1) from None
+    if refresh_cache:
+        return  # the cache is the output; nothing reads this process's stdout
     # Write the bare token (with trailing newline) to stdout — nothing else may
     # land on stdout or the consuming agent will treat it as part of the token.
     sys.stdout.write(token + "\n")
@@ -3129,18 +3175,10 @@ def otel_headers_cmd(
 
 
 def _oauth_token_is_fresh(token: str, buffer_seconds: float = 120) -> bool:
-    import base64
-    import binascii
-    import json
     import time
 
-    try:
-        payload = token.split(".")[1]
-        payload += "=" * (-len(payload) % 4)
-        expires_at = float(json.loads(base64.urlsafe_b64decode(payload))["exp"])
-    except (IndexError, KeyError, TypeError, ValueError, binascii.Error, json.JSONDecodeError):
-        return False
-    return time.time() < expires_at - buffer_seconds
+    expires_at = token_cache.token_expiry(token)
+    return expires_at is not None and time.time() < expires_at - buffer_seconds
 
 
 def _router_hook_token(host: str, profile: str | None, use_pat: bool) -> str | None:

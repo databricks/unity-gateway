@@ -260,6 +260,17 @@ class TestHelperArgv:
             anyio.run(cowork_hooks._probe, f"{SHARED}/mcp/gh", "tok", 1.0)
         assert seen["X-Databricks-Workspace-Id"] == WSID
 
+    def test_auth_token_refresher_mirrors_the_host_level_helper(self, selected):
+        # `auth-token` mints a host-level token, so neither it nor the background refresher that
+        # rewrites its cache entry carries a workspace selection; the cache is keyed by host.
+        from ucode import token_cache
+
+        helper = db_mod.build_auth_token_argv(SHARED, "p")
+        refresher = token_cache.refresh_command(SHARED, "p")
+        assert "--workspace-id" not in helper
+        assert "--workspace-id" not in refresher
+        assert refresher[refresher.index("auth-token") :] == [*helper[1:], "--refresh-cache"]
+
     def test_classic_argv_is_unchanged(self):
         assert "--workspace-id" not in db_mod.build_mcp_proxy_argv(f"{CLASSIC}/x", CLASSIC)
         assert "--workspace-id" not in db_mod.build_otel_headers_argv(CLASSIC)

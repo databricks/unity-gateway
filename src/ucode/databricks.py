@@ -33,6 +33,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
+from ucode import token_cache
 from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
@@ -1588,11 +1589,15 @@ _AUTH_LOGIN_NO_BROWSER_SUPPORT_LOCK = threading.Lock()
 
 
 def clear_databricks_token_cache() -> None:
-    """Forget memoized tokens and failures (after a login, and between tests)."""
+    """Forget memoized tokens and failures (after a login, and between tests).
+
+    Also drops the bearers `ug auth-token` cached on disk: a login may change the identity
+    behind a profile, and helper processes would otherwise keep serving the old one."""
     global _TOKEN_CACHE_EPOCH
     with _TOKEN_MEMO_LOCK:
         _TOKEN_CACHE_EPOCH += 1
         _TOKEN_MEMO.clear()
+    token_cache.clear()
 
 
 def _token_memo_key(workspace: str, profile: str | None) -> tuple[str, str | None]:

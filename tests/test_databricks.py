@@ -74,6 +74,13 @@ class _FakeResponse:
         return self._body
 
 
+def _fake_jwt(expires_at: float) -> str:
+    import base64
+
+    claims = base64.urlsafe_b64encode(json.dumps({"exp": expires_at}).encode()).decode()
+    return f"h.{claims.rstrip('=')}.s"
+
+
 def _write_fake_executable(directory: Path, name: str, python_body: str) -> str:
     """Write a python-backed fake CLI (a `.cmd` shim on Windows) and return the path to invoke."""
     script = directory / f"{name}.py"
@@ -3001,6 +3008,23 @@ class TestGetDatabricksToken:
         monkeypatch.setattr(db_mod, "run", fake_run)
         assert get_databricks_token(WS, "p") == "tok"
         assert timeouts == [15.0]
+
+    def test_clearing_the_token_memo_also_clears_the_helper_cache(self):
+        from ucode import token_cache
+
+        token_cache.write(WS, "p", _fake_jwt(time.time() + 3600))
+        assert token_cache.read(WS, "p")
+        db_mod.clear_databricks_token_cache()
+        assert token_cache.read(WS, "p") is None
+
+    def test_login_clears_the_helper_cache(self, monkeypatch):
+        from ucode import token_cache
+
+        token_cache.write(WS, "p", _fake_jwt(time.time() + 3600))
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "run", lambda *a, **k: None)
+        db_mod.run_databricks_login(WS, "p")
+        assert token_cache.read(WS, "p") is None
 
     def test_passes_profile_flag_when_provided(self, tmp_path, monkeypatch):
         # Fake CLI that records its argv to a file so we can assert the

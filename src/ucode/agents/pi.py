@@ -182,8 +182,10 @@ def build_pi_api_key(state: dict) -> str:
     process, so the token is minted on demand and never lands in the config.
 
     No `--force-refresh`: pi has no token cache of its own on this path, so
-    forcing a mint would round-trip to the workspace every turn. Plain
-    `auth-token` serves the CLI's cached token until it nears expiry.
+    forcing a mint would round-trip to the workspace every turn. Pi also kills
+    the command after 10s and discards its stderr, so plain `auth-token` serves
+    ug's own token cache (`ucode.token_cache`) before importing the full CLI,
+    and bounds any CLI call it does make.
 
     Always POSIX-quoted: pi runs `!command` values through bash on every OS
     (Git Bash on Windows), which strips the backslashes from a cmd.exe-style

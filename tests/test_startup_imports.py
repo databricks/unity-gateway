@@ -242,3 +242,48 @@ def test_other_arguments_delegate_to_cli_unchanged(monkeypatch, argv) -> None:
     entrypoint.main()
 
     assert calls == [["ug", *argv]]
+
+
+@pytest.mark.parametrize("command", ["ug", "ucode"])
+def test_auth_token_cache_hit_skips_cli_imports(tmp_path: Path, command: str) -> None:
+    """A cached `auth-token` bearer is printed before the full CLI is imported."""
+    import base64
+    import os
+    import time
+
+    workspace = "https://example.cloud.databricks.com"
+    claims = json.dumps({"exp": time.time() + 3600}).encode()
+    token = f"h.{base64.urlsafe_b64encode(claims).decode().rstrip('=')}.s"
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("DATABRICKS_", "UCODE_"))
+    }
+    env.update(HOME=str(tmp_path), USERPROFILE=str(tmp_path))
+    seed = (
+        "from ucode import token_cache\n"
+        f"token_cache.write({workspace!r}, 'p', {token!r})\n"
+        f"assert token_cache.read({workspace!r}, 'p') == {token!r}\n"
+    )
+    subprocess.run([sys.executable, "-c", seed], env=env, check=True, timeout=60)
+    guarded = ("ucode.cli", "typer", "ucode.databricks", *_LAZY_MODULES)
+    probe = (
+        "import json, sys\n"
+        f"sys.argv = [{command!r}, 'auth-token', '--host', {workspace!r}, '--profile', 'p']\n"
+        "from ucode.entrypoint import main\nmain()\n"
+        f"print(json.dumps([m for m in {list(guarded)!r} if m in sys.modules]))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    printed, loaded = result.stdout.splitlines()
+    assert printed == token
+    assert json.loads(loaded) == []
