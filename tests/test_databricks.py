@@ -2949,6 +2949,59 @@ class TestGetDatabricksToken:
         with pytest.raises(RuntimeError, match="no access token"):
             get_databricks_token(WS)
 
+    def test_allow_reauth_false_skips_login_fallback(self, tmp_path, monkeypatch):
+        # The headless `auth-token` helper must not run `auth login --no-browser`: nobody sees
+        # its URL, so it only spends the caller's deadline.
+        env, log = self._logging_fake(
+            tmp_path, self._HELP_WITH_NO_BROWSER + self._STALE_TOKEN + "sys.exit(1)"
+        )
+        monkeypatch.setattr("os.environ", env)
+        with pytest.raises(RuntimeError, match="no access token"):
+            get_databricks_token(WS, profile="p", allow_reauth=False)
+        calls = log.read_text().splitlines()
+        assert calls == [f"auth token --host {WS} --profile p --output json"]
+
+    def test_budget_bounds_a_hung_cli(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "import time\ntime.sleep(10)")
+        monkeypatch.setattr("os.environ", env)
+        started = time.monotonic()
+        with pytest.raises(
+            RuntimeError, match=r"no access token .*\(`databricks auth token` timed out after"
+        ):
+            get_databricks_token(WS, profile="p", budget_seconds=1.0, allow_reauth=False)
+        assert time.monotonic() - started < 5
+
+    def test_budget_spans_lock_retries(self, tmp_path, monkeypatch):
+        # Each lock-contention retry draws from the same budget, not a fresh 15s.
+        env, log = self._logging_fake(
+            tmp_path,
+            "import time\n"
+            "time.sleep(0.3)\n"
+            "print('Error: forced token refresh: cache update: exit status 45', file=sys.stderr)\n"
+            "sys.exit(1)",
+        )
+        monkeypatch.setattr("os.environ", env)
+        started = time.monotonic()
+        with pytest.raises(RuntimeError, match="no access token"):
+            get_databricks_token(WS, profile="p", budget_seconds=0.8, allow_reauth=False)
+        # Without a budget all four attempts would run (over 1.2s of CLI time alone).
+        assert len(log.read_text().splitlines()) < db_mod._TOKEN_FETCH_MAX_ATTEMPTS
+        assert time.monotonic() - started < 2
+
+    def test_without_a_budget_a_fetch_keeps_its_own_timeout(self, monkeypatch):
+        timeouts: list[float | None] = []
+
+        def fake_run(command, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
+            return subprocess.CompletedProcess(command, 0, '{"access_token": "tok"}', "")
+
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "run", fake_run)
+        assert get_databricks_token(WS, "p") == "tok"
+        assert timeouts == [15.0]
+
     def test_passes_profile_flag_when_provided(self, tmp_path, monkeypatch):
         # Fake CLI that records its argv to a file so we can assert the
         # --profile flag is forwarded to `databricks auth token`.

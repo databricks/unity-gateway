@@ -2927,6 +2927,11 @@ def claude_desktop_auth_cmd(
         sys.stdout.write(json.dumps(credential, separators=(",", ":")) + "\n")
 
 
+# Pi kills its `!command` apiKey after 10s and discards stderr; leave room for interpreter
+# startup so a slow CLI fails with ug's error rather than pi's.
+AUTH_TOKEN_CLI_BUDGET_SECONDS = 7.0
+
+
 @app.command("auth-token", hidden=True)
 def auth_token_cmd(
     host: Annotated[
@@ -2972,7 +2977,10 @@ def auth_token_cmd(
     and Codex's auth command on every token refresh. It is not meant for
     interactive use. All token logic (DATABRICKS_BEARER short-circuit, PAT
     profiles, OAuth refresh) lives in `get_databricks_token`, so the same
-    binary works on macOS, Linux, and Windows without any POSIX shell."""
+    binary works on macOS, Linux, and Windows without any POSIX shell.
+
+    The CLI call is bounded by ``AUTH_TOKEN_CLI_BUDGET_SECONDS`` unless ``--browser-login`` asks
+    for an interactive sign-in."""
     import sys
 
     if client_id is not None and use_pat:
@@ -3022,8 +3030,16 @@ def auth_token_cmd(
                 force_refresh=force_refresh,
             )
         else:
+            # Headless helper: bound the CLI call unless a person may be signing in through the
+            # browser (--browser-login), and skip the `auth login --no-browser` fallback, whose
+            # URL nobody sees here.
             token = get_databricks_token(
-                workspace, profile, force_refresh=force_refresh, browser_login=browser_login
+                workspace,
+                profile,
+                force_refresh=force_refresh,
+                browser_login=browser_login,
+                budget_seconds=None if browser_login else AUTH_TOKEN_CLI_BUDGET_SECONDS,
+                allow_reauth=False,
             )
     except RuntimeError as exc:
         print_err(str(exc))

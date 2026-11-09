@@ -2728,6 +2728,9 @@ class TestMcpSubcommands:
         mock_sync.assert_called_once_with()
 
 
+_HELPER_KW = {"budget_seconds": cli_mod.AUTH_TOKEN_CLI_BUDGET_SECONDS, "allow_reauth": False}
+
+
 class TestAuthTokenCommand:
     """`ucode auth-token` is the cross-platform apiKeyHelper (#116)."""
 
@@ -2758,8 +2761,15 @@ class TestAuthTokenCommand:
         # Nothing but the bare token (plus trailing newline) may reach stdout,
         # or the consuming agent will treat the noise as part of the token.
         assert result.stdout == "tok-123\n"
+        # Browser sign-in waits on a person, so only the headless helper gets the CLI budget.
+        budget = None if browser_login else cli_mod.AUTH_TOKEN_CLI_BUDGET_SECONDS
         fetch.assert_called_once_with(
-            "https://ws", None, force_refresh=False, browser_login=browser_login
+            "https://ws",
+            None,
+            force_refresh=False,
+            browser_login=browser_login,
+            budget_seconds=budget,
+            allow_reauth=False,
         )
         assert dict(os.environ) == previous
 
@@ -2773,7 +2783,7 @@ class TestAuthTokenCommand:
             )
         assert result.exit_code == 0
         fetch.assert_called_once_with(
-            "https://override", "prod", force_refresh=False, browser_login=False
+            "https://override", "prod", force_refresh=False, browser_login=False, **_HELPER_KW
         )
 
     def test_force_refresh_is_forwarded(self):
@@ -2783,7 +2793,9 @@ class TestAuthTokenCommand:
         ):
             result = runner.invoke(app, ["auth-token", "--force-refresh"])
         assert result.exit_code == 0
-        fetch.assert_called_once_with("https://ws", None, force_refresh=True, browser_login=False)
+        fetch.assert_called_once_with(
+            "https://ws", None, force_refresh=True, browser_login=False, **_HELPER_KW
+        )
 
     def test_errors_without_workspace(self):
         with patch("ucode.cli.load_state", return_value={}):

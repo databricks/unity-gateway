@@ -734,7 +734,7 @@ def run(
     capture_output: bool = False,
     text: Literal[True],
     env: dict[str, str] | None = None,
-    timeout: int | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]: ...
 
 
@@ -746,7 +746,7 @@ def run(
     capture_output: bool = False,
     text: Literal[False] = False,
     env: dict[str, str] | None = None,
-    timeout: int | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[bytes]: ...
 
 
@@ -757,7 +757,7 @@ def run(
     capture_output: bool = False,
     text: bool = False,
     env: dict[str, str] | None = None,
-    timeout: int | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
     return subprocess_cross_os.run(
         args,
@@ -1761,6 +1761,8 @@ def _get_databricks_token_for_profile(
     *,
     force_refresh: bool,
     browser_login: bool,
+    budget_seconds: float | None,
+    allow_reauth: bool,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
     if not force_refresh:
@@ -1798,6 +1800,8 @@ def _get_databricks_token_for_profile(
             force_refresh=force_refresh,
             browser_login=browser_login,
             token_epoch=token_epoch,
+            budget_seconds=budget_seconds,
+            allow_reauth=allow_reauth,
         )
 
 
@@ -1808,6 +1812,8 @@ def _fetch_databricks_token_for_profile(
     force_refresh: bool,
     browser_login: bool,
     token_epoch: int,
+    budget_seconds: float | None = None,
+    allow_reauth: bool = True,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
     env = build_databricks_cli_env(workspace, profile)
@@ -1835,11 +1841,20 @@ def _fetch_databricks_token_for_profile(
     # Treat unknown failures as transient unless the CLI explicitly identifies
     # invalid or missing credentials.
     transient_failure = True
+    deadline = None if budget_seconds is None else time.monotonic() + budget_seconds
+    # ug's own reason for a failed fetch (timeout, budget, bad JSON), named in the final error,
+    # which headless helpers log because their callers hide stderr. CLI stderr is left out: its
+    # generic `auth login` advice also follows network failures.
+    cause = ""
 
     def _fetch() -> tuple[str, float | None, str]:
         """Return (access_token, lifetime_s, diagnostics). token is '' on failure."""
-        nonlocal transient_failure
+        nonlocal transient_failure, cause
         transient_failure = True
+        timeout = 15.0 if deadline is None else min(15.0, deadline - time.monotonic())
+        if timeout <= 0:
+            cause = f"`databricks auth token` exceeded the {budget_seconds:g}s budget"
+            return "", None, cause
         try:
             result = run(
                 cmd,
@@ -1847,7 +1862,7 @@ def _fetch_databricks_token_for_profile(
                 capture_output=True,
                 text=True,
                 env=env,
-                timeout=15,
+                timeout=timeout,
             )
             _debug("auth token", _format_subprocess_result(result))
             if result.returncode == 0:
@@ -1859,9 +1874,15 @@ def _fetch_databricks_token_for_profile(
             transient_failure = not any(
                 marker in diagnostics.lower() for marker in _TOKEN_CREDENTIAL_FAILURE_MARKERS
             )
+            cause = ""
             return "", None, diagnostics
-        except (subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        except subprocess.TimeoutExpired as exc:
             _debug("auth token", f"exception: {type(exc).__name__}: {exc}")
+            cause = f"`databricks auth token` timed out after {timeout:.1f}s"
+            return "", None, str(exc)
+        except json.JSONDecodeError as exc:
+            _debug("auth token", f"exception: {type(exc).__name__}: {exc}")
+            cause = "`databricks auth token` returned invalid JSON"
             return "", None, str(exc)
 
     def _fetch_with_lock_retry() -> tuple[str, float | None]:
@@ -1889,7 +1910,7 @@ def _fetch_databricks_token_for_profile(
     if not token and browser_login and not transient_failure:
         # A desktop app's helper has no terminal to finish a non-browser login.
         token, lifetime_s = _browser_login(workspace, profile, env, _fetch_with_lock_retry)
-    elif not token and _auth_login_supports_no_browser(cli):
+    elif not token and allow_reauth and _auth_login_supports_no_browser(cli):
         # Session may have expired — attempt non-interactive re-auth and retry once.
         _debug("auth token", "empty on first fetch; attempting auth login --no-browser")
         try:
@@ -1919,11 +1940,12 @@ def _fetch_databricks_token_for_profile(
                 token, lifetime_s = _fetch_with_lock_retry()
             else:
                 _debug("auth login", f"returned non-zero status {reauth.returncode}")
-    elif not token:
+    elif not token and allow_reauth:
         _debug("auth token", "empty on first fetch; CLI has no `auth login --no-browser`")
 
     if not token:
-        error = f"Databricks CLI returned no access token for {workspace}. "
+        error = f"Databricks CLI returned no access token for {workspace}"
+        error += f" ({cause}). " if cause else ". "
         if transient_failure:
             error += (
                 "Retry the request and check network connectivity or Databricks CLI diagnostics."
@@ -1952,7 +1974,15 @@ def get_databricks_token(
     *,
     force_refresh: bool = False,
     browser_login: bool = False,
+    budget_seconds: float | None = None,
+    allow_reauth: bool = True,
 ) -> str:
+    """Return a Databricks bearer for ``workspace``.
+
+    ``budget_seconds`` caps the total time spent in `databricks auth token`, across cache-lock
+    retries, for a caller under a hard deadline. ``allow_reauth=False`` skips the
+    `auth login --no-browser` fallback, whose URL nobody sees when the caller is a headless helper.
+    """
     # ``DATABRICKS_BEARER`` is the CI escape hatch: when set, skip the
     # `databricks auth token` subprocess entirely and return the pre-fetched
     # bearer directly. Used by the e2e job, where the protected runner has
@@ -1981,6 +2011,8 @@ def get_databricks_token(
         profile,
         force_refresh=force_refresh,
         browser_login=browser_login,
+        budget_seconds=budget_seconds,
+        allow_reauth=allow_reauth,
     )
 
 
