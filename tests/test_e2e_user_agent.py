@@ -150,6 +150,10 @@ def _run_until_first_request(
     agents retry on 401 indefinitely. Swallow timeouts — the capture server
     has what we need by then. Returns the CompletedProcess (or None on
     timeout) so callers can surface stderr on failure."""
+    # A `ug auth-token` the agent spawns runs outside pytest's isolation: the bearer
+    # short-circuit keeps it off the developer's Databricks CLI and their ~/.ucode token cache
+    # and auth-token-errors.log. These tests check headers, not credentials; callers can override.
+    env = {"DATABRICKS_BEARER": "test-token", **env}
     try:
         return subprocess.run(
             cmd,

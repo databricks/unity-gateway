@@ -6,9 +6,11 @@ import plus a `databricks auth token` subprocess that can stall on network I/O. 
 by ``ucode.entrypoint`` before any of that is imported, so this module must stay stdlib-only.
 
 Only OAuth tokens minted through the Databricks CLI are cached: never PATs,
-``DATABRICKS_BEARER`` / ``DATABRICKS_BEARER_COMMAND`` values, or custom-client tokens. Entries are
-keyed by host, profile and ``DATABRICKS_CONFIG_FILE``. Files are ``0600`` inside a ``0700``
+``DATABRICKS_BEARER`` / ``DATABRICKS_BEARER_COMMAND`` values, or custom-client tokens, and the
+fast path defers to the full command when the saved workspace uses a PAT. Entries are keyed by
+host, profile and the resolved ``DATABRICKS_CONFIG_FILE``. Files are ``0600`` inside a ``0700``
 directory where the OS supports modes, like the CLI's own ``~/.databricks/token-cache.json``.
+:func:`clear` records when it ran, and a fetch that started before then is not written back.
 
 An entry is served while its JWT has at least ``MIN_REMAINING_SECONDS`` left. Once it is
 ``REFRESH_AFTER_SECONDS`` old it is still served, and the hit also starts a detached
@@ -24,12 +26,16 @@ import binascii
 import hashlib
 import json
 import os
-import shutil
 import sys
 import time
 from pathlib import Path
 
 CACHE_DIR = Path.home() / ".ucode" / "token-cache"
+# ug's saved state, read (stdlib-only) for the PAT mode the full command would honor.
+STATE_PATH = Path.home() / ".ucode" / "state.json"
+_CLEARED_NAME = "cleared-at"
+_LOCK_NAME = ".lock"
+_LOCK_TIMEOUT_SECONDS = 2.0
 # Never serve a token this close to expiry; the caller fetches through the CLI instead.
 MIN_REMAINING_SECONDS = 300
 # Re-check through the CLI, in the background, once an entry is this old.
@@ -56,15 +62,17 @@ def cache_applicable() -> bool:
     return not any(os.environ.get(name, "").strip() for name in _BEARER_ENV_VARS)
 
 
+def _config_file_key() -> str:
+    """The config file the CLI will read, as an absolute path; empty for its default.
+
+    Another config file can map the same profile name to other credentials, and a relative path
+    names a different file in each working directory."""
+    config_file = os.environ.get("DATABRICKS_CONFIG_FILE", "")
+    return os.path.abspath(os.path.expanduser(config_file)) if config_file else ""
+
+
 def _entry_name(host: str, profile: str | None) -> str:
-    key = "\0".join(
-        (
-            host.strip().rstrip("/").lower(),
-            profile or "",
-            # Another config file can map the same profile name to other credentials.
-            os.environ.get("DATABRICKS_CONFIG_FILE", ""),
-        )
-    )
+    key = "\0".join((host.strip().rstrip("/").lower(), profile or "", _config_file_key()))
     return hashlib.sha256(key.encode()).hexdigest()
 
 
@@ -115,8 +123,13 @@ def serve(host: str, profile: str | None) -> str | None:
     return token
 
 
-def write(host: str, profile: str | None, token: str) -> None:
-    """Atomically store ``token``, best-effort: a cache failure must never fail the helper."""
+def write(
+    host: str, profile: str | None, token: str, *, fetch_started: float | None = None
+) -> None:
+    """Atomically store ``token``, best-effort: a cache failure must never fail the helper.
+
+    ``fetch_started`` is the ``time.time()`` at which the caller began fetching ``token``. If
+    :func:`clear` ran since then (a login may have changed the identity), nothing is written."""
     if not cache_applicable() or token_expiry(token) is None:
         return
     path = _cache_path(host, profile)
@@ -126,8 +139,12 @@ def write(host: str, profile: str | None, token: str) -> None:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump({"token": token, "cached_at": time.time()}, fh)
-        os.replace(tmp, path)
-    except OSError:
+        with _locked():
+            if fetch_started is not None and _cleared_at() >= fetch_started:
+                tmp.unlink()
+                return
+            os.replace(tmp, path)
+    except (OSError, TimeoutError):
         try:
             tmp.unlink()
         except OSError:
@@ -135,8 +152,72 @@ def write(host: str, profile: str | None, token: str) -> None:
 
 
 def clear() -> None:
-    """Drop every cached token, e.g. after a fresh `databricks auth login`."""
-    shutil.rmtree(CACHE_DIR, ignore_errors=True)
+    """Drop every cached token, e.g. after a fresh `databricks auth login`.
+
+    Also records when it ran, so a fetch already in flight (another helper process, or the
+    background refresher) cannot write a token from before the login back afterwards. With no
+    cache directory yet there is nothing to drop, and nothing is created."""
+    if not CACHE_DIR.is_dir():
+        return
+    try:
+        with _locked():
+            _clear_entries()
+    except TimeoutError:
+        # A stuck lock holder must not keep a login from invalidating the cache.
+        _clear_entries()
+    except OSError:
+        pass
+
+
+def _clear_entries() -> None:
+    stamp = CACHE_DIR / _CLEARED_NAME
+    tmp = stamp.with_name(f".{stamp.name}.{os.getpid()}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(repr(time.time()))
+        os.replace(tmp, stamp)
+    except OSError:
+        pass
+    try:
+        entries = list(CACHE_DIR.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.suffix in (".json", ".refresh", ".tmp"):
+            try:
+                entry.unlink()
+            except OSError:
+                pass
+
+
+def _cleared_at() -> float:
+    try:
+        return float((CACHE_DIR / _CLEARED_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return float("-inf")
+
+
+class _locked:
+    """Hold the cache's file lock, so a write's clear check and replace are one step."""
+
+    def __enter__(self) -> None:
+        from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
+
+        self._file = (CACHE_DIR / _LOCK_NAME).open("a+b")
+        try:
+            acquire_exclusive_file_lock(self._file, timeout=_LOCK_TIMEOUT_SECONDS)
+        except BaseException:
+            self._file.close()
+            raise
+
+    def __exit__(self, *_exc: object) -> None:
+        from ucode.os_compatibility.file_lock_cross_os import release_file_lock
+
+        try:
+            release_file_lock(self._file)
+        finally:
+            self._file.close()
 
 
 def refresh_command(host: str, profile: str | None) -> list[str]:
@@ -227,11 +308,21 @@ def _fast_path_target(args: list[str]) -> tuple[str, str | None] | None:
     return host, parsed.get("--profile") or None
 
 
+def _saved_pat_mode() -> bool:
+    """Whether the saved current workspace uses a PAT, which the full command honors for any host."""
+    from ucode.state_file import current_workspace_state, read_state_file
+
+    return bool(current_workspace_state(read_state_file(STATE_PATH)).get("use_pat"))
+
+
 def fast_path_token(args: list[str]) -> str | None:
     """Serve ``auth-token --host H [--profile P]`` from the cache, else None.
 
     Only the exact OAuth argv ``build_auth_token_argv`` emits is handled. Anything else
     (``--use-pat``, ``--force-refresh``, ``--browser-login``, ``--refresh-cache``, custom-client
-    options, a missing ``--host``) returns None so the full CLI decides."""
+    options, a missing ``--host``) returns None so the full CLI decides, as does a saved
+    workspace in PAT mode."""
     target = _fast_path_target(args)
-    return serve(*target) if target else None
+    if target is None or _saved_pat_mode():
+        return None
+    return serve(*target)
