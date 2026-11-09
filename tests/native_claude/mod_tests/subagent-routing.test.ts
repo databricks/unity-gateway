@@ -238,42 +238,38 @@ test('parallel calls draw nothing above any reply once every route completes', a
   await prompt.unmount();
 });
 
-test('an aborted turn leaves nothing for the next turn\'s reply', async ($, on) => {
-  const gates = new Map<string, () => void>();
-  let started: () => void = () => {};
-  const bothStarted = new Promise<void>((resolve) => { started = resolve; });
-  on('session.id', () => ({ value: 'session-1' }));
-  on('process.run', async ($, e) => {
-    const { tool_use_id } = JSON.parse(e.init.stdin);
-    await new Promise<void>((resolve) => {
-      gates.set(tool_use_id, resolve);
-      if (gates.size === 2) started();
-    });
-    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-      model: 'system.ai.claude-sonnet-5', rationale: `Selected for ${tool_use_id}`,
-    }) } };
+for (const [name, result, warningCount] of [
+  ['disabled', { value: { exitCode: 0, stdout: '', stderr: '' } }, 0],
+  ['command failure', { value: { exitCode: 1, stdout: '', stderr: 'failure' } }, 1],
+  ['invalid JSON', { value: { exitCode: 0, stdout: 'invalid', stderr: '' } }, 1],
+  ['missing model', { value: { exitCode: 0, stdout: JSON.stringify({ rationale: 'Selected' }), stderr: '' } }, 1],
+  ['invalid model', { value: { exitCode: 0, stdout: JSON.stringify({ model: 42, rationale: 'Selected' }), stderr: '' } }, 1],
+  ['missing rationale', { value: { exitCode: 0, stdout: JSON.stringify({ model: 'system.ai.claude-sonnet-5' }), stderr: '' } }, 1],
+  ['invalid rationale', { value: { exitCode: 0, stdout: JSON.stringify({ model: 'system.ai.claude-sonnet-5', rationale: 42 }), stderr: '' } }, 1],
+  ['process unavailable', { deny: 'process unavailable' }, 1],
+] as const) {
+  test(`${name} forwards the original call without a routing annotation`, async ($, on) => {
+    const calls: any[] = [];
+    const warnings: string[] = [];
+    on('session.id', () => ({ value: 'session-1' }));
+    on('process.run', () => result);
+    on('ui.log', ($, e) => { warnings.push(e.text); return { value: undefined }; });
+    on('tool.call', ($, e) => { calls.push(e); return { deny: 'user policy' }; });
+    on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
+    const answer = await $.tool.call({ tool: 'Agent', tool_use_id: 'call-a', ...originalInput });
+    expect(answer).toEqual({ deny: 'user policy' });
+    expect(calls.length).toBe(1);
+    expect(calls[0].subagent_type).toBe(originalInput.subagent_type);
+    expect(calls[0].model).toBe(originalInput.model);
+    expect(warnings.length).toBe(warningCount);
+    for (const mount of [row('call-a'), reply('after')]) {
+      const ui = await $.ui.mount(mount);
+      expect(await ui.find({ type: 'Text', text: 'original Agent row' })).toBeDefined();
+      expect(await ui.find({ type: 'Text', text: /Reason:|Selected Model/ })).toBeUndefined();
+      await ui.unmount();
+    }
   });
-  on('tool.call', () => ({ result: 'ok' }));
-  on('prompt.submit', ($, e) => ({ text: e.text }));
-  on('turn.complete', () => ({ text: '' }));
-  on('ui.render', () => ({ type: 'Text', props: {}, children: ['other row'] }));
-  const parallel = async (ids: string[]) => {
-    gates.clear()
-    const calls = ids.map((id) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput, description: `Inspect ${id}` }));
-    await bothStarted;
-    for (const id of ids) gates.get(id)!();
-    await Promise.all(calls);
-  };
-
-  // The user interrupts the turn after its parallel calls were routed.
-  await $.prompt.submit({ text: 'inspect the parser' });
-  await parallel(['call-a', 'call-b']);
-  await $.turn.complete({ answer: '', isAborted: true });
-  await $.prompt.submit({ text: 'something unrelated' });
-  const unrelated = await $.ui.mount(reply('unrelated'));
-  expect(await unrelated.find({ type: 'Text', text: /Selected Model|call-a|call-b/ })).toBeUndefined();
-  await unrelated.unmount();
-});
+}
 
 test('a waiting call shows a spinner on its row, then returns to the plain row when routed', async ($, on) => {
   let release: (value: unknown) => void = () => {};

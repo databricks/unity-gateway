@@ -1,8 +1,5 @@
 import type { On, PluginOptions } from 'claude-code'
 
-// Only what agent.spawn needs; the decision itself lives in the /smart-router logs pane.
-type RoutingRecord = { name: string; model: string }
-
 const ANIMALS = [
   'Otter', 'Panda', 'Lynx', 'Fox', 'Badger', 'Beaver', 'Bison', 'Bobcat', 'Camel', 'Caribou',
   'Cheetah', 'Chipmunk', 'Cougar', 'Coyote', 'Deer', 'Dingo', 'Dolphin', 'Donkey', 'Elephant', 'Elk',
@@ -15,6 +12,9 @@ const ANIMALS = [
   'Eagle', 'Falcon', 'Finch', 'Flamingo', 'Heron', 'Ibis', 'Jay', 'Kestrel', 'Kiwi', 'Lark',
   'Magpie', 'Osprey', 'Owl', 'Parrot', 'Pelican', 'Penguin', 'Puffin', 'Raven', 'Robin', 'Swan',
 ]
+
+export const shortModel = (model: string): string =>
+  model.replace(/^system\.ai\./, '').replace(/^databricks-/, '')
 
 // Claude's own spinner glyphs, played forwards then back as Claude does.
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
@@ -42,7 +42,8 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   const unusedNames = [...ANIMALS]
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
   const pending = new Map<string, number | undefined>()
-  const records = new Map<string, RoutingRecord>()
+  // The routed model by call; the decision itself lives in the /smart-router logs pane.
+  const models = new Map<string, string>()
 
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[]
@@ -88,9 +89,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     }
     if (tool_use_id) {
       pending.delete(tool_use_id)
-      if (route) {
-        records.set(tool_use_id, { name: names.get(tool_use_id)!, model: route.model })
-      }
+      if (route) models.set(tool_use_id, route.model)
       $.ui.invalidate('ui.render')
     }
     // Auto mode reviewed this input; choose the child's model at agent.spawn instead.
@@ -98,9 +97,9 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   })
 
   on('agent.spawn', async ($, e, next) => {
-    const route = e.resume ? undefined : records.get(e.tool_use_id)
-    const name = route?.name
-    const result = await next(route ? { ...e, model: route.model } : e)
+    const model = e.resume ? undefined : models.get(e.tool_use_id)
+    const name = model && names.get(e.tool_use_id)
+    const result = await next(model ? { ...e, model } : e)
     if (name && result.agentId) {
       try {
         // The native bottom bar is outside ui.render; join its task ID to this call.
@@ -117,9 +116,9 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   // as the original Agent row with its animal name, with no decision drawn inline.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     const name = names.get(e.requestId)
-    if (!name || (!records.has(e.requestId) && !pending.has(e.requestId))) return next(e)
+    if (!name || (!models.has(e.requestId) && !pending.has(e.requestId))) return next(e)
     const original = await next({ ...e, props: { ...e.props, tool: name } })
-    if (records.has(e.requestId)) return original
+    if (models.has(e.requestId)) return original
     const { Box, Text } = $.ui.resolve(e)
     const glyph = SPINNER[Math.floor(((await now($)) ?? 0) / SPINNER_INTERVAL_MS) % SPINNER.length]
     const seconds = await secondsSince($, pending.get(e.requestId))
