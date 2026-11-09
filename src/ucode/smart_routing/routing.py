@@ -262,22 +262,43 @@ def select_route(
     raw_rationale = raw_rationale if isinstance(raw_rationale, str) else ""
     rationale = format_rationale(payload["route_selection"][0], raw_rationale)
     params = payload["route_selection"][0].get("params")
+    return (
+        RoutingDecision(
+            model=model,
+            rationale=rationale,
+            route_options=offered_routes,
+            router_name=router_name,
+            raw_rationale=raw_rationale if rationale != raw_rationale else None,
+            explanation=_validated_explanation(params, offered_routes),
+        ),
+        None,
+    )
+
+
+MAX_EXPLANATION_BYTES = 65536
+
+
+def _validated_explanation(
+    params: Any, offered_routes: tuple[tuple[str, str | None], ...]
+) -> dict[str, Any] | None:
     explanation = params.get("routing_explanation") if isinstance(params, dict) else None
     try:
         if isinstance(explanation, str):
-            explanation = json.loads(explanation) if len(explanation) <= 65536 else None
+            explanation = (
+                json.loads(explanation) if len(explanation) <= MAX_EXPLANATION_BYTES else None
+            )
         if (
             not isinstance(explanation, dict)
-            or len(json.dumps(explanation, allow_nan=False).encode("utf-8")) > 65536
+            or len(json.dumps(explanation, allow_nan=False).encode("utf-8")) > MAX_EXPLANATION_BYTES
         ):
             explanation = None
         if explanation is not None:
             models = explanation.get("models")
             offered_models = {
-                unwrap_anthropic_gateway_model(model)
+                unwrap_anthropic_gateway_model(offered)
                 .removeprefix("system.ai.")
                 .removesuffix("[1m]")
-                for model, _ in offered_routes
+                for offered, _ in offered_routes
             }
             if (
                 not isinstance(models, list)
@@ -288,17 +309,7 @@ def select_route(
                 explanation = None
     except (TypeError, ValueError, RecursionError):
         explanation = None
-    return (
-        RoutingDecision(
-            model=model,
-            rationale=rationale,
-            route_options=offered_routes,
-            router_name=router_name,
-            raw_rationale=raw_rationale if rationale != raw_rationale else None,
-            explanation=explanation,
-        ),
-        None,
-    )
+    return explanation
 
 
 def resolve_spawn_route(

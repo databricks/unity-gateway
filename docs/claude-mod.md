@@ -43,7 +43,7 @@ spinner line also reads `Selecting a model… Ns` or `Selecting models for N age
 timed from the oldest waiting call; Claude's own glyph and counters stay. Once routing
 completes, the row renders as the original Agent row with its animal name and nothing is
 drawn inline: the selected model, reason, and routing time live in the `/smart-router logs`
-pane, not in the transcript. Nothing is drawn above the prompt and nothing is logged.
+pane, not in the transcript. Nothing is drawn above the prompt or written into the transcript.
 Disabled routing, command failures, and invalid responses keep the original call;
 failures also log a diagnostic.
 Opening a decision in the `/smart-router logs` detail view also shows the gateway's

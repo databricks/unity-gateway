@@ -15,7 +15,7 @@ const decision = {
   decision: {
     v: 1, type: 'decision', decision_id: 'd1', at: 1000, harness: 'claude', kind: 'subagent',
     session_id: 'session-one', tool_use_id: 't1',
-    prompt: { preview: 'older task', text: 'Full prompt text', sha256: 'abc', length: 16 },
+    prompt: { preview: 'Recorded prompt preview', sha256: 'a'.repeat(64), length: 23 },
     original: { model: null, subagent_type: 'Explore' },
     selected_model: 'system.ai.claude-sonnet', requested_model: 'system.ai.claude-opus',
     candidates: [
@@ -32,7 +32,7 @@ test('opens and refreshes session rows newest first', { options }, async ($, on)
   on('session.id', () => ({ value: 'session-one' }));
   on('ui.open', ($, e) => { opened.push(e); return { value: { isPlaced: true } }; });
   on('process.run', ($, e) => {
-    expect(e.argv).toEqual(['/bin/ug', 'smart-router-logs', '--session', 'session-one', '--harness', 'claude', '--json']);
+    expect(e.argv).toEqual(['/bin/ug', 'smart-router-logs', '--session', 'session-one']);
     count++;
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: count === 1 ? records : [] }) } };
   });
@@ -42,6 +42,8 @@ test('opens and refreshes session rows newest first', { options }, async ($, on)
   const tree = JSON.stringify(await ui.drawn());
   expect(tree).toContain('2 routed prompts this session');
   expect(tree).not.toMatch(/\d{2}:\d{2}/);
+  expect(tree.indexOf('(prompt not recorded)')).toBeGreaterThanOrEqual(0);
+  expect(tree.indexOf('older task')).toBeGreaterThanOrEqual(0);
   expect(tree.indexOf('(prompt not recorded)')).toBeLessThan(tree.indexOf('older task'));
   expect(tree).toContain('claude-sonnet');
   expect(tree).toContain('fast');
@@ -66,10 +68,12 @@ test('pressing a row fetches the decision and Back returns to the list', { optio
   await $.command.run(command);
   const ui = await $.ui.mount(pane);
   await ui.press({ key: 'd1' });
-  expect(runs[1]).toEqual(['/bin/ug', 'smart-router-logs', '--session', 'session-one', '--harness', 'claude', '--decision', 'd1', '--json']);
+  expect(runs[1]).toEqual(['/bin/ug', 'smart-router-logs', '--session', 'session-one', '--decision', 'd1']);
   const tree = JSON.stringify(await ui.drawn());
-  expect(tree).toContain('Full prompt text');
-  expect(tree).toContain('Prompt (Explore)');
+  expect(tree).toContain('Recorded prompt preview');
+  expect(tree).toContain('Prompt preview (Explore)');
+  expect(tree).toContain('Length: 23 characters · SHA-256: aaaaaaaaaaaa');
+  expect(tree).toContain('Full prompt is not stored.');
   expect(tree).toContain('claude-sonnet');
   expect(tree).toContain('0.8s');
   expect(tree).toContain('Requested: claude-opus');
@@ -84,6 +88,65 @@ test('pressing a row fetches the decision and Back returns to the list', { optio
   await ui.unmount();
 });
 
+test('ignores a late decision load after a newer selection', { options }, async ($, on) => {
+  let releaseOld: (() => void) | undefined;
+  const oldResult = new Promise(resolve => {
+    releaseOld = () => resolve({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify(decision) } });
+  });
+  const newestDecision = {
+    ...decision,
+    decision: { ...decision.decision, decision_id: 'd2', prompt: { preview: 'newer decision', sha256: 'b'.repeat(64), length: 14 } },
+  };
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('process.run', ($, e) => {
+    if (e.argv.includes('--decision')) {
+      if (e.argv.includes('d1')) return oldResult;
+      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify(newestDecision) } };
+    }
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: records }) } };
+  });
+  await $.command.run(command);
+  const ui = await $.ui.mount(pane);
+  const oldLoad = ui.press({ key: 'd1' });
+  await ui.press({ key: 'd2' });
+  expect(JSON.stringify(await ui.drawn())).toContain('newer decision');
+  releaseOld?.();
+  await oldLoad;
+  const tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain('newer decision');
+  expect(tree).not.toContain('Recorded prompt preview');
+  await ui.unmount();
+});
+
+test('ignores a late decision load after rerunning logs', { options }, async ($, on) => {
+  let releaseOld: (() => void) | undefined;
+  let signalStarted: (() => void) | undefined;
+  const started = new Promise<void>(resolve => { signalStarted = resolve; });
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('process.run', ($, e) => {
+    if (e.argv.includes('--decision')) {
+      return new Promise(resolve => {
+        releaseOld = () => resolve({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify(decision) } });
+        signalStarted?.();
+      });
+    }
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: records }) } };
+  });
+  await $.command.run(command);
+  const ui = await $.ui.mount(pane);
+  const oldLoad = ui.press({ key: 'd1' });
+  await started;
+  await $.command.run(command);
+  releaseOld?.();
+  await oldLoad;
+  const tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain('2 routed prompts this session');
+  expect(tree).not.toContain('Recorded prompt preview');
+  await ui.unmount();
+});
+
 test('hides the requested model when it matches the selection', { options }, async ($, on) => {
   on('session.id', () => ({ value: 'session-one' }));
   on('ui.open', () => ({ value: { isPlaced: true } }));
@@ -91,7 +154,7 @@ test('hides the requested model when it matches the selection', { options }, asy
     if (e.argv.includes('--decision')) {
       return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
         ...decision,
-        decision: { ...decision.decision, requested_model: 'system.ai.claude-sonnet', rationale: null, prompt: { ...decision.decision.prompt, text: null } },
+        decision: { ...decision.decision, requested_model: 'system.ai.claude-sonnet', rationale: '  ', prompt: { ...decision.decision.prompt, preview: null } },
       }) } };
     }
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: records }) } };
@@ -110,24 +173,35 @@ test('a decision that fails to load shows an error with a way back', { options }
   const logs: string[] = [];
   let decisionStdout = '{"v":1,"error":"decision not found"}';
   let decisionExit = 1;
+  let decisionTruncated = false;
   on('session.id', () => ({ value: 'session-one' }));
   on('ui.open', () => ({ value: { isPlaced: true } }));
   on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
   on('process.run', ($, e) => {
-    if (e.argv.includes('--decision')) return { value: { exitCode: decisionExit, stderr: '', stdout: decisionStdout } };
+    if (e.argv.includes('--decision')) {
+      return { value: { exitCode: decisionExit, stderr: '', stdout: decisionStdout, isStdoutTruncated: decisionTruncated } };
+    }
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: records }) } };
   });
   await $.command.run(command);
   const ui = await $.ui.mount(pane);
-  for (const [stdout, exitCode] of [['{"v":1,"error":"decision not found"}', 1], ['not json', 0], ['{"v":1,"decision":{"v":1}}', 0]] as const) {
+  const invalidId = JSON.stringify({ ...decision, decision: { ...decision.decision, decision_id: 'different-id' } });
+  for (const [stdout, exitCode, truncated] of [
+    ['{"v":1,"error":"decision not found"}', 1, false],
+    ['not json', 0, false],
+    ['{"v":1,"decision":{"v":1}}', 0, false],
+    [invalidId, 0, false],
+    [JSON.stringify(decision), 0, true],
+  ] as const) {
     decisionStdout = stdout;
     decisionExit = exitCode;
+    decisionTruncated = truncated;
     await ui.press({ key: 'd1' });
     expect(JSON.stringify(await ui.drawn())).toContain('Could not load this routing decision.');
     await ui.press({ key: 'back' });
     expect(JSON.stringify(await ui.drawn())).toContain('2 routed prompts this session');
   }
-  expect(logs).toHaveLength(3);
+  expect(logs).toHaveLength(5);
   await ui.unmount();
 });
 
@@ -143,25 +217,56 @@ test('truncates long previews for the pane width', { options }, async ($, on) =>
   expect(tree).toContain('…');
   expect(tree).not.toContain('A'.repeat(40));
   await ui.unmount();
+  const { bodyColumns: _omitted, ...fallbackProps } = pane.props;
+  const fallback = await $.ui.mount({ ...pane, props: fallbackProps });
+  const fallbackTree = JSON.stringify(await fallback.drawn());
+  expect(fallbackTree).toContain('…');
+  expect(fallbackTree).not.toContain('A'.repeat(63));
+  await fallback.unmount();
 });
 
 test('shows a failure for command errors and malformed JSON', { options }, async ($, on) => {
   let stdout = 'invalid json';
-  let exitCode = 0;
   const logs: string[] = [];
   on('session.id', () => ({ value: 'session-one' }));
   on('ui.open', () => ({ value: { isPlaced: true } }));
   on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
-  on('process.run', () => ({ value: { exitCode, stderr: '', stdout } }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout } }));
   const ui = await $.ui.mount(pane);
-  for (const value of ['invalid json', '{"v":1,"decisions":[{}]}', '{"v":1,"decisions":[]}']) {
+  for (const value of ['invalid json', '{"v":2,"decisions":[]}', '123']) {
     stdout = value;
-    if (value.includes('[]')) exitCode = 1;
     await $.command.run(command);
     expect(JSON.stringify(await ui.drawn())).toContain('Could not read Smart Router logs.');
   }
   expect(logs).toHaveLength(3);
   await ui.unmount();
+});
+
+test('drops malformed decision rows without failing the pane', { options }, async ($, on) => {
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+    v: 1, decisions: [{ at: 'nope', preview: null, selected_model: 'x', routing_ms: 0 }, records[1]],
+  }) } }));
+  await $.command.run(command);
+  const ui = await $.ui.mount(pane);
+  const tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain('1 routed prompt this session');
+  expect(tree).toContain('fast');
+  await ui.unmount();
+});
+
+test('reports an unplaced pane', { options }, async ($, on) => {
+  let closed = 0;
+  let logged = 0;
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: false } }));
+  on('ui.close', () => { closed++; return { value: undefined }; });
+  on('ui.log', () => { logged++; return { value: undefined }; });
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: records }) } }));
+  expect((await $.command.run(command)).text).toBe('Could not open the Smart Router logs pane.');
+  expect(closed).toBe(1);
+  expect(logged).toBe(1);
 });
 
 test('missing command fails safely and unrouted launches stay inert', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
@@ -280,7 +385,7 @@ test('a UG route agent type is not shown as the prompt label', { options }, asyn
   const ui = await $.ui.mount(pane);
   await ui.press({ key: 'd1' });
   const tree = JSON.stringify(await ui.drawn());
-  expect(tree).toContain('"Prompt"');
+  expect(tree).toContain('Prompt preview');
   expect(tree).not.toContain('ucode-route-');
   await ui.unmount();
 });
