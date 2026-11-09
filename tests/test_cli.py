@@ -2957,13 +2957,16 @@ class TestAuthTokenCommand:
         log = auth_token_log.LOG_PATH.read_text()
         assert "host=https://ws profile=<none> background refresh failed: boom" in log
 
+    @pytest.mark.parametrize("cache_exists", [False, True])
     @pytest.mark.parametrize("refresh_cache", [False, True])
-    def test_login_during_a_fetch_wins_over_its_result(self, refresh_cache):
+    def test_login_during_a_fetch_wins_over_its_result(self, refresh_cache, cache_exists):
         # A helper or background refresher still fetching when a login clears the cache holds
-        # the old identity's token; later helpers must not be served it.
+        # the old identity's token; later helpers must not be served it, including when this is
+        # the first fetch and no cache directory exists yet.
         old = _jwt(time.time() + 3600, "old")
-
-        token_cache.write("https://ws", "other", _jwt(time.time() + 3600))
+        if cache_exists:
+            token_cache.write("https://ws", "other", _jwt(time.time() + 3600))
+        assert token_cache.CACHE_DIR.exists() == cache_exists
 
         def fetch(*_args, **_kwargs):
             db_mod.clear_databricks_token_cache()

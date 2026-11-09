@@ -331,7 +331,7 @@ CLI) and the entry-point fast path, which serves only `--host H [--profile P]` a
 full command for a saved PAT workspace. `test_auth_token_log.py` covers the helper's failure log
 and its SIGTERM line, including a real kill during `databricks auth token` that also ends the CLI
 call. `TestAuthTokenCommand` in `test_cli.py` covers cache use, the `--caller-timeout` budget, a
-login during a fetch, and logging, which keeps a failing
+login during a fetch (with and without a cache directory), and logging, which keeps a failing
 `DATABRICKS_BEARER_COMMAND`'s text and stderr out of the file. `TestGetDatabricksToken` in
 `test_databricks.py` covers the budget across cold CLI discovery, debug probes, profile lookup and
 lock retries under a controlled clock, a real hung CLI (a `.cmd` shim on Windows), the skipped

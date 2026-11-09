@@ -116,11 +116,27 @@ class TestReadWrite:
         monkeypatch.delenv(env)
         assert token_cache.read(WS, "other") is None
 
-    def test_corrupt_entry_is_a_miss(self):
-        token_cache.write(WS, None, _jwt(time.time() + 3600))
+    @pytest.mark.parametrize(
+        "content",
+        ["{not json", '{"token": 1, "cached_at": 0}', '{"token": "TOKEN", "cached_at": 1e999}'],
+    )
+    def test_corrupt_entry_is_a_miss(self, content):
+        token = _jwt(time.time() + 3600)
+        token_cache.write(WS, None, token)
         (entry,) = token_cache.CACHE_DIR.glob("*.json")
-        entry.write_text("{not json")
-        assert token_cache.read(WS, None) is None
+        entry.write_text(content.replace("TOKEN", token))
+        hit = token_cache.lookup(WS, None)
+        # An unreadable entry is a miss; an absurd stamp is served but due for a re-check.
+        assert hit is None or hit == (token, True)
+
+    def test_oversized_numbers_are_a_miss(self):
+        token = _jwt(time.time() + 3600)
+        token_cache.write(WS, None, token)
+        (entry,) = token_cache.CACHE_DIR.glob("*.json")
+        entry.write_text(f'{{"token": "{token}", "cached_at": 1{"0" * 400}}}')
+        assert token_cache.lookup(WS, None) is None
+        huge_exp = base64.urlsafe_b64encode(f'{{"exp": 1{"0" * 400}}}'.encode()).decode()
+        assert token_cache.token_expiry(f"h.{huge_exp.rstrip('=')}.s") is None
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
     def test_files_are_private(self):
@@ -152,9 +168,15 @@ class TestReadWrite:
         assert token_cache.read(WS, "p") is None
         assert list(token_cache.CACHE_DIR.glob("*.tmp")) == []
 
-    def test_clear_without_a_cache_creates_nothing(self):
-        token_cache.clear()
+    def test_first_fetch_racing_a_login_is_not_written_back(self):
+        # No helper has created the cache yet: a first fetch for the old identity is in flight
+        # when a login clears the cache, then tries to write.
         assert not token_cache.CACHE_DIR.exists()
+        started = time.time()
+        token_cache.clear()
+        token_cache.write(WS, "p", _jwt(time.time() + 3600), fetch_started=started)
+        assert token_cache.read(WS, "p") is None
+        assert list(token_cache.CACHE_DIR.glob("*.json")) == []
 
     def test_fetch_started_after_a_clear_is_written(self):
         token_cache.clear()
@@ -389,23 +411,18 @@ class TestSavedPatMode:
 
 
 class TestEntry:
-    def test_cache_hit_skips_full_cli(self, monkeypatch, capsys):
-        token = _jwt(time.time() + 3600)
-        token_cache.write(WS, None, token)
-        monkeypatch.setattr(sys, "argv", ["ug", "auth-token", "--host", WS])
-        monkeypatch.setattr("ucode.cli.main", lambda: pytest.fail("full CLI invoked"))
-        entrypoint.main()
-        assert capsys.readouterr().out == token + "\n"
-
-    def test_old_entry_is_served_without_the_full_cli(self, monkeypatch, capsys, spawned):
+    @pytest.mark.parametrize("old", [False, True])
+    def test_cache_hit_skips_full_cli(self, monkeypatch, capsys, spawned, old):
         token = _jwt(time.time() + 86400)
         token_cache.write(WS, None, token)
-        _age(WS, None, token_cache.REFRESH_AFTER_SECONDS + 1)
+        if old:
+            _age(WS, None, token_cache.REFRESH_AFTER_SECONDS + 1)
         monkeypatch.setattr(sys, "argv", ["ug", "auth-token", "--host", WS])
         monkeypatch.setattr("ucode.cli.main", lambda: pytest.fail("full CLI invoked"))
         entrypoint.main()
         assert capsys.readouterr().out == token + "\n"
-        assert spawned == [token_cache.refresh_command(WS, None)]
+        # Only an old entry starts the background refresher.
+        assert spawned == ([token_cache.refresh_command(WS, None)] if old else [])
 
     def test_cache_miss_delegates_to_full_cli(self, monkeypatch):
         calls = []

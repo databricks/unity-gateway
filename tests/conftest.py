@@ -204,8 +204,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # into a test that assumes a bare "databricks" or a specific fake CLI.
     databricks_mod.clear_databricks_cli_cache()
     # Tokens and token failures are memoized for the process; a fake CLI's answer
-    # in one test must not satisfy (or fail) a fetch in the next.
-    databricks_mod.clear_databricks_token_cache()
+    # in one test must not satisfy (or fail) a fetch in the next. Only the memo: clearing the
+    # (empty, per-test) disk cache would record an invalidation file in every test's home.
+    databricks_mod._clear_token_memo()
 
 
 def _workspace() -> str:

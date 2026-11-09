@@ -1675,11 +1675,16 @@ def clear_databricks_token_cache() -> None:
 
     Also drops the bearers `ug auth-token` cached on disk: a login may change the identity
     behind a profile, and helper processes would otherwise keep serving the old one."""
+    _clear_token_memo()
+    token_cache.clear()
+
+
+def _clear_token_memo() -> None:
+    """Forget this process's memoized tokens and failures only."""
     global _TOKEN_CACHE_EPOCH
     with _TOKEN_MEMO_LOCK:
         _TOKEN_CACHE_EPOCH += 1
         _TOKEN_MEMO.clear()
-    token_cache.clear()
 
 
 def _token_memo_key(workspace: str, profile: str | None) -> tuple[str, str | None]:
