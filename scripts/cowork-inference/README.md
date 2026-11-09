@@ -6,10 +6,9 @@ It runs after lint for same-repository PRs, main pushes, scheduled CI, and manua
 CI dispatches. It skips merge-group runs and fork PRs, which lack the required
 credentials. Authorized fork-integration runs test the pinned commit.
 The job is required by the integration gate, which feeds the required `e2e` check.
-Runs requesting a published UG release, another Claude CLI
-version, or a dependency override skip this checkout-specific desktop test.
-The gate accepts that explicit skip only for these unsupported dispatch inputs;
-failure, cancellation, or an unexpected skip blocks the gate.
+Desktop jobs always test the checkout with their pinned dependencies. Manual UG/CLI
+version, package-index, entry-point, and dependency overrides apply to CLI jobs only.
+Every integration job must succeed; failure, cancellation, or a skip blocks the gate.
 A [20-run fresh-Windows soak](https://github.com/databricks/unity-gateway/actions/runs/42240639887)
 passed without retries before enabling the gate. Whole-test retries are not used.
 
@@ -48,6 +47,11 @@ package sources are approved for this CI job. Python 3.12 is selected explicitly
 Claude Code's native binary selection requires its npm postinstall script.
 Package installation needs no JFrog credentials or GitHub OIDC permission.
 
+Desktop and CLI versions are upgraded deliberately. For Desktop, update the official
+URL and SHA256 together, keep signature/version checks, and run the native job on each
+affected OS before merging. Desktop has a separate release cadence from Claude Code;
+a CLI pin change does not update the app.
+
 ## Evidence and limits
 
 Artifacts contain installer provenance, configuration status, UI control names,
@@ -65,7 +69,7 @@ tests' inference-only coverage.
 ## macOS
 
 The `cowork-inference-macos` job runs the same inference journey on a disposable
-GitHub-hosted `macos-15-intel` runner. It has the same event/input guards and
+GitHub-hosted `macos-15-intel` runner. It has the same event guards and
 required integration gate as Windows. Apple Silicon hosted runners are not covered:
 Cowork was unavailable on the `macos-15` runner in the feasibility probe.
 No dedicated Mac is required.
