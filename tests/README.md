@@ -976,7 +976,10 @@ that list no API types fall back to names. The consumers are pinned too: Codex s
 saved Claude version list (`test_cli.py`), and Claude's web-search model (`test_agent_claude.py`)
 keep GPT first and leave Grok, gpt-oss, Qwen, Llama and Gemma out where those agents can't use
 them. `test_agent_pi.py` pins Grok's and Qwen 3.5's levels, the new MLflow limits, and every listed
-Claude version in Pi's picker. These are component checks with stubbed listings, not live discovery.
+Claude version in Pi's picker; it and `test_managed_resolve.py` also pin managed `pi_models` lists
+that name gpt-oss, Qwen, Llama or Gemma (bucketing, default and unservable warnings). Explicit
+`function_calling: false` and embedding names are excluded even by the name fallback. These are
+component checks with stubbed listings, not live discovery.
 
 Shared native transcript parsing is checked by `test_integration_agent_helpers.py` and
 `test_integration_evidence.py`. These component checks protect existing journey evidence;

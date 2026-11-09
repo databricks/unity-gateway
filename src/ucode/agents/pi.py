@@ -62,6 +62,7 @@ from ucode.databricks import (
     gemini_model_token_limits,
     get_databricks_token,
     gpt_model_token_limits,
+    is_mlflow_chat_model_name,
     oss_model_token_limits,
 )
 from ucode.os_compatibility import subprocess_cross_os
@@ -608,7 +609,8 @@ def _managed_model_families(
     """Split a managed config's ``pi_models`` into the per-family inputs Pi's providers need.
 
     Pi builds one provider block per family, so a flat list has to be classified back out:
-    ``(claude, codex, gemini, oss)``, with gpt-oss under ``oss``. Returns None when the managed
+    ``(claude, codex, gemini, oss)``, with gpt-oss and the other MLflow chat models (Qwen, Llama,
+    Gemma) under ``oss``. Returns None when the managed
     models yield no family Pi can serve, leaving the workspace-wide discovery lists in play rather
     than writing a config with no usable provider.
     """
@@ -630,7 +632,7 @@ def _managed_model_families(
             (codex if _serves_codex_model(model) else oss).append(model)
         elif family == "gemini":
             gemini.append(model)
-        elif family == "oss":
+        elif is_mlflow_chat_model_name(model):
             oss.append(model)
     if not (claude or codex or gemini or oss):
         return None
@@ -641,7 +643,7 @@ def _serves_model(model: str) -> bool:
     family = classify_model_family(model)
     if family in ANTHROPIC_FAMILIES:
         return _serves_claude_model(model)
-    return family in ("codex", "gemini", "oss")
+    return family in ("codex", "gemini") or is_mlflow_chat_model_name(model)
 
 
 def _excluded_model(model: str) -> bool:

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from ucode.databricks import ANTHROPIC_FAMILIES, classify_model_family
+from ucode.databricks import ANTHROPIC_FAMILIES, classify_model_family, is_mlflow_chat_model_name
 from ucode.state import MANAGED_OVERLAY_KEY
 
 # Proto model-config slot -> the family key `claude.py`'s render_overlay reads. The manifest keeps
@@ -141,7 +141,8 @@ def managed_unservable_models(managed: dict, tool: str) -> list[str]:
         else [
             m
             for m in models
-            if classify_model_family(m) in (*ANTHROPIC_FAMILIES, "codex", "gemini", "oss")
+            if classify_model_family(m) in (*ANTHROPIC_FAMILIES, "codex", "gemini")
+            or is_mlflow_chat_model_name(m)
         ]
     )
     return [] if servable else models

@@ -492,6 +492,19 @@ class TestWriteToolConfig:
         ]
         assert written["model"] == "databricks-claude/system.ai.claude-opus-5"
 
+    def test_managed_mlflow_default_is_rendered_on_the_mlflow_provider(self, tmp_path, monkeypatch):
+        pi_mod, config_file, settings_file, _ = self._setup(tmp_path, monkeypatch)
+        qwen = "system.ai.qwen35-122b-a10b"
+        state = self._state(pi_models=["system.ai.gpt-5", qwen], pi_default_model=qwen)
+
+        with patch("ucode.agents.pi.save_state"):
+            pi_mod.write_tool_config(state, pi.default_model(state), token="tok")
+
+        written = json.loads(config_file.read_text())
+        assert [m["id"] for m in written["providers"]["databricks-mlflow"]["models"]] == [qwen]
+        assert written["model"] == f"databricks-mlflow/{qwen}"
+        assert json.loads(settings_file.read_text())["defaultProvider"] == "databricks-mlflow"
+
     def test_config_written_with_correct_model_and_auth_command(self, tmp_path, monkeypatch):
         pi_mod, config_file, _, _ = self._setup(tmp_path, monkeypatch)
 
@@ -649,13 +662,34 @@ class TestManagedModels:
     def test_none_when_no_managed_model_is_servable(self):
         # A family discovery doesn't bucket yields no provider. Returning an all-empty tuple
         # would be truthy and suppress the fallback, writing a config with zero providers.
-        assert pi._managed_model_families({"pi_models": ["system.ai.qwen35-122b-a10b"]}) is None
+        assert pi._managed_model_families({"pi_models": ["system.ai.qwen3-embedding-0-6b"]}) is None
 
     def test_partially_servable_list_still_splits(self):
         families = pi._managed_model_families(
-            {"pi_models": ["system.ai.qwen35-122b-a10b", "system.ai.claude-opus-4-8"]}
+            {"pi_models": ["system.ai.qwen3-embedding-0-6b", "system.ai.claude-opus-4-8"]}
         )
         assert families == ({"opus": "system.ai.claude-opus-4-8"}, [], [], [])
+
+    def test_managed_mlflow_chat_models_land_on_the_mlflow_input(self):
+        # Qwen, Llama and Gemma reach Pi through discovery's API types; a managed list names them.
+        models = [
+            "system.ai.qwen35-122b-a10b",
+            "system.ai.gpt-5",
+            "system.ai.meta-llama-3-3-70b-instruct",
+            "system.ai.llama-4-maverick",
+            "system.ai.gemma-3-12b",
+        ]
+        state = {"pi_models": models}
+        assert pi._managed_model_families(state) == (
+            {},
+            ["system.ai.gpt-5"],
+            [],
+            [m for m in models if m != "system.ai.gpt-5"],
+        )
+        assert pi.default_model(state) == "system.ai.qwen35-122b-a10b"
+        only = {"pi_models": ["system.ai.gemma-3-12b"]}
+        assert pi._managed_model_families(only) == ({}, [], [], ["system.ai.gemma-3-12b"])
+        assert pi.default_model(only) == "system.ai.gemma-3-12b"
 
 
 class TestManagedDefaultModel:
@@ -1106,7 +1140,7 @@ class TestUnservableModels:
 
     @pytest.mark.parametrize(
         "managed",
-        [["system.ai.claude-opus-4-1"], ["system.ai.qwen35-122b-a10b"]],
+        [["system.ai.claude-opus-4-1"], ["system.ai.qwen3-embedding-0-6b"]],
     )
     def test_unservable_managed_list_defaults_to_discovery(self, managed):
         # `_managed_model_families` returns None for these, so the config uses discovery; the

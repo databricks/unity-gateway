@@ -5606,6 +5606,35 @@ class TestDiscoverModelServicesByApiTypes:
         assert (claude, codex, gemini) == ({}, [], [])
         assert oss == ["system.ai.glm-5-2"]
 
+    def test_non_chat_names_stay_out_of_every_bucket_by_name_fallback(self, monkeypatch):
+        _claude, codex, gemini, oss, _reason = self._discover(
+            monkeypatch,
+            [
+                _model_service("system.ai.gemini-embedding-001"),
+                _model_service("system.ai.gpt-embedding-3"),
+                _model_service("system.ai.glm-rerank"),
+                _model_service("system.ai.gpt-5-5"),
+            ],
+        )
+
+        assert (codex, gemini, oss) == (["system.ai.gpt-5-5"], [], [])
+
+    @pytest.mark.parametrize(
+        ("api_types", "function_calling", "expected"),
+        [
+            ((), False, False),
+            ((), True, True),
+            ((), None, True),
+            (("mlflow/v1/chat/completions",), False, False),
+            (("mlflow/v1/chat/completions",), None, True),
+        ],
+    )
+    def test_listed_tool_calling_false_wins_over_the_name_fallback(
+        self, api_types, function_calling, expected
+    ):
+        entry = db_mod.ModelServiceEntry("system.ai.glm-5-2", api_types, function_calling)
+        assert db_mod._is_oss_chat_entry(entry) is expected
+
     def test_unknown_tool_calling_keeps_a_chat_model(self, monkeypatch):
         _claude, _codex, _gemini, oss, _reason = self._discover(
             monkeypatch,
@@ -5712,6 +5741,26 @@ class TestResponsesModelHelpers:
     )
     def test_is_oss_family_model(self, model_id, expected):
         assert db_mod.is_oss_family_model(model_id) is expected
+
+    @pytest.mark.parametrize(
+        ("model_id", "expected"),
+        [
+            ("system.ai.glm-5-2", True),
+            ("system.ai.gpt-oss-20b", True),
+            ("system.ai.qwen35-122b-a10b", True),
+            ("system.ai.qwen3-next-80b-a3b-instruct", True),
+            ("system.ai.llama-4-maverick", True),
+            ("system.ai.meta-llama-3-3-70b-instruct", True),
+            ("databricks-gemma-3-12b", True),
+            ("system.ai.qwen3-embedding-0-6b", False),
+            ("system.ai.gpt-5-5", False),
+            ("system.ai.gemini-3-flash", False),
+            ("system.ai.grok-4-7", False),
+            ("mystery-model", False),
+        ],
+    )
+    def test_is_mlflow_chat_model_name(self, model_id, expected):
+        assert db_mod.is_mlflow_chat_model_name(model_id) is expected
 
     def test_codex_fallback_listing_orders_gpt_first(self, monkeypatch):
         def endpoint(name: str) -> dict:

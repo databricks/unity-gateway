@@ -2252,6 +2252,23 @@ def is_oss_family_model(model_id: str) -> bool:
     return classify_model_family(model_id) == "oss"
 
 
+# Canonical-name prefixes of the other MLflow chat models discovery lists in ``oss_models`` (see
+# `is_mlflow_chat_model_name`).
+_MLFLOW_CHAT_MODEL_PREFIXES = ("gpt-oss", "qwen", "llama", "meta-llama", "gemma")
+
+
+def is_mlflow_chat_model_name(model_id: str) -> bool:
+    """Whether a model named in a config is an MLflow chat model Pi's MLflow provider serves.
+
+    A config records no API types, so this matches the shared OSS families and the other MLflow
+    chat families discovery lists by API type (gpt-oss, Qwen, Llama, Gemma) by name, never an
+    embedding or reranking service."""
+    name = canonical_model_name(model_id)
+    if any(bad in name for bad in _NON_CHAT_MODEL_SUBSTRINGS):
+        return False
+    return is_oss_family_model(model_id) or name.startswith(_MLFLOW_CHAT_MODEL_PREFIXES)
+
+
 def is_gpt_model(model_id: str) -> bool:
     """Whether ``model_id`` is an OpenAI GPT model on the Responses API (gpt-oss is not)."""
     name = canonical_model_name(model_id)
@@ -2679,11 +2696,11 @@ def _is_oss_chat_entry(entry: ModelServiceEntry) -> bool:
     gpt-oss lists only MLflow routes, so it lands here rather than in the Responses bucket. A
     service that lists no tool calling (``function_calling: false``) can't drive a coding agent."""
     name = canonical_model_name(entry.id)
-    if any(bad in name for bad in _NON_CHAT_MODEL_SUBSTRINGS):
+    if entry.function_calling is False or any(bad in name for bad in _NON_CHAT_MODEL_SUBSTRINGS):
         return False
     if not entry.api_types:
         return is_oss_family_model(entry.id) or name.startswith("gpt-oss")
-    return API_MLFLOW_CHAT_COMPLETIONS in entry.api_types and entry.function_calling is not False
+    return API_MLFLOW_CHAT_COMPLETIONS in entry.api_types
 
 
 def discover_model_services(
@@ -2721,7 +2738,13 @@ def discover_model_services(
         if candidates:
             claude_models[family] = candidates[0]
 
-    chat_entries = [entry for entry in entries if "claude-" not in entry.id.lower()]
+    # Embedding and reranking services stay out of every chat bucket, even by name fallback.
+    chat_entries = [
+        entry
+        for entry in entries
+        if "claude-" not in entry.id.lower()
+        and not any(bad in canonical_model_name(entry.id) for bad in _NON_CHAT_MODEL_SUBSTRINGS)
+    ]
     responses_api = _TOOL_API_TYPES["codex"]
     codex_models = sorted(
         [
