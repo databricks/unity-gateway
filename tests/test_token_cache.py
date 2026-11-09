@@ -118,7 +118,7 @@ class TestReadWrite:
 
     def test_corrupt_entry_is_a_miss(self):
         token_cache.write(WS, None, _jwt(time.time() + 3600))
-        (entry,) = token_cache.CACHE_DIR.iterdir()
+        (entry,) = token_cache.CACHE_DIR.glob("*.json")
         entry.write_text("{not json")
         assert token_cache.read(WS, None) is None
 
@@ -126,13 +126,56 @@ class TestReadWrite:
     def test_files_are_private(self):
         token_cache.write(WS, None, _jwt(time.time() + 3600))
         assert stat.S_IMODE(token_cache.CACHE_DIR.stat().st_mode) == 0o700
-        (entry,) = token_cache.CACHE_DIR.iterdir()
+        (entry,) = token_cache.CACHE_DIR.glob("*.json")
         assert stat.S_IMODE(entry.stat().st_mode) == 0o600
 
     def test_clear(self):
         token_cache.write(WS, None, _jwt(time.time() + 3600))
         token_cache.clear()
         assert token_cache.read(WS, None) is None
+
+    def test_clear_also_drops_refresh_markers(self, spawned):
+        token_cache.write(WS, None, _jwt(time.time() + 86400))
+        _age(WS, None, token_cache.REFRESH_AFTER_SECONDS + 1)
+        token_cache.serve(WS, None)
+        assert token_cache._refresh_marker_path(WS, None).exists()
+        token_cache.clear()
+        assert not token_cache._refresh_marker_path(WS, None).exists()
+
+    def test_fetch_started_before_a_clear_is_not_written_back(self):
+        # A helper or refresher still fetching when a login clears the cache holds the old
+        # identity's token; it must not reappear for the next helper.
+        token_cache.write(WS, "other", _jwt(time.time() + 3600))
+        started = time.time()
+        token_cache.clear()
+        token_cache.write(WS, "p", _jwt(time.time() + 3600), fetch_started=started)
+        assert token_cache.read(WS, "p") is None
+        assert list(token_cache.CACHE_DIR.glob("*.tmp")) == []
+
+    def test_clear_without_a_cache_creates_nothing(self):
+        token_cache.clear()
+        assert not token_cache.CACHE_DIR.exists()
+
+    def test_fetch_started_after_a_clear_is_written(self):
+        token_cache.clear()
+        token = _jwt(time.time() + 3600)
+        token_cache.write(WS, "p", token, fetch_started=time.time() + 0.001)
+        assert token_cache.read(WS, "p") == token
+
+    def test_relative_config_file_is_keyed_by_the_file_it_names(self, monkeypatch, tmp_path):
+        # The CLI resolves a relative DATABRICKS_CONFIG_FILE against the working directory.
+        first, second = tmp_path / "a", tmp_path / "b"
+        first.mkdir()
+        second.mkdir()
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", ".databrickscfg")
+        monkeypatch.chdir(first)
+        token = _jwt(time.time() + 3600)
+        token_cache.write(WS, "p", token)
+        assert token_cache.read(WS, "p") == token
+        monkeypatch.chdir(second)
+        assert token_cache.read(WS, "p") is None
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(first / ".databrickscfg"))
+        assert token_cache.read(WS, "p") == token
 
 
 class TestBackgroundRefresh:
@@ -301,6 +344,42 @@ class TestFastPath:
     )
     def test_other_shapes_defer_to_full_cli(self, cached, argv):
         assert token_cache.fast_path_token(argv) is None
+
+
+class TestSavedPatMode:
+    """The full command honors a saved workspace's PAT mode for any host, so the fast path must."""
+
+    def _save_state(self, use_pat: bool) -> None:
+        from ucode.state_file import STATE_VERSION
+
+        token_cache.STATE_PATH.write_text(
+            json.dumps(
+                {
+                    "state_version": STATE_VERSION,
+                    "current_workspace": WS,
+                    "workspaces": {WS: {"profile": "p", "use_pat": use_pat}},
+                }
+            )
+        )
+
+    def test_saved_pat_mode_defers_to_the_full_cli(self):
+        token_cache.write(WS, "p", _jwt(time.time() + 3600))
+        self._save_state(use_pat=True)
+        assert token_cache.fast_path_token(["auth-token", "--host", WS, "--profile", "p"]) is None
+
+    def test_saved_oauth_mode_is_served(self):
+        token = _jwt(time.time() + 3600)
+        token_cache.write(WS, "p", token)
+        self._save_state(use_pat=False)
+        assert token_cache.fast_path_token(["auth-token", "--host", WS, "--profile", "p"]) == token
+
+    def test_missing_or_corrupt_state_is_served(self):
+        token = _jwt(time.time() + 3600)
+        token_cache.write(WS, "p", token)
+        argv = ["auth-token", "--host", WS, "--profile", "p"]
+        assert token_cache.fast_path_token(argv) == token
+        token_cache.STATE_PATH.write_text("{not json")
+        assert token_cache.fast_path_token(argv) == token
 
 
 class TestEntry:

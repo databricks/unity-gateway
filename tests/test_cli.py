@@ -2923,6 +2923,68 @@ class TestAuthTokenCommand:
         log = auth_token_log.LOG_PATH.read_text()
         assert "host=https://ws profile=<none> background refresh failed: boom" in log
 
+    @pytest.mark.parametrize("refresh_cache", [False, True])
+    def test_login_during_a_fetch_wins_over_its_result(self, refresh_cache):
+        # A helper or background refresher still fetching when a login clears the cache holds
+        # the old identity's token; later helpers must not be served it.
+        old = _jwt(time.time() + 3600, "old")
+
+        token_cache.write("https://ws", "other", _jwt(time.time() + 3600))
+
+        def fetch(*_args, **_kwargs):
+            db_mod.clear_databricks_token_cache()
+            return old
+
+        args = ["auth-token", "--host", "https://ws"]
+        with (
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli.get_databricks_token", side_effect=fetch),
+        ):
+            result = runner.invoke(app, [*args, "--refresh-cache"] if refresh_cache else args)
+        assert result.exit_code == 0, result.output
+        assert token_cache.read("https://ws", None) is None
+
+    def test_bearer_command_failure_keeps_its_details_out_of_the_log(self, monkeypatch, tmp_path):
+        # The command text and its stderr may carry a credential; only stderr may show them.
+        broker = tmp_path / "broker.py"
+        broker.write_text(
+            "import sys\nprint('access_token=TEST_SECRET_SENTINEL', file=sys.stderr)\nsys.exit(3)\n"
+        )
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.setattr(cli_mod, "get_databricks_token", db_mod.get_databricks_token)
+        monkeypatch.setenv(
+            "DATABRICKS_BEARER_COMMAND",
+            subprocess.list2cmdline([sys.executable, str(broker), "--secret=SENTINEL_ARG"])
+            if sys.platform == "win32"
+            else f"{sys.executable} {broker} --secret=SENTINEL_ARG",
+        )
+        with patch("ucode.cli.load_state", return_value={}):
+            result = runner.invoke(app, ["auth-token", "--host", "https://ws"])
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert "TEST_SECRET_SENTINEL" in result.stderr
+        log = auth_token_log.LOG_PATH.read_text()
+        assert "DATABRICKS_BEARER_COMMAND exited 3." in log
+        assert "SENTINEL" not in log
+
+    def test_saved_pat_mode_serves_the_pat_over_a_cached_oauth_token(self, monkeypatch):
+        # The full command honors the saved workspace's PAT mode even with an explicit host.
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        oauth_tok = _jwt(time.time() + 3600, "oauth")
+        token_cache.write("https://ws", "p", oauth_tok)
+        monkeypatch.setattr("ucode.databricks.resolve_pat_token", lambda p: "dapi-pat")
+        with (
+            patch(
+                "ucode.cli.load_state", return_value={"workspace": "https://ws", "use_pat": True}
+            ),
+            patch(
+                "ucode.cli.get_databricks_token",
+                side_effect=lambda w, p, **_kwargs: os.environ.get("DATABRICKS_BEARER", ""),
+            ),
+        ):
+            result = runner.invoke(app, ["auth-token", "--host", "https://ws", "--profile", "p"])
+        assert result.stdout == "dapi-pat\n"
+
     def test_refresh_cache_rejects_client_id(self):
         result = runner.invoke(
             app,

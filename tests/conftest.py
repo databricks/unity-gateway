@@ -63,6 +63,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     state_dir = tmp_path / ".ucode"
     state_dir.mkdir()
     monkeypatch.setattr(token_cache_mod, "CACHE_DIR", state_dir / "token-cache")
+    monkeypatch.setattr(token_cache_mod, "STATE_PATH", state_dir / "state.json")
     monkeypatch.setattr(auth_token_log_mod, "LOG_PATH", state_dir / "auth-token-errors.log")
     # A real background refresher is a separate process that sees none of these patches: it would
     # run the developer's Databricks CLI and write their real ~/.ucode token cache.

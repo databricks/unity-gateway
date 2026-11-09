@@ -324,13 +324,16 @@ while `--help` fails on a missing CLI startup dependency.
 `TestUpgrade` in `test_cli.py` covers both command names before, during, and after
 the distribution rename with mocked installer calls, including `--help` verification
 of the full CLI import path and failure recovery guidance.
-`test_token_cache.py` covers the `ug auth-token` disk cache: keys, expiry, the background
-refresher (throttle, detached stdio, a real `python -P -m ucode` run against a fake CLI) and the
-entry-point fast path, which serves only `--host H [--profile P]`. `test_auth_token_log.py`
-covers the helper's failure log and its SIGTERM line, including a real kill during
-`databricks auth token`. `TestAuthTokenCommand` in `test_cli.py` covers cache use, the CLI budget
-and logging in the full command; `TestGetDatabricksToken` in `test_databricks.py` covers the
-budget, the skipped `auth login --no-browser` fallback and cache clearing after a login.
+`test_token_cache.py` covers the `ug auth-token` disk cache: keys (including a relative
+`DATABRICKS_CONFIG_FILE`), expiry, clearing that a fetch already in flight cannot undo, the
+background refresher (throttle, detached stdio, a real `python -P -m ucode` run against a fake
+CLI) and the entry-point fast path, which serves only `--host H [--profile P]` and defers to the
+full command for a saved PAT workspace. `test_auth_token_log.py` covers the helper's failure log
+and its SIGTERM line, including a real kill during `databricks auth token`. `TestAuthTokenCommand`
+in `test_cli.py` covers cache use, the CLI budget, a login during a fetch, and logging, which keeps
+a failing `DATABRICKS_BEARER_COMMAND`'s text and stderr out of the file. `TestGetDatabricksToken`
+in `test_databricks.py` covers the budget across profile lookup and lock retries, the skipped
+`auth login --no-browser` fallback and cache clearing after a login.
 `test_startup_imports.py` checks that a cache hit imports no CLI modules. These use fake CLIs;
 they do not establish live agent timing.
 `test_subprocess_cross_os.py` covers Windows npm shim resolution, native and Node targets,

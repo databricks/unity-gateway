@@ -2995,6 +2995,59 @@ class TestGetDatabricksToken:
         assert len(log.read_text().splitlines()) < db_mod._TOKEN_FETCH_MAX_ATTEMPTS
         assert time.monotonic() - started < 2
 
+    def test_budget_also_bounds_profile_lookup(self, tmp_path, monkeypatch):
+        # Without --profile the helper first lists profiles, which can hang on the network. The
+        # listing gets half the budget; the token fetch still runs, without a profile.
+        env, log = self._logging_fake(
+            tmp_path,
+            "import time\n"
+            "if sys.argv[1:3] == ['auth', 'profiles']:\n"
+            "    time.sleep(10)\n"
+            'print(json.dumps({"access_token": "good-token"}))',
+        )
+        monkeypatch.setattr("os.environ", env)
+        started = time.monotonic()
+        assert get_databricks_token(WS, budget_seconds=3.0, allow_reauth=False) == "good-token"
+        assert time.monotonic() - started < 5
+        calls = log.read_text().splitlines()
+        assert calls == ["auth profiles --output json", f"auth token --host {WS} --output json"]
+
+    def test_spent_budget_skips_profile_lookup(self, monkeypatch):
+        calls: list[list[str]] = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, '{"access_token": "tok"}', "")
+
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "run", fake_run)
+        with pytest.raises(RuntimeError, match="time budget"):
+            get_databricks_token(WS, budget_seconds=0.0, allow_reauth=False)
+        assert calls == []
+
+    def test_cause_of_an_earlier_attempt_is_not_reported_for_a_later_one(self, monkeypatch):
+        token_calls: list[list[str]] = []
+
+        def fake_run(command, **kwargs):
+            if command[1:3] == ["auth", "login"]:
+                return subprocess.CompletedProcess(command, 0, "", "")
+            token_calls.append(command)
+            if len(token_calls) == 1:
+                raise subprocess.TimeoutExpired(command, kwargs.get("timeout") or 15)
+            return subprocess.CompletedProcess(command, 0, "{}", "")
+
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "_auth_login_supports_no_browser", lambda cli: True)
+        monkeypatch.setattr(db_mod, "run", fake_run)
+        with pytest.raises(RuntimeError, match="no access token") as exc_info:
+            get_databricks_token(WS, "p")
+        assert len(token_calls) == 2
+        assert "timed out" not in str(exc_info.value)
+
     def test_without_a_budget_a_fetch_keeps_its_own_timeout(self, monkeypatch):
         timeouts: list[float | None] = []
 

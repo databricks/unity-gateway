@@ -76,6 +76,7 @@ from ucode.custom_oauth import (
 )
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
+    BearerCommandError,
     apply_pat_environment,
     build_shared_base_urls,
     cached_model_service_entries,
@@ -2995,6 +2996,7 @@ def auth_token_cmd(
     the CLI to ``AUTH_TOKEN_CLI_BUDGET_SECONDS`` (unless ``--browser-login`` asks for an
     interactive sign-in) and logs failures to ``~/.ucode/auth-token-errors.log``."""
     import sys
+    import time
 
     if client_id is not None and use_pat:
         print_err("--client-id cannot be combined with --use-pat.")
@@ -3060,6 +3062,8 @@ def auth_token_cmd(
                 auth_token_log.set_stage(
                     "waiting for `databricks auth token`", host=workspace, profile=profile
                 )
+                # A login that clears the cache during this fetch must win over its result.
+                fetch_started = time.time()
                 if browser_login:
                     budget = None
                 elif refresh_cache:
@@ -3076,15 +3080,18 @@ def auth_token_cmd(
                     budget_seconds=budget,
                     allow_reauth=False,
                 )
-                token_cache.write(workspace, profile, token)
+                token_cache.write(workspace, profile, token, fetch_started=fetch_started)
     except RuntimeError as exc:
         message = str(exc)
+        # The log persists, so a bearer command's text and stderr (which may hold a credential)
+        # stay on stderr only.
+        logged = exc.summary if isinstance(exc, BearerCommandError) else message
         # A failed background refresh failed no request: its caller was already served the
         # cached token. Label it so the log says so.
         auth_token_log.log_failure(
             workspace,
             profile,
-            f"background refresh failed: {message}" if refresh_cache else message,
+            f"background refresh failed: {logged}" if refresh_cache else logged,
         )
         print_err(message)
         raise typer.Exit(1) from None

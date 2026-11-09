@@ -1291,7 +1291,10 @@ def check_databricks_auth(workspace: str, profile: str | None = None) -> bool | 
             return None
 
 
-def list_profile_entries() -> list[dict]:
+_PROFILE_LIST_TIMEOUT_SECONDS = 20.0
+
+
+def list_profile_entries(*, timeout: float = _PROFILE_LIST_TIMEOUT_SECONDS) -> list[dict]:
     """Return raw profile dicts ({"name", "host", "auth_type", ...}) from
     `databricks auth profiles`.
 
@@ -1303,15 +1306,18 @@ def list_profile_entries() -> list[dict]:
     Returns ``[]`` on any failure (CLI missing, timeout, non-zero exit, JSON
     decode error). When ``UCODE_DEBUG=1`` each dropout path logs *why* the
     result was empty so a silently-disappearing workspace picker is
-    diagnosable from ``~/.ucode/debug.log``.
+    diagnosable from ``~/.ucode/debug.log``. A ``timeout`` that is already spent runs nothing.
     """
+    if timeout <= 0:
+        _debug("list_profile_entries", "no time left to list profiles")
+        return []
     try:
         result = run(
             [databricks_cli_path(), "auth", "profiles", "--output", "json"],
             check=False,
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         _debug("list_profile_entries", f"subprocess error: {type(exc).__name__}: {exc}")
@@ -1357,6 +1363,19 @@ def find_profile_name_for_host(workspace: str) -> str | None:
     """Find the Databricks CLI profile name matching a workspace URL."""
     normalized = workspace.rstrip("/")
     for host, name in get_databricks_profiles():
+        if host == normalized:
+            return name
+    return None
+
+
+def _find_profile_name_for_host_by(workspace: str, deadline: float) -> str | None:
+    """:func:`find_profile_name_for_host` within half the time left before ``deadline``.
+
+    The other half is kept for `databricks auth token`, which can find the host's profile itself
+    when the listing times out. ``deadline`` is a ``time.monotonic()`` value."""
+    timeout = min(_PROFILE_LIST_TIMEOUT_SECONDS, (deadline - time.monotonic()) / 2)
+    normalized = workspace.rstrip("/")
+    for host, name in profile_choices(list_profile_entries(timeout=timeout)):
         if host == normalized:
             return name
     return None
@@ -1531,6 +1550,17 @@ def ensure_databricks_auth(
     run_databricks_login(workspace, profile, workspace_id=workspace_id)
 
 
+class BearerCommandError(RuntimeError):
+    """``DATABRICKS_BEARER_COMMAND`` failed.
+
+    The message names the command and its stderr for the person reading it. ``summary`` leaves
+    both out, since either may hold a credential, for anything that persists the failure."""
+
+    def __init__(self, message: str, summary: str) -> None:
+        super().__init__(message)
+        self.summary = summary
+
+
 def _bearer_from_command(command: str) -> str:
     """Run ``DATABRICKS_BEARER_COMMAND`` and return the bearer it prints.
 
@@ -1553,9 +1583,10 @@ def _bearer_from_command(command: str) -> str:
             timeout=15,
         )
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(
+        raise BearerCommandError(
             f"DATABRICKS_BEARER_COMMAND could not be run: {type(exc).__name__}: {exc}. "
-            f"Command: {command}"
+            f"Command: {command}",
+            f"DATABRICKS_BEARER_COMMAND could not be run ({type(exc).__name__}).",
         ) from exc
     # Deliberately not _format_subprocess_result: that includes stdout on a
     # non-zero exit, and this command's stdout is the bearer itself.
@@ -1568,7 +1599,10 @@ def _bearer_from_command(command: str) -> str:
     # diagnostic, not a bearer, and forwarding it only resurfaces as a 401.
     reason = f"exited {result.returncode}" if result.returncode else "printed no token"
     detail = f" Stderr: {stderr}" if stderr else ""
-    raise RuntimeError(f"DATABRICKS_BEARER_COMMAND {reason}. Command: {command}.{detail}")
+    raise BearerCommandError(
+        f"DATABRICKS_BEARER_COMMAND {reason}. Command: {command}.{detail}",
+        f"DATABRICKS_BEARER_COMMAND {reason}.",
+    )
 
 
 @dataclass(frozen=True)
@@ -1766,7 +1800,7 @@ def _get_databricks_token_for_profile(
     *,
     force_refresh: bool,
     browser_login: bool,
-    budget_seconds: float | None,
+    deadline: float | None,
     allow_reauth: bool,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
@@ -1805,7 +1839,7 @@ def _get_databricks_token_for_profile(
             force_refresh=force_refresh,
             browser_login=browser_login,
             token_epoch=token_epoch,
-            budget_seconds=budget_seconds,
+            deadline=deadline,
             allow_reauth=allow_reauth,
         )
 
@@ -1817,7 +1851,7 @@ def _fetch_databricks_token_for_profile(
     force_refresh: bool,
     browser_login: bool,
     token_epoch: int,
-    budget_seconds: float | None = None,
+    deadline: float | None = None,
     allow_reauth: bool = True,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
@@ -1846,7 +1880,6 @@ def _fetch_databricks_token_for_profile(
     # Treat unknown failures as transient unless the CLI explicitly identifies
     # invalid or missing credentials.
     transient_failure = True
-    deadline = None if budget_seconds is None else time.monotonic() + budget_seconds
     # ug's own reason for a failed fetch (timeout, budget, bad JSON), named in the final error,
     # which headless helpers log because their callers hide stderr. CLI stderr is left out: its
     # generic `auth login` advice also follows network failures.
@@ -1856,9 +1889,10 @@ def _fetch_databricks_token_for_profile(
         """Return (access_token, lifetime_s, diagnostics). token is '' on failure."""
         nonlocal transient_failure, cause
         transient_failure = True
+        cause = ""
         timeout = 15.0 if deadline is None else min(15.0, deadline - time.monotonic())
         if timeout <= 0:
-            cause = f"`databricks auth token` exceeded the {budget_seconds:g}s budget"
+            cause = "the time budget for `databricks auth token` ran out"
             return "", None, cause
         try:
             result = run(
@@ -1879,7 +1913,6 @@ def _fetch_databricks_token_for_profile(
             transient_failure = not any(
                 marker in diagnostics.lower() for marker in _TOKEN_CREDENTIAL_FAILURE_MARKERS
             )
-            cause = ""
             return "", None, diagnostics
         except subprocess.TimeoutExpired as exc:
             _debug("auth token", f"exception: {type(exc).__name__}: {exc}")
@@ -1957,7 +1990,10 @@ def _fetch_databricks_token_for_profile(
             )
         else:
             error += "Run `databricks auth login` to re-authenticate."
-            profile_name = profile or find_profile_name_for_host(workspace)
+            # Under a deadline the profile was already looked up from the host before fetching.
+            profile_name = profile
+            if not profile_name and deadline is None:
+                profile_name = find_profile_name_for_host(workspace)
             if profile_name:
                 error += (
                     " The saved Databricks CLI profile may be stale or invalid. Try:\n"
@@ -1984,8 +2020,8 @@ def get_databricks_token(
 ) -> str:
     """Return a Databricks bearer for ``workspace``.
 
-    ``budget_seconds`` caps the total time spent in `databricks auth token`, across cache-lock
-    retries, for a caller under a hard deadline. ``allow_reauth=False`` skips the
+    ``budget_seconds`` caps the total time spent on profile lookup and `databricks auth token`,
+    across cache-lock retries, for a caller under a hard deadline. ``allow_reauth=False`` skips the
     `auth login --no-browser` fallback, whose URL nobody sees when the caller is a headless helper.
     """
     # ``DATABRICKS_BEARER`` is the CI escape hatch: when set, skip the
@@ -2007,16 +2043,22 @@ def get_databricks_token(
     if command:
         return _bearer_from_command(command)
 
+    deadline = None if budget_seconds is None else time.monotonic() + budget_seconds
     _log_auth_diagnostics()
     # See has_valid_databricks_auth: resolve the profile from the host when
     # the caller didn't supply one, so duplicate-host cfgs don't break us.
-    profile = profile or find_profile_name_for_host(workspace)
+    if not profile:
+        profile = (
+            find_profile_name_for_host(workspace)
+            if deadline is None
+            else _find_profile_name_for_host_by(workspace, deadline)
+        )
     return _get_databricks_token_for_profile(
         workspace,
         profile,
         force_refresh=force_refresh,
         browser_login=browser_login,
-        budget_seconds=budget_seconds,
+        deadline=deadline,
         allow_reauth=allow_reauth,
     )
 
