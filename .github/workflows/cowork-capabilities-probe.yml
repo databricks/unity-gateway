@@ -1,0 +1,105 @@
+name: Windows Cowork capability probe
+
+on:
+  push:
+    branches: [masonc08/windows-cowork-capabilities]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Cowork capability · ${{ matrix.capability }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        capability: [file, mcp, skill]
+    env:
+      PYTHONUTF8: 1
+      CAPABILITY: ${{ matrix.capability }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Validate Cowork test scripts
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          foreach ($script in Get-ChildItem scripts/cowork-inference/*.ps1) {
+            [void][System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
+          & ./scripts/cowork-inference/test-diagnostics.ps1
+      - name: Download and verify the approved Claude installer
+        shell: pwsh
+        env:
+          INSTALLER_URL: https://downloads.claude.ai/releases/win32/x64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.msix
+          INSTALLER_SHA256: D737861F0DA3175C6B663172AF0E602494CD99FF1B350D57DAE5910A49519FC9
+        run: |
+          if ($env:INSTALLER_SHA256 -notmatch '^[a-fA-F0-9]{64}$') {
+            throw 'An installer SHA256 is required'
+          }
+          $installer = Join-Path $env:RUNNER_TEMP 'Claude.msix'
+          Invoke-WebRequest -Uri $env:INSTALLER_URL -OutFile $installer -TimeoutSec 300
+          $digest = $env:INSTALLER_SHA256
+          & ./scripts/cowork-inference/install-desktop.ps1 -InstallerPath $installer `
+            -ExpectedSha256 $digest `
+            -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
+      - name: Install UG and pinned Claude CLI
+        shell: pwsh
+        run: ./scripts/cowork-inference/install-dependencies.ps1
+      - name: Configure Desktop with existing CI credentials
+        shell: pwsh
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: ./scripts/cowork-inference/configure.ps1
+      - name: Assert Cowork inference through Windows UI Automation
+        shell: pwsh
+        env:
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-inference.ps1 `
+            -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prepare capability through public UG commands
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: ./scripts/cowork-inference/prepare-capability.ps1
+      - name: Exercise capability through native Desktop UI
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/probe-capability.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Capture host and runtime diagnostics
+        if: always()
+        shell: pwsh
+        env:
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: ./scripts/cowork-inference/capability-diagnostics.ps1
+      - name: Upload Cowork inference evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: cowork-capability-${{ matrix.capability }}
+          retention-days: 3
+          path: |
+            ${{ runner.temp }}/cowork-inference/*.json
+            ${{ runner.temp }}/cowork-inference/*.png
+            ${{ runner.temp }}/cowork-inference/native-*.log
+            ${{ runner.temp }}/cowork-capability/
+          if-no-files-found: warn
