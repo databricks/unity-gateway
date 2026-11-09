@@ -886,3 +886,52 @@ class TestManagedModelEntries:
         assert by_id["system.ai.claude-opus-5-5"]["contextWindow"] == 1_000_000
         assert by_id["system.ai.gpt-5"]["thinkingLevelMap"] == {"off": None}
         assert by_id["system.ai.gemini-3-1-pro"]["reasoning"] is True
+
+
+class TestExcludedSelectedModel:
+    """A managed default or budget recommendation can name a model Pi leaves out."""
+
+    def _write(self, tmp_path, monkeypatch, state: dict, model: str):
+        import ucode.config_io as config_io_mod
+
+        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
+        monkeypatch.setattr(pi, "PI_CONFIG_PATH", tmp_path / "models.json")
+        monkeypatch.setattr(pi, "PI_SETTINGS_PATH", tmp_path / "settings.json")
+        monkeypatch.setattr(pi, "PI_BACKUP_PATH", tmp_path / "pi-backup.json")
+        monkeypatch.setattr(pi, "PI_SETTINGS_BACKUP_PATH", tmp_path / "pi-settings-backup.json")
+        with patch("ucode.agents.pi.save_state"), patch("ucode.agents.pi.print_warning") as warn:
+            pi.write_tool_config(
+                {"workspace": WS, "base_urls": {"pi": _base_urls()}, **state}, model, token="tok"
+            )
+        return warn
+
+    def test_old_claude_falls_back_to_the_default_with_a_warning(self, tmp_path, monkeypatch):
+        state = {"claude_models": {"opus": "system.ai.claude-opus-5-5"}}
+
+        warn = self._write(tmp_path, monkeypatch, state, "system.ai.claude-opus-4-1")
+
+        written = json.loads((tmp_path / "models.json").read_text())
+        settings = json.loads((tmp_path / "settings.json").read_text())
+        assert written["model"] == "databricks-claude/system.ai.claude-opus-5-5"
+        assert settings["defaultModel"] == "system.ai.claude-opus-5-5"
+        warn.assert_called_once()
+        assert "system.ai.claude-opus-4-1" in warn.call_args.args[0]
+        assert "Starting on system.ai.claude-opus-5-5" in warn.call_args.args[0]
+
+    def test_old_claude_without_another_model_is_an_actionable_error(self, tmp_path, monkeypatch):
+        state = {"claude_models": {"opus": "system.ai.claude-opus-4-1"}}
+
+        with pytest.raises(RuntimeError, match="Choose a Claude 4.5 or newer, GPT or Gemini model"):
+            self._write(tmp_path, monkeypatch, state, "databricks-claude/system.ai.claude-opus-4-1")
+
+        assert not (tmp_path / "models.json").exists()
+
+    def test_a_served_model_is_kept_without_a_warning(self, tmp_path, monkeypatch):
+        state = {"claude_models": {"opus": "system.ai.claude-opus-5-5"}, "codex_models": ["gpt-5"]}
+
+        warn = self._write(tmp_path, monkeypatch, state, "gpt-5")
+
+        assert json.loads((tmp_path / "models.json").read_text())["model"] == (
+            "databricks-openai/gpt-5"
+        )
+        warn.assert_not_called()
