@@ -760,23 +760,30 @@ class TestUnservableModels:
         assert "providers" not in overlay
         assert ["providers", "databricks-claude"] not in keys
 
-    def test_gpt_oss_stays_off_the_responses_provider(self):
+    def test_gpt_oss_keeps_a_bare_responses_entry(self):
+        # gpt-oss stays on the Responses provider as on main: no GPT limits, reasoning or images.
         overlay, _ = _overlay(
             "system.ai.gpt-oss-120b",
             codex_models=["system.ai.gpt-5", "system.ai.gpt-oss-120b", "system.ai.gpt-oss-20b"],
         )
 
-        ids = [m["id"] for m in overlay["providers"]["databricks-openai"]["models"]]
-        assert ids == ["system.ai.gpt-5"]
-        assert overlay["model"] == "system.ai.gpt-oss-120b"
+        models = overlay["providers"]["databricks-openai"]["models"]
+        assert [m["id"] for m in models] == [
+            "system.ai.gpt-5",
+            "system.ai.gpt-oss-120b",
+            "system.ai.gpt-oss-20b",
+        ]
+        assert models[1:] == [{"id": "system.ai.gpt-oss-120b"}, {"id": "system.ai.gpt-oss-20b"}]
+        assert overlay["model"] == "databricks-openai/system.ai.gpt-oss-120b"
 
-    def test_default_model_skips_unservable_models(self):
+    def test_default_model_skips_old_claude(self):
         state = {
             "claude_models": {"opus": "system.ai.claude-opus-4-1"},
             "codex_models": ["system.ai.gpt-oss-120b", "system.ai.gpt-5"],
         }
-        assert pi.default_model(state) == "system.ai.gpt-5"
-        assert pi.default_model({"codex_models": ["system.ai.gpt-oss-20b"]}) is None
+        # Main's order among the GPT models is kept, gpt-oss included.
+        assert pi.default_model(state) == "system.ai.gpt-oss-120b"
+        assert pi.default_model({"claude_models": {"opus": "system.ai.claude-opus-4-1"}}) is None
 
     def test_managed_list_skips_unservable_models(self):
         state = {
@@ -790,25 +797,31 @@ class TestUnservableModels:
 
         assert pi._managed_model_families(state) == (
             {"opus": "system.ai.claude-opus-5-5"},
-            ["system.ai.gpt-6-sol"],
+            ["system.ai.gpt-oss-120b", "system.ai.gpt-6-sol"],
             [],
         )
-        assert pi.default_model(state) == "system.ai.claude-opus-5-5"
+        assert pi.default_model(state) == "system.ai.gpt-oss-120b"
 
-    def test_managed_list_of_only_gpt_oss_falls_back(self):
-        assert pi._managed_model_families({"pi_models": ["system.ai.gpt-oss-120b"]}) is None
+    def test_managed_gpt_oss_is_served(self):
+        state = {"pi_models": ["system.ai.gpt-oss-120b"]}
+
+        assert pi._managed_model_families(state) == ({}, ["system.ai.gpt-oss-120b"], [])
+        assert pi.default_model(state) == "system.ai.gpt-oss-120b"
 
     def test_excluded_managed_default_is_not_the_default(self):
         state = {
-            "pi_default_model": "system.ai.gpt-oss-120b",
-            "pi_models": ["system.ai.gpt-oss-120b", "system.ai.gpt-5"],
+            "pi_default_model": "system.ai.claude-opus-4-1",
+            "pi_models": ["system.ai.claude-opus-4-1", "system.ai.gpt-5"],
         }
 
         assert pi.default_model(state) == "system.ai.gpt-5"
+        assert pi.default_model({**state, "pi_default_model": "system.ai.gpt-oss-120b"}) == (
+            "system.ai.gpt-oss-120b"
+        )
 
     @pytest.mark.parametrize(
         "managed",
-        [["system.ai.gpt-oss-120b"], ["system.ai.claude-opus-4-1"], ["system.ai.kimi-k2-7-code"]],
+        [["system.ai.claude-opus-4-1"], ["system.ai.kimi-k2-7-code"]],
     )
     def test_unservable_managed_list_defaults_to_discovery(self, managed):
         # `_managed_model_families` returns None for these, so the config uses discovery; the
@@ -866,8 +879,10 @@ class TestManagedModelEntries:
         assert set(by_id) == {
             "system.ai.claude-opus-5-5",
             "system.ai.gpt-5",
+            "system.ai.gpt-oss-120b",
             "system.ai.gemini-3-1-pro",
         }
+        assert by_id["system.ai.gpt-oss-120b"] == {"id": "system.ai.gpt-oss-120b"}
         assert by_id["system.ai.claude-opus-5-5"]["contextWindow"] == 1_000_000
         assert by_id["system.ai.gpt-5"]["thinkingLevelMap"] == {"off": None}
         assert by_id["system.ai.gemini-3-1-pro"]["reasoning"] is True
