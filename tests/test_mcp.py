@@ -755,7 +755,7 @@ def _patch_mcp_choices(monkeypatch, *values: str, categories: set[str] | None = 
     monkeypatch.setattr(
         mcp,
         "discover_all_mcp_service_names",
-        lambda workspace, profile=None, on_progress=None: [],
+        lambda workspace, profile=None, **kwargs: ([], None),
     )
 
 
@@ -1316,7 +1316,7 @@ class TestConfigureMcpCommand:
             walk_calls.append(workspace)
             if on_services is not None:
                 on_services(["mycat.myschema.weather"])
-            return ["mycat.myschema.weather"]
+            return ["mycat.myschema.weather"], None
 
         monkeypatch.setattr(mcp, "discover_all_mcp_service_names", fake_walk)
 
@@ -1328,6 +1328,24 @@ class TestConfigureMcpCommand:
         assert [c.value for c in appended] == [
             f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}mycat.myschema.weather"
         ]
+
+    def test_workspace_wide_walk_shows_timeout_after_partial_results(self, monkeypatch):
+        def fake_walk(workspace, profile=None, *, on_services, **kwargs):
+            on_services(["main.tools.linear"])
+            return ["main.tools.linear"], "deadline exceeded while listing MCP services"
+
+        monkeypatch.setattr(mcp, "discover_all_mcp_service_names", fake_walk)
+        appended: list = []
+        message = mcp._mcp_services_background_loader(WS, None, set(), additive=True)(
+            appended.extend, threading.Event()
+        )
+
+        assert [choice.value for choice in appended] == [
+            f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}main.tools.linear"
+        ]
+        assert message is not None
+        assert "Timed out after 30s" in message
+        assert "ug mcp add --names" in message
 
     def test_mcp_service_choice_known_vs_unknown(self):
         # Unregistered -> an add-choice; already-registered -> a removable toggle in replace
@@ -4218,7 +4236,7 @@ class TestSingleSourceSkipsPrompt:
         monkeypatch.setattr(
             mcp,
             "discover_all_mcp_service_names",
-            lambda workspace, profile=None, on_progress=None, on_services=None: [],
+            lambda workspace, profile=None, **kwargs: ([], None),
         )
         captured: dict = {}
 

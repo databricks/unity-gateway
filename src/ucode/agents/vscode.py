@@ -199,7 +199,8 @@ def _catalog(state: dict, provider: str | None, location: str | None) -> list[Co
     if not catalog:
         reason = (state.get("_discovery_reasons") or {}).get("copilot")
         raise RuntimeError(
-            f"No Claude or GPT models for VS Code ({reason or 'the workspace has none'})."
+            "No Claude, GPT, GLM, Kimi or DeepSeek models for VS Code "
+            f"({reason or 'the workspace has none'})."
         )
     return catalog
 
