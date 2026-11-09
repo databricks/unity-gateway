@@ -1,5 +1,21 @@
 # Test suites and user journeys
 
+Windows Desktop detection allows up to 30 seconds for the native package query.
+Component coverage in `test_desktop_setup.py` verifies slow successful detection creates
+UG's profile, while missing packages, timeouts, launch errors, and query failures leave
+it absent. Query failures report their actual cause instead of asking users to open
+an app that is already installed. Native Cowork CI still requires completed inference.
+
+Windows first-launch configuration has component coverage in
+`test_desktop_setup.py`: an installed MSIX creates the missing Desktop profile
+store; absent installations, package-query failures, and timeouts leave it absent.
+The native Windows Cowork inference job in `.github/workflows/integration.yml`
+exercises real installation, UG configuration before first launch, and completed
+`system.ai.claude-haiku-4-5` inference through the desktop UI. CI contract checks
+verify workspace-credential event guards, installation without OIDC permissions,
+and required Cowork success in the integration gate. Unsupported release/version dispatches allow an
+explicit skip; failure, cancellation, and unexpected skips fail the gate.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component
@@ -529,7 +545,10 @@ Unreferenced root-path sentinels and an ineffective temporary-directory alias te
 removed; content updates and empty-payload cache refresh now share one lifecycle test.
 Equivalent registered-directory aliases remain covered separately.
 Dry-run preservation covers both fresh and already-configured installations.
-Root bundle writer checks belong to the separate MDM follow-up.
+`test_desktop_bundle.py` covers macOS publication through on-demand elevation, target/source validation,
+whole-bundle updates/removal, failed-replacement recovery, and linked/special-file rejection.
+It exercises the packaged POSIX shell with temporary path, ownership and OS adapters;
+Windows MDM is unsupported.
 Temporary filesystem destinations are real; external Claude registry/cache operations
 and platform privilege boundaries are simulated. These checks do not establish native
 Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
@@ -540,7 +559,57 @@ that behavior. A null directory path was rejected by native registry validation;
 ignoring it during UG inspection does not establish automatic registry repair.
 This check does not establish native install/update failure recovery or Desktop GUI behavior.
 `test_desktop_configure_cli.py` also checks explicit-global selection versus default and
-`--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers.
+`--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers. MDM cases also
+cover skipping non-macOS platforms and surfacing provisioning prerequisite failures.
+
+`test_desktop_mdm.py` covers macOS guards, provisioning before a Cowork account
+exists, string-encoded inference/MCP/tool-search policy, shared command bindings without
+administrator credentials, and a required organization plugin containing skill assets,
+connector guidance, warming hooks, and matching version metadata. MCP definitions appear
+only in the plist; no per-user native plugin commands or refresh job are used.
+Update/removal checks cover changed skill versions, removed connectors/assets, untouched
+user registrations (including malformed records), foreign-policy preservation, failed
+discovery/download before publication, and retry after partial publication failure.
+Plain revert covers user plus MDM cleanup, MDM-only installations, continued cleanup after
+sudo denial, state retention and successful retry, and no prompt without an MDM deployment.
+Scope flags are rejected. Foreign policy is preserved without blocking UG cleanup.
+Packaged file writes check executable helpers, readable policy, and binary-plist updates/removal.
+The root bundle tests exercise the packaged shell worker with temporary target/ownership
+adapters, including binary/executable assets, linked/special-file rejection, missing manifests,
+and failed-replacement recovery. Workspace APIs and machine ownership are simulated.
+Runtime checks retain isolated Python import probing, shared virtualenv paths, early
+Databricks/Claude CLI trust validation within MDM, and provisioning-credential scrubbing. Global
+Desktop skips unsupported PAT/custom OAuth and shared-host selections with warnings,
+while CLI configuration continues.
+Existing auth/MCP/tracing command behavior is unchanged. Global configure authentication
+routing matches Claude and Codex for external bearers, bearer commands, and the normal
+login path. MDM calls the common token helper and preserves its errors. These checks
+substitute authentication boundaries; they do not validate live service-principal credentials.
+LaunchAgent scheduling, cached-marketplace synchronization, and account-cleanup tests were
+replaced with organization-plugin publication and user-file preservation checks because
+those MDM mechanisms were removed. Ordinary user-plugin/cache coverage remains.
+These checks do not establish native macOS organization-plugin loading, fresh-user login,
+GUI tool/skill invocation, managed-plist precedence, or update delivery after restart.
+Follow `docs/claude-desktop-mdm.md` for migration and the native rollout checklist.
+
+`test_desktop_scope.py` exercises the configure CLI with real Desktop writers in temporary
+directories: no flag and `--user` write only the user source, and explicit
+`--global` publishes MDM without changing the user's profile, source or registration. It also
+checks an existing MDM deployment stays byte-for-byte unchanged under default/user configure,
+provisioning before account creation, warnings on Desktop failures, dry run, command-local
+scope, and skipping Desktop on platforms without MDM support.
+Public Desktop CLI scope cases check that Desktop-only prerequisite/authentication failures
+warn and leave CLI configuration successful.
+Command-local scope checks also run as a standard user. Failure checks cover runtime validation and publication after valid
+authentication, without creating a user profile, source, or registration.
+CLI-agent setup and external services
+are isolated; this is component coverage, not native macOS or live connector coverage.
+Omitted-agent cases cover managed and interactive selection: Codex-only configuration
+works without Desktop privileges, while selecting Claude still completes CLI setup if
+MDM prerequisites fail. An explicit `--global --mcp` case rejects user-level
+MCP registration before any Desktop publication, following the shared global contract.
+`test_cli.py::TestConfigureMcpFlag` retains coverage for ordinary MCP-only configure;
+`TestConfigureScopeFlags` covers rejection of user-level requests under `--global`.
 
 `connector_behavior/test_connector_skill.py` is an explicitly selected live-model suite.
 It checks that Claude uses an available Slack tool despite a stale disconnect notice, discovers
@@ -729,6 +798,18 @@ output without colors, and the hint when more limits exist.
 These are unit/component tests; CUJ5 checks live `ug usage --all` output against budget
 figures before and after the command.
 
+Dashboard-link component coverage in `test_usage.py`, `test_databricks.py`, and
+`test_workspace_selection.py` checks the authenticated dashboard GET, workspace selector
+headers, the optional footer after limits or empty/unavailable-budget messages, literal
+URL rendering, and omission for absent URLs or failed lookups. One representative
+failure reason covers the optional lookup; existing budget tests cover `--all` separately.
+An explicit missing-URL case checks that no footer or extra blank line is printed.
+Presentation checks use a real Rich Console at 40 columns with explicit modern-terminal,
+legacy-Windows, and redirected modes. Modern terminals emit the hyperlink target; legacy
+Windows output keeps the full styled URL without OSC 8 links. Checks also cover the bold
+label and link indicator, trailing blank line, URL color, and intact long URLs. These
+checks do not establish native Windows console behavior or live dashboard navigation.
+
 `test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
 gateway provider on Windows while Unix launch arguments stay unchanged and routing
 hooks stay with the app-server. This is component coverage, not a live Windows
@@ -853,6 +934,11 @@ managed default), that those launches
 skip the routed launch path (no Smart Router skills or hooks) and the hook-review note, and that
 Claude, routing versions, `--disable-smart-routing`, plain launches, and native subcommands do
 not warn. The live Codex managed-default journey also requires the workspace warning text.
+With `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS=1`, Claude can route through a Model Provider
+Service; Codex, and Claude without the gate, still reject provider launches with routing enabled.
+`test_cli.py` checks the gate in `_launch_options` and that a saved Claude provider fetches its
+provider-scoped catalog for a routed launch. These tests mock dispatch; they do not verify
+catalog delivery to the router or a live routed provider launch.
 
 The toggle integration journeys retain the legacy routing-only and orchestration cases and
 add the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only
