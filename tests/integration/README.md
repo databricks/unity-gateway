@@ -1,5 +1,10 @@
 # Integration tests
 
+Cowork connector hooks use Bash quoting on Windows as well as Unix. Component
+coverage in `test_cowork_plugin.py` checks that Windows executable paths and profile
+arguments survive shell parsing. This fixes the observed native Windows startup-hook
+failure; it does not establish successful native MCP discovery or execution.
+
 Windows Desktop detection allows up to 30 seconds for the native package query.
 Component coverage in `test_desktop_setup.py` verifies slow successful detection creates
 UG's profile, while missing packages, timeouts, launch errors, and query failures leave

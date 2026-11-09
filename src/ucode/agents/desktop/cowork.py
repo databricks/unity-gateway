@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import tempfile
 from collections import Counter
@@ -550,7 +551,7 @@ def _connector_hooks(
         argv.append("--use-pat")
     for name, url in urls.items():
         argv += ["--server", f"{name}={url}"]
-    command_line = subprocess_cross_os.shell_command(argv)
+    command_line = shlex.join(argv)  # Cowork runs command hooks through Bash on Windows too.
     return {
         "hooks": {
             event: [{"hooks": [{"type": "command", "command": command_line, "timeout": timeout}]}]
