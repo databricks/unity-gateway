@@ -55,6 +55,14 @@ const safeNumber = (value: unknown, nonNegative = false): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1e12 && (!nonNegative || value >= 0)
     ? value : undefined;
 
+// Parses an optional candidate field; a present-but-invalid value rejects the explanation.
+const optional = <T,>(value: unknown, parse: (input: unknown) => T | undefined): T | undefined => {
+  if (value === undefined) return undefined;
+  const parsed = parse(value);
+  if (parsed === undefined) throw new Error('invalid candidate numbers');
+  return parsed;
+};
+
 function numericDetails(value: unknown): Record<string, number> | undefined {
   if (!isObject(value) || Object.keys(value).length > 8) return undefined;
   const entries = Object.entries(value);
@@ -63,15 +71,7 @@ function numericDetails(value: unknown): Record<string, number> | undefined {
   return Object.fromEntries(entries as [string, number][]);
 }
 
-function utf8Length(value: string): number {
-  let bytes = 0;
-  for (const character of value) {
-    const point = character.codePointAt(0) ?? 0;
-    bytes += point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4;
-    if (bytes > MAX_EXPLANATION_BYTES) return bytes;
-  }
-  return bytes;
-}
+const utf8Length = (value: string): number => new TextEncoder().encode(value).length;
 
 // Throws on anything that does not match the explanation shape; the caller treats the
 // explanation as absent, so a bad payload can never break the rest of the detail view.
@@ -100,23 +100,13 @@ function parseExplanation(value: unknown, routedModel: string): Explanation {
       || typeof candidate.selected !== 'boolean' || typeof candidate.considered !== 'boolean'
       || (candidate.selected && !candidate.considered)) throw new Error('invalid candidate');
     ids.add(id);
-    const quality = candidate.quality_estimate === undefined ? undefined : safeNumber(candidate.quality_estimate);
-    const cost = candidate.estimated_cost_usd === undefined ? undefined : safeNumber(candidate.estimated_cost_usd, true);
-    const score = candidate.routing_score === undefined ? undefined : safeNumber(candidate.routing_score);
-    const components = candidate.components === undefined ? undefined : numericDetails(candidate.components);
-    const difference = candidate.difference_from_winner === undefined
-      ? undefined : numericDetails(candidate.difference_from_winner);
-    if ((candidate.quality_estimate !== undefined && quality === undefined)
-      || (candidate.estimated_cost_usd !== undefined && cost === undefined)
-      || (candidate.routing_score !== undefined && score === undefined)
-      || (candidate.components !== undefined && components === undefined)
-      || (candidate.difference_from_winner !== undefined && difference === undefined)) {
-      throw new Error('invalid candidate numbers');
-    }
     models.push({
       id, name, reason, selected: candidate.selected, considered: candidate.considered,
-      quality_estimate: quality, routing_score: score, estimated_cost_usd: cost, components,
-      difference_from_winner: difference,
+      quality_estimate: optional(candidate.quality_estimate, safeNumber),
+      routing_score: optional(candidate.routing_score, safeNumber),
+      estimated_cost_usd: optional(candidate.estimated_cost_usd, (input) => safeNumber(input, true)),
+      components: optional(candidate.components, numericDetails),
+      difference_from_winner: optional(candidate.difference_from_winner, numericDetails),
     });
   }
   if (models.filter((model) => model.selected).length !== 1
