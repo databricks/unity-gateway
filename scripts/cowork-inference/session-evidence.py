@@ -7,14 +7,28 @@ from datetime import datetime
 from pathlib import Path
 
 
+def content_blocks(content):
+    if not isinstance(content, list):
+        return []
+    return [block for block in content if isinstance(block, dict)]
+
+
 def content_text(content):
     if isinstance(content, str):
         return content
-    return "\n".join(block.get("text", "") for block in content if block.get("type") == "text")
+    return "\n".join(
+        block["text"]
+        for block in content_blocks(content)
+        if block.get("type") == "text" and isinstance(block.get("text"), str)
+    )
 
 
 def evaluate(records, task):
-    messages = [record["message"] for record in records if isinstance(record.get("message"), dict)]
+    messages = [
+        record["message"]
+        for record in records
+        if isinstance(record, dict) and isinstance(record.get("message"), dict)
+    ]
     if not any(
         message.get("role") == "user" and task["prompt"] in content_text(message.get("content", []))
         for message in messages
@@ -35,12 +49,7 @@ def evaluate(records, task):
             "error": "Completed answer does not match the file",
             "answer": answer,
         }
-    blocks = [
-        block
-        for message in messages
-        if isinstance(message.get("content"), list)
-        for block in message["content"]
-    ]
+    blocks = [block for message in messages for block in content_blocks(message.get("content"))]
     results = {
         block["tool_use_id"]: block
         for block in blocks
@@ -88,18 +97,21 @@ def evaluate(records, task):
 
 def inspect_sessions(root, task):
     started = datetime.fromisoformat(task["startedAfter"]).timestamp()
-    paths = sorted(
-        (
-            path
-            for path in root.glob("**/projects/session/*.jsonl")
-            if path.stat().st_mtime >= started
-        ),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    for path in paths:
+    paths = []
+    for path in root.glob("**/projects/session/*.jsonl"):
+        try:
+            modified = path.stat().st_mtime
+        except FileNotFoundError:
+            continue
+        if modified >= started:
+            paths.append((modified, path))
+    for _, path in sorted(paths, reverse=True):
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except FileNotFoundError:
+            continue
         records = []
-        for line in path.read_text(encoding="utf-8-sig").splitlines():
+        for line in text.splitlines():
             try:
                 records.append(json.loads(line))
             except json.JSONDecodeError:

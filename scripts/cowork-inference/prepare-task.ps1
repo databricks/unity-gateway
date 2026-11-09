@@ -1,3 +1,41 @@
+function Invoke-CoworkPluginCommand {
+    param([string]$Executable, [string[]]$Arguments, [string]$LogPath)
+    $stderrPath = [IO.Path]::GetTempFileName()
+    try {
+        $output = (& $Executable @Arguments 2> $stderrPath | Out-String)
+        $code = $LASTEXITCODE
+        $stderr = Get-Content -LiteralPath $stderrPath -Raw
+        Protect-DiagnosticText "$output`n$stderr" | Add-Content -LiteralPath $LogPath
+        if ($code -ne 0) { throw 'Native Cowork plugin command failed; see skill-install.txt' }
+        if ($Arguments -contains '--json') {
+            $result = $output | ConvertFrom-Json
+            if ($result.outcome -and $result.outcome -notin @('ok', 'success')) {
+                throw 'Native plugin command reported failure; see skill-install.txt'
+            }
+            return $result
+        }
+    } finally {
+        Remove-Item -LiteralPath $stderrPath
+    }
+}
+
+function Find-CoworkPlugin {
+    param($Payload, [string]$PluginId)
+    if ($Payload -is [array]) {
+        foreach ($entry in $Payload) { Find-CoworkPlugin -Payload $entry -PluginId $PluginId }
+        return
+    }
+    if ($Payload -isnot [pscustomobject]) { return }
+    $name, $marketplace = $PluginId -split '@', 2
+    if ($Payload.id -eq $PluginId -or $Payload.pluginId -eq $PluginId -or
+        ($Payload.name -eq $name -and $Payload.marketplace -eq $marketplace)) {
+        return $Payload
+    }
+    foreach ($property in $Payload.PSObject.Properties) {
+        Find-CoworkPlugin -Payload $property.Value -PluginId $PluginId
+    }
+}
+
 function New-CoworkTask {
     param([string]$Capability, [string]$EvidenceDirectory)
     $task = [ordered]@{ capability = $Capability }
@@ -51,18 +89,11 @@ Do not guess the contents and do not use subagents.
                 @('plugin', 'list', '--cowork', '--json')
             )
             foreach ($arguments in $commands) {
-                $output = (& $claude @arguments 2>&1 | Out-String)
-                $code = $LASTEXITCODE
-                Protect-DiagnosticText $output | Add-Content (Join-Path $evidence 'skill-install.txt')
-                if ($code -ne 0) { throw 'Native Cowork plugin installation failed; see skill-install.txt' }
-                if ($arguments -contains '--json') {
-                    $result = $output | ConvertFrom-Json
-                    if ($result.outcome -and $result.outcome -notin @('ok', 'success')) {
-                        throw 'Native plugin command reported failure; see skill-install.txt'
-                    }
-                }
+                $result = Invoke-CoworkPluginCommand -Executable $claude -Arguments $arguments `
+                    -LogPath (Join-Path $evidence 'skill-install.txt')
             }
-            $installed = @($result | Where-Object { $_.id -eq 'cowork-probe@cowork-probe-marketplace' -and $_.enabled })
+            $installed = @(Find-CoworkPlugin -Payload $result -PluginId 'cowork-probe@cowork-probe-marketplace' |
+                Where-Object { $_.enabled -eq $true -and $_.installPath })
             if ($installed.Count -ne 1) { throw 'Expected one enabled native skill plugin' }
             $task.expectedFile = Join-Path $installed[0].installPath 'skills/probe-summary/references/facts.txt'
             $task.skill = 'cowork-probe:probe-summary'

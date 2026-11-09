@@ -1,13 +1,19 @@
 """Offline checks prevent native Desktop task evidence from producing false passes."""
 
+import json
+import os
 import runpy
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-evaluate = runpy.run_path(
+session_evidence = runpy.run_path(
     str(Path(__file__).parents[1] / "scripts/cowork-inference/session-evidence.py")
-)["evaluate"]
+)
+evaluate = session_evidence["evaluate"]
+inspect_sessions = session_evidence["inspect_sessions"]
 
 
 @pytest.fixture
@@ -122,3 +128,61 @@ def test_unrelated_or_incomplete_sessions_cannot_pass(evidence, incomplete):
     else:
         records.pop()
     assert evaluate(records, task)["status"] == "pending"
+
+
+@pytest.mark.parametrize(
+    "content", [None, [None, "unstructured text", {"type": "text", "text": None}]]
+)
+def test_ignores_unrelated_non_message_content(evidence, content):
+    records, task = evidence
+    records[:0] = [None, "metadata", {"message": {"role": "user", "content": content}}]
+    records[4]["message"]["content"].extend([None, "metadata"])
+    assert evaluate(records, task)["status"] == "passed"
+
+
+@pytest.mark.parametrize("content", [None, ["proof-a12345"], [{"type": "text", "text": None}]])
+def test_unstructured_tool_result_cannot_prove_a_read(evidence, content):
+    records, task = evidence
+    records[2]["message"]["content"][1]["content"] = content
+    assert evaluate(records, task)["status"] == "failed"
+
+
+@pytest.mark.parametrize("missing_at", ["stat", "read_text"])
+@pytest.mark.parametrize("remaining_session", [False, True])
+def test_transcript_rotation_preserves_pending_and_valid_sessions(
+    evidence, tmp_path, monkeypatch, missing_at, remaining_session
+):
+    records, task = evidence
+    task["startedAfter"] = datetime.fromtimestamp(0, tz=UTC).isoformat()
+    directory = tmp_path / "projects" / "session"
+    directory.mkdir(parents=True)
+    disappearing = directory / "rotated.jsonl"
+    disappearing.write_text("{}\n")
+    if remaining_session:
+        (directory / "active.jsonl").write_text("\n".join(map(json.dumps, records)))
+    newest = time.time() + 60
+    os.utime(disappearing, (newest, newest))
+    original = getattr(Path, missing_at)
+
+    def remove_during_inspection(path, *args, **kwargs):
+        if path == disappearing:
+            path.unlink(missing_ok=True)
+        return original(path, *args, **kwargs)
+
+    # Force the filesystem race at its boundary; the parser and surviving file stay real.
+    monkeypatch.setattr(Path, missing_at, remove_during_inspection)
+    result = inspect_sessions(tmp_path, task)
+    assert result["status"] == ("passed" if remaining_session else "pending")
+
+
+def test_transcript_permission_errors_are_not_hidden(tmp_path, monkeypatch):
+    directory = tmp_path / "projects" / "session"
+    directory.mkdir(parents=True)
+    (directory / "unreadable.jsonl").write_text("{}\n")
+
+    def denied(*args, **kwargs):
+        raise PermissionError("unreadable transcript")
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    with pytest.raises(PermissionError, match="unreadable transcript"):
+        inspect_sessions(tmp_path, {"startedAfter": "1970-01-01T00:00:00+00:00"})

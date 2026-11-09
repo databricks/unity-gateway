@@ -173,8 +173,10 @@ try {
         try { [void]$process.WaitForExit(10000) } catch { }
     }
     if ($report.session.transcript) {
-        $text = Get-Content $report.session.transcript -Raw
-        Protect-DiagnosticText $text | Set-Content (Join-Path $evidence 'session.jsonl')
+        try {
+            $text = Get-Content $report.session.transcript -Raw
+            Protect-DiagnosticText $text | Set-Content (Join-Path $evidence 'session.jsonl')
+        } catch { $report.captureError = $_.Exception.Message }
     }
     Remove-Item $taskPath -ErrorAction SilentlyContinue
     Protect-DiagnosticText ($report | ConvertTo-Json -Depth 8) | Set-Content (Join-Path $evidence 'result.json')

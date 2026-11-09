@@ -25,6 +25,9 @@ documented in the [main test guide](../README.md). The same native Windows job r
 inference, a selected-folder file read, and local plugin skill execution sequentially.
 The file/skill assertions require real native tool results and completed answers;
 UC skill downloads and external MCP execution are not covered by this job.
+After successful inference, the skill case runs even if the file case fails. Both remain
+blocking. The job budget includes both task timeouts and artifact collection; CLI stderr
+is logged separately from JSON, and transcript rotation does not abort evidence polling.
 
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API

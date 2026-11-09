@@ -43,7 +43,11 @@ exercises real installation, UG configuration before first launch, and completed
 then checks a selected local file and a user-authored native plugin skill, requiring
 successful tool results and completed answers with random values absent from the prompts.
 `test_cowork_session_evidence.py` rejects wrong-session/file/value evidence, tool errors,
-mismatched result IDs, missing skill calls, and incomplete answers. UC skill downloads,
+mismatched result IDs, missing skill calls, and incomplete answers. It tolerates unrelated
+non-message content and transcripts disappearing during polling without accepting invalid
+tool evidence. Native PowerShell checks cover separate stderr diagnostics and nested plugin
+listing formats. A file-read failure does not skip the skill case after successful baseline
+inference; either task failure still fails the job. UC skill downloads,
 external MCP calls, and file writes remain outside this native coverage. CI contract checks
 verify workspace-credential event guards, installation without OIDC permissions,
 and required Cowork success in the integration gate. Desktop jobs always test the checkout
