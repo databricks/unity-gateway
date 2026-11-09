@@ -701,11 +701,23 @@ class TestModelEntries:
         for model_id in ("gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro", "gpt-5-5-pro"):
             assert _entry(f"system.ai.{model_id}")["thinkingLevelMap"]["off"] is None, model_id
 
-    @pytest.mark.parametrize("model_id", ["system.ai.gpt-4o", "codex-mini", "system.ai.gpt-6"])
+    @pytest.mark.parametrize("model_id", ["codex-mini", "system.ai.gpt-6"])
     def test_gpt_models_without_documented_levels_get_limits_only(self, model_id):
         entry = _entry(model_id)
 
         assert set(entry) == {"id", "contextWindow", "maxTokens"}
+
+    @pytest.mark.parametrize(
+        "model_id",
+        ["system.ai.gpt-4o", "system.ai.gpt-4o-mini", "system.ai.gpt-4-1", "gpt-4.1-nano"],
+    )
+    def test_vision_gpt_models_without_reasoning_take_images(self, model_id):
+        entry = _entry(model_id)
+
+        assert entry["input"] == ["text", "image"]
+        assert entry["inputLimits"]["maxRequestBytes"] == 32 * 1024 * 1024
+        assert "reasoning" not in entry
+        assert "thinkingLevelMap" not in entry
 
     @pytest.mark.parametrize(
         "model_id",
@@ -721,6 +733,11 @@ class TestModelEntries:
     def test_dotted_ids_resolve_like_dashed_ones(self):
         assert _entry("gemini-3.8-flash")["thinkingLevelMap"] == {"minimal": None}
         assert _entry("gpt-6.1-sol")["contextWindow"] == 1_050_000
+        assert (
+            _entry("claude-opus-5.5")["thinkingLevelMap"]
+            == _entry("claude-opus-5-5")["thinkingLevelMap"]
+        )
+        assert not pi._serves_claude_model("claude-opus-4.1")
 
 
 class TestUnservableModels:
@@ -780,6 +797,26 @@ class TestUnservableModels:
 
     def test_managed_list_of_only_gpt_oss_falls_back(self):
         assert pi._managed_model_families({"pi_models": ["system.ai.gpt-oss-120b"]}) is None
+
+    def test_excluded_managed_default_is_not_the_default(self):
+        state = {
+            "pi_default_model": "system.ai.gpt-oss-120b",
+            "pi_models": ["system.ai.gpt-oss-120b", "system.ai.gpt-5"],
+        }
+
+        assert pi.default_model(state) == "system.ai.gpt-5"
+
+    @pytest.mark.parametrize(
+        "managed",
+        [["system.ai.gpt-oss-120b"], ["system.ai.claude-opus-4-1"], ["system.ai.kimi-k2-7-code"]],
+    )
+    def test_unservable_managed_list_defaults_to_discovery(self, managed):
+        # `_managed_model_families` returns None for these, so the config uses discovery; the
+        # default must come from the same lists.
+        state = {"pi_models": managed, "claude_models": {"opus": "system.ai.claude-opus-5-5"}}
+
+        assert pi.default_model(state) == "system.ai.claude-opus-5-5"
+        assert pi.default_model({"pi_models": managed}) is None
 
 
 class TestGeminiEnvironment:
