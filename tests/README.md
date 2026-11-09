@@ -917,7 +917,7 @@ controls unchanged. `native_claude/test_mod.py` runs `/smart-router off --feedba
 through Claude, the mod and the real CLI: an unsaved report and another session's report keep
 routing on, this session's report turns it off. `mod_tests/register.test.ts` pins the
 replies, the CLI arguments and session ID, the rollback, and the usage reply outside Omnigent.
-Only a rejected ID (exit 3) gets the feedback ID reply; another CLI failure, including exit 2
+Without the feedback rule the mod drops the ID and runs the ordinary off. Only a rejected ID (exit 3) gets the feedback ID reply; another CLI failure, including exit 2
 from a CLI without the flag, gets the update
 failure reply. Both show the CLI's error in the transcript.
 
