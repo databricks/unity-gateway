@@ -695,13 +695,18 @@ class TestModelEntries:
         assert _entry("system.ai.claude-haiku-5-5")["compat"] == {"forceAdaptiveThinking": True}
         assert "compat" not in _entry("system.ai.claude-sonnet-4-5")
 
-    def test_gpt_5_never_sends_effort_none(self):
-        # Without an off entry Pi sends `reasoning.effort: "none"`, which gpt-5, -mini, -nano and
-        # the Pro models reject with HTTP 400.
-        for model_id in ("gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro", "gpt-5-5-pro"):
-            assert _entry(f"system.ai.{model_id}")["thinkingLevelMap"]["off"] is None, model_id
-
-    @pytest.mark.parametrize("model_id", ["codex-mini", "system.ai.gpt-6"])
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            "codex-mini",
+            "system.ai.gpt-6",
+            # Undocumented GPT-5 ids must not inherit the original GPT-5 `minimal` level.
+            "system.ai.gpt-5-6",
+            "gpt-5.6",
+            "system.ai.gpt-5-codex",
+            "system.ai.gpt-5-7",
+        ],
+    )
     def test_gpt_models_without_documented_levels_get_limits_only(self, model_id):
         entry = _entry(model_id)
 
@@ -845,31 +850,39 @@ class TestGeminiEnvironment:
         assert env["GOOGLE_CLOUD_PROJECT"] == "my-project"
         assert env["GOOGLE_CLOUD_LOCATION"] == "us-central1"
 
-    def test_pins_the_gemini_sdk_off_vertex_when_unset(self, monkeypatch):
+    def test_adds_nothing_when_the_switches_are_unset(self, monkeypatch):
+        # A stock environment reaches Pi's shell unchanged.
         monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
         monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
 
         env = pi.build_runtime_env("tok")
 
-        assert env["GOOGLE_GENAI_USE_VERTEXAI"] == "false"
+        assert "GOOGLE_GENAI_USE_VERTEXAI" not in env
         assert "GOOGLE_GENAI_USE_ENTERPRISE" not in env
 
-    def test_pins_the_enterprise_switch_when_set(self, monkeypatch):
-        # The SDK lets GOOGLE_GENAI_USE_ENTERPRISE outrank GOOGLE_GENAI_USE_VERTEXAI.
-        monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", "true")
+    def test_leaves_switches_that_are_off(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "0")
+        monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", "false")
 
-        assert pi.build_runtime_env("tok")["GOOGLE_GENAI_USE_ENTERPRISE"] == "false"
+        env = pi.build_runtime_env("tok")
+
+        assert env["GOOGLE_GENAI_USE_VERTEXAI"] == "0"
+        assert env["GOOGLE_GENAI_USE_ENTERPRISE"] == "false"
+
+    def test_turns_off_the_enterprise_switch_when_on(self, monkeypatch):
+        # The SDK lets GOOGLE_GENAI_USE_ENTERPRISE outrank GOOGLE_GENAI_USE_VERTEXAI.
+        monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+        monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", "TRUE")
+
+        env = pi.build_runtime_env("tok")
+
+        assert env["GOOGLE_GENAI_USE_ENTERPRISE"] == "false"
+        assert "GOOGLE_GENAI_USE_VERTEXAI" not in env
 
 
 class TestManagedModelEntries:
     def test_managed_models_get_per_model_entries(self, tmp_path, monkeypatch):
-        import ucode.config_io as config_io_mod
-
-        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
-        monkeypatch.setattr(pi, "PI_CONFIG_PATH", tmp_path / "models.json")
-        monkeypatch.setattr(pi, "PI_SETTINGS_PATH", tmp_path / "settings.json")
-        monkeypatch.setattr(pi, "PI_BACKUP_PATH", tmp_path / "pi-backup.json")
-        monkeypatch.setattr(pi, "PI_SETTINGS_BACKUP_PATH", tmp_path / "pi-settings-backup.json")
+        TestWriteToolConfig()._setup(tmp_path, monkeypatch)
         state = {
             "workspace": WS,
             "base_urls": {"pi": _base_urls()},
@@ -903,13 +916,7 @@ class TestExcludedSelectedModel:
     """A managed default or budget recommendation can name a model Pi leaves out."""
 
     def _write(self, tmp_path, monkeypatch, state: dict, model: str):
-        import ucode.config_io as config_io_mod
-
-        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
-        monkeypatch.setattr(pi, "PI_CONFIG_PATH", tmp_path / "models.json")
-        monkeypatch.setattr(pi, "PI_SETTINGS_PATH", tmp_path / "settings.json")
-        monkeypatch.setattr(pi, "PI_BACKUP_PATH", tmp_path / "pi-backup.json")
-        monkeypatch.setattr(pi, "PI_SETTINGS_BACKUP_PATH", tmp_path / "pi-settings-backup.json")
+        TestWriteToolConfig()._setup(tmp_path, monkeypatch)
         with patch("ucode.agents.pi.save_state"), patch("ucode.agents.pi.print_warning") as warn:
             pi.write_tool_config(
                 {"workspace": WS, "base_urls": {"pi": _base_urls()}, **state}, model, token="tok"
