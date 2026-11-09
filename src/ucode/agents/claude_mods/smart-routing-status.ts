@@ -1,6 +1,7 @@
 import type { On } from 'claude-code'
 import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
+import { recordSubagentRateLimit } from './subagent-routing.ts'
 
 const BANNER = 'unity gateway smart router'
 
@@ -56,7 +57,9 @@ async function readRoutingState($: any): Promise<RoutingState> {
 export const registerStatusBand = (on: On): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
-  on('prompt.submit', ($, e, next) => {
+  on('prompt.submit', async ($, e, next) => {
+    // The native client permits one unmatched prompt handler, shared with routing recovery.
+    if (e.origin?.kind === 'task-notification') recordSubagentRateLimit(e.text, await $.clock.now())
     if (band.isVisible) band.isHideArmed = true
     return next(e)
   })

@@ -651,3 +651,71 @@ test('a spawn step preserves native text and thinking with reviewed tool inputs'
   expect(spawn.chunks.map(chunk => chunk.kind)).toEqual(['thinking', 'text', 'tool', 'input', 'tool', 'input']);
   expect(spawn.chunks[3].json).toBe(JSON.stringify(originalInput));
 });
+
+test('a confirmed 429 temporarily uses the parent model and reports the actual launch model', async ($, on) => {
+  const blocked = 'system.ai.glm-5-3-flash[1m]';
+  const parent = 'system.ai.claude-opus-4-8';
+  let selected: string | undefined = blocked;
+  let parentModel = parent;
+  let timestamp = 10_000;
+  const forwarded: any[] = [];
+  on('clock.now', () => ({ value: timestamp }));
+  on('session.id', () => ({ value: 'session-1' }));
+  on('fs.write', () => ({ value: undefined }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '',
+    stdout: selected ? JSON.stringify({ model: selected, rationale: 'Selected for the task' }) : '',
+  } }));
+  on('agent.spawn', ($, e) => ({ model: e.model === 'opus' ? parent : e.model!, agentId: `child-${e.tool_use_id}` }));
+  on('tool.call', async (_, e) => {
+    const spawned = await $.agent.spawn({
+      tool_use_id: e.tool_use_id!, prompt: originalInput.prompt, description: originalInput.description,
+      subagentType: 'general-purpose', model: 'opus', parentModel,
+      provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
+    });
+    return spawned.deny ? { deny: spawned.deny } : {
+      result: { agentId: spawned.agentId, resolvedModel: spawned.model },
+      text: 'Native launch result', context: ['Existing context'],
+    };
+  });
+  on('prompt.submit', ($, e) => { forwarded.push(e); return { text: e.text }; });
+  const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput, model: 'opus' });
+  const first = await launch('first');
+  expect(first.result.resolvedModel).toBe(blocked);
+  expect(first.text).toBe('Native launch result');
+  expect(first.context?.[0]).toBe('Existing context');
+  expect(first.context?.[1]).toContain(`"launched_model":"${blocked}"`);
+  // Native 2.1.316/319 terminal failure format; the API omits the context-window suffix.
+  const notice = { text: `<task-notification>
+<task-id>child-first</task-id>
+<tool-use-id>first</tool-use-id>
+<status>failed</status>
+<summary>Agent "Inspect parser" failed: Agent terminated early due to an API error (error type rate_limit, HTTP 429, model sent to the API: system.ai.glm-5-3-flash)</summary>
+</task-notification>`, wait: false, origin: { kind: 'task-notification' as const } };
+  for (const [index, event] of [
+    { ...notice, origin: { kind: 'composer' as const } },
+    { ...notice, text: notice.text.replace('child-first', 'unknown-child') },
+    { ...notice, text: notice.text.replace('rate_limit, HTTP 429', 'authentication_failed, HTTP 401') },
+    { ...notice, text: notice.text.replace('system.ai.glm-5-3-flash', parent) },
+  ].entries()) {
+    await $.prompt.submit(event);
+    expect((await launch(`unaffected-${index}`)).result.resolvedModel).toBe(blocked);
+  }
+  await $.prompt.submit(notice);
+  expect(forwarded.at(-1)).toEqual(notice);
+  const retry = await launch('retry');
+  expect(retry.result.resolvedModel).toBe(parent);
+  expect(retry.context?.[0]).toBe('Existing context');
+  expect(retry.context?.[1]).toContain(`"launched_model":"${parent}"`);
+  selected = 'system.ai.claude-haiku-5-5';
+  expect((await launch('other-model')).result.resolvedModel).toBe(selected);
+  selected = undefined;
+  expect((await launch('routing-off')).context).toEqual(['Existing context']);
+  selected = blocked;
+  parentModel = blocked.replace('[1m]', '');
+  expect((await launch('blocked-parent')).deny).toContain('routed and parent models are rate-limited');
+  parentModel = parent;
+  timestamp += 59_999;
+  expect((await launch('before-expiry')).result.resolvedModel).toBe(parent);
+  timestamp += 1;
+  expect((await launch('after-expiry')).result.resolvedModel).toBe(blocked);
+});

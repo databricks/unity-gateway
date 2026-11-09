@@ -23,6 +23,7 @@ const canonicalModel = (model: string): string => {
 }
 
 const children = new Map<string, RoutingRecord>()
+const rateLimitedUntil = new Map<string, number>()
 export const routedModels = {
   started(record: RoutingRecord) { children.set(record.spawned!.agentId, record) },
   model(agentId?: string) {
@@ -31,7 +32,7 @@ export const routedModels = {
     return child && resolved && canonicalModel(resolved) === canonicalModel(child.model)
       ? resolved : child?.model
   },
-  reset() { children.clear() },
+  reset() { children.clear(); rateLimitedUntil.clear() },
 }
 
 const ANIMALS = [
@@ -48,6 +49,7 @@ const ANIMALS = [
 ]
 
 const shortModel = (model: string): string => model.replace(/^system\.ai\./, '').replace(/^databricks-/, '')
+const RATE_LIMIT_COOLDOWN_MS = 60_000
 // Claude's own spinner glyphs, played forwards then back as Claude does.
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
 const SPINNER = [...SPINNER_GLYPHS, ...SPINNER_GLYPHS.slice(1, -1).reverse()]
@@ -108,6 +110,17 @@ const card = ($: any, e: any, record: RoutingRecord) => {
 // Grouped calls not yet drawn, in call order. They live outside registration so the
 // register module's one turn.complete handler can drop them.
 const cards = { unplaced: [] as string[] }
+
+// Background API errors arrive as native task notifications, after the client's retries.
+// Keep the cooldown local to this launch's workspace and confirm the failed child's model.
+export function recordSubagentRateLimit(text: string, timestamp: number): void {
+  const task = text.match(/^<task-notification>\s*<task-id>([^<\s]+)<\/task-id>/)
+  const failure = text.match(/<status>failed<\/status>\s*<summary>[^<]*\(error type rate_limit, HTTP 429, model sent to the API: ([^\s()<]+)\)<\/summary>/)
+  const model = task ? routedModels.model(task[1]) : undefined
+  if (model && failure && canonicalModel(model) === canonicalModel(failure[1])) {
+    rateLimitedUntil.set(canonicalModel(model), timestamp + RATE_LIMIT_COOLDOWN_MS)
+  }
+}
 
 // An aborted turn draws no reply, so its calls must not reach a later turn. A turn that
 // merely ends, as when the reply waits on a background agent, keeps them.
@@ -214,7 +227,17 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   })
 
   on('agent.spawn', async ($, e, next) => {
-    const route = e.resume ? undefined : records.get(e.tool_use_id)
+    let route = e.resume ? undefined : records.get(e.tool_use_id)
+    const timestamp = route ? await now($) : undefined
+    if (route && timestamp !== undefined && (rateLimitedUntil.get(canonicalModel(route.model)) ?? 0) > timestamp) {
+      if ((rateLimitedUntil.get(canonicalModel(e.parentModel)) ?? 0) > timestamp) {
+        return { deny: 'The routed and parent models are rate-limited. Wait for the limit to reset before starting another subagent.' }
+      }
+      route = { ...route, model: e.parentModel,
+        rationale: `${shortModel(route.model)} recently hit a rate limit; using the parent model during its cooldown.` }
+      records.set(e.tool_use_id, route)
+      $.ui.invalidate('ui.render')
+    }
     const name = route?.name
     const result = await next(route ? { ...e, model: route.model } : e)
     if (route && result.agentId && !result.deny) {
