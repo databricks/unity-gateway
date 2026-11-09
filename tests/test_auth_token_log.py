@@ -24,6 +24,14 @@ def _isolated_env(home, path: str) -> dict[str, str]:
     return env
 
 
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 class TestLogFailure:
     def test_appends_one_line_per_failure(self):
         auth_token_log.log_failure(WS, "prod", "first\n  failure")
@@ -89,7 +97,9 @@ class TestKillLogging:
         assert "while loading the ug CLI" in log
 
     def test_kill_while_waiting_on_the_cli_names_that_stage(self, tmp_path):
-        """pi's timeout landing mid-`databricks auth token`, through the real entry point."""
+        """pi's timeout landing mid-`databricks auth token`, through the real entry point.
+
+        The CLI call it was waiting on ends with it rather than outliving the helper."""
         home, bin_dir = tmp_path / "home", tmp_path / "bin"
         home.mkdir()
         bin_dir.mkdir()
@@ -103,7 +113,10 @@ class TestKillLogging:
         )
         fake_cli.chmod(0o755)
         proc = subprocess.Popen(
-            [sys.executable, "-P", "-m", "ucode", "auth-token", "--host", WS, "--profile", "p"],
+            [
+                *[sys.executable, "-P", "-m", "ucode", "auth-token", "--host", WS],
+                *["--profile", "p", "--caller-timeout", "60"],
+            ],
             env=_isolated_env(home, f"{bin_dir}{os.pathsep}/usr/bin{os.pathsep}/bin"),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -116,6 +129,11 @@ class TestKillLogging:
                 time.sleep(0.05)
             proc.send_signal(signal.SIGTERM)
             assert proc.wait(timeout=30) == -signal.SIGTERM
+            cli_pid = int(started.read_text())
+            gone_by = time.monotonic() + 30
+            while _alive(cli_pid) and time.monotonic() < gone_by:
+                time.sleep(0.1)
+            assert not _alive(cli_pid), "the CLI call outlived the killed helper"
         finally:
             if proc.poll() is None:
                 proc.kill()

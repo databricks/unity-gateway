@@ -297,10 +297,14 @@ def _fast_path_target(args: list[str]) -> tuple[str, str | None] | None:
     if not args or args[0] != "auth-token":
         return None
     opts = args[1:]
-    if len(opts) not in (2, 4):
+    if len(opts) not in (2, 4, 6):
         return None
     parsed = dict(zip(opts[::2], opts[1::2], strict=True))
-    if len(parsed) != len(opts) // 2 or not set(parsed) <= {"--host", "--profile"}:
+    if len(parsed) != len(opts) // 2 or not set(parsed) <= {
+        "--host",
+        "--profile",
+        "--caller-timeout",
+    }:
         return None
     host = parsed.get("--host", "").strip()
     if not host:
@@ -316,9 +320,10 @@ def _saved_pat_mode() -> bool:
 
 
 def fast_path_token(args: list[str]) -> str | None:
-    """Serve ``auth-token --host H [--profile P]`` from the cache, else None.
+    """Serve ``auth-token --host H [--profile P] [--caller-timeout S]`` from the cache, else None.
 
-    Only the exact OAuth argv ``build_auth_token_argv`` emits is handled. Anything else
+    Only the exact OAuth argv ``build_auth_token_argv`` emits, plus pi's ``--caller-timeout``, is
+    handled; a hit needs no time limit. Anything else
     (``--use-pat``, ``--force-refresh``, ``--browser-login``, ``--refresh-cache``, custom-client
     options, a missing ``--host``) returns None so the full CLI decides, as does a saved
     workspace in PAT mode."""

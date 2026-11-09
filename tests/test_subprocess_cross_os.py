@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -403,3 +405,95 @@ class TestShellCommand:
         assert subprocess_cross_os.shell_command(["/opt/my ug/ug", "route"]) == (
             "'/opt/my ug/ug' route"
         )
+
+
+def _alive(pid: int) -> bool:
+    if os.name == "nt":
+        from ucode.os_compatibility.system_cross_os import windows_system32_dir
+
+        listing = subprocess.run(
+            [str(windows_system32_dir() / "tasklist.exe"), "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        return str(pid) in listing.stdout
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _wrapper_argv(pid_file) -> list[str]:
+    """A command whose own child holds the output pipes, like the python behind a `.cmd` shim."""
+    child = (
+        "import os, sys, time\nopen(sys.argv[1], 'w').write(str(os.getpid()))\ntime.sleep(120)\n"
+    )
+    wrapper = (
+        "import os, subprocess, sys, time\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {child!r}, sys.argv[1]])\n"
+        "while not os.path.exists(sys.argv[1]):\n"
+        "    time.sleep(0.05)\n"
+        "child.wait()\n"
+    )
+    return [sys.executable, "-c", wrapper, str(pid_file)]
+
+
+class TestRunBounded:
+    """`run_bounded` ends the whole process tree, so a wrapper's child can't hold its output open."""
+
+    def test_returns_output_and_status(self):
+        result = subprocess_cross_os.run_bounded(
+            [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
+            timeout=60,
+            text=True,
+        )
+        assert (result.returncode, result.stdout.strip(), result.stderr.strip()) == (
+            0,
+            "out",
+            "err",
+        )
+        with pytest.raises(subprocess.CalledProcessError):
+            subprocess_cross_os.run_bounded(
+                [sys.executable, "-c", "raise SystemExit(3)"], timeout=60, check=True
+            )
+
+    def test_timeout_ends_a_wrapper_and_its_child(self, tmp_path):
+        pid_file = tmp_path / "child.pid"
+        started = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            subprocess_cross_os.run_bounded(_wrapper_argv(pid_file), timeout=10, text=True)
+        # The child would hold the pipes for two minutes; plain subprocess.run waits for it.
+        assert time.monotonic() - started < 60
+        child = int(pid_file.read_text())
+        deadline = time.monotonic() + 30
+        while _alive(child) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert not _alive(child)
+
+    def test_end_running_trees_ends_a_command_in_flight(self, tmp_path):
+        pid_file = tmp_path / "child.pid"
+        outcome: list[object] = []
+
+        def run() -> None:
+            try:
+                outcome.append(
+                    subprocess_cross_os.run_bounded(_wrapper_argv(pid_file), timeout=120)
+                )
+            except BaseException as exc:  # surfaced below
+                outcome.append(exc)
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        deadline = time.monotonic() + 60
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert pid_file.exists(), "the wrapper never started its child"
+        subprocess_cross_os.end_running_trees()
+        thread.join(timeout=60)
+        assert not thread.is_alive()
+        (result,) = outcome
+        assert isinstance(result, subprocess.CompletedProcess)
+        assert result.returncode != 0

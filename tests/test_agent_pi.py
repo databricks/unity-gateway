@@ -499,7 +499,7 @@ class TestBuildPiApiKey:
         monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/tools/{command}")
         api_key = pi.build_pi_api_key({"workspace": WS})
 
-        assert api_key == f"!/tools/ug auth-token --host {WS}"
+        assert api_key == f"!/tools/ug auth-token --host {WS} --caller-timeout 10"
 
     @pytest.mark.parametrize(
         "ug_exe",
@@ -521,6 +521,8 @@ class TestBuildPiApiKey:
             "--profile",
             "my profile",
             "--use-pat",
+            "--caller-timeout",
+            "10",
         ]
 
     def test_omits_force_refresh(self):

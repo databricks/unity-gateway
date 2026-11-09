@@ -90,6 +90,14 @@ def _on_sigterm(signum: int, _frame: object) -> None:
     if sys.platform != "win32":
         signal.alarm(_HANDLER_DEADLINE_SECONDS)
     elapsed = time.monotonic() - _started_at
+    # A Databricks CLI call still running would outlive this process; end it first. Looked up
+    # rather than imported: this module stays stdlib-only, and only a loaded CLI runs commands.
+    subprocesses = sys.modules.get("ucode.os_compatibility.subprocess_cross_os")
+    if subprocesses is not None:
+        try:
+            subprocesses.end_running_trees()
+        except Exception:
+            pass
     log_failure(
         _host,
         _profile,
