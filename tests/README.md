@@ -5,11 +5,12 @@ process against a controlled provider: incorrect model claims must be absent
 from streamed assistant messages and saved transcripts, for both foreground and
 background children. The provider emits incorrect prose before spawn and on every
 parent continuation; the saved child answer must still be delivered without a
-format correction or Stop-hook retry.
+format correction or Stop-hook retry. Successful lifecycle status lines must be absent
+from both the stream and transcript; recorded child answers remain visible.
 `native_claude/mod_tests/subagent-routing.test.ts` checks
-automatic report rendering, selected-versus-launched model validation, recorded
-child answers, split chunks, no-text steps with stop events, parallel and early
-completion, stale references,
+automatic report rendering, selected-versus-launched model validation, provider usage
+aliases that cannot replace the launch identity, recorded child answers, split chunks,
+no-text steps with stop events, parallel and early completion, stale references,
 failed handback/resume rollback, unchanged tool inputs and ordinary main-only replies.
 These are deterministic
 component checks; they do not establish live router or provider behavior.

@@ -508,6 +508,10 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     path.read_text() for path in (root / "config/projects").glob("*/*.jsonl")
                 )
                 assert false_claim not in saved
+                for state in ("Running", "Finished"):
+                    status = f" · {selected_model} · {state}"
+                    assert not any(status in answer for answer in parent_answers), parent_answers
+                    assert status not in saved.replace("\\u00b7", "·")
                 assert rejection not in saved.replace('\\"', '"')
                 child_request = json.dumps(child_requests[0])
                 assert original["prompt"] in child_request

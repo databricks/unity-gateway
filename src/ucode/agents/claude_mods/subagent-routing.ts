@@ -112,14 +112,15 @@ function createReports() {
         const child = children.get(childId)
         if (!child || child.parentAgentId !== parentAgentId) continue
         const completion = completions.get(childId)
-        const actual = completion?.usage?.model || child.spawned?.model
+        // Usage may name a provider backend; the spawn receipt identifies the launched route.
+        const actual = child.spawned?.model
         if (!actual || canonicalModel(actual) !== canonicalModel(child.model)) return REPORT_UNAVAILABLE
-        const state = !completion ? 'Running' : completion.isAborted ? 'Interrupted'
-          : completion.reason === 'answer' ? 'Finished' : 'Failed'
-        const heading = `${child.name} · ${actual} · ${state}`
-        if (state === 'Finished' && completion?.answer) {
-          output.push(`${heading}\n\nChild answer:\n${completion.answer.split('\n').map(line => `> ${line}`).join('\n')}`)
-        } else output.push(heading)
+        if (!completion) continue
+        if (completion.isAborted || completion.reason !== 'answer') {
+          output.push(`${child.name} · ${actual} · ${completion.isAborted ? 'Interrupted' : 'Failed'}`)
+        } else if (completion.answer) {
+          output.push(`${child.name}\n\nChild answer:\n${completion.answer.split('\n').map(line => `> ${line}`).join('\n')}`)
+        }
       }
       return output.join('\n\n')
     },
@@ -303,8 +304,8 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       launched_model: record.spawned.model ?? null,
     })
     return { ...result, context: [...(result.context ?? []),
-      `Smart Router launch: ${identity}. UG automatically reports this child's verified identity, `
-      + 'status and recorded answer. Continue using tools as needed; no reporting format is required.',
+      `Smart Router launch: ${identity}. UG shows the verified model in the routing row and delivers `
+      + 'the recorded child answer. Continue using tools as needed; no reporting format is required.',
     ] }
   })
 

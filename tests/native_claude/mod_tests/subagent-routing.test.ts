@@ -667,11 +667,14 @@ test('parent reports recorded answers despite arbitrary prose, then resets on a 
   }]);
   reportReady = true;
   const running = await collectParentTurn($, 'parent-report', 1);
-  expect(running.text).toMatch(/ · claude-opus-4-8 · Running$/);
-  expect(running.text).not.toContain('Child answer:');
+  expect(running.text).toBe('');
+  expect(running.result.answer).toBe('');
+  expect(running.chunks).toEqual([toolChunk, toolInputChunk, {kind: 'stop', stopReason: 'tool_use', usage: null}]);
+  expect(running.result.toolUses).toEqual([toolUse]);
   await $.turn.complete({
     agentId: 'child-call-b', turnId: 'child-turn-b', answer: 'Original answer from child B',
     reason: 'answer', isAborted: false, durationMs: 1,
+    usage: { model: 'provider-backend-revision' } as any,
   });
   await $.turn.complete({
     agentId: 'child-call-a', turnId: 'child-turn-a', answer: 'Answer from child A',
@@ -695,8 +698,9 @@ test('parent reports recorded answers despite arbitrary prose, then resets on a 
   reportReady = true;
   const parent = await collectParentTurn($, 'parent-report', 1);
   expect(parent.text).toBe(parent.result.answer);
-  expect(parent.text).toMatch(/^[A-Z][a-z]+(?: \d+)? · claude-sonnet-5 · Finished$/m);
-  expect(parent.text).toMatch(/^[A-Z][a-z]+(?: \d+)? · claude-opus-4-8 · Finished$/m);
+  expect(parent.text).toMatch(/^[A-Z][a-z]+(?: \d+)?\n\nChild answer:\n> Answer from child A$/m);
+  expect(parent.text).toMatch(/^[A-Z][a-z]+(?: \d+)?\n\nChild answer:\n> Handed-back answer from child B$/m);
+  expect(parent.text).not.toContain(' · ');
   expect(parent.text).toContain('Child answer:\n> ' + handedBackAnswer);
   expect(parent.text).not.toContain('Original answer from child B');
   expect(parent.text).not.toContain(report);
@@ -771,7 +775,8 @@ test('parent reports recorded answers despite arbitrary prose, then resets on a 
   const forwardedNotification = submittedPrompts.find((event) => event.text === 'A background task update');
   expect(forwardedNotification.context).toBeUndefined();
   const notification = await collectParentTurn($, 'notification-turn', 0);
-  expect(notification.text).toMatch(/^[A-Z][a-z]+(?: \d+)? · claude-sonnet-5 · Finished$/m);
+  expect(notification.text).toContain('Child answer:\n> Answer from child A');
+  expect(notification.text).not.toContain(' · ');
   expect(notification.text).toBe(notification.result.answer);
   await $.turn.complete({
     turnId: 'notification-turn', answer: notification.result.answer, reason: 'answer',
@@ -912,6 +917,7 @@ test('parent prose and stale references cannot override mismatched launch record
   await $.turn.complete({
     agentId: 'child-one', turnId: 'child-one-turn', answer: 'Verified child answer',
     reason: 'answer', isAborted: false, durationMs: 1,
+    usage: { model: selected } as any,
   });
 
   for (let index = 1; index <= frames.length; index++) {

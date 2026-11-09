@@ -28,13 +28,16 @@ outside the built-in choices does not prevent a general-purpose launch; the rout
 selects an available execution model.
 After a successful spawn, the Agent/Task result carries model-visible context with the
 child ID, router-selected model, and model reported by Claude's spawn result. The parent
-report is rendered directly from that request's owned child records, without parsing
-model-written references. Spawn-step prose is buffered and suppressed before
+reply delivers recorded answers from that request's owned children, without parsing
+model-written references. Model identity and running status stay in the native routing
+UI; assistant replies do not duplicate successful lifecycle updates. Interrupted or
+failed children still produce an explicit report. Spawn-step prose is buffered and suppressed before
 streaming or transcript storage. Missing host model
 information remains explicitly unknown. Denials and tool errors retain their original
 results without a success annotation. If Claude reports a different model than the route,
 the routing row also shows `Launched Model` separately. This is host launch metadata,
-not verification of the provider's underlying model version.
+not verification of the provider's underlying model version. Usage telemetry may name a
+provider backend; it does not replace the confirmed launch identity in reports.
 Forks keep their native model; resumed routed children keep the router-selected model. This preserves
 auto mode's review of the tool input instead of invalidating it with a routing rewrite.
 The display label uses a random animal from a list of 100, without repeats until the list
