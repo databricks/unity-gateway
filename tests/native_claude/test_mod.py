@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from session import Session
 
 from ucode.agents.claude import _header_mod_files
@@ -217,7 +218,10 @@ def test_native_process_inherits_settings_and_runs_python_cli(native_binary, tmp
         assert result["stdout"] == result["stderr"] == "", result
 
 
-def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(native_binary, tmp_path):
+@pytest.mark.parametrize("background", [False, True])
+def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
+    native_binary, tmp_path, background
+):
     """Scenario: Auto Mode approves or flags a native Agent call.
 
     Expected: approval preserves the reviewed input and uses the distinct routed child model
@@ -230,6 +234,7 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(native_b
         "subagent_type": "general-purpose",
         "model": "sonnet",
         "name": "PinnedName",
+        "run_in_background": background,
     }
     selected_model = "claude-opus-4-6"
     routed_type = _routed_claude_agent_name(selected_model)
@@ -356,7 +361,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
             root = tmp_path / label
             root.mkdir()
             plugin = root / "plugin"
-            _write_routed_claude_plugin(plugin, [selected_model])
+            _write_routed_claude_plugin(plugin)
             options = _claude_mod_launch_options({})
             options["routeCommand"] = [
                 sys.executable,
@@ -441,6 +446,16 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     if request.get("stream") and request.get("model") == selected_model
                 ]
                 assert child_requests, server.requests
+                parent_requests = [
+                    request
+                    for request in server.requests
+                    if request.get("stream") and request.get("model") == "claude-sonnet-4-6"
+                ]
+                assert any(
+                    "Smart Router launch:" in json.dumps(request)
+                    and selected_model in json.dumps(request)
+                    for request in parent_requests[1:]
+                ), parent_requests
                 child_request = json.dumps(child_requests[0])
                 assert original["prompt"] in child_request
                 assert "Routed prompt" not in child_request

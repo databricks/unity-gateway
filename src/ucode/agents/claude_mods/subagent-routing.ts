@@ -13,6 +13,7 @@ type RoutingExplanation = {
 type RoutingRecord = {
   name: string; task: string; model: string; rationale: string; seconds?: number
   explanation?: RoutingExplanation
+  spawned?: { agentId: string; model?: string }
 }
 type ExplanationState = { enabled: boolean; showNumbers?: boolean; latest?: RoutingRecord; paneRecord?: RoutingRecord; modelId?: string }
 
@@ -182,6 +183,11 @@ const selection = (
       ...(onWhy ? [Button({ key: 'why-this-model', label: 'Why this model?', onPress: onWhy })] : []),
     ],
   })]
+  if (record.spawned?.model && record.spawned.model !== record.model) {
+    lines.push(Box({ paddingLeft: reasonPadding,
+      children: [Text({ children: [`Launched Model: ${safeText(record.spawned.model, 240)}`] })],
+    }))
+  }
   if (record.rationale) {
     lines.push(Box({
       paddingLeft: reasonPadding,
@@ -388,14 +394,30 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       }
       $.ui.invalidate('ui.render')
     }
-    // Auto mode reviewed this input; choose the child's model at agent.spawn instead.
-    return next(e)
+    // Auto mode reviewed this input; model identity belongs in the result, not its arguments.
+    const result = await next(e)
+    const record = tool_use_id ? records.get(tool_use_id) : undefined
+    if (result.deny !== undefined || result.isError || !record?.spawned) return result
+    const identity = JSON.stringify({
+      agent_id: record.spawned.agentId,
+      selected_model: record.model,
+      launched_model: record.spawned.model ?? null,
+    })
+    return { ...result, context: [...(result.context ?? []),
+      `Smart Router launch: ${identity}. Use the launched model when reporting this child's model. `
+      + 'The requested model, agent type, name, and task text are not execution evidence. '
+      + 'A null launched model means Claude did not report it; do not infer it.',
+    ] }
   })
 
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume ? undefined : records.get(e.tool_use_id)
     const name = route?.name
     const result = await next(route ? { ...e, model: route.model } : e)
+    if (route && result.agentId && !result.deny) {
+      route.spawned = { agentId: result.agentId, model: result.model || undefined }
+      $.ui.invalidate('ui.render')
+    }
     if (name && result.agentId) {
       try {
         // The native bottom bar is outside ui.render; join its task ID to this call.

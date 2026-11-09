@@ -1,5 +1,12 @@
 # Integration tests
 
+Routed child identity regressions cover model-visible launch context, original-result
+preservation, reversed parallel completion, missing model information, denied/failed
+spawns, native role menus, and rejection of explanation rows outside the offered menu.
+Native auto-mode tests verify both foreground and background Agent calls deliver the
+host-reported model to the parent's next request while preserving reviewed inputs and
+denials. These controlled tests do not establish deployed-service explanation coverage.
+
 Routing explanation component tests cover opt-in native panes, per-model selection,
 optional numeric estimates, missing or invalid diagnostics, and preservation of the
 selected model and reviewed tool input. Python tests cover optional metadata transport

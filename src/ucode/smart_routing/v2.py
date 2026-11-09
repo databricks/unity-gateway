@@ -374,8 +374,8 @@ def _claude_mod_launch_args(options: Mapping[str, object]) -> list[str]:
     return ["--system-prompt-snapshot", "off"] if options.get("orchestratorInstructions") else []
 
 
-def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
-    """Write exact-model agents for launch-scoped loading through --plugin-dir."""
+def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = None) -> None:
+    """Write the native routing mod and roles; model IDs support legacy hook agents."""
     write_json_file(
         plugin_dir / ".claude-plugin" / "plugin.json",
         {
@@ -429,7 +429,7 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             },
         },
     )
-    for name, definition in _routed_claude_agent_definitions(model_ids).items():
+    for name, definition in _routed_claude_agent_definitions(model_ids or []).items():
         slug = name.partition(":")[2]
         write_text_file(
             plugin_dir / "agents" / f"{slug}.md",
@@ -787,7 +787,7 @@ def launch_claude(
             ] = mod_options
             try:
                 write_json_file(settings_path, settings)
-                _write_routed_claude_plugin(plugin_dir, model_ids)
+                _write_routed_claude_plugin(plugin_dir)
             except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
                 raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc
             model_args = launch_model_args(remaining, routed_model or launch_model)

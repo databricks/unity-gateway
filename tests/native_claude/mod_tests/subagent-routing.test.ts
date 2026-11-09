@@ -109,6 +109,12 @@ test('routing changes only the matching spawn model and joins its display name t
     expect(result).toEqual(id === 'denied' ? { deny: 'Permission denied' }
       : { model: 'claude-sonnet-5', agentId: `child-${id}` });
   }
+  const launched = await $.ui.mount(row('call-a'));
+  expect(await launched.find({ type: 'Text', text: 'Launched Model: claude-sonnet-5' })).toBeDefined();
+  await launched.unmount();
+  const denied = await $.ui.mount(row('denied'));
+  expect(await denied.find({ type: 'Text', text: /Launched Model:/ })).toBeUndefined();
+  await denied.unmount();
   expect(writes.length).toBe(2);
   for (const [index, id] of ['call-b', 'call-a'].entries()) {
     expect(writes[index].path.endsWith(`/agent-names/agent-child-${id}.json`)).toBe(true);
@@ -617,3 +623,66 @@ for (const placed of [true, false]) {
     expect(closes).toBe(placed ? 0 : 1);
   });
 }
+
+test('parent receives the successful child model without rewriting requested inputs or results', async ($, on) => {
+  const forwarded: any[] = [];
+  const finish = new Map<string, (result: any) => void>();
+  let allStarted: () => void = () => {};
+  const ready = new Promise<void>(resolve => { allStarted = resolve; });
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', ($, e) => {
+    const { tool_use_id } = JSON.parse(e.init.stdin);
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: `selected-${tool_use_id}`, rationale: 'Selected for the task',
+    }) } };
+  });
+  on('agent.spawn', ($, e) => e.tool_use_id === 'denied' ? { deny: 'Permission denied' }
+    : { agentId: `child-${e.tool_use_id}`, model: e.tool_use_id === 'unknown' ? '' : `launched-${e.tool_use_id}` });
+  on('fs.write', () => ({ value: undefined }));
+  on('tool.call', ($, e) => {
+    forwarded.push(e);
+    return new Promise(resolve => {
+      finish.set(e.tool_use_id, resolve);
+      if (finish.size === 6) allStarted();
+    });
+  });
+  const inputs = ['background', 'foreground', 'unknown', 'denied', 'error', 'no-child'].map(id => ({
+    tool: 'Agent' as const, tool_use_id: id, ...originalInput,
+    prompt: 'Use requested-model to compute 1+1', name: 'requested-model',
+    subagent_type: 'ug-smart-router:ucode-route-requested-model-hash',
+    run_in_background: id !== 'foreground',
+  }));
+  const waiting = inputs.map(input => $.tool.call(input));
+  await ready;
+  for (const input of [...inputs].reverse()) {
+    const id = input.tool_use_id;
+    if (id === 'no-child') { finish.get(id)!({ result: 'unchanged', text: 'unchanged' }); continue; }
+    const spawn = await $.agent.spawn({
+      tool_use_id: id, prompt: input.prompt, description: input.description,
+      subagentType: input.subagent_type, parentModel: 'parent-model',
+      provider: { plugin: 'engine', tier: 'core' }, background: input.run_in_background, fork: false,
+      name: input.name, permissionMode: 'default', parentAgentId: 'parent', cwd: '/workspace',
+    });
+    finish.get(id)!(spawn.deny ? { deny: spawn.deny }
+      : { result: { agentId: spawn.agentId }, text: 'Original child result',
+        context: ['Existing context'], ...(id === 'error' ? { isError: true } : {}) });
+  }
+  const results = await Promise.all(waiting);
+  for (const [index, input] of inputs.entries()) {
+    expect(forwarded.find(e => e.tool_use_id === input.tool_use_id)).toEqual(input);
+    const result = results[index];
+    const id = input.tool_use_id;
+    if (id === 'denied') { expect(result).toEqual({ deny: 'Permission denied' }); continue; }
+    if (id === 'no-child') { expect(result).toEqual({ result: 'unchanged', text: 'unchanged' }); continue; }
+    expect(result.result).toEqual({ agentId: `child-${id}` });
+    expect(result.text).toBe('Original child result');
+    expect(result.context?.[0]).toBe('Existing context');
+    if (id === 'error') { expect(result.context).toEqual(['Existing context']); continue; }
+    const note = result.context?.[1] ?? '';
+    expect(note).toContain(`"agent_id":"child-${id}"`);
+    expect(note).toContain(`"selected_model":"selected-${id}"`);
+    expect(note).toContain(id === 'unknown' ? '"launched_model":null' : `"launched_model":"launched-${id}"`);
+    expect(note).not.toContain('requested-model');
+    expect(note).not.toContain('1+1');
+  }
+});
