@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -232,6 +233,21 @@ class TestBackgroundRefresh:
             token_cache.refresh_command(WS, "dev"),
         ]
 
+    def test_throttle_holds_when_file_times_run_ahead_of_time_time(self, monkeypatch, spawned):
+        # On Windows, Python 3.12's time.time() reads the coarse system clock (about 16ms
+        # steps) while NTFS stamps files from a finer one, so a marker created just now can
+        # carry an mtime later than time.time(). Measuring the claim's age from its mtime made
+        # it look stamped in the future, so every request re-claimed it and spawned a refresher.
+        # A lagging time.time() reproduces that on any OS.
+        lagging = SimpleNamespace(**{**vars(time), "time": lambda: time.time() - 0.5})
+        monkeypatch.setattr(token_cache, "time", lagging)
+        token = _jwt(time.time() + 86400)
+        token_cache.write(WS, "prod", token)
+        _age(WS, "prod", token_cache.REFRESH_AFTER_SECONDS + 1)
+        for _ in range(3):
+            assert token_cache.serve(WS, "prod") == token
+        assert spawned == [token_cache.refresh_command(WS, "prod")]
+
     def test_refresh_is_retried_after_the_window(self, spawned):
         # A refresher that failed leaves the entry old; the next window retries it.
         token = _jwt(time.time() + 86400)
@@ -239,10 +255,35 @@ class TestBackgroundRefresh:
         _age(WS, "prod", token_cache.REFRESH_AFTER_SECONDS + 1)
         token_cache.serve(WS, "prod")
         marker = token_cache._refresh_marker_path(WS, "prod")
+        marker.write_text(repr(time.time() - token_cache.REFRESH_RETRY_SECONDS - 1))
+        token_cache.serve(WS, "prod")
+        assert len(spawned) == 2
+
+    def test_claim_stamped_in_the_future_is_retried(self, spawned):
+        # The clock moved back after the claim; don't wait out a window that may never end.
+        token = _jwt(time.time() + 86400)
+        token_cache.write(WS, "prod", token)
+        _age(WS, "prod", token_cache.REFRESH_AFTER_SECONDS + 1)
+        token_cache.serve(WS, "prod")
+        marker = token_cache._refresh_marker_path(WS, "prod")
+        marker.write_text(repr(time.time() + token_cache.REFRESH_RETRY_SECONDS))
+        token_cache.serve(WS, "prod")
+        assert len(spawned) == 2
+
+    @pytest.mark.parametrize("content", ["", "not a time"])
+    def test_unreadable_claim_falls_back_to_its_file_time(self, spawned, content):
+        # A claim whose stamp never got written (or an older ug's empty marker).
+        token = _jwt(time.time() + 86400)
+        token_cache.write(WS, "prod", token)
+        _age(WS, "prod", token_cache.REFRESH_AFTER_SECONDS + 1)
+        marker = token_cache._refresh_marker_path(WS, "prod")
+        marker.write_text(content)
+        token_cache.serve(WS, "prod")
+        assert spawned == []
         past = time.time() - token_cache.REFRESH_RETRY_SECONDS - 1
         os.utime(marker, (past, past))
         token_cache.serve(WS, "prod")
-        assert len(spawned) == 2
+        assert len(spawned) == 1
 
     def test_spawn_failure_still_serves_the_token(self, monkeypatch):
         def boom(argv):

@@ -260,25 +260,50 @@ def refresh_in_background(host: str, profile: str | None) -> bool:
 def _claim_refresh(marker: Path, now: float) -> bool:
     """Take this entry's refresh slot unless it was taken within the retry window.
 
-    The marker is a throttle, not a lock: if two callers race past a stale marker, both start a
-    refresher and both rewrite the entry atomically."""
+    The claim records ``now`` inside the marker and its age is measured against that, from the
+    same clock. The marker's mtime comes from the filesystem's clock instead: on Windows it can
+    run ahead of ``time.time()``, which made a claim taken a moment ago look stamped in the
+    future, so every request re-claimed it. The marker is a throttle, not a lock: if two callers
+    race past a stale marker, both start a refresher and both rewrite the entry atomically."""
     for _ in range(2):
         try:
-            os.close(os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
-            return True
+            fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError:
             pass
-        try:
-            age = now - marker.stat().st_mtime
-        except FileNotFoundError:
+        else:
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(repr(now))
+            except OSError:
+                pass  # the claim stands; its age falls back to the file's mtime
+            return True
+        claimed_at = _claimed_at(marker)
+        if claimed_at is None:
             continue
-        if 0 <= age < REFRESH_RETRY_SECONDS:
+        if 0 <= now - claimed_at < REFRESH_RETRY_SECONDS:
             return False
         try:
             marker.unlink()
         except FileNotFoundError:
             pass
     return False
+
+
+def _claimed_at(marker: Path) -> float | None:
+    """When the marker's claim was taken, or None if the marker is gone.
+
+    A marker without a readable stamp (its writer stopped after creating it, or an older ug
+    wrote it empty) falls back to the file's mtime."""
+    try:
+        return float(marker.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, OverflowError):
+        pass
+    try:
+        return marker.stat().st_mtime
+    except FileNotFoundError:
+        return None
 
 
 def _spawn_detached(argv: list[str]) -> None:
