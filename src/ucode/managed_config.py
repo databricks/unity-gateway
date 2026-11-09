@@ -103,8 +103,7 @@ class AgentModels:
     """Model configuration for an agent with mutually-exclusive source selection.
 
     Reads the default model and family slots from default_models map, and selects
-    exactly one of: model_provider_service, unity_catalog_location, or a static model list
-    (``models.sources``, falling back to the legacy ``model_services`` field).
+    exactly one of: model_provider_service, unity_catalog_location, or model_services.
     """
 
     default_model: str | None = None
@@ -129,17 +128,18 @@ class AgentModels:
             if isinstance(key, str) and _FAMILY_SLOT_RE.fullmatch(key) and (model := _str(value))
         }
         # The model source is a server-enforced oneof; keep the one present, precedence
-        # model_provider_service > unity_catalog_location > the static list. The static list is
-        # `sources`; `model_services` is the legacy spelling and loses when both are present.
-        # Wildcard sources are not supported yet and are dropped; an all-wildcard list leaves the
-        # source empty, so launch falls back to discovery.
+        # model_provider_service > unity_catalog_location > sources/model_services. `sources` may
+        # mix 3-part model services and 4-part MPS model refs; both are used as-is.
         provider = _str(models_dict.get("model_provider_service"))
         location = None if provider else _str(models_dict.get("unity_catalog_location"))
-        sources = [s for s in _str_list(models_dict.get("sources")) if "*" not in s]
         model_services = (
             None
             if provider or location
-            else (sources or _str_list(models_dict.get("model_services")) or None)
+            else (
+                _str_list(models_dict.get("sources"))
+                or _str_list(models_dict.get("model_services"))
+                or None
+            )
         )
 
         if not (overall_default or slots or provider or location or model_services):

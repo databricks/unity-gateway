@@ -510,8 +510,6 @@ class TestManagedSuppliesModels:
         assert managed_supplies_models(managed, "opencode") is True
 
     def test_true_for_a_static_list_alone(self):
-        # A sources-only config has no default model; discovery must still be skipped because the
-        # static list is itself the answer.
         managed = {
             "enabled_agents": {
                 "claude": {

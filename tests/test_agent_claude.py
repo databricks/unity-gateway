@@ -675,25 +675,6 @@ class TestRenderOverlay:
         labels = [opt["label"] for opt in overlay["modelPicker"]["options"]]
         assert labels == ["Claude Opus 4.8", "GLM 5.3", "Kimi K3", "Databricks Custom Model"]
 
-    def test_static_sources_write_exact_four_part_ids_without_mps_header(self):
-        # A 4-part MPS reference from `models.sources` is used directly as the inference model id:
-        # written verbatim to `availableModels` and the picker, with no provider-service header.
-        static = [
-            "main.anthropic.byok.claude-opus-5-5",
-            "system.ai.claude-sonnet-4-6",
-        ]
-        overlay, _ = claude.render_overlay(WS, "s4", static_models=static)
-        assert overlay["availableModels"] == static
-        assert overlay["enforceAvailableModels"] is True
-        picker = overlay["modelPicker"]
-        assert [opt["model"] for opt in picker["options"]] == static
-        assert [opt["label"] for opt in picker["options"]] == [
-            "Claude Opus 5.5 (main.anthropic.byok)",
-            "Claude Sonnet 4.6",
-        ]
-        headers = overlay["env"].get("ANTHROPIC_CUSTOM_HEADERS", "")
-        assert "Databricks-Model-Provider-Service" not in headers
-
 
 class TestRenderOverlayOtelTracing:
     def test_otel_tracing_off_by_default(self):

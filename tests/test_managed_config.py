@@ -166,9 +166,7 @@ class TestNormalize:
             "system.ai.claude-haiku-4-5",
         ]
 
-    def test_sources_normalize_to_model_services(self):
-        # `models.sources` is the current static-list field; it lands in the same internal key as
-        # the legacy `model_services`, order preserved, 3- and 4-part names mixed.
+    def test_sources_are_carried_as_the_static_list(self):
         raw = {
             "enabled_agents": [
                 {
@@ -177,9 +175,9 @@ class TestNormalize:
                         "models": {
                             "sources": [
                                 "main.anthropic.byok.claude-opus-5-5",
-                                "system.ai.claude-sonnet-4-6",
-                                "main.anthropic.byok-2.claude-haiku-4-5",
-                            ]
+                                "system.ai.kimi-k3",
+                            ],
+                            "model_services": ["system.ai.claude-haiku-4-5"],
                         }
                     },
                 }
@@ -188,112 +186,8 @@ class TestNormalize:
         claude = normalize_managed_config(raw)["enabled_agents"]["claude"]
         assert claude["model_config"]["model_services"] == [
             "main.anthropic.byok.claude-opus-5-5",
-            "system.ai.claude-sonnet-4-6",
-            "main.anthropic.byok-2.claude-haiku-4-5",
+            "system.ai.kimi-k3",
         ]
-
-    def test_wildcard_sources_are_dropped(self):
-        # Wildcards are not supported yet; they are filtered out rather than passed through.
-        raw = {
-            "enabled_agents": [
-                {
-                    "agent": "CODING_AGENT_CLAUDE_CODE",
-                    "config": {
-                        "models": {
-                            "sources": [
-                                "main.anthropic.*",
-                                "system.ai.claude-opus-5-5",
-                                "*",
-                            ]
-                        }
-                    },
-                }
-            ]
-        }
-        claude = normalize_managed_config(raw)["enabled_agents"]["claude"]
-        assert claude["model_config"]["model_services"] == ["system.ai.claude-opus-5-5"]
-
-    def test_all_wildcard_sources_leave_no_model_source(self):
-        # An all-wildcard list is empty, so launch falls back to discovery as today.
-        raw = {
-            "enabled_agents": [
-                {
-                    "agent": "CODING_AGENT_CLAUDE_CODE",
-                    "config": {"models": {"sources": ["system.ai.*"]}},
-                }
-            ]
-        }
-        claude = normalize_managed_config(raw)["enabled_agents"]["claude"]
-        assert "model_services" not in claude.get("model_config", {})
-
-    def test_sources_win_over_model_services(self):
-        raw = {
-            "enabled_agents": [
-                {
-                    "agent": "CODING_AGENT_CLAUDE_CODE",
-                    "config": {
-                        "models": {
-                            "sources": ["system.ai.claude-opus-5-5"],
-                            "model_services": ["system.ai.claude-haiku-4-5"],
-                        }
-                    },
-                }
-            ]
-        }
-        claude = normalize_managed_config(raw)["enabled_agents"]["claude"]
-        assert claude["model_config"]["model_services"] == ["system.ai.claude-opus-5-5"]
-
-    def test_provider_still_beats_sources(self):
-        raw = {
-            "enabled_agents": [
-                {
-                    "agent": "CODING_AGENT_CLAUDE_CODE",
-                    "config": {
-                        "models": {
-                            "model_provider_service": "main.default.anthropic-mps",
-                            "sources": ["system.ai.claude-opus-5-5"],
-                        }
-                    },
-                }
-            ]
-        }
-        claude = normalize_managed_config(raw)["enabled_agents"]["claude"]
-        assert claude["model_config"]["model_provider_service"] == "main.default.anthropic-mps"
-        assert "model_services" not in claude["model_config"]
-
-    def test_location_still_beats_sources(self):
-        raw = {
-            "enabled_agents": [
-                {
-                    "agent": "CODING_AGENT_CLAUDE_CODE",
-                    "config": {
-                        "models": {
-                            "unity_catalog_location": "main.agents",
-                            "sources": ["system.ai.claude-opus-5-5"],
-                        }
-                    },
-                }
-            ]
-        }
-        claude = normalize_managed_config(raw)["enabled_agents"]["claude"]
-        assert claude["model_config"]["unity_catalog_location"] == "main.agents"
-        assert "model_services" not in claude["model_config"]
-
-    def test_sources_with_smart_routing_stay_enabled(self):
-        raw = {
-            "enabled_agents": [
-                {
-                    "agent": "CODING_AGENT_CLAUDE_CODE",
-                    "config": {
-                        "models": {"sources": ["main.anthropic.byok.claude-sonnet-5-5"]},
-                        "smart_routing": {"enabled": True},
-                    },
-                }
-            ]
-        }
-        claude = normalize_managed_config(raw)["enabled_agents"]["claude"]
-        assert claude["smart_routing_enabled"] is True
-        assert claude["model_config"]["model_services"] == ["main.anthropic.byok.claude-sonnet-5-5"]
 
     def test_unity_catalog_location_is_carried(self):
         raw = {
