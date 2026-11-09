@@ -129,6 +129,7 @@ def test_initial_and_streamed_mcp_choices_have_identical_details(monkeypatch):
     def discover(workspace, profile, *, on_services, metadata, **kwargs):
         metadata["cat.sch.docs"] = details
         on_services(["cat.sch.docs"])
+        return ["cat.sch.docs"], None
 
     monkeypatch.setattr(mcp, "discover_all_mcp_service_names", discover)
     streamed = []
