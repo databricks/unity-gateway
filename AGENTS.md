@@ -251,6 +251,8 @@ See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`. On Windows the managed file is `C:\ProgramData\OpenAI\Codex\requirements.toml`, which omits `model` and `mcp_servers` and adds `env_http_headers` for the launch-scoped headers.
 
+On Linux and macOS, `ug configure --global` (what Codex MDM runs) writes `managed_config.toml` as above and also rebuilds two files from scratch, through the same root or `sudo` write as the other machine-wide files. `/etc/codex/requirements.toml` gets `model_provider` and the whole `model_providers.Databricks` entry, laid out as on Windows, with the same `ug auth-token --host <workspace> --browser-login` command for every user. `/etc/codex/config.toml` gets only the config's `model`.
+
 | Field | Without managed config | With managed config | Notes |
 |-------|------------------------|---------------------|-------|
 | `model_provider` | Create/replace | Create/replace | Gateway provider (`Databricks`) |

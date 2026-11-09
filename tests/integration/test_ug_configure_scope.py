@@ -26,6 +26,7 @@ CLAUDE_MANAGED = Path(
     else "/etc/claude-code/managed-settings.json"
 )
 CODEX_MANAGED = Path("/etc/codex/managed_config.toml")
+CODEX_REQUIREMENTS = Path("/etc/codex/requirements.toml")
 
 
 @pytest.fixture(scope="module")
@@ -139,6 +140,15 @@ def _check_scope(request, session, workspace, scope, *, agent, launch):
             helper = provider["auth"]["command"]
         # Every user's agents run the helper, so --global must point it at the shared install.
         assert str(session.binary) in helper, helper
+    if agent == "codex" and scope == "global":
+        # --global also locks the provider for every user, with one shared sign-in command.
+        lock = tomllib.loads(CODEX_REQUIREMENTS.read_text())
+        assert lock["model_provider"] == "Databricks", lock
+        locked = lock["model_providers"]["Databricks"]
+        assert locked["base_url"] == f"{workspace}/ai-gateway/codex/v1", locked
+        assert str(session.binary) in locked["auth"]["command"], locked
+        assert locked["auth"]["args"][:3] == ["auth-token", "--host", workspace], locked
+        assert "--browser-login" in locked["auth"]["args"], locked
     assert ug_file.exists() == (scope != "global")
     if scope != "global":
         assert workspace in ug_file.read_text()
@@ -202,8 +212,9 @@ def test_ug_configure_scope_codex(request, live_session, workspace, scope):
     """Scenario: configure Codex in one scope over a user-owned config.toml, then launch.
 
     Expected: default writes `~/.codex/ucode.config.toml` and the managed file; `--user` and
-    `UG_SKIP_OS_SETTINGS` write only the per-user file; `--global` writes only the managed file,
-    whose auth command is the shared installation. `~/.codex/config.toml` is unchanged
+    `UG_SKIP_OS_SETTINGS` write only the per-user file; `--global` writes only the managed file
+    and `/etc/codex/requirements.toml`, whose provider lock uses the shared installation's
+    `ug auth-token --host <workspace> --browser-login`. `~/.codex/config.toml` is unchanged
     (default keeps the user's keys), the saved scope is `user` only after `--user`, and the
     launch answers through the gateway without changing the managed file.
     """

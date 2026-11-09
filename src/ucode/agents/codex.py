@@ -709,12 +709,17 @@ def managed_config_status(state: dict) -> tuple[Path | None, str, str]:
 
 
 def revert_managed_config() -> str:
-    return revert_managed_file(
-        "codex",
-        display="Codex",
-        parser=_parse_managed_config,
-        dumper=tomlkit.dumps,
-    )
+    """Revert managed_config.toml and the requirements.toml and config.toml `--global` writes."""
+    results = [
+        revert_managed_file(
+            tool,
+            display="Codex",
+            parser=_parse_managed_config,
+            dumper=tomlkit.dumps,
+        )
+        for tool in ("codex", "codex-requirements", "codex-config")
+    ]
+    return next((result for result in results if result != "unchanged"), "unchanged")
 
 
 def _otel_service_path() -> Path:
@@ -1146,6 +1151,8 @@ def _reconcile_managed_config(
             "config."
         )
         return
+    if _is_posix_global_run():
+        _write_global_files(state, path.parent)
     if path.is_symlink():
         raise RuntimeError(
             f"Refusing to use Codex managed settings through symlink {path}. Replace it with a "
@@ -1212,6 +1219,45 @@ def _as_requirements(compose: Callable[[dict], dict]) -> Callable[[dict], dict]:
         return doc
 
     return compose_requirements
+
+
+def _is_posix_global_run() -> bool:
+    """Whether this is an explicit ``ug configure --global`` on Linux or macOS. Besides
+    ``managed_config.toml``, it writes ``requirements.toml`` and ``config.toml`` in ``/etc/codex``."""
+    return machine_wide_only() and current_os() in (OS.LINUX, OS.MACOS)
+
+
+def _write_global_files(state: dict, system_dir: Path) -> None:
+    """Rebuild UG's provider lock in ``requirements.toml`` and its default model in ``config.toml``.
+
+    Every user shares the provider, so its auth command names no profile, PAT, or OAuth client.
+    The entry replaces any ``-c`` provider, so per-launch headers come from ``env_http_headers``."""
+    provider = _provider_block(
+        state["workspace"], None, managed_http_headers=state.get("codex_http_headers")
+    )
+    for header in _LAUNCH_ROUTING_HEADER_ENV_VARS:
+        provider["http_headers"].pop(header, None)
+    provider["env_http_headers"] = dict(_LAUNCH_ROUTING_HEADER_ENV_VARS)
+    requirements = {
+        "model_provider": CODEX_MODEL_PROVIDER_NAME,
+        "model_providers": {CODEX_MODEL_PROVIDER_NAME: provider},
+    }
+    model = state.get("codex_default_model")
+    config = {"model": model} if isinstance(model, str) else {}
+    # The same privileged write, through sudo when not root, as every other machine-wide file.
+    provider_keys = [["model_provider"], ["model_providers", CODEX_MODEL_PROVIDER_NAME]]
+    for tool, name, doc, owned in (
+        ("codex-requirements", CODEX_REQUIREMENTS_FILE, requirements, provider_keys),
+        ("codex-config", "config.toml", config, [["model"]]),
+    ):
+        reconcile_managed_file(
+            system_dir / name,
+            tomlkit.dumps(doc),
+            tool=tool,
+            display="Codex",
+            owned_paths=owned,
+            parser=_parse_managed_config,
+        )
 
 
 MANAGED_MCP_CONFIG_KEY = "mcp_servers"
