@@ -56,6 +56,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     from ucode.agents import vscode as vscode_mod
     from ucode.agents.desktop import claude as desktop_mod
     from ucode.agents.desktop import cowork as cowork_mod
+    from ucode.agents.desktop import mdm as mdm_mod
 
     state_dir = tmp_path / ".ucode"
     state_dir.mkdir()
@@ -132,6 +133,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # The header mod installs beside the real managed file; tests opt in with a tmp root.
     monkeypatch.setattr(claude_mod, "claude_header_mod_root", lambda: None)
     monkeypatch.setattr(managed_files_mod, "claude_desktop_org_plugin_path", lambda: None)
+    monkeypatch.setattr(mdm_mod, "MDM_ROOT", tmp_path / "desktop-mdm")
+    monkeypatch.setattr(mdm_mod, "POLICY_PATH", tmp_path / "desktop-policy.plist")
     monkeypatch.setattr(
         codex_mod, "CODEX_MODEL_CATALOG_PATH", state_dir / "codex-model-catalog.json"
     )

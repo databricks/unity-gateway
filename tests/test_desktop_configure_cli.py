@@ -21,6 +21,7 @@ from ucode.mcp import McpServiceListingRateLimited
 @pytest.mark.parametrize("failed", [False, True])
 def test_explicit_global_desktop_scope_is_command_local(monkeypatch, flags, failed):
     selections = []
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
     monkeypatch.setattr(cli, "install_databricks_cli", lambda: None)
 
     def configure_workspace(*args, **kwargs):
@@ -40,7 +41,11 @@ def test_explicit_global_desktop_scope_is_command_local(monkeypatch, flags, fail
 
 
 def test_global_skips_user_desktop_setup(monkeypatch):
+    from ucode.agents.desktop import mdm
+
     managed_files.set_machine_wide_only(True)
+    machine_configure = Mock()
+    monkeypatch.setattr(mdm, "configure", machine_configure)
 
     def unexpected_write(*args, **kwargs):
         pytest.fail("--global attempted user-level Desktop setup")
@@ -48,9 +53,43 @@ def test_global_skips_user_desktop_setup(monkeypatch):
     monkeypatch.setattr(desktop_setup, "write_claude_desktop_profile", unexpected_write)
     monkeypatch.setattr(desktop_setup, "configure_cowork", unexpected_write)
     monkeypatch.setattr(desktop_setup, "configure_code", unexpected_write)
-    desktop_setup.configure_claude_desktop({})
+    monkeypatch.setattr(desktop_setup.sys, "platform", "darwin")
+    desktop_setup.configure_claude_desktop({"workspace": "https://workspace.example"})
     desktop_setup.configure_claude_cowork({}, [])
     desktop_setup.configure_claude_code_plugin([])
+    machine_configure.assert_called_once_with("https://workspace.example", None)
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_global_skips_desktop_mdm_on_other_platforms(monkeypatch, platform):
+    from ucode.agents.desktop import mdm
+
+    managed_files.set_machine_wide_only(True)
+    monkeypatch.setattr(desktop_setup.sys, "platform", platform)
+    machine_configure = Mock()
+    profile_write = Mock()
+    monkeypatch.setattr(mdm, "configure", machine_configure)
+    monkeypatch.setattr(desktop_setup, "write_claude_desktop_profile", profile_write)
+    desktop_setup.configure_claude_desktop({"workspace": "https://workspace.example"})
+    machine_configure.assert_not_called()
+    profile_write.assert_not_called()
+
+
+def test_global_desktop_provisioning_failure_warns(monkeypatch, capsys):
+    message = "Could not update Desktop plugin: sudo authentication failed"
+    from ucode.agents.desktop import mdm
+
+    managed_files.set_machine_wide_only(True)
+    monkeypatch.setattr(desktop_setup.sys, "platform", "darwin")
+    monkeypatch.setattr(mdm, "configure", Mock(side_effect=RuntimeError(message)))
+    profile_write = Mock()
+    monkeypatch.setattr(desktop_setup, "write_claude_desktop_profile", profile_write)
+    desktop_setup.configure_claude_desktop({"workspace": "https://workspace.example"})
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Could not configure Claude Desktop" in output
+    assert message in output
+    assert "Claude Code setup is unchanged" in output
+    profile_write.assert_not_called()
 
 
 @pytest.fixture
@@ -228,7 +267,7 @@ def test_desktop_failure_preserves_successful_configure_exit(
     def fail(*a, **k):
         raise OSError("Desktop profile is not writable")
 
-    monkeypatch.setattr(desktop_setup, "_configure_desktop", fail)
+    monkeypatch.setattr(desktop_setup, "_configure_claude_desktop_user_level", fail)
     monkeypatch.setattr(desktop_setup.sys, "platform", "darwin")
     args: dict[str, Any] = {"selected_tools": ["claude"]}
     if flow == "single":

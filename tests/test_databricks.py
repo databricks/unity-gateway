@@ -2129,6 +2129,93 @@ class TestWalkCatalogSchemas:
         assert reason == "no user UC catalogs found"
         assert probed == []
 
+    def test_streams_probe_before_other_catalog_finishes_listing(self, monkeypatch):
+        slow_catalog_started = threading.Event()
+        release_slow_catalog = threading.Event()
+        first_result = threading.Event()
+        collected: list[str] = []
+        failures: list[Exception] = []
+
+        def fake_pages(url, token, *, items_key, **kwargs):
+            if items_key == "catalogs":
+                return [{"name": "fast"}, {"name": "slow"}], None
+            if kwargs["extra_params"]["catalog_name"] == "slow":
+                slow_catalog_started.set()
+                release_slow_catalog.wait(timeout=5)
+                return [{"name": "later"}], None
+            return [{"name": "first"}], None
+
+        def collect(result, done, total):
+            collected.append(result)
+            first_result.set()
+
+        def run_walk():
+            try:
+                db_mod.walk_catalog_schemas(
+                    WS,
+                    "token",
+                    deadline=time.monotonic() + 5,
+                    probe=lambda catalog, schema: f"{catalog}.{schema}",
+                    collect=collect,
+                )
+            except Exception as exc:  # noqa: BLE001
+                failures.append(exc)
+
+        monkeypatch.setattr(db_mod, "_paginated_json_items", fake_pages)
+        thread = threading.Thread(target=run_walk, daemon=True)
+        thread.start()
+        try:
+            assert slow_catalog_started.wait(timeout=2)
+            assert first_result.wait(timeout=2)
+            assert collected[0] == "fast.first"
+        finally:
+            release_slow_catalog.set()
+            thread.join(timeout=2)
+        assert not thread.is_alive()
+        assert not failures
+        assert set(collected) == {"fast.first", "slow.later"}
+
+    def test_busy_probe_queue_does_not_starve_catalog_listing(self, monkeypatch):
+        third_catalog_started = threading.Event()
+        release_probes = threading.Event()
+        failures: list[Exception] = []
+
+        def fake_pages(url, token, *, items_key, **kwargs):
+            if items_key == "catalogs":
+                return [{"name": name} for name in ("first", "second", "third")], None
+            catalog = kwargs["extra_params"]["catalog_name"]
+            if catalog == "third":
+                third_catalog_started.set()
+            return ([{"name": f"s{i}"} for i in range(30)] if catalog == "first" else []), None
+
+        def probe(catalog, schema):
+            release_probes.wait(timeout=3)
+            return f"{catalog}.{schema}"
+
+        def run_walk():
+            try:
+                db_mod.walk_catalog_schemas(
+                    WS,
+                    "token",
+                    deadline=time.monotonic() + 5,
+                    probe=probe,
+                    collect=lambda *args: None,
+                    max_workers=2,
+                )
+            except Exception as exc:  # noqa: BLE001
+                failures.append(exc)
+
+        monkeypatch.setattr(db_mod, "_paginated_json_items", fake_pages)
+        thread = threading.Thread(target=run_walk, daemon=True)
+        thread.start()
+        try:
+            assert third_catalog_started.wait(timeout=1.5)
+        finally:
+            release_probes.set()
+            thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert not failures
+
 
 class TestListAllMcpServices:
     """Workspace-wide walk: catalogs -> schemas -> per-schema mcp-services."""
@@ -2205,6 +2292,24 @@ class TestListAllMcpServices:
         assert [p[1] for p in progress] == [2, 2]
         assert progress[-1][0] == 2
         assert progress[-1][2] == 2
+
+    def test_timeout_keeps_streamed_services_and_reports_partial_listing(self, monkeypatch):
+        def walk(workspace, token, *, probe, collect, **kwargs):
+            collect(probe("main", "tools"), 1, 2)
+            return "deadline exceeded while listing UC schemas"
+
+        monkeypatch.setattr(db_mod, "walk_catalog_schemas", walk)
+        monkeypatch.setattr(
+            db_mod,
+            "list_mcp_services",
+            lambda workspace, token, parent, **kwargs: (["main.tools.linear"], None),
+        )
+        streamed: list[list[str]] = []
+        names, reason = db_mod.list_all_mcp_services(WS, "token", on_services=streamed.append)
+
+        assert names == ["main.tools.linear"]
+        assert streamed == [["main.tools.linear"]]
+        assert reason == "deadline exceeded while listing MCP services"
 
     def test_skips_internal_catalogs(self, monkeypatch):
         monkeypatch.setattr(
@@ -5842,6 +5947,47 @@ class TestCodingAgentConfigCrudClients:
         assert reason == "HTTP 404 Not Found"
 
 
+class TestGetUsageDashboardUrl:
+    def test_fetches_published_url_with_workspace_token(self, monkeypatch):
+        dashboard_url = f"{WS}/dashboardsv3/dashboard/published?o=123"
+        requests = []
+
+        def urlopen(request, timeout):
+            requests.append((request, timeout))
+            return _FakeResponse({"dashboard_id": "dashboard", "dashboard_url": dashboard_url})
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+
+        assert db_mod.get_usage_dashboard_url(WS, "workspace-token") == dashboard_url
+        assert len(requests) == 1
+        request, timeout = requests[0]
+        assert request.full_url == f"{WS}/api/ai-gateway/v2/usage-analytics-dashboard"
+        assert request.get_method() == "GET"
+        assert request.get_header("Authorization") == "Bearer workspace-token"
+        assert timeout == 10
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            None,
+            [],
+            {},
+            {"dashboard_id": "dashboard"},
+            {"dashboard_url": None},
+            {"dashboard_url": ""},
+            {"dashboard_url": "  "},
+            {"dashboard_url": 123},
+        ],
+    )
+    def test_omits_link_without_a_nonempty_url(self, monkeypatch, payload):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (payload, None))
+        assert db_mod.get_usage_dashboard_url(WS, "token") is None
+
+    def test_lookup_failure_omits_optional_link(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (None, "HTTP 403 Forbidden"))
+        assert db_mod.get_usage_dashboard_url(WS, "token") is None
+
+
 class TestListWorkspaceBudgets:
     PER_USER = "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER"
     SHARED = "ALERT_CONFIGURATION_SCOPE_TYPE_SHARED"
@@ -6222,7 +6368,7 @@ class TestWalkCatalogSchemasCancellation:
             return f"{cat}.{schema}"
 
         start = time.monotonic()
-        db_mod.walk_catalog_schemas(
+        reason = db_mod.walk_catalog_schemas(
             WS,
             "tok",
             deadline=start + 0.1,
@@ -6231,6 +6377,7 @@ class TestWalkCatalogSchemasCancellation:
         )
         assert time.monotonic() - start < 1.5
         assert len(collected) < N
+        assert reason == "deadline exceeded while listing UC schemas"
 
     def test_all_probes_collected_on_full_success(self, monkeypatch):
         N = 20
