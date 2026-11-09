@@ -632,6 +632,40 @@ class TestGeminiModelTokenLimits:
         }
 
 
+class TestOssModelTokenLimits:
+    @pytest.mark.parametrize(
+        ("model_id", "context", "output"),
+        [
+            ("system.ai.glm-5-3", 1_048_576, 131_072),
+            ("databricks-glm-5-3-flash", 1_048_576, 131_072),
+            ("system.ai.glm-5.2", 1_000_000, 131_072),
+            ("system.ai.kimi-k3", 1_000_000, 131_072),
+            ("system.ai.kimi-k3-1-pro", 1_000_000, 131_072),
+            ("system.ai.gpt-oss-120b", 128_000, 25_000),
+            ("system.ai.gpt-oss-20b", 128_000, 25_000),
+        ],
+    )
+    def test_limits_are_model_specific(self, model_id, context, output):
+        assert db_mod.oss_model_token_limits(model_id) == {"context": context, "output": output}
+
+    def test_unlisted_glm_keeps_the_shared_family_limits(self):
+        assert db_mod.oss_model_token_limits("system.ai.glm-4-6") == db_mod.model_token_limits(
+            "system.ai.glm-4-6"
+        )
+
+    def test_other_unlisted_models_are_never_uncapped(self):
+        assert db_mod.oss_model_token_limits("system.ai.deepseek-v4-1-flash") == {
+            "context": 128_000,
+            "output": 8_192,
+        }
+
+
+def test_pi_base_urls_include_the_mlflow_route():
+    assert db_mod.build_pi_base_urls("https://example.cloud.databricks.com")["oss"] == (
+        "https://example.cloud.databricks.com/ai-gateway/mlflow/v1"
+    )
+
+
 class TestDiscoverModelServices:
     def test_buckets_families_by_name(self, monkeypatch):
         payload = {

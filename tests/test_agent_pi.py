@@ -20,6 +20,7 @@ def _base_urls() -> dict[str, str]:
         "claude": f"{WS}/ai-gateway/anthropic",
         "openai": f"{WS}/ai-gateway/codex/v1",
         "gemini": f"{WS}/ai-gateway/gemini/v1beta",
+        "oss": f"{WS}/ai-gateway/mlflow/v1",
     }
 
 
@@ -29,6 +30,7 @@ def _empty() -> dict:
         "claude_models": {},
         "codex_models": [],
         "gemini_models": [],
+        "oss_models": [],
     }
 
 
@@ -42,6 +44,7 @@ def _overlay(model: str, token: str = "tok", **kwargs):
         bundle["claude_models"],
         bundle["codex_models"],
         bundle["gemini_models"],
+        bundle["oss_models"],
     )
 
 
@@ -97,6 +100,32 @@ class TestRenderOverlayProviders:
             "databricks-gemini",
         }
 
+    def test_mlflow_provider_uses_openai_completions(self):
+        overlay, keys = _overlay("system.ai.glm-5-3", oss_models=["system.ai.glm-5-3"])
+        provider = overlay["providers"]["databricks-mlflow"]
+        assert provider["api"] == "openai-completions"
+        assert provider["baseUrl"] == f"{WS}/ai-gateway/mlflow/v1"
+        assert provider["authHeader"] is True
+        assert ["providers", "databricks-mlflow"] in keys
+        assert overlay["model"] == "databricks-mlflow/system.ai.glm-5-3"
+
+    def test_no_mlflow_provider_without_oss_models(self):
+        overlay, keys = _overlay("gpt-5", codex_models=["gpt-5"])
+        assert "databricks-mlflow" not in overlay["providers"]
+        assert ["providers", "databricks-mlflow"] not in keys
+
+    def test_render_overlay_without_oss_argument_still_moves_gpt_oss(self):
+        # Callers that predate the MLflow provider pass only three model lists.
+        overlay, _ = pi.render_overlay(
+            "system.ai.gpt-oss-120b",
+            "tok",
+            _base_urls(),
+            {},
+            ["system.ai.gpt-oss-120b"],
+            [],
+        )
+        assert set(overlay["providers"]) == {"databricks-mlflow"}
+
 
 class TestRenderOverlayUserAgent:
     def test_user_agent_set_on_all_three_providers(self, monkeypatch):
@@ -150,6 +179,18 @@ class TestRenderOverlayCompatFlags:
         )
         assert "compat" not in overlay["providers"]["databricks-openai"]
         assert "compat" not in overlay["providers"]["databricks-gemini"]
+
+    def test_mlflow_omits_the_openai_fields_mlflow_models_reject(self):
+        # gpt-oss, Qwen and Llama reject `store`, `max_completion_tokens` and
+        # `prompt_cache_retention` ("json: unknown field"); Qwen rejects the developer role.
+        overlay, _ = _overlay("system.ai.kimi-k3", oss_models=["system.ai.kimi-k3"])
+        assert overlay["providers"]["databricks-mlflow"]["compat"] == {
+            "supportsStore": False,
+            "supportsStrictMode": False,
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": False,
+            "supportsLongCacheRetention": False,
+        }
 
 
 class TestRenderOverlayAuthAndModels:
@@ -250,6 +291,14 @@ class TestPiDefaultModel:
     def test_falls_back_to_gemini(self):
         state = {"claude_models": {}, "codex_models": [], "gemini_models": ["gemini-2"]}
         assert pi.default_model(state) == "gemini-2"
+
+    def test_falls_back_to_mlflow_models_last(self):
+        state = {"codex_models": ["system.ai.gpt-oss-120b"], "oss_models": ["system.ai.glm-5-3"]}
+        assert pi.default_model(state) == "system.ai.glm-5-3"
+        assert pi.default_model({**state, "gemini_models": ["gemini-2"]}) == "gemini-2"
+        assert pi.default_model({"codex_models": ["system.ai.gpt-oss-20b"]}) == (
+            "system.ai.gpt-oss-20b"
+        )
 
     def test_returns_none_when_empty(self):
         assert pi.default_model({}) is None
@@ -385,7 +434,9 @@ class TestWriteToolConfig:
 
     def test_every_provider_gets_the_auth_command(self, tmp_path, monkeypatch):
         pi_mod, config_file, _, _ = self._setup(tmp_path, monkeypatch)
-        state = self._state(codex_models=["gpt-5"], gemini_models=["gemini-2"])
+        state = self._state(
+            codex_models=["gpt-5"], gemini_models=["gemini-2"], oss_models=["system.ai.glm-5-2"]
+        )
 
         with (
             patch("ucode.agents.pi.get_databricks_token", return_value="tok"),
@@ -394,8 +445,40 @@ class TestWriteToolConfig:
             pi_mod.write_tool_config(state, "claude-sonnet", token="tok")
 
         providers = json.loads(config_file.read_text())["providers"]
-        for name in ("databricks-claude", "databricks-openai", "databricks-gemini"):
+        for name in pi_mod.PROVIDER_NAMES:
             assert providers[name]["apiKey"].startswith("!"), name
+
+    def test_discovered_oss_and_gpt_oss_land_on_the_mlflow_provider(self, tmp_path, monkeypatch):
+        pi_mod, config_file, _, _ = self._setup(tmp_path, monkeypatch)
+        state = self._state(
+            codex_models=["system.ai.gpt-5", "system.ai.gpt-oss-120b"],
+            oss_models=["system.ai.kimi-k3"],
+        )
+
+        with patch("ucode.agents.pi.save_state"):
+            pi_mod.write_tool_config(state, "claude-sonnet", token="tok")
+
+        providers = json.loads(config_file.read_text())["providers"]
+        assert [m["id"] for m in providers["databricks-mlflow"]["models"]] == [
+            "system.ai.kimi-k3",
+            "system.ai.gpt-oss-120b",
+        ]
+        assert [m["id"] for m in providers["databricks-openai"]["models"]] == ["system.ai.gpt-5"]
+
+    def test_saved_base_urls_without_an_mlflow_entry_get_the_workspace_route(
+        self, tmp_path, monkeypatch
+    ):
+        # State saved before the MLflow provider existed has only the three older routes.
+        pi_mod, config_file, _, _ = self._setup(tmp_path, monkeypatch)
+        saved = {k: v for k, v in _base_urls().items() if k != "oss"}
+        state = self._state(base_urls={"pi": saved}, oss_models=["system.ai.glm-5-3"])
+
+        with patch("ucode.agents.pi.save_state"):
+            pi_mod.write_tool_config(state, "claude-sonnet", token="tok")
+
+        providers = json.loads(config_file.read_text())["providers"]
+        assert providers["databricks-mlflow"]["baseUrl"] == f"{WS}/ai-gateway/mlflow/v1"
+        assert providers["databricks-claude"]["baseUrl"] == saved["claude"]
 
     def test_settings_pins_default_provider_and_model(self, tmp_path, monkeypatch):
         # Without this, Pi's `findInitialModel` can fall through to a built-in
@@ -459,21 +542,32 @@ class TestManagedModels:
             {"opus": "system.ai.claude-opus-4-8"},
             ["system.ai.gpt-5"],
             ["system.ai.gemini-3-flash"],
+            [],
         )
+
+    def test_managed_oss_models_land_on_the_mlflow_input(self):
+        state = {"pi_models": ["system.ai.kimi-k3", "system.ai.gpt-oss-20b", "system.ai.gpt-5"]}
+        assert pi._managed_model_families(state) == (
+            {},
+            ["system.ai.gpt-5"],
+            [],
+            ["system.ai.kimi-k3", "system.ai.gpt-oss-20b"],
+        )
+        assert pi.default_model(state) == "system.ai.kimi-k3"
 
     def test_no_split_without_managed_models(self):
         assert pi._managed_model_families({"claude_models": {"opus": "x"}}) is None
 
     def test_none_when_no_managed_model_is_servable(self):
-        # Pi has no OSS provider, so an oss-only list yields no families. Returning an all-empty
-        # tuple would be truthy and suppress the fallback, writing a config with zero providers.
-        assert pi._managed_model_families({"pi_models": ["system.ai.kimi-k2-7-code"]}) is None
+        # A family discovery doesn't bucket yields no provider. Returning an all-empty tuple
+        # would be truthy and suppress the fallback, writing a config with zero providers.
+        assert pi._managed_model_families({"pi_models": ["system.ai.qwen35-122b-a10b"]}) is None
 
     def test_partially_servable_list_still_splits(self):
         families = pi._managed_model_families(
-            {"pi_models": ["system.ai.kimi-k2-7-code", "system.ai.claude-opus-4-8"]}
+            {"pi_models": ["system.ai.qwen35-122b-a10b", "system.ai.claude-opus-4-8"]}
         )
-        assert families == ({"opus": "system.ai.claude-opus-4-8"}, [], [])
+        assert families == ({"opus": "system.ai.claude-opus-4-8"}, [], [], [])
 
 
 class TestManagedDefaultModel:
@@ -597,6 +691,29 @@ _DOCUMENTED_LEVELS = {
     # The doc lists minimal for 3.1 Pro, but the gateway rejects it.
     "gemini-3-1-pro": _NO_OFF_NO_MINIMAL,
     "gemini-2-5-pro": _BUDGET,
+    # MLflow models: hybrid ones turn reasoning off with `none`; levels the doc says fall back to
+    # `max` or alias another tier are hidden.
+    "glm-5-2": {"off": "none", "high": "high", "max": "max"},
+    "glm-5-3": {"low": "low", "high": "high", "max": "max"},
+    "glm-5-3-flash": {"low": "low", "high": "high", "max": "max"},
+    "kimi-k3": {"off": "none", "low": "low", "high": "high", "max": "max"},
+    "kimi-k3-1-pro": {"off": "none", "low": "low", "high": "high", "max": "max"},
+    "deepseek-v4-1-flash": {
+        "off": "none",
+        "low": "low",
+        "high": "high",
+        "xhigh": "xhigh",
+        "max": "max",
+    },
+    "deepseek-v4-1-flash-1017": {
+        "off": "none",
+        "low": "low",
+        "high": "high",
+        "xhigh": "xhigh",
+        "max": "max",
+    },
+    "gpt-oss-120b": _NO_OFF_NO_MINIMAL,
+    "gpt-oss-20b": _NO_OFF_NO_MINIMAL,
 }
 
 
@@ -622,6 +739,13 @@ def _entry(model_id: str) -> dict:
     elif "gemini-" in model_id:
         overlay, _ = _overlay(model_id, gemini_models=[model_id])
         provider = "databricks-gemini"
+    elif "gpt-oss" in model_id.replace(".", "-"):
+        # Discovery buckets gpt-oss with GPT; Pi moves it to the MLflow provider.
+        overlay, _ = _overlay(model_id, codex_models=[model_id])
+        provider = "databricks-mlflow"
+    elif any(family in model_id for family in ("kimi-", "glm-", "deepseek-")):
+        overlay, _ = _overlay(model_id, oss_models=[model_id])
+        provider = "databricks-mlflow"
     else:
         overlay, _ = _overlay(model_id, codex_models=[model_id])
         provider = "databricks-openai"
@@ -659,6 +783,13 @@ class TestModelEntries:
             ("system.ai.gpt-5", 400_000, 128_000),
             ("system.ai.gemini-3-1-pro", 1_048_576, 65_536),
             ("system.ai.gemini-3-pro-image", 65_536, 32_768),
+            ("system.ai.glm-5-3-flash", 1_048_576, 131_072),
+            ("system.ai.glm-5-2", 1_000_000, 131_072),
+            ("system.ai.kimi-k3-1-pro", 1_000_000, 131_072),
+            ("system.ai.gpt-oss-120b", 128_000, 25_000),
+            # Unlisted GLM keeps the shared family limits; other unlisted models get the floor.
+            ("system.ai.glm-4-6", 200_000, 25_000),
+            ("system.ai.deepseek-v4-1-flash", 128_000, 8_192),
         ],
     )
     def test_limits_are_model_specific(self, model_id, context, output):
@@ -735,6 +866,16 @@ class TestModelEntries:
     def test_undocumented_and_image_generation_gemini_models_get_limits_only(self, model_id):
         assert set(_entry(model_id)) == {"id", "contextWindow", "maxTokens"}
 
+    @pytest.mark.parametrize("model_id", ["system.ai.glm-6", "system.ai.kimi-k4"])
+    def test_undocumented_mlflow_models_get_limits_only(self, model_id):
+        # Without a documented level map Pi sends no reasoning_effort, so the model uses its own
+        # default instead of a value it might reject.
+        assert set(_entry(model_id)) == {"id", "contextWindow", "maxTokens"}
+
+    def test_mlflow_entries_stay_text_only(self):
+        # Image input through the MLflow route is unverified, so Pi keeps its text-only default.
+        assert "input" not in _entry("system.ai.kimi-k3")
+
     def test_dotted_ids_resolve_like_dashed_ones(self):
         assert _entry("gemini-3.8-flash")["thinkingLevelMap"] == {"minimal": None}
         assert _entry("gpt-6.1-sol")["contextWindow"] == 1_050_000
@@ -765,36 +906,44 @@ class TestUnservableModels:
         assert "providers" not in overlay
         assert ["providers", "databricks-claude"] not in keys
 
-    def test_gpt_oss_keeps_a_bare_responses_entry(self):
-        # gpt-oss stays on the Responses provider as on main: no GPT limits, reasoning or images.
+    def test_gpt_oss_moves_from_the_responses_provider_to_mlflow(self):
+        # Its model service declares only the MLflow route.
         overlay, _ = _overlay(
             "system.ai.gpt-oss-120b",
             codex_models=["system.ai.gpt-5", "system.ai.gpt-oss-120b", "system.ai.gpt-oss-20b"],
         )
 
-        models = overlay["providers"]["databricks-openai"]["models"]
-        assert [m["id"] for m in models] == [
-            "system.ai.gpt-5",
-            "system.ai.gpt-oss-120b",
-            "system.ai.gpt-oss-20b",
-        ]
-        assert models[1:] == [{"id": "system.ai.gpt-oss-120b"}, {"id": "system.ai.gpt-oss-20b"}]
-        assert overlay["model"] == "databricks-openai/system.ai.gpt-oss-120b"
+        ids = [m["id"] for m in overlay["providers"]["databricks-openai"]["models"]]
+        assert ids == ["system.ai.gpt-5"]
+        mlflow_ids = [m["id"] for m in overlay["providers"]["databricks-mlflow"]["models"]]
+        assert mlflow_ids == ["system.ai.gpt-oss-120b", "system.ai.gpt-oss-20b"]
+        assert overlay["model"] == "databricks-mlflow/system.ai.gpt-oss-120b"
 
-    def test_default_model_skips_old_claude(self):
+    def test_gpt_oss_listed_in_both_inputs_appears_once(self):
+        overlay, _ = _overlay(
+            "system.ai.gpt-oss-20b",
+            codex_models=["system.ai.gpt-oss-20b"],
+            oss_models=["system.ai.gpt-oss-20b", "system.ai.glm-5-3"],
+        )
+
+        ids = [m["id"] for m in overlay["providers"]["databricks-mlflow"]["models"]]
+        assert ids == ["system.ai.gpt-oss-20b", "system.ai.glm-5-3"]
+        assert "databricks-openai" not in overlay["providers"]
+
+    def test_default_model_skips_unservable_models(self):
         state = {
             "claude_models": {"opus": "system.ai.claude-opus-4-1"},
             "codex_models": ["system.ai.gpt-oss-120b", "system.ai.gpt-5"],
         }
-        # Main's order among the GPT models is kept, gpt-oss included.
-        assert pi.default_model(state) == "system.ai.gpt-oss-120b"
+        # gpt-oss is on the MLflow provider, which comes after the GPT models.
+        assert pi.default_model(state) == "system.ai.gpt-5"
         assert pi.default_model({"claude_models": {"opus": "system.ai.claude-opus-4-1"}}) is None
 
     def test_managed_list_skips_unservable_models(self):
         state = {
             "pi_models": [
-                "system.ai.gpt-oss-120b",
                 "system.ai.claude-opus-4-1",
+                "system.ai.gpt-oss-120b",
                 "system.ai.claude-opus-5-5",
                 "system.ai.gpt-6-sol",
             ]
@@ -802,15 +951,26 @@ class TestUnservableModels:
 
         assert pi._managed_model_families(state) == (
             {"opus": "system.ai.claude-opus-5-5"},
-            ["system.ai.gpt-oss-120b", "system.ai.gpt-6-sol"],
+            ["system.ai.gpt-6-sol"],
             [],
+            ["system.ai.gpt-oss-120b"],
         )
         assert pi.default_model(state) == "system.ai.gpt-oss-120b"
 
-    def test_managed_gpt_oss_is_served(self):
-        state = {"pi_models": ["system.ai.gpt-oss-120b"]}
+    def test_managed_list_of_only_gpt_oss_uses_the_mlflow_provider(self):
+        assert pi._managed_model_families({"pi_models": ["system.ai.gpt-oss-120b"]}) == (
+            {},
+            [],
+            [],
+            ["system.ai.gpt-oss-120b"],
+        )
 
-        assert pi._managed_model_families(state) == ({}, ["system.ai.gpt-oss-120b"], [])
+    def test_managed_gpt_oss_default_is_the_default(self):
+        state = {
+            "pi_default_model": "system.ai.gpt-oss-120b",
+            "pi_models": ["system.ai.gpt-oss-120b", "system.ai.gpt-5"],
+        }
+
         assert pi.default_model(state) == "system.ai.gpt-oss-120b"
 
     def test_excluded_managed_default_is_not_the_default(self):
@@ -820,13 +980,10 @@ class TestUnservableModels:
         }
 
         assert pi.default_model(state) == "system.ai.gpt-5"
-        assert pi.default_model({**state, "pi_default_model": "system.ai.gpt-oss-120b"}) == (
-            "system.ai.gpt-oss-120b"
-        )
 
     @pytest.mark.parametrize(
         "managed",
-        [["system.ai.claude-opus-4-1"], ["system.ai.kimi-k2-7-code"]],
+        [["system.ai.claude-opus-4-1"], ["system.ai.qwen35-122b-a10b"]],
     )
     def test_unservable_managed_list_defaults_to_discovery(self, managed):
         # `_managed_model_families` returns None for these, so the config uses discovery; the
@@ -906,7 +1063,10 @@ class TestManagedModelEntries:
             "system.ai.gpt-oss-120b",
             "system.ai.gemini-3-1-pro",
         }
-        assert by_id["system.ai.gpt-oss-120b"] == {"id": "system.ai.gpt-oss-120b"}
+        assert [m["id"] for m in providers["databricks-mlflow"]["models"]] == [
+            "system.ai.gpt-oss-120b"
+        ]
+        assert by_id["system.ai.gpt-oss-120b"]["maxTokens"] == 25_000
         assert by_id["system.ai.claude-opus-5-5"]["contextWindow"] == 1_000_000
         assert by_id["system.ai.gpt-5"]["thinkingLevelMap"] == {"off": None}
         assert by_id["system.ai.gemini-3-1-pro"]["reasoning"] is True

@@ -2310,6 +2310,33 @@ def gemini_model_token_limits(model_id: str) -> dict[str, int]:
     return dict(_GEMINI_IMAGE_LIMITS if image else _GEMINI_TEXT_LIMITS)
 
 
+# Per-model limits of chat models on `/ai-gateway/mlflow/v1`, keyed by canonical name and ordered
+# most specific first; a key matches the name or a `<key>-` prefix. Output caps are the largest
+# `max_tokens` the gateway accepts (GLM 5.x 128K; gpt-oss 25K, "cannot be greater than
+# max_output_tokens 25000"). Kimi K3 accepts `max_tokens` up to its whole window, so 128K bounds
+# a runaway answer. Context windows come from each model's serving-endpoint description.
+_OSS_TOKEN_LIMITS: tuple[tuple[str, dict[str, int]], ...] = (
+    ("glm-5-3", {"context": 1_048_576, "output": 131_072}),
+    ("glm-5-2", {"context": 1_000_000, "output": 131_072}),
+    ("kimi-k3", {"context": 1_000_000, "output": 131_072}),
+    ("gpt-oss", {"context": 128_000, "output": 25_000}),
+)
+# A model with no entry or family limits gets a floor the gateway accepts: a low output cap
+# truncates an answer, while one above the gateway's cap fails the request.
+_OSS_FALLBACK_LIMITS = {"context": 128_000, "output": 8_192}
+
+
+def oss_model_token_limits(model_id: str) -> dict[str, int]:
+    """``{"context": ..., "output": ...}`` for an MLflow chat model, never uncapped.
+
+    Falls back to the family limits of ``model_token_limits``, then to a conservative floor."""
+    name = canonical_model_name(model_id)
+    for family, limits in _OSS_TOKEN_LIMITS:
+        if name == family or name.startswith(f"{family}-"):
+            return dict(limits)
+    return model_token_limits(model_id) or dict(_OSS_FALLBACK_LIMITS)
+
+
 @dataclass(frozen=True)
 class ModelServiceEntry:
     """One ``system.ai.*`` model service and the API types it advertises.
@@ -4250,12 +4277,13 @@ def build_pi_base_urls(workspace: str) -> dict[str, str]:
     # - openai-completions       appends `/chat/completions`
     #
     # So the baseUrls below stop just before the suffix Pi will tack on.
-    # Compat flags applied per-provider in agents/pi.py; required for `oss`
-    # only (MLflow rejects `store` and `tools[].function.strict`).
+    # Compat flags applied per-provider in agents/pi.py; the `oss` provider
+    # needs them because MLflow models reject several OpenAI request fields.
     return {
         "claude": build_tool_base_url("claude", workspace),
         "openai": build_tool_base_url("codex", workspace),
         "gemini": build_tool_base_url("gemini", workspace) + "/v1beta",
+        "oss": f"{workspace}/ai-gateway/mlflow/v1",
     }
 
 

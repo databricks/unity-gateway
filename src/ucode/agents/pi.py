@@ -1,12 +1,13 @@
 """Pi coding agent: writes a ucode-private models.json with Databricks-backed providers.
 
-Pi (https://pi.dev) is a multi-provider coding agent. We register three
+Pi (https://pi.dev) is a multi-provider coding agent. We register four
 providers in its `models.json`, each speaking the API dialect best suited to
 that family's gateway path:
 
 - `databricks-claude`  (api: anthropic-messages)       → /ai-gateway/anthropic
 - `databricks-openai`  (api: openai-responses)         → /ai-gateway/codex/v1
 - `databricks-gemini`  (api: google-generative-ai)     → /ai-gateway/gemini/v1beta
+- `databricks-mlflow`  (api: openai-completions)       → /ai-gateway/mlflow/v1
 
 Per-provider `compat` flags work around fields the gateway translators reject:
 
@@ -15,18 +16,17 @@ Per-provider `compat` flags work around fields the gateway translators reject:
   pi uses for every request. With this flag pi omits the per-tool field and
   sends the legacy `anthropic-beta: fine-grained-tool-streaming-...` header
   instead, which the gateway accepts.
+- mlflow: see `_MLFLOW_COMPAT` for the OpenAI fields MLflow models reject.
 
 Gateway model ids are not in Pi's built-in catalog, so a bare `{"id": ...}`
 entry gets Pi's custom-model defaults: no thinking, text-only input, a 128K
 context and 16K output. Each entry therefore declares its limits, image input,
 reasoning and a `thinkingLevelMap` of the levels the model accepts.
 
-OSS / Databricks-foundation models (Llama, Qwen, etc.) are not exposed via
-pi today — they live behind /ai-gateway/mlflow/v1 with per-model
-`max_tokens` caps that pi has no global way to honor without per-model
-config we don't currently maintain. gpt-oss is bucketed with the GPT models by
-name and keeps a bare entry on the Responses provider. Claude models older than
-4.5 reject Pi's Anthropic request shape and are left out.
+The OSS models discovery finds (GLM, Kimi, DeepSeek) and gpt-oss go to
+`databricks-mlflow`. gpt-oss is bucketed with the GPT models by name, but its
+model service declares only the MLflow route, so Pi moves it there. Claude
+models older than 4.5 reject Pi's Anthropic request shape and are left out.
 
 Each provider's `apiKey` is pi's `!command` config value rather than a baked
 bearer, so pi mints one per request via `ug auth-token` and nothing that
@@ -62,6 +62,7 @@ from ucode.databricks import (
     gemini_model_token_limits,
     get_databricks_token,
     gpt_model_token_limits,
+    oss_model_token_limits,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import mark_tool_managed, save_state
@@ -91,6 +92,7 @@ PROVIDER_NAMES = (
     "databricks-claude",
     "databricks-openai",
     "databricks-gemini",
+    "databricks-mlflow",
 )
 
 PROVIDER_KEYS: list[list[str]] = [["providers", name] for name in PROVIDER_NAMES]
@@ -140,6 +142,21 @@ def _claude_version(model_id: str) -> tuple[str, tuple[int, int]] | None:
 def _serves_claude_model(model_id: str) -> bool:
     parsed = _claude_version(model_id)
     return parsed is None or parsed[1] >= _MIN_CLAUDE_VERSION
+
+
+def _is_gpt_oss(model_id: str) -> bool:
+    return canonical_model_name(model_id).startswith("gpt-oss")
+
+
+def _serves_codex_model(model_id: str) -> bool:
+    # gpt-oss shares the GPT bucket by name, but its model service declares only the MLflow
+    # route, so Pi serves it from `databricks-mlflow` instead of the Responses provider.
+    return not _is_gpt_oss(model_id)
+
+
+def _mlflow_models(oss_models: list[str], codex_models: list[str]) -> list[str]:
+    """The `databricks-mlflow` models: discovered OSS models, then gpt-oss from the GPT bucket."""
+    return list(dict.fromkeys([*oss_models, *(m for m in codex_models if _is_gpt_oss(m))]))
 
 
 def _claude_thinking_level_map(model_id: str) -> ThinkingLevelMap | None:
@@ -234,10 +251,6 @@ _GPT_VISION_WITHOUT_REASONING = ("gpt-4o", "gpt-4-1")
 
 
 def _gpt_model_entry(model_id: str) -> dict:
-    if canonical_model_name(model_id).startswith("gpt-oss"):
-        # gpt-oss shares the GPT bucket by name but is an OSS model: keep its bare entry and
-        # Pi's defaults rather than claim GPT limits, reasoning or image input for it.
-        return {"id": model_id}
     limits = gpt_model_token_limits(model_id)
     entry: dict = {
         "id": model_id,
@@ -290,11 +303,65 @@ def _gemini_model_entry(model_id: str) -> dict:
     return entry
 
 
+# Pi levels for MLflow models from the Databricks reasoning-models doc; Pi sends each value as
+# `reasoning_effort`. Hybrid models reason at `max` when the effort is omitted, so `off` must map
+# to `none` to stop reasoning. Levels the doc says fall back to `max` or alias another tier are
+# hidden. Models missing here get limits only, so Pi sends no `reasoning_effort`.
+_HYBRID_LOW_HIGH_MAX: ThinkingLevelMap = {
+    "off": "none",
+    "minimal": None,
+    "low": "low",
+    "medium": None,
+    "high": "high",
+    "max": "max",
+}
+_OSS_THINKING_LEVEL_MAPS: dict[str, ThinkingLevelMap] = {
+    "glm-5-2": {**_HYBRID_LOW_HIGH_MAX, "low": None},
+    "kimi-k3": _HYBRID_LOW_HIGH_MAX,
+    "kimi-k3-1-pro": _HYBRID_LOW_HIGH_MAX,
+    "deepseek-v4-1-flash": {**_HYBRID_LOW_HIGH_MAX, "xhigh": "xhigh"},
+    "deepseek-v4-1-flash-1017": {**_HYBRID_LOW_HIGH_MAX, "xhigh": "xhigh"},
+    # Reasoning only: GLM 5.3 rejects `none` with HTTP 400.
+    "glm-5-3": {**_HYBRID_LOW_HIGH_MAX, "off": None},
+    "glm-5-3-flash": {**_HYBRID_LOW_HIGH_MAX, "off": None},
+    # Always reasons at low/medium/high; `none` is treated as unset.
+    "gpt-oss-120b": {"off": None, "minimal": None},
+    "gpt-oss-20b": {"off": None, "minimal": None},
+}
+
+
+def _oss_model_entry(model_id: str) -> dict:
+    limits = oss_model_token_limits(model_id)
+    entry: dict = {
+        "id": model_id,
+        "contextWindow": limits["context"],
+        "maxTokens": limits["output"],
+    }
+    level_map = _OSS_THINKING_LEVEL_MAPS.get(canonical_model_name(model_id))
+    if level_map is not None:
+        entry.update(reasoning=True, thinkingLevelMap=dict(level_map))
+    return entry
+
+
+# MLflow chat models reject OpenAI fields Pi sends by default (HTTP 400 "json: unknown field" on
+# gpt-oss, Qwen and Llama): `store`, `max_completion_tokens`, and the `prompt_cache_retention` /
+# `prompt_cache_key` pair Pi adds under PI_CACHE_RETENTION=long. Qwen's chat template also
+# rejects the `developer` role. Strict tool schemas are Pi's default off; kept explicit.
+_MLFLOW_COMPAT: dict[str, object] = {
+    "supportsStore": False,
+    "supportsStrictMode": False,
+    "maxTokensField": "max_tokens",
+    "supportsDeveloperRole": False,
+    "supportsLongCacheRetention": False,
+}
+
+
 def _resolve_model_selector(
     model: str,
     claude_models: dict[str, str],
     codex_models: list[str],
     gemini_models: list[str],
+    oss_models: list[str],
 ) -> str:
     """Return a Pi model selector in `<provider>/<model>` form when possible."""
     for name in PROVIDER_NAMES:
@@ -306,6 +373,8 @@ def _resolve_model_selector(
         return f"databricks-openai/{model}"
     if model in gemini_models:
         return f"databricks-gemini/{model}"
+    if model in oss_models:
+        return f"databricks-mlflow/{model}"
     return model
 
 
@@ -316,15 +385,19 @@ def render_overlay(
     claude_models: dict[str, str],
     codex_models: list[str],
     gemini_models: list[str],
+    oss_models: list[str] | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Pi's private agent config.
 
     ``api_key`` is a pi config value, not necessarily a literal bearer: see
     ``build_pi_api_key`` for the `!command` form every provider gets.
 
-    Claude older than 4.5, which Pi can't serve, is dropped from the provider lists first.
-    ``model`` is used as given; ``write_tool_config`` replaces an excluded one before calling here."""
+    gpt-oss moves from ``codex_models`` to the MLflow provider, and Claude older than 4.5 is
+    dropped, before any provider or the model selector is built. ``model`` is used as given;
+    ``write_tool_config`` replaces an excluded one before calling here."""
     claude_models = {f: m for f, m in claude_models.items() if _serves_claude_model(m)}
+    oss_models = _mlflow_models(oss_models or [], codex_models)
+    codex_models = [m for m in codex_models if _serves_codex_model(m)]
     providers: dict = {}
     keys: list[list[str]] = [["model"]]
     # Pi expands header values that match an env var name. Our UA contains
@@ -374,8 +447,21 @@ def render_overlay(
             "models": [_gemini_model_entry(m) for m in gemini_models],
         }
         keys.append(["providers", "databricks-gemini"])
+    if oss_models:
+        providers["databricks-mlflow"] = {
+            "baseUrl": pi_base_urls["oss"],
+            "api": "openai-completions",
+            "apiKey": api_key,
+            "authHeader": True,
+            "compat": dict(_MLFLOW_COMPAT),
+            "headers": ua_headers,
+            "models": [_oss_model_entry(m) for m in oss_models],
+        }
+        keys.append(["providers", "databricks-mlflow"])
     overlay: dict = {
-        "model": _resolve_model_selector(model, claude_models, codex_models, gemini_models),
+        "model": _resolve_model_selector(
+            model, claude_models, codex_models, gemini_models, oss_models
+        ),
     }
     if providers:
         overlay["providers"] = providers
@@ -433,12 +519,17 @@ def write_tool_config(
     backup_existing_file(PI_CONFIG_PATH, PI_BACKUP_PATH)
     if token is None:
         token = get_databricks_token(state["workspace"], state.get("profile"))
-    pi_base_urls = state.get("base_urls", {}).get("pi") or build_pi_base_urls(state["workspace"])
+    # Base URLs saved before the MLflow provider existed have no `oss` entry.
+    pi_base_urls = {
+        **build_pi_base_urls(state["workspace"]),
+        **(state.get("base_urls", {}).get("pi") or {}),
+    }
     managed_families = _managed_model_families(state)
-    claude_models, codex_models, gemini_models = managed_families or (
+    claude_models, codex_models, gemini_models, oss_models = managed_families or (
         state.get("claude_models") or {},
         state.get("codex_models") or [],
         state.get("gemini_models") or [],
+        state.get("oss_models") or [],
     )
     overlay, managed_keys = render_overlay(
         model,
@@ -447,6 +538,7 @@ def write_tool_config(
         claude_models,
         codex_models,
         gemini_models,
+        oss_models,
     )
     existing = read_json_safe(PI_CONFIG_PATH)
     providers = existing.get("providers")
@@ -474,12 +566,15 @@ def _write_settings(model_selector: str) -> None:
     write_json_file(PI_SETTINGS_PATH, merged)
 
 
-def _managed_model_families(state: dict) -> tuple[dict[str, str], list[str], list[str]] | None:
+def _managed_model_families(
+    state: dict,
+) -> tuple[dict[str, str], list[str], list[str], list[str]] | None:
     """Split a managed config's ``pi_models`` into the per-family inputs Pi's providers need.
 
-    Pi builds one provider block per family, so a flat list has to be classified back out. Returns
-    None when the managed models yield no family Pi can serve, leaving the workspace-wide discovery
-    lists in play rather than writing a config with no usable provider.
+    Pi builds one provider block per family, so a flat list has to be classified back out:
+    ``(claude, codex, gemini, oss)``, with gpt-oss under ``oss``. Returns None when the managed
+    models yield no family Pi can serve, leaving the workspace-wide discovery lists in play rather
+    than writing a config with no usable provider.
     """
     managed = state.get("pi_models")
     if not isinstance(managed, list) or not managed:
@@ -487,6 +582,7 @@ def _managed_model_families(state: dict) -> tuple[dict[str, str], list[str], lis
     claude: dict[str, str] = {}
     codex: list[str] = []
     gemini: list[str] = []
+    oss: list[str] = []
     for model in managed:
         if not isinstance(model, str) or not model.strip():
             continue
@@ -495,28 +591,31 @@ def _managed_model_families(state: dict) -> tuple[dict[str, str], list[str], lis
             if _serves_claude_model(model):
                 claude.setdefault(family, model)
         elif family == "codex":
-            codex.append(model)
+            (codex if _serves_codex_model(model) else oss).append(model)
         elif family == "gemini":
             gemini.append(model)
-    if not (claude or codex or gemini):
+        elif family == "oss":
+            oss.append(model)
+    if not (claude or codex or gemini or oss):
         return None
-    return claude, codex, gemini
+    return claude, codex, gemini, oss
 
 
 def _serves_model(model: str) -> bool:
     family = classify_model_family(model)
     if family in ANTHROPIC_FAMILIES:
         return _serves_claude_model(model)
-    return family in ("codex", "gemini")
+    return family in ("codex", "gemini", "oss")
 
 
 def _excluded_model(model: str) -> bool:
     """Whether ``model`` is a Claude model Pi leaves out (older than 4.5)."""
-    return classify_model_family(model) in ANTHROPIC_FAMILIES and not _serves_claude_model(model)
+    family = classify_model_family(model)
+    return family in ANTHROPIC_FAMILIES and not _serves_model(model)
 
 
 def default_model(state: dict) -> str | None:
-    """Prefer Claude opus → sonnet → haiku; fall back to codex, gemini.
+    """Prefer Claude opus → sonnet → haiku; fall back to codex, gemini, then MLflow models.
 
     A managed config's ``pi_default_model`` and ``pi_models`` win over discovery: the former is
     the admin's chosen session start, the latter their allowlist (its first model Pi serves).
@@ -536,12 +635,15 @@ def default_model(state: dict) -> str | None:
     for family in ("opus", "sonnet", "haiku"):
         if claude_models.get(family) and _serves_claude_model(claude_models[family]):
             return claude_models[family]
-    codex_models = state.get("codex_models") or []
+    codex_models = [m for m in state.get("codex_models") or [] if _serves_codex_model(m)]
     if codex_models:
         return codex_models[0]
     gemini_models = state.get("gemini_models") or []
     if gemini_models:
         return gemini_models[0]
+    mlflow_models = _mlflow_models(state.get("oss_models") or [], state.get("codex_models") or [])
+    if mlflow_models:
+        return mlflow_models[0]
     return next((m for m in claude_models.values() if _serves_claude_model(m)), None)
 
 
