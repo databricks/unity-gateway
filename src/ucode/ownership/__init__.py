@@ -159,11 +159,6 @@ def _overlapping(entries: tuple[Entry, ...], path: list[str]) -> list[Entry]:
     return [entry for entry in entries if _overlaps(list(entry.path), path)]
 
 
-def _admin_leaves(native: dict) -> list[tuple[list[str], object]]:
-    # An empty table is a value in its own right (e.g. an empty MCP allowlist), so keep it.
-    return list(_leaf_paths(native, []))
-
-
 def compose(
     entries: tuple[Entry, ...],
     *,
@@ -189,7 +184,7 @@ def compose(
     kept: list[tuple[list[str], object]] = []
     admin_lists: dict[tuple[str, ...], list] = {}
     overridden_defaults: set[tuple[str, ...]] = set()
-    for path, value in _admin_leaves(native):
+    for path, value in _leaf_paths(native, []):
         dotted = ".".join(path)
         matches = _overlapping(entries, path)
         owner = next((entry for entry in matches if entry.active(features)), None)
@@ -267,11 +262,6 @@ def _check_ug_values(entries: tuple[Entry, ...], ug_values: dict, features: set[
                 f"Unity Gateway writes {'.'.join(path)}, which its ownership table doesn't "
                 "reserve for the managed file. Add it to the table."
             )
-
-
-def ug_writable_paths(entries: tuple[Entry, ...]) -> list[tuple[str, ...]]:
-    """Paths UG may write into the managed file (any feature state)."""
-    return [entry.path for entry in entries if entry.in_managed_file and entry.cls != DEFAULT]
 
 
 def defaults(entries: tuple[Entry, ...]) -> dict[str, object]:
