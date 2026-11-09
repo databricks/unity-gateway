@@ -1,5 +1,8 @@
 # Test suites and user journeys
 
+Routed answers retain the animal name and quoted answer without an extra answer heading;
+native component checks cover the rendered output and one-time delivery.
+
 `native_claude/test_mod.py` checks routed parent reports in the real Claude
 process against a controlled provider: incorrect model claims must be absent
 from streamed assistant messages and saved transcripts, for both foreground and

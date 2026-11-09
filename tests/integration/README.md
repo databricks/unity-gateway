@@ -1,5 +1,8 @@
 # Integration tests
 
+Routed answers retain the animal name and quoted answer without an extra answer heading;
+native component checks cover the rendered output and one-time delivery.
+
 Windows Desktop detection allows up to 30 seconds for the native package query.
 Component coverage in `test_desktop_setup.py` verifies slow successful detection creates
 UG's profile, while missing packages, timeouts, launch errors, and query failures leave

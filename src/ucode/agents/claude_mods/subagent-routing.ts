@@ -122,7 +122,7 @@ function createReports() {
         if (completion.isAborted || completion.reason !== 'answer') {
           output.push(`${child.name} · ${actual} · ${completion.isAborted ? 'Interrupted' : 'Failed'}`)
         } else if (completion.answer) {
-          output.push(`${child.name}\n\nChild answer:\n${completion.answer.split('\n').map(line => `> ${line}`).join('\n')}`)
+          output.push(`${child.name}\n\n${completion.answer.split('\n').map(line => `> ${line}`).join('\n')}`)
         }
       }
       for (const [childId, completion] of completedReports) delivered.set(childId, completion)

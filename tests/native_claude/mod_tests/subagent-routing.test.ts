@@ -699,13 +699,14 @@ test('parent reports recorded answers despite arbitrary prose, then resets on a 
   reportReady = true;
   const parent = await collectParentTurn($, 'parent-report', 1);
   expect(parent.text).toBe(parent.result.answer);
-  expect(parent.text).toMatch(/^[A-Z][a-z]+(?: \d+)?\n\nChild answer:\n> Answer from child A$/m);
-  expect(parent.text).toMatch(/^[A-Z][a-z]+(?: \d+)?\n\nChild answer:\n> Handed-back answer from child B$/m);
+  expect(parent.text).toMatch(/^[A-Z][a-z]+(?: \d+)?\n\n> Answer from child A$/m);
+  expect(parent.text).toMatch(/^[A-Z][a-z]+(?: \d+)?\n\n> Handed-back answer from child B$/m);
   expect(parent.text).not.toContain(' · ');
-  expect(parent.text).toContain('Child answer:\n> ' + handedBackAnswer);
+  expect(parent.text).not.toContain('Child answer:');
+  expect(parent.text).toContain('> ' + handedBackAnswer);
   expect(parent.text).not.toContain('Original answer from child B');
   expect(parent.text).not.toContain(report);
-  expect(parent.text).toContain('Child answer:\n> Answer from child A');
+  expect(parent.text).toContain('> Answer from child A');
   expect(parent.chunks.find((chunk) => chunk.kind === 'tool')).toEqual(toolChunk);
   expect(parent.chunks.find((chunk) => chunk.kind === 'input')).toEqual(toolInputChunk);
   expect(parent.chunks.some((chunk) => chunk.kind === 'thinking')).toBe(false);
@@ -735,7 +736,7 @@ test('parent reports recorded answers despite arbitrary prose, then resets on a 
   });
   expect(deniedHandback).toEqual({ deny: 'Handback denied' });
   const afterDeniedHandback = await collectParentTurn($, 'parent-report', 2);
-  expect(afterDeniedHandback.text).toContain('Child answer:\n> ' + handedBackAnswer);
+  expect(afterDeniedHandback.text).toContain('> ' + handedBackAnswer);
   expect(afterDeniedHandback.text).not.toContain('Denied replacement answer');
 
   await completeAgain('child-call-b', 'Original answer from child B');
@@ -750,7 +751,7 @@ test('parent reports recorded answers despite arbitrary prose, then resets on a 
   }
   expect(handbackThrew).toBe(true);
   const afterThrownHandback = await collectParentTurn($, 'parent-report', 3);
-  expect(afterThrownHandback.text).toContain('Child answer:\n> ' + handedBackAnswer);
+  expect(afterThrownHandback.text).toContain('> ' + handedBackAnswer);
   expect(afterThrownHandback.text).not.toContain('Thrown replacement answer');
 
   await completeAgain('child-call-a', 'Answer from child A');
@@ -759,7 +760,7 @@ test('parent reports recorded answers despite arbitrary prose, then resets on a 
   });
   expect(deniedResume).toEqual({ deny: 'Resume denied' });
   const afterDeniedResume = await collectParentTurn($, 'parent-report', 4);
-  expect(afterDeniedResume.text).toContain('Child answer:\n> Answer from child A');
+  expect(afterDeniedResume.text).toContain('> Answer from child A');
 
   await completeAgain('child-call-b', 'Original answer from child B');
   let resumeThrew = false;
@@ -770,7 +771,7 @@ test('parent reports recorded answers despite arbitrary prose, then resets on a 
   }
   expect(resumeThrew).toBe(true);
   const afterThrownResume = await collectParentTurn($, 'parent-report', 5);
-  expect(afterThrownResume.text).toContain('Child answer:\n> ' + handedBackAnswer);
+  expect(afterThrownResume.text).toContain('> ' + handedBackAnswer);
   resumeFailures.delete('child-call-b');
   await $.agent.spawn({ ...spawnArgs('call-b'), resume: { agentId: 'child-call-b' } });
   expect((await collectParentTurn($, 'parent-report', 6)).text).toBe('');
@@ -780,7 +781,7 @@ test('parent reports recorded answers despite arbitrary prose, then resets on a 
   });
   report = '';
   const resumedAnswer = await collectParentTurn($, 'parent-report', 7);
-  expect(resumedAnswer.text).toContain('Child answer:\n> A fresh child answer');
+  expect(resumedAnswer.text).toContain('> A fresh child answer');
   expect(resumedAnswer.chunks[resumedAnswer.chunks.length - 1].kind).toBe('stop');
   expect(resumedAnswer.chunks[resumedAnswer.chunks.length - 2].kind).toBe('text');
   expect((await collectParentTurn($, 'parent-report', 8)).text).toBe('');
