@@ -137,6 +137,33 @@ class TestConfigure:
             "GPT 5.5",
         ]
 
+    def test_open_models_use_chat_completions_with_their_limits(self, code):
+        discovered = copilot.build_copilot_catalog(
+            ["system.ai.kimi-k3-1-pro", "system.ai.deepseek-v4-1-flash-1017", "system.ai.gpt-5-5"]
+        )
+        state = {**STATE, "copilot_catalog": copilot.catalog_state(discovered)}
+
+        models = vscode.model_entries(state)
+
+        assert models[1:] == [
+            {
+                "id": "system.ai.deepseek-v4-1-flash-1017",
+                "name": "DeepSeek V4.1 Flash 1017",
+                "family": "deepseek-v4-1-flash-1017",
+                "api": "completions",
+                "maxInputTokens": 687_000,
+                "maxOutputTokens": 32_000,
+            },
+            {
+                "id": "system.ai.kimi-k3-1-pro",
+                "name": "Kimi K3.1 Pro",
+                "family": "kimi-k3-1-pro",
+                "api": "completions",
+                "maxInputTokens": 687_000,
+                "maxOutputTokens": 32_000,
+            },
+        ]
+
     def test_a_provider_services_claude_targets_keep_their_ids_and_their_limits(
         self, code, monkeypatch, capsys
     ):
@@ -297,9 +324,10 @@ class TestConfigure:
 
         assert code.calls == []
         assert code.config == installed
-        assert f"No Claude or GPT models for VS Code ({reason or 'the workspace has none'})" in (
-            _printed(capsys)
-        )
+        assert (
+            "No Claude, GPT, GLM, Kimi or DeepSeek models for VS Code "
+            f"({reason or 'the workspace has none'})"
+        ) in (_printed(capsys))
 
     def test_reports_a_code_command_that_cant_run(self, code, monkeypatch, capsys):
         def hang(*args, **kwargs):

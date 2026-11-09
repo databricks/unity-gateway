@@ -65,6 +65,7 @@ from ucode.constants import (
     AGENT_CODEX,
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
+    ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -2055,7 +2056,10 @@ class _HelpOrderedGroup(TyperGroup):
             signature = ", ".join(option.opts)
             if option.secondary_opts:
                 signature += f" / {', '.join(option.secondary_opts)}"
-            metavar = option.make_metavar(ctx=ctx)
+            display_type = getattr(option, "display_type_rich", None)
+            metavar = (
+                display_type(ctx=ctx) if display_type is not None else option.make_metavar(ctx=ctx)
+            )
             if metavar and "boolean" not in metavar.lower():
                 signature += f" {metavar}"
             help_record = option.get_help_record(ctx)
@@ -3705,6 +3709,37 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
     return tool == "claude" and tool_args[0].startswith("-")
 
 
+def _smart_routing_supported(tool: str, provider: str | None) -> bool:
+    """Smart routing with a Model Provider Service: Claude only, behind the external-models gate."""
+    return not provider or (
+        tool == "claude" and os.environ.get(ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR) == "1"
+    )
+
+
+def _routes_launch(
+    tool: str,
+    tool_args: list[str],
+    *,
+    smart_routing_enabled: bool,
+    explicit_prompt: bool,
+    model: str | None,
+    provider: str | None,
+) -> bool:
+    """Whether this launch is smart-routed."""
+    return (
+        # Smart routing is enabled globally.
+        smart_routing_enabled
+        # Only Claude Code and Codex currently support smart routing.
+        and tool in CAN_USE_CACHED_CONFIG_AGENTS
+        # Model Provider Services require the external-models gate.
+        and _smart_routing_supported(tool, provider)
+        # Route a supported interactive launch shape.
+        and _should_launch_smart_routing(
+            tool, tool_args, explicit_prompt=explicit_prompt, model=model
+        )
+    )
+
+
 def _launch_options(
     tool: str,
     tool_args: list[str],
@@ -3719,20 +3754,13 @@ def _launch_options(
         launch_model=launch_model,
         # Pinned models for providers are resolved above through the provider-specific launch path.
         user_pinned_model=user_pinned_model if provider is None else None,
-        launch_smart_routing=(
-            # Smart routing is enabled globally.
-            smart_routing_enabled
-            # Only Claude Code and Codex currently support smart routing.
-            and tool in CAN_USE_CACHED_CONFIG_AGENTS
-            # Smart routing does not currently support Model Provider Services.
-            and provider is None
-            # Route a supported interactive launch shape.
-            and _should_launch_smart_routing(
-                tool,
-                tool_args,
-                explicit_prompt=explicit_prompt,
-                model=user_pinned_model,
-            )
+        launch_smart_routing=_routes_launch(
+            tool,
+            tool_args,
+            smart_routing_enabled=smart_routing_enabled,
+            explicit_prompt=explicit_prompt,
+            model=user_pinned_model,
+            provider=provider,
         ),
     )
 
@@ -4027,7 +4055,11 @@ def _launch_tool(
             raise RuntimeError("--provider and --model-location cannot be used together.")
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
         # guard too, or routing would be persisted as on while a provider is active.
-        if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and provider:
+        if (
+            tool in CAN_USE_CACHED_CONFIG_AGENTS
+            and smart_routing_enabled
+            and not _smart_routing_supported(tool, provider)
+        ):
             raise RuntimeError(
                 f"{TOOL_SPECS[tool]['display']} smart routing cannot be enabled with "
                 "--provider. Launch without a Model Provider Service and try again."
@@ -4077,6 +4109,17 @@ def _launch_tool(
             and (
                 bool(managed_parent_schema or managed_provider)
                 or (managed is None and bool(explicit_provider or parent_schema))
+                or (
+                    bool(provider)
+                    and _routes_launch(
+                        tool,
+                        ctx.args,
+                        smart_routing_enabled=smart_routing_enabled,
+                        explicit_prompt=explicit_prompt,
+                        model=model or forwarded_model,
+                        provider=provider,
+                    )
+                )
             )
         )
         if should_fetch_claude_picker_catalog:
@@ -4265,7 +4308,11 @@ def _launch_tool(
         print_section(_launch_title(tool))
         if provider:
             print_kv("Provider", provider)
-        if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and not provider:
+        if (
+            tool in CAN_USE_CACHED_CONFIG_AGENTS
+            and smart_routing_enabled
+            and _smart_routing_supported(tool, provider)
+        ):
             print_note(
                 f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
                 "`/hooks` and trust the ug routing hooks if prompted."
