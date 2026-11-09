@@ -340,6 +340,9 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
       const label = preview.length > room ? preview.slice(0, Math.max(0, room - 1)) + '…' : preview;
       children.push(Button({
         key: row.decision_id, plain: true,
+        // The label prop is the only portable form: 2.1.290 rejects mixed
+        // string/Text children ("takes one string child, its label, or none").
+        label: `${label}  ${model}`,
         onPress: async () => {
           showNumbers = false;
           const request = ++detailRequest;
@@ -348,10 +351,6 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
           detail = loaded;
           $.ui.invalidate('ui.render');
         },
-        children: [
-          `${label}  `,
-          Text({ color: 'green', bold: true, children: [model] }),
-        ],
       }));
     }
     return Box({ flexDirection: 'column', children });

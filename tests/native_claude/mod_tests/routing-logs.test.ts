@@ -49,7 +49,10 @@ test('opens and refreshes session rows newest first', { options }, async ($, on)
   expect(tree).toContain('fast');
   expect(tree).not.toContain('1.4s');
   expect(tree).not.toContain('0.3s');
-  expect(tree).toContain('green');
+  // Rows are pressable Buttons labeled with the preview and the short model.
+  expect(tree).toContain('"type":"Button"');
+  expect(tree).toContain('"key":"d2","label":"(prompt not recorded)  fast"');
+  expect(tree).toContain('"key":"d1","label":"older task  claude-sonnet"');
   await $.command.run(command);
   expect(JSON.stringify(await ui.drawn())).toContain('No routed subagents in this session yet.');
   expect(count).toBe(2);
