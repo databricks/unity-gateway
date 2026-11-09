@@ -14,7 +14,11 @@ Per-provider `compat` flags work around fields the gateway translators reject:
   rejects `tools[].eager_input_streaming` on the streaming + tools path that
   pi uses for every request. With this flag pi omits the per-tool field and
   sends the legacy `anthropic-beta: fine-grained-tool-streaming-...` header
-  instead, which the gateway accepts.
+  instead, which the gateway accepts. `sendSessionAffinityHeaders: true` makes
+  pi send `x-session-affinity: <session id>`, a routing hint meant to keep a
+  conversation on one AI Gateway destination under traffic splitting, since
+  prompt caches are destination-local. Pi's Responses dialect already sends
+  `session_id` without a flag, and its Gemini dialect has no affinity setting.
 
 OSS / Databricks-foundation models (Llama, Qwen, etc.) are not exposed via
 pi today — they live behind /ai-gateway/mlflow/v1 with per-model
@@ -140,8 +144,14 @@ def render_overlay(
             "authHeader": True,
             # Gateway's Anthropic translator rejects per-tool
             # `eager_input_streaming` on the streaming + tools path. Pi sends
-            # the legacy beta header instead when this is false.
-            "compat": {"supportsEagerToolInputStreaming": False},
+            # the legacy beta header instead when this is false. The session
+            # affinity header is a hint meant to keep a conversation on one AI
+            # Gateway destination under traffic splitting (caches are
+            # destination-local).
+            "compat": {
+                "supportsEagerToolInputStreaming": False,
+                "sendSessionAffinityHeaders": True,
+            },
             "headers": ua_headers,
             "models": [{"id": m} for m in claude_ids],
         }
