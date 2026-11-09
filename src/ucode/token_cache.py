@@ -36,6 +36,14 @@ STATE_PATH = Path.home() / ".ucode" / "state.json"
 _CLEARED_NAME = "cleared-at"
 _LOCK_NAME = ".lock"
 _LOCK_TIMEOUT_SECONDS = 2.0
+# `clear` and `write` order their stamps under the lock, so a write after a clear is always
+# stamped later, and a clear later than every write before it, even within one tick of a coarse
+# clock (time.time() moves in about 16ms steps on Windows with Python 3.12).
+_CLEAR_AFTER_STAMP_SECONDS = 0.002
+_WRITE_AFTER_CLEAR_SECONDS = 0.001
+# A served entry's stamp may sit this far ahead of now (just after a clear, see above) without
+# counting as a clock that moved back.
+_FUTURE_STAMP_TOLERANCE_SECONDS = 1.0
 # Never serve a token this close to expiry; the caller fetches through the CLI instead.
 MIN_REMAINING_SECONDS = 300
 # Re-check through the CLI, in the background, once an entry is this old.
@@ -96,7 +104,9 @@ def lookup(host: str, profile: str | None, *, now: float | None = None) -> tuple
     """Return ``(token, needs_refresh)`` for a servable cached token, else None.
 
     ``needs_refresh`` is True once the entry is ``REFRESH_AFTER_SECONDS`` old, or when it is
-    stamped in the future (the clock moved back)."""
+    stamped in the future (the clock moved back). An entry written before the latest
+    :func:`clear` is a miss even if deleting it failed (on Windows a concurrent reader can
+    block the delete), so a login's previous identity is never served."""
     if not cache_applicable():
         return None
     now = time.time() if now is None else now
@@ -106,18 +116,13 @@ def lookup(host: str, profile: str | None, *, now: float | None = None) -> tuple
         cached_at = float(entry["cached_at"])
     except (OSError, ValueError, KeyError, TypeError, OverflowError):
         return None
-    if not isinstance(token, str) or not token:
+    if not isinstance(token, str) or not token or cached_at <= _cleared_at():
         return None
     expires_at = token_expiry(token)
     if expires_at is None or now >= expires_at - MIN_REMAINING_SECONDS:
         return None
-    return token, not 0 <= now - cached_at < REFRESH_AFTER_SECONDS
-
-
-def read(host: str, profile: str | None, *, now: float | None = None) -> str | None:
-    """Return a cached token that is still comfortably valid, else None."""
-    hit = lookup(host, profile, now=now)
-    return hit[0] if hit else None
+    age = now - cached_at
+    return token, not -_FUTURE_STAMP_TOLERANCE_SECONDS <= age < REFRESH_AFTER_SECONDS
 
 
 def serve(host: str, profile: str | None) -> str | None:
@@ -144,13 +149,15 @@ def write(
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"token": token, "cached_at": time.time()}, fh)
         with _locked():
-            if fetch_started is not None and _cleared_at() >= fetch_started:
-                tmp.unlink()
+            cleared_at = _cleared_at()
+            if fetch_started is not None and cleared_at >= fetch_started:
                 return
+            # Stamped after the latest clear, which `lookup` requires of a servable entry.
+            cached_at = max(time.time(), cleared_at + _WRITE_AFTER_CLEAR_SECONDS)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"token": token, "cached_at": cached_at}, fh)
             os.replace(tmp, path)
     except (OSError, TimeoutError):
         try:
@@ -183,10 +190,12 @@ def clear() -> None:
 def _clear_entries() -> None:
     stamp = CACHE_DIR / _CLEARED_NAME
     tmp = stamp.with_name(f".{stamp.name}.{os.getpid()}.tmp")
+    # Later than every entry written before now (see `write`), even within one clock tick.
+    cleared_at = max(time.time(), _cleared_at() + _CLEAR_AFTER_STAMP_SECONDS)
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(repr(time.time()))
+            fh.write(repr(cleared_at))
         os.replace(tmp, stamp)
     except OSError:
         pass
