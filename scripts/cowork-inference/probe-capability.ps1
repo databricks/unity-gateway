@@ -49,7 +49,10 @@ function Invoke-Control {
         $pattern.Invoke()
     } elseif ($Control.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
         $pattern.Select()
-    } elseif ($Control.Current.Name -eq 'Select Folder' -and $Control.Current.ControlType.ProgrammaticName -eq 'ControlType.Pane') {
+    } elseif ($Control.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) {
+        $pattern.Expand()
+    } elseif ($Control.Current.ControlType.ProgrammaticName -in @('ControlType.Button', 'ControlType.MenuItem') -or
+        ($Control.Current.Name -eq 'Select Folder' -and $Control.Current.ControlType.ProgrammaticName -eq 'ControlType.Pane')) {
         $point = $Control.GetClickablePoint()
         [Windows.Forms.Cursor]::Position = [Drawing.Point]::new([int]$point.X, [int]$point.Y)
         [CapabilityWindow]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
