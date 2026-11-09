@@ -18,6 +18,7 @@ import pytest
 
 import ucode.custom_oauth as custom_oauth_mod
 import ucode.databricks as db_mod
+from ucode import token_cache
 from ucode.databricks import (
     _format_subprocess_result,
     _parse_databricks_cli_version,
@@ -73,6 +74,12 @@ class _FakeResponse:
 
     def read(self):
         return self._body
+
+
+def _served(host: str, profile: str | None, **kwargs) -> str | None:
+    """The token ``token_cache.lookup`` would serve, or None."""
+    hit = token_cache.lookup(host, profile, **kwargs)
+    return hit[0] if hit else None
 
 
 def _fake_jwt(expires_at: float) -> str:
@@ -3035,6 +3042,32 @@ class TestGetDatabricksToken:
             get_databricks_token(WS, profile="p", budget_seconds=1.0, allow_reauth=False)
         assert calls == [(["databricks", "--version"], 1.0)]
 
+    def test_discovery_cut_short_by_the_budget_is_not_cached(self, monkeypatch):
+        # The budget runs out probing the first of two CLIs on PATH, so the second is never
+        # probed; that order must not stick for the rest of the process.
+        def respond(command, timeout, clock):
+            if command == ["old", "--version"]:
+                clock.now += timeout
+                raise subprocess.TimeoutExpired(command, timeout)
+            if command == ["new", "--version"]:
+                return subprocess.CompletedProcess(command, 0, "Databricks CLI v0.299.0", "")
+            return subprocess.CompletedProcess(command, 0, '{"access_token": "tok"}', "")
+
+        calls = self._budget_harness(monkeypatch, respond, discover=True)
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: ["old", "new"])
+        with pytest.raises(RuntimeError, match="time budget"):
+            get_databricks_token(WS, profile="p", budget_seconds=1.0, allow_reauth=False)
+        assert calls == [(["old", "--version"], 1.0)]
+        assert db_mod._DISCOVERED_DATABRICKS_CLIS_ORDERED is None
+        # Without a deadline the next walk probes both, then caches its order.
+        calls.clear()
+        assert db_mod.databricks_cli_path() == "new"
+        assert [command for command, _timeout in calls] == [
+            ["old", "--version"],
+            ["new", "--version"],
+        ]
+        assert db_mod._DISCOVERED_DATABRICKS_CLIS_ORDERED is not None
+
     def test_debug_probes_are_skipped_under_a_budget(self, monkeypatch):
         monkeypatch.setenv("UCODE_DEBUG", "1")
         db_mod._log_auth_diagnostics.cache_clear()
@@ -3165,21 +3198,17 @@ class TestGetDatabricksToken:
         assert timeouts == [15.0]
 
     def test_clearing_the_token_memo_also_clears_the_helper_cache(self):
-        from ucode import token_cache
-
         token_cache.write(WS, "p", _fake_jwt(time.time() + 3600))
-        assert token_cache.read(WS, "p")
+        assert _served(WS, "p")
         db_mod.clear_databricks_token_cache()
-        assert token_cache.read(WS, "p") is None
+        assert _served(WS, "p") is None
 
     def test_login_clears_the_helper_cache(self, monkeypatch):
-        from ucode import token_cache
-
         token_cache.write(WS, "p", _fake_jwt(time.time() + 3600))
         monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
         monkeypatch.setattr(db_mod, "run", lambda *a, **k: None)
         db_mod.run_databricks_login(WS, "p")
-        assert token_cache.read(WS, "p") is None
+        assert _served(WS, "p") is None
 
     def test_passes_profile_flag_when_provided(self, tmp_path, monkeypatch):
         # Fake CLI that records its argv to a file so we can assert the

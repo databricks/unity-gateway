@@ -53,6 +53,12 @@ TOOLS = ["codex", "claude", "gemini", "opencode"]
 MODEL_SERVICE_PROBE = GatewayProbe(True, "reachable, accessible model service returned", True)
 
 
+def _served(host: str, profile: str | None, **kwargs) -> str | None:
+    """The token ``token_cache.lookup`` would serve, or None."""
+    hit = token_cache.lookup(host, profile, **kwargs)
+    return hit[0] if hit else None
+
+
 def _jwt(expires_at: float, sub: str = "user") -> str:
     claims = {"exp": expires_at, "sub": sub}
     payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode()
@@ -2786,17 +2792,6 @@ class TestAuthTokenCommand:
             "https://override", "prod", force_refresh=False, browser_login=False, **_HELPER_KW
         )
 
-    def test_force_refresh_is_forwarded(self):
-        with (
-            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
-            patch("ucode.cli.get_databricks_token", return_value="tok") as fetch,
-        ):
-            result = runner.invoke(app, ["auth-token", "--force-refresh"])
-        assert result.exit_code == 0
-        fetch.assert_called_once_with(
-            "https://ws", None, force_refresh=True, browser_login=False, **_HELPER_KW
-        )
-
     @pytest.mark.parametrize(
         ("caller_timeout", "budget"), [("10", 7.0), ("2", 1.0), ("2.5", 1.0), ("30", 27.0)]
     )
@@ -2876,21 +2871,22 @@ class TestAuthTokenCommand:
         ):
             result = runner.invoke(app, ["auth-token", "--host", "https://ws"])
         assert result.exit_code == 0
-        assert token_cache.read("https://ws", None) == token
+        assert _served("https://ws", None) == token
 
     def test_force_refresh_bypasses_and_replaces_cache(self):
         stale, fresh = _jwt(time.time() + 3600, "old"), _jwt(time.time() + 3600, "new")
         token_cache.write("https://ws", None, stale)
         with (
-            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
             patch("ucode.cli.get_databricks_token", return_value=fresh) as fetch,
         ):
-            result = runner.invoke(app, ["auth-token", "--host", "https://ws", "--force-refresh"])
+            result = runner.invoke(app, ["auth-token", "--force-refresh"])
+        assert result.exit_code == 0
         assert result.stdout == fresh + "\n"
         fetch.assert_called_once_with(
             "https://ws", None, force_refresh=True, browser_login=False, **_HELPER_KW
         )
-        assert token_cache.read("https://ws", None) == fresh
+        assert _served("https://ws", None) == fresh
 
     def test_custom_client_token_is_never_cached(self, monkeypatch):
         token = _jwt(time.time() + 3600)
@@ -2944,7 +2940,7 @@ class TestAuthTokenCommand:
             budget_seconds=cli_mod.AUTH_TOKEN_BACKGROUND_BUDGET_SECONDS,
             allow_reauth=False,
         )
-        assert token_cache.read("https://ws", "prod") == new
+        assert _served("https://ws", "prod") == new
 
     def test_failed_background_refresh_is_labelled_in_the_log(self):
         with (
@@ -2979,7 +2975,7 @@ class TestAuthTokenCommand:
         ):
             result = runner.invoke(app, [*args, "--refresh-cache"] if refresh_cache else args)
         assert result.exit_code == 0, result.output
-        assert token_cache.read("https://ws", None) is None
+        assert _served("https://ws", None) is None
 
     def test_bearer_command_failure_keeps_its_details_out_of_the_log(self, monkeypatch, tmp_path):
         # The command text and its stderr may carry a credential; only stderr may show them.
@@ -3136,7 +3132,7 @@ class TestAuthTokenCommand:
         assert result.stdout == pat + "\n"
         monkeypatch.delenv("DATABRICKS_BEARER")
         # The earlier OAuth entry is untouched, not overwritten by the PAT.
-        assert token_cache.read("https://ws", "p") == oauth_tok
+        assert _served("https://ws", "p") == oauth_tok
 
 
 class TestOtelHeadersCommand:

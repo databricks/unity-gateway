@@ -960,6 +960,10 @@ def _discover_databricks_clis(
     # Best-first: highest version wins. A stable sort keeps PATH order among equal
     # versions, and the None-version sentinel (unparseable) sinks below every real one.
     discovered.sort(key=lambda pv: pv[1] or (-1, -1, -1), reverse=True)
+    if _time_left(1.0) <= 0:
+        # A caller's deadline ran out during the walk, so later candidates were never probed
+        # and read as unparseable; a later call in this process must not inherit that order.
+        return discovered
     _DISCOVERED_DATABRICKS_CLIS_ORDERED = discovered
     return _DISCOVERED_DATABRICKS_CLIS_ORDERED
 

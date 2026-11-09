@@ -263,7 +263,7 @@ def test_auth_token_cache_hit_skips_cli_imports(tmp_path: Path, command: str) ->
     seed = (
         "from ucode import token_cache\n"
         f"token_cache.write({workspace!r}, 'p', {token!r})\n"
-        f"assert token_cache.read({workspace!r}, 'p') == {token!r}\n"
+        f"assert token_cache.lookup({workspace!r}, 'p') == ({token!r}, False)\n"
     )
     subprocess.run([sys.executable, "-c", seed], env=env, check=True, timeout=60)
     guarded = ("ucode.cli", "typer", "ucode.databricks", *_LAZY_MODULES)

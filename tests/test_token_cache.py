@@ -19,6 +19,25 @@ from ucode import entrypoint, token_cache
 _REAL_SPAWN_DETACHED = token_cache._spawn_detached
 
 
+def _deny_entry_deletes(monkeypatch) -> None:
+    """Make deleting a cache entry fail, as a sharing violation does on Windows."""
+    path_type = type(token_cache.CACHE_DIR)
+    real_unlink = path_type.unlink
+
+    def unlink(path, *args, **kwargs):
+        if path.suffix == ".json":
+            raise PermissionError(13, "sharing violation", str(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(path_type, "unlink", unlink)
+
+
+def _served(host: str, profile: str | None, **kwargs) -> str | None:
+    """The token ``token_cache.lookup`` would serve, or None."""
+    hit = token_cache.lookup(host, profile, **kwargs)
+    return hit[0] if hit else None
+
+
 def _jwt(expires_at: float, sub: str = "user") -> str:
     claims = json.dumps({"exp": expires_at, "sub": sub}).encode()
     return f"h.{base64.urlsafe_b64encode(claims).decode().rstrip('=')}.s"
@@ -61,23 +80,23 @@ class TestReadWrite:
     def test_round_trip(self):
         token = _jwt(time.time() + 3600)
         token_cache.write(WS, "prod", token)
-        assert token_cache.read(WS, "prod") == token
+        assert _served(WS, "prod") == token
 
     def test_key_normalizes_host_but_separates_profiles(self):
         token = _jwt(time.time() + 3600)
         token_cache.write(WS + "/", "prod", token)
-        assert token_cache.read(WS.upper(), "prod") == token
-        assert token_cache.read(WS, None) is None
-        assert token_cache.read(WS, "other") is None
+        assert _served(WS.upper(), "prod") == token
+        assert _served(WS, None) is None
+        assert _served(WS, "other") is None
 
     def test_config_file_is_part_of_the_key(self, monkeypatch):
         token_cache.write(WS, "prod", _jwt(time.time() + 3600))
         monkeypatch.setenv("DATABRICKS_CONFIG_FILE", "/elsewhere/.databrickscfg")
-        assert token_cache.read(WS, "prod") is None
+        assert _served(WS, "prod") is None
 
     def test_near_expiry_is_a_miss(self):
         token_cache.write(WS, None, _jwt(time.time() + token_cache.MIN_REMAINING_SECONDS - 1))
-        assert token_cache.read(WS, None) is None
+        assert _served(WS, None) is None
 
     def test_fresh_entry_is_not_due_for_refresh(self):
         token = _jwt(time.time() + 3600)
@@ -90,7 +109,7 @@ class TestReadWrite:
         token_cache.write(WS, None, token)
         later = time.time() + token_cache.REFRESH_AFTER_SECONDS + 1
         assert token_cache.lookup(WS, None, now=later) == (token, True)
-        assert token_cache.read(WS, None, now=later) == token
+        assert _served(WS, None, now=later) == token
 
     def test_old_entry_near_expiry_is_a_miss(self):
         token_cache.write(WS, None, _jwt(time.time() + 3600))
@@ -112,23 +131,27 @@ class TestReadWrite:
         token = _jwt(time.time() + 3600)
         token_cache.write(WS, None, token)
         monkeypatch.setenv(env, "x")
-        assert token_cache.read(WS, None) is None
+        assert _served(WS, None) is None
         token_cache.write(WS, "other", token)
         monkeypatch.delenv(env)
-        assert token_cache.read(WS, "other") is None
+        assert _served(WS, "other") is None
 
     @pytest.mark.parametrize(
-        "content",
-        ["{not json", '{"token": 1, "cached_at": 0}', '{"token": "TOKEN", "cached_at": 1e999}'],
+        ("content", "served"),
+        [
+            ("{not json", False),
+            ('{"token": 1, "cached_at": 0}', False),
+            ('{"token": "TOKEN"}', False),
+            # A stamp in the far future is served, but due for a re-check at once.
+            ('{"token": "TOKEN", "cached_at": 1e999}', True),
+        ],
     )
-    def test_corrupt_entry_is_a_miss(self, content):
+    def test_corrupt_entry_is_a_miss(self, content, served):
         token = _jwt(time.time() + 3600)
         token_cache.write(WS, None, token)
         (entry,) = token_cache.CACHE_DIR.glob("*.json")
         entry.write_text(content.replace("TOKEN", token))
-        hit = token_cache.lookup(WS, None)
-        # An unreadable entry is a miss; an absurd stamp is served but due for a re-check.
-        assert hit is None or hit == (token, True)
+        assert token_cache.lookup(WS, None) == ((token, True) if served else None)
 
     def test_oversized_numbers_are_a_miss(self):
         token = _jwt(time.time() + 3600)
@@ -146,10 +169,40 @@ class TestReadWrite:
         (entry,) = token_cache.CACHE_DIR.glob("*.json")
         assert stat.S_IMODE(entry.stat().st_mode) == 0o600
 
-    def test_clear(self):
+    @pytest.mark.parametrize("delete_fails", [False, True])
+    def test_clear(self, monkeypatch, delete_fails):
         token_cache.write(WS, None, _jwt(time.time() + 3600))
+        (entry,) = token_cache.CACHE_DIR.glob("*.json")
+        if delete_fails:
+            # On Windows a concurrent reader can block the delete (a sharing violation).
+            _deny_entry_deletes(monkeypatch)
         token_cache.clear()
-        assert token_cache.read(WS, None) is None
+        assert entry.exists() == delete_fails
+        # The surviving entry predates the clear, so it is never served again.
+        assert token_cache.lookup(WS, None) is None
+
+    def test_clears_and_writes_stay_ordered_within_one_clock_tick(self, monkeypatch):
+        # time.time() can return the same value for consecutive calls (about 16ms steps on
+        # Windows with Python 3.12); stamps must still order a clear against each write.
+        frozen = time.time()
+        monkeypatch.setattr(
+            token_cache, "time", SimpleNamespace(**{**vars(time), "time": lambda: frozen})
+        )
+        _deny_entry_deletes(monkeypatch)  # so only the stamps decide
+        token = _jwt(frozen + 3600)
+        token_cache.write(WS, None, token)
+        token_cache.clear()
+        assert token_cache.lookup(WS, None) is None
+        token_cache.write(WS, None, token)
+        assert token_cache.lookup(WS, None) == (token, False)
+        token_cache.clear()
+        assert token_cache.lookup(WS, None) is None
+
+    def test_entry_written_after_a_clear_is_served(self):
+        token_cache.clear()
+        token = _jwt(time.time() + 3600)
+        token_cache.write(WS, None, token)
+        assert token_cache.lookup(WS, None) == (token, False)
 
     def test_clear_also_drops_refresh_markers(self, spawned):
         token_cache.write(WS, None, _jwt(time.time() + 86400))
@@ -166,7 +219,7 @@ class TestReadWrite:
         started = time.time()
         token_cache.clear()
         token_cache.write(WS, "p", _jwt(time.time() + 3600), fetch_started=started)
-        assert token_cache.read(WS, "p") is None
+        assert _served(WS, "p") is None
         assert list(token_cache.CACHE_DIR.glob("*.tmp")) == []
 
     def test_first_fetch_racing_a_login_is_not_written_back(self):
@@ -176,14 +229,14 @@ class TestReadWrite:
         started = time.time()
         token_cache.clear()
         token_cache.write(WS, "p", _jwt(time.time() + 3600), fetch_started=started)
-        assert token_cache.read(WS, "p") is None
+        assert _served(WS, "p") is None
         assert list(token_cache.CACHE_DIR.glob("*.json")) == []
 
     def test_fetch_started_after_a_clear_is_written(self):
         token_cache.clear()
         token = _jwt(time.time() + 3600)
         token_cache.write(WS, "p", token, fetch_started=time.time() + 0.001)
-        assert token_cache.read(WS, "p") == token
+        assert _served(WS, "p") == token
 
     def test_relative_config_file_is_keyed_by_the_file_it_names(self, monkeypatch, tmp_path):
         # The CLI resolves a relative DATABRICKS_CONFIG_FILE against the working directory.
@@ -194,11 +247,11 @@ class TestReadWrite:
         monkeypatch.chdir(first)
         token = _jwt(time.time() + 3600)
         token_cache.write(WS, "p", token)
-        assert token_cache.read(WS, "p") == token
+        assert _served(WS, "p") == token
         monkeypatch.chdir(second)
-        assert token_cache.read(WS, "p") is None
+        assert _served(WS, "p") is None
         monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(first / ".databrickscfg"))
-        assert token_cache.read(WS, "p") == token
+        assert _served(WS, "p") == token
 
 
 class TestBackgroundRefresh:
@@ -387,12 +440,6 @@ class TestFastPath:
         argv = ["auth-token", "--profile", "prod", "--host", WS]
         assert token_cache.fast_path_token(argv) == cached
 
-    def test_old_entry_is_served_and_refreshed_in_background(self, cached, spawned):
-        _age(WS, "prod", token_cache.REFRESH_AFTER_SECONDS + 1)
-        argv = ["auth-token", "--host", WS, "--profile", "prod"]
-        assert token_cache.fast_path_token(argv) == cached
-        assert spawned == [token_cache.refresh_command(WS, "prod")]
-
     @pytest.mark.parametrize(
         "argv",
         [
@@ -455,15 +502,15 @@ class TestEntry:
     @pytest.mark.parametrize("old", [False, True])
     def test_cache_hit_skips_full_cli(self, monkeypatch, capsys, spawned, old):
         token = _jwt(time.time() + 86400)
-        token_cache.write(WS, None, token)
+        token_cache.write(WS, "prod", token)
         if old:
-            _age(WS, None, token_cache.REFRESH_AFTER_SECONDS + 1)
-        monkeypatch.setattr(sys, "argv", ["ug", "auth-token", "--host", WS])
+            _age(WS, "prod", token_cache.REFRESH_AFTER_SECONDS + 1)
+        monkeypatch.setattr(sys, "argv", ["ug", "auth-token", "--host", WS, "--profile", "prod"])
         monkeypatch.setattr("ucode.cli.main", lambda: pytest.fail("full CLI invoked"))
         entrypoint.main()
         assert capsys.readouterr().out == token + "\n"
-        # Only an old entry starts the background refresher.
-        assert spawned == ([token_cache.refresh_command(WS, None)] if old else [])
+        # Only an old entry starts the background refresher, for the same profile.
+        assert spawned == ([token_cache.refresh_command(WS, "prod")] if old else [])
 
     def test_cache_miss_delegates_to_full_cli(self, monkeypatch):
         calls = []
