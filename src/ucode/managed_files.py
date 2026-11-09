@@ -47,8 +47,8 @@ _machine_wide_only = False
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
-# Written by `ug configure --global` from a published agent configuration (an MDM run). Its presence makes this an
-# MDM-managed machine: every other run leaves the machine-wide files alone.
+# Written by `ug configure --global` from a published agent configuration (an MDM run). Its
+# presence makes this an MDM-managed machine: every other run leaves the machine-wide files alone.
 MDM_STATE_PATH = Path("/etc/unitygateway/agents-state.json")
 CODEX_SYSTEM_REQUIREMENTS_PATH = Path("/etc/codex/requirements.toml")
 CODEX_SYSTEM_CONFIG_PATH = Path("/etc/codex/config.toml")
@@ -200,8 +200,8 @@ _mdm_run = False
 
 
 def set_mdm_run(enabled: bool) -> None:
-    """Mark this process as the MDM run (``ug configure --global`` with a published agent configuration), the one writer of
-    machine-wide files on an MDM-managed machine."""
+    """Mark this process as the MDM run (``ug configure --global`` with a published agent
+    configuration), the one writer of machine-wide files on an MDM-managed machine."""
     global _mdm_run
     _mdm_run = enabled
 

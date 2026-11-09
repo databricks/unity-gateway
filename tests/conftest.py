@@ -129,7 +129,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(managed_files_mod, "_explicit_managed_command", None)
     monkeypatch.setattr(managed_files_mod, "_machine_wide_only", False)
     # The test interpreter lives in a developer's checkout; tests of the check itself override this.
-    monkeypatch.setattr("ucode.cli._require_shared_installation", lambda *_args: None)
+    monkeypatch.setattr("ucode.cli._require_shared_installation", lambda: None)
     # A developer's own machine may be MDM-managed; tests opt in to that mode explicitly.
     monkeypatch.setattr(managed_files_mod, "MDM_STATE_PATH", tmp_path / "etc" / "agents-state.json")
     monkeypatch.setattr(managed_files_mod, "_mdm_run", False)

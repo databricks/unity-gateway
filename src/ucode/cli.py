@@ -26,7 +26,7 @@ from rich.text import Text
 from typer import _click
 from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
-from ucode import custom_oauth
+from ucode import custom_oauth, managed_files
 from ucode.agents import (
     GEMINI_API_TOOLS,
     MODEL_LOCATION_TOOLS,
@@ -5601,8 +5601,6 @@ def _global_workspace(workspace: str | None, profile: str | None) -> str | None:
     workspace = workspace or os.environ.get("UG_WORKSPACE") or None
     if workspace is None and profile is not None:
         workspace = _parse_profile_option(profile)[0][0]
-    from ucode import managed_files
-
     if workspace is None and (marker := managed_files.mdm_state()) is not None:
         saved = marker.get("workspace")
         workspace = saved if isinstance(saved, str) and saved else None
@@ -5630,7 +5628,6 @@ def _configure_global_from_agent_config(
     from ucode import managed_mdm
     from ucode.agents.desktop.setup import configure_claude_desktop
 
-    code = managed_mdm.EXIT_OK
     try:
         if current_os() not in (OS.LINUX, OS.MACOS):
             if from_file is not None:
@@ -5685,7 +5682,7 @@ def _configure_global_from_agent_config(
                 _require_shared_installation()
             except RuntimeError as exc:
                 raise managed_mdm.MdmError(managed_mdm.EXIT_USAGE, str(exc)) from exc
-        code = managed_mdm.run(key=key, raw=raw, agents=selected, dry_run=dry_run, source=from_file)
+        managed_mdm.run(key=key, raw=raw, agents=selected, dry_run=dry_run, source=from_file)
         enabled = normalize_managed_config(raw).get("enabled_agents") or {}
         if from_file is None and "claude" in selected and "claude" in enabled:
             # Best effort, as before: a Desktop failure warns without failing the run.
@@ -5700,7 +5697,7 @@ def _configure_global_from_agent_config(
     finally:
         set_mdm_run(False)
         set_machine_wide_only(False)
-    raise typer.Exit(code)
+    raise typer.Exit(managed_mdm.EXIT_OK)
 
 
 # Only these agents have machine-wide settings; every other agent is configured per user.
@@ -5736,7 +5733,7 @@ def _check_machine_wide_only_request(
         )
 
 
-def _require_shared_installation(command: str = "`ug configure --global`") -> None:
+def _require_shared_installation() -> None:
     """Reject ``ug configure --global`` when other users couldn't run this ug installation.
 
     The machine-wide settings run ``ug`` (and some helpers, its Python) for every user, so an
@@ -5745,7 +5742,7 @@ def _require_shared_installation(command: str = "`ug configure --global`") -> No
     ug = ug_binary()
     if not os.path.isabs(ug):
         raise RuntimeError(
-            f"{command} needs `ug` on PATH, since machine-wide settings run it by its "
+            "`ug configure --global` needs `ug` on PATH, since machine-wide settings run it by its "
             "full path. Install ug where every user can run it, then rerun."
         )
     found = per_user_paths([ug, sys.executable])
@@ -5759,7 +5756,7 @@ def _require_shared_installation(command: str = "`ug configure --global`") -> No
         "uv tool install git+https://github.com/databricks/unity-gateway` (see scripts/mdm)."
     )
     raise RuntimeError(
-        f"{command} writes settings every user's agents run, but this ug "
+        "`ug configure --global` writes settings every user's agents run, but this ug "
         f"installation is in a user's home folder: {', '.join(found)}. Reinstall ug in a shared "
         f"location every user can run, then rerun from that installation.{example}"
     )

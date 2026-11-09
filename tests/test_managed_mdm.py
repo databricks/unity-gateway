@@ -301,7 +301,7 @@ class TestRun:
     def test_writes_files_policy_copy_and_marker(self, writes):
         written, saved = writes
         raw = _raw_config(claude_config={}, codex_config={})
-        assert _run(raw) == mdm.EXIT_OK
+        _run(raw)
         assert claude.managed_settings_path() in written
         assert managed_files_mod.CODEX_SYSTEM_REQUIREMENTS_PATH in written
         assert saved and saved[0][0][1] == raw

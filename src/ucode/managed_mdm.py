@@ -157,7 +157,7 @@ def claude_ug_values(
         disable_web_search=True,
         profile=None,
         provider=provider,
-        provider_models={k: v for k, v in pins.items() if k != "default"} if provider else None,
+        provider_models=pins if provider else None,
         parent_schema=location,
         static_models=managed_static_models(manifest, "claude"),
         otel_tracing=managed_otel_tracing_enabled(manifest, "claude"),
@@ -322,8 +322,13 @@ def plan_agents(
             composed = build_claude(manifest, workspace, mcp_entries.get("claude"))
             plan.files[agent_paths("claude")[0]] = claude_agent._dump_managed_settings(composed.doc)
             plan.reports.append(("agent_native_settings", composed))
+            tracing_paths = {
+                entry.dotted
+                for entry in ownership.load_table("claude").section("entry")
+                if entry.feature == "tracing"
+            }
             if "tracing" in agent_features(manifest, "claude") and any(
-                item.outcome == ownership.SKIPPED and "otel" in item.path.lower()
+                item.outcome == ownership.SKIPPED and item.path in tracing_paths
                 for item in composed.items
             ):
                 plan.warnings.append(
@@ -540,8 +545,8 @@ def run(
     agents: list[str],
     dry_run: bool,
     source: str | None = None,
-) -> int:
-    """Rebuild ``agents``' machine-wide files from ``raw`` and return the exit code.
+) -> None:
+    """Rebuild ``agents``' machine-wide files from ``raw``.
 
     ``source`` names a draft file being previewed. Raises :class:`MdmError` on failure; nothing is
     written unless every file could be built.
@@ -582,7 +587,7 @@ def run(
                 )
         console.print()
         print_report(plans, dry_run=True)
-        return EXIT_OK
+        return
 
     _write_files(plans)
     try:
@@ -594,7 +599,6 @@ def run(
     except (ManagedFileWriteUnavailable, RuntimeError, OSError) as exc:
         raise MdmError(EXIT_WRITE, f"Could not save the machine's MDM state: {exc}") from exc
     print_report(plans, dry_run=False)
-    return EXIT_OK
 
 
 def revert_machine() -> list[str]:
