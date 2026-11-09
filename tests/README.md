@@ -958,8 +958,8 @@ They do not launch Pi or Git Bash on Windows.
 
 Pi's model-entry tests in `test_agent_pi.py` pin each documented Claude, GPT and Gemini
 model's thinking levels, per-model limits, image input and inline-image limits, the
-exclusion of gpt-oss and pre-4.5 Claude (providers, selector, default model and managed
-`pi_models`), and the Vertex environment pinning. `test_databricks.py` covers the shared
+bare gpt-oss entry, the exclusion of pre-4.5 Claude (providers, selector, default model
+and managed `pi_models`), and the Vertex environment pinning. `test_databricks.py` covers the shared
 GPT/Gemini limit tables. These render `models.json` only; they do not establish that the
 gateway accepts the levels or limits, which was checked manually on Pi 1.5.0 for a subset.
 

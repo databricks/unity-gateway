@@ -21,12 +21,12 @@ entry gets Pi's custom-model defaults: no thinking, text-only input, a 128K
 context and 16K output. Each entry therefore declares its limits, image input,
 reasoning and a `thinkingLevelMap` of the levels the model accepts.
 
-OSS / Databricks-foundation models (Llama, Qwen, gpt-oss, etc.) are not exposed
-via pi today — they live behind /ai-gateway/mlflow/v1 with per-model
+OSS / Databricks-foundation models (Llama, Qwen, etc.) are not exposed via
+pi today — they live behind /ai-gateway/mlflow/v1 with per-model
 `max_tokens` caps that pi has no global way to honor without per-model
 config we don't currently maintain. gpt-oss is bucketed with the GPT models by
-name but rejects the Responses requests Pi sends, so Pi leaves it out. Claude
-models older than 4.5 reject Pi's Anthropic request shape and are left out too.
+name and keeps a bare entry on the Responses provider. Claude models older than
+4.5 reject Pi's Anthropic request shape and are left out.
 
 Each provider's `apiKey` is pi's `!command` config value rather than a baked
 bearer, so pi mints one per request via `ug auth-token` and nothing that
@@ -140,12 +140,6 @@ def _serves_claude_model(model_id: str) -> bool:
     return parsed is None or parsed[1] >= _MIN_CLAUDE_VERSION
 
 
-def _serves_codex_model(model_id: str) -> bool:
-    # gpt-oss shares the GPT bucket by name but 400s on /ai-gateway/codex/v1 ("Open Responses API
-    # does not recognize these fields: prompt_cache_retention").
-    return not canonical_model_name(model_id).startswith("gpt-oss")
-
-
 def _claude_thinking_level_map(model_id: str) -> ThinkingLevelMap | None:
     """Levels for Claude models that need adaptive thinking, else None (budget thinking).
 
@@ -233,6 +227,10 @@ _GPT_VISION_WITHOUT_REASONING = ("gpt-4o", "gpt-4-1")
 
 
 def _gpt_model_entry(model_id: str) -> dict:
+    if canonical_model_name(model_id).startswith("gpt-oss"):
+        # gpt-oss shares the GPT bucket by name but is an OSS model: keep its bare entry and
+        # Pi's defaults rather than claim GPT limits, reasoning or image input for it.
+        return {"id": model_id}
     limits = gpt_model_token_limits(model_id)
     entry: dict = {
         "id": model_id,
@@ -317,10 +315,9 @@ def render_overlay(
     ``api_key`` is a pi config value, not necessarily a literal bearer: see
     ``build_pi_api_key`` for the `!command` form every provider gets.
 
-    Models Pi can't serve (Claude older than 4.5, gpt-oss) are dropped from every list first, so
-    neither a provider nor the model selector names them."""
+    Claude older than 4.5, which Pi can't serve, is dropped first, so neither a provider nor the
+    model selector names it."""
     claude_models = {f: m for f, m in claude_models.items() if _serves_claude_model(m)}
-    codex_models = [m for m in codex_models if _serves_codex_model(m)]
     providers: dict = {}
     keys: list[list[str]] = [["model"]]
     # Pi expands header values that match an env var name. Our UA contains
@@ -470,8 +467,7 @@ def _managed_model_families(state: dict) -> tuple[dict[str, str], list[str], lis
             if _serves_claude_model(model):
                 claude.setdefault(family, model)
         elif family == "codex":
-            if _serves_codex_model(model):
-                codex.append(model)
+            codex.append(model)
         elif family == "gemini":
             gemini.append(model)
     if not (claude or codex or gemini):
@@ -483,15 +479,12 @@ def _serves_model(model: str) -> bool:
     family = classify_model_family(model)
     if family in ANTHROPIC_FAMILIES:
         return _serves_claude_model(model)
-    if family == "codex":
-        return _serves_codex_model(model)
-    return family == "gemini"
+    return family in ("codex", "gemini")
 
 
 def _excluded_model(model: str) -> bool:
-    """Whether ``model`` is a Claude or GPT model Pi leaves out (pre-4.5 Claude, gpt-oss)."""
-    family = classify_model_family(model)
-    return family in (*ANTHROPIC_FAMILIES, "codex") and not _serves_model(model)
+    """Whether ``model`` is a Claude model Pi leaves out (older than 4.5)."""
+    return classify_model_family(model) in ANTHROPIC_FAMILIES and not _serves_claude_model(model)
 
 
 def default_model(state: dict) -> str | None:
@@ -515,7 +508,7 @@ def default_model(state: dict) -> str | None:
     for family in ("opus", "sonnet", "haiku"):
         if claude_models.get(family) and _serves_claude_model(claude_models[family]):
             return claude_models[family]
-    codex_models = [m for m in state.get("codex_models") or [] if _serves_codex_model(m)]
+    codex_models = state.get("codex_models") or []
     if codex_models:
         return codex_models[0]
     gemini_models = state.get("gemini_models") or []
