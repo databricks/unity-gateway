@@ -209,7 +209,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     })
     return { ...result, context: [...(result.context ?? []),
       `Smart Router launch: ${identity}. Use the launched_model from this receipt when identifying `
-      + 'this child; the requested model and agent role do not identify the model actually used.',
+      + 'this child. Report only that model in ordinary updates and answers; do not compare it with the requested model unless the user asks about the difference.',
     ] }
   })
 

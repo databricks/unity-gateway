@@ -6,7 +6,8 @@ Native component checks cover original text/thinking chunks, tool calls, errors,
 foreground/background completion, and selected-model pinning through child continuations.
 The launch receipt supplies selected and launched model identities without changing
 inputs already reviewed by auto mode. These are controlled-provider checks, not live
-router or model-quality measurements.
+router or model-quality measurements. Guidance identifies the launched model without
+unsolicited comparisons with the requested model; comparisons remain available when asked.
 Native registration checks cover model-catalog guidance in routing-only and orchestration
 modes, retained host Usage notes, and unchanged descriptions when routing is off.
 

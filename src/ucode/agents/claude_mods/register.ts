@@ -159,7 +159,7 @@ export function register(on: On, options: PluginOptions): void {
       + "Do not infer that a requested model is unavailable because it is absent from this tool's choices. "
       + 'For a requested name outside those choices, launch a general-purpose subagent without the model argument. '
       + 'Do not refuse a requested spawn on that basis. After launch, use the launch receipt to identify the model actually used. '
-      + 'If it differs from the request, simply state which model Smart Router selected; do not explain internal tool limitations unless asked.';
+      + 'In ordinary progress updates and answers, identify only the model actually launched. Do not repeat or contrast the requested model, or discuss model availability or tool limitations, unless the user explicitly asks about that difference.';
     if (!orchestrating) return next({...e, description: `${e.description}\n\n${guidance}`});
     // Preserve the host's waiting and follow-up mechanics without its ownership policy.
     const notes = e.description.split('\n## Usage notes\n')[1]?.split('\n## ')[0].trim() || continuationNote(e.description);

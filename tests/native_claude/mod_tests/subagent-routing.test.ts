@@ -501,6 +501,8 @@ test('parent receives the successful child model without rewriting requested inp
     expect(note).toContain(`"agent_id":"child-${id}"`);
     expect(note).toContain(`"selected_model":"selected-${id}"`);
     expect(note).toContain(id === 'unknown' ? '"launched_model":null' : `"launched_model":"launched-${id}"`);
+    expect(note).toContain('Report only that model in ordinary updates and answers');
+    expect(note).toContain('unless the user asks about the difference');
     expect(note).not.toContain('requested-model');
     expect(note).not.toContain('1+1');
   }
