@@ -128,7 +128,7 @@ _CLAUDE_VERSION_RE = re.compile(r"^claude-(fable|opus|sonnet|haiku)-(\d+)(?:-(\d
 
 def _claude_version(model_id: str) -> tuple[str, tuple[int, int]] | None:
     """``(family, (major, minor))`` of a Claude id, or None when it doesn't follow the scheme."""
-    match = _CLAUDE_VERSION_RE.match(claude_model_name(model_id))
+    match = _CLAUDE_VERSION_RE.match(claude_model_name(model_id).replace(".", "-"))
     if not match:
         return None
     family, major, minor = match.groups()
@@ -227,6 +227,11 @@ def _gpt_thinking_level_map(name: str) -> ThinkingLevelMap | None:
     return None
 
 
+# GPT models that accept images but not reasoning settings (Pi's OpenAI catalog). Every GPT model
+# with a level map above accepts images too.
+_GPT_VISION_WITHOUT_REASONING = ("gpt-4o", "gpt-4-1")
+
+
 def _gpt_model_entry(model_id: str) -> dict:
     limits = gpt_model_token_limits(model_id)
     entry: dict = {
@@ -234,14 +239,12 @@ def _gpt_model_entry(model_id: str) -> dict:
         "contextWindow": limits["context"],
         "maxTokens": limits["output"],
     }
-    level_map = _gpt_thinking_level_map(canonical_model_name(model_id))
+    name = canonical_model_name(model_id)
+    level_map = _gpt_thinking_level_map(name)
     if level_map is not None:
-        entry.update(
-            reasoning=True,
-            thinkingLevelMap=level_map,
-            input=["text", "image"],
-            inputLimits=_IMAGE_INPUT_LIMITS,
-        )
+        entry.update(reasoning=True, thinkingLevelMap=level_map)
+    if level_map is not None or name.startswith(_GPT_VISION_WITHOUT_REASONING):
+        entry.update(input=["text", "image"], inputLimits=_IMAGE_INPUT_LIMITS)
     return entry
 
 
@@ -485,21 +488,29 @@ def _serves_model(model: str) -> bool:
     return family == "gemini"
 
 
+def _excluded_model(model: str) -> bool:
+    """Whether ``model`` is a Claude or GPT model Pi leaves out (pre-4.5 Claude, gpt-oss)."""
+    family = classify_model_family(model)
+    return family in (*ANTHROPIC_FAMILIES, "codex") and not _serves_model(model)
+
+
 def default_model(state: dict) -> str | None:
     """Prefer Claude opus → sonnet → haiku; fall back to codex, gemini.
 
-    A managed config's ``pi_default_model`` and ``pi_models`` both win outright: the former is
+    A managed config's ``pi_default_model`` and ``pi_models`` win over discovery: the former is
     the admin's chosen session start, the latter their allowlist (its first model Pi serves).
-    Workspace-wide discovery falls back.
+    A model Pi leaves out never becomes the default. When the allowlist has none Pi serves, the
+    config falls back to workspace-wide discovery (see ``_managed_model_families``), and so does
+    the default.
     """
-    if isinstance(state.get("pi_default_model"), str):
-        return state.get("pi_default_model")
+    managed_default = state.get("pi_default_model")
+    if isinstance(managed_default, str) and not _excluded_model(managed_default):
+        return managed_default
     managed = state.get("pi_models")
-    if isinstance(managed, list) and managed:
-        return next(
-            (m for m in managed if isinstance(m, str) and _serves_model(m)),
-            managed[0],
-        )
+    if isinstance(managed, list):
+        served = next((m for m in managed if isinstance(m, str) and _serves_model(m)), None)
+        if served is not None:
+            return served
     claude_models = state.get("claude_models") or {}
     for family in ("opus", "sonnet", "haiku"):
         if claude_models.get(family) and _serves_claude_model(claude_models[family]):

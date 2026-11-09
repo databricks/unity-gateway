@@ -2281,6 +2281,7 @@ _GPT_TOKEN_LIMITS: tuple[tuple[str, dict[str, int]], ...] = (
     ("gpt-5-4-mini", {"context": 400_000, "output": 128_000}),
     ("gpt-5-4-nano", {"context": 400_000, "output": 128_000}),
     ("gpt-5-4", {"context": 272_000, "output": 128_000}),
+    ("gpt-5-3-codex-spark", {"context": 128_000, "output": 32_000}),
     ("gpt-5", {"context": 400_000, "output": 128_000}),
     ("gpt-4-1", {"context": 1_047_576, "output": 32_768}),
     ("gpt-4o", {"context": 128_000, "output": 16_384}),

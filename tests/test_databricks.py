@@ -580,6 +580,9 @@ class TestGptModelTokenLimits:
             ("system.ai.gpt-5-4", 272_000, 128_000),
             ("system.ai.gpt-5-4-nano", 400_000, 128_000),
             ("databricks-gpt-5-mini", 400_000, 128_000),
+            ("system.ai.gpt-5-3-codex", 400_000, 128_000),
+            # Spark is a smaller model than the rest of GPT-5.3 Codex.
+            ("system.ai.gpt-5-3-codex-spark", 128_000, 32_000),
             ("system.ai.gpt-4o", 128_000, 16_384),
         ],
     )
