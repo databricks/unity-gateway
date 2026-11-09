@@ -26,7 +26,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
-from http.client import HTTPException
+from http.client import HTTPException, IncompleteRead
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
 from urllib import error as urllib_error
@@ -115,6 +115,7 @@ _HTTP_GET_RETRYABLE_STATUS_CODES = frozenset({429, 499, 502, 503, 504})
 _HTTP_GET_RETRY_BASE_SECONDS = 1.0
 _HTTP_GET_RETRY_MAX_SECONDS = 5.0
 _HTTP_GET_RETRY_AFTER_JITTER_SECONDS = 0.25
+_MODEL_DISCOVERY_MAX_RETRIES = 2
 _ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES = 2
 
 
@@ -295,6 +296,21 @@ def _log_auth_diagnostics() -> None:
         _debug(f"databrickscfg ({cfg_path})", f"read error: {exc}")
 
 
+def _http_network_failure_reason(exc: OSError | HTTPException, *, can_retry: bool) -> str:
+    if isinstance(exc, IncompleteRead):
+        recovery = (
+            "Retry the request."
+            if can_retry
+            else "Check whether the operation completed before retrying."
+        )
+        return (
+            f"network error: response was cut off before the full body arrived ({exc}); "
+            "this may be caused by "
+            f"a network, VPN, or proxy interruption. {recovery}"
+        )
+    return f"network error: {exc}"
+
+
 def _http_get_retry_delay(retry_after: str | None, retry_index: int) -> float:
     if retry_after is not None:
         try:
@@ -420,7 +436,7 @@ def _http_get_bytes(
             # Read timeouts, malformed headers, and truncated bodies can escape urllib
             # without a URLError wrapper. Use the caller's existing retry budget.
             _debug(f"GET {url}", f"{type(exc).__name__}: {exc}")
-            reason = f"network error: {exc}"
+            reason = _http_network_failure_reason(exc, can_retry=True)
             if attempt == max_retries:
                 return None, reason
             retry_after = None
@@ -529,11 +545,10 @@ def _http_send_json(
     except urllib_error.URLError as exc:
         _debug(f"{method} {url}", f"URLError: {exc.reason}")
         return None, f"network error: {exc.reason}"
-    except OSError as exc:
-        # See `_http_get_json`: a bare socket timeout is an OSError, not a
-        # URLError, and would otherwise escape the caller's error handling.
-        _debug(f"{method} {url}", f"OSError: {exc}")
-        return None, f"network error: {exc}"
+    except (OSError, HTTPException) as exc:
+        # Read timeouts and truncated bodies can escape urllib without a URLError wrapper.
+        _debug(f"{method} {url}", f"{type(exc).__name__}: {exc}")
+        return None, _http_network_failure_reason(exc, can_retry=False)
 
 
 def _http_post_json(
@@ -3818,7 +3833,9 @@ def discover_endpoints_with_api_type(
     """
     hostname = workspace_hostname(workspace)
     payload, reason = _http_get_json(
-        f"https://{hostname}/api/2.0/serving-endpoints:foundation-models", token
+        f"https://{hostname}/api/2.0/serving-endpoints:foundation-models",
+        token,
+        max_retries=_MODEL_DISCOVERY_MAX_RETRIES,
     )
     if payload is None:
         return [], reason

@@ -715,7 +715,11 @@ live search, parent/child discovery, or classifier permission behavior.
 `test_databricks.py` also covers process-local CLI token memoization, expiry
 margins on both wall and monotonic clocks (including suspend and clock rollback),
 short-lived failure entries only for confirmed invalid/missing credentials,
-forced refresh, and login invalidation. Unknown CLI failures, network errors,
+forced refresh, and login invalidation. Mocked HTTP component tests cover truncated
+foundation-model GET recovery and an actionable network/VPN/proxy reason after exhaustion,
+connection-reset retries, transient preflight classification, and single-attempt 400/404
+responses. Truncated mutation responses are reported without automatically retrying; these
+checks do not establish live network or agent behavior. Unknown CLI failures, network errors,
 and malformed token responses retry on the next call without a stale-profile hint.
 Concurrent callers share a per-profile fetch, and an in-flight result cannot
 restore a memo invalidated by login.

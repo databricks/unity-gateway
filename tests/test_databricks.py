@@ -2398,7 +2398,7 @@ class TestDiscoverGeminiModels:
                 "databricks-gemini-3-flash",
             ]
         )
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token: (payload, None))
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token, **kwargs: (payload, None))
 
         models, reason = db_mod.discover_gemini_models(WS, "token")
 
@@ -2426,12 +2426,87 @@ class TestDiscoverGeminiModels:
                 for name in ["databricks-gpt-4-1", "databricks-gpt-5-2-codex"]
             ]
         }
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token: (payload, None))
+        requests = []
+
+        def fake_get(url, token, **kwargs):
+            requests.append((url, token, kwargs))
+            return payload, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
 
         models, reason = db_mod.discover_codex_models(WS, "token")
 
         assert reason is None
         assert models == ["databricks-gpt-5-2-codex", "databricks-gpt-4-1"]
+        assert requests[0][2] == {"max_retries": db_mod._MODEL_DISCOVERY_MAX_RETRIES}
+
+    def test_retries_truncated_response_during_discovery(self, monkeypatch):
+        from http.client import IncompleteRead
+
+        payload = {
+            "endpoints": [
+                {
+                    "name": "databricks-gpt-5-codex",
+                    "config": {
+                        "served_entities": [
+                            {
+                                "foundation_model": {
+                                    "ai_gateway_v2_supported": True,
+                                    "api_types": ["openai/v1/responses"],
+                                }
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+        truncated = _FakeResponse(b"")
+        truncated.read = lambda: (_ for _ in ()).throw(IncompleteRead(b'{"endpoints":', 100))
+        outcomes = iter([truncated, _FakeResponse(json.dumps(payload).encode())])
+        requests = []
+        sleeps = []
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            return next(outcomes)
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+
+        models, reason = db_mod.discover_codex_models(WS, "token")
+
+        assert models == ["databricks-gpt-5-codex"]
+        assert reason is None
+        assert len(requests) == 2
+        assert sleeps == [1.25]
+
+    def test_persistent_truncated_response_returns_actionable_reason(self, monkeypatch):
+        from http.client import IncompleteRead
+
+        requests = []
+        sleeps = []
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            response = _FakeResponse(b"")
+            response.read = lambda: (_ for _ in ()).throw(IncompleteRead(b"partial", 100))
+            return response
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+
+        models, reason = db_mod.discover_codex_models(WS, "token")
+
+        assert models == []
+        assert reason is not None
+        assert "response was cut off" in reason
+        assert "network, VPN, or proxy" in reason
+        assert "Retry the request" in reason
+        assert "IncompleteRead" in reason
+        assert len(requests) == db_mod._MODEL_DISCOVERY_MAX_RETRIES + 1
+        assert sleeps == [1.25, 2.5]
 
 
 class TestResolvePatToken:
@@ -4399,6 +4474,24 @@ class TestProbeUnityGatewayCapabilities:
         assert "HTTP 499 Unknown" in str(excinfo.value)
         assert len(calls) == db_mod._MODEL_SERVICE_PROBE_MAX_RETRIES + 1
 
+    def test_probe_treats_truncated_response_as_transient(self, monkeypatch):
+        from http.client import IncompleteRead
+        from unittest.mock import MagicMock
+
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.side_effect = IncompleteRead(b"partial", 100)
+        urlopen = MagicMock(return_value=response)
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda delay: None)
+
+        with pytest.raises(RuntimeError, match="usually transient") as excinfo:
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
+        assert "response was cut off" in str(excinfo.value)
+        assert "--skip-preflight" in str(excinfo.value)
+        assert urlopen.call_count == db_mod._MODEL_SERVICE_PROBE_MAX_RETRIES + 1
+
     def test_transient_classification_matches_retryable_statuses(self):
         for code in db_mod._HTTP_GET_RETRYABLE_STATUS_CODES:
             assert db_mod._looks_like_transient_failure(f"HTTP {code} Whatever")
@@ -4493,7 +4586,28 @@ class TestHttpGetJsonRetries:
             assert reason is None
         else:
             assert payload is None
-            assert reason == "network error: IncompleteRead(17 bytes read, 100 more expected)"
+            assert reason == (
+                "network error: response was cut off before the full body arrived "
+                "(IncompleteRead(17 bytes read, 100 more expected)); this may be caused by a "
+                "network, VPN, or proxy interruption. Retry the request."
+            )
+
+    @pytest.mark.parametrize(
+        "exc", [ConnectionResetError("connection reset"), OSError("read failed")]
+    )
+    def test_retries_read_oserror_then_succeeds(self, monkeypatch, exc):
+        from unittest.mock import MagicMock
+
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.side_effect = exc
+        urlopen = MagicMock(side_effect=[response, _FakeResponse({"ok": True})])
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda delay: None)
+
+        assert db_mod._http_get_json("https://x/y", "tok", max_retries=2) == ({"ok": True}, None)
+        assert urlopen.call_count == 2
+        response.__exit__.assert_called_once()
 
     @pytest.mark.parametrize("error_type", ["BadStatusLine", "LineTooLong"])
     def test_retries_protocol_errors_before_response_body(self, monkeypatch, error_type):
@@ -5408,6 +5522,26 @@ class TestHttpGetJsonTimeout:
         assert body is None
         assert reason is not None
         assert "timed out" in reason
+
+    @pytest.mark.parametrize("method", ["POST", "PATCH", "DELETE"])
+    def test_mutation_incomplete_response_returns_reason_without_retry(self, monkeypatch, method):
+        from http.client import IncompleteRead
+        from unittest.mock import MagicMock
+
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.side_effect = IncompleteRead(b"partial", 100)
+        urlopen = MagicMock(return_value=response)
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+
+        payload, reason = db_mod._http_send_json(method, f"{WS}/api/2.0/anything", "tok", {})
+
+        assert payload is None
+        assert reason is not None
+        assert "response was cut off" in reason
+        assert "Check whether the operation completed before retrying" in reason
+        urlopen.assert_called_once()
+        response.__exit__.assert_called_once()
 
 
 class TestInstallAiTools:
