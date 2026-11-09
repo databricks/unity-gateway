@@ -956,6 +956,8 @@ controls unchanged. `native_claude/test_mod.py` runs `/smart-router off --feedba
 through Claude, the mod and the real CLI: an unsaved report and another session's report keep
 routing on, this session's report turns it off. `mod_tests/register.test.ts` pins the
 replies, the CLI arguments and session ID, the rollback, and the usage reply outside Omnigent.
+Only a rejected ID (exit 2) gets the feedback ID reply; another CLI failure gets the update
+failure reply. Both show the CLI's error in the transcript.
 
 `test_integration_evidence.py` checks that the Codex approval driver accepts only the
 exact local command. Other commands or environments are rejected, and an incomplete

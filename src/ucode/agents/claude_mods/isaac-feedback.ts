@@ -1,5 +1,5 @@
 import type { EngineInterface, On } from 'claude-code';
-import { envBool } from './constants.ts';
+import { CLI_REJECTED_EXIT_CODE, envBool, ROUTING_UPDATE_FAILED_REPLY } from './constants.ts';
 
 const FEEDBACK_PANE = 'smart-router-feedback';
 const FEEDBACK_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -177,13 +177,23 @@ async function openFeedbackForm(
 }
 
 async function turnOffWithSavedFeedback(
-  disableRouting: NonNullable<FeedbackState['disableRouting']>, feedbackId: string,
+  $: EngineInterface, state: FeedbackState, feedbackId: string,
 ): Promise<{ text: string }> {
   try {
+    if (!state.readRoutingEnabled || !state.disableRouting) {
+      throw new Error('Smart Router controls are unavailable.');
+    }
+    if (!await state.readRoutingEnabled()) return { text: 'Smart Router is off' };
     // UG's CLI turns routing off only if Isaac saved this ID as smart routing feedback for this session.
-    await disableRouting(['--smart-router-feedback-id', feedbackId]);
-  } catch {
-    return { text: 'Could not turn Smart Router off with that feedback ID. Smart Router is still on.' };
+    await state.disableRouting(['--smart-router-feedback-id', feedbackId]);
+  } catch (error) {
+    const failure = error as { exitCode?: number; stderr?: string } | undefined;
+    if (failure?.stderr) $.ui.log(failure.stderr.split(/\s+/).join(' '));
+    return {
+      text: failure?.exitCode === CLI_REJECTED_EXIT_CODE
+        ? 'Could not turn Smart Router off with that feedback ID. Smart Router is still on.'
+        : ROUTING_UPDATE_FAILED_REPLY,
+    };
   }
   return { text: 'Smart Router is off' };
 }
@@ -253,12 +263,12 @@ export function registerIsaacFeedback(
     const feedbackRequired = envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'));
     if (!feedbackRequired) return next(e);
     if (state.submitted) return { text: 'Feedback is being prepared.' };
+    if (command.feedbackId) return turnOffWithSavedFeedback($, state, command.feedbackId);
     try {
       if (!state.readRoutingEnabled || !state.disableRouting) {
         throw new Error('Smart Router controls are unavailable.');
       }
       if (!await state.readRoutingEnabled()) return {text: 'Smart Router is off'};
-      if (command.feedbackId) return await turnOffWithSavedFeedback(state.disableRouting, command.feedbackId);
       state.submitted = false;
       state.reason = '';
       state.category = 'smart-routing';
