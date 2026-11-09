@@ -17,10 +17,6 @@ _CLAUDE_SESSION_ID_ENV_VAR = "CLAUDE_CODE_SESSION_ID"
 _MAX_RECEIPT_BYTES = 2 * 1024 * 1024
 
 
-def isaac_feedback_directory() -> Path:
-    return Path.home() / ".isaac" / "feedback"
-
-
 def require_saved_session_feedback(feedback_id: str) -> None:
     """Raise ``ValueError`` unless ``feedback_id`` is this session's saved smart routing feedback."""
     if os.environ.get(_ISAAC_LAUNCH_MODE_ENV_VAR) != "omni":
@@ -29,7 +25,7 @@ def require_saved_session_feedback(feedback_id: str) -> None:
         feedback_id = str(uuid.UUID(feedback_id))
     except ValueError:
         raise ValueError(f"Feedback ID {feedback_id} is not a UUID.") from None
-    receipt = _read_receipt(isaac_feedback_directory() / feedback_id / "receipt.json")
+    receipt = _read_receipt(Path.home() / ".isaac" / "feedback" / feedback_id / "receipt.json")
     request = receipt.get("request")
     session_id = os.environ.get(_CLAUDE_SESSION_ID_ENV_VAR, "")
     if (
