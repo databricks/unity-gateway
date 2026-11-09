@@ -10,9 +10,56 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 
 _DISTRIBUTION = "unity_gateway"
 _VERSION_ARGV = (["--version"], ["-V"])
+_HELPER_COMMANDS = {
+    "auth-token",
+    "claude-desktop-auth",
+    "claude-router-hook",
+    "codex-router-hook",
+    "cowork-hook",
+    "mcp-proxy",
+    "otel-headers",
+    "otel-proxy",
+    "smart-router-describe",
+}
+
+
+def _ensure_accessible_cwd() -> str | None:
+    """Move to an accessible home or temporary directory if the current one is unusable."""
+    try:
+        os.getcwd()
+        return None
+    except OSError:
+        pass
+
+    try:
+        home = os.path.expanduser("~")
+        os.chdir(home)
+        return home
+    except OSError:
+        pass
+
+    try:
+        temporary = tempfile.gettempdir()
+        os.chdir(temporary)
+        return temporary
+    except OSError:
+        return None
+
+
+def _warn_about_cwd_fallback(directory: str) -> None:
+    """Tell interactive callers when a failed cwd probe changed path resolution."""
+    command = sys.argv[1] if len(sys.argv) > 1 else ""
+    if sys.argv[1:] in _VERSION_ARGV or command in _HELPER_COMMANDS:
+        return
+    print(
+        f"ug: current working directory is not accessible; using {directory!r} instead. "
+        "Relative paths and project context may differ.",
+        file=sys.stderr,
+    )
 
 
 def _read_installed_version() -> str | None:
@@ -59,6 +106,10 @@ def _read_installed_version() -> str | None:
 
 
 def main() -> None:
+    fallback_directory = _ensure_accessible_cwd()
+    if fallback_directory is not None:
+        _warn_about_cwd_fallback(fallback_directory)
+
     if sys.argv[1:] in _VERSION_ARGV:
         version = _read_installed_version()
         if version is None:
