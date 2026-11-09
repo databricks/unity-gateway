@@ -376,7 +376,7 @@ _MLFLOW_COMPAT: dict[str, object] = {
 
 def _resolve_model_selector(
     model: str,
-    claude_models: dict[str, str],
+    claude_ids: list[str],
     codex_models: list[str],
     gemini_models: list[str],
     oss_models: list[str],
@@ -385,7 +385,7 @@ def _resolve_model_selector(
     for name in PROVIDER_NAMES:
         if model.startswith(f"{name}/"):
             return model
-    if model in claude_models.values():
+    if model in claude_ids:
         return f"databricks-claude/{model}"
     if model in codex_models:
         return f"databricks-openai/{model}"
@@ -404,16 +404,28 @@ def render_overlay(
     codex_models: list[str],
     gemini_models: list[str],
     oss_models: list[str] | None = None,
+    claude_model_ids: list[str] | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Pi's private agent config.
 
     ``api_key`` is a pi config value, not necessarily a literal bearer: see
     ``build_pi_api_key`` for the `!command` form every provider gets.
 
-    gpt-oss moves from ``codex_models`` to the MLflow provider, and Claude older than 4.5 is
-    dropped, before any provider or the model selector is built. ``model`` is used as given;
-    ``write_tool_config`` replaces an excluded one before calling here."""
+    ``claude_models`` holds one model per family; ``claude_model_ids`` adds the other Claude
+    versions Pi's model picker lists. gpt-oss moves from ``codex_models`` to the MLflow provider,
+    and Claude older than 4.5 is dropped, before any provider or the model selector is built.
+    ``model`` is used as given; ``write_tool_config`` replaces an excluded one before calling here."""
     claude_models = {f: m for f, m in claude_models.items() if _serves_claude_model(m)}
+    claude_ids = sorted(
+        {
+            *claude_models.values(),
+            *(
+                m
+                for m in claude_model_ids or []
+                if classify_model_family(m) in ANTHROPIC_FAMILIES and _serves_claude_model(m)
+            ),
+        }
+    )
     oss_models = _mlflow_models(oss_models or [], codex_models)
     codex_models = [m for m in codex_models if _serves_codex_model(m)]
     providers: dict = {}
@@ -430,7 +442,6 @@ def render_overlay(
     if gateway_url:
         ua_headers.update(workspace_headers(gateway_url))
 
-    claude_ids = sorted(set(claude_models.values()))
     if claude_ids:
         providers["databricks-claude"] = {
             "baseUrl": pi_base_urls["claude"],
@@ -478,7 +489,7 @@ def render_overlay(
         keys.append(["providers", "databricks-mlflow"])
     overlay: dict = {
         "model": _resolve_model_selector(
-            model, claude_models, codex_models, gemini_models, oss_models
+            model, claude_ids, codex_models, gemini_models, oss_models
         ),
     }
     if providers:
@@ -549,6 +560,10 @@ def write_tool_config(
         state.get("gemini_models") or [],
         state.get("oss_models") or [],
     )
+    # Every Claude version: the managed list's, else discovery's full listing.
+    claude_model_ids = (
+        state.get("pi_models") if managed_families else state.get("all_claude_models")
+    )
     overlay, managed_keys = render_overlay(
         model,
         build_pi_api_key(state),
@@ -557,6 +572,9 @@ def write_tool_config(
         codex_models,
         gemini_models,
         oss_models,
+        [m for m in claude_model_ids if isinstance(m, str)]
+        if isinstance(claude_model_ids, list)
+        else None,
     )
     existing = read_json_safe(PI_CONFIG_PATH)
     providers = existing.get("providers")

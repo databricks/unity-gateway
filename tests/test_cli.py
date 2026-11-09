@@ -7292,6 +7292,55 @@ class TestConfigureSharedStateUsePat:
 
         assert claude_agent._resolve_web_search_model(state) == "system.ai.gpt-5-6-sol"
 
+    def test_configure_saves_every_listed_claude_version(self, monkeypatch):
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        heads = {"opus": "system.ai.claude-opus-5-5", "sonnet": "system.ai.claude-sonnet-5"}
+        monkeypatch.setattr(
+            cli_mod, "discover_model_services", lambda w, t: (heads, [], [], [], None)
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "cached_model_service_entries",
+            lambda w: [
+                db_mod.ModelServiceEntry("system.ai.claude-opus-4-8"),
+                db_mod.ModelServiceEntry("system.ai.claude-opus-5-5"),
+                db_mod.ModelServiceEntry("system.ai.claude-sonnet-5"),
+                db_mod.ModelServiceEntry("system.ai.gpt-5-5"),
+            ],
+        )
+
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["pi"])
+
+        assert state["claude_models"] == heads
+        assert state["all_claude_models"] == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-opus-5-5",
+            "system.ai.claude-sonnet-5",
+        ]
+
+    def test_configure_drops_a_stale_claude_version_list(self, monkeypatch):
+        # Without this run's UC listing (the gateway fallback found the families), Pi lists the
+        # family models rather than versions saved by an earlier configure.
+        cli_mod, *_ = self._stub_deps(
+            monkeypatch,
+            pat_token="dapi-pat",
+            existing_state={
+                "workspace": self.WS,
+                "all_claude_models": ["system.ai.claude-opus-4-8"],
+            },
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_claude_models",
+            lambda w, t: ({"opus": "databricks-claude-opus-5"}, None),
+        )
+        monkeypatch.setattr(cli_mod, "cached_model_service_entries", lambda w: None)
+
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["pi"])
+
+        assert state["claude_models"] == {"opus": "databricks-claude-opus-5"}
+        assert "all_claude_models" not in state
+
     def test_pi_only_configure_persists_discovered_oss_models(self, monkeypatch):
         # Pi's MLflow provider reads `oss_models`, so a Pi-only configure must save them.
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")

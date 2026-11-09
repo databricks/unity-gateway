@@ -796,6 +796,7 @@ def configure_shared_state(
     copilot_reason: str | None = None
     copilot_models: list[copilot_agent.CopilotModel] | None = None
     claude_models = {}
+    all_claude_models: list[str] = []
     gemini_models = []
     codex_models = []
     oss_models = []
@@ -823,6 +824,13 @@ def configure_shared_state(
                 claude_models, claude_reason = ms_claude, ms_reason
                 if not claude_models:
                     claude_models, claude_reason = discover_claude_models(workspace, token)
+                # Every Claude version this run's UC listing found, for Pi's model picker. Without
+                # one, Pi lists the family models above.
+                all_claude_models = [
+                    entry.id
+                    for entry in cached_model_service_entries(workspace) or ()
+                    if "claude-" in entry.id.lower()
+                ]
             if want_gemini:
                 gemini_models, gemini_reason = ms_gemini, ms_reason
                 if not gemini_models:
@@ -858,6 +866,10 @@ def configure_shared_state(
     else:
         if want_claude:
             state["claude_models"] = claude_models
+            if all_claude_models:
+                state["all_claude_models"] = all_claude_models
+            else:
+                state.pop("all_claude_models", None)
         if want_gemini:
             state["gemini_models"] = gemini_models
         if want_codex:

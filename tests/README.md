@@ -972,11 +972,11 @@ Capability discovery is covered by `TestDiscoverModelServicesByApiTypes` and its
 and other tool-calling MLflow chat models (GLM, Kimi, DeepSeek, gpt-oss, Qwen, Llama, Gemma) in
 `oss_models`. Embedding, non-chat and `function_calling: false` services are dropped, and services
 that list no API types fall back to names. The consumers are pinned too: Codex smart routing
-(`test_codex_routing.py`), managed model options (`test_managed_setup.py`), OpenCode/Kilo
-(`test_cli.py`), and Claude's web-search model (`test_agent_claude.py`) keep GPT first and leave
-Grok, gpt-oss, Qwen, Llama and Gemma out where those agents can't use them. `test_agent_pi.py` pins
-Grok's and Qwen 3.5's levels and the new MLflow limits. These are component checks with stubbed
-listings, not live discovery.
+(`test_codex_routing.py`), managed model options (`test_managed_setup.py`), OpenCode/Kilo and the
+saved Claude version list (`test_cli.py`), and Claude's web-search model (`test_agent_claude.py`)
+keep GPT first and leave Grok, gpt-oss, Qwen, Llama and Gemma out where those agents can't use
+them. `test_agent_pi.py` pins Grok's and Qwen 3.5's levels, the new MLflow limits, and every listed
+Claude version in Pi's picker. These are component checks with stubbed listings, not live discovery.
 
 Shared native transcript parsing is checked by `test_integration_agent_helpers.py` and
 `test_integration_evidence.py`. These component checks protect existing journey evidence;
