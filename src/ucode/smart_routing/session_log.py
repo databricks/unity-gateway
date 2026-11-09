@@ -127,7 +127,7 @@ def read_decisions(harness: str, session_id: str) -> list[dict[str, Any]]:
             continue
         try:
             record = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):
             continue
         if not isinstance(record, dict):
             continue
