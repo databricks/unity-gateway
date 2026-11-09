@@ -30,7 +30,6 @@ pytestmark = [
 ]
 
 CODEX_NATIVE_START_MODEL = "gpt-5.6-sol"
-CODEX_GATEWAY_START_MODEL = "system.ai.gpt-5-6-sol"
 CODEX_NATIVE_CATALOG_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra"]
 
 
@@ -77,7 +76,7 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
 
     Expected: the native child and actual hook input contain the exact assignment,
     matched by the router decision's digest. One native child completes on the selected model; the parent stays on
-    its original model. Requests use the launch's Databricks Smart Router proxy and
+    its original model. Requests use the configured Databricks provider directly and
     preserve the user's config, without user-supplied feature flags.
     """
     session = live_session
@@ -132,10 +131,8 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
         if os.name == "nt"
         else Path("/etc/codex/managed_config.toml")
     )
-    configured = tomllib.loads(provider_config.read_text())
-    assert configured.get("model_provider") == ("Databricks" if os.name == "nt" else None)
-    assert configured["model_providers"]["Databricks"]["base_url"].startswith(workspace)
-    assert parent_meta["model_provider"] == "DatabricksSmartRouter"
+    assert tomllib.loads(provider_config.read_text())["model_provider"] == "Databricks"
+    assert parent_meta["model_provider"] == "Databricks"
     assert child_meta["model_provider"] == parent_meta["model_provider"]
 
     (decision,) = read_jsonl(session.home / ".ucode/codex-smart-routing-decisions.jsonl")
@@ -168,7 +165,6 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
     ]
     assert parent_contexts and child_contexts
     assert all(r.get("multi_agent_version") == "v2" for r in parent_contexts + child_contexts)
-    assert {context["model"] for context in parent_contexts} == {CODEX_GATEWAY_START_MODEL}
-    assert codex.completed_task_models(parent, task.value) == {CODEX_GATEWAY_START_MODEL}
+    assert codex.completed_task_models(parent, task.value) == {CODEX_NATIVE_START_MODEL}
     assert_subagent_routed(session, "codex", task)
     session.record("codex-native-v2-pre-tool-use.json", [hook])

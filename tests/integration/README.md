@@ -11,63 +11,30 @@ unsolicited comparisons with the requested model; comparisons remain available w
 Native registration checks cover model-catalog guidance in routing-only and orchestration
 modes, retained host Usage notes, and unchanged descriptions when routing is off.
 
-`test_codex_routing_proxy.py` covers current recipe metadata, malformed controls,
-metadata preservation, proxy cleanup, and configuration isolation. The socket tests
-in `test_gateway_proxy_integration.py` exercise the real proxy with a controlled
-upstream: existing thread IDs, independent sessions, streaming, and a state change
-during an authentication retry. These replace the removed reload-controller tests;
-there is no longer a reload transaction to test.
+`test_codex_routing_reload.py` (under `tests/`) covers reload races, held input,
+permission preservation, multiple roots, rapid toggles, reconnects, Escape, and
+bounded failure handling with controlled transports. Navigation cases preserve
+root ownership and settings while selecting children, nested descendants, and
+already tracked roots, then verify a subsequent toggle still reloads the tree.
 
-`test_smart_router_codex_agent_navigation_preserves_running_child` opens a busy
-child through `/subagents`, returns to the parent, and requires the command to
-finish exactly once under the original ID, without any interruption.
+`test_smart_router_codex_agent_navigation_preserves_running_child` uses the real
+`/subagents` picker to open a busy child and return to the parent without a toggle.
+It requires no reload or interruption, exactly one completed command, stable IDs,
+a child-owned final answer, and a successful follow-up parent turn. On Linux with
+Codex 0.167.0 it reproduced the accidental reload before the fix and passed after it.
 
-`test_smart_router_codex_proxy_updates_running_parent_and_child_inference` invokes
-the actual skill off with two children running and on with three existing children
-running. It requires unchanged command PIDs and one start per command, stable
-thread IDs and permissions, child-owned answers, correct header/body recipes on
-subsequent parent/child requests, and new children inheriting current attribution.
-The diagnostic recorder forwards unchanged requests to the real workspace.
-Live Linux validation of the proxy passed with Codex 0.164.0, 0.165.0 and 0.167.0 against
-`eng-ml-inference`. The 0.165.0 and 0.167.0 runs each checked six post-off requests across four
-threads and seven post-on requests across five threads. Independent mitmproxy on
-0.165.0 captured 30 inference requests: all matching header/body recipes, all HTTP
-200. First-prompt model routing passed on 0.164.0; navigation and exit/relaunch
-followed by native `/resume` passed on
-0.167.0. These are selected journeys, not a full live matrix or native macOS/Windows
-validation. Subsequent investigation confirmed the gateway's OSS converter drops
-native `agent_message` items. The proxy now translates plaintext assignments,
-follow-ups and child results for recognized Kimi/GLM/DeepSeek models; GPT messages
-stay native. Unit coverage checks content/order/recipient preservation, routing
-on/off, and rejection of encrypted-only OSS messages.
-
-`test_smart_router_codex_delivers_tasks_and_followups_to_two_kimi_children` assigns
-two explicit Kimi children different file tasks while routing is off, then turns
-routing on and sends follow-ups to the same children. It requires translated wire
-messages, each child's own answers, stable IDs, native history, and current recipe
-headers/bodies. Explicit models isolate protocol compatibility from route selection.
-The test fails on the previous package when the first child's assignment is absent
-from standard message input. The installed-wheel test passes on Codex 0.167.0
-with the conversion enabled, including all four child-owned answers.
-
-The router-selected Kimi variant of the busy-child journey also passes on Codex
-0.165.0: two Kimi children survive off, then those children and a third child
-survive on. Commands retain their original PIDs and run once. Six post-off
-requests across four threads and seven post-on requests across five threads have
-matching header/body recipes. Transcript lookup uses the owning session's first
-metadata record so copied parent history cannot hide the parent's newer answer.
-Historical tree-reload results do not validate the replacement.
-
-The Codex toggle journeys also cover `subagent_orch_v1`. Its off/on case launches
-with the explicit `--enable-smart-routing` flag and requires a routing box before
-the initial child and after re-enabling routing, plus no box or decision while off.
-This exact preset/flag journey passed on Linux with Codex 0.167.0 against
-`eng-ml-inference`; a missing-box report on native macOS remains unverified.
-
-`test_smart_router_codex_resumes_history_after_proxy_restart` exits and relaunches
-with the same routing preset, selects the saved conversation through `/resume`,
-and checks memory of the previous turn, original thread ID, successful inference,
-and current recipe header/body through the new proxy.
+`test_smart_router_codex_reload_updates_parent_and_existing_child_inference`
+is an installed-wheel, real-TUI journey. It invokes the actual skill from the
+main agent: off with two children running, then on with all three existing
+children running. It checks stable IDs and permissions, child-owned final
+answers, and both recipe fields on every resumed parent and child request.
+New children must inherit the current recipe after each toggle. Its recorder forwards
+requests unchanged to the selected workspace and requires successful responses.
+Linux runs on Codex 0.164.0 and 0.165.0 passed, with independent mitmproxy
+verification of all requests after reload in both toggle phases. After the navigation
+fix, the busy-child journey also passed on 0.167.0: its test recorder verified all
+19 requests after off and 22 after on. No independent mitmproxy rerun on 0.167.0.
+See [reload behavior and validation limits](../../docs/codex-routing-reload.md).
 
 Windows and macOS Cowork desktop coverage, installation detection, and required
 integration gating are documented in the [main test guide](../README.md).
@@ -1092,13 +1059,12 @@ PATH conflicts for the Smart Router skill have subprocess/component coverage in
 establish PowerShell command execution.
 
 The toggle journeys retain the legacy routing-only and orchestration cases and add each of
-the subagent-only `SMART_ROUTER_CONFIG_VERSION` presets, including Codex `subagent_orch_v1`.
-They require only `smart-router`
+the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only `smart-router`
 for routing-only cases, and both `smart-router-orchestrator` and `smart-router` when orchestration
 is enabled. Claude checks each local mod confirmation and the recorded `smart_router_recipe_name`
 on the following calculation's real gateway requests. Codex verifies saved session controls,
-an uninterrupted conversation and a new parent answer after each skill invocation. The
-busy-child proxy journey additionally checks recipe metadata on actual inference requests.
+a successful tree reload and a new parent answer after each skill invocation. The
+busy-child reload journey additionally checks recipe metadata on actual inference requests.
 If Codex requests permission to read the controls, the driver approves only the exact
 public toggle command through the native dialog, leaving the sandbox intact.
 Offline cases in `../test_integration_evidence.py` cover wrong commands, non-local

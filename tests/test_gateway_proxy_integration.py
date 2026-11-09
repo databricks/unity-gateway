@@ -27,9 +27,6 @@ import httpx
 import pytest
 
 from ucode import gateway_proxy
-from ucode.config_io import atomic_write_json
-from ucode.constants import SMART_ROUTING_ENV_KEYS
-from ucode.smart_routing.codex_proxy import RoutingAttribution
 
 
 class _CapturedRequest:
@@ -315,104 +312,6 @@ def _running_gateway_auth_proxy(
 
 
 _SESSION_SECRET = "session-secret"
-
-
-class TestCodexRoutingProxyEndToEnd:
-    path = "/ai-gateway/codex/v1/responses"
-
-    def request(self, proxy_url, thread):
-        return httpx.post(
-            proxy_url + self.path,
-            headers={
-                "Authorization": f"Bearer {_SESSION_SECRET}",
-                "databricks-smart-router-recipe": "stale",
-                "thread-id": thread,
-            },
-            json={
-                "model": "gpt-6-luna",
-                "input": [],
-                "client_metadata": {
-                    "x-codex-turn-metadata": '{"smart_router_recipe_name":"stale","custom":"kept"}'
-                },
-            },
-            timeout=10,
-        )
-
-    def assert_recipe(self, request, recipe):
-        assert request.header("Databricks-Smart-Router-Recipe") == recipe
-        metadata = json.loads(json.loads(request.body)["client_metadata"]["x-codex-turn-metadata"])
-        assert metadata == {"smart_router_recipe_name": recipe, "custom": "kept"}
-
-    def test_existing_threads_see_toggles_and_sessions_stay_isolated(self, make_gateway, tmp_path):
-        gateway = make_gateway(chunks=[b"data: one\n\n", b"data: two\n\n"])
-        first, second = tmp_path / "first.json", tmp_path / "second.json"
-        atomic_write_json(first, {})
-        atomic_write_json(second, {})
-        options = {"allowed_path_prefixes": ("/ai-gateway/codex/v1/",)}
-        with (
-            _running_gateway_auth_proxy(
-                gateway, request_rewriter=RoutingAttribution(first, "first"), **options
-            ) as proxy,
-            _running_gateway_auth_proxy(
-                gateway, request_rewriter=RoutingAttribution(second, "second"), **options
-            ) as other,
-        ):
-            for controls, recipe in [
-                ({}, "first"),
-                (dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"), "DISABLED"),
-                ({}, "first"),
-            ]:
-                atomic_write_json(first, controls)
-                for thread in ("root", "existing-child", "new-child"):
-                    response = self.request(proxy, thread)
-                    assert response.status_code == 200
-                    assert response.content == b"data: one\n\ndata: two\n\n"
-                    self.assert_recipe(gateway.requests[-1], recipe)
-                    assert gateway.requests[-1].header("thread-id") == thread
-                assert self.request(other, "other-root").status_code == 200
-                self.assert_recipe(gateway.requests[-1], "second")
-
-    def test_auth_retry_keeps_original_recipe_snapshot(self, make_gateway, tmp_path):
-        gateway = make_gateway(statuses=[401, 200, 200])
-        controls = tmp_path / "env.json"
-        atomic_write_json(controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
-        calls = []
-
-        def token(force):
-            calls.append(force)
-            if len(calls) > 1:
-                atomic_write_json(controls, {})
-            return "token"
-
-        with _running_gateway_auth_proxy(
-            gateway,
-            token,
-            added_headers={"DATABRICKS-SMART-ROUTER-RECIPE": "static"},
-            allowed_path_prefixes=("/ai-gateway/codex/v1/",),
-            request_rewriter=RoutingAttribution(controls, "stable"),
-        ) as proxy:
-            assert self.request(proxy, "child").status_code == 200
-            assert len(gateway.requests) == 2
-            for request in gateway.requests:
-                self.assert_recipe(request, "DISABLED")
-            assert self.request(proxy, "root").status_code == 200
-            self.assert_recipe(gateway.requests[-1], "stable")
-
-    def test_invalid_controls_fail_without_forwarding_and_recover(self, make_gateway, tmp_path):
-        gateway = make_gateway()
-        controls = tmp_path / "missing.json"
-        with _running_gateway_auth_proxy(
-            gateway,
-            allowed_path_prefixes=("/ai-gateway/codex/v1/",),
-            request_rewriter=RoutingAttribution(controls, "stable"),
-        ) as proxy:
-            response = self.request(proxy, "child")
-            assert response.status_code == 503
-            assert "session controls" in response.json()["error"]["message"]
-            assert not gateway.requests
-            atomic_write_json(controls, {})
-            assert self.request(proxy, "child").status_code == 200
-            self.assert_recipe(gateway.requests[-1], "stable")
 
 
 class TestGatewayAuthProxyEndToEnd:

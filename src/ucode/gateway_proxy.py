@@ -85,14 +85,6 @@ _DEFAULT_TTL_S = 3600
 # and exception class names — never headers, bodies, or credentials.
 _DIAGNOSTICS_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS"
 
-RequestRewriter = Callable[[str, bytes | None], tuple[bytes | None, Mapping[str, str]]]
-
-
-class RequestRewriteError(Exception):
-    def __init__(self, status: int, message: str):
-        super().__init__(message)
-        self.status = status
-
 
 def _diagnostics_enabled() -> bool:
     return env_bool(_DIAGNOSTICS_ENV)
@@ -530,8 +522,6 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     body_rewriter: Callable[[str, bytes], bytes] | None = None
     bad_request_rewriter: Callable[[bytes], bytes | None] | None = None
     discarded_paths: frozenset[str] = frozenset()
-    request_rewriter: RequestRewriter | None = None
-    rewritten_headers: Mapping[str, str] = {}
 
     def _relay_response(self, resp: httpx.Response, **kwargs: Any) -> None:
         # `read` decodes only these encodings, so the body goes out without Content-Encoding.
@@ -556,9 +546,6 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
             pass
 
     def _request_body(self, body: bytes | None) -> bytes | None:
-        self.rewritten_headers = {}
-        if self.request_rewriter is not None:
-            body, self.rewritten_headers = self.request_rewriter(self.path, body)
         if body and self.body_rewriter is not None:
             body = self.body_rewriter(self.path, body)
         if not body or not self.dropped_chat_completions_fields:
@@ -628,10 +615,7 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
                 self._reject(404, "This path is not served by the Unity Gateway proxy.")
                 return
             self.path = rewritten
-        try:
-            super()._handle()
-        except RequestRewriteError as exc:
-            self._send_json_error(exc.status, str(exc))
+        super()._handle()
 
     def _discard(self) -> None:
         """Accept and drop a request the gateway has no route for, with an empty success."""
@@ -646,19 +630,11 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
             pass
 
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
-        added = frozenset(name.lower() for name in self._added_headers())
+        added = frozenset(name.lower() for name in self.added_headers)
         return self.token_header, _SESSION_CREDENTIAL_HEADERS | added, "gateway"
 
     def _added_headers(self) -> dict[str, str]:
-        replaced = {name.lower() for name in self.rewritten_headers}
-        return {
-            **{
-                name: value
-                for name, value in self.added_headers.items()
-                if name.lower() not in replaced
-            },
-            **self.rewritten_headers,
-        }
+        return dict(self.added_headers)
 
     def _on_refresh_failure(self, exc: RuntimeError) -> bool:
         self.cache.report_refresh_failure(exc)
@@ -801,7 +777,6 @@ def start_gateway_auth_proxy(
     body_rewriter: Callable[[str, bytes], bytes] | None = None,
     bad_request_rewriter: Callable[[bytes], bytes | None] | None = None,
     discarded_paths: Iterable[str] = (),
-    request_rewriter: RequestRewriter | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start a per-session proxy for agents that only hold a static credential.
 
@@ -812,10 +787,7 @@ def start_gateway_auth_proxy(
     gateway path it is forwarded to, and ``body_rewriter(path, body)`` adjusts a request
     body for the gateway. ``bad_request_rewriter(body)`` may replace the body of a gateway 400
     (returning None relays it as it is). ``discarded_paths`` are answered with an empty 200 and
-    never forwarded. ``request_rewriter`` snapshots dynamic body and header changes
-    once per request, including across an authentication retry. It may raise
-    ``RequestRewriteError`` to reject a request without forwarding it.
-    Binds an OS-assigned port, read from ``server.server_address[1]``.
+    never forwarded. Binds an OS-assigned port, read from ``server.server_address[1]``.
     """
     return _start_proxy(
         workspace,
@@ -839,7 +811,6 @@ def start_gateway_auth_proxy(
                 staticmethod(bad_request_rewriter) if bad_request_rewriter else None
             ),
             "discarded_paths": frozenset(discarded_paths),
-            "request_rewriter": staticmethod(request_rewriter) if request_rewriter else None,
         },
         on_refresh_failure=on_refresh_failure,
     )

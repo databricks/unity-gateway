@@ -253,7 +253,7 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 
 | Field | Without managed config | With managed config | Notes |
 |-------|------------------------|---------------------|-------|
-| `model_provider` | Create/replace | Remove UG default on ordinary configure; explicit `--global` retains it | Per-user default remains `Databricks`. Launch-local proxy selects `DatabricksSmartRouter`; explicit administrator provider choices remain enforced |
+| `model_provider` | Create/replace | Create/replace | Gateway provider (`Databricks`) |
 | `model` | Ignore | Create/replace | The config's default model |
 | `model_providers.Databricks` | Merge | Merge | Provider block: name, gateway base URL, wire API, `ug` auth command; other keys left alone. A relayed (ChatGPT subscription) provider sets `requires_openai_auth` instead of the auth command and skips the managed file |
 | `http_headers` | Merge | Merge | In `[model_providers.Databricks]`; merge `ug`'s routing headers by name, admin headers added under managed config. `UG_HEADERS` names not already present are added to the launch's `-c` flags only, never a file. On a host that serves several workspaces, the workspace selector headers are added last |
@@ -263,7 +263,7 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone. A same-name entry in `~/.codex/config.toml` of the other transport (stdio vs HTTP) is removed, since Codex would merge the two into an invalid entry |
 | Smart Router and Smart Router Orchestrator hooks | Merge | Merge | Launch-only `PreToolUse`, plus `UserPromptSubmit` and compact `SessionStart` with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; Codex combines them with its native hook sources and applies project trust; `features.hooks` is enabled for a smart-routed launch |
 | Native v2 collaboration | Launch-only (-c), never written | Launch-only (-c), never written | `features.multi_agent_v2.non_code_mode_only=false` and matching `root_agent_usage_hint_text` / `subagent_usage_hint_text` override saved values for the session; only for smart routing on Codex 0.164.0 or newer. User config files, general developer instructions, and native delegation-mode controls are preserved |
-| Smart Router inference proxy | Launch-only, never written | Launch-only, never written | Uses a session-authenticated loopback proxy and `DatabricksSmartRouter` provider. Each inference reads the session controls and overwrites the recipe header/body. Recognized OSS models receive plaintext native agent messages as standard user messages; GPT messages remain native. No tree reload, forced unload, or recovery prompt. Ordinary configure removes UG’s pinned managed provider selection so it cannot make the proxy-backed TUI read-only; other provider definitions and policies remain. See `docs/codex-routing-proxy.md` |
+| Routing-toggle reload | Launch/resume-only, never written | Launch/resume-only, never written | Smart-routed `ug codex` launches set `thread_unload_delay_secs=0` and the recipe header plus `responses_api_metadata.smart_router_recipe_name`. Configure removes persisted recipe headers, which would override reload settings. Windows requirements omit the recipe env-header and use body metadata. A session toggle interrupts and reloads saved roots and children with refreshed attribution. See `docs/codex-routing-reload.md` for behavior, recovery, and validation |
 
 </details>
 
