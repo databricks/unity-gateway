@@ -266,7 +266,8 @@ def test_entrypoint_recovers_unavailable_cwd_to_home(
     cli = ModuleType("ucode.cli")
     cli.main = lambda: print("token")
     monkeypatch.setitem(sys.modules, "ucode.cli", cli)
-    monkeypatch.setenv("HOME", str(home))
+    # Windows resolves `~` from USERPROFILE, not HOME, so patch the lookup itself.
+    monkeypatch.setattr(entrypoint.os.path, "expanduser", lambda _path: str(home))
     monkeypatch.setattr(sys, "argv", ["ug", "auth-token"])
     monkeypatch.setattr(entrypoint.os, "getcwd", getcwd_once_fails)
 
