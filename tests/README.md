@@ -1,5 +1,16 @@
 # Test suites and user journeys
 
+`native_claude/test_mod.py` checks routed parent reports in the real Claude
+process against a controlled provider: incorrect model claims must be absent
+from streamed assistant messages and saved transcripts, for both foreground and
+background children, followed by a corrected reference and the saved child answer.
+`native_claude/mod_tests/subagent-routing.test.ts` checks
+structured report rendering, selected-versus-launched model validation, recorded
+child answers, split chunks, parallel and early completion, invalid references,
+failed handback/resume rollback, unchanged tool inputs and ordinary main-only replies.
+These are deterministic
+component checks; they do not establish live router or provider behavior.
+
 Windows Desktop detection allows up to 30 seconds for the native package query.
 Component coverage in `test_desktop_setup.py` verifies slow successful detection creates
 UG's profile, while missing packages, timeouts, launch errors, and query failures leave
@@ -1416,3 +1427,9 @@ installed plugin to contain no duplicate servers. Reconfigure comparisons includ
 added through `ug mcp add`, while retaining the original model/authentication-field assertions.
 These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
+
+Routed child identity regressions cover model-visible launch context, original-result
+preservation, reversed parallel completion, missing model information, denied/failed
+spawns, and native role menus. Native auto-mode tests verify both foreground and
+background Agent calls deliver the host-reported model to the parent's next request
+while preserving reviewed inputs and denials.

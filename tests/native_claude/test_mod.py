@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from session import Session
 
 from ucode.agents.claude import _header_mod_files
@@ -217,7 +218,10 @@ def test_native_process_inherits_settings_and_runs_python_cli(native_binary, tmp
         assert result["stdout"] == result["stderr"] == "", result
 
 
-def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(native_binary, tmp_path):
+@pytest.mark.parametrize("background", [False, True])
+def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
+    native_binary, tmp_path, background
+):
     """Scenario: Auto Mode approves or flags a native Agent call.
 
     Expected: approval preserves the reviewed input and uses the distinct routed child model
@@ -230,8 +234,10 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(native_b
         "subagent_type": "general-purpose",
         "model": "sonnet",
         "name": "PinnedName",
+        "run_in_background": background,
     }
     selected_model = "claude-opus-4-6"
+    false_claim = "I started a Sonnet subagent to compute the answer."
     routed_type = _routed_claude_agent_name(selected_model)
 
     class Handler(BaseHTTPRequestHandler):
@@ -271,6 +277,29 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(native_b
             count = self.server.message_count
             self.server.message_count += 1
             tool_call = count == 0
+            answer = "Probe finished."
+            if request["model"] == "claude-sonnet-4-6":
+                answer = false_claim
+                if self.server.parent_answers:
+
+                    def strings(value):
+                        if isinstance(value, str):
+                            yield value
+                        elif isinstance(value, dict):
+                            for item in value.values():
+                                yield from strings(item)
+                        elif isinstance(value, list):
+                            for item in value:
+                                yield from strings(item)
+
+                    for text in strings(request.get("messages", [])):
+                        if "Smart Router launch: " in text:
+                            receipt, _ = json.JSONDecoder().raw_decode(
+                                text.split("Smart Router launch: ", 1)[1]
+                            )
+                            answer = json.dumps({"child_id": receipt["agent_id"], "view": "result"})
+                if not tool_call:
+                    self.server.parent_answers += 1
             block = (
                 {"type": "tool_use", "id": tool_use_id, "name": "Agent", "input": {}}
                 if tool_call
@@ -279,7 +308,10 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(native_b
             delta = (
                 {"type": "input_json_delta", "partial_json": json.dumps(original)}
                 if tool_call
-                else {"type": "text_delta", "text": "Probe finished."}
+                else {
+                    "type": "text_delta",
+                    "text": answer,
+                }
             )
             verdict = {
                 "type": "dangerous_tool_use",
@@ -356,7 +388,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
             root = tmp_path / label
             root.mkdir()
             plugin = root / "plugin"
-            _write_routed_claude_plugin(plugin, [selected_model])
+            _write_routed_claude_plugin(plugin)
             options = _claude_mod_launch_options({})
             options["routeCommand"] = [
                 sys.executable,
@@ -369,6 +401,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
             server.requests = []
             server.message_count = 0
             server.classifier_requests = 0
+            server.parent_answers = 0
             server.verdict = verdict
             debug_file = root / "debug.log"
             result = subprocess.run(
@@ -388,7 +421,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     "--tools",
                     "Agent",
                     "--max-turns",
-                    "2",
+                    "4",
                     "--output-format",
                     "stream-json",
                     "--verbose",
@@ -414,7 +447,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                 text=True,
                 timeout=45,
             )
-            assert result.returncode == 0, result.stderr
+            assert result.returncode == 0, result.stderr + result.stdout
             debug_log = debug_file.read_text(encoding="utf-8")
             events = [
                 json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")
@@ -441,6 +474,35 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     if request.get("stream") and request.get("model") == selected_model
                 ]
                 assert child_requests, server.requests
+                parent_requests = [
+                    request
+                    for request in server.requests
+                    if request.get("stream") and request.get("model") == "claude-sonnet-4-6"
+                ]
+                assert any(
+                    "Smart Router launch:" in json.dumps(request)
+                    and selected_model in json.dumps(request)
+                    for request in parent_requests[1:]
+                ), parent_requests
+                # Exercise the host stream and stored transcript, not only a render hook.
+                rejection = 'Smart Router report rejected: use a child reference with view "status" or "result".'
+                parent_answers = [
+                    block.get("text", "")
+                    for event in events
+                    if event.get("type") == "assistant" and not event.get("parent_tool_use_id")
+                    for block in event.get("message", {}).get("content", [])
+                    if block.get("type") == "text"
+                ]
+                assert rejection in parent_answers, parent_answers
+                assert any(
+                    "Child answer:\n> Probe finished." in answer for answer in parent_answers
+                ), parent_answers
+                assert false_claim not in "\n".join(parent_answers), parent_answers
+                saved = "\n".join(
+                    path.read_text() for path in (root / "config/projects").glob("*/*.jsonl")
+                )
+                assert false_claim not in saved
+                assert rejection in saved.replace('\\"', '"')
                 child_request = json.dumps(child_requests[0])
                 assert original["prompt"] in child_request
                 assert "Routed prompt" not in child_request

@@ -1910,3 +1910,9 @@ Missing, malformed, and other-workspace profiles leave plugin setup untouched.
 Installed-CLI Desktop journeys read MCP commands from `managedMcpServers` and require the
 installed plugin to contain no duplicate servers. These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
+
+Routed child identity regressions cover model-visible launch context, original-result
+preservation, reversed parallel completion, missing model information, denied/failed
+spawns, and native role menus. Native auto-mode tests verify both foreground and
+background Agent calls deliver the host-reported model to the parent's next request
+while preserving reviewed inputs and denials.
