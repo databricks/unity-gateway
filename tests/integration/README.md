@@ -14,9 +14,11 @@ service/resource URL, pinned Codex OAuth client, and absence of a user-scope cop
 It replaces the obsolete stdio-only expectation; this checks configuration, not live login.
 
 Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
-before numbered reuse, stable names during routing and in parallel cards, and unchanged
-execution inputs and row controls. They cover a lone call's decision under its Agent row,
-parallel calls as cards above the parent's next reply in call order, calls
+before numbered reuse, stable names during routing, unchanged execution inputs and row
+controls, and pending row/turn-spinner timers. They verify that routed decisions are absent
+from Agent rows and replies for lone and parallel calls; disabled or failed routing forwards
+the original call and propagates policy denials. These are not live parallel-agent TUI or
+gateway checks.
 `../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
 behavior with controlled authentication and transport boundaries. The local-socket
 proxy suite also covers refresh/retry wiring; these checks do not establish live

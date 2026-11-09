@@ -1082,7 +1082,7 @@ class TestRoutingExplanation:
         explanation = {"models": self.MODELS, "detail": "x" * 65537}
         decision, _ = self._select(monkeypatch, self._payload(explanation))
         assert decision.explanation is None
-        string = json.dumps({"models": self.MODELS}) + " " + "x" * 65536
+        string = json.dumps({"models": self.MODELS, "detail": "x" * 65536})
         decision, _ = self._select(monkeypatch, self._payload(string))
         assert decision.explanation is None
 
