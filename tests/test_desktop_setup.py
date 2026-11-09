@@ -3,6 +3,7 @@
 import json
 import os
 import stat
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -893,6 +894,7 @@ def test_missing_app_warns_before_model_discovery(platform, monkeypatch, tmp_pat
     directory = root / "configLibrary"
     monkeypatch.setattr(desktop_setup, "sys", SimpleNamespace(platform=platform))
     monkeypatch.setattr(claude_desktop, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(claude_desktop, "_claude_desktop_installed", lambda: False)
 
     def reject_token_fetch(*_args):
         pytest.fail("Missing Desktop must be detected before external authentication")
@@ -978,3 +980,66 @@ def test_switching_workspace_replaces_one_reserved_profile(desktop):
     }
     assert desktop_setup.revert_desktop() == "removed"
     assert not (desktop / f"{claude_desktop.PROFILE_ID}.json").exists()
+
+
+@pytest.mark.parametrize("desktop", ["win32"], indirect=True)
+@pytest.mark.parametrize(
+    "installation",
+    [
+        "installed",
+        "slow_installed",
+        "missing",
+        "timeout",
+        "query_unavailable",
+        "query_failed",
+        "query_startup_failed",
+    ],
+)
+def test_windows_configure_claude_desktop(desktop, installation, monkeypatch, capsys):
+    (desktop / "_meta.json").unlink()
+    desktop.rmdir()
+    desktop.parent.rmdir()
+
+    def query_installed_package(args, **kwargs):
+        # Simulate the Windows package query while keeping real configuration writes.
+        if installation == "timeout" or (
+            installation == "slow_installed" and kwargs["timeout"] < 20
+        ):
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+        if installation == "query_unavailable":
+            raise FileNotFoundError("PowerShell unavailable")
+        if installation == "query_failed":
+            return subprocess.CompletedProcess(
+                args, 2, stderr="AppX package registration unavailable"
+            )
+        if installation == "query_startup_failed":
+            return subprocess.CompletedProcess(args, 1, stderr="PowerShell initialization failed")
+        return subprocess.CompletedProcess(
+            args, 0 if installation in ("installed", "slow_installed") else 3
+        )
+
+    monkeypatch.setattr(claude_desktop.subprocess_cross_os, "run", query_installed_package)
+    desktop_setup.configure_claude_desktop(
+        {"workspace": "https://workspace.example", "profile": "chosen-profile"}
+    )
+
+    if installation in ("installed", "slow_installed"):
+        profile = configured_profile(desktop)
+        assert profile["inferenceProvider"] == "gateway"
+        assert profile["inferenceModels"] == [
+            {"name": "system.ai.claude-haiku-4-5", "labelOverride": "Claude Haiku 4.5"}
+        ]
+        return
+    output = " ".join(capsys.readouterr().out.split())
+    expected = {
+        "missing": "Open Claude Desktop once",
+        "timeout": "Checking the installed Claude Desktop package timed out after 30 seconds",
+        "query_unavailable": "Could not start PowerShell",
+        "query_failed": "PowerShell exit code 2): AppX package registration unavailable",
+        "query_startup_failed": "PowerShell exit code 1): PowerShell initialization failed",
+    }
+    assert expected[installation] in output
+    if installation != "missing":
+        assert "Open Claude Desktop once" not in output
+    assert not desktop.parent.exists()
+    assert not claude_desktop.APP_DIR.exists()
