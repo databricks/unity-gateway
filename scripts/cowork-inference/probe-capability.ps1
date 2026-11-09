@@ -186,6 +186,22 @@ try {
     $deadline = [DateTime]::UtcNow.AddSeconds(300)
     do {
         Start-Sleep -Seconds 3
+        if ($task.capability -eq 'mcp' -and -not $report.permissionApproved) {
+            $permission = Find-Control -Names @("Claude wants to use Searching the web from $($task.server)")
+            if ($permission) {
+                $allow = $script:window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
+                    Where-Object {
+                        $_.Current.IsEnabled -and -not $_.Current.IsOffscreen -and
+                        $_.Current.ControlType.ProgrammaticName -eq 'ControlType.Button' -and
+                        $_.Current.Name -match '^Allow once(?: [0-9]+)?$'
+                    } | Select-Object -First 1
+                if ($allow) {
+                    Save-UI 'mcp-permission'
+                    Invoke-Control $allow
+                    $report.permissionApproved = $true
+                }
+            }
+        }
         $controls = $script:window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
         $names = @($controls | ForEach-Object { $_.Current.Name })
         $answers = @($names | Where-Object { $_ -like 'Claude responded:*' -and $_.Contains($task.expected) })
