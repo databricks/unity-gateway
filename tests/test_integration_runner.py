@@ -23,7 +23,7 @@ def test_headless_only_selects_exact_nodes_for_requested_agents(tmp_path):
         tmp_path,
         ["claude", "codex"],
         platform_name="nt",
-        system_platform="win32",
+        macos_desktop=False,
         installation_only=False,
         headless_only=True,
     ) == [
@@ -37,7 +37,7 @@ def test_copilot_headless_target_and_exact_version(tmp_path):
         tmp_path,
         ["copilot"],
         platform_name="posix",
-        system_platform="linux",
+        macos_desktop=False,
         installation_only=False,
         headless_only=True,
     ) == [
@@ -52,7 +52,7 @@ def test_antigravity_build_selects_its_headless_node_and_version(tmp_path):
         tmp_path,
         ["antigravity"],
         platform_name="posix",
-        system_platform="linux",
+        macos_desktop=False,
         installation_only=False,
         headless_only=True,
     ) == [
@@ -187,7 +187,7 @@ def test_copilot_version_output_matches_the_pinned_version():
     assert runner.agent_version_output("codex", "codex-cli 0.154.0") == "codex-cli 0.154.0"
 
 
-def test_live_runs_select_every_module_except_platform_unsupported_ones(tmp_path):
+def test_live_runs_select_every_module_except_unsupported_and_desktop_ones(tmp_path):
     (tmp_path / "test_headless.py").write_text("import json\n")
     (tmp_path / "test_tui.py").write_text("from utils.terminal import AgentTerminal\n")
     (tmp_path / "test_ug_claude_tracing.py").write_text("import json\n")
@@ -197,7 +197,7 @@ def test_live_runs_select_every_module_except_platform_unsupported_ones(tmp_path
         tmp_path,
         ["claude"],
         platform_name="nt",
-        system_platform="win32",
+        macos_desktop=False,
         installation_only=False,
         headless_only=False,
     ) == [
@@ -209,7 +209,7 @@ def test_live_runs_select_every_module_except_platform_unsupported_ones(tmp_path
         tmp_path,
         ["claude"],
         platform_name="posix",
-        system_platform="linux",
+        macos_desktop=False,
         installation_only=False,
         headless_only=False,
     ) == [str(tmp_path), f"--ignore={tmp_path / 'test_ug_codex_desktop_macos.py'}"]
@@ -217,7 +217,7 @@ def test_live_runs_select_every_module_except_platform_unsupported_ones(tmp_path
         tmp_path,
         ["codex"],
         platform_name="posix",
-        system_platform="darwin",
+        macos_desktop=True,
         installation_only=False,
         headless_only=False,
     ) == [str(tmp_path)]

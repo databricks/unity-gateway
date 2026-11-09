@@ -79,9 +79,12 @@ class MacApp:
                 raise AssertionError(f"{self.name} never showed {role} {label!r}")
             time.sleep(2)
 
-    def click(self, role: str, label: str, timeout: float = 60) -> None:
+    def click(self, role: str, label: str | None, timeout: float = 60) -> None:
+        """Click the first ``role`` element labelled ``label`` (any label if None)."""
         self.wait_for(role, label, timeout)
-        self.session.run("click", str(self.proc.pid), role, label, binary=self.client, timeout=60)
+        self.session.run(
+            "click", str(self.proc.pid), role, label or "", binary=self.client, timeout=60
+        )
 
     def type_line(self, text: str) -> None:
         """Type into the focused control with real keystrokes, then press Return."""

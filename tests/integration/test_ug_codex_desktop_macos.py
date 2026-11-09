@@ -1,9 +1,16 @@
 """CUJ: configure Codex through ug, then complete a turn in the real ChatGPT desktop app on macOS."""
 
+import time
 from pathlib import Path
 
 import pytest
-from utils.evidence import agent_sessions, assert_completed_task_model, assistant_answers, fresh_id
+from utils.evidence import (
+    agent_sessions,
+    assert_completed_task_model,
+    assistant_answers,
+    completed_task_models,
+    fresh_id,
+)
 from utils.macos_app import MacApp
 from utils.managed import use_managed_config_fixture
 
@@ -36,9 +43,15 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
         app.click("AXButton", "Continue")
         app.click("AXButton", "Skip")
         app.click("AXButton", "Go to ChatGPT")
-        app.wait_for("AXTextArea", None, 120)
+        # Click the composer so the keystrokes cannot land in another control.
+        app.click("AXTextArea", None, timeout=120)
         app.type_line(f"Reply with exactly {marker} and nothing else.")
         app.wait_for("AXStaticText", marker, 300)
+        # The answer can render before the rollout records the completed turn; keep the app open.
+        deadline = time.monotonic() + 60
+        while not completed_task_models(session, "codex", marker):
+            assert time.monotonic() < deadline, "The app never recorded the completed turn"
+            time.sleep(1)
 
     sessions = agent_sessions(session, "codex").values()
     origins = [

@@ -228,7 +228,8 @@ service needs a user session), the GUI, or inference.
 configure it opens the pinned ChatGPT desktop app, answers onboarding and sends a prompt through
 Accessibility clicks and real keystrokes, and requires the exact answer on screen and in the
 app's rollout, with `system.ai.gpt-5-6-sol` as the completed turn's model.
-Off macOS, `scripts/run_integration.py` ignores the module, as it does for Windows-unsupported ones.
+`scripts/run_integration.py` ignores the module unless `--macos-desktop` is passed, which only the
+macOS desktop CI job does, so a local run never drives a developer's installed app.
 
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.

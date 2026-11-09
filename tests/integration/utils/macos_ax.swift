@@ -1,5 +1,5 @@
 // An Accessibility client for one app: `tree PID` prints its UI elements, `click PID ROLE LABEL`
-// clicks the centre of the first matching element with the mouse.
+// clicks the centre of the first matching element (any label if LABEL is empty) with the mouse.
 import AppKit
 
 func attribute(_ element: AXUIElement, _ name: String) -> String {
@@ -28,7 +28,8 @@ case "tree":
     }
 case "click" where arguments.count == 5:
     guard let target = all.first(where: { element in
-        attribute(element, kAXRoleAttribute) == arguments[3] && labels.contains { attribute(element, $0) == arguments[4] }
+        attribute(element, kAXRoleAttribute) == arguments[3]
+            && (arguments[4].isEmpty || labels.contains { attribute(element, $0) == arguments[4] })
     }) else { fatalError("No \(arguments[3]) labelled \(arguments[4])") }
     var position = CGPoint.zero, size = CGSize.zero
     var value: CFTypeRef?

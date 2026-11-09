@@ -122,6 +122,7 @@ def test_codex_desktop_macos_ci_is_blocking_and_installs_a_pinned_app():
     assert re.search(r"(?m)^      CHATGPT_APP_SHA256: [0-9a-f]{64}$", job)
     assert "codex-app-prod/ChatGPT-darwin-arm64-${CHATGPT_APP_VERSION}.zip" in job
     assert "shasum -a 256 -c" in job
+    assert "--macos-desktop" in job
     assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
         "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
     }
