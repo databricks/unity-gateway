@@ -5,17 +5,21 @@ from __future__ import annotations
 from decimal import Decimal
 
 from rich.markup import escape
+from rich.style import Style
+from rich.text import Text
 
 from ucode.budget import BudgetLimitStatus, list_current_user_budget_spend_statuses
 from ucode.databricks import (
     apply_pat_environment,
     ensure_databricks_auth,
     get_databricks_token,
+    get_usage_dashboard_url,
     raise_for_invalid_access_token,
 )
 from ucode.state import load_state
 from ucode.ui import (
     console,
+    encodable_glyph,
     format_meter,
     format_usd,
     label,
@@ -164,12 +168,23 @@ def usage(*, show_all: bool = False) -> int:
                 "Unity Gateway budget usage is not available for this workspace. "
                 "Contact your workspace admin for help."
             )
-            return 0
-        raise RuntimeError(f"Could not retrieve Unity Gateway spend limits: {reason}")
-
-    if not budget_limits:
+        else:
+            raise RuntimeError(f"Could not retrieve Unity Gateway spend limits: {reason}")
+    elif not budget_limits:
         print_note("No Unity Gateway spend limits found for this workspace.")
-        return 0
+    else:
+        console.print(render_budget_limits(budget_limits, show_all=show_all))
 
-    console.print(render_budget_limits(budget_limits, show_all=show_all))
+    dashboard_url = get_usage_dashboard_url(workspace, token)
+    if dashboard_url:
+        console.print(
+            Text.assemble(
+                "\n",
+                Text.from_markup(label(f"{encodable_glyph('↗', '->')} Explore usage trends:")),
+                " ",
+                (dashboard_url, Style(color="cyan", underline=True, link=dashboard_url)),
+            ),
+            soft_wrap=True,
+            end="\n\n",
+        )
     return 0

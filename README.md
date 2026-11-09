@@ -120,10 +120,32 @@ config can set one for Copilot. `ug copilot --model-location <catalog>.<schema>`
 services of one schema instead: services named like Claude or GPT models use their usual API, and
 the rest go through the gateway's Anthropic endpoint, as for Claude Code.
 
+`ug claude --provider <catalog>.<schema>.<name>` and `ug codex --provider ...` also
+accept custom Model Provider Services. The upstream endpoint must natively support
+Anthropic Messages for Claude or OpenAI Responses for Codex; MPS calls do not translate
+between APIs. Declare those APIs on the service's targets. Custom deployment names are
+preserved and can be selected with `--model`.
+
+For every supported provider, Codex accepts only targets declared with OpenAI Responses
+(`openai/v1/responses`). Restricted services with no compatible targets are hidden from
+the provider picker and rejected when selected explicitly.
+
+`ug codex --provider <catalog>.<schema>.<name>` on an Amazon Bedrock (runtime) service turns off Codex's
+built-in `web_search` for that launch, because Bedrock's Responses API rejects it, and registers the
+`system.ai.web_search` MCP service instead. Nothing is added if that service is already configured
+for Codex. Bedrock Mantle and other providers keep the built-in tool.
+
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
 to select another model source; managed workspace configs control their own sources.
+`ug claude --provider <catalog>.<schema>.<name>` also supports Claude deployments on
+Microsoft Foundry. For every provider, Claude uses only targets declared with Anthropic Messages
+(`anthropic/v1/messages`); MPS requests do not translate other APIs to Messages. Restricted
+services with no compatible targets are rejected. Deployment names are passed unchanged.
+When no target identifies a Claude family, the first compatible target becomes the default.
+Use `--model <deployment>` to select another deployment or a model on an allow-all service
+without declared targets.
 Interactive `ug configure` also offers a **Custom Model Location** (`<catalog>.<schema>`) for
 Claude Code, Codex and Copilot alongside Databricks Hosted and External Models. The choice is saved
 with the rest of the configuration, so later `ug claude` / `ug codex` / `ug copilot` launches use it; an
@@ -154,19 +176,61 @@ ug configure --agents claude,codex
 ug configure --workspace https://first.databricks.com
 ug configure --profile DEFAULT --agents claude,codex
 ug configure --user
+ug configure --agent claude --model-location main.models
+ug configure --agents claude,codex --provider main.default.anthropic
 ```
 
-`--global` (the default) writes the machine-wide Claude Code and Codex managed settings with sudo,
-with or without a terminal: run headless as root (or with passwordless sudo), since a write that
-can't be authorized fails the command.
+`--model-location <catalog>.<schema>` and `--provider <catalog>.<schema>.<name>` pick the model
+source without the interactive picker, so a script can configure it. `--model-location` applies to
+Claude Code, Codex, and Copilot (CLI and VS Code); `--provider` also applies to Gemini CLI. Either
+needs `--agent`/`--agents`, and they cannot be combined. Cursor may share the run but takes no
+source. The choice is saved for later launches, and each one replaces the other. A bad Copilot
+source fails before anything is saved. A managed config that enables agents names the source itself
+and rejects both flags.
+
+By default, `ug configure` writes both the per-user settings and the machine-wide Claude Code and
+Codex managed settings with sudo, with or without a terminal: run headless as root (or with
+passwordless sudo), since a write that can't be authorized fails the command.
+`--global` writes only the machine-wide managed settings and leaves every per-user setting alone:
+`~/.claude/ucode-settings.json`, `~/.codex/ucode.config.toml` and `~/.codex/config.toml`, user MCP
+servers, skills, Databricks AI Tools, and Desktop/Cowork user settings. Claude Code and Codex
+(0.134.0 or newer) have machine-wide CLI settings; macOS also supports Desktop MDM provisioning.
+Other CLI agents are skipped with a note, so a run that names only them does nothing. It fails for `--mcp`, `--enable-databricks-ai-tools`, a subscription
+relay, and `UG_SKIP_OS_SETTINGS`. It also fails when `ug` or its Python is in a user's home folder
+(checked through symlinks), since every user's agents run them: install ug in a shared location
+first, as `scripts/mdm/macos-provision.sh` does with `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR`, and
+`UV_PYTHON_INSTALL_DIR`. Workspace MCP servers that only user settings can hold, the
+web_search MCP server, and a static Codex model list are skipped with a warning. ug still saves its
+own state in `~/.ucode` and your Databricks login. Only that run is limited: each user's first
+launch writes their per-user settings as usual.
 `--user` skips them, like `UG_SKIP_OS_SETTINGS`, and needs no sudo; use it when you launch through
 `ug`. `UG_SKIP_OS_SETTINGS=1` neither writes nor checks the OS-managed files: ug trusts whatever is
 there and the agents apply their native precedence. Configure fails while a managed file for the agent exists, since managed settings take
 precedence; later launches use whatever files are present.
 The choice is saved for launches after a successful configure; `ug configure` without `--user`
-and `ug revert` return to `--global`.
+and `ug revert` return to the default, which writes both.
 `--user` also fails for a workspace that publishes a managed config, which must be installed
-machine-wide; use `--global` for it.
+machine-wide: run `ug configure` without `--user`, or ask your administrator to run
+`ug configure --global`.
+
+For Claude Desktop, default `ug configure` and `--user` both write only the user's
+3P JSON profile, generated marketplace, and native Cowork registration/cache. They leave
+root files untouched. Explicit `--global` skips those user-level Desktop writers; machine
+policy and plugin provisioning use the macOS MDM path. CLI-agent scope handling is
+unchanged. If Desktop has not initialized a Cowork account directory, ordinary configure
+skips plugin setup until that directory exists. See
+[Desktop plugin installation](docs/claude-desktop.md#cowork-workspace-skills-and-mcp-servers).
+
+For macOS MDM deployment, run `ug configure --agents claude --global --workspace <url>`
+with a preinstalled shared runtime. Machine writes request sudo when needed. This publishes Desktop's managed plist with
+connectors/tool search and an organization plugin containing skills/hooks. Desktop loads
+the plugin directly; no LaunchAgent or per-user marketplace refresh is installed.
+It leaves Desktop's user profile and marketplace source unchanged. Windows and Linux skip
+Desktop under `--global`.
+Desktop provisioning failures warn without failing CLI setup. Ordinary `ug revert` attempts
+user and MDM cleanup, requesting sudo for machine files when needed.
+Provisioning credentials stay separate from users' Desktop authentication.
+See [MDM prerequisites, deployment, and validation](docs/claude-desktop-mdm.md).
 
 ### Hosts that serve several workspaces
 
@@ -188,6 +252,18 @@ profile for the host yet, the first login names one `ug-<name>`.
 Not supported yet on these hosts: disaster-recovery stable connection ids, signing in to an MCP
 service connection that needs your own login, and the MDM bootstrap script. MCP servers are
 registered through `ug mcp-proxy`, never as the agent's own OAuth connection.
+
+### Server-side web search for Claude Code
+
+ug denies Claude Code's native `WebSearch` and registers its own `web_search` MCP. For one launch,
+`UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1 ug claude` instead uses the AI Gateway's server-side search,
+writing no file. If the OS-managed settings, their `managed-settings.d`
+drop-ins, or the user settings deny `WebSearch`, ug warns and keeps its MCP for that launch.
+To make it the default, run `ug configure --enable-server-side-web-search` (`--disable-...` undoes it;
+omitting the flag keeps the saved choice). An explicit `ug configure` then also removes a bare
+`WebSearch` deny from the OS-managed settings unless your admin settings request it, and `ug revert`
+restores it only if that deny list wasn't edited since. ug never writes the deny to the managed file.
+Relayed launches are unaffected.
 
 ### Extra headers for one session
 
@@ -590,7 +666,7 @@ preferences are ignored and their files are left untouched. See the bundled
 | Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS), `C:\Program Files\ClaudeCode\managed-settings.json` (Windows, written only from an elevated terminal) |
 | Gemini CLI | `~/.gemini/ucode.env`, `~/.ucode/.gemini-home/.gemini/settings.json` |
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |
-| GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/ucode-mcp-config.json` |
+| GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/mcp-config.json` (or `$COPILOT_HOME/mcp-config.json`) |
 | Pi | `~/.ucode/pi-home/.pi/agent/models.json`, `~/.ucode/pi-home/.pi/agent/settings.json` |
 | Antigravity CLI | `~/.gemini/config/skills.json` (adds `~/.agents/skills`), `~/.gemini/config/mcp_config.json` (ug's MCP servers only); the gateway is set per launch through `AGY_LLM_GATEWAY_*` variables |
 | Cursor Agent | `~/.cursor/mcp.json` |

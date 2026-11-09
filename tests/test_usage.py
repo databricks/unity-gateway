@@ -456,6 +456,10 @@ class TestRenderBudgetLimits:
 
 class TestUsageCommand:
     @pytest.fixture(autouse=True)
+    def without_dashboard(self, monkeypatch):
+        monkeypatch.setattr(usage_mod, "get_usage_dashboard_url", lambda *args: None)
+
+    @pytest.fixture(autouse=True)
     def without_usage_opt_in(self, monkeypatch):
         monkeypatch.delenv("ENABLE_UG_USAGE_SPEND_API", raising=False)
 
@@ -681,6 +685,107 @@ class TestUsageCommand:
         with pytest.raises(RuntimeError) as exc_info:
             usage()
         assert str(exc_info.value) == "Your access token is expired or invalid."
+
+    @pytest.mark.parametrize("budget_result", ["limits", "empty", "unavailable"])
+    def test_appends_dashboard_url_after_usage_output(self, monkeypatch, budget_result):
+        self._stub_auth(monkeypatch, {"workspace": "https://workspace", "profile": "profile"})
+        statuses = [BudgetLimitStatus("budget", PER_USER, "MONTH", Decimal("25"))]
+        monkeypatch.setattr(
+            usage_mod,
+            "list_current_user_budget_spend_statuses",
+            lambda *args: (
+                statuses if budget_result == "limits" else [],
+                "HTTP 404 Not Found" if budget_result == "unavailable" else None,
+            ),
+        )
+        dashboard_url = "https://workspace/dashboardsv3/dashboard/published?o=123"
+        calls = []
+        monkeypatch.setattr(
+            usage_mod,
+            "get_usage_dashboard_url",
+            lambda workspace, token: calls.append((workspace, token)) or dashboard_url,
+        )
+        output = io.StringIO()
+        console = Console(file=output, color_system=None, width=200)
+        monkeypatch.setattr(usage_mod, "console", console)
+        monkeypatch.setattr(usage_mod, "print_note", console.print)
+
+        assert usage() == 0
+
+        text = output.getvalue()
+        assert calls == [("https://workspace", "workspace-token")]
+        assert text.endswith(f"\n\n↗ Explore usage trends: {dashboard_url}\n\n")
+        if budget_result == "limits":
+            assert "25% used" in text
+        elif budget_result == "empty":
+            assert "No Unity Gateway spend limits found" in text
+        else:
+            assert "budget usage is not available" in text
+
+    def test_omits_dashboard_footer_without_a_url(self, monkeypatch):
+        self._stub_auth(monkeypatch, {"workspace": "https://workspace"})
+        monkeypatch.setattr(
+            usage_mod, "list_current_user_budget_spend_statuses", lambda *args: ([], None)
+        )
+        monkeypatch.setattr(usage_mod, "get_usage_dashboard_url", lambda *args: None)
+        output = io.StringIO()
+        console = Console(file=output, color_system=None, width=200)
+        monkeypatch.setattr(usage_mod, "console", console)
+        monkeypatch.setattr(usage_mod, "print_note", console.print)
+
+        assert usage() == 0
+        assert output.getvalue() == "No Unity Gateway spend limits found for this workspace.\n"
+
+    @pytest.mark.parametrize(
+        ("terminal", "legacy_windows"),
+        [(False, False), (True, False), (True, True)],
+        ids=["redirected", "modern-terminal", "legacy-windows"],
+    )
+    def test_displays_dashboard_url_as_literal_hyperlink(
+        self, monkeypatch, terminal, legacy_windows
+    ):
+        self._stub_auth(monkeypatch, {"workspace": "https://workspace"})
+        monkeypatch.setattr(
+            usage_mod, "list_current_user_budget_spend_statuses", lambda *args: ([], None)
+        )
+        dashboard_url = (
+            "https://example-workspace.cloud.databricks.com/dashboardsv3/"
+            "0123456789abcdef0123456789abcdef/published?o=1234567890123456"
+            "&filter=[red]value[/red]"
+        )
+        monkeypatch.setattr(usage_mod, "get_usage_dashboard_url", lambda *args: dashboard_url)
+        monkeypatch.setattr(usage_mod, "print_note", lambda *args: None)
+        output = io.StringIO()
+        console = Console(
+            file=output,
+            force_terminal=terminal,
+            color_system="standard" if terminal else None,
+            no_color=False,
+            # A terminal may be legacy Windows, which intentionally omits OSC 8 links.
+            legacy_windows=legacy_windows,
+            width=40,
+        )
+        monkeypatch.setattr(usage_mod, "console", console)
+
+        assert usage() == 0
+
+        rendered = output.getvalue()
+        expected = f"\n↗ Explore usage trends: {dashboard_url}\n\n"
+        if terminal:
+            text = Text.from_ansi(rendered)
+            assert text.plain == expected
+            style = text.get_style_at_offset(console, text.plain.index(dashboard_url))
+            assert style.link == (None if legacy_windows else dashboard_url)
+            if legacy_windows:
+                assert "\x1b]8;" not in rendered
+            assert style.underline is True
+            assert style.color is not None and style.color.number == 6  # ANSI cyan
+            label_style = text.get_style_at_offset(console, 1)
+            assert label_style.bold is True
+            assert label_style.link is None
+        else:
+            assert rendered == expected
+            assert "\x1b" not in rendered
 
     def test_requires_a_configured_workspace(self, monkeypatch):
         monkeypatch.setattr(usage_mod, "load_state", lambda: {})

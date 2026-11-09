@@ -17,7 +17,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from ucode.config_io import ToolSpec
+from ucode.config_io import ToolSpec, is_dry_run
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT
 from ucode.databricks import (
     AnthropicModelCatalog,
@@ -25,11 +25,12 @@ from ucode.databricks import (
     install_ai_tools,
     install_databricks_cli,
     map_claude_family_models,
+    provider_targets_for_tool,
     resolve_provider_service,
 )
 from ucode.env import env_bool
 from ucode.managed_config import refresh_managed_config
-from ucode.managed_files import config_scope, managed_write_batch
+from ucode.managed_files import config_scope, machine_wide_only, managed_write_batch
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import get_model_location, get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
@@ -121,6 +122,12 @@ def install_databricks_ai_tools_for_agents(
     reuses that read instead of adding another control-plane round trip.
     """
     if not state.get("databricks_ai_tools_enabled"):
+        return
+    if machine_wide_only():
+        # AI Tools install into per-user agent settings.
+        print_note(
+            "Skipped Databricks AI Tools: `ug configure --global` writes only machine-wide settings."
+        )
         return
     # An admin's managed config governs the workspace, so ucode does not
     # self-install AI Tools under one (may become a managed-config option later).
@@ -411,9 +418,11 @@ def resolve_provider_models(
     """Validate ``provider`` for ``tool`` and return the model ids to pin.
 
     Returns ``(provider_models, error, relayed)``. ``provider_models`` is a ``{family: model_id}``
-    dict re-derived from the service's declared targets — Bedrock (provider-side slugs), API-key
-    Anthropic, and relayed Anthropic that declares a curated allowlist alike — so the client uses the
-    ids the MPS allows rather than Claude Code's defaults. It is None when ``provider`` is None, when
+    dict re-derived from the service's declared targets — Bedrock (provider-side slugs), Foundry
+    (deployment names), API-key Anthropic, and relayed Anthropic that declares a curated allowlist
+    alike — so the client uses the ids the MPS allows rather than Claude Code's defaults.
+    When no family can be inferred, ``default`` pins the first compatible target instead.
+    It is None when ``provider`` is None, when
     the service declares no Claude targets (e.g. an ``allow_all`` relay), or for a non-Claude (e.g.
     codex) service. ``relayed`` is True for a credential-less Anthropic subscription relay, which the
     launch path wires with the relayed overlay + refresh proxy. A non-None ``error`` means the
@@ -438,7 +447,11 @@ def resolve_provider_models(
     # through Claude-family logic would be meaningless (see docstring).
     if tool != "claude":
         return None, None, relayed
-    return map_claude_family_models(service.get("targets") or []) or None, None, relayed
+    targets = provider_targets_for_tool(tool, service)
+    models = map_claude_family_models(targets)
+    if not models and targets:
+        models = {"default": targets[0]}
+    return models or None, None, relayed
 
 
 def _newest_first(model: str) -> list[int]:
@@ -528,8 +541,8 @@ def refuse_user_scope_over_managed_files(tools: list[str]) -> None:
         if path is not None and path.exists():
             raise RuntimeError(
                 f"`ug configure --user` can't be used while {display} managed settings exist at "
-                f"{path}; they take precedence over user settings. Run `ug revert` if ug wrote "
-                "them, ask your administrator to remove them, or use `ug configure --global`."
+                f"{path}; they take precedence over user settings. Run `ug configure` without "
+                "--user, run `ug revert` if ug wrote them, or ask your administrator to remove them."
             )
 
 
@@ -543,7 +556,8 @@ def refuse_user_scope_over_managed_config(workspace: str | None, managed: dict |
         return
     raise RuntimeError(
         f"`ug configure --user` can't be used with {workspace}: it publishes a managed config, "
-        "which must be installed machine-wide. Use `ug configure --global` (the default)."
+        "which must be installed machine-wide. Run `ug configure` without --user, or ask your "
+        "administrator to run `ug configure --global`."
     )
 
 
@@ -686,10 +700,38 @@ def _availability_failure_detail(tool: str, state: dict) -> str:
     return " (" + "; ".join(parts) + ")"
 
 
+_vscode_with_copilot = True
+
+
+def request_vscode_with_copilot(requested: bool = True) -> None:
+    """Whether configuring Copilot in this run also sets up VS Code (``ug configure --no-vscode``
+    passes ``False``)."""
+    global _vscode_with_copilot
+    _vscode_with_copilot = requested
+
+
+def configure_vscode(state: dict, *, provider: str | None, parent_schema: str | None) -> None:
+    """Set up Copilot Chat in VS Code with the models the Copilot CLI was configured with."""
+    if not _vscode_with_copilot:
+        return
+    if is_dry_run():
+        print_note("Dry run: VS Code isn't changed.")
+        return
+    from . import vscode
+
+    vscode.configure(state, provider=provider, location=parent_schema)
+
+
 def configure_single_tool(
-    tool: str, state: dict, *, parent_schema: str | None = None, provider: str | None = None
+    tool: str,
+    state: dict,
+    *,
+    parent_schema: str | None = None,
+    provider: str | None = None,
+    with_vscode: bool = False,
 ) -> dict:
-    """Check availability, configure, and persist state for one tool only."""
+    """Check availability, configure, and persist state for one tool only. ``with_vscode`` also
+    sets up VS Code after Copilot."""
     parent_schema = parent_schema or _persisted_model_location(tool, state, provider)
     provider = None if parent_schema else provider or get_provider_service(state, tool)
     # A Model Provider Service or parent schema routes through the same gateway and pins no
@@ -704,6 +746,8 @@ def configure_single_tool(
             )
     with managed_write_batch(_managed_settings_displays([tool])):
         state = _configure_one(tool, state, provider, parent_schema=parent_schema)
+    if with_vscode and tool == AGENT_COPILOT:
+        configure_vscode(state, provider=provider, parent_schema=parent_schema)
     available_tools = list(set((state.get("available_tools") or []) + [tool]))
     state["available_tools"] = available_tools
     save_state(state)
@@ -761,6 +805,7 @@ def configure_selected_tools(
     *,
     install_ai_tools: bool = True,
     parent_schemas: dict[str, str] | None = None,
+    providers: dict[str, str] | None = None,
 ) -> dict:
     """Configure the given tools. Caller is responsible for ensuring each tool
     is available on the workspace.
@@ -776,10 +821,14 @@ def configure_selected_tools(
     configured: list[str] = []
     with managed_write_batch(_managed_settings_displays(tools)):
         for tool in tools:
+            # An explicit provider displaces a saved model location, as on the picker.
+            explicit_provider = (providers or {}).get(tool)
             parent_schema = (parent_schemas or {}).get(tool) or _persisted_model_location(
-                tool, state, None
+                tool, state, explicit_provider
             )
-            provider = None if parent_schema else get_provider_service(state, tool)
+            provider = (
+                None if parent_schema else explicit_provider or get_provider_service(state, tool)
+            )
             try:
                 state = _configure_one(tool, state, provider, parent_schema=parent_schema)
             except Exception as exc:  # noqa: BLE001 -- surface any harness failure as a warning
@@ -788,6 +837,9 @@ def configure_selected_tools(
                 )
                 continue
             configured.append(tool)
+            # `ug configure` sets up Copilot Chat in VS Code along with the Copilot CLI.
+            if tool == AGENT_COPILOT:
+                configure_vscode(state, provider=provider, parent_schema=parent_schema)
 
     existing = state.get("available_tools") or []
     state["available_tools"] = sorted(set(existing) | set(configured))

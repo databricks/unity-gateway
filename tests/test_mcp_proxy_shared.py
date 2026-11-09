@@ -76,7 +76,7 @@ class _Client:
         assert value is not None, self.process.stderr.read()
         return value
 
-    def initialize(self):
+    def initialize(self, client_name="component"):
         self.send(
             {
                 "jsonrpc": "2.0",
@@ -85,7 +85,7 @@ class _Client:
                 "params": {
                     "protocolVersion": "2025-11-25",
                     "capabilities": {},
-                    "clientInfo": {"name": "component", "version": "1"},
+                    "clientInfo": {"name": client_name, "version": "1"},
                 },
             }
         )
@@ -123,7 +123,12 @@ class _Client:
 
 @pytest.fixture
 def peer():
-    sessions = set()
+    class Sessions(set):
+        def __init__(self):
+            super().__init__()
+            self.user_agents = {}
+
+    sessions = Sessions()
     lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
@@ -188,6 +193,8 @@ def peer():
                 }
             else:
                 result = {"tools": []} if method == "tools/list" else {}
+            with lock:
+                sessions.user_agents.setdefault(session, []).append(self.headers.get("User-Agent"))
             self.reply(200, {"jsonrpc": "2.0", "id": request["id"], "result": result}, session)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -256,12 +263,17 @@ def _endpoints(tmp_path):
 
 
 def test_concurrent_agents_share_backend_with_distinct_sessions(clients, peer, tmp_path):
-    url, _ = peer
+    url, sessions = peer
     first = clients(url + "/first", header="X-Agent: first", profile="one")
     second = clients(url + "/second", header="X-Agent: second", profile="two")
     # Both agents use request IDs 1 and 2; response routing must remain private.
     with ThreadPoolExecutor(max_workers=2) as pool:
-        list(pool.map(lambda client: client.initialize(), [first, second]))
+        list(
+            pool.map(
+                lambda item: item[0].initialize(item[1]),
+                [(first, "first-agent"), (second, "second-agent")],
+            )
+        )
         responses = list(
             pool.map(lambda item: item[0].call(item[1]), [(first, "α"), (second, "β")])
         )
@@ -272,8 +284,23 @@ def test_concurrent_agents_share_backend_with_distinct_sessions(clients, peer, t
         ("/second", "β", "second"),
     ]
     assert all(r["authorization"] == "Bearer component-bearer" for r in responses)
+    for response, name in zip(responses, ["first-agent", "second-agent"], strict=True):
+        assert len(sessions.user_agents[response["session"]]) == 2
+        assert all(
+            agent == mcp_proxy.ucode_user_agent(mcp_proxy.ug_version(), f"{name}/1")
+            for agent in sessions.user_agents[response["session"]]
+        )
     first.close()
     assert second.call("still alive", 3)["value"] == "still alive"
+
+
+def test_explicit_user_agent_takes_precedence_over_client_info(clients, peer):
+    url, sessions = peer
+    client = clients(url + "/mcp", header="uSeR-aGeNt: custom/1")
+    client.initialize("agent-from-client-info")
+    session = client.call("hello")["session"]
+
+    assert sessions.user_agents[session] == ["custom/1", "custom/1"]
 
 
 def test_different_credential_environments_use_separate_backends(clients, peer, tmp_path):

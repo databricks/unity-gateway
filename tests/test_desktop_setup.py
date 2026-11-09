@@ -76,7 +76,7 @@ def test_configure_uses_claude_catalog_and_absolute_helper(desktop, tmp_path, ca
     ]
     profile = configured_profile(desktop)
     assert profile["inferenceModels"] == [
-        {"name": "system.ai.claude-haiku-4-5"},
+        {"name": "system.ai.claude-haiku-4-5", "labelOverride": "Claude Haiku 4.5"},
     ]
     assert profile["inferenceGatewayBaseUrl"] == "https://workspace.example/ai-gateway/anthropic"
     assert profile["inferenceCredentialHelper"] == str(tmp_path / "venv with spaces" / "python")
@@ -364,9 +364,9 @@ def test_configure_filters_claude_names_without_changing_source(desktop, monkeyp
 
     desktop_setup.configure_claude_desktop(state)
 
-    assert configured_profile(desktop)["inferenceModels"] == [
-        {"name": model_id} for model_id in claude_models
-    ]
+    assert [
+        model["name"] for model in configured_profile(desktop)["inferenceModels"]
+    ] == claude_models
     assert model_ids == original_ids
 
 
@@ -432,7 +432,9 @@ def test_reconfigure_refreshes_existing_profile_without_deletion(desktop, capsys
     refreshed = configured_profile(desktop)
     original_metadata["entries"][0]["name"] = "Unity Gateway - updated-profile"
     assert json.loads(metadata_path.read_text()) == original_metadata
-    assert refreshed["inferenceModels"] == [{"name": "main.models.claude-sonnet-5-desktop"}]
+    assert refreshed["inferenceModels"] == [
+        {"name": "main.models.claude-sonnet-5-desktop", "labelOverride": "Claude Sonnet 5 Desktop"}
+    ]
     assert refreshed["inferenceGatewayBaseUrl"] == "https://workspace.example/ai-gateway/anthropic"
     assert refreshed["inferenceCredentialHelper"] == str(tmp_path / "venv with spaces" / "python")
     assert refreshed["inferenceCredentialHelperArgs"][-2:] == ["--profile", "updated-profile"]
@@ -533,7 +535,9 @@ def test_managed_static_catalog_keeps_ids_when_label_discovery_fails(desktop, mo
         }
     )
 
-    assert configured_profile(desktop)["inferenceModels"] == [{"name": haiku}]
+    assert configured_profile(desktop)["inferenceModels"] == [
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5"}
+    ]
 
 
 def test_configure_refreshes_model_labels_from_discovery(desktop, monkeypatch):
@@ -556,8 +560,8 @@ def test_configure_refreshes_model_labels_from_discovery(desktop, monkeypatch):
 
     assert configured_profile(desktop)["inferenceModels"] == [
         {"name": sonnet, "labelOverride": "Claude Sonnet 5"},
-        {"name": opus},
-        {"name": haiku},
+        {"name": opus, "labelOverride": "Claude Opus 5"},
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5"},
         {"name": sonnet, "labelOverride": "Claude Sonnet 5"},
     ]
     assert model_ids == original_ids
@@ -569,7 +573,7 @@ def test_configure_refreshes_model_labels_from_discovery(desktop, monkeypatch):
     assert configured_profile(desktop)["inferenceModels"] == [
         {"name": sonnet, "labelOverride": "Sonnet — Updated label"},
         {"name": opus, "labelOverride": "Claude Opus 5"},
-        {"name": haiku},
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5"},
         {"name": sonnet, "labelOverride": "Sonnet — Updated label"},
     ]
 
@@ -577,9 +581,79 @@ def test_configure_refreshes_model_labels_from_discovery(desktop, monkeypatch):
     display_names[opus] = ""
     desktop_setup.configure_claude_desktop(state)
     assert configured_profile(desktop)["inferenceModels"] == [
-        {"name": model_id} for model_id in [sonnet, opus, haiku, sonnet]
+        {"name": sonnet, "labelOverride": "Claude Sonnet 5"},
+        {"name": opus, "labelOverride": "Claude Opus 5"},
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5"},
+        {"name": sonnet, "labelOverride": "Claude Sonnet 5"},
     ]
     assert model_ids == original_ids
+
+
+@pytest.mark.parametrize(
+    "model_id,label",
+    [
+        ("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+        ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5"),
+        ("anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5"),
+        ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5"),
+        ("eu.anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5"),
+        ("global.anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5"),
+        ("anthropic.claude-opus-4-8", "Claude Opus 4.8"),
+        ("system.ai.claude-haiku-4-5", "Claude Haiku 4.5"),
+        ("databricks-claude-haiku-4-5", "Claude Haiku 4.5"),
+        ("main.models.claude-sonnet-5-desktop", "Claude Sonnet 5 Desktop"),
+    ],
+)
+@pytest.mark.parametrize("echoed_id", [False, True])
+def test_provider_models_get_readable_labels_when_discovery_names_are_missing_or_ids(
+    desktop, monkeypatch, model_id, label, echoed_id
+):
+    monkeypatch.setattr(
+        desktop_setup,
+        "list_anthropic_model_catalog",
+        lambda *args, **kwargs: AnthropicModelCatalog(
+            [model_id], {model_id: model_id} if echoed_id else {}
+        ),
+    )
+
+    desktop_setup.configure_claude_desktop(
+        {
+            "workspace": "https://workspace.example",
+            "profile": "chosen-profile",
+            "provider_services": {"claude": "main.models.provider"},
+        }
+    )
+
+    profile = configured_profile(desktop)
+    assert profile["inferenceModels"] == [{"name": model_id, "labelOverride": label}]
+    assert (
+        profile["inferenceCustomHeaders"][MODEL_PROVIDER_SERVICE_HEADER] == "main.models.provider"
+    )
+
+
+@pytest.mark.parametrize("catalog_labels", [False, True])
+def test_model_label_collisions_keep_distinct_routes_visible(desktop, monkeypatch, catalog_labels):
+    us = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    eu = "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    haiku = "claude-haiku-4-5"
+    model_ids = [us, haiku, eu, us]
+    names = {us: "Claude Sonnet 4.5"} if catalog_labels else {}
+    monkeypatch.setattr(
+        desktop_setup,
+        "list_anthropic_model_catalog",
+        lambda *args, **kwargs: AnthropicModelCatalog(model_ids, names),
+    )
+
+    desktop_setup.configure_claude_desktop(
+        {"workspace": "https://workspace.example", "profile": "chosen-profile"}
+    )
+
+    assert configured_profile(desktop)["inferenceModels"] == [
+        {"name": us, "labelOverride": us},
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5"},
+        {"name": eu, "labelOverride": eu},
+        {"name": us, "labelOverride": us},
+    ]
 
 
 @pytest.mark.parametrize("parent", [None, "main.models"])
@@ -739,11 +813,22 @@ def test_revert_failure_retains_workspace_state_and_allows_retry(desktop, monkey
     state_store.save_state(state)
 
     # Other agents' cleanup must not touch host configuration.
+    monkeypatch.setattr(cli.copilot_agent, "COPILOT_CONFIG_DIR", claude_desktop.APP_DIR / "copilot")
     monkeypatch.setattr(cli, "restore_file", lambda *args: False)
     monkeypatch.setattr(cli, "revert_mcp_configs", lambda state: {})
     monkeypatch.setattr(cli, "revert_legacy_shared_config", lambda: False)
     monkeypatch.setattr(cli.claude_agent, "revert_managed_settings", lambda: "unchanged")
     monkeypatch.setattr(cli.codex_agent, "revert_managed_config", lambda: "unchanged")
+    monkeypatch.setattr(
+        cli.claude_agent,
+        "managed_settings_path",
+        lambda: claude_desktop.APP_DIR / "claude-managed.json",
+    )
+    monkeypatch.setattr(
+        cli.codex_agent,
+        "codex_managed_config_path",
+        lambda: claude_desktop.APP_DIR / "codex-managed.toml",
+    )
 
     def lock_timeout(handle, *, timeout):
         raise TimeoutError("Lock is held by another operation")
@@ -857,7 +942,7 @@ def test_reconfigure_recreates_deleted_profile_with_fixed_id(desktop, capsys):
 
     assert json.loads(metadata_path.read_text()) == original_metadata
     assert configured_profile(desktop)["inferenceModels"] == [
-        {"name": "system.ai.claude-haiku-4-5"},
+        {"name": "system.ai.claude-haiku-4-5", "labelOverride": "Claude Haiku 4.5"},
     ]
     assert {path.name for path in desktop.glob("*.json")} == {
         "_meta.json",

@@ -40,6 +40,9 @@ SKIP_OS_SETTINGS_ENV = "UG_SKIP_OS_SETTINGS"
 CONFIG_SCOPES = ("global", "user")
 DEFAULT_CONFIG_SCOPE = "global"
 _config_scope = DEFAULT_CONFIG_SCOPE
+# Set by an explicit `ug configure --global`: that run writes machine-wide settings and no per-user
+# agent settings. Not saved; launches and other commands are unaffected.
+_machine_wide_only = False
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
@@ -84,6 +87,11 @@ CLAUDE_HEADER_MOD_FILES = (
     "ug-headers/hooks/register.ts",
 )
 
+CLAUDE_DESKTOP_MDM_ROOT = Path("/Library/Application Support/UnityGateway/claude-desktop-mdm")
+CLAUDE_DESKTOP_POLICY_PATH = Path(
+    "/Library/Managed Preferences/com.anthropic.claudefordesktop.plist"
+)
+
 _SUDO_REPLACE_TARGETS = {
     OS.LINUX: frozenset(
         {
@@ -98,6 +106,9 @@ _SUDO_REPLACE_TARGETS = {
             Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
             Path("/etc/codex/managed_config.toml"),
             UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
+            CLAUDE_DESKTOP_POLICY_PATH,
+            CLAUDE_DESKTOP_MDM_ROOT / "ug",
+            CLAUDE_DESKTOP_MDM_ROOT / "otel-headers.sh",
             *(CLAUDE_HEADER_MOD_ROOTS[OS.MACOS] / name for name in CLAUDE_HEADER_MOD_FILES),
         }
     ),
@@ -125,6 +136,39 @@ def set_config_scope(scope: str) -> None:
 
 def config_scope() -> str:
     return _config_scope
+
+
+def set_machine_wide_only(enabled: bool) -> None:
+    """Mark this run as an explicit ``ug configure --global``, which writes no per-user settings."""
+    global _machine_wide_only
+    _machine_wide_only = enabled
+
+
+def machine_wide_only() -> bool:
+    """Whether this run writes only machine-wide settings and leaves per-user agent settings alone.
+
+    True only during an explicit ``ug configure --global``. ug's own state under ``~/.ucode`` and the
+    Databricks login are still written, since the machine-wide settings rely on them.
+    """
+    return _machine_wide_only
+
+
+def per_user_paths(paths: list[str]) -> list[str]:
+    """The ``paths`` inside a user's home folder, where other users may not be able to run them.
+
+    Checks each path both as given and with symlinks resolved, since a shared ``/usr/local/bin/ug``
+    can still point into one user's home."""
+    home = Path.home()
+    # A home of the filesystem root (HOME=/, as some MDM and system jobs run) holds every path.
+    roots = [home] if home.parent != home else []
+    if (profiles := system_cross_os.user_profiles_dir()) is not None:
+        roots.append(profiles)
+    found = []
+    for path in paths:
+        candidates = {Path(path).absolute(), Path(path).resolve()}
+        if any(c.is_relative_to(root) for c in candidates for root in roots):
+            found.append(path)
+    return found
 
 
 def managed_settings_skipped() -> bool:
@@ -170,22 +214,69 @@ def _windows_claude_header_mod_root() -> Path:
     return windows_claude_managed_settings_path().parent / "ucode-plugins"
 
 
-def reconcile_privileged_files(files: dict[Path, str], *, display: str) -> None:
-    """Write each allowlisted root-owned file whose contents differ, through the sudo worker.
+def claude_desktop_org_plugin_path() -> Path | None:
+    if current_os() is OS.MACOS:
+        return Path("/Library/Application Support/Claude/org-plugins/ug")
+    if current_os() is OS.WINDOWS:
+        return system_cross_os.windows_program_files_dir() / "Claude" / "org-plugins" / "ug"
+    return None
+
+
+def replace_privileged_bundle(path: Path, source: Path | None) -> None:
+    """Copy or remove UG's Desktop organization plugin."""
+    if path != claude_desktop_org_plugin_path():
+        raise RuntimeError(f"Refusing unexpected privileged bundle target: {path}")
+    if is_dry_run():
+        return
+    for folder in (path, *path.parents):
+        if folder.is_symlink() or folder.is_junction():
+            raise RuntimeError(f"Refusing linked Desktop plugin path: {folder}")
+    if current_os() is not OS.MACOS:
+        raise RuntimeError("System Desktop plugins require macOS.")
+    if source is None and not path.exists():
+        return
+    try:
+        with managed_write_session():
+            if _sudo_may_prompt():
+                _print_managed_write_permission("Claude Desktop")
+            _session_worker().replace(
+                path, str(source.resolve()) if source is not None else "-", operation="BUNDLE"
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = str(getattr(exc, "stderr", None) or exc).strip()
+        raise ManagedFileWriteUnavailable(
+            f"Could not update Desktop plugin at {path}: {detail}. Resolve the error and retry."
+        ) from exc
+
+
+def reconcile_privileged_files(files: Mapping[Path, str | None], *, display: str) -> None:
+    """Update or remove changed allowlisted root-owned files through the existing sudo helpers.
 
     Without a terminal it runs ``sudo -n``, so a headless ``ug configure`` installs them where sudo
     needs no password, as it does the workspace policy."""
-    changed = [(path, text) for path, text in files.items() if read_managed_file(path) != text]
+    changed = []
+    for path, text in files.items():
+        try:
+            current = path.read_bytes()
+        except FileNotFoundError:
+            current = None
+        desired = text.encode("utf-8") if text is not None else None
+        if current != desired:
+            changed.append((path, text))
     if changed and _sudo_may_prompt():
         _print_managed_write_permission(display)
     for path, text in changed:
-        if current_os() is OS.WINDOWS:
+        if text is None:
+            if current_os() is not OS.WINDOWS:
+                _validate_sudo_replace_target(path)
+            _privileged_remove(path)
+        elif current_os() is OS.WINDOWS:
             _windows_replace(path, text)
         else:
             _sudo_replace(path, text)
 
 
-def remove_privileged_tree(root: Path) -> None:
+def remove_privileged_tree(root: Path, *, empty_only: bool = False) -> None:
     """Remove a root-owned folder ug owns entirely, such as its header mod's, through sudo."""
     if root.is_symlink():
         raise RuntimeError(f"Refusing to remove {root} through a symlink.")
@@ -195,12 +286,14 @@ def remove_privileged_tree(root: Path) -> None:
         if root.exists():
             if not system_cross_os.is_admin():
                 raise PermissionError("administrator rights are required")
-            shutil.rmtree(root)
+            if empty_only:
+                root.rmdir()
+            else:
+                shutil.rmtree(root)
         return
     if root.exists():
-        subprocess_cross_os.run(
-            _sudo_command("rm", "-rf", "--", str(root)), capture_output=True, text=True, check=True
-        )
+        command = ("rmdir", "--", str(root)) if empty_only else ("rm", "-rf", "--", str(root))
+        subprocess_cross_os.run(_sudo_command(*command), capture_output=True, text=True, check=True)
 
 
 def windows_claude_managed_settings_path() -> Path:
@@ -1416,11 +1509,11 @@ class _SudoReplaceWorker:
         """Whether this worker can still serve requests (authenticated and running)."""
         return not self._broken and self.process.poll() is None
 
-    def replace(self, path: Path, source_path: str) -> None:
+    def replace(self, path: Path, source_path: str, *, operation: str = "REPLACE") -> None:
         request_id = str(self._next_request_id)
         self._next_request_id += 1
         fields = (
-            "REPLACE",
+            operation,
             request_id,
             _encode_worker_arg(source_path),
             _encode_worker_arg(str(path)),

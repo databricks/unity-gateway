@@ -16,7 +16,7 @@ import pytest
 import ucode.databricks as db_mod
 import ucode.workspace as workspace_mod
 from ucode import gateway_proxy, mcp, mcp_connection_login, skills_usage
-from ucode.agents import claude, codex, gemini, kilo, opencode, pi
+from ucode.agents import claude, codex, copilot, gemini, kilo, opencode, pi, vscode
 from ucode.state import build_agent_state
 from ucode.workspace import (
     activate,
@@ -176,6 +176,20 @@ class TestHttpChokepoints:
         url = f"{SHARED}/api/2.0/x"
         (payload, reason), request = self._get(url, _Response(b"{}", url, WSID))
         assert (payload, reason) == ({}, None)
+        assert request.get_header("X-databricks-org-id") == WSID
+        assert request.get_header("X-databricks-workspace-id") == WSID
+
+    def test_usage_dashboard_uses_selected_workspace(self, selected):
+        url = f"{SHARED}/api/ai-gateway/v2/usage-analytics-dashboard"
+        dashboard_url = f"{SHARED}/dashboardsv3/dashboard/published?o={WSID}"
+        body = json.dumps({"dashboard_url": dashboard_url}).encode()
+        with patch.object(
+            db_mod.urllib_request, "urlopen", return_value=_Response(body, url, WSID)
+        ) as urlopen:
+            assert db_mod.get_usage_dashboard_url(SHARED, "tok") == dashboard_url
+
+        request = urlopen.call_args.args[0]
+        assert request.full_url == url
         assert request.get_header("X-databricks-org-id") == WSID
         assert request.get_header("X-databricks-workspace-id") == WSID
 
@@ -348,6 +362,29 @@ class TestAgentConfigs:
         assert block["http_headers"]["X-Databricks-Workspace-Id"] == WSID
         assert block["http_headers"]["X-Databricks-Org-Id"] == WSID
         assert "X-Databricks-Org-Id" not in codex._provider_block(CLASSIC, "p")["http_headers"]
+
+    def test_vscode_selection_comes_after_admin_headers(self, selected, monkeypatch):
+        written = {}
+        monkeypatch.setattr(vscode, "find_code", lambda: "code")
+        monkeypatch.setattr(
+            vscode, "install_extension", lambda code, config: written.update(config)
+        )
+        state = {
+            "workspace": SHARED,
+            copilot.CATALOG_STATE_KEY: {"models": ["system.ai.claude-sonnet-5-5"]},
+            "copilot_http_headers": {"x-databricks-workspace-id": "999", "X-Team": "a"},
+        }
+
+        assert vscode.configure(state)
+        assert written["headers"] == {"X-Team": "a", **SELECTOR}
+
+        written.clear()
+        assert vscode.configure({**state, "workspace": CLASSIC})
+        assert written["headers"] == {"X-Team": "a"}
+
+    def test_copilot_proxy_headers_leave_the_selection_to_the_proxy(self):
+        managed = {"X-Databricks-Org-Id": "999", "X-Team": "a"}
+        assert copilot.managed_http_headers({"copilot_http_headers": managed}) == {"X-Team": "a"}
 
     def test_gemini(self, selected):
         env = gemini.render_env_overlay(SHARED, "g", "tok")
