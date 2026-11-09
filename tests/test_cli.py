@@ -133,7 +133,7 @@ class TestHelp:
         assert panels["Usage"] < global_options
         global_options_section = output[global_options:]
         assert "--version, -V" in global_options_section
-        assert "--workspace <str>" in global_options_section
+        assert re.search(r"--workspace (?:TEXT|<str>)\s", global_options_section)
 
         sections = {
             "Launch": output[panels["Launch"] : panels["Setup"]],

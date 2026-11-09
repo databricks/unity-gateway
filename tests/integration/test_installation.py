@@ -13,13 +13,15 @@ def sibling_entry_point(selected_binary, name):
 
 
 def test_ug_installed_wheel_exposes_help_and_version(session):
-    """Scenario: invoke the freshly installed ug console script.
+    """Scenario: invoke both console scripts from a freshly installed wheel.
 
-    Expected: public commands are listed and the installed version is reported.
+    Expected: ug and ucode list public commands and report the installed version.
     """
-    output = session.run("--help").stdout
-    assert "configure" in output and "revert" in output
-    assert session.run("--version").stdout.strip()
+    for name in ("ug", "ucode"):
+        binary = sibling_entry_point(session.binary, name)
+        output = session.run("--help", binary=binary).stdout
+        assert "configure" in output and "revert" in output
+        assert session.run("--version", binary=binary).stdout.strip()
 
 
 def test_ug_status_in_fresh_home_is_unconfigured(session):
