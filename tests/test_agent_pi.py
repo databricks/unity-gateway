@@ -841,13 +841,24 @@ class TestGeminiEnvironment:
         env = pi.build_runtime_env("tok")
 
         assert env["GOOGLE_GENAI_USE_VERTEXAI"] == "false"
-        assert "GOOGLE_CLOUD_PROJECT" not in env
-        assert "GOOGLE_CLOUD_LOCATION" not in env
+        # Pi's shell and subprocesses (gcloud, the user's own Vertex code) keep the project.
+        assert env["GOOGLE_CLOUD_PROJECT"] == "my-project"
+        assert env["GOOGLE_CLOUD_LOCATION"] == "us-central1"
 
     def test_pins_the_gemini_sdk_off_vertex_when_unset(self, monkeypatch):
         monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+        monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
 
-        assert pi.build_runtime_env("tok")["GOOGLE_GENAI_USE_VERTEXAI"] == "false"
+        env = pi.build_runtime_env("tok")
+
+        assert env["GOOGLE_GENAI_USE_VERTEXAI"] == "false"
+        assert "GOOGLE_GENAI_USE_ENTERPRISE" not in env
+
+    def test_pins_the_enterprise_switch_when_set(self, monkeypatch):
+        # The SDK lets GOOGLE_GENAI_USE_ENTERPRISE outrank GOOGLE_GENAI_USE_VERTEXAI.
+        monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", "true")
+
+        assert pi.build_runtime_env("tok")["GOOGLE_GENAI_USE_ENTERPRISE"] == "false"
 
 
 class TestManagedModelEntries:

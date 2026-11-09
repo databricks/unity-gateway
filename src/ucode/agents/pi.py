@@ -548,18 +548,19 @@ def _configure_launch(state: dict) -> str:
     return token
 
 
-_VERTEX_PROJECT_ENV_VARS = ("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION")
-
-
 def build_runtime_env(token: str) -> dict[str, str]:
     env = os.environ.copy()
     env["OAUTH_TOKEN"] = token
     env["PI_CODING_AGENT_DIR"] = str(PI_CONFIG_DIR)
-    # Inherited Vertex settings (often exported for other tools) switch Pi's Google SDK to Vertex
-    # `publishers/google/models/...` paths, which the gateway's Gemini route rejects.
+    # An inherited Vertex switch (often exported for other tools) sends Pi's Google SDK to Vertex
+    # `publishers/google/models/...` paths, which the gateway's Gemini route rejects. Pi has no
+    # provider setting for this, so pin the SDK's switches. GOOGLE_GENAI_USE_ENTERPRISE outranks
+    # GOOGLE_GENAI_USE_VERTEXAI, so it is pinned too when set. GOOGLE_CLOUD_PROJECT and
+    # GOOGLE_CLOUD_LOCATION are kept: the Gemini API backend ignores them, and gcloud or Vertex
+    # code run from Pi's shell still needs them.
     env["GOOGLE_GENAI_USE_VERTEXAI"] = "false"
-    for name in _VERTEX_PROJECT_ENV_VARS:
-        env.pop(name, None)
+    if "GOOGLE_GENAI_USE_ENTERPRISE" in env:
+        env["GOOGLE_GENAI_USE_ENTERPRISE"] = "false"
     return env
 
 
