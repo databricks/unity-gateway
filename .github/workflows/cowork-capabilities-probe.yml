@@ -55,7 +55,9 @@ jobs:
             -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
       - name: Install UG and pinned Claude CLI
         shell: pwsh
-        run: ./scripts/cowork-inference/install-dependencies.ps1
+        run: |
+          ./scripts/cowork-inference/install-dependencies.ps1
+          (Join-Path $env:RUNNER_TEMP 'desktop-ug-runtime/Scripts') | Add-Content $env:GITHUB_PATH
       - name: Configure Desktop with existing CI credentials
         shell: pwsh
         env:
@@ -70,7 +72,7 @@ jobs:
           & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-inference.ps1 `
             -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Prepare capability through public UG commands
+      - name: Prepare capability through supported configuration commands
         timeout-minutes: 5
         shell: pwsh
         env:

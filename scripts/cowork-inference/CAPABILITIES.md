@@ -8,8 +8,10 @@ inference baseline before attempting a new task through UI Automation.
   an input file whose random marker is absent from the prompt.
 - MCP: add `system.ai.web_search` through UG, then require a completed answer and
   native evidence of a successful web-search tool call.
-- Skill: download `ug_e2e.skills.fixture-summary` through UG and require the marker
-  held only in its reference file in the completed response.
+- Skill: install a small local plugin through native `claude plugin ... --cowork`
+  commands and require the random marker held only in its reference file. This
+  tests native skill execution, not UC skill download/propagation; the catalog
+  fixture is not downloadable with this workspace/CI credential.
 
 Setup failures, unsupported runtime capabilities, UI-driver failures, and failed
 assertions remain failures. Host virtualization information is diagnostic only.

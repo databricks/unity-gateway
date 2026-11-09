@@ -42,9 +42,9 @@ function Invoke-Control {
 }
 
 function Save-UI {
-    param([string]$Name)
-    if (-not $script:window) { return }
-    $controls = $script:window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+    param([string]$Name, $Root = $script:window)
+    if (-not $Root) { return }
+    $controls = $Root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
     $rows = @($controls | ForEach-Object {
         @{ name = $_.Current.Name; type = $_.Current.ControlType.ProgrammaticName; id = $_.Current.AutomationId; enabled = $_.Current.IsEnabled; offscreen = $_.Current.IsOffscreen }
     })
@@ -52,8 +52,19 @@ function Save-UI {
 }
 
 function Select-Folder {
-    Invoke-Control (Wait-Control -Names @('Work in a folder', 'Choose a folder', 'Select a folder', 'Add folder'))
+    Invoke-Control (Wait-Control -Names @('Project or folder', 'Work in a folder', 'Choose a folder', 'Select a folder', 'Add folder'))
+    Start-Sleep -Seconds 1
+    Save-UI 'folder-menu'
+    $choices = $script:window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+    $folderChoice = $choices | Where-Object {
+        $_.Current.IsEnabled -and -not $_.Current.IsOffscreen -and
+        $_.Current.Name -match '(?i)(choose|select|add|open|work in).{0,30}folder' -and
+        $_.Current.ControlType.ProgrammaticName -in @('ControlType.MenuItem', 'ControlType.Button')
+    } | Select-Object -First 1
+    if ($folderChoice) { Invoke-Control $folderChoice }
     $desktop = [Windows.Automation.AutomationElement]::RootElement
+    Start-Sleep -Seconds 1
+    Save-UI 'folder-dialog' -Root $desktop
     $dialog = Wait-Control -Names @('Select Folder', 'Select folder', 'Choose a folder', 'Open', 'Browse For Folder') -Seconds 20 -Root $desktop
     $dialog.SetFocus()
     [Windows.Forms.Clipboard]::SetText($task.folder)

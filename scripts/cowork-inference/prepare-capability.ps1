@@ -33,15 +33,55 @@ try {
             $task.expected = 'databricks.com'
         }
         'skill' {
-            Invoke-Ug -Arguments @('skills', 'add', '--names', 'ug_e2e.skills.fixture-summary') -LogName 'skill-download.txt'
-            Invoke-Ug -Arguments @('configure', '--profile', 'desktop-ci', '--agents', 'claude', '--user', '--disable-databricks-ai-tools', '--skip-upgrade') -LogName 'skill-configure.txt'
-            $references = @(Get-ChildItem (Join-Path $env:USERPROFILE '.ucode/claude-cowork-marketplace') -Recurse -Filter 'fixture-facts.md')
-            if (-not $references.Count) { throw 'Downloaded fixture skill is absent from the generated Cowork plugin' }
-            $match = [regex]::Match((Get-Content $references[0].FullName -Raw), 'ugsum-[a-f0-9]+')
-            if (-not $match.Success) { throw 'Expected skill reference marker not found' }
-            $task.expected = $match.Value
-            $task.prompt = 'Use the fixture-summary skill from the ug plugin and reply with only the one-line summary it produces. Read its reference file as instructed. Do not use subagents.'
-            $task.skillReference = $references[0].FullName
+            $marketplace = Join-Path $env:RUNNER_TEMP 'cowork-probe-marketplace'
+            $plugin = Join-Path $marketplace 'plugins/cowork-probe'
+            $skill = Join-Path $plugin 'skills/probe-summary'
+            foreach ($directory in @("$marketplace/.claude-plugin", "$plugin/.claude-plugin", "$skill/references")) {
+                New-Item -ItemType Directory -Path $directory -Force | Out-Null
+            }
+            @{
+                name = 'cowork-probe-marketplace'
+                owner = @{ name = 'Unity Gateway CI' }
+                plugins = @(@{ name = 'cowork-probe'; source = './plugins/cowork-probe'; description = 'Disposable native skill capability probe' })
+            } | ConvertTo-Json -Depth 6 | Set-Content "$marketplace/.claude-plugin/marketplace.json"
+            @{ name = 'cowork-probe'; version = '1.0.0'; description = 'Disposable native skill capability probe' } |
+                ConvertTo-Json | Set-Content "$plugin/.claude-plugin/plugin.json"
+            @'
+---
+name: probe-summary
+description: Use when asked to produce the capability probe summary.
+---
+Read references/facts.txt beside this skill. Reply with only its contents, unchanged.
+Do not guess the contents and do not use subagents.
+'@ | Set-Content "$skill/SKILL.md"
+            $task.expected = 'skill-proof-' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
+            Set-Content -LiteralPath "$skill/references/facts.txt" -Value $task.expected -NoNewline
+            $sessions = Join-Path $env:LOCALAPPDATA 'Claude-3p/local-agent-mode-sessions'
+            $roots = @(Get-ChildItem $sessions -Directory | ForEach-Object { Get-ChildItem $_.FullName -Directory })
+            if ($roots.Count -ne 1) { throw 'Expected one native Cowork account directory after baseline inference' }
+            $env:CLAUDE_CONFIG_DIR = $roots[0].FullName
+            $claude = (Get-Command claude.cmd -ErrorAction Stop).Source
+            $commands = @(
+                @('plugin', 'validate', $marketplace),
+                @('plugin', 'marketplace', 'add', $marketplace, '--cowork', '--json'),
+                @('plugin', 'install', 'cowork-probe@cowork-probe-marketplace', '--cowork', '--json'),
+                @('plugin', 'list', '--cowork', '--json')
+            )
+            foreach ($arguments in $commands) {
+                $output = (& $claude @arguments 2>&1 | Out-String)
+                $code = $LASTEXITCODE
+                Protect-DiagnosticText $output | Add-Content (Join-Path $evidence 'skill-install.txt')
+                if ($code -ne 0) { throw 'Native Cowork plugin installation failed; see skill-install.txt' }
+                if ($arguments -contains '--json') {
+                    $result = $output | ConvertFrom-Json
+                    if ($result.outcome -and $result.outcome -notin @('ok', 'success')) {
+                        throw 'Native plugin command reported failure; see skill-install.txt'
+                    }
+                }
+            }
+            Remove-Item Env:CLAUDE_CONFIG_DIR
+            $task.prompt = 'Use the probe-summary skill from the cowork-probe plugin to produce the capability probe summary. Reply with only its result. Do not use subagents.'
+            $task.skillSource = 'local plugin installed through native Claude plugin commands'
         }
         default { throw 'Unknown capability' }
     }
