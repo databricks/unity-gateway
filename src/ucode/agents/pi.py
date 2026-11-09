@@ -521,10 +521,18 @@ def _configure_launch(state: dict) -> str:
     return token
 
 
+_VERTEX_PROJECT_ENV_VARS = ("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION")
+
+
 def build_runtime_env(token: str) -> dict[str, str]:
     env = os.environ.copy()
     env["OAUTH_TOKEN"] = token
     env["PI_CODING_AGENT_DIR"] = str(PI_CONFIG_DIR)
+    # Inherited Vertex settings (often exported for other tools) switch Pi's Google SDK to Vertex
+    # `publishers/google/models/...` paths, which the gateway's Gemini route rejects.
+    env["GOOGLE_GENAI_USE_VERTEXAI"] = "false"
+    for name in _VERTEX_PROJECT_ENV_VARS:
+        env.pop(name, None)
     return env
 
 

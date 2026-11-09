@@ -782,6 +782,24 @@ class TestUnservableModels:
         assert pi._managed_model_families({"pi_models": ["system.ai.gpt-oss-120b"]}) is None
 
 
+class TestGeminiEnvironment:
+    def test_pins_the_gemini_sdk_off_vertex(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "my-project")
+        monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+
+        env = pi.build_runtime_env("tok")
+
+        assert env["GOOGLE_GENAI_USE_VERTEXAI"] == "false"
+        assert "GOOGLE_CLOUD_PROJECT" not in env
+        assert "GOOGLE_CLOUD_LOCATION" not in env
+
+    def test_pins_the_gemini_sdk_off_vertex_when_unset(self, monkeypatch):
+        monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+
+        assert pi.build_runtime_env("tok")["GOOGLE_GENAI_USE_VERTEXAI"] == "false"
+
+
 class TestManagedModelEntries:
     def test_managed_models_get_per_model_entries(self, tmp_path, monkeypatch):
         import ucode.config_io as config_io_mod
