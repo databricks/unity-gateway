@@ -53,7 +53,15 @@ def token_expiry(token: str) -> float | None:
         payload = token.split(".")[1]
         payload += "=" * (-len(payload) % 4)
         return float(json.loads(base64.urlsafe_b64decode(payload))["exp"])
-    except (IndexError, KeyError, TypeError, ValueError, binascii.Error, json.JSONDecodeError):
+    except (
+        IndexError,
+        KeyError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        binascii.Error,
+        json.JSONDecodeError,
+    ):
         return None
 
 
@@ -96,7 +104,7 @@ def lookup(host: str, profile: str | None, *, now: float | None = None) -> tuple
         entry = json.loads(_cache_path(host, profile).read_text(encoding="utf-8"))
         token = entry["token"]
         cached_at = float(entry["cached_at"])
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, OverflowError):
         return None
     if not isinstance(token, str) or not token:
         return None
@@ -155,9 +163,12 @@ def clear() -> None:
     """Drop every cached token, e.g. after a fresh `databricks auth login`.
 
     Also records when it ran, so a fetch already in flight (another helper process, or the
-    background refresher) cannot write a token from before the login back afterwards. With no
-    cache directory yet there is nothing to drop, and nothing is created."""
-    if not CACHE_DIR.is_dir():
+    background refresher) cannot write a token from before the login back afterwards. That
+    includes a first fetch that has not created the cache directory yet, so the directory is
+    created to hold the record."""
+    try:
+        CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError:
         return
     try:
         with _locked():
