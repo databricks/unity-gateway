@@ -58,7 +58,7 @@ _AGENT_MODEL_FAMILIES: dict[str, tuple[str, ...]] = {
     "codex": ("codex", "oss"),
     "opencode": ("claude", "codex", "gemini", "oss"),
     "pi": ("claude", "codex", "gemini", "oss"),
-    "copilot": ("claude", "codex"),
+    "copilot": ("claude", "codex", "oss"),
 }
 
 
