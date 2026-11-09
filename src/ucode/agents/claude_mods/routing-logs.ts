@@ -3,6 +3,11 @@ import type { On, PluginOptions } from 'claude-code';
 const PANE = 'smart-router-logs';
 type Decision = { at: number; preview: string | null; selected_model: string; routing_ms: number };
 
+const isDecision = (d: Decision): boolean =>
+  Boolean(d) && Number.isFinite(d.at) && Number.isFinite(new Date(d.at * 1000).getTime()) &&
+  (d.preview === null || typeof d.preview === 'string') && typeof d.selected_model === 'string' &&
+  Number.isFinite(d.routing_ms);
+
 export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnabled: boolean): void {
   let rows: Decision[] = [];
   let failed = false;
@@ -16,15 +21,12 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
         throw new Error('logs command unavailable');
       }
       const session = await $.session.id();
-      const result = await $.process.run([...command, '--session', session, '--harness', 'claude', '--json'], { timeoutMs: 10000 });
+      const result = await $.process.run([...command, '--session', session], { timeoutMs: 10000 });
       if (result.exitCode !== 0 || result.isStdoutTruncated) throw new Error(`logs command exited ${result.exitCode} or truncated output`);
       let data;
       try { data = JSON.parse(result.stdout); } catch { throw new Error('invalid logs JSON'); }
-      if (data?.v !== 1 || !Array.isArray(data.decisions) || data.decisions.some((d: Decision) =>
-        !d || !Number.isFinite(d.at) || !Number.isFinite(new Date(d.at * 1000).getTime()) ||
-        (d.preview !== null && typeof d.preview !== 'string') || typeof d.selected_model !== 'string' ||
-        !Number.isFinite(d.routing_ms))) throw new Error('invalid logs response');
-      rows = data.decisions.slice().reverse();
+      if (data?.v !== 1 || !Array.isArray(data.decisions)) throw new Error('invalid logs response');
+      rows = data.decisions.filter(isDecision).reverse();
       failed = false;
     } catch (error) {
       rows = [];
@@ -32,12 +34,16 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
       $.ui.log(`Smart Router logs: ${error instanceof Error ? error.message : 'read failed'}`, { to: 'debug' });
     }
     try {
-      await $.ui.open({ id: PANE, title: 'Smart Router logs', focus: true, closeOnEscape: true });
+      const pane = await $.ui.open({ id: PANE, title: 'Smart Router logs', focus: true, closeOnEscape: true });
+      if (!pane.isPlaced) {
+        await $.ui.close({ id: PANE });
+        throw new Error('pane was not placed');
+      }
       $.ui.invalidate('ui.render');
       return { text: 'Smart Router logs opened.' };
     } catch {
       $.ui.log('Smart Router logs: could not open pane', { to: 'debug' });
-      return { text: 'Could not read Smart Router logs.' };
+      return { text: 'Could not open the Smart Router logs pane.' };
     }
   });
 
@@ -49,7 +55,8 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
     for (const row of rows) {
       const model = row.selected_model.replace(/^system\.ai\./, '').replace(/^databricks-/, '');
       const seconds = `${(row.routing_ms / 1000).toFixed(1)}s`;
-      const room = Math.max(1, e.props.bodyColumns - model.length - seconds.length - 11);
+      const columns = Number.isFinite(e.props.bodyColumns) ? e.props.bodyColumns : 80;
+      const room = Math.max(1, columns - model.length - seconds.length - 11);
       const preview = (row.preview || '(prompt not recorded)').replace(/\s+/g, ' ');
       const label = preview.length > room ? preview.slice(0, Math.max(0, room - 1)) + '…' : preview;
       children.push(Box({ flexDirection: 'row', children: [
