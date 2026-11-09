@@ -158,6 +158,18 @@ class TestRenderOverlayCompatFlags:
         assert "compat" not in overlay["providers"]["databricks-openai"]
         assert "compat" not in overlay["providers"]["databricks-gemini"]
 
+    def test_gpt_oss_opts_out_of_long_cache_retention(self):
+        # The Responses route 400s on `prompt_cache_retention` for gpt-oss,
+        # which Pi sends under the launch's long-retention default.
+        overlay, _ = _overlay(
+            "system.ai.gpt-6-sol",
+            codex_models=["system.ai.gpt-6-sol", "system.ai.gpt-oss-120b", "gpt-oss-20b"],
+        )
+        entries = {m["id"]: m for m in overlay["providers"]["databricks-openai"]["models"]}
+        assert entries["system.ai.gpt-6-sol"] == {"id": "system.ai.gpt-6-sol"}
+        for oss in ("system.ai.gpt-oss-120b", "gpt-oss-20b"):
+            assert entries[oss]["compat"] == {"supportsLongCacheRetention": False}
+
 
 class TestRenderOverlayAuthAndModels:
     def test_api_key_config_value_embedded_verbatim(self):
@@ -269,6 +281,18 @@ class TestBuildRuntimeEnv:
     def test_sets_oauth_token(self):
         env = pi.build_runtime_env("tok")
         assert env["OAUTH_TOKEN"] == "tok"
+
+    def test_defaults_to_long_cache_retention(self, monkeypatch):
+        monkeypatch.delenv("PI_CACHE_RETENTION", raising=False)
+        assert pi.build_runtime_env("tok")["PI_CACHE_RETENTION"] == "long"
+
+    def test_blank_cache_retention_gets_the_default(self, monkeypatch):
+        monkeypatch.setenv("PI_CACHE_RETENTION", " ")
+        assert pi.build_runtime_env("tok")["PI_CACHE_RETENTION"] == "long"
+
+    def test_explicit_cache_retention_wins(self, monkeypatch):
+        monkeypatch.setenv("PI_CACHE_RETENTION", "short")
+        assert pi.build_runtime_env("tok")["PI_CACHE_RETENTION"] == "short"
 
     def test_sets_private_agent_dir_without_replacing_home(self, monkeypatch):
         monkeypatch.setenv("HOME", "/real-user-home")
