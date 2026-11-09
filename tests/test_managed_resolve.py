@@ -509,6 +509,18 @@ class TestManagedSuppliesModels:
         managed = {"enabled_agents": {"opencode": {"model_config": {"models": ["a", "b"]}}}}
         assert managed_supplies_models(managed, "opencode") is True
 
+    def test_true_for_a_static_list_alone(self):
+        # A sources-only config has no default model; discovery must still be skipped because the
+        # static list is itself the answer.
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {"model_services": ["main.anthropic.byok.claude-sonnet-5-5"]}
+                }
+            }
+        }
+        assert managed_supplies_models(managed, "claude") is True
+
     def test_false_when_the_config_names_no_models(self):
         # Discovery still has to run, or the launch has nothing to pin.
         managed = {"enabled_agents": {"claude": {}}}

@@ -180,6 +180,46 @@ def test_managed_fixture_claude_model_picker_reflects_the_config(live_session, w
 
 
 @pytest.mark.managed_fixture
+@pytest.mark.claude
+def test_managed_fixture_claude_sources_static_list(live_session, workspace):
+    """Scenario: an admin config lists Claude models through `models.sources`, mixing 3-part UC
+    model services and 4-part MPS references, with smart routing enabled.
+
+    Expected: `ug configure` applies the config without the personal agent selector, and both
+    Claude settings files carry the exact source ids in `availableModels` and the replacement
+    picker (no model discovery, no provider-service header). This settings reconciliation check
+    does not claim model inference.
+    """
+    session = live_session
+    sources = [
+        "main.anthropic.byok.claude-opus-5-5",
+        "main.anthropic.byok-2.claude-sonnet-5-5",
+        "system.ai.claude-opus-5-5",
+        "system.ai.kimi-k3",
+    ]
+    use_managed_config_fixture(session, "claude_sources")
+    result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
+    assert "Select coding agents to configure:" not in result.stdout, result.stdout
+
+    private_settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
+    os_managed_settings = json.loads(
+        session.run(
+            "/etc/claude-code/managed-settings.json", binary=session.which("cat"), timeout=30
+        ).stdout
+    )
+    for settings in (private_settings, os_managed_settings):
+        env = settings.get("env") or {}
+        assert sources == settings.get("availableModels"), settings
+        assert settings.get("enforceAvailableModels") is True, settings
+        picker = settings["modelPicker"]
+        assert picker["replaceBuiltInOptions"] is True, picker
+        assert [option["model"] for option in picker["options"]] == sources, picker
+        assert "Databricks-Model-Provider-Service" not in env.get("ANTHROPIC_CUSTOM_HEADERS", ""), (
+            settings
+        )
+
+
+@pytest.mark.managed_fixture
 @pytest.mark.codex
 @pytest.mark.parametrize(
     "routing",

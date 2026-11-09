@@ -928,7 +928,7 @@ test_ug_codex_managed_model_discovery.py  # Codex MPS policy cases (codex_mps.js
 test_ug_claude_model_discovery.py       # unmanaged scenarios 9, 11, 13
 test_ug_codex_model_discovery.py        # unmanaged scenarios 10, 12, 14
 test_ug_configure_managed.py            # stubbed static model list/catalog pointer, no agent selector, saved-config replay
-test_ug_configure_managed_models.py     # stubbed model sources, smart-routing banner, Codex fallback metadata
+test_ug_configure_managed_models.py     # stubbed static model lists (model_services/sources), smart-routing banner, Codex fallback metadata
 test_ug_configure_managed_mcp.py        # stubbed managed MCP list
 test_ug_configure_managed_skills.py     # stubbed managed skills: download, coexist, reconcile away
 test_ug_configure_managed_lifecycle.py  # none -> A -> B -> MPS -> none: reconcile, clear on MPS/no-config
@@ -1562,6 +1562,15 @@ to be listed. The fixture itself has no managed smart-routing setting.
 
 The Claude parent-schema defaults case expects discovered numbered GPT models to carry
 `[1m]` in the picker and retain its catalog display label.
+
+`test_managed_fixture_claude_sources_static_list` injects `claude_sources.json`, whose
+`models.sources` mixes 3-part UC model services and 4-part MPS references
+(`main.anthropic.byok.claude-opus-5-5`, `main.anthropic.byok-2.claude-sonnet-5-5`,
+`system.ai.claude-opus-5-5`, `system.ai.kimi-k3`) with smart routing enabled. Configure must write
+the exact source ids verbatim into `availableModels` and the replacement picker in both settings
+files, with no model discovery and no `Databricks-Model-Provider-Service` header. It is a settings
+reconciliation check and does not claim inference; the gateway router's acceptance of 4-part ids is
+a server-side dependency.
 
 The smart-routing banner journeys inject static Claude and Codex model lists with
 `smart_routing` enabled in the agent config, run `ug configure`, then launch the real TUI with

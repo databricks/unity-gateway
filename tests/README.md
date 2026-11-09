@@ -1288,6 +1288,19 @@ desktop GUI, a real `launchctl` or `schtasks` run, or a login/reboot pass.
 `refresh_ts.json`, launches replaying the saved read without a request, no privileged write for unchanged policy or
 retrieval-only drift, configure-only sudo selection, deferred-update warning/fallback, matching
 removal, workspace isolation, fingerprint invalidation, and dry-run behavior.
+`test_managed_config.py` also covers the static-list wire field `models.sources`: it normalizes into
+the internal `model_services` key with order preserved and 3-/4-part names mixed, wildcard entries
+are dropped (an all-wildcard list leaves the source empty so launch falls back to discovery),
+`sources` wins over a legacy `model_services` in the same config, provider and Unity Catalog
+location still take precedence, and smart routing stays enabled alongside a sources list.
+`test_managed_resolve.py` checks that a static list alone makes the launch skip model discovery,
+and `test_agent_claude.py` checks that a 4-part source id is written verbatim to
+`availableModels`/`modelPicker` with a namespaced picker label and no provider-service header.
+`test_string_utils.py` covers `model_picker_label`: `system.ai` and bare ids keep their established
+labels exactly, dotted versions inside a model name (`gpt-5.5`, `llama-3.3-70b`) are not split, and
+another namespace is kept as a suffix (`main.anthropic.byok.claude-opus-5-5` ->
+`Claude Opus 5.5 (main.anthropic.byok)`). These are unit/component checks; live 4-part inference is
+not covered (the gateway router's acceptance of 4-part ids is a server-side dependency).
 Pending-change regressions cover one warning across rechecks, distinct-change warnings,
 retrieval/key-order stability, removal, and clearing after remote/MDM/configure reconciliation.
 Workspace-lock regressions in `test_managed_config.py` and `test_cli.py` refuse foreign workspaces

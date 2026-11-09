@@ -194,11 +194,14 @@ def managed_supplies_models(managed: dict | None, tool: str) -> bool:
     """True when the managed config already says which models ``tool`` should use.
 
     Lets the launch path skip Databricks model discovery, whose whole purpose is to find the models
-    the config has now specified. Any of the three counts: a provider (the agent routes by header and
-    pins no Databricks model), a ``default_model``, or at least one entry in ``models``.
+    the config has now specified. Any of the following counts: a provider (the agent routes by
+    header and pins no Databricks model), a ``default_model``, a static model list
+    (``model_services``), or at least one entry in the legacy ``models`` key.
     """
     model_config = _agent_model_config(managed or {}, tool)
     if _str(model_config.get("model_provider_service")) or _str(model_config.get("default_model")):
+        return True
+    if managed_static_models(managed or {}, tool):
         return True
     models = model_config.get("models")
     if isinstance(models, dict):
