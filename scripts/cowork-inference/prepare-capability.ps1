@@ -23,7 +23,16 @@ try {
             $task.folder = $folder
             $task.prompt = 'Read input.txt in the selected local folder using a file-reading tool. Reply with only its contents. Do not guess the contents.'
         }
-        'mcp' {
+        { $_ -in @('mcp', 'mcp-pat') } {
+            $task.capability = 'mcp'
+            $task.credentialSource = 'environment'
+            if ($env:CAPABILITY -eq 'mcp-pat') {
+                $config = Join-Path $env:USERPROFILE '.databrickscfg'
+                @('[desktop-ci]', "host = $env:UCODE_TEST_WORKSPACE", 'auth_type = pat', "token = $env:DATABRICKS_BEARER") |
+                    Set-Content -LiteralPath $config
+                Invoke-Ug -Arguments @('configure', '--profile', 'desktop-ci', '--use-pat', '--agents', 'claude', '--user', '--disable-databricks-ai-tools', '--skip-validate', '--skip-upgrade') -LogName 'mcp-profile-setup.txt'
+                $task.credentialSource = 'temporary Databricks PAT profile using the existing CI bearer'
+            }
             Invoke-Ug -Arguments @('mcp', 'add', '--agents', 'claude', '--workspace', $env:UCODE_TEST_WORKSPACE, '--names', 'system.ai.web_search') -LogName 'mcp-setup.txt'
             $profile = Get-Content (Join-Path $env:LOCALAPPDATA 'Claude-3p/configLibrary/5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json') -Raw | ConvertFrom-Json
             $servers = @($profile.managedMcpServers | Where-Object { ($_.args -join ' ') -match 'system.ai.web_search' })

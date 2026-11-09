@@ -6,7 +6,7 @@ $hostInfo = @{
     processor = @(Get-CimInstance Win32_Processor | Select-Object Name, VirtualizationFirmwareEnabled, SecondLevelAddressTranslationExtensions, VMMonitorModeExtensions)
     computer = Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer, Model, HypervisorPresent
 }
-if ($env:CAPABILITY -eq 'mcp') {
+if ($env:CAPABILITY -in @('mcp', 'mcp-pat')) {
     $python = Join-Path $env:RUNNER_TEMP 'desktop-ug-runtime/Scripts/python.exe'
     $text = (& $python "$PSScriptRoot/diagnose-mcp.py" 2>&1 | Out-String)
     Protect-DiagnosticText $text | Set-Content (Join-Path $evidence 'mcp-outside-desktop.txt')

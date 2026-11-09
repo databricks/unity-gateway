@@ -7,12 +7,15 @@ using System.Runtime.InteropServices;
 public static class CapabilityWindow {
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")]
+    public static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
 }
 '@
 . "$PSScriptRoot/diagnostics.ps1"
 $evidence = Join-Path $env:RUNNER_TEMP 'cowork-capability'
 $task = Get-Content (Join-Path $env:RUNNER_TEMP 'cowork-capability-task.json') -Raw | ConvertFrom-Json
 $report = [ordered]@{ capability = $task.capability; passed = $false; submitted = $false }
+if ($task.credentialSource) { $report.credentialSource = $task.credentialSource }
 $script:window = $null
 $started = Get-Date
 
@@ -46,6 +49,11 @@ function Invoke-Control {
         $pattern.Invoke()
     } elseif ($Control.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
         $pattern.Select()
+    } elseif ($Control.Current.Name -eq 'Select Folder' -and $Control.Current.ControlType.ProgrammaticName -eq 'ControlType.Pane') {
+        $point = $Control.GetClickablePoint()
+        [Windows.Forms.Cursor]::Position = [Drawing.Point]::new([int]$point.X, [int]$point.Y)
+        [CapabilityWindow]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+        [CapabilityWindow]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
     } else { throw "No activation pattern for $($Control.Current.Name)" }
 }
 
