@@ -190,7 +190,9 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
 def test_custom_twenty_model_menu_keeps_preselector_filtered_rows(tmp_path, monkeypatch, wrapped):
     model_ids = [f"custom.catalog.model-{index:02d}" for index in range(20)]
     model_ids[1] = model_ids[0] + "[1m]"
-    offered_models = [("anthropic-aigw-01234567-" if wrapped else "") + model for model in model_ids]
+    offered_models = [
+        ("anthropic-aigw-01234567-" if wrapped else "") + model for model in model_ids
+    ]
     selected_model = offered_models[0]
     explanation = {
         "selected_model": model_ids[0],
