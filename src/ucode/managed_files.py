@@ -97,6 +97,8 @@ _SUDO_REPLACE_TARGETS = {
         {
             Path("/etc/claude-code/managed-settings.json"),
             Path("/etc/codex/managed_config.toml"),
+            Path("/etc/codex/requirements.toml"),
+            Path("/etc/codex/config.toml"),
             UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
             *(CLAUDE_HEADER_MOD_ROOTS[OS.LINUX] / name for name in CLAUDE_HEADER_MOD_FILES),
         }
@@ -105,6 +107,8 @@ _SUDO_REPLACE_TARGETS = {
         {
             Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
             Path("/etc/codex/managed_config.toml"),
+            Path("/etc/codex/requirements.toml"),
+            Path("/etc/codex/config.toml"),
             UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
             CLAUDE_DESKTOP_POLICY_PATH,
             CLAUDE_DESKTOP_MDM_ROOT / "ug",

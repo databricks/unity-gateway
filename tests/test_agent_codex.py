@@ -1974,6 +1974,7 @@ class TestCodexManagedConfig:
         # Deterministic managed path + a mocked sudo writer that writes straight to disk, so the test
         # can read the TOML back and NO real sudo/`/etc` write ever happens.
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
+        monkeypatch.setattr(codex, "CODEX_SYSTEM_DIR", managed_path.parent)
 
         def fake_write_managed(path, text, **kwargs):
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -2111,6 +2112,90 @@ class TestCodexManagedConfig:
         profile = read_toml_safe(config_path)
         assert profile["model"] == "gpt-5"
         assert "env_http_headers" not in profile["model_providers"]["Databricks"]
+
+    def _patch_global(self, tmp_path, monkeypatch, *, os_=managed_files.OS.LINUX, global_=True):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "current_os", lambda: os_)
+        monkeypatch.setattr(codex, "machine_wide_only", lambda: global_)
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/usr/local/bin/ug")
+        monkeypatch.setattr(codex, "ucode_user_agent", lambda *_: "ucode/test")
+        return managed_path.parent
+
+    GLOBAL_STATE = {
+        "workspace": WS,
+        "profile": "dev",
+        "use_pat": True,
+        "codex_http_headers": {"X-Team": "eng"},
+        "codex_default_model": "system.ai.gpt-5",
+    }
+    # The UG-owned entries of the Codex MDM design's §3.3 example requirements.toml.
+    GLOBAL_REQUIREMENTS = {
+        "model_provider": "Databricks",
+        "model_providers": {
+            "Databricks": {
+                "name": "Databricks AI Gateway",
+                "base_url": f"{WS}/ai-gateway/codex/v1",
+                "wire_api": "responses",
+                "http_headers": {"User-Agent": "ucode/test", "X-Team": "eng"},
+                "env_http_headers": {
+                    "Databricks-Model-Provider-Service": "UG_CODEX_MODEL_PROVIDER_SERVICE",
+                    "Databricks-Model-Service-Parent-Schema": "UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA",
+                    "Databricks-Smart-Router-Recipe": "UG_CODEX_SMART_ROUTER_RECIPE",
+                    "Databricks-Ai-Gateway-Request-Tags": "UG_CODEX_REQUEST_TAGS",
+                },
+                "auth": {
+                    "command": "/usr/local/bin/ug",
+                    "args": ["auth-token", "--host", WS, "--browser-login"],
+                    "timeout_ms": 180000,
+                    "refresh_interval_ms": 900000,
+                },
+            }
+        },
+    }
+
+    def test_global_run_writes_provider_lock_and_default_model(self, tmp_path, monkeypatch):
+        # Not root: the run goes through the privileged managed-file writer (faked by _patch).
+        system_dir = self._patch_global(tmp_path, monkeypatch)
+        # Per-launch headers belong in env_http_headers only.
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", "team=eng")
+        system_dir.mkdir(parents=True)
+        (system_dir / "requirements.toml").write_text("stale = 1\n", encoding="utf-8")
+        (system_dir / "config.toml").write_text('stale = 1\nmodel = "old"\n', encoding="utf-8")
+
+        for _ in range(2):
+            codex.write_tool_config(dict(self.GLOBAL_STATE), provider="cat.s.mps")
+            assert read_toml_safe(system_dir / "requirements.toml") == self.GLOBAL_REQUIREMENTS
+            assert read_toml_safe(system_dir / "config.toml") == {"model": "system.ai.gpt-5"}
+        # managed_config.toml keeps carrying the provider and managed MCP servers.
+        assert read_toml_safe(system_dir / "managed_config.toml")["model_provider"] == "Databricks"
+
+        codex.write_tool_config({"workspace": WS})
+        assert read_toml_safe(system_dir / "config.toml") == {}
+
+    def test_global_run_fails_when_the_privileged_write_is_denied(self, tmp_path, monkeypatch):
+        system_dir = self._patch_global(tmp_path, monkeypatch)
+
+        def deny(path, text, **kwargs):
+            raise managed_files.ManagedFileWriteUnavailable(f"Could not update {path}")
+
+        monkeypatch.setattr(codex, "reconcile_managed_file", deny)
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="requirements.toml"):
+            codex.write_tool_config(dict(self.GLOBAL_STATE))
+        assert not (system_dir / "managed_config.toml").exists()
+
+    @pytest.mark.parametrize(
+        ("os_", "global_"), [(managed_files.OS.LINUX, False), (managed_files.OS.WINDOWS, True)]
+    )
+    def test_per_user_or_windows_run_keeps_managed_config(
+        self, tmp_path, monkeypatch, os_, global_
+    ):
+        system_dir = self._patch_global(tmp_path, monkeypatch, os_=os_, global_=global_)
+
+        codex.write_tool_config(dict(self.GLOBAL_STATE))
+
+        assert read_toml_safe(system_dir / "managed_config.toml")["model_provider"] == "Databricks"
+        assert not (system_dir / "requirements.toml").exists()
+        assert not (system_dir / "config.toml").exists()
 
     @pytest.mark.parametrize("opt_out", ["env", "user_scope"])
     def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch, opt_out):

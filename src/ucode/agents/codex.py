@@ -114,6 +114,8 @@ CODEX_BACKUP_PATH = APP_DIR / "codex-ucode-config.backup.toml"
 CODEX_MODEL_CATALOG_PATH = APP_DIR / "codex-model-catalog.json"
 LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
+# Where `ug configure --global` writes UG's requirements.toml and config.toml on Linux and macOS.
+CODEX_SYSTEM_DIR = Path("/etc/codex")
 CODEX_MODEL_PROVIDER_NAME = "Databricks"
 LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
 # The Codex app relay's own provider in ~/.codex/config.toml, apart from the managed `Databricks`.
@@ -1140,6 +1142,8 @@ def _reconcile_managed_config(
             "`ug configure --global` can't configure Codex here: this platform has no "
             "machine-wide Codex settings. Run `ug configure` without --global."
         )
+    if _is_posix_global_run():
+        _write_global_files(state)
     if path is None:
         print_warning_err(
             "Machine-wide Codex settings aren't supported on this platform; skipped the managed "
@@ -1212,6 +1216,45 @@ def _as_requirements(compose: Callable[[dict], dict]) -> Callable[[dict], dict]:
         return doc
 
     return compose_requirements
+
+
+def _is_posix_global_run() -> bool:
+    """Whether this is an explicit ``ug configure --global`` on Linux or macOS. Besides
+    ``managed_config.toml``, it writes ``requirements.toml`` and ``config.toml`` in ``/etc/codex``."""
+    return machine_wide_only() and current_os() in (OS.LINUX, OS.MACOS)
+
+
+def _write_global_files(state: dict) -> None:
+    """Rebuild UG's provider lock in ``requirements.toml`` and its default model in ``config.toml``.
+
+    Every user shares the provider, so its auth command names no profile, PAT, or OAuth client.
+    The entry replaces any ``-c`` provider, so per-launch headers come from ``env_http_headers``."""
+    provider = _provider_block(
+        state["workspace"], None, managed_http_headers=state.get("codex_http_headers")
+    )
+    for header in _LAUNCH_ROUTING_HEADER_ENV_VARS:
+        provider["http_headers"].pop(header, None)
+    provider["env_http_headers"] = dict(_LAUNCH_ROUTING_HEADER_ENV_VARS)
+    requirements = {
+        "model_provider": CODEX_MODEL_PROVIDER_NAME,
+        "model_providers": {CODEX_MODEL_PROVIDER_NAME: provider},
+    }
+    model = state.get("codex_default_model")
+    config = {"model": model} if isinstance(model, str) else {}
+    # The same privileged write, through sudo when not root, as every other machine-wide file.
+    provider_keys = [["model_provider"], ["model_providers", CODEX_MODEL_PROVIDER_NAME]]
+    for tool, name, doc, owned in (
+        ("codex-requirements", CODEX_REQUIREMENTS_FILE, requirements, provider_keys),
+        ("codex-config", "config.toml", config, [["model"]]),
+    ):
+        reconcile_managed_file(
+            CODEX_SYSTEM_DIR / name,
+            tomlkit.dumps(doc),
+            tool=tool,
+            display="Codex",
+            owned_paths=owned,
+            parser=_parse_managed_config,
+        )
 
 
 MANAGED_MCP_CONFIG_KEY = "mcp_servers"

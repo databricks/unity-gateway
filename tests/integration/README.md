@@ -511,8 +511,12 @@ keys), and the saved `config_scope`. A headless launch must then answer through 
 changing the OS-managed file. `--global` refuses an installation in a home folder, so that case runs
 a second, shared installation of the version under test in `/opt`: the runner's Python is copied
 there and the runner's frozen package set (`installed.txt`) is installed from the same index, as
-`scripts/mdm` does. Its managed auth helper must point at that installation. The suite uses the
-runner's passwordless sudo and does not count password prompts.
+`scripts/mdm` does. Its managed auth helper must point at that installation. For Codex, `--global`
+must also write the `/etc/codex/requirements.toml` provider lock (gateway URL, and that
+installation's `ug auth-token --host <workspace> --browser-login`). Not covered: the lock being
+enforced (CI pins Codex 0.154.0, and the lock needs 0.156), and removing it, since `ug revert`
+doesn't remove it yet. The suite uses the runner's passwordless sudo and does not count password
+prompts.
 
 The sudo-session regression checks live in `../test_managed_files.py` and `../test_cli.py`.
 They cover shared-worker invocation counts, shutdown/cancellation, and temporary-file failure
