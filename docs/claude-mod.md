@@ -21,16 +21,6 @@ the `routeCommand` plugin option, and continues with the original input. The mat
 `agent.spawn` hook applies only the selected model, preserving the agent's type, prompt,
 name and permissions. The routing response contains `model`, `rationale`, and optional explanation details;
 the model retains Claude's `[1m]` context hint for eligible GPT models.
-New native launches offer task roles without generated model-specific agent types.
-Smart Router chooses the execution model independently of the requested role or name.
-After a successful spawn, the Agent/Task result carries model-visible context with the
-child ID, router-selected model, and model reported by Claude's spawn result. The parent
-must use that record when describing the child; a requested model in user text, tool
-arguments, or an agent name is not evidence of which model launched. Missing host model
-information remains explicitly unknown. Denials and tool errors retain their original
-results without a success annotation. If Claude reports a different model than the route,
-the routing row also shows `Launched Model` separately. This is host launch metadata,
-not verification of the provider's underlying model version.
 Forks and resumed agents keep their native model. This preserves
 auto mode's review of the tool input instead of invalidating it with a routing rewrite.
 The display label uses a random animal from a list of 100, without repeats until the list

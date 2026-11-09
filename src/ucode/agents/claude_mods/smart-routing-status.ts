@@ -1,7 +1,6 @@
 import type { On } from 'claude-code'
 import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
-import { routingReports } from './subagent-routing.ts'
 
 const BANNER = 'unity gateway smart router'
 
@@ -58,13 +57,8 @@ export const registerStatusBand = (on: On): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
   on('prompt.submit', ($, e, next) => {
-    if (e.origin?.kind === 'task-notification') {
-      routingReports.notification(e.turnId)
-    }
     if (band.isVisible) band.isHideArmed = true
-    const context = ['task-notification', 'peer', 'peer-send-message'].includes(e.origin?.kind)
-      ? routingReports.notificationContext() : undefined
-    return next(context ? {...e, context: [...(e.context ?? []), context]} : e)
+    return next(e)
   })
 
   // The prompt hint row always carries the state as a plain tail, so it stays visible after

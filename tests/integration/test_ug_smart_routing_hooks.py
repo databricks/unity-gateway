@@ -519,10 +519,6 @@ def _assert_claude_calculation_requests(
             and task.marker in request.payload.get("task", {}).get("prompt", "")
         ]
         assert routes, (task.marker, routes)
-        assert any(
-            "Smart Router launch:" in json.dumps(request.payload.get("messages", []))
-            for request in inferences
-        ), "Parent inference must receive the routed child's launch identity"
         recipe = routes[0].payload.get("route_selector", {}).get("router_name")
         assert isinstance(recipe, str) and recipe.strip() and recipe != "DISABLED", (
             task.marker,

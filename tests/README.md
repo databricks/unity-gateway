@@ -1,16 +1,5 @@
 # Test suites and user journeys
 
-`native_claude/test_mod.py` checks routed parent reports in the real Claude
-process against a controlled provider: incorrect model claims must be absent
-from streamed assistant messages and saved transcripts, for both foreground and
-background children, followed by a corrected reference and the saved child answer.
-`native_claude/mod_tests/subagent-routing.test.ts` checks
-structured report rendering, selected-versus-launched model validation, recorded
-child answers, split chunks, parallel and early completion, invalid references,
-failed handback/resume rollback, unchanged tool inputs and ordinary main-only replies.
-These are deterministic
-component checks; they do not establish live router or provider behavior.
-
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component
@@ -1354,16 +1343,9 @@ added through `ug mcp add`, while retaining the original model/authentication-fi
 These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
 
-Routed child identity regressions cover model-visible launch context, original-result
-preservation, reversed parallel completion, missing model information, denied/failed
-spawns, native role menus, and rejection of explanation rows outside the offered menu.
-Native auto-mode tests verify both foreground and background Agent calls deliver the
-host-reported model to the parent's next request while preserving reviewed inputs and
-denials. These controlled tests do not establish deployed-service explanation coverage.
-
 Routing explanation component tests cover opt-in native panes, per-model selection,
-optional numeric estimates, missing or invalid diagnostics, and preservation of the
-selected model and reviewed tool input. Python tests cover optional metadata transport
+optional numeric estimates, missing or invalid diagnostics, rejection of rows outside
+the offered menu, and preservation of the selected model and reviewed tool input. Python tests cover optional metadata transport
 and audit records; native tests exercise the command and pane controls. These checks do
 not establish deployed-service explanation availability. See the Claude mod guide for
 the optional service response contract.
