@@ -763,6 +763,91 @@ class TestApplyMcpServerChanges:
     def _server(self, name, clients):
         return {"name": name, "url": f"{WS}/api/2.0/mcp/external/{name}", "clients": clients}
 
+    @pytest.mark.parametrize("operation", ["empty", "remove", "proxy", "unchanged-proxy"])
+    def test_batch_skips_oauth_discovery_without_eligible_registration(
+        self, monkeypatch, operation
+    ):
+        writes = {"claude": [], "codex": []}
+        for client in writes:
+            monkeypatch.setattr(
+                getattr(mcp, client),
+                "write_user_mcp_servers",
+                lambda add, remove, name=client: writes[name].append((add, remove)),
+            )
+        monkeypatch.setattr(
+            mcp,
+            "_oauth_http_client",
+            lambda *args, **kwargs: pytest.fail("This work does not need OAuth metadata"),
+        )
+        server = self._server("sql", ["claude", "codex"])
+        original = [server] if operation in {"remove", "unchanged-proxy"} else []
+        working = [server] if operation in {"proxy", "unchanged-proxy"} else []
+
+        changed = mcp.apply_mcp_server_changes(
+            original, working, list(writes), WS, batch_agents=frozenset(writes)
+        )
+
+        assert changed is (operation in {"remove", "proxy"})
+        for calls in writes.values():
+            if operation == "remove":
+                assert calls == [({}, {"sql"})]
+            elif operation == "proxy":
+                assert len(calls) == 1
+                assert calls[0][0]["sql"]["command"]
+                assert "mcp-proxy" in calls[0][0]["sql"]["args"]
+            else:
+                assert calls == []
+
+    def test_batch_reuses_negative_oauth_choice_only_within_one_apply(self, monkeypatch):
+        probes = []
+        for client in ["claude", "codex"]:
+            monkeypatch.setattr(getattr(mcp, client), "write_user_mcp_servers", lambda *args: None)
+
+        def unavailable(client, workspace, *, use_pat):
+            probes.append((client, workspace, use_pat))
+            return None
+
+        monkeypatch.setattr(mcp, "_oauth_http_client", unavailable)
+        servers = [
+            {"name": name, "url": f"{WS}/ai-gateway/mcp-services/system.ai.{name}"}
+            for name in ["a", "b"]
+        ]
+        for _ in range(2):
+            mcp.apply_mcp_server_changes(
+                [], servers, ["claude", "codex"], WS, batch_agents=frozenset({"claude", "codex"})
+            )
+        assert probes == [(client, WS, False) for _ in range(2) for client in ["claude", "codex"]]
+
+    def test_batch_reuses_oauth_choice_for_migration_and_new_entry(self, tmp_path, monkeypatch):
+        config_path = tmp_path / ".claude.json"
+        config_path.write_text('{"mcpServers": {}}')
+        monkeypatch.setattr(mcp.claude, "CLAUDE_CODE_CONFIG_PATH", config_path)
+        probes = []
+        monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda workspace: True)
+        monkeypatch.setattr(
+            mcp, "oauth_client_available", lambda workspace, client: probes.append(client) or True
+        )
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *args: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *args: True)
+        servers = [
+            {
+                "name": name,
+                "url": f"{WS}/ai-gateway/mcp-services/system.ai.{name}",
+                "clients": ["claude"],
+            }
+            for name in ["old", "new"]
+        ]
+
+        assert mcp.apply_mcp_server_changes(
+            servers[:1], servers, ["claude"], WS, batch_agents=frozenset({"claude"})
+        )
+
+        assert probes == [mcp.CLAUDE_CODE_CIMD_CLIENT_ID]
+        saved = json.loads(config_path.read_text())["mcpServers"]
+        assert saved == {
+            server["name"]: mcp.claude.managed_mcp_entry(server["url"]) for server in servers
+        }
+
     def test_adds_across_clients_serial_within_client(self, monkeypatch):
         # Record (client, name) for every add. Each client's ops must stay in
         # order even though clients run concurrently.
@@ -938,13 +1023,17 @@ class TestApplyMcpServerChanges:
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         url = f"{WS}/ai-gateway/mcp-services/system.ai.github"
-        working = [{"name": "system-ai-github", "url": url, "clients": ["claude"]}]
+        working = [
+            self._server("plain", ["claude"]),
+            {"name": "system-ai-github", "url": url, "clients": ["claude"]},
+        ]
 
         mcp.apply_mcp_server_changes(
             [], working, ["claude"], WS, batch_agents=frozenset({"claude"})
         )
 
         add, _ = writes[0]
+        assert add["plain"]["type"] == "stdio"
         assert add["system-ai-github"] == mcp.claude.managed_mcp_entry(url)
         assert add["system-ai-github"]["type"] == "http" and add["system-ai-github"]["url"] == url
 

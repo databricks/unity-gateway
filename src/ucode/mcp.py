@@ -1607,10 +1607,16 @@ def apply_mcp_server_changes(
     batched = {c for c in clients if c in batch_agents and c in _MCP_CLIENT_MODULES}
     batch_add: dict[str, dict[str, dict]] = {c: {} for c in batched}
     batch_remove: dict[str, set[str]] = {c: set() for c in batched}
-    # The HTTP+OAuth choice is URL-independent, so read CIMD metadata once per batched
-    # client here rather than once per server inside the entry-building loop below.
-    batch_http_client = {c: _oauth_http_client(c, workspace, use_pat=use_pat) for c in batched}
-    migration_http_client: dict[str, str | None] = {}
+    http_clients: dict[str, str | None] = {}
+
+    def http_client_for_url(client: str, url: str) -> str | None:
+        # Proxy-only URLs and removals need no OAuth discovery. Cache negative choices too.
+        if connection_from_url(url) is None:
+            return None
+        if client not in http_clients:
+            http_clients[client] = _oauth_http_client(client, workspace, use_pat=use_pat)
+        return http_clients[client]
+
     changed = False
 
     for name, server in original_by_name.items():
@@ -1638,14 +1644,8 @@ def apply_mcp_server_changes(
                     server
                 ):
                     continue
-                if client not in migration_http_client:
-                    migration_http_client[client] = batch_http_client.get(client)
-                    if client not in batched:
-                        migration_http_client[client] = _oauth_http_client(
-                            client, workspace, use_pat=use_pat
-                        )
                 native_client = _native_oauth_http_entry(
-                    migration_http_client[client], url, workspace, profile
+                    http_client_for_url(client, url), url, workspace, profile
                 )
                 if native_client is None or not _needs_native_cimd_rewrite(
                     client, name, url, native_client
@@ -1681,7 +1681,7 @@ def apply_mcp_server_changes(
                     profile,
                     use_pat=use_pat,
                     always_load=always_load,
-                    http_client=batch_http_client[client],
+                    http_client=http_client_for_url(client, url),
                 )
             else:
                 work[client].append(

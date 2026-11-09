@@ -1,5 +1,10 @@
 # Integration tests
 
+`test_mcp.py::TestApplyMcpServerChanges` covers lazy OAuth discovery for batched
+MCP changes at the component layer. Existing managed-MCP and configure/revert journeys
+retain native registration and lifecycle coverage; these component checks do not
+establish live OAuth-discovery latency or browser sign-in.
+
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They

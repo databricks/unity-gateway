@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+`TestApplyMcpServerChanges` in `test_mcp.py` checks that empty/removal-only batches
+and proxy-only URLs need no OAuth capability reads. Eligible additions and migrations
+share one choice per client, including negative results, within each apply call.
+Existing native/proxy, PAT, and workspace-selection checks retain their transport assertions.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component
