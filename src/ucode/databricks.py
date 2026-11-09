@@ -4,6 +4,8 @@ discovery, AI Gateway checks, and URL builders."""
 from __future__ import annotations
 
 import configparser
+import contextlib
+import contextvars
 import functools
 import json
 import logging
@@ -85,6 +87,7 @@ TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 # we retry rather than treat them as an expired session.
 _TOKEN_CACHE_LOCK_MARKERS = ("cache update", "exit status 45")
 _TOKEN_FETCH_MAX_ATTEMPTS = 4
+_BUDGET_SPENT = "the time budget for `databricks auth token` ran out"
 # Only explicit credential refusals justify a negative memo; unknown CLI errors
 # can be network, VPN, or service failures that the next call should retry.
 _TOKEN_CREDENTIAL_FAILURE_MARKERS = (
@@ -240,14 +243,52 @@ def _scrub_json(value: object) -> object:
     return value
 
 
+# A ``time.monotonic()`` deadline for the Databricks CLI calls made in this context, set by
+# ``get_databricks_token(budget_seconds=...)``. CLI discovery, profile listing and token fetches
+# read it through ``_time_left``; ``run`` then ends a timed-out command's whole process tree.
+_CLI_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "ucode_databricks_cli_deadline", default=None
+)
+
+
+@contextlib.contextmanager
+def _cli_deadline(seconds: float | None):
+    """Bound the CLI calls made in this block to ``seconds`` from now; nesting only narrows it."""
+    if seconds is None:
+        yield
+        return
+    deadline = time.monotonic() + seconds
+    outer = _CLI_DEADLINE.get()
+    reset = _CLI_DEADLINE.set(deadline if outer is None else min(deadline, outer))
+    try:
+        yield
+    finally:
+        _CLI_DEADLINE.reset(reset)
+
+
+def _time_left(default: float) -> float:
+    """``default`` seconds, capped by the current CLI deadline (zero or less once it has passed)."""
+    deadline = _CLI_DEADLINE.get()
+    return default if deadline is None else min(default, deadline - time.monotonic())
+
+
 @functools.cache
 def _log_auth_diagnostics() -> None:
     """Dump CLI version, profiles, and ~/.databrickscfg (scrubbed) to the debug log.
 
-    No-op unless UCODE_DEBUG=1; cached so it runs at most once per process."""
+    No-op unless UCODE_DEBUG=1; cached so it runs at most once per process. Under a CLI deadline
+    the CLI probes are skipped, so debugging never spends a headless helper's budget."""
     if not _debug_enabled():
         return
 
+    if _CLI_DEADLINE.get() is None:
+        _log_cli_diagnostics()
+    else:
+        _debug("databricks --version", "skipped under the caller's time budget")
+    _log_databrickscfg()
+
+
+def _log_cli_diagnostics() -> None:
     try:
         version_result = subprocess_cross_os.run(
             [databricks_cli_path(), "--version"],
@@ -285,6 +326,8 @@ def _log_auth_diagnostics() -> None:
     except (OSError, subprocess.TimeoutExpired) as exc:
         _debug("databricks auth profiles", f"exception: {type(exc).__name__}: {exc}")
 
+
+def _log_databrickscfg() -> None:
     cfg_path = Path(os.environ.get("DATABRICKS_CONFIG_FILE") or "~/.databrickscfg").expanduser()
     try:
         if cfg_path.is_file():
@@ -760,6 +803,21 @@ def run(
     env: dict[str, str] | None = None,
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
+    if (
+        isinstance(args, list)
+        and capture_output
+        and timeout is not None
+        and _CLI_DEADLINE.get() is not None
+    ):
+        # Under a caller's deadline a timeout must end the whole command, including a wrapper
+        # script's child that would otherwise keep its output open (a Windows `.cmd` shim).
+        return subprocess_cross_os.run_bounded(
+            args,
+            timeout=timeout,
+            check=check,
+            text=text,
+            env=env,
+        )
     return subprocess_cross_os.run(
         args,
         check=check,
@@ -852,8 +910,13 @@ def _read_databricks_cli_version(path: str) -> tuple[int, int, int] | None:
     Used only by discovery, which is what establishes ``path`` in the first
     place — every other caller reads a version through ``databricks_cli_path()``.
     """
+    timeout = _time_left(10)
+    if timeout <= 0:
+        return None
     try:
-        result = run([path, "--version"], check=False, capture_output=True, text=True, timeout=10)
+        result = run(
+            [path, "--version"], check=False, capture_output=True, text=True, timeout=timeout
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
     raw = result.stdout or result.stderr or ""
@@ -1291,10 +1354,7 @@ def check_databricks_auth(workspace: str, profile: str | None = None) -> bool | 
             return None
 
 
-_PROFILE_LIST_TIMEOUT_SECONDS = 20.0
-
-
-def list_profile_entries(*, timeout: float = _PROFILE_LIST_TIMEOUT_SECONDS) -> list[dict]:
+def list_profile_entries() -> list[dict]:
     """Return raw profile dicts ({"name", "host", "auth_type", ...}) from
     `databricks auth profiles`.
 
@@ -1306,8 +1366,9 @@ def list_profile_entries(*, timeout: float = _PROFILE_LIST_TIMEOUT_SECONDS) -> l
     Returns ``[]`` on any failure (CLI missing, timeout, non-zero exit, JSON
     decode error). When ``UCODE_DEBUG=1`` each dropout path logs *why* the
     result was empty so a silently-disappearing workspace picker is
-    diagnosable from ``~/.ucode/debug.log``. A ``timeout`` that is already spent runs nothing.
+    diagnosable from ``~/.ucode/debug.log``. Under a spent CLI deadline nothing runs.
     """
+    timeout = _time_left(20)
     if timeout <= 0:
         _debug("list_profile_entries", "no time left to list profiles")
         return []
@@ -1363,19 +1424,6 @@ def find_profile_name_for_host(workspace: str) -> str | None:
     """Find the Databricks CLI profile name matching a workspace URL."""
     normalized = workspace.rstrip("/")
     for host, name in get_databricks_profiles():
-        if host == normalized:
-            return name
-    return None
-
-
-def _find_profile_name_for_host_by(workspace: str, deadline: float) -> str | None:
-    """:func:`find_profile_name_for_host` within half the time left before ``deadline``.
-
-    The other half is kept for `databricks auth token`, which can find the host's profile itself
-    when the listing times out. ``deadline`` is a ``time.monotonic()`` value."""
-    timeout = min(_PROFILE_LIST_TIMEOUT_SECONDS, (deadline - time.monotonic()) / 2)
-    normalized = workspace.rstrip("/")
-    for host, name in profile_choices(list_profile_entries(timeout=timeout)):
         if host == normalized:
             return name
     return None
@@ -1800,7 +1848,6 @@ def _get_databricks_token_for_profile(
     *,
     force_refresh: bool,
     browser_login: bool,
-    deadline: float | None,
     allow_reauth: bool,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
@@ -1839,7 +1886,6 @@ def _get_databricks_token_for_profile(
             force_refresh=force_refresh,
             browser_login=browser_login,
             token_epoch=token_epoch,
-            deadline=deadline,
             allow_reauth=allow_reauth,
         )
 
@@ -1851,7 +1897,6 @@ def _fetch_databricks_token_for_profile(
     force_refresh: bool,
     browser_login: bool,
     token_epoch: int,
-    deadline: float | None = None,
     allow_reauth: bool = True,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
@@ -1890,9 +1935,9 @@ def _fetch_databricks_token_for_profile(
         nonlocal transient_failure, cause
         transient_failure = True
         cause = ""
-        timeout = 15.0 if deadline is None else min(15.0, deadline - time.monotonic())
+        timeout = _time_left(15.0)
         if timeout <= 0:
-            cause = "the time budget for `databricks auth token` ran out"
+            cause = _BUDGET_SPENT
             return "", None, cause
         try:
             result = run(
@@ -1931,7 +1976,7 @@ def _fetch_databricks_token_for_profile(
         held only for the brief cache write, so a short jittered backoff almost
         always wins the next attempt. A non-lock failure returns '' immediately
         so the caller can fall through to the re-auth path."""
-        nonlocal transient_failure
+        nonlocal transient_failure, cause
         for attempt in range(_TOKEN_FETCH_MAX_ATTEMPTS):
             token, lifetime_s, diagnostics = _fetch()
             if token:
@@ -1941,7 +1986,12 @@ def _fetch_databricks_token_for_profile(
             _debug("auth token", f"cache-lock contention (attempt {attempt + 1}); retrying")
             transient_failure = True
             if attempt < _TOKEN_FETCH_MAX_ATTEMPTS - 1:
-                time.sleep(random.uniform(0.05, 0.1 * (2**attempt)))
+                pause = random.uniform(0.05, 0.1 * (2**attempt))
+                if _time_left(pause) < pause:
+                    # No attempt could start inside the budget after this pause.
+                    cause = _BUDGET_SPENT
+                    return "", None
+                time.sleep(pause)
         return "", None
 
     token, lifetime_s = _fetch_with_lock_retry()
@@ -1992,7 +2042,7 @@ def _fetch_databricks_token_for_profile(
             error += "Run `databricks auth login` to re-authenticate."
             # Under a deadline the profile was already looked up from the host before fetching.
             profile_name = profile
-            if not profile_name and deadline is None:
+            if not profile_name and _CLI_DEADLINE.get() is None:
                 profile_name = find_profile_name_for_host(workspace)
             if profile_name:
                 error += (
@@ -2020,9 +2070,11 @@ def get_databricks_token(
 ) -> str:
     """Return a Databricks bearer for ``workspace``.
 
-    ``budget_seconds`` caps the total time spent on profile lookup and `databricks auth token`,
-    across cache-lock retries, for a caller under a hard deadline. ``allow_reauth=False`` skips the
-    `auth login --no-browser` fallback, whose URL nobody sees when the caller is a headless helper.
+    ``budget_seconds`` caps the total time spent in Databricks CLI calls (CLI discovery, profile
+    lookup and `databricks auth token` across cache-lock retries) for a caller under a hard
+    deadline; a call that runs out of time is ended with its whole process tree.
+    ``allow_reauth=False`` skips the `auth login --no-browser` fallback, whose URL nobody sees
+    when the caller is a headless helper.
     """
     # ``DATABRICKS_BEARER`` is the CI escape hatch: when set, skip the
     # `databricks auth token` subprocess entirely and return the pre-fetched
@@ -2043,24 +2095,22 @@ def get_databricks_token(
     if command:
         return _bearer_from_command(command)
 
-    deadline = None if budget_seconds is None else time.monotonic() + budget_seconds
-    _log_auth_diagnostics()
-    # See has_valid_databricks_auth: resolve the profile from the host when
-    # the caller didn't supply one, so duplicate-host cfgs don't break us.
-    if not profile:
-        profile = (
-            find_profile_name_for_host(workspace)
-            if deadline is None
-            else _find_profile_name_for_host_by(workspace, deadline)
+    with _cli_deadline(budget_seconds):
+        _log_auth_diagnostics()
+        # See has_valid_databricks_auth: resolve the profile from the host when
+        # the caller didn't supply one, so duplicate-host cfgs don't break us.
+        if not profile:
+            # Under a budget the listing gets half of what is left; `databricks auth token`
+            # can find the host's profile itself if the listing runs out of time.
+            with _cli_deadline(None if budget_seconds is None else _time_left(budget_seconds) / 2):
+                profile = find_profile_name_for_host(workspace)
+        return _get_databricks_token_for_profile(
+            workspace,
+            profile,
+            force_refresh=force_refresh,
+            browser_login=browser_login,
+            allow_reauth=allow_reauth,
         )
-    return _get_databricks_token_for_profile(
-        workspace,
-        profile,
-        force_refresh=force_refresh,
-        browser_login=browser_login,
-        deadline=deadline,
-        allow_reauth=allow_reauth,
-    )
 
 
 def _extract_apps_payload(payload: object) -> list[dict]:

@@ -7,7 +7,9 @@ import platform
 import re
 import shlex
 import shutil
+import signal
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -112,3 +114,99 @@ def popen(args: list[str] | str, **kwargs: Any) -> subprocess.Popen[Any]:
         ),
         **kwargs,
     )
+
+
+# Commands `run_bounded` is waiting on, so a signal handler can end them before the process dies.
+_RUNNING_TREES: set[subprocess.Popen[Any]] = set()
+# Reentrant: a signal handler on the thread that holds it may call `end_running_trees`.
+_RUNNING_TREES_LOCK = threading.RLock()
+# After ending a tree, how long to wait for its output pipes to close.
+_DRAIN_SECONDS = 5.0
+
+
+def run_bounded(
+    args: list[str], *, timeout: float, check: bool = False, **kwargs: Any
+) -> subprocess.CompletedProcess[Any]:
+    """Like ``run(args, capture_output=True, timeout=timeout)``, but a timeout ends the whole tree.
+
+    ``subprocess.run`` kills only the direct child on a timeout, then waits for its output pipes
+    to close. A wrapper's own child (the interpreter behind a Windows ``.cmd`` shim, or a shell
+    script that does not ``exec``) keeps them open, so ``run`` waits as long as that child runs.
+    The command gets its own process group (Windows) or session (POSIX), with no stdin unless the
+    caller passes one, and is not meant to be interactive."""
+    kwargs = _with_text_defaults(kwargs)
+    kwargs.setdefault("stdin", subprocess.DEVNULL)
+    if os.name == "nt":
+        kwargs["creationflags"] = (
+            kwargs.get("creationflags", 0) | subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+    else:
+        kwargs["start_new_session"] = True
+    proc = subprocess.Popen(
+        _resolved_args(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs
+    )
+    with _RUNNING_TREES_LOCK:
+        _RUNNING_TREES.add(proc)
+    try:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _end_tree(proc)
+            try:
+                stdout, stderr = proc.communicate(timeout=_DRAIN_SECONDS)
+            except subprocess.TimeoutExpired:
+                # Something that left the tree still holds the pipes; stop waiting for it.
+                stdout = stderr = None
+            raise subprocess.TimeoutExpired(
+                proc.args, timeout, output=stdout, stderr=stderr
+            ) from None
+        except BaseException:
+            _end_tree(proc)
+            raise
+    finally:
+        with _RUNNING_TREES_LOCK:
+            _RUNNING_TREES.discard(proc)
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                stream.close()
+    returncode = proc.wait()
+    if check and returncode:
+        raise subprocess.CalledProcessError(returncode, proc.args, stdout, stderr)
+    return subprocess.CompletedProcess(proc.args, returncode, stdout, stderr)
+
+
+def end_running_trees() -> None:
+    """End every command ``run_bounded`` is waiting on, e.g. before this process exits by signal."""
+    with _RUNNING_TREES_LOCK:
+        running = list(_RUNNING_TREES)
+    for proc in running:
+        _end_tree(proc)
+
+
+def _end_tree(proc: subprocess.Popen[Any]) -> None:
+    if proc.poll() is not None and os.name == "nt":
+        return
+    if os.name == "nt":
+        from ucode.os_compatibility.system_cross_os import windows_system32_dir
+
+        try:
+            subprocess.run(
+                [str(windows_system32_dir() / "taskkill.exe"), "/F", "/T", "/PID", str(proc.pid)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=_DRAIN_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        try:
+            # The session leader's pid is its process group id.
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass

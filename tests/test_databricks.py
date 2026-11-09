@@ -2985,8 +2985,10 @@ class TestGetDatabricksToken:
         def __getattr__(self, name):
             return getattr(time, name)
 
-    def _budget_harness(self, monkeypatch, respond):
-        """Route the CLI through ``respond(command, timeout, clock)`` under a controlled clock."""
+    def _budget_harness(self, monkeypatch, respond, *, discover=False):
+        """Route the CLI through ``respond(command, timeout, clock)`` under a controlled clock.
+
+        ``discover`` leaves CLI discovery (its `--version` probe) to run through ``respond``."""
         clock = self._Clock()
         calls: list[tuple[list[str], float | None]] = []
 
@@ -2996,7 +2998,10 @@ class TestGetDatabricksToken:
 
         monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
         monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
-        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        if discover:
+            monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: ["databricks"])
+        else:
+            monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
         monkeypatch.setattr(db_mod, "run", fake_run)
         monkeypatch.setattr(db_mod, "time", clock)
         # The longest lock-retry backoff, so the schedule below is exact.
@@ -3016,17 +3021,63 @@ class TestGetDatabricksToken:
         # One attempt, given the budget rather than the default 15s.
         assert [timeout for _command, timeout in calls] == [1.0]
 
-    def test_budget_kills_a_real_hung_cli(self, tmp_path, monkeypatch):
-        # End to end: the subprocess timeout really ends a CLI that would otherwise run for a
-        # minute. The margin leaves room for a loaded machine's process start-up.
-        env = self._fake_databricks(tmp_path, "import time\ntime.sleep(60)")
-        monkeypatch.setattr("os.environ", env)
-        # Discover the fake CLI first: its `--version` probe would otherwise draw on the budget.
-        db_mod.databricks_cli_path()
-        started = time.monotonic()
-        with pytest.raises(RuntimeError, match=r"`databricks auth token` timed out after"):
+    def test_budget_covers_cold_cli_discovery(self, monkeypatch):
+        # A first call in a process discovers the CLI with `databricks --version`; a stalled
+        # probe must draw on the same budget as the token fetch.
+        def respond(command, timeout, clock):
+            if command[1:] == ["--version"]:
+                clock.now += timeout
+                raise subprocess.TimeoutExpired(command, timeout)
+            return subprocess.CompletedProcess(command, 0, '{"access_token": "tok"}', "")
+
+        calls = self._budget_harness(monkeypatch, respond, discover=True)
+        with pytest.raises(RuntimeError, match="time budget for `databricks auth token` ran out"):
             get_databricks_token(WS, profile="p", budget_seconds=1.0, allow_reauth=False)
-        assert time.monotonic() - started < 30
+        assert calls == [(["databricks", "--version"], 1.0)]
+
+    def test_debug_probes_are_skipped_under_a_budget(self, monkeypatch):
+        monkeypatch.setenv("UCODE_DEBUG", "1")
+        db_mod._log_auth_diagnostics.cache_clear()
+        probes = []
+        monkeypatch.setattr(db_mod, "_log_cli_diagnostics", lambda: probes.append(True))
+        try:
+            calls = self._budget_harness(
+                monkeypatch,
+                lambda command, timeout, clock: subprocess.CompletedProcess(
+                    command, 0, '{"access_token": "tok"}', ""
+                ),
+            )
+            assert get_databricks_token(WS, "p", budget_seconds=1.0, allow_reauth=False) == "tok"
+        finally:
+            db_mod._log_auth_diagnostics.cache_clear()
+        assert probes == []
+        assert len(calls) == 1
+
+    @pytest.mark.parametrize("stalls", ["auth token", "--version"])
+    def test_budget_ends_a_real_hung_cli(self, tmp_path, monkeypatch, stalls):
+        # End to end, through the real process launch: on Windows the fake CLI is a `.cmd` shim
+        # whose python child holds the output pipes, so only ending the whole process tree
+        # returns. A cold `--version` probe is bounded the same way. The CLI would run for two
+        # minutes; the bound leaves room for a loaded machine's process start-up.
+        script = (
+            "import time\n"
+            f"if {stalls!r} == '--version' or sys.argv[1:3] == ['auth', 'token']:\n"
+            "    time.sleep(120)\n"
+            'print(json.dumps({"access_token": "tok"}))'
+        )
+        _write_fake_executable(tmp_path, "databricks", script)
+        env = {**os.environ, "PATH": str(tmp_path)}
+        env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        monkeypatch.setattr("os.environ", env)
+        if stalls == "auth token":
+            # Discover the CLI first, so the token fetch gets the whole budget.
+            assert db_mod.databricks_cli_path()
+        started = time.monotonic()
+        with pytest.raises(RuntimeError, match="no access token") as exc_info:
+            get_databricks_token(WS, profile="p", budget_seconds=2.0, allow_reauth=False)
+        assert time.monotonic() - started < 60
+        if stalls == "auth token":
+            assert "`databricks auth token` timed out after" in str(exc_info.value)
 
     def test_budget_spans_lock_retries(self, monkeypatch):
         # Each lock-contention retry draws from the same budget, not a fresh 15s.
@@ -3039,11 +3090,13 @@ class TestGetDatabricksToken:
         calls = self._budget_harness(monkeypatch, locked)
         with pytest.raises(RuntimeError, match="time budget for `databricks auth token` ran out"):
             get_databricks_token(WS, profile="p", budget_seconds=0.8, allow_reauth=False)
-        # 0.3s attempt, 0.1s backoff, 0.3s attempt, 0.2s backoff: the budget is spent before the
-        # third of the four attempts an unbounded fetch would make.
+        # 0.3s attempt, 0.1s backoff, 0.3s attempt: the 0.2s backoff would end past the budget,
+        # so it is skipped and no third of the four attempts an unbounded fetch makes starts.
         timeouts = [timeout for _command, timeout in calls]
         assert timeouts == pytest.approx([0.8, 0.4])
         assert len(timeouts) < db_mod._TOKEN_FETCH_MAX_ATTEMPTS
+        # No backoff sleeps past the budget (the clock starts at 1000).
+        assert db_mod.time.now <= 1000.8 + 1e-9
 
     def test_budget_also_bounds_profile_lookup(self, monkeypatch):
         # Without --profile the helper first lists profiles, which can hang on the network. The

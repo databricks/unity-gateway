@@ -2928,9 +2928,9 @@ def claude_desktop_auth_cmd(
         sys.stdout.write(json.dumps(credential, separators=(",", ":")) + "\n")
 
 
-# Pi kills its `!command` apiKey after 10s and discards stderr; leave room for interpreter
-# startup so a slow CLI fails with ug's error, which is logged, rather than pi's.
-AUTH_TOKEN_CLI_BUDGET_SECONDS = 7.0
+# A caller that kills the helper (`--caller-timeout`, which pi's apiKey passes) leaves this much
+# of its timeout for interpreter start-up, so a slow CLI fails with ug's logged error first.
+AUTH_TOKEN_STARTUP_HEADROOM_SECONDS = 3.0
 # Nobody waits on the background refresher (`--refresh-cache`), but it must not linger.
 AUTH_TOKEN_BACKGROUND_BUDGET_SECONDS = 30.0
 
@@ -2951,6 +2951,16 @@ def auth_token_cmd(
         typer.Option("--force-refresh", help="Force the Databricks CLI to mint a new token."),
     ] = False,
     browser_login: Annotated[bool, typer.Option("--browser-login", hidden=True)] = False,
+    caller_timeout: Annotated[
+        float | None,
+        typer.Option(
+            "--caller-timeout",
+            hidden=True,
+            min=0.0,
+            help="Seconds after which the caller kills this command. Bounds the Databricks CLI "
+            "calls to fit, ending a timed-out call's whole process tree.",
+        ),
+    ] = None,
     refresh_cache: Annotated[
         bool,
         typer.Option(
@@ -2992,9 +3002,10 @@ def auth_token_cmd(
     binary works on macOS, Linux, and Windows without any POSIX shell.
 
     CLI-minted OAuth tokens are cached in ``ucode.token_cache``; ``ucode.entrypoint`` serves a hit
-    for the plain ``--host H [--profile P]`` form before this module is imported. A miss bounds
-    the CLI to ``AUTH_TOKEN_CLI_BUDGET_SECONDS`` (unless ``--browser-login`` asks for an
-    interactive sign-in) and logs failures to ``~/.ucode/auth-token-errors.log``."""
+    for the plain ``--host H [--profile P] [--caller-timeout S]`` form before this module is
+    imported. A miss fits the CLI calls inside ``--caller-timeout`` when the caller sets one
+    (unless ``--browser-login`` asks for an interactive sign-in) and logs failures to
+    ``~/.ucode/auth-token-errors.log``."""
     import sys
     import time
 
@@ -3065,13 +3076,15 @@ def auth_token_cmd(
                 # A login that clears the cache during this fetch must win over its result.
                 fetch_started = time.time()
                 if browser_login:
-                    budget = None
+                    budget = None  # a person may be signing in through the browser
                 elif refresh_cache:
                     budget = AUTH_TOKEN_BACKGROUND_BUDGET_SECONDS
+                elif caller_timeout is not None:
+                    budget = max(1.0, caller_timeout - AUTH_TOKEN_STARTUP_HEADROOM_SECONDS)
                 else:
-                    budget = AUTH_TOKEN_CLI_BUDGET_SECONDS
+                    budget = None  # each CLI call keeps its own timeout, as before
                 # Headless helper: skip the `auth login --no-browser` fallback, whose URL
-                # nobody sees here, and bound the CLI unless a person may be signing in.
+                # nobody sees here.
                 token = get_databricks_token(
                     workspace,
                     profile,

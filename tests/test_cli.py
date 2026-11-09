@@ -2729,7 +2729,8 @@ class TestMcpSubcommands:
         mock_sync.assert_called_once_with()
 
 
-_HELPER_KW = {"budget_seconds": cli_mod.AUTH_TOKEN_CLI_BUDGET_SECONDS, "allow_reauth": False}
+# Without --caller-timeout each CLI call keeps its own timeout, as before the cache.
+_HELPER_KW = {"budget_seconds": None, "allow_reauth": False}
 
 
 class TestAuthTokenCommand:
@@ -2762,14 +2763,12 @@ class TestAuthTokenCommand:
         # Nothing but the bare token (plus trailing newline) may reach stdout,
         # or the consuming agent will treat the noise as part of the token.
         assert result.stdout == "tok-123\n"
-        # Browser sign-in waits on a person, so only the headless helper gets the CLI budget.
-        budget = None if browser_login else cli_mod.AUTH_TOKEN_CLI_BUDGET_SECONDS
         fetch.assert_called_once_with(
             "https://ws",
             None,
             force_refresh=False,
             browser_login=browser_login,
-            budget_seconds=budget,
+            budget_seconds=None,
             allow_reauth=False,
         )
         assert dict(os.environ) == previous
@@ -2797,6 +2796,41 @@ class TestAuthTokenCommand:
         fetch.assert_called_once_with(
             "https://ws", None, force_refresh=True, browser_login=False, **_HELPER_KW
         )
+
+    @pytest.mark.parametrize(
+        ("caller_timeout", "budget"), [("10", 7.0), ("2", 1.0), ("2.5", 1.0), ("30", 27.0)]
+    )
+    def test_caller_timeout_bounds_the_cli_inside_it(self, caller_timeout, budget):
+        # Pi kills its apiKey command after 10s; the CLI gets what start-up leaves of that.
+        with (
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli.get_databricks_token", return_value="tok") as fetch,
+        ):
+            result = runner.invoke(
+                app, ["auth-token", "--host", "https://ws", "--caller-timeout", caller_timeout]
+            )
+        assert result.exit_code == 0, result.output
+        fetch.assert_called_once_with(
+            "https://ws",
+            None,
+            force_refresh=False,
+            browser_login=False,
+            budget_seconds=budget,
+            allow_reauth=False,
+        )
+
+    def test_browser_login_ignores_caller_timeout(self):
+        # A person may be signing in; their browser flow keeps its own timeout.
+        with (
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli.get_databricks_token", return_value="tok") as fetch,
+        ):
+            result = runner.invoke(
+                app,
+                ["auth-token", "--host", "https://ws", "--browser-login", "--caller-timeout", "10"],
+            )
+        assert result.exit_code == 0, result.output
+        assert fetch.call_args.kwargs["budget_seconds"] is None
 
     def test_failure_is_logged_for_headless_callers(self):
         # pi discards the helper's stderr, so the cause must land on disk too.

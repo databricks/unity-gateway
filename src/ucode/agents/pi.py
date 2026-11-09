@@ -174,6 +174,10 @@ def render_overlay(
     return overlay, keys
 
 
+# Pi kills a `!command` apiKey after this many seconds.
+PI_API_KEY_COMMAND_TIMEOUT_SECONDS = 10
+
+
 def build_pi_api_key(state: dict) -> str:
     """Return the `!command` apiKey value pi resolves before every request.
 
@@ -183,9 +187,9 @@ def build_pi_api_key(state: dict) -> str:
 
     No `--force-refresh`: pi has no token cache of its own on this path, so
     forcing a mint would round-trip to the workspace every turn. Pi also kills
-    the command after 10s and discards its stderr, so plain `auth-token` serves
-    ug's own token cache (`ucode.token_cache`) before importing the full CLI,
-    and bounds any CLI call it does make.
+    the command after 10s and discards its stderr, so `auth-token` serves ug's
+    own token cache (`ucode.token_cache`) before importing the full CLI, and
+    `--caller-timeout` fits any CLI call it does make inside pi's limit.
 
     Always POSIX-quoted: pi runs `!command` values through bash on every OS
     (Git Bash on Windows), which strips the backslashes from a cmd.exe-style
@@ -195,6 +199,7 @@ def build_pi_api_key(state: dict) -> str:
         state.get("profile"),
         use_pat=bool(state.get("use_pat")),
     )
+    argv += ["--caller-timeout", str(PI_API_KEY_COMMAND_TIMEOUT_SECONDS)]
     return "!" + shlex.join(argv)
 
 

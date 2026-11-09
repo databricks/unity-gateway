@@ -316,6 +316,10 @@ class TestFastPath:
     def test_host_only(self, cached):
         assert token_cache.fast_path_token(["auth-token", "--host", WS]) == cached
 
+    def test_pi_caller_timeout_is_served(self, cached):
+        argv = ["auth-token", "--host", WS, "--profile", "prod", "--caller-timeout", "10"]
+        assert token_cache.fast_path_token(argv) == cached
+
     def test_host_and_profile_in_either_order(self, cached):
         argv = ["auth-token", "--profile", "prod", "--host", WS]
         assert token_cache.fast_path_token(argv) == cached
@@ -338,6 +342,8 @@ class TestFastPath:
             ["auth-token", "--host", WS, "--profile", "prod", "--refresh-cache"],
             ["auth-token", "--host", WS, "--client-id", "c"],
             ["auth-token", "--host", WS, "--host", WS],
+            ["auth-token", "--caller-timeout", "10"],
+            ["auth-token", "--host", WS, "--caller-timeout", "10", "--use-pat"],
             ["auth-token", f"--host={WS}"],
             ["configure", "--host", WS],
         ],
