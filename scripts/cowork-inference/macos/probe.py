@@ -1,5 +1,6 @@
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -7,6 +8,7 @@ from pathlib import Path
 
 from controls import matches_labels
 from diagnostics import redact
+from terminal import PROBE_TIMEOUT_SECONDS
 
 from ucode.os_compatibility import subprocess_cross_os as process
 
@@ -22,7 +24,7 @@ def save(name, text):
     (EVIDENCE / name).write_text(redact(text))
 
 
-def ui(*args, wait_until_enabled=True):
+def ui(*args, wait_until_enabled=True, timeout=45):
     if wait_until_enabled and args[0] in ("click", "type"):
         wait_for(args[1], enabled=True)
     result = process.run(
@@ -30,7 +32,7 @@ def ui(*args, wait_until_enabled=True):
         capture_output=True,
         text=True,
         stdin=subprocess.DEVNULL,
-        timeout=45,
+        timeout=timeout,
     )
     if result.returncode:
         raise RuntimeError(result.stderr.strip())
@@ -40,16 +42,30 @@ def ui(*args, wait_until_enabled=True):
 def wait_for(label, timeout=60, require_all=False, enabled=False):
     deadline = time.monotonic() + timeout
     last = ""
-    while time.monotonic() < deadline:
+    while (remaining := deadline - time.monotonic()) > 0:
         try:
-            last = ui("snapshot")
+            last = ui("snapshot", timeout=min(45, remaining))
             if matches_labels(last, label, require_all=require_all, enabled=enabled):
                 return last
-        except RuntimeError as exc:
+        except (RuntimeError, subprocess.TimeoutExpired) as exc:
             last = str(exc)
-        time.sleep(2)
+        time.sleep(min(2, max(0, deadline - time.monotonic())))
     save("last-ui.json", last)
     raise RuntimeError(f"Timed out waiting for {label}")
+
+
+def configured_model_label(profile):
+    models = profile["inferenceModels"]
+    targets = [model for model in models if model["name"] == MODEL]
+    if len(targets) != 1:
+        raise RuntimeError("Expected system.ai model missing or ambiguous")
+    label = targets[0].get("labelOverride") or MODEL
+    matching_labels = [
+        model for model in models if (model.get("labelOverride") or model["name"]) == label
+    ]
+    if len(matching_labels) != 1:
+        raise RuntimeError("Configured target model label is ambiguous")
+    return label
 
 
 def configure():
@@ -92,25 +108,28 @@ def configure():
         raise RuntimeError("Expected system.ai model services")
     if headers.get("Databricks-Model-Service-Parent-Schema") not in (None, "", "system.ai"):
         raise RuntimeError("Expected system.ai schema")
-    models = [m for m in profile["inferenceModels"] if m["name"] == MODEL]
-    if len(models) != 1:
-        raise RuntimeError("Expected system.ai model missing or ambiguous")
-    label = models[0].get("labelOverride") or MODEL
+    label = configured_model_label(profile)
     save("configuration.json", json.dumps({"provider": "gateway", "model": MODEL, "label": label}))
     return label
 
 
-def main():
+def stop_probe(signum, _frame):
+    raise TimeoutError(f"Cowork probe stopped by {signal.Signals(signum).name}")
+
+
+def main(private):
     if sys.platform != "darwin" or os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("Use a disposable macOS GitHub Actions runner")
     EVIDENCE.mkdir(exist_ok=True)
     report = {"model": MODEL, "responseAsserted": False}
     app = None
-    raw_log = TEMP / "claude-native.log"
+    raw_log = private / "native.log"
+    handlers = {sig: signal.signal(sig, stop_probe) for sig in (signal.SIGTERM, signal.SIGALRM)}
+    signal.alarm(PROBE_TIMEOUT_SECONDS)
     try:
         model_label = configure()
         print("UG gateway profile configured", flush=True)
-        with raw_log.open("w") as log:
+        with os.fdopen(os.open(raw_log, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as log:
             app = process.popen(
                 [
                     "/Applications/Claude.app/Contents/MacOS/Claude",
@@ -161,36 +180,51 @@ def main():
         report.update(responseAsserted=True, responseFinished=True, expectedResponse="48213")
     except Exception as exc:
         report["error"] = str(exc)
+        report["responseAsserted"] = False
     finally:
-        if app:
+        signal.alarm(0)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        try:
+            if app:
+                try:
+                    save("final-ui.json", ui("snapshot"))
+                except Exception as exc:
+                    report["captureError"] = str(exc)
+                try:
+                    process.run(
+                        ["/usr/sbin/screencapture", "-x", str(EVIDENCE / "desktop.png")], timeout=15
+                    )
+                except Exception as exc:
+                    report["screenshotError"] = str(exc)
+                try:
+                    app.terminate()
+                    try:
+                        app.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        app.kill()
+                        app.wait(timeout=10)
+                    report["exitCode"] = app.poll()
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    report["cleanupError"] = str(exc)
+                    report["responseAsserted"] = False
             try:
-                save("final-ui.json", ui("snapshot"))
-            except Exception as exc:
-                report["captureError"] = str(exc)
-            try:
-                process.run(
-                    ["/usr/sbin/screencapture", "-x", str(EVIDENCE / "desktop.png")], timeout=15
-                )
-            except Exception as exc:
-                report["screenshotError"] = str(exc)
-            app.terminate()
-            try:
-                app.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                app.kill()
-                app.wait(timeout=10)
-            report["exitCode"] = app.poll()
-        if raw_log.exists():
-            save("native.log", raw_log.read_text(errors="replace"))
-            raw_log.unlink()
-        save("result.json", json.dumps(report, indent=2))
-        print(
-            "Cowork inference passed"
-            if report["responseAsserted"]
-            else "Cowork probe failed; see evidence"
-        )
+                if raw_log.exists():
+                    save("native.log", raw_log.read_text(errors="replace"))
+                    raw_log.unlink()
+            except OSError as exc:
+                report["logError"] = str(exc)
+                report["responseAsserted"] = False
+            save("result.json", json.dumps(report, indent=2))
+            print(
+                "Cowork inference passed"
+                if report["responseAsserted"]
+                else "Cowork probe failed; see evidence"
+            )
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
     return 0 if report["responseAsserted"] else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(Path(sys.argv[1])))

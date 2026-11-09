@@ -86,16 +86,24 @@ A missing permission fails the job. UG configures the app through its public CLI
 then the test accepts gateway onboarding, opens Cowork, verifies the configured
 model, sends the prompt, and requires both the exact answer and completion marker.
 JSON snapshots preserve multiline control values. Controls wait for an enabled exact label;
-response assertions wait up to four minutes.
+individual Accessibility timeouts retry only within the current wait's remaining budget.
+Response assertions wait up to four minutes. The target model must have a unique display
+label in the generated profile so another model cannot satisfy the selection check.
 There are no whole-test retries.
 
 Terminal receives only the required environment through an owner-only temporary
-file, which the child deletes after reading. Raw logs remain private until redacted.
-The parent bounds the run to ten minutes and terminates the child's process group;
-an always-run workflow step also stops Claude and Terminal. Artifacts contain only
+file, which the child deletes after reading. Raw logs stay in that private directory
+with owner-only permissions until redacted. The probe has a 15-minute deadline;
+the parent allows another 90 seconds for evidence capture and 30 seconds for startup.
+On a parent timeout, it signals the probe first and allows up to 90 seconds for
+final diagnostics before terminating the remaining process group. Cleanup errors
+fail the run while still attempting to save sanitized logs and remove temporary
+credentials. An always-run workflow step also stops Claude and Terminal. Artifacts contain only
 sanitized diagnostics, installer provenance, UI snapshots, and screenshots, with
 three-day retention. Configuration and credential files are never uploaded.
 
-`tests/test_macos_cowork_harness.py` checks redaction, control readiness, and rejection
-of partial, incorrect, or unfinished responses. These helper checks do not replace
-running the native macOS job.
+`tests/test_macos_cowork_harness.py` checks redaction, private log permissions, control
+readiness, bounded Accessibility retries, unambiguous model labels, and rejection of
+partial, incorrect, or unfinished responses. Component tests cover launch, cleanup,
+and evidence-write failures, plus graceful termination of a real isolated subprocess.
+These checks do not replace running the native macOS job.

@@ -13,6 +13,67 @@ from diagnostics import redact
 
 from ucode.os_compatibility import subprocess_cross_os as process
 
+PROBE_TIMEOUT_SECONDS = 900
+PROBE_CLEANUP_SECONDS = 90
+TERMINAL_TIMEOUT_SECONDS = PROBE_TIMEOUT_SECONDS + PROBE_CLEANUP_SECONDS + 30
+
+
+def stop_process_group(private):
+    pid_file = private / "pid.txt"
+    if not pid_file.exists():
+        return
+    group = int(pid_file.read_text())
+    if group <= 1 or group == os.getpgrp():
+        raise RuntimeError("Refusing to terminate the runner process group")
+    status = private / "status.txt"
+    if not status.exists():
+        try:
+            os.kill(group, signal.SIGTERM)
+            deadline = time.monotonic() + PROBE_CLEANUP_SECONDS
+            while time.monotonic() < deadline and not status.exists():
+                os.kill(group, 0)
+                time.sleep(0.1)
+        except ProcessLookupError:
+            pass
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(group, sig)
+        except ProcessLookupError:
+            return
+        if sig == signal.SIGTERM:
+            time.sleep(2)
+
+
+def cleanup(private, failure):
+    errors = []
+    try:
+        stop_process_group(private)
+    except (OSError, ValueError, RuntimeError) as exc:
+        errors.append(str(exc))
+    evidence = Path(os.environ["RUNNER_TEMP"]) / "macos-cowork-evidence"
+    try:
+        evidence.mkdir(exist_ok=True)
+        for source, destination in (("output.txt", "terminal.txt"), ("native.log", "native.log")):
+            try:
+                path = private / source
+                if path.exists():
+                    (evidence / destination).write_text(redact(path.read_text(errors="replace")))
+            except OSError as exc:
+                errors.append(str(exc))
+        if failure or errors:
+            with (evidence / "terminal.txt").open("a") as log:
+                log.write(redact("\n".join(filter(None, [failure, *errors]))))
+    except OSError as exc:
+        errors.append(str(exc))
+    finally:
+        try:
+            shutil.rmtree(private)
+        except OSError as exc:
+            errors.append(str(exc))
+    for error in errors:
+        print(redact(f"Probe cleanup failed: {error}"), file=sys.stderr)
+    return errors
+
 
 def main():
     if sys.platform != "darwin":
@@ -24,15 +85,22 @@ def main():
         if os.getpgrp() != os.getpid():
             os.setsid()
         (environment.parent / "pid.txt").write_text(str(os.getpid()))
-        os.execv(sys.executable, [sys.executable, str(Path(__file__).with_name("probe.py"))])
+        os.execv(
+            sys.executable,
+            [sys.executable, str(Path(__file__).with_name("probe.py")), str(environment.parent)],
+        )
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("Use a disposable macOS GitHub Actions runner")
+    return run_terminal()
+
+
+def run_terminal():
     private = Path(tempfile.mkdtemp(prefix="macos-probe-", dir=os.environ["RUNNER_TEMP"]))
     environment = private / "environment.json"
     output = private / "output.txt"
     status = private / "status.txt"
     command = private / "probe.command"
-    pid_file = private / "pid.txt"
+    failure = ""
     try:
         environment.write_text(
             json.dumps(
@@ -54,6 +122,7 @@ def main():
         )
         command.write_text(
             "#!/bin/bash\n"
+            "umask 077\n"
             f"{invocation} > {shlex.quote(str(output))} 2>&1\n"
             f"echo $? > {shlex.quote(str(status))}\n"
         )
@@ -64,7 +133,7 @@ def main():
             stdin=subprocess.DEVNULL,
             timeout=15,
         )
-        deadline = time.monotonic() + 600
+        deadline = time.monotonic() + TERMINAL_TIMEOUT_SECONDS
         reported = set()
         stages = {
             "UG gateway profile configured",
@@ -83,27 +152,21 @@ def main():
             if status.exists():
                 result = status.read_text().strip()
                 if result:
-                    return int(result)
-            time.sleep(2)
-        raise RuntimeError("Terminal probe did not finish within 600 seconds")
-    finally:
-        if pid_file.exists():
-            group = int(pid_file.read_text())
-            if group <= 1 or group == os.getpgrp():
-                raise RuntimeError("Refusing to terminate the runner process group")
-            for sig in (signal.SIGTERM, signal.SIGKILL):
-                try:
-                    os.killpg(group, sig)
-                except ProcessLookupError:
+                    result = int(result)
                     break
-                if sig == signal.SIGTERM:
-                    time.sleep(2)
-        if output.exists():
-            text = redact(output.read_text(errors="replace"))
-            evidence = Path(os.environ["RUNNER_TEMP"]) / "macos-cowork-evidence"
-            evidence.mkdir(exist_ok=True)
-            (evidence / "terminal.txt").write_text(text)
-        shutil.rmtree(private)
+            time.sleep(2)
+        else:
+            raise RuntimeError(
+                f"Terminal probe did not finish within {TERMINAL_TIMEOUT_SECONDS} seconds"
+            )
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        failure = str(exc)
+        raise
+    finally:
+        errors = cleanup(private, failure)
+    if errors:
+        raise RuntimeError("Terminal probe cleanup failed; see diagnostics")
+    return result
 
 
 if __name__ == "__main__":

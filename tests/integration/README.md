@@ -13,6 +13,10 @@ modes, retained host Usage notes, and unchanged descriptions when routing is off
 
 Windows and macOS Cowork desktop coverage, installation detection, and required
 integration gating are documented in the [main test guide](../README.md).
+`../test_macos_cowork_harness.py` separately covers bounded Accessibility retries,
+ambiguous model labels, private logs, and launch/timeout/cleanup/evidence-write failures.
+Those component tests control native boundaries and use an isolated subprocess for
+termination checks; they do not replace the native desktop inference jobs.
 
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API

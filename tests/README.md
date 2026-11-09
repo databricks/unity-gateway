@@ -25,8 +25,12 @@ Native macOS Cowork inference is covered by `cowork-inference-macos` in
 installed UG through its CLI, and asserts a completed exact-answer task on
 `system.ai.claude-haiku-4-5` through macOS Accessibility. Both jobs block the
 integration gate. Apple Silicon, Code-tab, MCP, and file operations remain uncovered.
-`test_macos_cowork_harness.py` checks sanitized evidence, multiline prompt fields, exact enabled controls,
-and rejection of wrong/partial/unfinished responses; it is helper coverage only.
+`test_macos_cowork_harness.py` checks sanitized evidence, private raw logs, multiline prompt
+fields, exact enabled controls, bounded Accessibility retries, unambiguous model labels,
+and rejection of wrong/partial/unfinished responses. Failure-path component tests cover
+launch, cleanup, and evidence-write errors, signal-handler restoration, temporary credential
+removal, and graceful timeout termination of a real isolated subprocess. Native app/OS
+boundaries are controlled in these component tests; they do not establish live inference.
 
 Windows first-launch configuration has component coverage in
 `test_desktop_setup.py`: an installed MSIX creates the missing Desktop profile
