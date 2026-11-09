@@ -186,24 +186,27 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
         assert "explanation" not in result and "explanation" not in record
 
 
-def test_custom_twenty_model_menu_keeps_preselector_filtered_rows(tmp_path, monkeypatch):
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_custom_twenty_model_menu_keeps_preselector_filtered_rows(tmp_path, monkeypatch, wrapped):
     model_ids = [f"custom.catalog.model-{index:02d}" for index in range(20)]
-    selected_model = model_ids[7]
+    model_ids[1] = model_ids[0] + "[1m]"
+    offered_models = [("anthropic-aigw-01234567-" if wrapped else "") + model for model in model_ids]
+    selected_model = offered_models[0]
     explanation = {
-        "selected_model": selected_model,
+        "selected_model": model_ids[0],
         "summary": "Selected from the offered custom catalog.",
         "task_understanding": [],
         "models": [
             {
                 "id": model_id,
                 "name": f"Custom model {index:02d}",
-                "selected": model_id == selected_model,
+                "selected": model_id == model_ids[0],
                 "considered": index < 18,
                 "reason": (
                     "Not available for comparison."
                     if index >= 18
                     else "Selected for the task."
-                    if model_id == selected_model
+                    if model_id == model_ids[0]
                     else "Evaluated by the router."
                 ),
             }
@@ -241,7 +244,7 @@ def test_custom_twenty_model_menu_keeps_preselector_filtered_rows(tmp_path, monk
         payload,
         workspace="https://example.com",
         token="token",
-        available_models=model_ids,
+        available_models=offered_models,
         audit_decision=True,
     )
 
@@ -249,7 +252,7 @@ def test_custom_twenty_model_menu_keeps_preselector_filtered_rows(tmp_path, monk
     assert result["explanation"] == explanation
     assert len(calls) == 1
     assert calls[0]["route_options"] == [
-        {"model": model_id, "harness": "claude"} for model_id in model_ids
+        {"model": model_id, "harness": "claude"} for model_id in offered_models
     ]
     rows = result["explanation"]["models"]
     assert len(rows) == 20

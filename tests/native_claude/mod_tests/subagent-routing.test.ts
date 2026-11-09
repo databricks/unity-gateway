@@ -459,9 +459,15 @@ const explanation = {
   evidence: { request_id: 'hidden-request', source: 'hidden-source' },
 };
 
-for (const modelCount of [2, 20]) {
-test(`explanations for ${modelCount} models are opt-in and preserve the routed model`, async ($, on) => {
-  const routedModel = modelCount === 20 ? 'anthropic-aigw-01234567-system.ai.model-b[1m]' : explanationModel;
+for (const [modelCount, customNames] of [[2, false], [20, false], [2, true]] as const) {
+test(`explanations for ${modelCount} models with custom names ${customNames} preserve the route`, async ($, on) => {
+  const details = customNames ? {
+    ...explanation, selected_model: 'custom.catalog.code',
+    models: explanation.models.map((model) => ({ ...model,
+      id: model.selected ? 'custom.catalog.code' : 'custom.catalog.code[1m]',
+    })),
+  } : explanation;
+  const routedModel = customNames ? 'anthropic-aigw-01234567-custom.catalog.code' : modelCount === 20 ? 'anthropic-aigw-01234567-system.ai.model-b[1m]' : explanationModel;
   let routeCalls = 0;
   const spawns: any[] = [];
   on('session.id', () => ({ value: 'session-1' }));
@@ -470,8 +476,8 @@ test(`explanations for ${modelCount} models are opt-in and preserve the routed m
     const request = JSON.parse(e.init.stdin);
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model: routedModel, rationale: 'Selected for the task', explanation: {
-        ...explanation, session_id: request.session_id, tool_use_id: request.tool_use_id,
-        models: [...explanation.models, ...Array.from({ length: modelCount - 2 }, (_, i) => ({
+        ...details, session_id: request.session_id, tool_use_id: request.tool_use_id,
+        models: [...details.models, ...Array.from({ length: modelCount - 2 }, (_, i) => ({
           id: `alternative-${i}`, name: `Alternative ${i}`, selected: false, considered: true, reason: 'Lower expected fit.',
         }))],
       }, session_id: request.session_id, tool_use_id: request.tool_use_id,
@@ -504,7 +510,7 @@ test(`explanations for ${modelCount} models are opt-in and preserve the routed m
     expect(tree).not.toContain(text);
   }
   expect(tree).not.toContain('Est. cost');
-  await pane.select({ key: 'compare-model', value: 'model-a' });
+  await pane.select({ key: 'compare-model', value: customNames ? 'custom.catalog.code[1m]' : 'model-a' });
   expect(JSON.stringify(await pane.drawn())).toContain('The router expected a weaker fit');
   await pane.press({ key: 'numbers' });
   expect(JSON.stringify(await pane.drawn())).toContain('Est. cost: 0.120 USD');

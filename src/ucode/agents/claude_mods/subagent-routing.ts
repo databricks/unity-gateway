@@ -45,7 +45,11 @@ function numericDetails(value: unknown): NumericDetails | undefined {
   return Object.fromEntries(entries as [string, number][])
 }
 
-const canonicalModel = (model: string): string => model.replace(/^anthropic-aigw-[0-9a-fA-F]{8}-/, '').replace(/^system\.ai\./, '').replace(/\[1m\]$/, '')
+const canonicalModel = (model: string): string => {
+  const original = model.replace(/^anthropic-aigw-[0-9a-fA-F]{8}-/, '')
+  if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
+  return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
+}
 
 function utf8Length(value: string): number {
   let bytes = 0
@@ -78,7 +82,7 @@ function parseExplanation(
       || !matchesRequestIdentity(value, sessionId, toolUseId)) return undefined
   const selectedModel = safeText(value.selected_model, 160)
   const summary = safeText(value.summary, 2000)
-  if (!selectedModel || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(selectedModel)
+  if (!selectedModel || !/^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}$/.test(selectedModel)
       || selectedModel !== canonicalModel(routedModel) || !summary
       || !Array.isArray(value.models) || value.models.length < 1
       || !Array.isArray(value.task_understanding) || value.task_understanding.length > 8) return undefined
@@ -92,7 +96,7 @@ function parseExplanation(
     const id = safeText(candidate.id, 160)
     const name = safeText(candidate.name, 128)
     const reason = safeText(candidate.reason, 1200)
-    if (!id || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(id) || ids.has(id)
+    if (!id || !/^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}$/.test(id) || ids.has(id)
         || !name || !reason || typeof candidate.selected !== 'boolean'
         || typeof candidate.considered !== 'boolean' || (candidate.selected && !candidate.considered)) return undefined
     ids.add(id)

@@ -192,6 +192,14 @@ def unwrap_anthropic_gateway_model(model: str) -> str:
     return model
 
 
+def _explanation_model_id(model: str) -> str:
+    model = unwrap_anthropic_gateway_model(model)
+    if model.startswith("system.ai."):
+        return model.removeprefix("system.ai.").removesuffix("[1m]")
+    # Brackets can be part of a three-part custom service name.
+    return model if len(model.split(".")) == 3 else model.removesuffix("[1m]")
+
+
 def configured_router_name() -> str:
     """Return the environment-selected router, falling back to ``stable``."""
     return os.environ.get(ROUTER_NAME_ENV_VAR, "").strip() or ROUTER_NAME
@@ -273,17 +281,8 @@ def select_route(
             explanation = None
         if explanation is not None:
             models = explanation.get("models")
-            normalized_selected = (
-                unwrap_anthropic_gateway_model(model)
-                .removeprefix("system.ai.")
-                .removesuffix("[1m]")
-            )
-            offered_models = {
-                unwrap_anthropic_gateway_model(model)
-                .removeprefix("system.ai.")
-                .removesuffix("[1m]")
-                for model, _ in offered_routes
-            }
+            normalized_selected = _explanation_model_id(model)
+            offered_models = {_explanation_model_id(model) for model, _ in offered_routes}
             if (
                 not isinstance(models, list)
                 or len(models) != len(offered_models)
