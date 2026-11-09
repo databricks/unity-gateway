@@ -6,7 +6,8 @@ from streamed assistant messages and saved transcripts, for both foreground and
 background children. The provider emits incorrect prose before spawn and on every
 parent continuation; the saved child answer must still be delivered without a
 format correction or Stop-hook retry. Successful lifecycle status lines must be absent
-from both the stream and transcript; recorded child answers remain visible.
+from both the stream and transcript; recorded child answers are delivered once, including
+early completions followed by background notifications. Resumed children can deliver fresh answers.
 `native_claude/mod_tests/subagent-routing.test.ts` checks
 automatic report rendering, selected-versus-launched model validation, provider usage
 aliases that cannot replace the launch identity, recorded child answers, split chunks,

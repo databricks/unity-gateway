@@ -28,6 +28,7 @@ const REPORT_UNAVAILABLE = 'Smart Router report unavailable: the child model cou
 function createReports() {
   const children = new Map<string, RoutingRecord>()
   const completions = new Map<string, TurnCompleteInput>()
+  const delivered = new Map<string, TurnCompleteInput>()
   const handbacks = new Map<string, string>()
   const turns = new Map<string | undefined, string>()
   const reporting = new Map<string, Set<string>>()
@@ -88,7 +89,7 @@ function createReports() {
     },
     reset() {
       children.clear(); completions.clear(); handbacks.clear(); reporting.clear(); turns.clear()
-      pendingReports.clear(); pendingNotifications.clear()
+      pendingReports.clear(); pendingNotifications.clear(); delivered.clear()
     },
     notification(turnId?: string) {
       for (const agentId of pendingNotifications) {
@@ -108,6 +109,7 @@ function createReports() {
     },
     render(turnId: string, parentAgentId?: string): string {
       const output: string[] = []
+      const completedReports: Array<[string, TurnCompleteInput]> = []
       for (const childId of reporting.get(turnId) ?? []) {
         const child = children.get(childId)
         if (!child || child.parentAgentId !== parentAgentId) continue
@@ -115,13 +117,15 @@ function createReports() {
         // Usage may name a provider backend; the spawn receipt identifies the launched route.
         const actual = child.spawned?.model
         if (!actual || canonicalModel(actual) !== canonicalModel(child.model)) return REPORT_UNAVAILABLE
-        if (!completion) continue
+        if (!completion || delivered.get(childId) === completion) continue
+        completedReports.push([childId, completion])
         if (completion.isAborted || completion.reason !== 'answer') {
           output.push(`${child.name} · ${actual} · ${completion.isAborted ? 'Interrupted' : 'Failed'}`)
         } else if (completion.answer) {
           output.push(`${child.name}\n\nChild answer:\n${completion.answer.split('\n').map(line => `> ${line}`).join('\n')}`)
         }
       }
+      for (const [childId, completion] of completedReports) delivered.set(childId, completion)
       return output.join('\n\n')
     },
   }

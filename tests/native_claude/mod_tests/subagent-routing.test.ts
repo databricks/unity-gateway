@@ -578,6 +578,7 @@ test('parent reports recorded answers despite arbitrary prose, then resets on a 
       const failure = resumeFailures.get(event.resume.agentId);
       if (failure === 'deny') return { deny: 'Resume denied' };
       if (failure === 'throw') throw new Error('Resume failed');
+      return { agentId: event.resume.agentId, model: selectedModels[event.tool_use_id] };
     }
     if (event.tool_use_id === 'call-a') {
       return new Promise<any>((resolve) => {
@@ -713,16 +714,21 @@ test('parent reports recorded answers despite arbitrary prose, then resets on a 
 
   report = '';
   const noText = await collectParentTurn($, 'parent-report', 2);
-  expect(noText.text).toContain('Child answer:\n> ' + handedBackAnswer);
+  expect(noText.text).toBe('');
   expect(noText.result.answer).toBe(noText.text);
   expect(noText.chunks[noText.chunks.length - 1].kind).toBe('stop');
-  expect(noText.chunks[noText.chunks.length - 2].kind).toBe('text');
+  expect(noText.chunks.some((chunk) => chunk.kind === 'text')).toBe(false);
   expect(noText.result.toolUses).toEqual([toolUse]);
 
   report = JSON.stringify([
     { child_id: 'child-call-a', view: 'result' },
     { child_id: 'child-call-b', view: 'result' },
   ]);
+  const completeAgain = (agentId: string, answer: string) => $.turn.complete({
+    agentId, turnId: 'repeated-' + agentId, answer,
+    reason: 'answer', isAborted: false, durationMs: 1,
+  });
+  await completeAgain('child-call-b', 'Original answer from child B');
   const deniedHandback = await $.tool.call({
     tool: 'SubagentHandback', agentId: 'child-call-b', tool_use_id: 'handback-denied',
     message: 'Denied replacement answer',
@@ -732,6 +738,7 @@ test('parent reports recorded answers despite arbitrary prose, then resets on a 
   expect(afterDeniedHandback.text).toContain('Child answer:\n> ' + handedBackAnswer);
   expect(afterDeniedHandback.text).not.toContain('Denied replacement answer');
 
+  await completeAgain('child-call-b', 'Original answer from child B');
   let handbackThrew = false;
   try {
     await $.tool.call({
@@ -746,14 +753,15 @@ test('parent reports recorded answers despite arbitrary prose, then resets on a 
   expect(afterThrownHandback.text).toContain('Child answer:\n> ' + handedBackAnswer);
   expect(afterThrownHandback.text).not.toContain('Thrown replacement answer');
 
+  await completeAgain('child-call-a', 'Answer from child A');
   const deniedResume = await $.agent.spawn({
     ...spawnArgs('call-a'), resume: { agentId: 'child-call-a' },
   });
   expect(deniedResume).toEqual({ deny: 'Resume denied' });
   const afterDeniedResume = await collectParentTurn($, 'parent-report', 4);
   expect(afterDeniedResume.text).toContain('Child answer:\n> Answer from child A');
-  expect(afterDeniedResume.text).toContain('Child answer:\n> ' + handedBackAnswer);
 
+  await completeAgain('child-call-b', 'Original answer from child B');
   let resumeThrew = false;
   try {
     await $.agent.spawn({ ...spawnArgs('call-b'), resume: { agentId: 'child-call-b' } });
@@ -762,8 +770,20 @@ test('parent reports recorded answers despite arbitrary prose, then resets on a 
   }
   expect(resumeThrew).toBe(true);
   const afterThrownResume = await collectParentTurn($, 'parent-report', 5);
-  expect(afterThrownResume.text).toContain('Child answer:\n> Answer from child A');
   expect(afterThrownResume.text).toContain('Child answer:\n> ' + handedBackAnswer);
+  resumeFailures.delete('child-call-b');
+  await $.agent.spawn({ ...spawnArgs('call-b'), resume: { agentId: 'child-call-b' } });
+  expect((await collectParentTurn($, 'parent-report', 6)).text).toBe('');
+  await $.turn.complete({
+    agentId: 'child-call-b', turnId: 'child-turn-b-resumed', answer: 'A fresh child answer',
+    reason: 'answer', isAborted: false, durationMs: 1,
+  });
+  report = '';
+  const resumedAnswer = await collectParentTurn($, 'parent-report', 7);
+  expect(resumedAnswer.text).toContain('Child answer:\n> A fresh child answer');
+  expect(resumedAnswer.chunks[resumedAnswer.chunks.length - 1].kind).toBe('stop');
+  expect(resumedAnswer.chunks[resumedAnswer.chunks.length - 2].kind).toBe('text');
+  expect((await collectParentTurn($, 'parent-report', 8)).text).toBe('');
   await $.turn.complete({
     turnId: 'parent-report', answer: afterThrownResume.result.answer, reason: 'answer',
     isAborted: false, durationMs: 1,
@@ -775,7 +795,7 @@ test('parent reports recorded answers despite arbitrary prose, then resets on a 
   const forwardedNotification = submittedPrompts.find((event) => event.text === 'A background task update');
   expect(forwardedNotification.context).toBeUndefined();
   const notification = await collectParentTurn($, 'notification-turn', 0);
-  expect(notification.text).toContain('Child answer:\n> Answer from child A');
+  expect(notification.text).toBe('');
   expect(notification.text).not.toContain(' · ');
   expect(notification.text).toBe(notification.result.answer);
   await $.turn.complete({

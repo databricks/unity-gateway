@@ -28,7 +28,7 @@ outside the built-in choices does not prevent a general-purpose launch; the rout
 selects an available execution model.
 After a successful spawn, the Agent/Task result carries model-visible context with the
 child ID, router-selected model, and model reported by Claude's spawn result. The parent
-reply delivers recorded answers from that request's owned children, without parsing
+reply delivers each recorded completion once from that request's owned children, without parsing
 model-written references. Model identity and running status stay in the native routing
 UI; assistant replies do not duplicate successful lifecycle updates. Interrupted or
 failed children still produce an explicit report. Spawn-step prose is buffered and suppressed before

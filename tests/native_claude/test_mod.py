@@ -500,8 +500,9 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     if block.get("type") == "text"
                 ]
                 assert not any(rejection in answer for answer in parent_answers), parent_answers
-                assert any(
-                    "Child answer:\n> Probe finished." in answer for answer in parent_answers
+                assert (
+                    sum("Child answer:\n> Probe finished." in answer for answer in parent_answers)
+                    == 1
                 ), parent_answers
                 assert false_claim not in "\n".join(parent_answers), parent_answers
                 saved = "\n".join(
