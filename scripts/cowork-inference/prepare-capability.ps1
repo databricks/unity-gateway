@@ -57,7 +57,8 @@ Do not guess the contents and do not use subagents.
             $task.expected = 'skill-proof-' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
             Set-Content -LiteralPath "$skill/references/facts.txt" -Value $task.expected -NoNewline
             $sessions = Join-Path $env:LOCALAPPDATA 'Claude-3p/local-agent-mode-sessions'
-            $roots = @(Get-ChildItem $sessions -Directory | ForEach-Object { Get-ChildItem $_.FullName -Directory })
+            $roots = @(Get-ChildItem $sessions -Directory | ForEach-Object { Get-ChildItem $_.FullName -Directory } |
+                Where-Object { Test-Path (Join-Path $_.FullName 'cowork_account_settings.json') })
             if ($roots.Count -ne 1) { throw 'Expected one native Cowork account directory after baseline inference' }
             $env:CLAUDE_CONFIG_DIR = $roots[0].FullName
             $claude = (Get-Command claude.cmd -ErrorAction Stop).Source

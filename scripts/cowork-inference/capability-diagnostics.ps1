@@ -6,6 +6,17 @@ $hostInfo = @{
     processor = @(Get-CimInstance Win32_Processor | Select-Object Name, VirtualizationFirmwareEnabled, SecondLevelAddressTranslationExtensions, VMMonitorModeExtensions)
     computer = Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer, Model, HypervisorPresent
 }
+if ($env:CAPABILITY -eq 'mcp') {
+    $python = Join-Path $env:RUNNER_TEMP 'desktop-ug-runtime/Scripts/python.exe'
+    $text = (& $python "$PSScriptRoot/diagnose-mcp.py" 2>&1 | Out-String)
+    Protect-DiagnosticText $text | Set-Content (Join-Path $evidence 'mcp-outside-desktop.txt')
+    $index = 0
+    foreach ($file in @(Get-ChildItem (Join-Path $env:USERPROFILE '.ucode/mcp-proxy') -Recurse -Filter 'backend.log' -ErrorAction SilentlyContinue)) {
+        $text = Get-Content $file.FullName -Tail 150 | Out-String
+        Protect-DiagnosticText $text | Set-Content (Join-Path $evidence "mcp-backend-$index.txt")
+        $index++
+    }
+}
 $hostInfo | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $evidence 'host.json')
 $root = Join-Path $env:LOCALAPPDATA 'Claude-3p'
 Get-ChildItem $root -Recurse -File -ErrorAction SilentlyContinue |

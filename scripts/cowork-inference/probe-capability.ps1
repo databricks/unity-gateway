@@ -1,6 +1,14 @@
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Use a disposable GitHub runner' }
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class CapabilityWindow {
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr window);
+}
+'@
 . "$PSScriptRoot/diagnostics.ps1"
 $evidence = Join-Path $env:RUNNER_TEMP 'cowork-capability'
 $task = Get-Content (Join-Path $env:RUNNER_TEMP 'cowork-capability-task.json') -Raw | ConvertFrom-Json
@@ -65,15 +73,40 @@ function Select-Folder {
     $desktop = [Windows.Automation.AutomationElement]::RootElement
     Start-Sleep -Seconds 1
     Save-UI 'folder-dialog' -Root $desktop
-    $dialog = Wait-Control -Names @('Select Folder', 'Select folder', 'Choose a folder', 'Open', 'Browse For Folder') -Seconds 20 -Root $desktop
-    $dialog.SetFocus()
+    $dialog = Wait-Control -Names @('Add folders to this session') -Seconds 20 -Root $desktop
+    if (-not [CapabilityWindow]::SetForegroundWindow([IntPtr]$dialog.Current.NativeWindowHandle)) {
+        throw 'Could not activate the native folder picker'
+    }
     [Windows.Forms.Clipboard]::SetText($task.folder)
     [Windows.Forms.SendKeys]::SendWait('^l')
     [Windows.Forms.SendKeys]::SendWait('^v')
     [Windows.Forms.SendKeys]::SendWait('{ENTER}')
+    Start-Sleep -Seconds 1
     Invoke-Control (Wait-Control -Names @('Select Folder', 'Select folder', 'Open') -Seconds 20 -Root $dialog)
     $report.folderSelected = $true
     Save-UI 'folder-selected'
+}
+
+function Read-CompletedAnswer {
+    $sessions = Join-Path $env:LOCALAPPDATA 'Claude-3p/local-agent-mode-sessions'
+    $files = @(Get-ChildItem $sessions -Recurse -Filter '*.jsonl' -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -ge $started -and $_.FullName -match '\\projects\\session\\' })
+    foreach ($file in $files) {
+        $records = @(foreach ($line in (Get-Content $file.FullName -ErrorAction SilentlyContinue)) {
+            try { $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+        })
+        $taskPresent = @($records | Where-Object {
+            $_.type -eq 'user' -and ($_.message.content | ConvertTo-Json -Depth 12 -Compress).Contains($task.prompt)
+        }).Count -gt 0
+        if (-not $taskPresent) { continue }
+        foreach ($record in $records) {
+            if ($record.type -ne 'assistant' -or $record.message.stop_reason -ne 'end_turn') { continue }
+            foreach ($block in @($record.message.content)) {
+                if ($block.type -eq 'text' -and $block.text) { return $block.text }
+            }
+        }
+    }
+    return $null
 }
 
 try {
@@ -116,11 +149,19 @@ try {
             $report.answer = $answers[-1]
             break
         }
+        $answer = Read-CompletedAnswer
+        if ($answer) {
+            $report.completed = $true
+            $report.answer = $answer
+            $report.answerVerified = $answer.Contains($task.expected)
+            $report.completionEvidence = 'native Desktop session transcript with end_turn'
+            break
+        }
         $runtimeError = @($names | Where-Object { $_ -match '(?i)(virtualization.{0,80}(disabled|unavailable|enable)|virtual machine.{0,80}(failed|unable)|Cowork.{0,60}(not available|requires))' })
         if ($runtimeError.Count) { throw ($runtimeError -join '; ') }
     } until ([DateTime]::UtcNow -ge $deadline)
     Save-UI 'result-ui'
-    if (-not $report.answerVerified) { throw 'No completed assistant answer with the expected result within 300 seconds' }
+    if (-not $report.answerVerified) { throw 'No completed assistant answer with the expected result; see answer and native session evidence' }
     if ($task.capability -ne 'mcp') { $report.passed = $true }
 } catch {
     $report.error = $_.Exception.Message
