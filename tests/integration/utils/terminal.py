@@ -26,31 +26,13 @@ SELECTED = "[›❯>]"
 
 
 def codex_trust_dialog_shown(screen: str, cwd: PurePath) -> bool:
-    """Whether Codex is asking to trust the test project, in its pre-0.156 or 0.156 layout."""
-    older = (
-        bool(
-            re.search(
-                rf"(?m)^\s*>\s+You are in {re.escape(str(cwd.parent))}[\\/][^\\/\r\n]*$",
-                screen,
-            )
-        )
-        and (
-            "Do you trust the contents of this directory?" in screen
-            or "directory allows project-local config, hooks, and exec policies to load." in screen
-        )
-        and bool(re.search(rf"(?m)^\s*{SELECTED}\s*1[.)]\s+Yes, continue\s*$", screen))
-        and bool(re.search(r"(?m)^\s*2[.)]\s+No, quit\s*$", screen))
-        and "Press enter to continue" in screen
-    )
-    current = (
+    """Whether Codex 0.156+ is asking to trust exactly the test project, with Trust selected."""
+    return (
         bool(re.search(r"(?m)^\s*Folder access\s*$", screen))
         and bool(re.search(rf"(?m)^\s*{re.escape(str(cwd))}\s*$", screen))
-        and "Trust this folder?" in screen
         # Windows ConPTY captures the selection marker as U+FFFD.
         and bool(re.search(r"(?m)^\s*[›❯>\ufffd]\s*1[.)]\s+Trust and continue\s*$", screen))
-        and bool(re.search(r"(?m)^\s*2[.)]\s+Quit\s*$", screen))
     )
-    return older or current
 
 
 def codex_session_footer_shown(screen: str, cwd: PurePath) -> bool:

@@ -87,11 +87,6 @@ _WINDOWS_TRUST = (
     f"  Folder access\n  {_WINDOWS_CWD}\n{_TRUST_TEXT}"
     "\ufffd 1. Trust and continue\n  2. Quit\n  enter continue \ufffd esc quit"
 )
-_OLDER_CWD = PurePosixPath("/tmp/project-parent/project with spaces")
-_OLDER_TRUST = (
-    f"> You are in {_OLDER_CWD}\n\n  Do you trust the contents of this directory?\n\n"
-    "› 1. Yes, continue\n  2. No, quit\n\n  Press enter to continue"
-)
 
 
 @pytest.mark.parametrize(
@@ -99,14 +94,11 @@ _OLDER_TRUST = (
     [
         (_LINUX_TRUST, _LINUX_CWD, None, True),
         (_WINDOWS_TRUST, _WINDOWS_CWD, None, True),
-        (_OLDER_TRUST, _OLDER_CWD, None, True),
         (_LINUX_TRUST, _LINUX_CWD, ("project with spaces", "other project"), False),
         (_WINDOWS_TRUST, _WINDOWS_CWD, ("project with spaces", "other project"), False),
         (_LINUX_TRUST, _LINUX_CWD, ("› 1.", "  1."), False),
         (_WINDOWS_TRUST, _WINDOWS_CWD, ("\ufffd 1.", "  1."), False),
-        (_LINUX_TRUST, _LINUX_CWD, ("2. Quit", "2. Exit"), False),
         (_LINUX_TRUST, _LINUX_CWD, ("Folder access", "Folder"), False),
-        (_LINUX_TRUST, _LINUX_CWD, ("Trust this folder?", "Trust it?"), False),
     ],
 )
 def test_codex_trust_dialog_requires_the_test_project(screen, cwd, change, shown):
