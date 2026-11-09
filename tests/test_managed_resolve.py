@@ -697,9 +697,13 @@ class TestManagedUnservableModels:
     def _copilot(models):
         return {"enabled_agents": {"copilot": {"model_config": {"model_services": models}}}}
 
-    def test_copilot_list_with_only_gemini_and_oss_is_unservable(self):
-        models = ["system.ai.gemini-3-flash", "system.ai.kimi-k2-6"]
+    def test_copilot_list_with_only_gemini_and_unsupported_oss_is_unservable(self):
+        models = ["system.ai.gemini-3-flash", "system.ai.llama-4-maverick"]
         assert managed_unservable_models(self._copilot(models), "copilot") == models
+
+    def test_copilot_list_with_a_kimi_model_is_servable(self):
+        models = ["system.ai.gemini-3-flash", "system.ai.kimi-k2-6"]
+        assert managed_unservable_models(self._copilot(models), "copilot") == []
 
     def test_copilot_list_with_a_claude_model_is_servable(self):
         models = ["system.ai.gemini-3-flash", "system.ai.claude-opus-4-8"]
