@@ -141,11 +141,11 @@ session ID, and the CLI turns routing off only if `~/.isaac/feedback/<id>/receip
 `schema_version` 1, that `feedback_id`, `request.category` `smart-routing`, and
 `request.session_id` equal to this session. Isaac enforces the reason rules when it saves,
 so the check reads nothing else and writes nothing. The same ID keeps working for later offs
-in that session. A failed check (the CLI exits 2) keeps routing on and replies "Could not
-turn Smart Router off with that feedback ID. Smart Router is still on." Any other failure
-also keeps routing on but gets the usual "Could not update Smart Router" reply, so Omnigent
-reports a rejected ID only when the ID was the problem. Either way, the CLI's error is shown
-in the transcript. Elsewhere, `--feedback-id` gets the usage reply. Without the feedback
+in that session. A failed check (the CLI exits 3) keeps routing on and replies "Could not
+turn Smart Router off with that feedback ID. Smart Router is still on." Any other failure,
+including exit 2 from a CLI without `--smart-router-feedback-id` asking for a reason, also
+keeps routing on but gets the usual "Could not update Smart Router" reply, so Omnigent
+reports a rejected ID only when the ID was the problem. Either way, the CLI's error is shown in the transcript. Elsewhere, `--feedback-id` gets the usage reply. Without the feedback
 flag, the ID is ignored and routing turns off as usual.
 
 In these sessions, with the same flag enabled, `/isaac-feedback` uses the same native
