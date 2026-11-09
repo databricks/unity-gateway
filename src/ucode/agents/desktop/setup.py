@@ -10,6 +10,7 @@ from collections import Counter
 
 from ucode.agents.copilot import claude_model_name
 from ucode.agents.desktop.claude import (
+    can_initialize_claude_desktop_directory,
     claude_desktop_directory,
     revert_claude_desktop,
 )
@@ -122,7 +123,7 @@ def _configure_claude_desktop_user_level(state: dict, *, parent_schema: str | No
     directory = claude_desktop_directory()
     if directory is None:
         raise RuntimeError("Claude Desktop profile configuration is unavailable on this platform.")
-    if sys.platform != "darwin" and not directory.parent.is_dir():
+    if sys.platform != "darwin" and not can_initialize_claude_desktop_directory(directory):
         raise RuntimeError("Open Claude Desktop once, then run ug configure again.")
     relayed = bool(state.get("claude_relayed"))
     claude_binary = None
