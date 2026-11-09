@@ -566,6 +566,31 @@ class TestCanonicalModelName:
         assert db_mod.canonical_model_name(model_id) == expected
 
 
+class TestClaudeModelName:
+    @pytest.mark.parametrize(
+        ("model_id", "expected"),
+        [
+            ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4-5"),
+            ("system.ai.claude-opus-4-8[1m]", "claude-opus-4-8"),
+            ("system.ai.gpt-5", "gpt-5"),
+        ],
+    )
+    def test_strips_catalog_and_release_suffix(self, model_id, expected):
+        assert db_mod.claude_model_name(model_id) == expected
+
+    @pytest.mark.parametrize(
+        ("model_id", "tokens"),
+        [
+            ("claude-opus-4.6", (1_000_000, 128_000)),
+            ("databricks-claude-fable-5-1", (1_000_000, 128_000)),
+            ("claude-sonnet-4-5-20250929", (200_000, 32_000)),
+            ("claude-sonnet-4-5-thinking", (200_000, 32_000)),
+        ],
+    )
+    def test_token_limits_by_name(self, model_id, tokens):
+        assert db_mod.claude_token_limits(model_id) == tokens
+
+
 class TestGptModelTokenLimits:
     @pytest.mark.parametrize(
         ("model_id", "context", "output"),

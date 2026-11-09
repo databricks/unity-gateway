@@ -69,6 +69,8 @@ from ucode.databricks import (
     bare_model_name,
     build_copilot_base_url,
     build_tool_base_url,
+    claude_model_name,
+    claude_token_limits,
     list_anthropic_model_catalog,
     list_provider_service_models,
     model_version_sort_key,
@@ -151,19 +153,11 @@ _UNSUPPORTED_MODELS = {
 _GATEWAY_ALIAS_PREFIX = "anthropic-aigw-"
 _GPT_MODEL_MAJOR_PATTERN = re.compile(r"^gpt-(\d+)o?(?=$|[.-])")
 _CLAUDE_DASHED_VERSION_PATTERN = re.compile(r"-(\d+)-(\d+)$")
-# Anthropic and Bedrock Claude ids end in a release date and, on Bedrock, a version:
-# `-20250929-v1:0`.
-_CLAUDE_RELEASE_SUFFIX_PATTERN = re.compile(r"(?:-\d{8})?(?:-v\d+(?::\d+)?)?$")
 _CLAUDE_HAIKU_MAJOR_PATTERN = re.compile(r"^claude-haiku-(\d+)")
 # Model Provider Service ids write versions with dots (`gpt-5.6`) or no separator (`o3`); the
 # version sort reads dash-separated digits.
 _DOTTED_VERSION_PATTERN = re.compile(r"(?<=\d)\.(?=\d)")
 _O_SERIES_PATTERN = re.compile(r"^o(?=\d)")
-_CLAUDE_CATALOG_VERSION_PATTERN = re.compile(r"^claude-([a-z]+)-(\d+)(?:\.(\d+))?$")
-
-# (max_input_tokens, max_tokens) of Claude models the gateway lists no limits for.
-_CLAUDE_1M_TOKENS = (1_000_000, 128_000)
-_CLAUDE_200K_TOKENS = (200_000, 32_000)
 
 # A Model Provider Service target that declares its APIs is usable only if one is a chat API.
 _CHAT_API_TYPES = frozenset(route for routes in _WIRE_ROUTES.values() for route in routes)
@@ -234,17 +228,6 @@ def uses_responses_api(model: str) -> bool:
     return _wire_from_name(bare_model_name(model)) == WIRE_RESPONSES
 
 
-def claude_model_name(model: str) -> str:
-    """A Claude model's own name, without its catalog/schema and release suffix:
-    ``us.anthropic.claude-sonnet-4-5-20250929-v1:0`` -> ``claude-sonnet-4-5``.
-
-    Other models keep their bare name."""
-    name = bare_model_name(model)
-    if not name.startswith("claude-"):
-        return name
-    return _CLAUDE_RELEASE_SUFFIX_PATTERN.sub("", name, count=1)
-
-
 def copilot_catalog_model_id(model: str) -> str | None:
     """Copilot's catalog id for a Claude model, e.g. ``system.ai.claude-sonnet-5-5`` -> ``claude-sonnet-5.5``.
 
@@ -261,20 +244,6 @@ def copilot_catalog_model_id(model: str) -> str | None:
     if haiku and int(haiku.group(1)) >= 5:
         catalog_id = catalog_id.replace("claude-haiku-", "claude-sonnet-", 1)
     return catalog_id
-
-
-def claude_token_limits(model: str) -> tuple[int, int] | None:
-    """``(max_input_tokens, max_tokens)`` of a Claude model by its name, or None for other models."""
-    catalog_id = copilot_catalog_model_id(model)
-    if catalog_id is None:
-        return None
-    version = _CLAUDE_CATALOG_VERSION_PATTERN.match(catalog_id)
-    if version is None:
-        return _CLAUDE_200K_TOKENS
-    family, major, minor = version.group(1), int(version.group(2)), int(version.group(3) or 0)
-    if major >= 5 or (family in ("opus", "sonnet") and (major, minor) >= (4, 6)):
-        return _CLAUDE_1M_TOKENS
-    return _CLAUDE_200K_TOKENS
 
 
 def catalog_model_limits(model: CopilotModel) -> tuple[int, int] | None:

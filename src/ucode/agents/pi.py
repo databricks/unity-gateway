@@ -57,6 +57,8 @@ from ucode.databricks import (
     build_pi_base_urls,
     canonical_model_name,
     classify_model_family,
+    claude_model_name,
+    claude_token_limits,
     gemini_model_token_limits,
     get_databricks_token,
     gpt_model_token_limits,
@@ -64,10 +66,10 @@ from ucode.databricks import (
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.ui import print_warning
 from ucode.workspace import workspace_headers
 
 from .args import LaunchOptions
-from .copilot import claude_model_name, claude_token_limits
 from .request_tags import request_tags_header_value
 
 PI_UCODE_HOME = APP_DIR / "pi-home"
@@ -171,8 +173,8 @@ def _claude_thinking_level_map(model_id: str) -> ThinkingLevelMap | None:
 
 
 def _claude_model_entry(model_id: str) -> dict:
-    # Copilot's name-based Claude limits: their windows match what the gateway's Anthropic listing
-    # reports, and they cost no request at launch.
+    # Name-based Claude limits (shared with Copilot): their windows match what the gateway's
+    # Anthropic listing reports, and they cost no request at launch.
     context, output = claude_token_limits(model_id) or (200_000, 32_000)
     entry: dict = {
         "id": model_id,
@@ -315,8 +317,8 @@ def render_overlay(
     ``api_key`` is a pi config value, not necessarily a literal bearer: see
     ``build_pi_api_key`` for the `!command` form every provider gets.
 
-    Claude older than 4.5, which Pi can't serve, is dropped first, so neither a provider nor the
-    model selector names it."""
+    Claude older than 4.5, which Pi can't serve, is dropped from the provider lists first.
+    ``model`` is used as given; ``write_tool_config`` replaces an excluded one before calling here."""
     claude_models = {f: m for f, m in claude_models.items() if _serves_claude_model(m)}
     providers: dict = {}
     keys: list[list[str]] = [["model"]]
@@ -397,11 +399,32 @@ def build_pi_api_key(state: dict) -> str:
     return "!" + shlex.join(argv)
 
 
+def _usable_model(state: dict, model: str) -> str:
+    """``model``, or the default model with a warning when Pi leaves ``model`` out.
+
+    An admin's managed default or a budget recommendation can name a Claude model older than
+    4.5. Pi would start on a model no provider lists, so it starts on its default instead, as
+    Copilot does for a recommended model it can't serve.
+    """
+    if not _excluded_model(model):
+        return model
+    reason = "Claude models older than 4.5 reject Pi's requests"
+    fallback = default_model(state)
+    if fallback is None:
+        raise RuntimeError(
+            f"Pi can't use {model}: {reason}, and no other Pi model is available on this "
+            "workspace. Choose a Claude 4.5 or newer, GPT or Gemini model."
+        )
+    print_warning(f"Pi can't use {model}: {reason}. Starting on {fallback} instead.")
+    return fallback
+
+
 def write_tool_config(
     state: dict,
     model: str,
     token: str | None = None,
 ) -> tuple[dict, str]:
+    model = _usable_model(state, model)
     backup_existing_file(PI_CONFIG_PATH, PI_BACKUP_PATH)
     if token is None:
         token = get_databricks_token(state["workspace"], state.get("profile"))
