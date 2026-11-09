@@ -20,6 +20,11 @@ Per-provider `compat` flags work around fields the gateway translators reject:
   prompt caches are destination-local. Pi's Responses dialect already sends
   `session_id` without a flag, and its Gemini dialect has no affinity setting.
 
+`launch` defaults `PI_CACHE_RETENTION=long` (see `build_runtime_env`). The
+Responses route rejects the `prompt_cache_retention` field that turns on for
+gpt-oss, so gpt-oss entries on the openai provider carry a per-model
+`supportsLongCacheRetention: false`.
+
 OSS / Databricks-foundation models (Llama, Qwen, etc.) are not exposed via
 pi today — they live behind /ai-gateway/mlflow/v1 with per-model
 `max_tokens` caps that pi has no global way to honor without per-model
@@ -88,6 +93,18 @@ PROVIDER_KEYS: list[list[str]] = [["providers", name] for name in PROVIDER_NAMES
 # Old provider names earlier ucode versions wrote; cleaned up on each write so
 # users don't end up with stale entries pointing at routes that 400.
 LEGACY_PROVIDER_NAMES = ("databricks-anthropic", "databricks-codex", "databricks-oss")
+
+
+def _pi_openai_model_entry(model_id: str) -> dict:
+    """Return a databricks-openai model entry, opting gpt-oss out of long cache retention.
+
+    Discovery files gpt-oss under the GPT family (its id contains `gpt-`), but the Responses
+    route 400s on the `prompt_cache_retention` field Pi adds under long retention. A model's
+    `compat` overrides the provider's field by field, so other GPT models keep the default.
+    """
+    if "gpt-oss-" in model_id:
+        return {"id": model_id, "compat": {"supportsLongCacheRetention": False}}
+    return {"id": model_id}
 
 
 def _resolve_model_selector(
@@ -163,7 +180,7 @@ def render_overlay(
             "apiKey": api_key,
             "authHeader": True,
             "headers": ua_headers,
-            "models": [{"id": m} for m in codex_models],
+            "models": [_pi_openai_model_entry(m) for m in codex_models],
         }
         keys.append(["providers", "databricks-openai"])
     if gemini_models:
@@ -313,10 +330,23 @@ def _configure_launch(state: dict) -> str:
     return token
 
 
+# Pi's default ("short") sends no retention hint, leaving GPT on its in-memory
+# prompt cache (minutes of idle time) and Claude on the 5-minute TTL. "long"
+# requests `prompt_cache_retention: "24h"` on Responses and
+# `cache_control.ttl: "1h"` on Anthropic Messages. AI Gateway accepts both for
+# Claude and GPT-5/6 models; gpt-oss opts out per model (see
+# `_pi_openai_model_entry`). Gemini's dialect ignores the setting.
+PI_CACHE_RETENTION_DEFAULT = "long"
+
+
 def build_runtime_env(token: str) -> dict[str, str]:
     env = os.environ.copy()
     env["OAUTH_TOKEN"] = token
     env["PI_CODING_AGENT_DIR"] = str(PI_CONFIG_DIR)
+    # A caller's PI_CACHE_RETENTION wins, e.g. `short` to avoid Anthropic's
+    # higher 1-hour cache-write price.
+    if not env.get("PI_CACHE_RETENTION", "").strip():
+        env["PI_CACHE_RETENTION"] = PI_CACHE_RETENTION_DEFAULT
     return env
 
 

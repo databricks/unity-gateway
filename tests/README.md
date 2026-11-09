@@ -956,6 +956,11 @@ Pi's token-command tests in `test_agent_pi.py` exercise Windows executable paths
 through POSIX parsing, including spaces, apostrophes, profile names, and PAT mode.
 They do not launch Pi or Git Bash on Windows.
 
+`test_agent_pi.py` also checks that the Claude provider sets `sendSessionAffinityHeaders` and
+that Pi's launch environment defaults `PI_CACHE_RETENTION` to `long`, keeping a caller's value,
+and that gpt-oss entries on the openai provider opt out with a per-model `supportsLongCacheRetention`.
+They do not check the headers or cache fields Pi sends, or whether the gateway honors them.
+
 Shared native transcript parsing is checked by `test_integration_agent_helpers.py` and
 `test_integration_evidence.py`. These component checks protect existing journey evidence;
 they do not establish live agent coverage.
