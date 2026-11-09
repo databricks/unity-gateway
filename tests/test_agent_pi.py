@@ -536,3 +536,283 @@ class TestBuildPiApiKey:
     def test_forwards_use_pat(self):
         assert "--use-pat" in pi.build_pi_api_key({"workspace": WS, "use_pat": True})
         assert "--use-pat" not in pi.build_pi_api_key({"workspace": WS})
+
+
+# Pi thinking levels each gateway model accepts, from the Databricks reasoning-models doc and then
+# Pi's catalog for undocumented models: {Pi level: value sent}. A level absent here is hidden.
+_PI_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+_BUDGET = {"off": "off", "minimal": "minimal", "low": "low", "medium": "medium", "high": "high"}
+_ADAPTIVE_MAX = {**_BUDGET, "max": "max"}
+_ADAPTIVE_XHIGH_MAX = {**_ADAPTIVE_MAX, "xhigh": "xhigh"}
+_NO_OFF_NO_MINIMAL = {"low": "low", "medium": "medium", "high": "high"}
+_NONE_THROUGH_XHIGH = {"off": "none", **_NO_OFF_NO_MINIMAL, "xhigh": "xhigh"}
+_DOCUMENTED_LEVELS = {
+    "claude-sonnet-4-5": _BUDGET,
+    "claude-opus-4-5": _BUDGET,
+    "claude-haiku-4-5": _BUDGET,
+    "claude-opus-4-6": _ADAPTIVE_MAX,
+    "claude-opus-4-7": _ADAPTIVE_XHIGH_MAX,
+    "claude-opus-4-8": _ADAPTIVE_XHIGH_MAX,
+    "claude-opus-5": _ADAPTIVE_XHIGH_MAX,
+    "claude-opus-5-5": {**_NO_OFF_NO_MINIMAL, "xhigh": "xhigh", "max": "max"},
+    "claude-sonnet-4-6": _ADAPTIVE_MAX,
+    "claude-sonnet-5": _ADAPTIVE_XHIGH_MAX,
+    "claude-sonnet-5-5": {**_NO_OFF_NO_MINIMAL, "xhigh": "xhigh", "max": "max"},
+    "claude-fable-5": {k: v for k, v in _ADAPTIVE_XHIGH_MAX.items() if k != "off"},
+    "claude-fable-5-1": {k: v for k, v in _ADAPTIVE_XHIGH_MAX.items() if k != "off"},
+    # The gateway rejects xhigh and max for Haiku 5.5.
+    "claude-haiku-5-5": {"off": "off", **_NO_OFF_NO_MINIMAL},
+    # `none` is rejected by the original GPT-5 models, so off stays hidden there.
+    "gpt-5": {k: v for k, v in _BUDGET.items() if k != "off"},
+    "gpt-5-mini": {k: v for k, v in _BUDGET.items() if k != "off"},
+    "gpt-5-nano": {k: v for k, v in _BUDGET.items() if k != "off"},
+    "gpt-5-pro": {"high": "high"},
+    "gpt-5.1": {"off": "none", **_NO_OFF_NO_MINIMAL},
+    "gpt-5.2": _NONE_THROUGH_XHIGH,
+    "gpt-5.2-pro": {"medium": "medium", "high": "high", "xhigh": "xhigh"},
+    "gpt-5.3-codex": _NONE_THROUGH_XHIGH,
+    "gpt-5.3-codex-spark": {**_NO_OFF_NO_MINIMAL, "xhigh": "xhigh"},
+    "gpt-5.4": _NONE_THROUGH_XHIGH,
+    "gpt-5.4-mini": _NONE_THROUGH_XHIGH,
+    "gpt-5.4-nano": _NONE_THROUGH_XHIGH,
+    "gpt-5.4-pro": {"medium": "medium", "high": "high", "xhigh": "xhigh"},
+    "gpt-5.5": _NONE_THROUGH_XHIGH,
+    "gpt-5.5-pro": {"medium": "medium", "high": "high", "xhigh": "xhigh"},
+    "gpt-5.6-luna": {**_NONE_THROUGH_XHIGH, "max": "max"},
+    "gpt-5.6-sol": {**_NONE_THROUGH_XHIGH, "max": "max"},
+    "gpt-5.6-terra": {**_NONE_THROUGH_XHIGH, "max": "max"},
+    "gpt-6-astra": {**_NO_OFF_NO_MINIMAL, "xhigh": "xhigh", "max": "max"},
+    "gpt-6-luna": {**_NONE_THROUGH_XHIGH, "max": "max"},
+    "gpt-6-sol": {**_NONE_THROUGH_XHIGH, "max": "max"},
+    "gpt-6.1-sol": {**_NONE_THROUGH_XHIGH, "max": "max"},
+    "gpt-6.1-terra": {**_NONE_THROUGH_XHIGH, "max": "max"},
+    "gemini-4-argon": _NO_OFF_NO_MINIMAL,
+    "gemini-3-8-flash": {"off": "off", **_NO_OFF_NO_MINIMAL},
+    "gemini-3-7-flash": {"off": "off", **_NO_OFF_NO_MINIMAL},
+    "gemini-3-6-flash": {k: v for k, v in _BUDGET.items() if k != "off"},
+    "gemini-3-5-flash": {k: v for k, v in _BUDGET.items() if k != "off"},
+    "gemini-3-5-flash-lite": {k: v for k, v in _BUDGET.items() if k != "off"},
+    "gemini-3-1-flash-lite": {k: v for k, v in _BUDGET.items() if k != "off"},
+    "gemini-3-flash": {k: v for k, v in _BUDGET.items() if k != "off"},
+    # The doc lists minimal for 3.1 Pro, but the gateway rejects it.
+    "gemini-3-1-pro": _NO_OFF_NO_MINIMAL,
+    "gemini-2-5-pro": _BUDGET,
+}
+
+
+def _effective_levels(level_map: dict | None) -> dict[str, object]:
+    """Resolve a thinkingLevelMap the way Pi does: unmapped levels through `high` send their own
+    name, unmapped `xhigh`/`max` are hidden, and a `None` value hides the level."""
+    level_map = level_map or {}
+    resolved: dict[str, object] = {}
+    for level in _PI_LEVELS:
+        if level in level_map:
+            if level_map[level] is not None:
+                resolved[level] = level_map[level]
+        elif level not in ("xhigh", "max"):
+            resolved[level] = level
+    return resolved
+
+
+def _entry(model_id: str) -> dict:
+    """The models.json entry Pi gets for one gateway model."""
+    if "claude-" in model_id:
+        overlay, _ = _overlay(model_id, claude_models={"opus": model_id})
+        provider = "databricks-claude"
+    elif "gemini-" in model_id:
+        overlay, _ = _overlay(model_id, gemini_models=[model_id])
+        provider = "databricks-gemini"
+    else:
+        overlay, _ = _overlay(model_id, codex_models=[model_id])
+        provider = "databricks-openai"
+    (entry,) = overlay["providers"][provider]["models"]
+    return entry
+
+
+class TestModelEntries:
+    """Gateway ids aren't in Pi's catalog, so each entry declares what Pi would otherwise default:
+    no thinking, text-only input, a 128K context and 16K output."""
+
+    @pytest.mark.parametrize("vendor_id", sorted(_DOCUMENTED_LEVELS))
+    @pytest.mark.parametrize("prefix", ["system.ai.", "databricks-"])
+    def test_thinking_levels_match_the_documented_levels(self, vendor_id, prefix):
+        entry = _entry(prefix + vendor_id.replace(".", "-"))
+
+        assert entry["reasoning"] is True
+        assert _effective_levels(entry.get("thinkingLevelMap")) == _DOCUMENTED_LEVELS[vendor_id]
+
+    @pytest.mark.parametrize(
+        ("model_id", "context", "output"),
+        [
+            ("system.ai.claude-opus-5-5", 1_000_000, 128_000),
+            ("system.ai.claude-sonnet-4-6", 1_000_000, 128_000),
+            ("system.ai.claude-haiku-5-5", 1_000_000, 128_000),
+            ("system.ai.claude-fable-5-1", 1_000_000, 128_000),
+            ("system.ai.claude-sonnet-4-5", 200_000, 32_000),
+            ("system.ai.gpt-6-sol", 1_050_000, 128_000),
+            ("system.ai.gpt-6-1-sol", 1_050_000, 128_000),
+            ("system.ai.gpt-6-luna", 1_050_000, 128_000),
+            ("system.ai.gpt-5-6-terra", 1_050_000, 128_000),
+            ("system.ai.gpt-5-5-pro", 1_050_000, 128_000),
+            ("system.ai.gpt-5-5", 272_000, 128_000),
+            ("system.ai.gpt-5-4-mini", 400_000, 128_000),
+            ("system.ai.gpt-5", 400_000, 128_000),
+            ("system.ai.gemini-3-1-pro", 1_048_576, 65_536),
+            ("system.ai.gemini-3-pro-image", 65_536, 32_768),
+        ],
+    )
+    def test_limits_are_model_specific(self, model_id, context, output):
+        entry = _entry(model_id)
+
+        assert (entry["contextWindow"], entry["maxTokens"]) == (context, output)
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            "system.ai.claude-opus-5-5",
+            "system.ai.gpt-6-sol",
+            "system.ai.gpt-5",
+            "system.ai.gemini-4-argon",
+        ],
+    )
+    def test_image_input_carries_the_gateway_request_cap(self, model_id):
+        entry = _entry(model_id)
+
+        assert entry["input"] == ["text", "image"]
+        assert entry["inputLimits"] == {
+            "maxRequestBytes": 32 * 1024 * 1024,
+            "images": {
+                "resize": {
+                    "maxWidth": 2000,
+                    "maxHeight": 2000,
+                    "maxBytes": 768 * 1024,
+                    "jpegQuality": 80,
+                }
+            },
+        }
+
+    def test_adaptive_claude_models_force_adaptive_thinking(self):
+        assert _entry("system.ai.claude-haiku-5-5")["compat"] == {"forceAdaptiveThinking": True}
+        assert "compat" not in _entry("system.ai.claude-sonnet-4-5")
+
+    def test_gpt_5_never_sends_effort_none(self):
+        # Without an off entry Pi sends `reasoning.effort: "none"`, which gpt-5, -mini, -nano and
+        # the Pro models reject with HTTP 400.
+        for model_id in ("gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro", "gpt-5-5-pro"):
+            assert _entry(f"system.ai.{model_id}")["thinkingLevelMap"]["off"] is None, model_id
+
+    @pytest.mark.parametrize("model_id", ["system.ai.gpt-4o", "codex-mini", "system.ai.gpt-6"])
+    def test_gpt_models_without_documented_levels_get_limits_only(self, model_id):
+        entry = _entry(model_id)
+
+        assert set(entry) == {"id", "contextWindow", "maxTokens"}
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            "system.ai.gemini-3-pro-image",
+            "system.ai.gemini-3-1-flash-image",
+            "system.ai.gemini-5-future",
+        ],
+    )
+    def test_undocumented_and_image_generation_gemini_models_get_limits_only(self, model_id):
+        assert set(_entry(model_id)) == {"id", "contextWindow", "maxTokens"}
+
+    def test_dotted_ids_resolve_like_dashed_ones(self):
+        assert _entry("gemini-3.8-flash")["thinkingLevelMap"] == {"minimal": None}
+        assert _entry("gpt-6.1-sol")["contextWindow"] == 1_050_000
+
+
+class TestUnservableModels:
+    def test_claude_older_than_4_5_is_left_out(self):
+        overlay, _ = _overlay(
+            "system.ai.claude-opus-4-1",
+            claude_models={
+                "opus": "system.ai.claude-opus-4-1",
+                "sonnet": "system.ai.claude-sonnet-4-5",
+            },
+        )
+
+        ids = [m["id"] for m in overlay["providers"]["databricks-claude"]["models"]]
+        assert ids == ["system.ai.claude-sonnet-4-5"]
+        assert overlay["model"] == "system.ai.claude-opus-4-1"
+
+    def test_no_claude_provider_when_only_old_claude(self):
+        overlay, keys = _overlay("x", claude_models={"opus": "databricks-claude-opus-4-1"})
+
+        assert "providers" not in overlay
+        assert ["providers", "databricks-claude"] not in keys
+
+    def test_gpt_oss_stays_off_the_responses_provider(self):
+        overlay, _ = _overlay(
+            "system.ai.gpt-oss-120b",
+            codex_models=["system.ai.gpt-5", "system.ai.gpt-oss-120b", "system.ai.gpt-oss-20b"],
+        )
+
+        ids = [m["id"] for m in overlay["providers"]["databricks-openai"]["models"]]
+        assert ids == ["system.ai.gpt-5"]
+        assert overlay["model"] == "system.ai.gpt-oss-120b"
+
+    def test_default_model_skips_unservable_models(self):
+        state = {
+            "claude_models": {"opus": "system.ai.claude-opus-4-1"},
+            "codex_models": ["system.ai.gpt-oss-120b", "system.ai.gpt-5"],
+        }
+        assert pi.default_model(state) == "system.ai.gpt-5"
+        assert pi.default_model({"codex_models": ["system.ai.gpt-oss-20b"]}) is None
+
+    def test_managed_list_skips_unservable_models(self):
+        state = {
+            "pi_models": [
+                "system.ai.gpt-oss-120b",
+                "system.ai.claude-opus-4-1",
+                "system.ai.claude-opus-5-5",
+                "system.ai.gpt-6-sol",
+            ]
+        }
+
+        assert pi._managed_model_families(state) == (
+            {"opus": "system.ai.claude-opus-5-5"},
+            ["system.ai.gpt-6-sol"],
+            [],
+        )
+        assert pi.default_model(state) == "system.ai.claude-opus-5-5"
+
+    def test_managed_list_of_only_gpt_oss_falls_back(self):
+        assert pi._managed_model_families({"pi_models": ["system.ai.gpt-oss-120b"]}) is None
+
+
+class TestManagedModelEntries:
+    def test_managed_models_get_per_model_entries(self, tmp_path, monkeypatch):
+        import ucode.config_io as config_io_mod
+
+        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
+        monkeypatch.setattr(pi, "PI_CONFIG_PATH", tmp_path / "models.json")
+        monkeypatch.setattr(pi, "PI_SETTINGS_PATH", tmp_path / "settings.json")
+        monkeypatch.setattr(pi, "PI_BACKUP_PATH", tmp_path / "pi-backup.json")
+        monkeypatch.setattr(pi, "PI_SETTINGS_BACKUP_PATH", tmp_path / "pi-settings-backup.json")
+        state = {
+            "workspace": WS,
+            "base_urls": {"pi": _base_urls()},
+            "pi_models": [
+                "system.ai.claude-opus-5-5",
+                "system.ai.gpt-5",
+                "system.ai.gpt-oss-120b",
+                "system.ai.gemini-3-1-pro",
+            ],
+            "claude_models": {"opus": "shared-should-not-win"},
+        }
+
+        with patch("ucode.agents.pi.save_state"):
+            pi.write_tool_config(state, pi.default_model(state), token="tok")
+
+        providers = json.loads((tmp_path / "models.json").read_text())["providers"]
+        by_id = {m["id"]: m for p in providers.values() for m in p["models"]}
+        assert set(by_id) == {
+            "system.ai.claude-opus-5-5",
+            "system.ai.gpt-5",
+            "system.ai.gemini-3-1-pro",
+        }
+        assert by_id["system.ai.claude-opus-5-5"]["contextWindow"] == 1_000_000
+        assert by_id["system.ai.gpt-5"]["thinkingLevelMap"] == {"off": None}
+        assert by_id["system.ai.gemini-3-1-pro"]["reasoning"] is True
