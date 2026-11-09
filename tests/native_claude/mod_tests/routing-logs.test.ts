@@ -17,7 +17,7 @@ test('opens and refreshes session rows newest first', { options }, async ($, on)
   on('session.id', () => ({ value: 'session-one' }));
   on('ui.open', ($, e) => { opened.push(e); return { value: { isPlaced: true } }; });
   on('process.run', ($, e) => {
-    expect(e.argv).toEqual(['/bin/ug', 'smart-router-logs', '--session', 'session-one', '--harness', 'claude', '--json']);
+    expect(e.argv).toEqual(['/bin/ug', 'smart-router-logs', '--session', 'session-one']);
     count++;
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: count === 1 ? records : [] }) } };
   });
@@ -27,6 +27,8 @@ test('opens and refreshes session rows newest first', { options }, async ($, on)
   const tree = JSON.stringify(await ui.drawn());
   expect(tree).toContain('2 routed prompts this session');
   expect(tree).toMatch(/\d{2}:\d{2}/);
+  expect(tree.indexOf('(prompt not recorded)')).toBeGreaterThanOrEqual(0);
+  expect(tree.indexOf('older task')).toBeGreaterThanOrEqual(0);
   expect(tree.indexOf('(prompt not recorded)')).toBeLessThan(tree.indexOf('older task'));
   expect(tree).toContain('claude-sonnet');
   expect(tree).toContain('fast');
@@ -51,25 +53,56 @@ test('truncates long previews for the pane width', { options }, async ($, on) =>
   expect(tree).toContain('…');
   expect(tree).not.toContain('A'.repeat(40));
   await ui.unmount();
+  const { bodyColumns: _omitted, ...fallbackProps } = pane.props;
+  const fallback = await $.ui.mount({ ...pane, props: fallbackProps });
+  const fallbackTree = JSON.stringify(await fallback.drawn());
+  expect(fallbackTree).toContain('…');
+  expect(fallbackTree).not.toContain('A'.repeat(60));
+  await fallback.unmount();
 });
 
 test('shows a failure for command errors and malformed JSON', { options }, async ($, on) => {
   let stdout = 'invalid json';
-  let exitCode = 0;
   const logs: string[] = [];
   on('session.id', () => ({ value: 'session-one' }));
   on('ui.open', () => ({ value: { isPlaced: true } }));
   on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
-  on('process.run', () => ({ value: { exitCode, stderr: '', stdout } }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout } }));
   const ui = await $.ui.mount(pane);
-  for (const value of ['invalid json', '{"v":1,"decisions":[{}]}', '{"v":1,"decisions":[]}']) {
+  for (const value of ['invalid json', '{"v":2,"decisions":[]}', '123']) {
     stdout = value;
-    if (value.includes('[]')) exitCode = 1;
     await $.command.run(command);
     expect(JSON.stringify(await ui.drawn())).toContain('Could not read Smart Router logs.');
   }
   expect(logs).toHaveLength(3);
   await ui.unmount();
+});
+
+test('drops malformed decision rows without failing the pane', { options }, async ($, on) => {
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+    v: 1, decisions: [{ at: 'nope', preview: null, selected_model: 'x', routing_ms: 0 }, records[1]],
+  }) } }));
+  await $.command.run(command);
+  const ui = await $.ui.mount(pane);
+  const tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain('1 routed prompt this session');
+  expect(tree).toContain('fast');
+  await ui.unmount();
+});
+
+test('reports an unplaced pane', { options }, async ($, on) => {
+  let closed = 0;
+  let logged = 0;
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: false } }));
+  on('ui.close', () => { closed++; return { value: undefined }; });
+  on('ui.log', () => { logged++; return { value: undefined }; });
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: records }) } }));
+  expect((await $.command.run(command)).text).toBe('Could not open the Smart Router logs pane.');
+  expect(closed).toBe(1);
+  expect(logged).toBe(1);
 });
 
 test('missing command fails safely and unrouted launches stay inert', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
