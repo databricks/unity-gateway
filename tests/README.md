@@ -1,23 +1,12 @@
 # Test suites and user journeys
 
-Routed answers retain the animal name and quoted answer without an extra answer heading;
-native component checks cover the rendered output and one-time delivery.
-
-`native_claude/test_mod.py` checks routed parent reports in the real Claude
-process against a controlled provider: incorrect model claims must be absent
-from streamed assistant messages and saved transcripts, for both foreground and
-background children. The provider emits incorrect prose before spawn and on every
-parent continuation; the saved child answer must still be delivered without a
-format correction or Stop-hook retry. Successful lifecycle status lines must be absent
-from both the stream and transcript; recorded child answers are delivered once, including
-early completions followed by background notifications. Resumed children can deliver fresh answers.
-`native_claude/mod_tests/subagent-routing.test.ts` checks
-automatic report rendering, selected-versus-launched model validation, provider usage
-aliases that cannot replace the launch identity, recorded child answers, split chunks,
-no-text steps with stop events, parallel and early completion, stale references,
-failed handback/resume rollback, unchanged tool inputs and ordinary main-only replies.
-These are deterministic
-component checks; they do not establish live router or provider behavior.
+Smart Router preserves the parent's native streamed response, including its synthesis
+of subagent results. It does not inject an animal-labeled answer or replace parent prose.
+Native component checks cover original text/thinking chunks, tool calls, errors,
+foreground/background completion, and selected-model pinning through child continuations.
+The launch receipt supplies selected and launched model identities without changing
+inputs already reviewed by auto mode. These are controlled-provider checks, not live
+router or model-quality measurements.
 
 Windows Desktop detection allows up to 30 seconds for the native package query.
 Component coverage in `test_desktop_setup.py` verifies slow successful detection creates

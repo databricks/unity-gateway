@@ -1,6 +1,6 @@
-import type { EngineInterface, On, PluginOptions, TurnStepChunk } from 'claude-code';
+import type { EngineInterface, On, PluginOptions } from 'claude-code';
 import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
-import { endSubagentRoutingTurn, registerSubagentRouting, routingReports } from './subagent-routing.ts';
+import { endSubagentRoutingTurn, registerSubagentRouting, routedModels } from './subagent-routing.ts';
 import {
   CLI_AGENT,
   CLI_MODULE,
@@ -14,7 +14,6 @@ import { createIsaacFeedbackState, registerIsaacFeedback } from './isaac-feedbac
 import { isRoutingEnabled } from './routing-state.ts';
 
 type Environment = Record<string, string | undefined>;
-const REPORT_INTERRUPTED = 'Smart Router report interrupted: the model response did not complete.';
 
 // Kept when a host description has no Usage notes section, so continuation stays native.
 // Copied from Claude Code 2.1.314's Agent Usage notes; its compact layout (no such section)
@@ -141,56 +140,14 @@ export function register(on: On, options: PluginOptions): void {
   });
 
   on('turn.step', async function* ($, e, next) {
-    routingReports.step(e.turnId, e.agentId);
     const active = await readOrchestratorState($, options);
     if (active !== orchestratorActive) {
       orchestratorActive = active;
       // A CLI/skill toggle changes the session file without notifying this process.
       $.ui.invalidate('tool.describe');
     }
-    const model = routingReports.model(e.agentId);
-    const request = model ? {...e, model} : e;
-    const routing = Boolean(options.routeCommand?.length) && isRoutingEnabled(await readSessionEnvironment($));
-    if (!routing && !routingReports.active(e.turnId)) return yield* next(request);
-    // A spawn can follow prose in the same response; inspect the complete step before publishing it.
-    const stream = next(request);
-    const chunks: TurnStepChunk[] = [];
-    let item;
-    try {
-      item = await stream.next();
-      while (!item.done) {
-        chunks.push(item.value);
-        item = await stream.next();
-      }
-    } catch (error) {
-      if (!routingReports.active(e.turnId)) throw error;
-      const stop = chunks.find(chunk => chunk.kind === 'stop');
-      yield {kind: 'text', index: 0, text: REPORT_INTERRUPTED};
-      return {turnId: e.turnId, index: e.index, answer: REPORT_INTERRUPTED,
-        toolUses: [], stopReason: null, usage: stop?.usage ?? null};
-    }
-    const spawning = routing && item.value.toolUses.some(tool =>
-      (tool.name === 'Agent' || tool.name === 'Task') && tool.input.subagent_type !== 'fork');
-    const reporting = routingReports.active(e.turnId);
-    if (!spawning && !reporting) {
-      yield* chunks;
-      return item.value;
-    }
-    const answer = reporting ? routingReports.render(e.turnId, e.agentId) : '';
-    const report = {kind: 'text' as const,
-      index: chunks.find(chunk => chunk.kind === 'text')?.index
-        ?? Math.max(-1, ...chunks.map(chunk => 'index' in chunk ? chunk.index : -1)) + 1,
-      text: answer};
-    let written = false;
-    for (const chunk of chunks) {
-      if (answer && !written && (chunk.kind === 'text' || chunk.kind === 'stop')) {
-        yield report;
-        written = true;
-      }
-      if (chunk.kind !== 'text' && chunk.kind !== 'thinking') yield chunk;
-    }
-    if (answer && !written) yield report;
-    return {...item.value, answer};
+    const model = routedModels.model(e.agentId);
+    return yield* next(model ? {...e, model} : e);
   });
 
   on('tool.describe', {tool: ['Agent', 'Task']}, async ($, e, next) => {
@@ -239,7 +196,6 @@ export function register(on: On, options: PluginOptions): void {
   registerSubagentRouting(on, options);
   // Claude allows one unmatched turn.complete handler per plugin, so both modules share it.
   on('turn.complete', ($, e, next) => {
-    routingReports.completed(e);
     endSubagentRoutingTurn(e.isAborted);
     if (endStatusBandTurn()) $.ui.invalidate('ui.render');
     return next(e);

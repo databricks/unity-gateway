@@ -1,9 +1,8 @@
-import type { On, PluginOptions, TurnCompleteInput } from 'claude-code'
+import type { On, PluginOptions } from 'claude-code'
 
 type RoutingRecord = {
   name: string; task: string; model: string; rationale: string; seconds?: number
   spawned?: { agentId: string; model?: string; background: boolean }
-  parentAgentId?: string
 }
 
 const safeText = (value: unknown, limit: number): string | undefined => {
@@ -23,115 +22,17 @@ const canonicalModel = (model: string): string => {
   return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
 }
 
-const REPORT_UNAVAILABLE = 'Smart Router report unavailable: the child model could not be verified.'
-
-function createReports() {
-  const children = new Map<string, RoutingRecord>()
-  const completions = new Map<string, TurnCompleteInput>()
-  const delivered = new Map<string, TurnCompleteInput>()
-  const handbacks = new Map<string, string>()
-  const turns = new Map<string | undefined, string>()
-  const reporting = new Map<string, Set<string>>()
-  const pendingReports = new Map<string, string | undefined>()
-  const pendingNotifications = new Set<string>()
-  const include = (turnId: string, childId: string) => {
-    if (!reporting.has(turnId)) reporting.set(turnId, new Set())
-    reporting.get(turnId)!.add(childId)
-  }
-  return {
-    step(turnId: string, agentId?: string) {
-      turns.set(agentId, turnId)
-      for (const [childId, parentId] of pendingReports) {
-        if (parentId === agentId) {
-          pendingReports.delete(childId)
-          include(turnId, childId)
-        }
-      }
-    },
-    started(record: RoutingRecord) {
-      children.set(record.spawned!.agentId, record)
-      if (record.spawned!.background) pendingNotifications.add(record.spawned!.agentId)
-      const turnId = turns.get(record.parentAgentId)
-      if (turnId) include(turnId, record.spawned!.agentId)
-    },
-    completed(event: TurnCompleteInput) {
-      reporting.delete(event.turnId)
-      if (event.agentId) {
-        completions.set(event.agentId, {...event, answer: handbacks.get(event.agentId) ?? event.answer})
-      }
-    },
-    handback(agentId: string, answer: string) {
-      handbacks.set(agentId, answer)
-      const completed = completions.get(agentId)
-      if (completed) completions.set(agentId, {...completed, answer})
-    },
-    sending(agentId: string) {
-      const child = children.get(agentId)
-      const alreadyPending = pendingReports.has(agentId)
-      if (child) pendingReports.set(agentId, child.parentAgentId)
-      return () => { if (!alreadyPending) pendingReports.delete(agentId) }
-    },
-    resumed(agentId: string) {
-      const completion = completions.get(agentId)
-      const handback = handbacks.get(agentId)
-      completions.delete(agentId); handbacks.delete(agentId)
-      const child = children.get(agentId)
-      return (succeeded: boolean) => {
-        if (succeeded) {
-          const turnId = child && turns.get(child.parentAgentId)
-          if (turnId) include(turnId, agentId)
-          if (child?.spawned?.background) pendingNotifications.add(agentId)
-          return
-        }
-        if (completion && !completions.has(agentId)) completions.set(agentId, completion)
-        if (handback !== undefined && !handbacks.has(agentId)) handbacks.set(agentId, handback)
-      }
-    },
-    reset() {
-      children.clear(); completions.clear(); handbacks.clear(); reporting.clear(); turns.clear()
-      pendingReports.clear(); pendingNotifications.clear(); delivered.clear()
-    },
-    notification(turnId?: string) {
-      for (const agentId of pendingNotifications) {
-        const child = children.get(agentId)
-        if (!completions.has(agentId) || child?.parentAgentId !== undefined) continue
-        pendingNotifications.delete(agentId)
-        if (turnId) include(turnId, agentId)
-        else pendingReports.set(agentId, undefined)
-      }
-    },
-    active(turnId = turns.get(undefined)) { return Boolean(turnId && reporting.has(turnId)) },
-    model(agentId?: string) {
-      const child = agentId ? children.get(agentId) : undefined
-      const resolved = child?.spawned?.model
-      return child && resolved && canonicalModel(resolved) === canonicalModel(child.model)
-        ? resolved : child?.model
-    },
-    render(turnId: string, parentAgentId?: string): string {
-      const output: string[] = []
-      const completedReports: Array<[string, TurnCompleteInput]> = []
-      for (const childId of reporting.get(turnId) ?? []) {
-        const child = children.get(childId)
-        if (!child || child.parentAgentId !== parentAgentId) continue
-        const completion = completions.get(childId)
-        // Usage may name a provider backend; the spawn receipt identifies the launched route.
-        const actual = child.spawned?.model
-        if (!actual || canonicalModel(actual) !== canonicalModel(child.model)) return REPORT_UNAVAILABLE
-        if (!completion || delivered.get(childId) === completion) continue
-        completedReports.push([childId, completion])
-        if (completion.isAborted || completion.reason !== 'answer') {
-          output.push(`${child.name} · ${actual} · ${completion.isAborted ? 'Interrupted' : 'Failed'}`)
-        } else if (completion.answer) {
-          output.push(`${child.name}\n\n${completion.answer.split('\n').map(line => `> ${line}`).join('\n')}`)
-        }
-      }
-      for (const [childId, completion] of completedReports) delivered.set(childId, completion)
-      return output.join('\n\n')
-    },
-  }
+const children = new Map<string, RoutingRecord>()
+export const routedModels = {
+  started(record: RoutingRecord) { children.set(record.spawned!.agentId, record) },
+  model(agentId?: string) {
+    const child = agentId ? children.get(agentId) : undefined
+    const resolved = child?.spawned?.model
+    return child && resolved && canonicalModel(resolved) === canonicalModel(child.model)
+      ? resolved : child?.model
+  },
+  reset() { children.clear() },
 }
-
-export const routingReports = createReports()
 
 const ANIMALS = [
   'Otter', 'Panda', 'Lynx', 'Fox', 'Badger', 'Beaver', 'Bison', 'Bobcat', 'Camel', 'Caribou',
@@ -215,7 +116,7 @@ export function endSubagentRoutingTurn(aborted: boolean): void {
 }
 
 export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
-  routingReports.reset()
+  routedModels.reset()
   const names = new Map<string, string>()
   const unusedNames = [...ANIMALS]
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
@@ -233,7 +134,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[]
     if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
-    const { tool, tool_use_id, agentId, ...input } = e
+    const { tool, tool_use_id, agentId: _agentId, ...input } = e
     let route
     let spinner: { cancel: () => void } | undefined
     if (tool_use_id) {
@@ -293,7 +194,6 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
           model: route.model,
           rationale: route.rationale,
           seconds,
-          parentAgentId: agentId,
         })
       }
       $.ui.invalidate('ui.render')
@@ -308,26 +208,18 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       launched_model: record.spawned.model ?? null,
     })
     return { ...result, context: [...(result.context ?? []),
-      `Smart Router launch: ${identity}. UG shows the verified model in the routing row and delivers `
-      + 'the recorded child answer. Continue using tools as needed; no reporting format is required.',
+      `Smart Router launch: ${identity}. Use the launched_model from this receipt when identifying `
+      + 'this child; the requested model and agent role do not identify the model actually used.',
     ] }
   })
 
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume ? undefined : records.get(e.tool_use_id)
     const name = route?.name
-    const finishResume = e.resume ? routingReports.resumed(e.resume.agentId) : undefined
-    let result
-    try {
-      result = await next(route ? { ...e, model: route.model } : e)
-      finishResume?.(result.deny === undefined && Boolean(result.agentId))
-    } catch (error) {
-      finishResume?.(false)
-      throw error
-    }
+    const result = await next(route ? { ...e, model: route.model } : e)
     if (route && result.agentId && !result.deny) {
       route.spawned = { agentId: result.agentId, model: result.model || undefined, background: e.background }
-      routingReports.started(route)
+      routedModels.started(route)
       $.ui.invalidate('ui.render')
     }
     if (name && result.agentId) {
@@ -340,19 +232,6 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       }
     }
     return result
-  })
-
-  on('tool.call', {tool: 'SubagentHandback'}, async ($, e, next) => {
-    const rollback = e.agentId ? routingReports.sending(e.agentId) : undefined
-    try {
-      const result = await next(e)
-      if (result.deny !== undefined || result.isError) rollback?.()
-      else if (e.agentId && typeof e.message === 'string') routingReports.handback(e.agentId, e.message)
-      return result
-    } catch (error) {
-      rollback?.()
-      throw error
-    }
   })
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
@@ -408,7 +287,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     return Box({ flexDirection: 'column', children: [...ids.map((id) => card($, e, records.get(id)!)), original] })
   })
   on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
-    routingReports.reset()
+    routedModels.reset()
     return next(e)
   })
 }

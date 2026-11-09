@@ -491,7 +491,6 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     for request in parent_requests[1:]
                 ), parent_requests
                 # Exercise the host stream and stored transcript, not only a render hook.
-                rejection = 'Smart Router report rejected: use a child reference with view "status" or "result".'
                 parent_answers = [
                     block.get("text", "")
                     for event in events
@@ -499,21 +498,16 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     for block in event.get("message", {}).get("content", [])
                     if block.get("type") == "text"
                 ]
-                assert not any(rejection in answer for answer in parent_answers), parent_answers
-                assert sum("> Probe finished." in answer for answer in parent_answers) == 1, (
-                    parent_answers
-                )
-                assert "Child answer:" not in "\n".join(parent_answers), parent_answers
-                assert false_claim not in "\n".join(parent_answers), parent_answers
+                assert parent_answers and parent_answers[-1] == false_claim, parent_answers
+                assert "Probe finished." not in "\n".join(parent_answers), parent_answers
                 saved = "\n".join(
                     path.read_text() for path in (root / "config/projects").glob("*/*.jsonl")
                 )
-                assert false_claim not in saved
+                assert false_claim in saved
                 for state in ("Running", "Finished"):
                     status = f" · {selected_model} · {state}"
                     assert not any(status in answer for answer in parent_answers), parent_answers
                     assert status not in saved.replace("\\u00b7", "·")
-                assert rejection not in saved.replace('\\"', '"')
                 child_request = json.dumps(child_requests[0])
                 assert original["prompt"] in child_request
                 assert "Routed prompt" not in child_request
