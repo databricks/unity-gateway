@@ -4,10 +4,13 @@ The branch-only `cowork-capabilities-probe.yml` workflow runs three isolated Win
 jobs. Each uses the pinned installer, public UG configure path, and existing native
 inference baseline before attempting a new task through UI Automation.
 
-The current matrix reruns only file selection and the MCP PAT-profile variant.
+The current matrix reruns only file selection.
 The skill case passed in run `42649230970`. The MCP PAT variant uses the existing
 CI bearer in a temporary Databricks profile, through public `ug configure
 --use-pat`, to diagnose credential inheritance. The profile is never uploaded.
+Run `42650320326` connected that MCP service inside Desktop, but Desktop rejected
+session installation because its name collided with an admin-managed direct-pool
+connector. No successful native web-search call was observed.
 
 - File: select a fresh folder through the native picker and require the contents of
   an input file whose random marker is absent from the prompt.

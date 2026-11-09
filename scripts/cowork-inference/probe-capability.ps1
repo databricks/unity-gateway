@@ -91,6 +91,8 @@ function Select-Folder {
     [Windows.Forms.SendKeys]::SendWait('{ENTER}')
     Start-Sleep -Seconds 1
     Invoke-Control (Wait-Control -Names @('Select Folder', 'Select folder', 'Open') -Seconds 20 -Root $dialog)
+    $permission = Wait-Control -Names @('Allow Claude to change files in “CoworkProbe”?') -Seconds 20
+    Invoke-Control (Wait-Control -Names @('Allow') -Seconds 10 -Root $permission)
     $report.folderSelected = $true
     Save-UI 'folder-selected'
 }
@@ -129,6 +131,18 @@ try {
     $script:window = [Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
     Invoke-Control (Wait-Control -Names @('Cowork'))
     Save-UI 'cowork-open'
+    if ($task.capability -eq 'mcp') {
+        $mainLog = Join-Path $env:LOCALAPPDATA 'Claude-3p/logs/main.log'
+        $deadline = [DateTime]::UtcNow.AddSeconds(90)
+        do {
+            $connected = Get-Content $mainLog -Tail 200 -ErrorAction SilentlyContinue |
+                Select-String -SimpleMatch "[custom3p-mcp] connected { name: '$($task.server)'"
+            if ($connected) { break }
+            Start-Sleep -Seconds 1
+        } until ([DateTime]::UtcNow -ge $deadline)
+        if (-not $connected) { throw 'Native MCP connection was not ready before task creation' }
+        $report.connectorReadyBeforeTask = $true
+    }
     $newTask = Find-Control -Names @('New task', 'New Task')
     if ($newTask) { Invoke-Control $newTask }
     $editor = Wait-Control -Names @('Write your prompt to Claude')
