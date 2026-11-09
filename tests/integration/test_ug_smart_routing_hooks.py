@@ -137,21 +137,6 @@ def _run_calculation(
         assert all(row["task_sha256"] in assignments for row in new_decisions), new_decisions
     else:
         assert all(task.marker in row.get("task_name", "") for row in new_decisions), new_decisions
-    decision = new_decisions[0]
-    if agent == "claude":
-        model = decision["requested_model"].removeprefix("system.ai.").removeprefix("databricks-")
-        rationale = decision["rationale"]
-        tui.wait_for(
-            lambda screen: (
-                f"SelectedModel:{model}" in "".join(screen.split())
-                and (
-                    not rationale
-                    or "".join(f"Reason: {rationale}".split()) in "".join(screen.split())
-                )
-            ),
-            f"the selected model and rationale for {task.marker}",
-            timeout=30,
-        )
     assert_subagent_routed(
         session,
         agent,

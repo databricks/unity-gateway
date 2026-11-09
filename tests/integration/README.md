@@ -963,9 +963,9 @@ Interactive first-prompt routing through `first_prompt_and_subagent_no_orch_v0` 
 the managed_fixture smart-routing banner journeys below for both agents. The subagent routing command journeys drive the real
 installed Claude mod command and Codex hook with native payloads against the live router. The
 subagent-only TUI journeys additionally spawn three native children in one real session,
-invoke the installed Smart Router skill to turn routing off and back on, and require the
-native model/rationale row (Claude) or subagent banner (Codex), plus a correlated
-live decision only while routing is enabled. Plugin-refresh survival and native
+invoke the installed Smart Router skill to turn routing off and back on, and require a
+persisted Claude decision-log entry per child (the mod renders no inline selection row) or
+a subagent banner (Codex), plus a correlated live decision only while routing is enabled. Plugin-refresh survival and native
 daemon/background dispatch remain deferred. CUJ4 covers interactive explicit-model
 bypass. Plugin generation and launch arguments are covered
 by component tests in `../test_claude_smart_routing_v2.py`, not by a live registration journey.
