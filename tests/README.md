@@ -934,11 +934,14 @@ managed default), that those launches
 skip the routed launch path (no Smart Router skills or hooks) and the hook-review note, and that
 Claude, routing versions, `--disable-smart-routing`, plain launches, and native subcommands do
 not warn. The live Codex managed-default journey also requires the workspace warning text.
-With `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS=1`, Claude can route through a Model Provider
-Service; Codex, and Claude without the gate, still reject provider launches with routing enabled.
+With `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS=1`, Claude and Codex can route through a Model
+Provider Service; without the gate both still reject provider launches with routing enabled.
 `test_cli.py` checks the gate in `_launch_options` and that a saved Claude provider fetches its
-provider-scoped catalog for a routed launch. These tests mock dispatch; they do not verify
-catalog delivery to the router or a live routed provider launch.
+provider-scoped catalog for a routed launch. `test_codex_smart_routing_v2.py` checks the Codex
+provider header, catalog delivery, provider-only candidates, and starting-model selection using a
+fake catalog and subprocesses. `test_agent_codex.py` checks the unrouted fallback when the catalog
+route is unavailable. These component tests do not verify live provider discovery or a live
+routed launch.
 
 The toggle integration journeys retain the legacy routing-only and orchestration cases and
 add the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only

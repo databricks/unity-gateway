@@ -1185,6 +1185,30 @@ class TestCodexLaunch:
         assert launches[0][-1] == "update"
         assert read_toml_safe(shared_path).get("model_catalog_json") == custom_catalog
 
+    def test_routed_provider_without_catalog_route_falls_back(self, tmp_path, monkeypatch, capsys):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.164.0")
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: tmp_path / "managed.toml")
+
+        def unavailable(*args, **kwargs):
+            raise codex.CodexMpsModelCatalogUnavailable("catalog route unavailable")
+
+        monkeypatch.setattr(codex, "_fetch_codex_model_catalog", unavailable)
+        monkeypatch.setattr(
+            codex.smart_routing_v2,
+            "launch_codex",
+            lambda *a, **k: pytest.fail("routing requires provider models"),
+        )
+        codex.launch(
+            {"workspace": WS, "_codex_launch_provider": "main.default.openai"},
+            [],
+            options=LaunchOptions(launch_smart_routing=True),
+        )
+
+        assert len(launches) == 1
+        assert "main.default.openai" in " ".join(launches[0])
+        assert "Smart routing is off" in capsys.readouterr().err
+
     def test_provider_discovery_uses_authoritative_catalog(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
         catalog_path = tmp_path / "models.json"
