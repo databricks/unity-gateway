@@ -45,6 +45,7 @@ def _overlay(model: str, token: str = "tok", **kwargs):
         bundle["codex_models"],
         bundle["gemini_models"],
         bundle["oss_models"],
+        bundle.get("claude_model_ids"),
     )
 
 
@@ -250,6 +251,29 @@ class TestRenderOverlayAuthAndModels:
         assert "databricks-openai" not in overlay["providers"]
         assert overlay["model"] == "databricks-mlflow/system.ai.gpt-oss-120b"
 
+    def test_every_listed_claude_version_is_offered(self):
+        # Discovery keeps one model per family; Pi's picker also lists the other versions.
+        overlay, _ = _overlay(
+            "system.ai.claude-opus-4-8",
+            claude_models={"opus": "system.ai.claude-opus-5-5"},
+            claude_model_ids=[
+                "system.ai.claude-opus-4-1",
+                "system.ai.claude-opus-4-8",
+                "system.ai.claude-opus-5-5",
+                "system.ai.claude-sonnet-5",
+                "system.ai.gpt-5-5",
+            ],
+        )
+
+        ids = [m["id"] for m in overlay["providers"]["databricks-claude"]["models"]]
+        # Opus 4.1 is older than 4.5 and stays out; non-Claude ids are ignored.
+        assert ids == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-opus-5-5",
+            "system.ai.claude-sonnet-5",
+        ]
+        assert overlay["model"] == "databricks-claude/system.ai.claude-opus-4-8"
+
 
 class TestRenderOverlayManagedKeys:
     def test_managed_keys_include_model(self):
@@ -430,6 +454,43 @@ class TestWriteToolConfig:
         for legacy in ("databricks-anthropic", "databricks-codex", "databricks-oss"):
             assert legacy not in written_providers
         assert "databricks-claude" in written_providers
+
+    def test_config_lists_every_saved_claude_version(self, tmp_path, monkeypatch):
+        pi_mod, config_file, _, _ = self._setup(tmp_path, monkeypatch)
+        state = self._state(
+            claude_models={"opus": "system.ai.claude-opus-5-5"},
+            all_claude_models=["system.ai.claude-opus-4-8", "system.ai.claude-opus-5-5"],
+        )
+
+        with patch("ucode.agents.pi.save_state"):
+            pi_mod.write_tool_config(state, pi.default_model(state), token="tok")
+
+        written = json.loads(config_file.read_text())
+        assert [m["id"] for m in written["providers"]["databricks-claude"]["models"]] == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-opus-5-5",
+        ]
+        # The default stays the family model discovery chose.
+        assert written["model"] == "databricks-claude/system.ai.claude-opus-5-5"
+
+    def test_managed_list_keeps_several_versions_of_one_family(self, tmp_path, monkeypatch):
+        pi_mod, config_file, _, _ = self._setup(tmp_path, monkeypatch)
+        state = self._state(
+            all_claude_models=["system.ai.claude-sonnet-5"],
+            pi_models=["system.ai.claude-opus-4-8", "system.ai.claude-opus-5", "system.ai.gpt-5"],
+            pi_default_model="system.ai.claude-opus-5",
+        )
+
+        with patch("ucode.agents.pi.save_state"):
+            pi_mod.write_tool_config(state, pi.default_model(state), token="tok")
+
+        written = json.loads(config_file.read_text())
+        # The admin's list decides; discovery's other versions stay out.
+        assert [m["id"] for m in written["providers"]["databricks-claude"]["models"]] == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-opus-5",
+        ]
+        assert written["model"] == "databricks-claude/system.ai.claude-opus-5"
 
     def test_config_written_with_correct_model_and_auth_command(self, tmp_path, monkeypatch):
         pi_mod, config_file, _, _ = self._setup(tmp_path, monkeypatch)

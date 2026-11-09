@@ -180,6 +180,20 @@ def _servable_families(
     )
 
 
+def _claude_ids(claude_models: dict[str, str], claude_model_ids: list[str] | None) -> list[str]:
+    """The Claude ids Pi lists: the family models plus every other version Pi serves."""
+    return sorted(
+        {
+            *claude_models.values(),
+            *(
+                m
+                for m in claude_model_ids or []
+                if classify_model_family(m) in ANTHROPIC_FAMILIES and _serves_claude_model(m)
+            ),
+        }
+    )
+
+
 def _claude_thinking_level_map(model_id: str) -> ThinkingLevelMap | None:
     """Levels for Claude models that need adaptive thinking, else None (budget thinking).
 
@@ -402,7 +416,7 @@ _MLFLOW_COMPAT: dict[str, object] = {
 
 def _resolve_model_selector(
     model: str,
-    claude_models: dict[str, str],
+    claude_ids: list[str],
     codex_models: list[str],
     gemini_models: list[str],
     oss_models: list[str],
@@ -414,7 +428,7 @@ def _resolve_model_selector(
     bare = _strip_ug_provider(model)
     if bare is None:
         return model
-    if bare in claude_models.values():
+    if bare in claude_ids:
         return f"databricks-claude/{bare}"
     if bare in codex_models:
         return f"databricks-openai/{bare}"
@@ -433,18 +447,21 @@ def render_overlay(
     codex_models: list[str],
     gemini_models: list[str],
     oss_models: list[str] | None = None,
+    claude_model_ids: list[str] | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Pi's private agent config.
 
     ``api_key`` is a pi config value, not necessarily a literal bearer: see
     ``build_pi_api_key`` for the `!command` form every provider gets.
 
-    gpt-oss moves from ``codex_models`` to the MLflow provider, and Claude older than 4.5 is
-    dropped, before any provider or the model selector is built. ``model`` is used as given;
-    ``write_tool_config`` replaces an excluded one before calling here."""
+    ``claude_models`` holds one model per family; ``claude_model_ids`` adds the other Claude
+    versions Pi's model picker lists. gpt-oss moves from ``codex_models`` to the MLflow provider,
+    and Claude older than 4.5 is dropped, before any provider or the model selector is built.
+    ``model`` is used as given; ``write_tool_config`` replaces an excluded one before calling here."""
     claude_models, codex_models, gemini_models, oss_models = _servable_families(
         claude_models, codex_models, gemini_models, oss_models or []
     )
+    claude_ids = _claude_ids(claude_models, claude_model_ids)
     providers: dict = {}
     keys: list[list[str]] = [["model"]]
     # Pi expands header values that match an env var name. Our UA contains
@@ -459,7 +476,6 @@ def render_overlay(
     if gateway_url:
         ua_headers.update(workspace_headers(gateway_url))
 
-    claude_ids = sorted(set(claude_models.values()))
     if claude_ids:
         providers["databricks-claude"] = {
             "baseUrl": pi_base_urls["claude"],
@@ -507,7 +523,7 @@ def render_overlay(
         keys.append(["providers", "databricks-mlflow"])
     overlay: dict = {
         "model": _resolve_model_selector(
-            model, claude_models, codex_models, gemini_models, oss_models
+            model, claude_ids, codex_models, gemini_models, oss_models
         ),
     }
     if providers:
@@ -579,6 +595,7 @@ def write_tool_config(
         **(state.get("base_urls", {}).get("pi") or {}),
     }
     claude_models, codex_models, gemini_models, oss_models = _effective_model_families(state)
+    claude_model_ids = _effective_claude_model_ids(state)
     overlay, managed_keys = render_overlay(
         model,
         build_pi_api_key(state),
@@ -587,6 +604,7 @@ def write_tool_config(
         codex_models,
         gemini_models,
         oss_models,
+        claude_model_ids,
     )
     existing = read_json_safe(PI_CONFIG_PATH)
     providers = existing.get("providers")
@@ -660,6 +678,14 @@ def _effective_model_families(
         state.get("gemini_models") or [],
         state.get("oss_models") or [],
     )
+
+
+def _effective_claude_model_ids(state: dict) -> list[str] | None:
+    """Every Claude version Pi lists: the managed list's, else discovery's full listing."""
+    ids = (
+        state.get("pi_models") if _managed_model_families(state) else state.get("all_claude_models")
+    )
+    return [m for m in ids if isinstance(m, str)] if isinstance(ids, list) else None
 
 
 def has_servable_models(state: dict) -> bool:
