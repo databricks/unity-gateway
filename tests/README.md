@@ -1,5 +1,21 @@
 # Test suites and user journeys
 
+Windows Desktop detection allows up to 30 seconds for the native package query.
+Component coverage in `test_desktop_setup.py` verifies slow successful detection creates
+UG's profile, while missing packages, timeouts, launch errors, and query failures leave
+it absent. Query failures report their actual cause instead of asking users to open
+an app that is already installed. Native Cowork CI still requires completed inference.
+
+Windows first-launch configuration has component coverage in
+`test_desktop_setup.py`: an installed MSIX creates the missing Desktop profile
+store; absent installations, package-query failures, and timeouts leave it absent.
+The native Windows Cowork inference job in `.github/workflows/integration.yml`
+exercises real installation, UG configuration before first launch, and completed
+`system.ai.claude-haiku-4-5` inference through the desktop UI. CI contract checks
+verify workspace-credential event guards, installation without OIDC permissions,
+and required Cowork success in the integration gate. Unsupported release/version dispatches allow an
+explicit skip; failure, cancellation, and unexpected skips fail the gate.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component
@@ -322,6 +338,10 @@ preconfigured workspace is assigned.
 
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.
+`test_cli.py::TestHelp` checks command grouping, global option order, and value labels.
+The help formatter supports Typer's pre-0.29 and 0.29+ type-display APIs.
+Fresh-install checks in `integration/test_installation.py` require both console scripts
+to render help and report their version with the resolved dependencies.
 `test_startup_imports.py` guards the bare `--version` / `-V` fast path and deferred
 command-specific imports in fresh interpreters. Component tests cover metadata lookup,
 version suffixes, fallback, and unchanged dispatch for other arguments; they do not
@@ -925,6 +945,11 @@ managed default), that those launches
 skip the routed launch path (no Smart Router skills or hooks) and the hook-review note, and that
 Claude, routing versions, `--disable-smart-routing`, plain launches, and native subcommands do
 not warn. The live Codex managed-default journey also requires the workspace warning text.
+With `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS=1`, Claude can route through a Model Provider
+Service; Codex, and Claude without the gate, still reject provider launches with routing enabled.
+`test_cli.py` checks the gate in `_launch_options` and that a saved Claude provider fetches its
+provider-scoped catalog for a routed launch. These tests mock dispatch; they do not verify
+catalog delivery to the router or a live routed provider launch.
 
 The toggle integration journeys retain the legacy routing-only and orchestration cases and
 add the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only
@@ -1004,6 +1029,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_codex_headless_prompt_argument`, `test_ug_codex_headless_prompt_stdin`, `test_ug_codex_headless_prompt_after_separator` | Run Codex from a script using each prompt form | Completed turn and final answer contain the file value; exit zero; no routing |
 | `test_ug_copilot_headless_completes_file_task`, `test_ug_copilot_headless_gpt_responses_task` | Run Copilot CLI from a script (`-p ... --output-format json`) on a Claude model (Anthropic Messages) and a GPT model (Responses) | Completed turn whose assistant message contains the file value and was sent as the requested model; the session started on the matching registry provider; no file under the session home holds the Databricks credential; no session registry left (non-blocking CI lane) |
 | `test_ug_copilot_one_setup_runs_claude_then_gpt_by_provider_ref` | One configure, then headless tasks on a Claude model older than its family's newest (only the full catalog registers it) and a GPT model chosen as `dbx-responses/<model>` | Each answer contains its file value and was sent as the requested model; sessions started on `dbx-anthropic` and `dbx-responses` (non-blocking CI lane) |
+| `test_ug_copilot_one_setup_runs_glm_kimi_and_deepseek_on_chat_completions` | One configure, then headless tasks on a GLM, a Kimi and a DeepSeek model named by catalog id | Each answer contains its file value and was sent as the requested model; every session started on `dbx-completions`; the saved catalog lists all three, DeepSeek coming from the model-services listing (non-blocking CI lane) |
 | `test_ug_copilot_unknown_model_lists_available_models` | Interactive launch with a model the workspace doesn't have | Exit 1 before Copilot starts; stderr names the model and lists the available ones, without `claude-opus-4-1`; no session registry left (non-blocking CI lane) |
 | `test_ug_copilot_tui_switches_from_claude_to_gpt_with_model_command` | TUI: answer folder trust, Claude task, `/model dbx-responses/<model>`, GPT task, `/exit` | Both answers sent as the Claude then GPT model; the session records the switch; normal exit; no session registry left (non-blocking CI lane) |
 | `test_ug_copilot_refreshes_a_revoked_token_mid_session`, `test_ug_copilot_reports_expired_sign_in` | Sign in through `DATABRICKS_BEARER_COMMAND` minting short-lived PATs; mid-task the agent revokes them (or also signs out) | Revoked: a token is minted after the revocation and the task completes without restarting Copilot. Signed out: output shows "Databricks sign-in expired" with `databricks auth login`; the failure is in `~/.ucode/logs/copilot-proxy.log`, not the terminal (non-blocking CI lane) |
