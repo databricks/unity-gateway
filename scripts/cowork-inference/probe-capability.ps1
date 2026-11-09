@@ -197,8 +197,16 @@ try {
                     } | Select-Object -First 1
                 if ($allow) {
                     Save-UI 'mcp-permission'
-                    Invoke-Control $allow
-                    $report.permissionApproved = $true
+                    if (-not [CapabilityWindow]::SetForegroundWindow([IntPtr]$script:window.Current.NativeWindowHandle)) {
+                        throw 'Could not activate the MCP permission window'
+                    }
+                    $point = $allow.GetClickablePoint()
+                    [Windows.Forms.Cursor]::Position = [Drawing.Point]::new([int]$point.X, [int]$point.Y)
+                    [CapabilityWindow]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+                    [CapabilityWindow]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+                    Start-Sleep -Seconds 1
+                    $report.permissionApproved = -not (Find-Control -Names @("Claude wants to use Searching the web from $($task.server)"))
+                    if (-not $report.permissionApproved) { throw 'MCP permission card remained after clicking Allow once' }
                 }
             }
         }
