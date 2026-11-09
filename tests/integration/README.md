@@ -7,6 +7,8 @@ foreground/background completion, and selected-model pinning through child conti
 The launch receipt supplies selected and launched model identities without changing
 inputs already reviewed by auto mode. These are controlled-provider checks, not live
 router or model-quality measurements.
+Native registration checks cover model-catalog guidance in routing-only and orchestration
+modes, retained host Usage notes, and unchanged descriptions when routing is off.
 
 Windows Desktop detection allows up to 30 seconds for the native package query.
 Component coverage in `test_desktop_setup.py` verifies slow successful detection creates

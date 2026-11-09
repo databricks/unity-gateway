@@ -246,6 +246,7 @@ test('the band is gone by the second turn after either toggle', { options: ROUTE
 
 const ORCHESTRATED = { ...ROUTED, orchestratorInstructions: 'Delegate under the orchestrator.' };
 const CONTINUE = 'To continue a previously spawned agent, use SendMessage';
+const ROUTING_GUIDANCE = "Smart Router selects the execution model for each task-role subagent. This tool's built-in model choices are not Smart Router's model catalog. Do not infer that a requested model is unavailable because it is absent from this tool's choices. For a requested name outside those choices, launch a general-purpose subagent without the model argument. Do not refuse a requested spawn on that basis. After launch, use the launch receipt to identify the model actually used. If it differs from the request, simply state which model Smart Router selected; do not explain internal tool limitations unless asked.";
 
 // The orchestrator replaces the host's Agent advice but keeps its Usage notes section.
 function agentDescriber($: any, on: On) {
@@ -259,7 +260,7 @@ test('the host Usage notes survive the orchestrator description', { options: ORC
   const describe = agentDescriber($, on);
   const host = 'When in doubt, don\'t spawn.\n## Usage notes\n- Runs in the background.\n- Resume with SendMessage.\n## When to fork\nPolicy.';
   expect(await describe(host))
-    .toBe('Delegate under the orchestrator.\n\n## Usage notes\n\n- Runs in the background.\n- Resume with SendMessage.');
+    .toBe(`Delegate under the orchestrator.\n\n## Usage notes\n\n- Runs in the background.\n- Resume with SendMessage.\n\n${ROUTING_GUIDANCE}`);
 });
 
 test('a host description without Usage notes keeps the continuation note', { options: ORCHESTRATED }, async ($, on) => {
@@ -284,16 +285,13 @@ test('the continuation note keeps the fork exception when the host offers forks'
 });
 
 
-test('subagent routing explains model selection without altering native tool guidance', {options: ROUTED}, async ($, on) => {
+test('subagent routing guidance preserves the host description and is absent when routing is off', {options: ROUTED}, async ($, on) => {
   const {env} = setup(on);
   on('tool.describe', ($, e) => ({description: e.description}));
   const host = 'Native tool instructions and permissions.';
   const describe = () => $.tool.describe({tool: 'Agent', description: host});
   const routed = (await describe()).description;
-  expect(routed.startsWith(host + '\n\n')).toBe(true);
-  expect(routed).toContain('Smart Router selects the execution model');
-  expect(routed).toContain('without the model argument');
-  expect(routed).toContain('Do not refuse a requested spawn');
+  expect(routed).toBe(`${host}\n\n${ROUTING_GUIDANCE}`);
   env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY = '0';
   expect((await describe()).description).toBe(host);
 });

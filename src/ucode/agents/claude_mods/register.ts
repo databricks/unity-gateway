@@ -152,16 +152,18 @@ export function register(on: On, options: PluginOptions): void {
 
   on('tool.describe', {tool: ['Agent', 'Task']}, async ($, e, next) => {
     const instructions = options.orchestratorInstructions as string;
-    if (!await readOrchestratorState($, options)) {
-      if (!options.routeCommand?.length || !isRoutingEnabled(await readSessionEnvironment($))) return next(e);
-      return next({...e, description: e.description + '\n\nSmart Router selects the execution model for each task-role subagent. '
-        + 'If the user requests a model outside this tool\'s built-in model choices, launch a general-purpose subagent '
-        + 'without the model argument; the router selects an available model. Do not refuse a requested spawn '
-        + 'because that model name is absent here. The launch receipt identifies the model actually used.'});
-    }
+    const orchestrating = await readOrchestratorState($, options);
+    if (!orchestrating && (!options.routeCommand?.length || !isRoutingEnabled(await readSessionEnvironment($)))) return next(e);
+    const guidance = 'Smart Router selects the execution model for each task-role subagent. '
+      + "This tool's built-in model choices are not Smart Router's model catalog. "
+      + "Do not infer that a requested model is unavailable because it is absent from this tool's choices. "
+      + 'For a requested name outside those choices, launch a general-purpose subagent without the model argument. '
+      + 'Do not refuse a requested spawn on that basis. After launch, use the launch receipt to identify the model actually used. '
+      + 'If it differs from the request, simply state which model Smart Router selected; do not explain internal tool limitations unless asked.';
+    if (!orchestrating) return next({...e, description: `${e.description}\n\n${guidance}`});
     // Preserve the host's waiting and follow-up mechanics without its ownership policy.
     const notes = e.description.split('\n## Usage notes\n')[1]?.split('\n## ')[0].trim() || continuationNote(e.description);
-    return next({...e, description: `${instructions}\n\n## Usage notes\n\n${notes}`});
+    return next({...e, description: `${instructions}\n\n## Usage notes\n\n${notes}\n\n${guidance}`});
   });
 
   // The installed smart-router skill already supplies the slash command.

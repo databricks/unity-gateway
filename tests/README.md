@@ -7,6 +7,10 @@ foreground/background completion, and selected-model pinning through child conti
 The launch receipt supplies selected and launched model identities without changing
 inputs already reviewed by auto mode. These are controlled-provider checks, not live
 router or model-quality measurements.
+Native Claude registration component checks distinguish the Agent model enum from the
+Smart Router catalog, preserve the host description in routing-only mode, append the same
+receipt-based guidance after orchestrator instructions and Usage notes, and leave the
+description unchanged when routing is off.
 
 Windows Desktop detection allows up to 30 seconds for the native package query.
 Component coverage in `test_desktop_setup.py` verifies slow successful detection creates
