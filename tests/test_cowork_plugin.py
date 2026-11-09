@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +10,35 @@ import pytest
 
 from ucode.agents.desktop import claude as desktop
 from ucode.agents.desktop import cowork
+
+
+@pytest.mark.parametrize(
+    "binary",
+    [r"D:\a\_temp\Scripts\ug.exe", r"C:\Program Files\Unity Gateway\ug.exe"],
+)
+def test_connector_hooks_preserve_windows_paths_in_bash(monkeypatch, binary):
+    monkeypatch.setattr(cowork.subprocess_cross_os.platform, "system", lambda: "Windows")
+    url = "https://workspace.example/ai-gateway/mcp-services/system.ai.web_search"
+    hooks = cowork._connector_hooks(
+        {"mcpServers": {"web_search": {"command": binary, "args": ["--url", url]}}},
+        "https://workspace.example",
+        "team's profile",
+        use_pat=True,
+    )
+    expected = [
+        binary,
+        "cowork-hook",
+        "--host",
+        "https://workspace.example",
+        "--profile",
+        "team's profile",
+        "--use-pat",
+        "--server",
+        f"web_search={url}",
+    ]
+    assert hooks is not None
+    for entries in hooks["hooks"].values():
+        assert shlex.split(entries[0]["hooks"][0]["command"]) == expected
 
 
 @pytest.fixture(autouse=True)
@@ -204,7 +234,7 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(
     assert "ask the user to try the request again shortly" in connector_skill
     hooks = json.loads((plugin_root / "hooks" / "hooks.json").read_text())
     assert set(hooks["hooks"]) == {"SessionStart", "UserPromptSubmit"}
-    expected_command = cowork.subprocess_cross_os.shell_command(
+    expected_command = shlex.join(
         [
             str(ug_binary),
             "cowork-hook",
