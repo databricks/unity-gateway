@@ -196,6 +196,11 @@ _GPT_SOL_TERRA_LUNA = tuple(
 )
 
 
+# The original GPT-5 models, the only ones that accept `minimal`. Other GPT-5 ids without a
+# documented map (plain GPT-5.6, GPT-5 Codex, later releases) get limits only.
+_ORIGINAL_GPT_5 = frozenset({"gpt-5", "gpt-5-mini", "gpt-5-nano"})
+
+
 def _gpt_thinking_level_map(name: str) -> ThinkingLevelMap | None:
     """Levels for a canonical GPT name, or None for a model Pi should send no reasoning.
 
@@ -218,7 +223,7 @@ def _gpt_thinking_level_map(name: str) -> ThinkingLevelMap | None:
         return {"off": "none", "minimal": None, "xhigh": "xhigh"}
     if name.startswith("gpt-5-1"):
         return {"off": "none", "minimal": None}
-    if name == "gpt-5" or name.startswith("gpt-5-"):
+    if name in _ORIGINAL_GPT_5:
         return {"off": None}
     return None
 
@@ -548,19 +553,21 @@ def _configure_launch(state: dict) -> str:
     return token
 
 
+# GOOGLE_GENAI_USE_ENTERPRISE outranks GOOGLE_GENAI_USE_VERTEXAI in the SDK; it reads either as on
+# only when the value is `true` in any case.
+_GOOGLE_VERTEX_SWITCHES = ("GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_GENAI_USE_ENTERPRISE")
+
+
 def build_runtime_env(token: str) -> dict[str, str]:
     env = os.environ.copy()
     env["OAUTH_TOKEN"] = token
     env["PI_CODING_AGENT_DIR"] = str(PI_CONFIG_DIR)
-    # An inherited Vertex switch (often exported for other tools) sends Pi's Google SDK to Vertex
-    # `publishers/google/models/...` paths, which the gateway's Gemini route rejects. Pi has no
-    # provider setting for this, so pin the SDK's switches. GOOGLE_GENAI_USE_ENTERPRISE outranks
-    # GOOGLE_GENAI_USE_VERTEXAI, so it is pinned too when set. GOOGLE_CLOUD_PROJECT and
-    # GOOGLE_CLOUD_LOCATION are kept: the Gemini API backend ignores them, and gcloud or Vertex
-    # code run from Pi's shell still needs them.
-    env["GOOGLE_GENAI_USE_VERTEXAI"] = "false"
-    if "GOOGLE_GENAI_USE_ENTERPRISE" in env:
-        env["GOOGLE_GENAI_USE_ENTERPRISE"] = "false"
+    # The gateway's Gemini route rejects the Vertex paths Pi's Google SDK uses when an inherited
+    # switch turns Vertex on. Pi has no per-provider setting, so a switch that is on is turned off
+    # here, which Pi's shell and child processes also inherit. Unset switches are left unset.
+    for name in _GOOGLE_VERTEX_SWITCHES:
+        if env.get(name, "").lower() == "true":
+            env[name] = "false"
     return env
 
 
