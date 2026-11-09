@@ -11,7 +11,9 @@ type Decision = {
 type Detail = {
   id: string;
   failed: boolean;
-  prompt: string;
+  preview: string | null;
+  promptLength: number | null;
+  promptHash: string | null;
   subagent: string | null;
   selected: string;
   requested: string | null;
@@ -33,22 +35,30 @@ function parseDecision(raw: string, id: string): Detail {
   let data: { v?: unknown; decision?: unknown } | null;
   try { data = JSON.parse(raw); } catch { throw new Error('invalid decision JSON'); }
   const d = data?.decision as Record<string, unknown> | null | undefined;
-  const prompt = d?.prompt as { preview?: unknown } | null | undefined;
+  const prompt = d?.prompt as { preview?: unknown; sha256?: unknown; length?: unknown } | null | undefined;
   const original = d?.original as { subagent_type?: unknown } | null | undefined;
-  const candidates = Array.isArray(d?.candidates) ? (d.candidates as unknown[]) : null;
-  if (data?.v !== 1 || !d || d.decision_id !== id ||
-    (prompt !== null && prompt !== undefined && (typeof prompt !== 'object' || (prompt.preview !== null && typeof prompt.preview !== 'string'))) ||
-    (original !== null && original !== undefined && (typeof original !== 'object' || (original.subagent_type !== null && typeof original.subagent_type !== 'string'))) ||
+  const candidates = Array.isArray(d?.candidates) ? d.candidates : [];
+  const validPrompt = prompt == null || (typeof prompt === 'object' && !Array.isArray(prompt) &&
+    (prompt.preview === null || typeof prompt.preview === 'string') &&
+    typeof prompt.sha256 === 'string' && /^[a-f0-9]{64}$/i.test(prompt.sha256) &&
+    typeof prompt.length === 'number' && Number.isInteger(prompt.length) && prompt.length >= 0);
+  const validOriginal = original == null || (typeof original === 'object' && !Array.isArray(original) &&
+    (original.subagent_type === null || typeof original.subagent_type === 'string'));
+  const validCandidates = Array.isArray(d?.candidates) && candidates.every(candidate =>
+    candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate) &&
+    typeof (candidate as { model?: unknown }).model === 'string');
+  if (data?.v !== 1 || !d || d.decision_id !== id || !validPrompt || !validOriginal ||
     typeof d.selected_model !== 'string' || !Number.isFinite(d.routing_ms) ||
     (d.requested_model !== null && typeof d.requested_model !== 'string') ||
-    (d.rationale !== null && typeof d.rationale !== 'string') || !candidates ||
-    candidates.some(c => !c || typeof (c as { model?: unknown }).model !== 'string')) {
+    (d.rationale !== null && typeof d.rationale !== 'string') || !validCandidates) {
     throw new Error('invalid decision response');
   }
   return {
     id,
     failed: false,
-    prompt: typeof prompt?.preview === 'string' ? prompt.preview : '(prompt not recorded)',
+    preview: typeof prompt?.preview === 'string' ? prompt.preview : null,
+    promptLength: typeof prompt?.length === 'number' ? prompt.length : null,
+    promptHash: typeof prompt?.sha256 === 'string' ? prompt.sha256.slice(0, 12) : null,
     // UG's own route agents (`ucode-route-<model>`) name a model, not a task type, and
     // would contradict the selected model, so only other subagent types are shown.
     subagent: typeof original?.subagent_type === 'string' && !/(^|:)ucode-route-/.test(original.subagent_type)
@@ -57,13 +67,14 @@ function parseDecision(raw: string, id: string): Detail {
     requested: typeof d.requested_model === 'string' ? d.requested_model : null,
     routing_ms: d.routing_ms,
     rationale: typeof d.rationale === 'string' ? d.rationale : null,
-    candidates: candidates.map(c => (c as { model: string }).model),
+    candidates: candidates.map(candidate => (candidate as { model: string }).model),
   };
 }
 
 function failedDetail(id: string): Detail {
   return {
-    id, failed: true, prompt: '', subagent: null, selected: '', requested: null, routing_ms: 0, rationale: null, candidates: [],
+    id, failed: true, preview: null, promptLength: null, promptHash: null,
+    subagent: null, selected: '', requested: null, routing_ms: 0, rationale: null, candidates: [],
   };
 }
 
@@ -185,10 +196,12 @@ async function load($: any, options: PluginOptions): Promise<void> {
 
 export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnabled: boolean): void {
   let detail: Detail | null = null;
+  let detailRequest = 0;
 
   on('command.run', { command: 'smart-router' }, async ($, e, next) => {
     if (e.args.trim() !== 'logs') return next(e);
     if (!launchedEnabled) return { text: 'Smart Router was not enabled for this session.' };
+    detailRequest++;
     detail = null;
     await load($, options);
     try {
@@ -213,14 +226,19 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
       const children = [
         Button({
           key: 'back', plain: true, autoFocus: true, children: ['← Back'],
-          onPress: () => { detail = null; $.ui.invalidate('ui.render'); },
+          onPress: () => { detailRequest++; detail = null; $.ui.invalidate('ui.render'); },
         }),
       ];
       if (detail.failed) {
         children.push(Text({ children: ['Could not load this routing decision.'] }));
       } else {
-        children.push(Text({ dimColor: true, children: [detail.subagent ? `Prompt (${detail.subagent})` : 'Prompt'] }));
-        children.push(Text({ children: [detail.prompt] }));
+        children.push(Text({ dimColor: true, children: [detail.subagent ? `Prompt preview (${detail.subagent})` : 'Prompt preview'] }));
+        children.push(Text({ children: [detail.preview ?? '(prompt not recorded)'] }));
+        if (detail.promptLength !== null) {
+          const hash = detail.promptHash ? ` · SHA-256: ${detail.promptHash}` : '';
+          children.push(Text({ dimColor: true, children: [`Length: ${detail.promptLength} characters${hash}`] }));
+        }
+        children.push(Text({ dimColor: true, children: ['Full prompt is not stored.'] }));
         const seconds = `${(detail.routing_ms / 1000).toFixed(1)}s`;
         children.push(Box({ flexDirection: 'row', children: [
           Text({ children: ['Selected: '] }),
@@ -231,7 +249,7 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
           children.push(Text({ dimColor: true, children: [`Requested: ${shortModel(detail.requested)}`] }));
         }
         children.push(Text({ dimColor: true, children: ['Rationale'] }));
-        children.push(Text({ children: [detail.rationale ?? 'No rationale returned.'] }));
+        children.push(Text({ children: [detail.rationale?.trim() ? detail.rationale : 'No rationale returned.'] }));
         children.push(Text({ dimColor: true, children: ['Candidates'] }));
         for (const candidate of detail.candidates) {
           children.push(Text({ children: [`${candidate === detail.selected ? '● ' : '○ '}${shortModel(candidate)}`] }));
@@ -255,7 +273,10 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
       children.push(Button({
         key: row.decision_id, plain: true,
         onPress: async () => {
-          detail = await openDecision($, options, row.decision_id);
+          const request = ++detailRequest;
+          const loaded = await openDecision($, options, row.decision_id);
+          if (request !== detailRequest) return;
+          detail = loaded;
           $.ui.invalidate('ui.render');
         },
         children: [
