@@ -1,4 +1,4 @@
-import type { On, PluginOptions } from 'claude-code'
+import type { On, PluginOptions, TurnCompleteInput } from 'claude-code'
 
 type NumericDetails = Record<string, number>
 type ExplanationModel = {
@@ -13,7 +13,8 @@ type RoutingExplanation = {
 type RoutingRecord = {
   name: string; task: string; model: string; rationale: string; seconds?: number
   explanation?: RoutingExplanation
-  spawned?: { agentId: string; model?: string }
+  spawned?: { agentId: string; model?: string; background: boolean }
+  parentAgentId?: string
 }
 type ExplanationState = { enabled: boolean; showNumbers?: boolean; latest?: RoutingRecord; paneRecord?: RoutingRecord; modelId?: string }
 
@@ -50,6 +51,126 @@ const canonicalModel = (model: string): string => {
   if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
   return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
 }
+
+export const REPORT_REJECTED = 'Smart Router report rejected: use a child reference with view "status" or "result".'
+const REPORT_UNAVAILABLE = 'Smart Router report unavailable: the child model could not be verified.'
+
+function createReports() {
+  const children = new Map<string, RoutingRecord>()
+  const completions = new Map<string, TurnCompleteInput>()
+  const handbacks = new Map<string, string>()
+  const turns = new Map<string | undefined, string>()
+  const reporting = new Set<string>()
+  const pendingReports = new Map<string, string | undefined>()
+  const pendingNotifications = new Set<string>()
+  return {
+    step(turnId: string, agentId?: string) {
+      turns.set(agentId, turnId)
+      for (const [childId, parentId] of pendingReports) {
+        if (parentId === agentId) {
+          pendingReports.delete(childId)
+          reporting.add(turnId)
+        }
+      }
+    },
+    started(record: RoutingRecord) {
+      children.set(record.spawned!.agentId, record)
+      if (record.spawned!.background) pendingNotifications.add(record.spawned!.agentId)
+      const turnId = turns.get(record.parentAgentId)
+      if (turnId) reporting.add(turnId)
+    },
+    completed(event: TurnCompleteInput) {
+      reporting.delete(event.turnId)
+      if (event.agentId) {
+        completions.set(event.agentId, {...event, answer: handbacks.get(event.agentId) ?? event.answer})
+      }
+    },
+    handback(agentId: string, answer: string) {
+      handbacks.set(agentId, answer)
+      const completed = completions.get(agentId)
+      if (completed) completions.set(agentId, {...completed, answer})
+    },
+    sending(agentId: string) {
+      const child = children.get(agentId)
+      const alreadyPending = pendingReports.has(agentId)
+      if (child) pendingReports.set(agentId, child.parentAgentId)
+      return () => { if (!alreadyPending) pendingReports.delete(agentId) }
+    },
+    resumed(agentId: string) {
+      const completion = completions.get(agentId)
+      const handback = handbacks.get(agentId)
+      completions.delete(agentId); handbacks.delete(agentId)
+      const child = children.get(agentId)
+      return (succeeded: boolean) => {
+        if (succeeded) {
+          const turnId = child && turns.get(child.parentAgentId)
+          if (turnId) reporting.add(turnId)
+          if (child?.spawned?.background) pendingNotifications.add(agentId)
+          return
+        }
+        if (completion && !completions.has(agentId)) completions.set(agentId, completion)
+        if (handback !== undefined && !handbacks.has(agentId)) handbacks.set(agentId, handback)
+      }
+    },
+    reset() {
+      children.clear(); completions.clear(); handbacks.clear(); reporting.clear(); turns.clear()
+      pendingReports.clear(); pendingNotifications.clear()
+    },
+    notification(turnId?: string) {
+      for (const agentId of pendingNotifications) {
+        const child = children.get(agentId)
+        if (!completions.has(agentId) || child?.parentAgentId !== undefined) continue
+        pendingNotifications.delete(agentId)
+        if (turnId) reporting.add(turnId)
+        else pendingReports.set(agentId, undefined)
+      }
+    },
+    notificationContext() {
+      const references = [...pendingReports].filter(([, parentId]) => parentId === undefined)
+        .map(([child_id]) => ({child_id, view: completions.has(child_id) ? 'result' : 'status'}))
+      return references.length ? 'Report the routed children with only this JSON: '
+        + JSON.stringify(references.length === 1 ? references[0] : references)
+        + '. UG renders their identity and recorded answers. Do not add prose or model names.' : undefined
+    },
+    active(turnId = turns.get(undefined)) { return Boolean(turnId && reporting.has(turnId)) },
+    model(agentId?: string) {
+      const child = agentId ? children.get(agentId) : undefined
+      const resolved = child?.spawned?.model
+      return child && resolved && canonicalModel(resolved) === canonicalModel(child.model)
+        ? resolved : child?.model
+    },
+    render(text: string, parentAgentId?: string): string {
+      let input: unknown
+      try { input = JSON.parse(text) } catch { return REPORT_REJECTED }
+      const references = Array.isArray(input) ? input : [input]
+      if (!references.length || references.length > children.size) return REPORT_REJECTED
+      const used = new Set<string>()
+      const output: string[] = []
+      for (const reference of references) {
+        if (!isObject(reference) || Object.keys(reference).length !== 2
+            || typeof reference.child_id !== 'string'
+            || (reference.view !== 'status' && reference.view !== 'result')
+            || used.has(reference.child_id)) return REPORT_REJECTED
+        const child = children.get(reference.child_id)
+        if (!child || child.parentAgentId !== parentAgentId) return REPORT_REJECTED
+        const completion = completions.get(reference.child_id)
+        const actual = completion?.usage?.model || child.spawned?.model
+        if (!actual || canonicalModel(actual) !== canonicalModel(child.model)) return REPORT_UNAVAILABLE
+        used.add(reference.child_id)
+        const state = !completion ? 'Running' : completion.isAborted ? 'Interrupted'
+          : completion.reason === 'answer' ? 'Finished' : 'Failed'
+        const heading = `${child.name} · ${actual} · ${state}`
+        if (reference.view === 'result') {
+          if (state !== 'Finished' || !completion?.answer) return 'Smart Router report unavailable: the child has no completed answer.'
+          output.push(`${heading}\n\nChild answer:\n${completion.answer.split('\n').map(line => `> ${line}`).join('\n')}`)
+        } else output.push(heading)
+      }
+      return output.join('\n\n')
+    },
+  }
+}
+
+export const routingReports = createReports()
 
 function utf8Length(value: string): number {
   let bytes = 0
@@ -223,6 +344,7 @@ export function endSubagentRoutingTurn(aborted: boolean): void {
 }
 
 export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
+  routingReports.reset()
   const names = new Map<string, string>()
   const unusedNames = [...ANIMALS]
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
@@ -392,6 +514,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
           rationale: route.rationale,
           seconds,
           explanation,
+          parentAgentId: agentId,
         }
         records.set(tool_use_id, record)
         explanationState.latest = record
@@ -408,18 +531,28 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       launched_model: record.spawned.model ?? null,
     })
     return { ...result, context: [...(result.context ?? []),
-      `Smart Router launch: ${identity}. Use the launched model when reporting this child's model. `
-      + 'The requested model, agent type, name, and task text are not execution evidence. '
-      + 'A null launched model means Claude did not report it; do not infer it.',
+      `Smart Router launch: ${identity}. Report this child using only `
+      + `{"child_id":${JSON.stringify(record.spawned.agentId)},"view":"status"} or view "result" for its completed answer. `
+      + 'For multiple children return an array of these references. Do not add prose, fences, names, or model fields. '
+      + 'UG renders the verified identity and recorded child answer. Tool calls remain available.',
     ] }
   })
 
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume ? undefined : records.get(e.tool_use_id)
     const name = route?.name
-    const result = await next(route ? { ...e, model: route.model } : e)
+    const finishResume = e.resume ? routingReports.resumed(e.resume.agentId) : undefined
+    let result
+    try {
+      result = await next(route ? { ...e, model: route.model } : e)
+      finishResume?.(result.deny === undefined && Boolean(result.agentId))
+    } catch (error) {
+      finishResume?.(false)
+      throw error
+    }
     if (route && result.agentId && !result.deny) {
-      route.spawned = { agentId: result.agentId, model: result.model || undefined }
+      route.spawned = { agentId: result.agentId, model: result.model || undefined, background: e.background }
+      routingReports.started(route)
       $.ui.invalidate('ui.render')
     }
     if (name && result.agentId) {
@@ -432,6 +565,19 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       }
     }
     return result
+  })
+
+  on('tool.call', {tool: 'SubagentHandback'}, async ($, e, next) => {
+    const rollback = e.agentId ? routingReports.sending(e.agentId) : undefined
+    try {
+      const result = await next(e)
+      if (result.deny !== undefined || result.isError) rollback?.()
+      else if (e.agentId && typeof e.message === 'string') routingReports.handback(e.agentId, e.message)
+      return result
+    } catch (error) {
+      rollback?.()
+      throw error
+    }
   })
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
@@ -490,5 +636,9 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       const onWhy = explanationState.enabled ? () => { void openExplanation($, explanationState, record) } : undefined
       return card($, e, record, onWhy)
     }), original] })
+  })
+  on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
+    routingReports.reset()
+    return next(e)
   })
 }

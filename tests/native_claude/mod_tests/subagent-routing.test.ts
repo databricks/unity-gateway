@@ -692,3 +692,430 @@ test('parent receives the successful child model without rewriting requested inp
     expect(note).not.toContain('1+1');
   }
 });
+
+async function collectParentTurn($: any, turnId: string, index = 1) {
+  const stream = $.turn.step({
+    turnId, index, model: 'parent-model', messageCount: 3, agentId: undefined,
+  });
+  const chunks: any[] = [];
+  let item = await stream.next();
+  while (!item.done) {
+    chunks.push(item.value);
+    item = await stream.next();
+  }
+  return {
+    chunks,
+    result: item.value,
+    text: chunks.filter((chunk) => chunk.kind === 'text').map((chunk) => chunk.text).join(''),
+  };
+}
+
+test('main parent resolves split child reports after reverse and early completion, then resets on a fresh prompt', async ($, on) => {
+  const selectedModels: Record<string, string> = {
+    'call-a': 'claude-sonnet-5',
+    'call-b': 'claude-opus-4-8',
+  };
+  const inputs = ['call-a', 'call-b'].map((id) => ({
+    tool: 'Agent' as const,
+    tool_use_id: id,
+    prompt: 'Inspect ' + id,
+    description: 'Inspect ' + id,
+    subagent_type: 'Explore',
+    model: 'sonnet',
+    run_in_background: true,
+  }));
+  let report = JSON.stringify([
+    { child_id: 'child-call-a', view: 'status' },
+    { child_id: 'child-call-b', view: 'result' },
+  ]);
+  const toolChunk = { kind: 'tool' as const, index: 2, id: 'read-one', name: 'Read' };
+  const toolInputChunk = {
+    kind: 'input' as const, index: 2, json: JSON.stringify({ file_path: 'README.md' }),
+  };
+  const toolUse = { name: 'Read', input: { file_path: 'README.md' } };
+  const thinkingChunk = { kind: 'thinking' as const, index: 0, text: 'private thought' };
+  let reportReady = false;
+  const forwardedInputs: any[] = [];
+  const handbacks: any[] = [];
+  const forwardedSpawns: any[] = [];
+  const submittedPrompts: any[] = [];
+  const handbackFailures = new Map([
+    ['handback-denied', 'deny'], ['handback-thrown', 'throw'],
+  ] as const);
+  const resumeFailures = new Map([
+    ['child-call-a', 'deny'], ['child-call-b', 'throw'],
+  ] as const);
+  const finishToolCall = new Map<string, (result: any) => void>();
+  let toolCallsReadyResolve: () => void = () => {};
+  const toolCallsReady = new Promise<void>((resolve) => { toolCallsReadyResolve = resolve; });
+  let finishSpawnA: ((result: any) => void) | undefined;
+  let spawnAReadyResolve: () => void = () => {};
+  const spawnAReady = new Promise<void>((resolve) => { spawnAReadyResolve = resolve; });
+
+  on('session.id', () => ({ value: 'session-1' }));
+  on('clock.every', () => ({ value: { cancel: () => {} } }));
+  on('process.run', ($, event) => {
+    const id = JSON.parse(event.init.stdin).tool_use_id;
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: selectedModels[id], rationale: 'Selected for the task',
+    }) } };
+  });
+  on('fs.write', () => ({ value: undefined }));
+  on('agent.spawn', ($, event) => {
+    forwardedSpawns.push(event);
+    if (event.resume) {
+      const failure = resumeFailures.get(event.resume.agentId);
+      if (failure === 'deny') return { deny: 'Resume denied' };
+      if (failure === 'throw') throw new Error('Resume failed');
+    }
+    if (event.tool_use_id === 'call-a') {
+      return new Promise<any>((resolve) => {
+        finishSpawnA = resolve;
+        spawnAReadyResolve();
+      });
+    }
+    return { agentId: 'child-' + event.tool_use_id, model: event.model };
+  });
+  on('tool.call', ($, event) => {
+    if (event.tool === 'SubagentHandback') {
+      handbacks.push(event);
+      const failure = handbackFailures.get(event.tool_use_id);
+      if (failure === 'deny') return { deny: 'Handback denied' };
+      if (failure === 'throw') throw new Error('Handback failed');
+      return { result: 'Handback recorded' };
+    }
+    forwardedInputs.push(event);
+    return new Promise<any>((resolve) => {
+      finishToolCall.set(event.tool_use_id, resolve);
+      if (finishToolCall.size === inputs.length) toolCallsReadyResolve();
+    });
+  });
+  on('turn.complete', () => ({ text: '' }));
+  on('prompt.submit', ($, event) => {
+    submittedPrompts.push(event);
+    return { text: event.text };
+  });
+  on('turn.step', async function* ($, event) {
+    if (event.turnId === 'parent-report') {
+      if (!reportReady) {
+        return {
+          turnId: event.turnId, index: event.index, answer: '',
+          toolUses: [], stopReason: null, usage: null,
+        };
+      }
+      const split = Math.floor(report.length / 2);
+      yield thinkingChunk;
+      yield { kind: 'text', index: 1, text: report.slice(0, split) };
+      yield toolChunk;
+      yield toolInputChunk;
+      yield { kind: 'text', index: 3, text: report.slice(split) };
+      return {
+        turnId: event.turnId, index: event.index, answer: report,
+        toolUses: [toolUse], stopReason: 'tool_use', usage: null,
+      };
+    }
+    if (event.turnId === 'notification-turn') {
+      const status = JSON.stringify({ child_id: 'child-call-a', view: 'status' });
+      yield { kind: 'text', index: 0, text: status };
+      return {
+        turnId: event.turnId, index: event.index, answer: status,
+        toolUses: [], stopReason: 'end_turn', usage: null,
+      };
+    }
+    const answer = 'A regular main-only answer.';
+    yield { kind: 'text', index: 0, text: answer };
+    return {
+      turnId: event.turnId, index: event.index, answer,
+      toolUses: [], stopReason: 'end_turn', usage: null,
+    };
+  });
+
+  const spawnArgs = (id: string) => {
+    const input = inputs.find((candidate) => candidate.tool_use_id === id)!;
+    return {
+      tool_use_id: id, prompt: input.prompt, description: input.description,
+      subagentType: input.subagent_type, parentModel: 'parent-model',
+      provider: { plugin: 'engine', tier: 'core' as const }, background: true, fork: false,
+      name: 'caller-' + id, permissionMode: 'default', parentAgentId: undefined, cwd: '/workspace',
+    };
+  };
+
+  expect((await collectParentTurn($, 'parent-report', 0)).text).toBe('');
+  const pendingToolCalls = inputs.map((input) => $.tool.call(input));
+  await toolCallsReady;
+  const pendingSpawnA = $.agent.spawn(spawnArgs('call-a'));
+  await spawnAReady;
+  const childB = await $.agent.spawn(spawnArgs('call-b'));
+  const handedBackAnswer = 'Handed-back answer from child B';
+  await $.tool.call({
+    tool: 'SubagentHandback', agentId: 'child-call-b', tool_use_id: 'handback-b', message: handedBackAnswer,
+  });
+  expect(handbacks).toEqual([{
+    tool: 'SubagentHandback', agentId: 'child-call-b', tool_use_id: 'handback-b', message: handedBackAnswer,
+  }]);
+  await $.turn.complete({
+    agentId: 'child-call-b', turnId: 'child-turn-b', answer: 'Original answer from child B',
+    reason: 'answer', isAborted: false, durationMs: 1,
+  });
+  await $.turn.complete({
+    agentId: 'child-call-a', turnId: 'child-turn-a', answer: 'Answer from child A',
+    reason: 'answer', isAborted: false, durationMs: 1,
+  });
+  finishSpawnA!({ agentId: 'child-call-a', model: selectedModels['call-a'] });
+  const childA = await pendingSpawnA;
+  expect(childA).toEqual({ agentId: 'child-call-a', model: selectedModels['call-a'] });
+  expect(childB).toEqual({ agentId: 'child-call-b', model: selectedModels['call-b'] });
+  expect(forwardedInputs).toEqual(inputs);
+  expect(forwardedSpawns).toEqual([
+    { ...spawnArgs('call-a'), model: selectedModels['call-a'] },
+    { ...spawnArgs('call-b'), model: selectedModels['call-b'] },
+  ]);
+  finishToolCall.get('call-a')!({ result: { agentId: 'child-call-a' }, text: 'Child A launched' });
+  finishToolCall.get('call-b')!({ result: { agentId: 'child-call-b' }, text: 'Child B launched' });
+  const launchResults = await Promise.all(pendingToolCalls);
+  expect(launchResults[0].context.join('\n')).toContain('"launched_model":"claude-sonnet-5"');
+  expect(launchResults[1].context.join('\n')).toContain('"launched_model":"claude-opus-4-8"');
+
+  reportReady = true;
+  const parent = await collectParentTurn($, 'parent-report', 1);
+  expect(parent.text).toBe(parent.result.answer);
+  expect(parent.text).toMatch(/^[A-Z][a-z]+(?: \d+)? · claude-sonnet-5 · Finished$/m);
+  expect(parent.text).toMatch(/^[A-Z][a-z]+(?: \d+)? · claude-opus-4-8 · Finished$/m);
+  expect(parent.text).toContain('Child answer:\n> ' + handedBackAnswer);
+  expect(parent.text).not.toContain('Original answer from child B');
+  expect(parent.text.indexOf('claude-sonnet-5')).toBeLessThan(parent.text.indexOf('claude-opus-4-8'));
+  expect(parent.chunks.find((chunk) => chunk.kind === 'tool')).toEqual(toolChunk);
+  expect(parent.chunks.find((chunk) => chunk.kind === 'input')).toEqual(toolInputChunk);
+  expect(parent.chunks.some((chunk) => chunk.kind === 'thinking')).toBe(false);
+  expect(parent.text).not.toContain('private thought');
+  expect(parent.result.toolUses).toEqual([toolUse]);
+
+  report = JSON.stringify([
+    { child_id: 'child-call-a', view: 'result' },
+    { child_id: 'child-call-b', view: 'result' },
+  ]);
+  const deniedHandback = await $.tool.call({
+    tool: 'SubagentHandback', agentId: 'child-call-b', tool_use_id: 'handback-denied',
+    message: 'Denied replacement answer',
+  });
+  expect(deniedHandback).toEqual({ deny: 'Handback denied' });
+  const afterDeniedHandback = await collectParentTurn($, 'parent-report', 2);
+  expect(afterDeniedHandback.text).toContain('Child answer:\n> ' + handedBackAnswer);
+  expect(afterDeniedHandback.text).not.toContain('Denied replacement answer');
+
+  let handbackThrew = false;
+  try {
+    await $.tool.call({
+      tool: 'SubagentHandback', agentId: 'child-call-b', tool_use_id: 'handback-thrown',
+      message: 'Thrown replacement answer',
+    });
+  } catch {
+    handbackThrew = true;
+  }
+  expect(handbackThrew).toBe(true);
+  const afterThrownHandback = await collectParentTurn($, 'parent-report', 3);
+  expect(afterThrownHandback.text).toContain('Child answer:\n> ' + handedBackAnswer);
+  expect(afterThrownHandback.text).not.toContain('Thrown replacement answer');
+
+  const deniedResume = await $.agent.spawn({
+    ...spawnArgs('call-a'), resume: { agentId: 'child-call-a' },
+  });
+  expect(deniedResume).toEqual({ deny: 'Resume denied' });
+  const afterDeniedResume = await collectParentTurn($, 'parent-report', 4);
+  expect(afterDeniedResume.text).toContain('Child answer:\n> Answer from child A');
+  expect(afterDeniedResume.text).toContain('Child answer:\n> ' + handedBackAnswer);
+
+  let resumeThrew = false;
+  try {
+    await $.agent.spawn({ ...spawnArgs('call-b'), resume: { agentId: 'child-call-b' } });
+  } catch {
+    resumeThrew = true;
+  }
+  expect(resumeThrew).toBe(true);
+  const afterThrownResume = await collectParentTurn($, 'parent-report', 5);
+  expect(afterThrownResume.text).toContain('Child answer:\n> Answer from child A');
+  expect(afterThrownResume.text).toContain('Child answer:\n> ' + handedBackAnswer);
+  await $.turn.complete({
+    turnId: 'parent-report', answer: afterThrownResume.result.answer, reason: 'answer',
+    isAborted: false, durationMs: 1,
+  });
+
+  await $.prompt.submit({
+    text: 'A background task update', wait: false, origin: { kind: 'task-notification' },
+  } as any);
+  const forwardedNotification = submittedPrompts.find((event) => event.text === 'A background task update');
+  const forwardedNotificationContext = forwardedNotification.context.join('\n');
+  expect(forwardedNotificationContext).toContain('"child_id":"child-call-a"');
+  expect(forwardedNotificationContext).toContain('"child_id":"child-call-b"');
+  expect(forwardedNotificationContext).toContain('"view":"result"');
+  const notification = await collectParentTurn($, 'notification-turn', 0);
+  expect(notification.text).toMatch(/^[A-Z][a-z]+(?: \d+)? · claude-sonnet-5 · Finished$/m);
+  expect(notification.text).toBe(notification.result.answer);
+  await $.turn.complete({
+    turnId: 'notification-turn', answer: notification.result.answer, reason: 'answer',
+    isAborted: false, durationMs: 1,
+  });
+
+  await $.prompt.submit({
+    text: 'An unrelated task update after completed reports were consumed.', wait: false,
+    origin: { kind: 'task-notification' },
+  } as any);
+  const unrelatedForwardedNotification = submittedPrompts.find((event) =>
+    event.text === 'An unrelated task update after completed reports were consumed.');
+  expect(unrelatedForwardedNotification.context).toBeUndefined();
+  const unrelatedNotification = await collectParentTurn($, 'unrelated-notification', 0);
+  expect(unrelatedNotification.text).toBe('A regular main-only answer.');
+  expect(unrelatedNotification.result.answer).toBe(unrelatedNotification.text);
+  await $.turn.complete({
+    turnId: 'unrelated-notification', answer: unrelatedNotification.text, reason: 'answer',
+    isAborted: false, durationMs: 1,
+  });
+
+  await $.prompt.submit({ text: 'fresh task', wait: false, origin: { kind: 'sdk' } });
+  const mainOnly = await collectParentTurn($, 'main-only', 0);
+  expect(mainOnly.text).toBe('A regular main-only answer.');
+  expect(mainOnly.result.answer).toBe(mainOnly.text);
+  await $.turn.complete({
+    turnId: 'main-only', answer: mainOnly.text, reason: 'answer',
+    isAborted: false, durationMs: 1,
+  });
+});
+
+test('invalid reports and stale or mismatched child references never reach the parent stream', async ($, on) => {
+  const selected = 'claude-sonnet-5';
+  const actual = 'claude-opus-4-8';
+  const rejected = 'Smart Router report rejected: use a child reference with view "status" or "result".';
+  const unavailable = 'Smart Router report unavailable: the child model could not be verified.';
+  const interrupted = 'Smart Router report interrupted: the model response did not complete.';
+  const partialWrongText = 'I started a Luna subagent and it found the answer.';
+  const frames: Array<{ text: string; expected: string; streamError?: boolean }> = [
+    { text: 'I started a Fox subagent.', expected: rejected },
+    { text: JSON.stringify({ child_id: 'child-one', view: 'status', model: actual }), expected: rejected },
+    { text: JSON.stringify({ child_id: 'old-child', view: 'status' }), expected: rejected },
+    { text: JSON.stringify({ child_id: 'child-one', view: 'status' }), expected: unavailable },
+    { text: JSON.stringify({ child_id: 'child-one', view: 'result' }), expected: unavailable },
+    { text: partialWrongText, expected: interrupted, streamError: true },
+  ];
+  const forwardedSpawns: any[] = [];
+  const submittedPrompts: any[] = [];
+  let finishToolCall: ((result: any) => void) | undefined;
+  let toolCallStartedResolve: () => void = () => {};
+  const toolCallStarted = new Promise<void>((resolve) => { toolCallStartedResolve = resolve; });
+  let promptSubmittedResolve: () => void = () => {};
+  const promptSubmitted = new Promise<void>((resolve) => { promptSubmittedResolve = resolve; });
+  let finishQueuedPrompt: ((result: any) => void) | undefined;
+
+  on('session.id', () => ({ value: 'session-1' }));
+  on('clock.every', () => ({ value: { cancel: () => {} } }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+    model: selected, rationale: 'Selected for the task',
+  }) } }));
+  on('fs.write', () => ({ value: undefined }));
+  on('agent.spawn', ($, event) => {
+    forwardedSpawns.push(event);
+    return { agentId: 'child-one', model: actual };
+  });
+  on('tool.call', () => new Promise<any>((resolve) => {
+    finishToolCall = resolve;
+    toolCallStartedResolve();
+  }));
+  on('turn.complete', () => ({ text: '' }));
+  on('prompt.submit', ($, event) => new Promise<any>((resolve) => {
+    submittedPrompts.push(event);
+    finishQueuedPrompt = resolve;
+    promptSubmittedResolve();
+  }));
+  on('turn.step', async function* ($, event) {
+    if (event.turnId === 'queued-user-turn') {
+      const answer = 'A fresh user-task answer.';
+      yield { kind: 'text', index: 0, text: answer };
+      return {
+        turnId: event.turnId, index: event.index, answer,
+        toolUses: [], stopReason: 'end_turn', usage: null,
+      };
+    }
+    if (event.turnId === 'parent-invalid' && event.index === 0) {
+      return {
+        turnId: event.turnId, index: event.index, answer: '',
+        toolUses: [], stopReason: null, usage: null,
+      };
+    }
+    const frame = frames[event.index - 1];
+    const answer = frame.text;
+    if (frame.streamError) {
+      yield { kind: 'text', index: 0, text: answer.slice(0, 24) };
+      throw new Error('synthetic native stream failure');
+    }
+    const split = Math.floor(answer.length / 2);
+    yield { kind: 'text', index: 0, text: answer.slice(0, split) };
+    yield { kind: 'text', index: 1, text: answer.slice(split) };
+    return {
+      turnId: event.turnId, index: event.index, answer,
+      toolUses: [], stopReason: 'end_turn', usage: null,
+    };
+  });
+
+  const input = {
+    tool: 'Agent' as const, tool_use_id: 'call-one', prompt: 'Inspect the parser',
+    description: 'Inspect the parser', subagent_type: 'Explore', model: 'sonnet',
+    run_in_background: true,
+  };
+  const spawnArgs = {
+    tool_use_id: 'call-one', prompt: input.prompt, description: input.description,
+    subagentType: input.subagent_type, parentModel: 'parent-model',
+    provider: { plugin: 'engine', tier: 'core' as const }, background: true, fork: false,
+    name: 'caller-one', permissionMode: 'default', parentAgentId: undefined, cwd: '/workspace',
+  };
+  expect((await collectParentTurn($, 'parent-invalid', 0)).text).toBe('');
+  const pendingToolCall = $.tool.call(input);
+  await toolCallStarted;
+  const child = await $.agent.spawn(spawnArgs);
+  expect(child).toEqual({ agentId: 'child-one', model: actual });
+  expect(forwardedSpawns).toEqual([{ ...spawnArgs, model: selected }]);
+  finishToolCall!({ result: { agentId: child.agentId }, text: 'Child launched' });
+  const launch = await pendingToolCall;
+  const receipt = launch.context.join('\n');
+  expect(receipt).toContain('"selected_model":"claude-sonnet-5"');
+  expect(receipt).toContain('"launched_model":"claude-opus-4-8"');
+  let queuedPromptResolved = false;
+  const queuedPrompt = $.prompt.submit({
+    text: 'Check this after the delegated work.', turnId: 'queued-user-turn', wait: true,
+    origin: { kind: 'composer' },
+  } as any).then((result: any) => { queuedPromptResolved = true; return result; });
+  await promptSubmitted;
+  expect(queuedPromptResolved).toBe(false);
+  expect(submittedPrompts[0]).toMatchObject({
+    text: 'Check this after the delegated work.', turnId: 'queued-user-turn', wait: true,
+  });
+  await $.turn.complete({
+    agentId: 'child-one', turnId: 'child-one-turn', answer: 'Verified child answer',
+    reason: 'answer', isAborted: false, durationMs: 1,
+  });
+
+  for (let index = 1; index <= frames.length; index++) {
+    const frame = await collectParentTurn($, 'parent-invalid', index);
+    expect(frame.text).toBe(frames[index - 1].expected);
+    expect(frame.result.answer).toBe(frames[index - 1].expected);
+    expect(frame.text).not.toContain(frames[index - 1].text);
+    if (index === 1) expect(queuedPromptResolved).toBe(false);
+    if (frames[index - 1].streamError) {
+      expect(frame.text).not.toContain(partialWrongText.slice(0, 24));
+      expect(frame.result.stopReason).toBeNull();
+      expect(frame.result.usage).toBeNull();
+      expect(frame.result.toolUses).toEqual([]);
+    }
+  }
+  await $.turn.complete({
+    turnId: 'parent-invalid', answer: frames[frames.length - 1].expected, reason: 'answer',
+    isAborted: false, durationMs: 1,
+  });
+  finishQueuedPrompt!({ text: 'Check this after the delegated work.' });
+  expect((await queuedPrompt).text).toBe('Check this after the delegated work.');
+  const queuedTurn = await collectParentTurn($, 'queued-user-turn', 0);
+  expect(queuedTurn.text).toBe('A fresh user-task answer.');
+  expect(queuedTurn.result.answer).toBe(queuedTurn.text);
+  await $.turn.complete({
+    turnId: 'queued-user-turn', answer: queuedTurn.text, reason: 'answer',
+    isAborted: false, durationMs: 1,
+  });
+});

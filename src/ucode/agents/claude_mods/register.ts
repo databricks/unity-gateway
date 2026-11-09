@@ -1,6 +1,6 @@
-import type { EngineInterface, On, PluginOptions } from 'claude-code';
+import type { EngineInterface, On, PluginOptions, TurnStepChunk } from 'claude-code';
 import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
-import { endSubagentRoutingTurn, registerSubagentRouting } from './subagent-routing.ts';
+import { endSubagentRoutingTurn, registerSubagentRouting, REPORT_REJECTED, routingReports } from './subagent-routing.ts';
 import {
   CLI_AGENT,
   CLI_MODULE,
@@ -14,6 +14,7 @@ import { createIsaacFeedbackState, registerIsaacFeedback } from './isaac-feedbac
 import { isRoutingEnabled } from './routing-state.ts';
 
 type Environment = Record<string, string | undefined>;
+const REPORT_INTERRUPTED = 'Smart Router report interrupted: the model response did not complete.';
 
 // Kept when a host description has no Usage notes section, so continuation stays native.
 // Copied from Claude Code 2.1.314's Agent Usage notes; its compact layout (no such section)
@@ -135,13 +136,56 @@ export function register(on: On, options: PluginOptions): void {
   });
 
   on('turn.step', async function* ($, e, next) {
+    routingReports.step(e.turnId, e.agentId);
     const active = await readOrchestratorState($, options);
     if (active !== orchestratorActive) {
       orchestratorActive = active;
       // A CLI/skill toggle changes the session file without notifying this process.
       $.ui.invalidate('tool.describe');
     }
-    return yield* next(e);
+    const model = routingReports.model(e.agentId);
+    const request = model ? {...e, model} : e;
+    if (!routingReports.active(e.turnId)) return yield* next(request);
+    // Buffer the response so invalid reporting text never reaches either consumer.
+    const stream = next(request);
+    const chunks: TurnStepChunk[] = [];
+    let text = '';
+    let overflow = false;
+    try {
+      let item = await stream.next();
+      while (!item.done) {
+        const chunk = item.value;
+        if (chunk.kind === 'text') {
+          if (text.length + chunk.text.length > 65536) overflow = true;
+          if (!overflow) text += chunk.text;
+          if (!chunks.some(c => c.kind === 'text')) chunks.push(chunk);
+        } else if (chunk.kind !== 'thinking') chunks.push(chunk);
+        item = await stream.next();
+      }
+      const answer = text || overflow ? (overflow ? REPORT_REJECTED : routingReports.render(text, e.agentId)) : '';
+      for (const chunk of chunks) yield chunk.kind === 'text' ? {...chunk, text: answer} : chunk;
+      return {...item.value, answer};
+    } catch {
+      const stop = chunks.find(chunk => chunk.kind === 'stop');
+      yield {kind: 'text', index: 0, text: REPORT_INTERRUPTED};
+      return {turnId: e.turnId, index: e.index, answer: REPORT_INTERRUPTED,
+        toolUses: [], stopReason: null, usage: stop?.usage ?? null};
+    }
+  }).catch(async function* ($, e, next) {
+    if (!routingReports.active(e.turnId)) return yield* next(e);
+    yield {kind: 'text', index: 0, text: REPORT_INTERRUPTED};
+    return {turnId: e.turnId, index: e.index, answer: REPORT_INTERRUPTED,
+      toolUses: [], stopReason: null, usage: null};
+  });
+
+  on('classic.Stop', async ($, e, next) => {
+    const result = await next(e);
+    if (!routingReports.active() || e.stop_hook_active || result.block || result.preventContinuation
+        || e.last_assistant_message !== REPORT_REJECTED) return result;
+    return {...result, block: 'Return only a JSON child reference using the actual agent ID from the '
+      + 'Smart Router launch receipt: {"child_id":"<agent ID>","view":"result"}. '
+      + 'Use view "status" if it is still running, or an array for multiple children. '
+      + 'UG renders the answer and identity; do not add prose, model names, or extra fields.'};
   });
 
   on('tool.describe', {tool: ['Agent', 'Task']}, async ($, e, next) => {
@@ -186,6 +230,7 @@ export function register(on: On, options: PluginOptions): void {
   registerSubagentRouting(on, options);
   // Claude allows one unmatched turn.complete handler per plugin, so both modules share it.
   on('turn.complete', ($, e, next) => {
+    routingReports.completed(e);
     endSubagentRoutingTurn(e.isAborted);
     if (endStatusBandTurn()) $.ui.invalidate('ui.render');
     return next(e);
