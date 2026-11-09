@@ -147,6 +147,27 @@ try {
     if ($newTask) { Invoke-Control $newTask }
     $editor = Wait-Control -Names @('Write your prompt to Claude')
     Save-UI 'new-task'
+    if ($task.capability -eq 'mcp') {
+        Invoke-Control (Wait-Control -Names @('Add files, connectors, and more'))
+        Start-Sleep -Seconds 1
+        Save-UI 'composer-menu'
+        $connectors = Find-Control -Names @('Connectors')
+        if ($connectors) {
+            Invoke-Control $connectors
+            Start-Sleep -Seconds 1
+            Save-UI 'connectors-menu'
+        }
+        $connector = Find-Control -Names @($task.server)
+        if ($connector) {
+            $toggle = $null
+            if ($connector.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$toggle)) {
+                if ($toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::Off) { $toggle.Toggle() }
+                $report.connectorEnabledInComposer = $true
+            }
+        }
+        [Windows.Forms.SendKeys]::SendWait('{ESC}')
+        [Windows.Forms.SendKeys]::SendWait('{ESC}')
+    }
     if ($task.capability -eq 'file') { Select-Folder }
     $editor = Wait-Control -Names @('Write your prompt to Claude')
     $valuePattern = $null
