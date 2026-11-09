@@ -135,6 +135,7 @@ from ucode.managed_config import (
 )
 from ucode.managed_files import (
     MANAGED_FILES_SUPPORTED_OSES,
+    OS,
     SKIP_OS_SETTINGS_ENV,
     ManagedFileWriteUnavailable,
     config_scope,
@@ -143,10 +144,12 @@ from ucode.managed_files import (
     machine_wide_only,
     managed_settings_skipped,
     managed_write_session,
+    mdm_managed,
     per_user_paths,
     request_explicit_managed_writes,
     set_config_scope,
     set_machine_wide_only,
+    set_mdm_run,
 )
 from ucode.managed_resolve import (
     OTEL_TRACING_TOOLS,
@@ -1400,6 +1403,11 @@ def _prompt_for_model_location() -> str:
         print_err("Model location must be `<catalog>.<schema>`.")
 
 
+MDM_MANAGED_NOTE = (
+    "Machine-wide settings are managed by your IT team. ug sets up only your own settings."
+)
+
+
 def configure_workspace_command(
     tool: str | None = None,
     selected_tools: list[str] | None = None,
@@ -1449,6 +1457,8 @@ def _configure_workspace_command(
 ) -> int:
     if tool is not None and selected_tools is not None:
         raise RuntimeError("Use either --agent or --agents, not both.")
+    if mdm_managed():
+        print_note(MDM_MANAGED_NOTE)
     refuse_user_scope_over_managed_files([tool] if tool else selected_tools or [])
 
     # The Databricks-vs-Model-Provider-Service picker is shown only on the fully
@@ -1936,6 +1946,8 @@ def status() -> int:
             f"Workspace-managed ({managed_freshness})" if managed else "Self-configured",
         )
     )
+    if mdm_managed():
+        provider_rows.append(("Machine-wide settings", "Managed by IT"))
     policy = (managed or {}).get("budget_policy")
     if isinstance(policy, dict):
         provider_rows.append(("Policy", str(policy.get("display_name") or "coding-agents-default")))
@@ -2027,6 +2039,27 @@ def _print_managed_revert_result(display: str, result: str, path: Path | None) -
     )
 
 
+def _revert_mdm_machine() -> str | None:
+    """Remove an MDM run's machine-wide files when this revert runs as root (e.g. from the MDM
+    policy). Returns the outcome to print, or None on a machine no MDM run manages."""
+    if not mdm_managed():
+        return None
+    from ucode import managed_mdm
+
+    if not managed_mdm.has_machine_privileges():
+        print_note(
+            "Machine-wide settings are managed by your IT team, so `ug revert` leaves them. "
+            "It still reverts your own settings."
+        )
+        return "managed by your IT team"
+    try:
+        removed = managed_mdm.revert_machine()
+    except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
+        print_warning(f"Could not remove the MDM-managed machine settings: {exc}")
+        return "failed"
+    return f"removed ({', '.join(removed)})" if removed else "unchanged"
+
+
 def revert() -> int:
     from ucode.agents.desktop.setup import revert_desktop
 
@@ -2040,9 +2073,15 @@ def revert() -> int:
         copilot_agent.sweep_session_registries()
     except OSError as exc:
         print_warning(f"Could not remove leftover Copilot session files: {exc}")
-    claude_managed_result = claude_agent.revert_managed_settings()
-    codex_managed_result = codex_agent.revert_managed_config()
-    workspace_policy_result = revert_machine_policy()
+    mdm_result = _revert_mdm_machine()
+    if mdm_managed():
+        # IT's MDM run owns the machine-wide files; a developer's revert leaves them alone.
+        claude_managed_result = codex_managed_result = "unchanged"
+        workspace_policy_result = "managed by your IT team"
+    else:
+        claude_managed_result = claude_agent.revert_managed_settings()
+        codex_managed_result = codex_agent.revert_managed_config()
+        workspace_policy_result = revert_machine_policy()
     from ucode.agents import vscode
 
     try:
@@ -2080,6 +2119,8 @@ def revert() -> int:
         "Codex", codex_managed_result, codex_agent.codex_managed_config_path()
     )
     print_kv("Unity Gateway workspace policy", workspace_policy_result)
+    if mdm_result is not None:
+        print_kv("MDM-managed machine settings", mdm_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     print_kv("VS Code extension", vscode_result)
     for client, spec in MCP_CLIENTS.items():
@@ -3105,9 +3146,32 @@ def auth_token_cmd(
     if not workspace:
         print_err("No workspace configured. Run `ug configure` first.")
         raise typer.Exit(1)
-    if profile is None and not explicit_host:
+    saved_workspace = state.get("workspace")
+    # A machine-wide helper (an MDM run's `ug auth-token --host <ws>`) runs as each developer and
+    # carries no per-user choices, so a host matching the saved workspace uses the saved ones.
+    uses_saved_choices = not explicit_host or (
+        isinstance(saved_workspace, str)
+        and bool(saved_workspace.strip())
+        and normalize_workspace_url(saved_workspace) == normalize_workspace_url(workspace)
+    )
+    saved_oauth = state.get("custom_oauth")
+    if (
+        uses_saved_choices
+        and explicit_host
+        and profile is None
+        and client_id is None
+        and not use_pat
+        and isinstance(saved_oauth, dict)
+        and isinstance(saved_oauth.get("client_id"), str)
+        and isinstance(saved_oauth.get("scopes"), list)
+    ):
+        client_id = saved_oauth["client_id"]
+        redirect_url = saved_oauth.get("redirect_url") or None
+        scopes = ",".join(saved_oauth["scopes"])
+        profile = saved_oauth.get("profile") or None
+    if profile is None and uses_saved_choices:
         profile = state.get("profile")
-    if client_id is None and (use_pat or state.get("use_pat")):
+    if client_id is None and (use_pat or (uses_saved_choices and state.get("use_pat"))):
         # --use-pat explicitly means "serve the profile's static PAT". Fail
         # closed if it can't be read rather than falling through to OAuth —
         # `auth token` cannot serve a PAT-only profile, so that path would
@@ -3485,6 +3549,10 @@ def _auto_configure_tool(
     existing = load_state()
     workspace = existing.get("workspace")
     profile = existing.get("profile")
+    if mdm_managed():
+        print_note(MDM_MANAGED_NOTE)
+        # The MDM run chose the machine's workspace, so the first launch needs no prompt.
+        workspace = workspace or managed_state_workspace()
     if not workspace:
         workspace, profile = _prompt_for_configuration(tool)
     configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
@@ -5238,6 +5306,8 @@ def configure(
             "--global",
             help="Write only machine-wide Claude Code/Codex settings and, on macOS, provision Claude "
             "Desktop through MDM, requesting sudo when needed. Leave per-user agent settings alone. "
+            "When the workspace publishes an agent configuration, rebuild the machine-wide files "
+            "from it (see docs/admin-managed-settings.md). "
             "Desktop MDM requires a shared runtime; without --global, Desktop writes only user-level files.",
         ),
     ] = False,
@@ -5257,6 +5327,14 @@ def configure(
             "'low' prints terse single-line status instead.",
         ),
     ] = "normal",
+    from_file: Annotated[
+        str | None,
+        typer.Option(
+            "--from-file",
+            help="With --global --dry-run: preview the machine-wide files a draft agent "
+            "configuration (the JSON `ug export` writes) produces, instead of the published one.",
+        ),
+    ] = None,
 ) -> None:
     """Configure workspace URL and Unity Gateway."""
     if ctx.invoked_subcommand is not None:
@@ -5266,6 +5344,29 @@ def configure(
         raise typer.Exit(2)
     set_dry_run(dry_run)
     set_verbosity(verbose)
+    if from_file is not None and not (global_scope and dry_run):
+        print_err("--from-file previews a draft, so it requires --global --dry-run.")
+        raise typer.Exit(2)
+    if global_scope and not user_scope:
+        # Raises typer.Exit when the workspace publishes an agent configuration; otherwise the
+        # merge below runs as before.
+        _configure_global_from_agent_config(
+            from_file=from_file,
+            dry_run=dry_run,
+            workspace=workspace if workspace is not None else workspaces,
+            profile=profile if profile is not None else profiles,
+            agent=agent,
+            agents=agents,
+            conflicting={
+                "--use-pat": use_pat,
+                "--client-id": client_id is not None,
+                "--mcp": mcp is not None,
+                "--provider": provider is not None,
+                "--model-location": model_location is not None,
+                "--enable-databricks-ai-tools": bool(enable_databricks_ai_tools),
+                "--enable-server-side-web-search": enable_server_side_web_search is not None,
+            },
+        )
     try:
         if global_scope and user_scope:
             raise RuntimeError("Use either --global or --user, not both.")
@@ -5495,6 +5596,113 @@ def configure(
         set_machine_wide_only(False)
 
 
+def _global_workspace(workspace: str | None, profile: str | None) -> str | None:
+    """The workspace a ``ug configure --global`` run targets without prompting, if one is known."""
+    workspace = workspace or os.environ.get("UG_WORKSPACE") or None
+    if workspace is None and profile is not None:
+        workspace = _parse_profile_option(profile)[0][0]
+    from ucode import managed_files
+
+    if workspace is None and (marker := managed_files.mdm_state()) is not None:
+        saved = marker.get("workspace")
+        workspace = saved if isinstance(saved, str) and saved else None
+    return workspace
+
+
+def _configure_global_from_agent_config(
+    *,
+    from_file: str | None,
+    dry_run: bool,
+    workspace: str | None,
+    profile: str | None,
+    agent: str | None,
+    agents: str | None,
+    conflicting: dict[str, bool],
+) -> None:
+    """``ug configure --global`` on a workspace that publishes an agent configuration.
+
+    Rebuilds Claude Code's and Codex's machine-wide files from the configuration and the
+    ownership tables (see :mod:`ucode.managed_mdm`), provisions Claude Desktop on macOS, and exits
+    with the documented code. Returns without doing anything when the workspace publishes no
+    configuration on a machine no earlier such run manages, or when the workspace isn't known
+    yet, so the caller's merge runs as before.
+    """
+    from ucode import managed_mdm
+    from ucode.agents.desktop.setup import configure_claude_desktop
+
+    code = managed_mdm.EXIT_OK
+    try:
+        if current_os() not in (OS.LINUX, OS.MACOS):
+            if from_file is not None:
+                raise managed_mdm.MdmError(
+                    managed_mdm.EXIT_USAGE, "--from-file previews macOS and Linux files only."
+                )
+            return
+        try:
+            target = _global_workspace(workspace, profile)
+        except RuntimeError as exc:
+            raise managed_mdm.MdmError(managed_mdm.EXIT_USAGE, str(exc)) from exc
+        if target is None:
+            if from_file is not None:
+                raise managed_mdm.MdmError(
+                    managed_mdm.EXIT_USAGE, "--from-file requires --workspace <url>."
+                )
+            return
+        key, host = managed_mdm.resolve_host(target)
+        set_mdm_run(True)
+        if from_file is not None:
+            raw: dict | None = managed_mdm.load_draft(from_file)
+        else:
+            try:
+                raw = managed_mdm.fetch_published(host, profile)
+            except managed_mdm.SignInUnavailable:
+                if mdm_managed():
+                    raise
+                return  # The merge signs in first and reads the configuration itself.
+        if raw is None:
+            if mdm_managed():
+                raise managed_mdm.no_config_error(host)
+            return
+        used = [flag for flag, present in conflicting.items() if present]
+        if used:
+            raise managed_mdm.MdmError(
+                managed_mdm.EXIT_USAGE,
+                f"{host} publishes an agent configuration, which decides the machine-wide "
+                f"settings, so `ug configure --global` can't be combined with {', '.join(used)}.",
+            )
+        if agent is not None and agents is not None:
+            raise managed_mdm.MdmError(
+                managed_mdm.EXIT_USAGE, "Use either --agent or --agents, not both."
+            )
+        agent, agents = _drop_per_user_agents(agent, agents)
+        if agent is None and agents == "":
+            # Every requested agent has only per-user settings: nothing to write.
+            raise typer.Exit(managed_mdm.EXIT_OK)
+        selected = managed_mdm.parse_agents(agents if agents is not None else agent)
+        if not dry_run:
+            managed_mdm.check_privileges()
+            try:
+                _require_shared_installation()
+            except RuntimeError as exc:
+                raise managed_mdm.MdmError(managed_mdm.EXIT_USAGE, str(exc)) from exc
+        code = managed_mdm.run(key=key, raw=raw, agents=selected, dry_run=dry_run, source=from_file)
+        enabled = normalize_managed_config(raw).get("enabled_agents") or {}
+        if from_file is None and "claude" in selected and "claude" in enabled:
+            # Best effort, as before: a Desktop failure warns without failing the run.
+            set_machine_wide_only(True)
+            configure_claude_desktop({"workspace": host, "profile": profile})
+    except managed_mdm.MdmError as exc:
+        print_err(str(exc))
+        raise typer.Exit(exc.code) from None
+    except KeyboardInterrupt:
+        print_err("Interrupted.")
+        raise typer.Exit(130) from None
+    finally:
+        set_mdm_run(False)
+        set_machine_wide_only(False)
+    raise typer.Exit(code)
+
+
 # Only these agents have machine-wide settings; every other agent is configured per user.
 MACHINE_WIDE_TOOLS = ("claude", "codex")
 
@@ -5528,7 +5736,7 @@ def _check_machine_wide_only_request(
         )
 
 
-def _require_shared_installation() -> None:
+def _require_shared_installation(command: str = "`ug configure --global`") -> None:
     """Reject ``ug configure --global`` when other users couldn't run this ug installation.
 
     The machine-wide settings run ``ug`` (and some helpers, its Python) for every user, so an
@@ -5537,7 +5745,7 @@ def _require_shared_installation() -> None:
     ug = ug_binary()
     if not os.path.isabs(ug):
         raise RuntimeError(
-            "`ug configure --global` needs `ug` on PATH, since machine-wide settings run it by its "
+            f"{command} needs `ug` on PATH, since machine-wide settings run it by its "
             "full path. Install ug where every user can run it, then rerun."
         )
     found = per_user_paths([ug, sys.executable])
@@ -5551,7 +5759,7 @@ def _require_shared_installation() -> None:
         "uv tool install git+https://github.com/databricks/unity-gateway` (see scripts/mdm)."
     )
     raise RuntimeError(
-        "`ug configure --global` writes settings every user's agents run, but this ug "
+        f"{command} writes settings every user's agents run, but this ug "
         f"installation is in a user's home folder: {', '.join(found)}. Reinstall ug in a shared "
         f"location every user can run, then rerun from that installation.{example}"
     )

@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 from tests.test_desktop_bundle import system_source as system_source
 from tests.test_desktop_mdm import WORKSPACE
 from tests.test_desktop_mdm import device as device
-from ucode import cli, config_io, managed_files, workspace
+from ucode import cli, config_io, managed_files, managed_mdm, workspace
 from ucode import state as state_store
 from ucode.agents.desktop import claude, cowork, mdm, setup
 
@@ -49,6 +49,9 @@ def desktop_configuration(device, monkeypatch):
     monkeypatch.setattr(cli, "install_databricks_ai_tools_for_agents", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "_configure_managed_mcp_servers", lambda *a, **kw: [])
     monkeypatch.setattr(cli, "_configure_managed_skills", lambda *a, **kw: True)
+    # These cases cover `--global`'s merge path; a published agent configuration's rebuild is
+    # covered in test_managed_mdm.py. Desktop's own read of the configuration stays real.
+    monkeypatch.setattr(managed_mdm, "fetch_published", lambda *a, **kw: None)
     return state
 
 

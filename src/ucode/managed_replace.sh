@@ -33,6 +33,9 @@ target_is_allowed() {
         "linux:/etc/claude-code/managed-settings.json"|\
         "linux:/etc/codex/managed_config.toml"|\
         "linux:/etc/unitygateway/managed-settings.json"|\
+        "linux:/etc/unitygateway/agents-state.json"|\
+        "linux:/etc/codex/requirements.toml"|\
+        "linux:/etc/codex/config.toml"|\
         "linux:/etc/claude-code/ucode-plugins/.claude-plugin/marketplace.json"|\
         "linux:/etc/claude-code/ucode-plugins/ug-headers/.claude-plugin/plugin.json"|\
         "linux:/etc/claude-code/ucode-plugins/ug-headers/hooks/hooks.json"|\
@@ -43,6 +46,9 @@ target_is_allowed() {
         "macos:/Library/Application Support/UnityGateway/claude-desktop-mdm/otel-headers.sh"|\
         "macos:/etc/codex/managed_config.toml"|\
         "macos:/etc/unitygateway/managed-settings.json"|\
+        "macos:/etc/unitygateway/agents-state.json"|\
+        "macos:/etc/codex/requirements.toml"|\
+        "macos:/etc/codex/config.toml"|\
         "macos:/Library/Application Support/ClaudeCode/ucode-plugins/.claude-plugin/marketplace.json"|\
         "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-headers/.claude-plugin/plugin.json"|\
         "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-headers/hooks/hooks.json"|\

@@ -147,6 +147,18 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 
 </details>
 
+`ug configure --global` on a workspace that publishes an agent configuration (an MDM run, as
+root) doesn't use the table above. It rebuilds
+Claude Code's managed file and Codex's `/etc/codex/requirements.toml` and `/etc/codex/config.toml`
+from scratch, from the agent configuration and the ownership tables in `src/ucode/ownership/*.toml`
+(`managed_mdm.py`). When a change makes ug write, strip, or reserve an agent key, update the matching
+table entry and regenerate `docs/admin-managed-settings.md` with
+`uv run python -m ucode.ownership --write docs/admin-managed-settings.md`; `just lint` and
+`tests/test_ownership.py` fail otherwise. The run leaves the marker `/etc/unitygateway/agents-state.json`;
+while it is present every other run treats the machine-wide files as skipped (like
+`UG_SKIP_OS_SETTINGS`) and reads the agent configuration copy the MDM run saved. Without a
+published configuration (and no marker), `--global` keeps the merge described above.
+
 Claude Desktop third-party profiles live under `Claude-3p/configLibrary` in
 `~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on current Windows releases,
 and `~/.config` on Linux. Windows can initialize the directory before first launch when Claude's registered MSIX package and executable are present. Linux requires Desktop to have opened once.

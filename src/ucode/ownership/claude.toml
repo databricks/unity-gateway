@@ -1,0 +1,248 @@
+# Ownership table for Claude Code's machine-wide managed-settings.json.
+#
+# `ug configure --global` (with a published agent configuration) builds the managed file from four layers:
+#   UG defaults < admin agent_native_settings < feature requirements < gateway requirements
+# This table says how UG treats each Claude Code key. Every key not listed passes through
+# from agent_native_settings unchanged.
+#
+# Fields:
+#   path             Dotted settings path, e.g. "env.ANTHROPIC_BASE_URL".
+#   class            reserved | conditionally_reserved | default | shared_list
+#   feature          For conditionally_reserved: tracing | models | smart_routing
+#   in_managed_file  false: UG never writes the key into the managed file, and the admin's value
+#                    is still dropped (defaults to true).
+#   value            For default: the constant UG writes unless the admin sets the key.
+#   note             Shown to admins in the docs and in the run report.
+#
+# After editing, regenerate the admin docs:
+#   uv run python -m ucode.ownership --write docs/admin-managed-settings.md
+# CI fails when the docs or the claude.py constants disagree with this file.
+
+agent = "claude"
+display = "Claude Code"
+
+[[entry]]
+path = "apiKeyHelper"
+class = "reserved"
+note = "Runs `ug auth-token`, which signs in as the developer."
+
+[[entry]]
+path = "env.ANTHROPIC_BASE_URL"
+class = "reserved"
+note = "The AI Gateway endpoint."
+
+[[entry]]
+path = "env.ANTHROPIC_CUSTOM_HEADERS"
+class = "reserved"
+note = "Use `http_headers` in the agent config."
+
+[[entry]]
+path = "env.CLAUDE_CODE_USE_GATEWAY"
+class = "reserved"
+note = "Routes Claude Code through the gateway."
+
+[[entry]]
+path = "env.CLAUDE_CODE_API_KEY_HELPER_TTL_MS"
+class = "reserved"
+note = "Tied to the token lifetime."
+
+[[entry]]
+path = "env.ANTHROPIC_AUTH_TOKEN"
+class = "reserved"
+note = "Written blank, so a stray shell credential can't replace the gateway sign-in."
+
+[[entry]]
+path = "env.ANTHROPIC_API_KEY"
+class = "reserved"
+note = "Written blank, so a stray shell credential can't replace the gateway sign-in."
+
+[[entry]]
+path = "env.CLAUDE_CODE_USE_BEDROCK"
+class = "reserved"
+note = "Written blank, so developers can't bypass the gateway."
+
+[[entry]]
+path = "env.CLAUDE_CODE_USE_VERTEX"
+class = "reserved"
+note = "Written blank, so developers can't bypass the gateway."
+
+[[entry]]
+path = "awsAuthRefresh"
+class = "reserved"
+in_managed_file = false
+note = "Has no effect while the Bedrock switch is blank."
+
+[[entry]]
+path = "awsCredentialExport"
+class = "reserved"
+in_managed_file = false
+note = "Has no effect while the Bedrock switch is blank."
+
+[[entry]]
+path = "gcpAuthRefresh"
+class = "reserved"
+in_managed_file = false
+note = "Has no effect while the Vertex switch is blank."
+
+[[entry]]
+path = "forceLoginMethod"
+class = "reserved"
+in_managed_file = false
+note = "The gateway handles sign-in."
+
+[[entry]]
+path = "env.ANTHROPIC_DEFAULT_FABLE_MODEL"
+class = "reserved"
+note = "Use `default_models`. Written when the agent config supplies one."
+
+[[entry]]
+path = "env.ANTHROPIC_DEFAULT_OPUS_MODEL"
+class = "reserved"
+note = "Use `default_models`. Written when the agent config supplies one."
+
+[[entry]]
+path = "env.ANTHROPIC_DEFAULT_SONNET_MODEL"
+class = "reserved"
+note = "Use `default_models`. Written when the agent config supplies one."
+
+[[entry]]
+path = "env.ANTHROPIC_DEFAULT_HAIKU_MODEL"
+class = "reserved"
+note = "Use `default_models`. Written when the agent config supplies one."
+
+[[entry]]
+path = "env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME"
+class = "reserved"
+in_managed_file = false
+note = "The model picker shows the routable model ID."
+
+[[entry]]
+path = "env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME"
+class = "reserved"
+in_managed_file = false
+note = "The model picker shows the routable model ID."
+
+[[entry]]
+path = "env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"
+class = "reserved"
+in_managed_file = false
+note = "The model picker shows the routable model ID."
+
+[[entry]]
+path = "env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME"
+class = "reserved"
+in_managed_file = false
+note = "The model picker shows the routable model ID."
+
+[[entry]]
+path = "env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"
+class = "reserved"
+in_managed_file = false
+note = "Would turn off 1-hour prompt caching."
+
+[[entry]]
+path = "env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
+class = "reserved"
+in_managed_file = false
+note = "Set per launch when the developer opts in."
+
+[[entry]]
+path = "env.ANTHROPIC_MODEL"
+class = "conditionally_reserved"
+feature = "smart_routing"
+in_managed_file = false
+note = "Set per launch while smart routing is on."
+
+[[entry]]
+path = "availableModels"
+class = "conditionally_reserved"
+feature = "models"
+note = "Use `models`. Written when the agent config lists models explicitly."
+
+[[entry]]
+path = "enforceAvailableModels"
+class = "conditionally_reserved"
+feature = "models"
+note = "Use `models`. Written when the agent config lists models explicitly."
+
+[[entry]]
+path = "modelPicker"
+class = "conditionally_reserved"
+feature = "models"
+note = "Use `models`. Written when the agent config lists models explicitly."
+
+[[entry]]
+path = "env.CLAUDE_CODE_ENABLE_TELEMETRY"
+class = "conditionally_reserved"
+feature = "tracing"
+note = "Unity Gateway tracing can't run alongside your own OTEL export."
+
+[[entry]]
+path = "env.CLAUDE_CODE_ENHANCED_TELEMETRY_BETA"
+class = "conditionally_reserved"
+feature = "tracing"
+note = "Unity Gateway tracing can't run alongside your own OTEL export."
+
+[[entry]]
+path = "env.OTEL_TRACES_EXPORTER"
+class = "conditionally_reserved"
+feature = "tracing"
+note = "Unity Gateway tracing can't run alongside your own OTEL export."
+
+[[entry]]
+path = "env.OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"
+class = "conditionally_reserved"
+feature = "tracing"
+note = "Unity Gateway tracing can't run alongside your own OTEL export."
+
+[[entry]]
+path = "env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+class = "conditionally_reserved"
+feature = "tracing"
+note = "Unity Gateway tracing can't run alongside your own OTEL export."
+
+[[entry]]
+path = "env.CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS"
+class = "conditionally_reserved"
+feature = "tracing"
+note = "Unity Gateway tracing can't run alongside your own OTEL export."
+
+[[entry]]
+path = "env.CLAUDE_CODE_PROPAGATE_TRACEPARENT"
+class = "conditionally_reserved"
+feature = "tracing"
+note = "Unity Gateway tracing can't run alongside your own OTEL export."
+
+[[entry]]
+path = "otelHeadersHelper"
+class = "conditionally_reserved"
+feature = "tracing"
+note = "Claude Code applies this helper to every OTEL signal, so your exporters would receive Unity Gateway's headers."
+
+[[entry]]
+path = "managedMcpServers"
+class = "reserved"
+note = "Databricks MCP servers come from `mcp_servers` in the agent config."
+
+[[entry]]
+path = "allowedMcpServers"
+class = "reserved"
+in_managed_file = false
+note = "Block servers with `deniedMcpServers`, which passes through."
+
+[[entry]]
+path = "env.ENABLE_PROMPT_CACHING_1H"
+class = "default"
+value = "1"
+note = "1-hour prompt caching."
+
+[[entry]]
+path = "env.ENABLE_TOOL_SEARCH"
+class = "default"
+value = "true"
+note = "Loads MCP tools on demand."
+
+[[entry]]
+path = "permissions.deny"
+class = "shared_list"
+note = "Unity Gateway adds `WebSearch`, because the gateway rejects Claude's hosted web search."

@@ -16,7 +16,16 @@ import pytest
 from typer.testing import CliRunner
 
 from tests.test_desktop_bundle import system_source as system_source
-from ucode import cli, config_io, managed_config, managed_files, mcp, skills_download, workspace
+from ucode import (
+    cli,
+    config_io,
+    managed_config,
+    managed_files,
+    managed_mdm,
+    mcp,
+    skills_download,
+    workspace,
+)
 from ucode.agents.desktop import cowork, mdm, setup
 from ucode.databricks import AnthropicModelCatalog
 from ucode.skills_api import SkillRef
@@ -630,6 +639,8 @@ def test_global_preserves_existing_auth_flow(device, monkeypatch, agent, externa
         monkeypatch.setenv(external_auth, "external-credential-input")
     monkeypatch.setattr(cli, "_parse_profile_option", lambda value: [(WORKSPACE, value)])
     monkeypatch.setattr(cli, "install_databricks_cli", lambda: None)
+    # The merge path's auth routing; a published configuration's rebuild is in test_managed_mdm.py.
+    monkeypatch.setattr(managed_mdm, "fetch_published", lambda *a, **kw: None)
     login = Mock()
     ensure_auth = Mock()
     monkeypatch.setattr(cli, "run_databricks_login", login)

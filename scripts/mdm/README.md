@@ -16,6 +16,12 @@ aliases (for `UG_SKIP_OS_SETTINGS=1 ug claude` / `ug codex`) to `/etc/zshrc` and
 developers launch with `claude` or `codex` in a new terminal: no sudo, and inference uses their own
 OAuth.
 
+When the workspace publishes an agent configuration, the script's `ug configure --global` run is a
+managed run: it rebuilds each supported agent's machine-wide files from the configuration,
+including the admin's native settings. Developers then launch their agents through `ug` with no
+extra variable. See
+[Admin-managed agent settings reference](../../docs/admin-managed-settings-reference.md).
+
 The script authenticates `ug configure` with a short-lived token for a service principal whose
 client id and secret come in as policy parameters; neither the credentials nor the token are
 written to disk. See [macos-setup.md](macos-setup.md) for the full setup.

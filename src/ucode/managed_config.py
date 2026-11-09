@@ -48,6 +48,8 @@ from ucode.managed_files import (
     current_os,
     managed_file_fingerprint,
     managed_settings_skipped,
+    mdm_managed,
+    mdm_run,
     update_workspace_policy,
 )
 from ucode.os_compatibility import system_cross_os
@@ -180,6 +182,8 @@ class AgentConfig:
     vscode_integration_enabled: bool | None = None
     # Harness-native settings delivered verbatim into the agent's managed settings file.
     settings: dict | None = None
+    # Codex only: enforced requirements delivered into requirements.toml by an MDM run.
+    requirements: dict | None = None
 
     @classmethod
     def from_wire(cls, config: object) -> AgentConfig:
@@ -197,6 +201,7 @@ class AgentConfig:
             otel_tracing_enabled=_enabled_flag(config_dict.get("tracing")),
             vscode_integration_enabled=_enabled_flag(config_dict.get("vscode_integration")),
             settings=_as_dict(config_dict.get("agent_native_settings")) or None,
+            requirements=_as_dict(config_dict.get("agent_native_requirements")) or None,
         )
 
     def to_internal(self) -> dict:
@@ -215,6 +220,8 @@ class AgentConfig:
             result["vscode_integration_enabled"] = self.vscode_integration_enabled
         if self.settings:
             result["agent_native_settings"] = self.settings
+        if self.requirements:
+            result["agent_native_requirements"] = self.requirements
         return result
 
 
@@ -919,6 +926,10 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     workspace = selected if force_refresh else managed_launch_workspace(selected)
     if not workspace:
         return ManagedConfigResult(None, False)
+    if mdm_managed() and not mdm_run():
+        # IT's MDM run fetched the policy and saved a copy; per-user runs read that copy, so the
+        # per-user settings follow the same policy as the machine-wide files, with no request.
+        return ManagedConfigResult(load_managed_state(workspace), False)
     host = split_workspace_key(workspace)[0]
     if not _machine_policy_installable() and _installed_config(workspace) is None:
         return _refresh_user_cache(state, workspace, force_refresh=force_refresh)
