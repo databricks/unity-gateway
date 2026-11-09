@@ -4829,6 +4829,73 @@ class TestClaudeReadManagedMcpUrls:
         assert claude.read_managed_mcp_urls() == {}
 
 
+class TestClaudeCodeConfigPath:
+    @pytest.mark.parametrize("custom_directory", [False, True])
+    @pytest.mark.parametrize("legacy_exists", [False, True])
+    @pytest.mark.parametrize("current_exists", [False, True])
+    def test_matches_native_config_selection(
+        self, tmp_path, monkeypatch, custom_directory, legacy_exists, current_exists
+    ):
+        directory = tmp_path / ("custom" if custom_directory else ".claude")
+        directory.mkdir()
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", tmp_path / ".claude.json")
+        if custom_directory:
+            monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(directory))
+        else:
+            monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        legacy = directory / ".claude.json" if custom_directory else tmp_path / ".claude.json"
+        current = directory / ".config.json"
+        for path, exists in ((legacy, legacy_exists), (current, current_exists)):
+            if exists:
+                path.write_text("{}")
+
+        assert claude.claude_code_config_path() == (current if current_exists else legacy)
+
+    def test_registration_and_gate_follow_existing_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        legacy = tmp_path / ".claude.json"
+        legacy.write_text('{"mcpServers": {}, "numStartups": 3}')
+        untouched = legacy.read_bytes()
+        current = tmp_path / ".config.json"
+        entry = claude._web_search_mcp_entry(WS, "search-model", "profile")
+        current.write_text(json.dumps({"mcpServers": {"web_search": entry}, "numStartups": 9}))
+
+        assert claude._web_search_mcp_is_current({claude.WEB_SEARCH_MCP_STATE_KEY: entry}, entry)
+        claude.ensure_hooks_modules_gate()
+        claude.write_user_mcp_servers(
+            {"other": {"type": "http", "url": "https://example.com"}}, set()
+        )
+
+        saved = json.loads(current.read_text())
+        assert saved["numStartups"] == 9
+        assert saved["cachedGrowthBookFeatures"][claude.CLAUDE_HOOKS_MODULES_GATE] is True
+        assert saved["mcpServers"]["web_search"] == entry
+        assert saved["mcpServers"]["other"]["url"] == "https://example.com"
+        assert legacy.read_bytes() == untouched
+
+    def test_does_not_fall_back_from_unreadable_current_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        legacy = tmp_path / ".claude.json"
+        legacy.write_text("{}")
+        current = tmp_path / ".config.json"
+        current.write_text("not json")
+
+        assert claude.claude_code_config_path() == current
+        claude.ensure_hooks_modules_gate()
+        assert current.read_text() == "not json"
+        assert legacy.read_text() == "{}"
+
+    def test_rechecks_file_selection_after_migration(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        legacy = tmp_path / ".claude.json"
+        current = tmp_path / ".config.json"
+        assert claude.claude_code_config_path() == legacy
+        current.write_text("{}")
+        assert claude.claude_code_config_path() == current
+        current.unlink()
+        assert claude.claude_code_config_path() == legacy
+
+
 class TestWriteUserMcpServers:
     """Batched user-scope `mcpServers` writes for the workspace-managed reconcile path."""
 

@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+`test_agent_claude.py::TestClaudeCodeConfigPath` covers native config-file precedence,
+default and explicit config directories, unreadable selected files, migration, MCP
+ownership checks, and hook-gate writes. The existing configure/repeat/revert journey
+uses a pre-existing `.config.json` alongside its legacy file and completes a native task.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component

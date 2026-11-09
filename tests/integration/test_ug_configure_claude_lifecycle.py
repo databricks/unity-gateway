@@ -67,7 +67,7 @@ def test_unmanaged_claude_preserves_preexisting_family_defaults(live_session, un
 def test_ug_configure_claude_repeat_and_revert(live_session, workspace):
     """Scenario: configure twice over user-owned settings, use the agent, then revert.
 
-    Expected: repeat setup remains usable, unrelated settings survive, no bearer
+    Expected: repeat setup uses Claude's existing .config.json, unrelated settings survive, no bearer
     is saved in ug state, and repeated revert restores the original configuration.
     The generated ug file must be removed; a leftover file remains a failure.
     """
@@ -78,6 +78,12 @@ def test_ug_configure_claude_repeat_and_revert(live_session, workspace):
     original = '{"permissions":{"allow":["Read"]},"env":{"UG_USER_SETTING":"keep"}}\n'
     user_path.parent.mkdir(parents=True)
     user_path.write_text(original)
+    # Both are pre-existing native user files; Claude prefers .config.json when present.
+    native_config = user_path.parent / ".config.json"
+    native_config.write_text('{"mcpServers": {}, "numStartups": 7}\n')
+    legacy_config = user_path.parent / ".claude.json"
+    legacy_original = '{"mcpServers": {}, "numStartups": 3}\n'
+    legacy_config.write_text(legacy_original)
 
     session.run(
         "configure",
@@ -125,6 +131,13 @@ def test_ug_configure_claude_repeat_and_revert(live_session, workspace):
         timeout=180,
     )
     task.assert_headless_answer("claude", result)
+    assert (
+        json.loads(native_config.read_text())["cachedGrowthBookFeatures"][
+            "tengu_plugin_hooks_modules"
+        ]
+        is True
+    )
+    assert legacy_config.read_text() == legacy_original
     with TerminalProcess(session, "ug", [str(session.binary), "revert"], "revert") as terminal:
         terminal.finish()
     assert json.loads(user_path.read_text()) == json.loads(original)

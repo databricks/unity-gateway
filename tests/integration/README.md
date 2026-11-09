@@ -1,5 +1,9 @@
 # Integration tests
 
+The Claude configure/repeat/revert journey begins with user-owned `.config.json`
+and `.claude.json` files. It checks that the existing native config receives the
+hook gate, the unused legacy file stays unchanged, and the agent completes its file task.
+
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They
