@@ -128,6 +128,24 @@ def test_codex_desktop_macos_ci_is_blocking_and_installs_a_pinned_app():
     }
 
 
+def test_latest_harness_runs_the_newest_signed_chatgpt_app():
+    workflow = _workflow("harness-latest.yml")
+    job = workflow.split("\n  codex-desktop-latest:\n", 1)[1].split("\n  notify:\n", 1)[0]
+    assert "runs-on: macos-latest" in job
+    assert "codex-app-prod/appcast.xml" in job
+    assert "CHATGPT_APP_SHA256" not in job
+    # No hash exists for an unseen build, so Apple's signature checks stand in for it.
+    assert "codesign --verify --deep --strict /Applications/ChatGPT.app" in job
+    assert "spctl --assess --type execute /Applications/ChatGPT.app" in job
+    assert re.search(r"(?m)^      OPENAI_TEAM_ID: [A-Z0-9]{10}$", job)
+    assert '"TeamIdentifier=$OPENAI_TEAM_ID"' in job
+    assert "needs.resolve-versions.outputs.codex" in job
+    assert "--macos-desktop" in job
+    assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+    }
+
+
 def test_soft_fail_ci_is_non_blocking_on_both_platforms():
     jobs = _integration_jobs()
     job = jobs["soft-fail"]
@@ -375,13 +393,16 @@ def test_latest_harness_slack_notification(
     assert "needs: resolve-versions" in harness
     for agent in ("claude", "codex"):
         assert f"needs.resolve-versions.outputs.{agent}" in harness
-    assert "needs: [resolve-versions, harness-latest]" in notify
+    assert "needs: [resolve-versions, harness-latest, codex-desktop-latest]" in notify
     assert "always()" in notify
     assert "needs.harness-latest.result == 'success'" in notify
     assert "needs.harness-latest.result == 'failure'" in notify
     assert "needs.resolve-versions.result == 'failure'" in notify
     assert "NOTIFY_NAME: Latest harness test" in notify
-    assert "NOTIFY_RESULT: ${{ needs.harness-latest.result }}" in notify
+    assert (
+        "NOTIFY_RESULT: ${{ needs.harness-latest.result == 'success' && "
+        "needs.codex-desktop-latest.result == 'success' && 'success' || 'failure' }}"
+    ) in notify
     _assert_slack_notify_wiring(notify)
 
     env = {

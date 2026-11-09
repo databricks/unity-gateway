@@ -1347,7 +1347,9 @@ OpenAI's versioned appcast zip, pinned by version and SHA256 in `integration.yml
 `macos_desktop` marker against the managed e2e workspace. GitHub's macOS image pre-grants
 Accessibility to the runner's shell, so no permission prompt is needed. It uploads
 `integration-codex-desktop-macos` evidence. To update the app, take a newer `<enclosure>` from
-`https://persistent.oaistatic.com/codex-app-prod/appcast.xml` and its SHA256.
+`https://persistent.oaistatic.com/codex-app-prod/appcast.xml` and its SHA256. The
+harness-latest workflow runs the same journey against the newest appcast build, so it shows
+when a bump is due.
 Local native runs use the same runner; Colima/Docker provides a separate Linux
 container option. Matching dependency versions does not make those OS environments identical.
 Installation jobs need no workspace credentials. For same-repository PRs, the live jobs
@@ -1504,6 +1506,9 @@ The **harness-latest** workflow runs every six hours on `main` (00:00, 06:00,
 latest Claude and Codex releases, recording exact versions in its artifacts. It covers
 CUJ4, routing hooks, skill toggles (including Claude's recipe-header assertions),
 and first-prompt banners. It runs separately from PR checks, so failures do not block merges.
+Its **Codex desktop · macOS** job runs `test_ug_codex_desktop_macos.py` against the newest
+ChatGPT desktop build in OpenAI's appcast. With no hash to pin, it requires `codesign`,
+`spctl` (notarization) and OpenAI's Developer ID team before opening the app.
 Versions are resolved once for all three suites. A final job sends one success or
 failure message using `SLACK_WEBHOOK_UG_CODING_AGENTS_POD`, with both versions and
 a workflow-run link on success or a failed-job link on failure (the workflow-run
