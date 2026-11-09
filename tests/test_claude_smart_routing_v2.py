@@ -68,6 +68,69 @@ _EXPLANATION = {
         ("[" * 2000 + "0" + "]" * 2000, False),
         ({"summary": "x" * 65536}, False),
         ({"score": float("nan")}, False),
+        ({**_EXPLANATION, "selected_model": "alternative"}, False),
+        (
+            {
+                **_EXPLANATION,
+                "models": [
+                    _EXPLANATION["models"][0],
+                    {**_EXPLANATION["models"][1], "selected": True},
+                ],
+            },
+            False,
+        ),
+        (
+            {
+                **_EXPLANATION,
+                "models": [
+                    {**_EXPLANATION["models"][0], "considered": False},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            False,
+        ),
+        (
+            {
+                **_EXPLANATION,
+                "models": [
+                    {**_EXPLANATION["models"][0], "selected": 1},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            False,
+        ),
+        (
+            {
+                **_EXPLANATION,
+                "models": [
+                    _EXPLANATION["models"][0],
+                    {**_EXPLANATION["models"][1], "considered": 1},
+                ],
+            },
+            False,
+        ),
+    ],
+    ids=[
+        "object",
+        "json-string",
+        "missing-model",
+        "unoffered-model",
+        "duplicate-model",
+        "extra-model",
+        "absent",
+        "invalid-json",
+        "array",
+        "null",
+        "nonfinite-json",
+        "oversized-json",
+        "deeply-nested",
+        "oversized-object",
+        "nonfinite-object",
+        "invalid-selected-model",
+        "double-selected",
+        "selected-not-considered",
+        "nonbool-selected",
+        "nonbool-considered",
     ],
 )
 def test_explanation_roundtrip_does_not_change_subagent_selection(
@@ -121,6 +184,82 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
         assert result["explanation"] == record["explanation"] == expected
     else:
         assert "explanation" not in result and "explanation" not in record
+
+
+def test_custom_twenty_model_menu_keeps_preselector_filtered_rows(tmp_path, monkeypatch):
+    model_ids = [f"custom.catalog.model-{index:02d}" for index in range(20)]
+    selected_model = model_ids[7]
+    explanation = {
+        "selected_model": selected_model,
+        "summary": "Selected from the offered custom catalog.",
+        "task_understanding": [],
+        "models": [
+            {
+                "id": model_id,
+                "name": f"Custom model {index:02d}",
+                "selected": model_id == selected_model,
+                "considered": index < 18,
+                "reason": (
+                    "Not available for comparison."
+                    if index >= 18
+                    else "Selected for the task."
+                    if model_id == selected_model
+                    else "Evaluated by the router."
+                ),
+            }
+            for index, model_id in enumerate(model_ids)
+        ],
+    }
+    calls = []
+    payload = {
+        "session_id": "s20",
+        "tool_use_id": "t20",
+        "tool_name": "Agent",
+        "tool_input": {"prompt": "inspect the repository", "subagent_type": "general-purpose"},
+    }
+
+    def reply(request, timeout):
+        calls.append(json.loads(request.data))
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "route_selection": [
+                        {
+                            "route_option": {"model": selected_model},
+                            "params": {"routing_explanation": explanation},
+                        }
+                    ],
+                    "rationale": "Selected from the custom catalog.",
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(routing.urllib.request, "urlopen", reply)
+    monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
+
+    result = v2.route_claude_subagent(
+        payload,
+        workspace="https://example.com",
+        token="token",
+        available_models=model_ids,
+        audit_decision=True,
+    )
+
+    assert result["model"] == selected_model
+    assert result["explanation"] == explanation
+    assert len(calls) == 1
+    assert calls[0]["route_options"] == [
+        {"model": model_id, "harness": "claude"} for model_id in model_ids
+    ]
+    rows = result["explanation"]["models"]
+    assert len(rows) == 20
+    assert [row["id"] for row in rows] == model_ids
+    assert all(row["considered"] for row in rows[:18])
+    assert all(not row["considered"] for row in rows[-2:])
+    assert [row["reason"] for row in rows[-2:]] == ["Not available for comparison."] * 2
+
+    record = json.loads((tmp_path / "decisions.jsonl").read_text())
+    assert record["explanation"] == explanation
 
 
 def _plugin_agent_models(plugin_dir: Path) -> set[str]:

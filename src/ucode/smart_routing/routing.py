@@ -273,6 +273,11 @@ def select_route(
             explanation = None
         if explanation is not None:
             models = explanation.get("models")
+            normalized_selected = (
+                unwrap_anthropic_gateway_model(model)
+                .removeprefix("system.ai.")
+                .removesuffix("[1m]")
+            )
             offered_models = {
                 unwrap_anthropic_gateway_model(model)
                 .removeprefix("system.ai.")
@@ -284,6 +289,14 @@ def select_route(
                 or len(models) != len(offered_models)
                 or any(not isinstance(item, dict) for item in models)
                 or {item.get("id") for item in models} != offered_models
+                or explanation.get("selected_model") != normalized_selected
+                or any(
+                    not isinstance(item.get("selected"), bool)
+                    or item["selected"] != (item.get("id") == normalized_selected)
+                    or not isinstance(item.get("considered"), bool)
+                    or (item["selected"] and not item["considered"])
+                    for item in models
+                )
             ):
                 explanation = None
     except (TypeError, ValueError, RecursionError):
