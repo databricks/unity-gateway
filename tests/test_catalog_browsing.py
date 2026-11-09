@@ -10,7 +10,7 @@ from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from ucode import databricks, mcp, skills_api, skills_download
+from ucode import databricks, mcp, skills_api, skills_download, ui
 from ucode.ui.interactive_picker import (
     CatalogChoice,
     StreamingInquirerControl,
@@ -178,12 +178,13 @@ def test_details_preserve_fields_and_normalize_dates():
         ("\x01\r", ["first", "second"]),
         ("\r", []),
         ("\x03", None),
+        ("\x1b[D", ui._BACK),
     ],
 )
 def test_browser_keyboard_preserves_selection_and_cancellation(keys, expected):
     async def run():
         with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
-            question = scrolling_checkbox(
+            question = ui.scrolling_checkbox(
                 "Browse",
                 [
                     CatalogChoice(
@@ -198,6 +199,7 @@ def test_browser_keyboard_preserves_selection_and_cancellation(keys, expected):
                 ],
                 "space select, enter save",
                 picker_style(),
+                allow_back=True,
                 show_description=True,
                 table=True,
             )
@@ -205,7 +207,10 @@ def test_browser_keyboard_preserves_selection_and_cancellation(keys, expected):
             await asyncio.sleep(0.05)
             pipe.send_text(keys)
             result = await asyncio.wait_for(task, 2)
-            assert result == expected
+            if expected is ui._BACK:
+                assert result is ui._BACK
+            else:
+                assert result == expected
 
     asyncio.run(run())
 

@@ -38,6 +38,31 @@ from ucode.ui import (
 )
 
 
+def test_terminal_progress_bar_activates_and_advances(monkeypatch):
+    from rich.progress import Progress
+
+    output = io.StringIO()
+    monkeypatch.setattr(output, "isatty", lambda: True)
+    monkeypatch.setattr(ui_mod.sys, "stdout", output)
+    monkeypatch.setattr(ui_mod, "console", Console(file=output, force_terminal=True, width=80))
+    instances = []
+
+    def make_progress(*args, **kwargs):
+        progress = Progress(*args, **kwargs)
+        instances.append(progress)
+        return progress
+
+    monkeypatch.setattr("rich.progress.Progress", make_progress)
+    with ui_mod.progress_bar("Downloading", 2) as advance:
+        advance()
+        assert len(instances) == 1
+        assert instances[0].tasks[0].completed == 1
+        advance()
+        assert instances[0].tasks[0].completed == 2
+
+    assert not instances[0].live.is_started
+
+
 class TestSpinner:
     @pytest.mark.parametrize("raises", [False, True])
     def test_exit_wakes_the_frame_wait_and_clears_the_line(self, monkeypatch, raises):

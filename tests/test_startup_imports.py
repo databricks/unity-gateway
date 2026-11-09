@@ -20,6 +20,10 @@ _LAZY_MODULES = (
     "websockets",
     "ucode.gateway_proxy",
     "ucode.smart_routing.codex_interposer",
+    "questionary",
+    "prompt_toolkit",
+    "ucode.ui.interactive_picker",
+    "rich.progress",
 )
 
 
@@ -106,6 +110,128 @@ def test_installed_version_matches_importlib_metadata() -> None:
 def test_cli_import_defers_subcommand_specific_modules() -> None:
     _, loaded = _modules_loaded_after("import ucode.cli\nimport ucode.agents.claude", _LAZY_MODULES)
 
+    assert loaded == []
+
+
+@pytest.mark.parametrize(
+    ("arguments", "routing_enabled"),
+    [
+        (["--help"], False),
+        (["claude", "--help"], False),
+        (["claude-router-hook", "route-first-prompt"], False),
+        (["codex-router-hook", "session-start"], False),
+        (["claude-router-hook", "session-start"], True),
+        (["codex-router-hook", "session-start"], True),
+    ],
+)
+def test_noninteractive_commands_skip_picker_imports(
+    tmp_path, monkeypatch, arguments, routing_enabled
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1" if routing_enabled else "0")
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
+    monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+    monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
+    output, loaded = _modules_loaded_after(
+        "import sys\nfrom io import BytesIO, TextIOWrapper\n"
+        'sys.stdin = TextIOWrapper(BytesIO(b\'{"session_id": "startup-import-test"}\'))\n'
+        f"sys.argv = {['ug', *arguments]!r}\n"
+        "from ucode.entrypoint import main\n"
+        "try:\n"
+        "    main()\n"
+        "except SystemExit as exc:\n"
+        "    assert exc.code == 0, exc.code",
+        _LAZY_MODULES,
+    )
+
+    assert loaded == []
+    if "--help" in arguments:
+        assert "Usage:" in output
+    else:
+        assert output == ""
+        if routing_enabled:
+            agent = arguments[0].removesuffix("-router-hook")
+            canary = tmp_path / ".ucode" / f"{agent}-smart-routing-canary.json"
+            assert json.loads(canary.read_text())["session_id"] == "startup-import-test"
+
+
+def test_public_picker_exports_preserve_identity_and_parameters():
+    from inspect import signature
+
+    from ucode import ui
+    from ucode.ui import interactive_picker
+
+    assert ui._BACK is interactive_picker._BACK
+    assert ui._Back is interactive_picker._Back
+    assert ui.StreamingInquirerControl is interactive_picker.StreamingInquirerControl
+    # Keep the lazy wrapper typed without letting its parameters or defaults drift.
+    assert (
+        signature(ui.scrolling_checkbox).parameters
+        == signature(interactive_picker.scrolling_checkbox).parameters
+    )
+
+    namespace = {}
+    exec("from ucode.ui import *", namespace)
+    assert namespace["StreamingInquirerControl"] is interactive_picker.StreamingInquirerControl
+    assert namespace["merge_new_choices"] is interactive_picker.merge_new_choices
+    for name in ("Window", "Dimension", "InquirerControl"):
+        assert namespace[name] is getattr(interactive_picker, name)
+    from prompt_toolkit.formatted_text import to_formatted_text
+    from questionary.constants import INDICATOR_SELECTED, INDICATOR_UNSELECTED
+
+    assert namespace["to_formatted_text"] is to_formatted_text
+    assert namespace["INDICATOR_SELECTED"] == INDICATOR_SELECTED
+    assert namespace["INDICATOR_UNSELECTED"] == INDICATOR_UNSELECTED
+
+
+def test_public_progress_exports_preserve_identity():
+    from rich import progress
+
+    from ucode import ui
+    from ucode.ui import BarColumn, MofNCompleteColumn, Progress, TextColumn
+
+    namespace = {}
+    exec("from ucode.ui import *", namespace)
+    for exported in (BarColumn, MofNCompleteColumn, Progress, TextColumn):
+        assert exported is getattr(progress, exported.__name__)
+        assert exported is getattr(ui, exported.__name__)
+        assert exported is namespace[exported.__name__]
+
+
+def test_redirected_progress_bar_keeps_rich_progress_unloaded() -> None:
+    output, loaded = _modules_loaded_after(
+        "from ucode.ui import progress_bar\n"
+        "with progress_bar('Loading', 2) as advance:\n"
+        "    advance()\n"
+        "    advance()",
+        ("rich.progress",),
+    )
+
+    assert output == ""
+    assert loaded == []
+
+
+def test_auth_token_helper_skips_picker_imports(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("DATABRICKS_BEARER", "ug-startup-test-bearer")
+    output, loaded = _modules_loaded_after(
+        "import sys\n"
+        "from contextlib import redirect_stdout\n"
+        "from io import StringIO\n"
+        "sys.argv = ['ug', 'auth-token', '--host', 'https://workspace.example.invalid']\n"
+        "from ucode.entrypoint import main\n"
+        "with redirect_stdout(StringIO()) as output:\n"
+        "    try:\n"
+        "        main()\n"
+        "    except SystemExit as exc:\n"
+        "        assert exc.code == 0, exc.code\n"
+        "assert output.getvalue() == 'ug-startup-test-bearer\\n', output.getvalue()",
+        _LAZY_MODULES,
+    )
+
+    assert output == ""
     assert loaded == []
 
 
