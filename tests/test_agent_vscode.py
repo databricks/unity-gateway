@@ -864,7 +864,7 @@ def test_managed_configure_hands_copilot_the_vscode_switch(monkeypatch):
 
     cli_mod.configure_workspace_command(selected_tools=None, workspaces=[(WS, None)])
 
-    assert seen[0]["copilot_vscode_integration"] is False
+    assert seen[0]["state"]["copilot_vscode_integration"] is False
 
 
 @pytest.mark.parametrize(
