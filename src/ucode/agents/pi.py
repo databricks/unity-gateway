@@ -249,8 +249,14 @@ def _gpt_thinking_level_map(name: str) -> ThinkingLevelMap | None:
 # with a level map above accepts images too.
 _GPT_VISION_WITHOUT_REASONING = ("gpt-4o", "gpt-4-1")
 
+# Grok always reasons and accepts only low, medium, high and xhigh: the gateway rejects `none`,
+# `minimal` and `max` with HTTP 400 on both models. Its model services list no image input.
+_GROK_THINKING_LEVEL_MAP: ThinkingLevelMap = {"off": None, "minimal": None, "xhigh": "xhigh"}
+_GROK_REASONING_MODELS = ("grok-4-6", "grok-4-7")
+
 
 def _gpt_model_entry(model_id: str) -> dict:
+    """An entry for a model on the Responses provider: GPT, or another model such as Grok."""
     limits = gpt_model_token_limits(model_id)
     entry: dict = {
         "id": model_id,
@@ -258,6 +264,9 @@ def _gpt_model_entry(model_id: str) -> dict:
         "maxTokens": limits["output"],
     }
     name = canonical_model_name(model_id)
+    if name in _GROK_REASONING_MODELS:
+        entry.update(reasoning=True, thinkingLevelMap=dict(_GROK_THINKING_LEVEL_MAP))
+        return entry
     level_map = _gpt_thinking_level_map(name)
     if level_map is not None:
         entry.update(reasoning=True, thinkingLevelMap=level_map)
@@ -327,6 +336,15 @@ _OSS_THINKING_LEVEL_MAPS: dict[str, ThinkingLevelMap] = {
     # Always reasons at low/medium/high; `none` is treated as unset.
     "gpt-oss-120b": {"off": None, "minimal": None},
     "gpt-oss-20b": {"off": None, "minimal": None},
+    # Qwen 3.5 reasons unless sent `none`, and the gateway streams its reasoning as content parts
+    # that Pi's chat-completions client can't read (it prints "[object Object]"), so only `off`.
+    "qwen35-122b-a10b": {
+        "off": "none",
+        "minimal": None,
+        "low": None,
+        "medium": None,
+        "high": None,
+    },
 }
 
 

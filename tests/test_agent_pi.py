@@ -227,6 +227,29 @@ class TestRenderOverlayAuthAndModels:
         ids = {m["id"] for m in overlay["providers"]["databricks-gemini"]["models"]}
         assert ids == {"gemini-2", "gemini-2-pro"}
 
+    def test_grok_joins_gpt_on_the_responses_provider(self):
+        grok = "system.ai.grok-4-7"
+        overlay, _ = _overlay(grok, codex_models=["system.ai.gpt-5-5", grok])
+
+        provider = overlay["providers"]["databricks-openai"]
+        assert provider["api"] == "openai-responses"
+        assert [m["id"] for m in provider["models"]] == ["system.ai.gpt-5-5", grok]
+        assert overlay["model"] == f"databricks-openai/{grok}"
+
+    def test_discovered_mlflow_models_reach_the_mlflow_provider(self):
+        oss = [
+            "system.ai.glm-5-2",
+            "system.ai.gpt-oss-120b",
+            "system.ai.qwen35-122b-a10b",
+            "system.ai.meta-llama-3-3-70b-instruct",
+            "system.ai.gemma-3-12b",
+        ]
+        overlay, _ = _overlay("system.ai.gpt-oss-120b", oss_models=oss)
+
+        assert [m["id"] for m in overlay["providers"]["databricks-mlflow"]["models"]] == oss
+        assert "databricks-openai" not in overlay["providers"]
+        assert overlay["model"] == "databricks-mlflow/system.ai.gpt-oss-120b"
+
 
 class TestRenderOverlayManagedKeys:
     def test_managed_keys_include_model(self):
@@ -291,6 +314,10 @@ class TestPiDefaultModel:
     def test_falls_back_to_gemini(self):
         state = {"claude_models": {}, "codex_models": [], "gemini_models": ["gemini-2"]}
         assert pi.default_model(state) == "gemini-2"
+
+    def test_gpt_stays_the_default_with_grok_listed(self):
+        state = {"codex_models": ["system.ai.gpt-5-6-sol", "system.ai.grok-4-7"]}
+        assert pi.default_model(state) == "system.ai.gpt-5-6-sol"
 
     def test_falls_back_to_mlflow_models_last(self):
         state = {"codex_models": ["system.ai.gpt-oss-120b"], "oss_models": ["system.ai.glm-5-3"]}
@@ -714,6 +741,11 @@ _DOCUMENTED_LEVELS = {
     },
     "gpt-oss-120b": _NO_OFF_NO_MINIMAL,
     "gpt-oss-20b": _NO_OFF_NO_MINIMAL,
+    # Pi can't read Qwen 3.5's streamed reasoning, so only `off` (sent as `none`) is offered.
+    "qwen35-122b-a10b": {"off": "none"},
+    # Grok always reasons; the gateway rejects none, minimal and max (checked on both models).
+    "grok-4-6": {**_NO_OFF_NO_MINIMAL, "xhigh": "xhigh"},
+    "grok-4-7": {**_NO_OFF_NO_MINIMAL, "xhigh": "xhigh"},
 }
 
 
@@ -743,7 +775,9 @@ def _entry(model_id: str) -> dict:
         # Discovery buckets gpt-oss with GPT; Pi moves it to the MLflow provider.
         overlay, _ = _overlay(model_id, codex_models=[model_id])
         provider = "databricks-mlflow"
-    elif any(family in model_id for family in ("kimi-", "glm-", "deepseek-")):
+    elif any(
+        family in model_id for family in ("kimi-", "glm-", "deepseek-", "qwen", "llama", "gemma")
+    ):
         overlay, _ = _overlay(model_id, oss_models=[model_id])
         provider = "databricks-mlflow"
     else:
@@ -787,6 +821,13 @@ class TestModelEntries:
             ("system.ai.glm-5-2", 1_000_000, 131_072),
             ("system.ai.kimi-k3-1-pro", 1_000_000, 131_072),
             ("system.ai.gpt-oss-120b", 128_000, 25_000),
+            ("system.ai.qwen35-122b-a10b", 128_000, 25_000),
+            ("system.ai.qwen3-next-80b-a3b-instruct", 128_000, 10_000),
+            ("system.ai.llama-4-maverick", 128_000, 8_192),
+            ("system.ai.meta-llama-3-3-70b-instruct", 128_000, 8_192),
+            ("system.ai.gemma-3-12b", 128_000, 8_192),
+            # The gateway lists no window for Grok, so it keeps the Responses fallback.
+            ("system.ai.grok-4-7", 128_000, 16_384),
             # Unlisted GLM keeps the shared family limits; other unlisted models get the floor.
             ("system.ai.glm-4-6", 200_000, 25_000),
             ("system.ai.deepseek-v4-1-flash", 128_000, 8_192),
@@ -871,6 +912,27 @@ class TestModelEntries:
         # Without a documented level map Pi sends no reasoning_effort, so the model uses its own
         # default instead of a value it might reject.
         assert set(_entry(model_id)) == {"id", "contextWindow", "maxTokens"}
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            "system.ai.qwen3-next-80b-a3b-instruct",
+            "system.ai.llama-4-maverick",
+            "system.ai.gemma-3-12b",
+        ],
+    )
+    def test_capability_discovered_mlflow_models_get_limits_only(self, model_id):
+        assert set(_entry(model_id)) == {"id", "contextWindow", "maxTokens"}
+
+    def test_grok_stays_text_only(self):
+        # Grok's model services list no image input.
+        entry = _entry("system.ai.grok-4-7")
+
+        assert "input" not in entry
+        assert "inputLimits" not in entry
+
+    def test_unverified_grok_models_get_limits_only(self):
+        assert set(_entry("system.ai.grok-5")) == {"id", "contextWindow", "maxTokens"}
 
     def test_mlflow_entries_stay_text_only(self):
         # Image input through the MLflow route is unverified, so Pi keeps its text-only default.

@@ -58,6 +58,7 @@ from ucode.databricks import (
     build_tool_base_url,
     get_databricks_token,
     maybe_add_gpt_1m_suffix,
+    runs_web_search_tool,
     ug_binary,
 )
 from ucode.env import env_bool
@@ -184,17 +185,18 @@ def minimum_version_error() -> str | None:
 
 def _resolve_web_search_model(state: dict) -> str | None:
     """Pick the model the web_search MCP server should call. Prefers an
-    explicit override in state, otherwise the first endpoint discovered as
-    Responses-API-capable. Returns None if no GPT endpoint is available —
-    callers should skip the MCP wiring in that case."""
+    explicit override in state, otherwise the first model discovered as
+    Responses-API-capable that runs the `web_search` tool (Grok answers on
+    that route but never runs it). Returns None if no such endpoint is
+    available — callers should skip the MCP wiring in that case."""
     override = state.get("web_search_model")
     if isinstance(override, str) and override.strip():
         return override.strip()
     codex_models = state.get("codex_models") or []
-    if isinstance(codex_models, list) and codex_models:
-        first = codex_models[0]
-        if isinstance(first, str) and first.strip():
-            return first.strip()
+    if isinstance(codex_models, list):
+        for model in codex_models:
+            if isinstance(model, str) and model.strip() and runs_web_search_tool(model.strip()):
+                return model.strip()
     return None
 
 

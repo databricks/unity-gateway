@@ -38,6 +38,7 @@ from ucode.config_io import APP_DIR
 from ucode.constants import (
     API_ANTHROPIC_MESSAGES,
     API_GEMINI_GENERATE_CONTENT,
+    API_MLFLOW_CHAT_COMPLETIONS,
     API_OPENAI_RESPONSES,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
@@ -2203,9 +2204,16 @@ _MODEL_SERVICE_REQUIRED_PREFIX = "system.ai."
 # is the only server-side narrowing that works.
 _MODEL_SERVICE_PARENT_SCHEMA = "schemas/system.ai"
 
-# Supported OSS chat families, matched by name substring. Add an entry to
-# support a new family.
+# OSS chat families matched by name substring. Every agent that serves OSS models (Codex smart
+# routing, OpenCode, Kilo, Pi) uses them, and discovery falls back to them when a model service
+# lists no API types. Discovery also finds other MLflow chat models by the API types they list;
+# only Pi serves those (see `is_oss_family_model`). Add an entry to support a new family
+# everywhere.
 _OSS_MODEL_FAMILIES = ("kimi-", "glm-", "deepseek-")
+
+# Names discovery falls back to for the Responses bucket when a model service lists no API types.
+# gpt-oss is served only on MLflow chat routes.
+_RESPONSES_MODEL_FAMILIES = ("gpt-", "grok-")
 
 # Claude model families ucode buckets, newest tier first. Each maps to a
 # Claude Code family alias (ANTHROPIC_DEFAULT_<FAMILY>_MODEL). Add an entry to
@@ -2221,18 +2229,48 @@ def classify_model_family(model_id: str) -> str | None:
     Mirrors how discovery buckets a model-services listing (see `discover_model_services`), so a
     model named in a managed config lands in the same bucket it would have from discovery. Returns
     one of ``ANTHROPIC_FAMILIES``, ``"codex"``, ``"gemini"``, or ``"oss"``. Matching is by name
-    substring because neither the listing nor the config records a model's API dialect.
+    substring because a config doesn't record a model's API types. gpt-oss stays under ``codex``
+    by name, although discovery lists it with the OSS models; Pi moves it to its MLflow provider.
     """
     for family in ANTHROPIC_FAMILIES:
         if f"claude-{family}-" in model_id:
             return family
-    if "gpt-" in model_id:
+    if any(family in model_id for family in _RESPONSES_MODEL_FAMILIES):
         return "codex"
     if "gemini-" in model_id:
         return "gemini"
     if any(oss in model_id for oss in _OSS_MODEL_FAMILIES):
         return "oss"
     return None
+
+
+def is_oss_family_model(model_id: str) -> bool:
+    """Whether ``model_id`` is in an OSS family every OSS-serving agent supports (GLM, Kimi, DeepSeek).
+
+    Discovery's ``oss_models`` also lists other MLflow chat models (gpt-oss, Qwen, Llama, Gemma).
+    Only Pi's MLflow provider serves those; Codex, OpenCode and Kilo keep to these families."""
+    return classify_model_family(model_id) == "oss"
+
+
+def is_gpt_model(model_id: str) -> bool:
+    """Whether ``model_id`` is an OpenAI GPT model on the Responses API (gpt-oss is not)."""
+    name = canonical_model_name(model_id)
+    return name.startswith("gpt-") and not name.startswith("gpt-oss")
+
+
+def runs_web_search_tool(model_id: str) -> bool:
+    """Whether a Responses model runs the hosted ``web_search`` tool Claude's web search sends.
+
+    Grok answers on the Responses route without running the tool, and gpt-oss isn't served there."""
+    return not canonical_model_name(model_id).startswith(("grok-", "gpt-oss"))
+
+
+def responses_model_sort_key(model_id: str) -> tuple:
+    """Sort Responses models GPT first, then newest version first.
+
+    Codex smart routing starts on the first model and Claude's web search uses the first GPT
+    model, so other Responses models such as Grok never displace GPT at the top."""
+    return (not is_gpt_model(model_id), model_version_sort_key(model_id))
 
 
 # Per-family token limits (context window + max output tokens). These are a
@@ -2290,7 +2328,9 @@ _GPT_FALLBACK_LIMITS = {"context": 128_000, "output": 16_384}
 
 
 def gpt_model_token_limits(model_id: str) -> dict[str, int]:
-    """``{"context": ..., "output": ...}`` for a GPT model, else a conservative 128K/16K."""
+    """``{"context": ..., "output": ...}`` for a Responses model, else a conservative 128K/16K.
+
+    Grok's windows aren't listed by the gateway, so Grok gets the fallback."""
     name = canonical_model_name(model_id)
     for family, limits in _GPT_TOKEN_LIMITS:
         if name == family or name.startswith(f"{family}-"):
@@ -2313,16 +2353,20 @@ def gemini_model_token_limits(model_id: str) -> dict[str, int]:
 # Per-model limits of chat models on `/ai-gateway/mlflow/v1`, keyed by canonical name and ordered
 # most specific first; a key matches the name or a `<key>-` prefix. Output caps are the largest
 # `max_tokens` the gateway accepts (GLM 5.x 128K; gpt-oss 25K, "cannot be greater than
-# max_output_tokens 25000"). Kimi K3 accepts `max_tokens` up to its whole window, so 128K bounds
-# a runaway answer. Context windows come from each model's serving-endpoint description.
+# max_output_tokens 25000"; Qwen 3.5 25K and Qwen3 Next 10K, "cannot exceed"). Kimi K3 accepts
+# `max_tokens` up to its whole window, so 128K bounds a runaway answer. Context windows come from
+# each model's serving-endpoint description; Qwen's describe none, so they keep the 128K floor.
 _OSS_TOKEN_LIMITS: tuple[tuple[str, dict[str, int]], ...] = (
     ("glm-5-3", {"context": 1_048_576, "output": 131_072}),
     ("glm-5-2", {"context": 1_000_000, "output": 131_072}),
     ("kimi-k3", {"context": 1_000_000, "output": 131_072}),
     ("gpt-oss", {"context": 128_000, "output": 25_000}),
+    ("qwen35", {"context": 128_000, "output": 25_000}),
+    ("qwen3-next", {"context": 128_000, "output": 10_000}),
 )
 # A model with no entry or family limits gets a floor the gateway accepts: a low output cap
-# truncates an answer, while one above the gateway's cap fails the request.
+# truncates an answer, while one above the gateway's cap fails the request. Llama 3.3, Llama 4
+# Maverick and Gemma 3 accept 8,192 and no more (128K windows).
 _OSS_FALLBACK_LIMITS = {"context": 128_000, "output": 8_192}
 
 
@@ -2339,13 +2383,16 @@ def oss_model_token_limits(model_id: str) -> dict[str, int]:
 
 @dataclass(frozen=True)
 class ModelServiceEntry:
-    """One ``system.ai.*`` model service and the API types it advertises.
+    """One ``system.ai.*`` model service, the API types it advertises and whether it calls tools.
 
-    ``api_types`` is advisory: the gateway serves some models on routes they don't list, so callers
-    use it to exclude non-chat models, never to pick a route."""
+    Discovery buckets a model by the API family it lists (Responses, Gemini or MLflow chat); within
+    a family the routes are advisory, since the gateway serves some models on routes they don't
+    list (Grok lists only ``openai/v1/responses`` and also answers on ``codex/v1/responses``).
+    ``function_calling`` is None when the service doesn't say."""
 
     id: str
     api_types: tuple[str, ...] = ()
+    function_calling: bool | None = None
 
 
 def _model_service_api_types(service: dict) -> tuple[str, ...]:
@@ -2353,6 +2400,14 @@ def _model_service_api_types(service: dict) -> tuple[str, ...]:
     if not isinstance(api_types, list):
         return ()
     return tuple(t for t in api_types if isinstance(t, str))
+
+
+def _model_service_function_calling(service: dict) -> bool | None:
+    capabilities = service.get("capabilities")
+    if not isinstance(capabilities, dict):
+        return None
+    value = capabilities.get("function_calling")
+    return value if isinstance(value, bool) else None
 
 
 def _model_service_id(service: dict) -> str | None:
@@ -2507,7 +2562,9 @@ def list_model_service_entries(
                 model_id = _model_service_id(service)
                 if model_id and model_id not in entries:
                     entries[model_id] = ModelServiceEntry(
-                        model_id, _model_service_api_types(service)
+                        model_id,
+                        _model_service_api_types(service),
+                        _model_service_function_calling(service),
                     )
         page_token = data.get("next_page_token") or None
         if not page_token:
@@ -2607,27 +2664,53 @@ def discover_claude_models_unbucketed(workspace: str, token: str) -> tuple[list[
     return [m for m in ids if "claude-" in m.lower()], None
 
 
+# Embedding and reranking services are never chat candidates, even with malformed metadata.
+_NON_CHAT_MODEL_SUBSTRINGS = ("embedding", "embed", "rerank")
+
+
+def _declares_api(entry: ModelServiceEntry, api_type: str, *, name_fallback: bool) -> bool:
+    """Whether ``entry`` serves ``api_type``: its listed API types decide, else its name."""
+    return api_type in entry.api_types if entry.api_types else name_fallback
+
+
+def _is_oss_chat_entry(entry: ModelServiceEntry) -> bool:
+    """An MLflow chat model that can call tools, else (no API types listed) a known OSS family.
+
+    gpt-oss lists only MLflow routes, so it lands here rather than in the Responses bucket. A
+    service that lists no tool calling (``function_calling: false``) can't drive a coding agent."""
+    name = canonical_model_name(entry.id)
+    if any(bad in name for bad in _NON_CHAT_MODEL_SUBSTRINGS):
+        return False
+    if not entry.api_types:
+        return is_oss_family_model(entry.id) or name.startswith("gpt-oss")
+    return API_MLFLOW_CHAT_COMPLETIONS in entry.api_types and entry.function_calling is not False
+
+
 def discover_model_services(
     workspace: str, token: str
 ) -> tuple[dict[str, str], list[str], list[str], list[str], str | None]:
-    """Discover models via UC model-services and bucket them by family name.
+    """Discover models via UC model-services and bucket them by the API types they list.
 
     Returns (claude_models, codex_models, gemini_models, oss_models, reason):
 
     - ``claude_models`` maps ``fable``/``opus``/``sonnet``/``haiku`` to the
       newest matching ``system.ai.claude-*`` id (mirrors
-      ``discover_claude_models``).
-    - ``codex_models`` is the list of ``system.ai.*gpt-*`` ids, newest first.
-    - ``gemini_models`` is the list of ``system.ai.*gemini-*`` ids, newest first.
-    - ``oss_models`` is the list of OSS-model ``system.ai.*`` ids.
+      ``discover_claude_models``), by name.
+    - ``codex_models`` holds every model listing ``openai/v1/responses``, the API a Model Provider
+      Service target needs for Codex (see ``provider_targets_for_tool``): GPT, then others such as
+      Grok, newest first. GLM and Kimi list only ``codex/v1/responses`` and stay OSS.
+    - ``gemini_models`` holds every model listing ``gemini/v1/generateContent``, newest first.
+    - ``oss_models`` holds the other MLflow chat models that call tools: GLM, Kimi, DeepSeek,
+      gpt-oss, Qwen, Llama and Gemma. Only Pi serves the ones outside ``_OSS_MODEL_FAMILIES``.
 
-    ``reason`` is None on success, else explains why nothing was found. Family
-    bucketing is by name substring because the model-services API does not
-    expose per-model API dialects.
+    A service that lists no API types is bucketed by name (``gpt-``/``grok-``, ``gemini-``, the OSS
+    families and gpt-oss), as before the listing carried them. ``reason`` is None on success, else
+    explains why nothing was found.
     """
-    ids, reason = list_model_services(workspace, token)
-    if not ids:
+    entries, reason = list_model_service_entries(workspace, token)
+    if not entries:
         return {}, [], [], [], reason
+    ids = [entry.id for entry in entries]
 
     claude_models: dict[str, str] = {}
     for family in ANTHROPIC_FAMILIES:
@@ -2638,10 +2721,36 @@ def discover_model_services(
         if candidates:
             claude_models[family] = candidates[0]
 
-    codex_models = sorted([m for m in ids if "gpt-" in m], key=model_version_sort_key)
-    gemini_models = sorted([m for m in ids if "gemini-" in m], key=model_version_sort_key)
-
-    oss_models = [m for m in ids if any(family in m for family in _OSS_MODEL_FAMILIES)]
+    chat_entries = [entry for entry in entries if "claude-" not in entry.id.lower()]
+    responses_api = _TOOL_API_TYPES["codex"]
+    codex_models = sorted(
+        [
+            entry.id
+            for entry in chat_entries
+            if _declares_api(
+                entry,
+                responses_api,
+                name_fallback=classify_model_family(entry.id) == "codex"
+                and not canonical_model_name(entry.id).startswith("gpt-oss"),
+            )
+        ],
+        key=responses_model_sort_key,
+    )
+    gemini_models = sorted(
+        [
+            entry.id
+            for entry in chat_entries
+            if entry.id not in codex_models
+            and _declares_api(
+                entry, API_GEMINI_GENERATE_CONTENT, name_fallback="gemini-" in entry.id
+            )
+        ],
+        key=model_version_sort_key,
+    )
+    native = {*codex_models, *gemini_models}
+    oss_models = [
+        entry.id for entry in chat_entries if entry.id not in native and _is_oss_chat_entry(entry)
+    ]
 
     if not (claude_models or codex_models or gemini_models or oss_models):
         sample = ", ".join(ids[:5])
@@ -3288,12 +3397,17 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
     return None
 
 
+# The API a model must declare to serve each tool without translation: a Model Provider Service
+# target for Claude Code or Codex, and a model service for discovery's Responses bucket.
+_TOOL_API_TYPES = {"claude": API_ANTHROPIC_MESSAGES, "codex": API_OPENAI_RESPONSES}
+
+
 def provider_targets_for_tool(tool: str, service: dict) -> list[str]:
     """Return declared targets compatible with the tool's provider API."""
     targets = service.get("targets") or []
-    if tool in ("claude", "codex"):
+    if tool in _TOOL_API_TYPES:
         # MPS requests pass through without API translation.
-        api_type = API_ANTHROPIC_MESSAGES if tool == "claude" else API_OPENAI_RESPONSES
+        api_type = _TOOL_API_TYPES[tool]
         target_api_types = service.get("target_api_types") or {}
         return [target for target in targets if api_type in (target_api_types.get(target) or ())]
     if tool in ("copilot", "vscode") and service.get("provider_type") in BEDROCK_PROVIDER_TYPES:
@@ -3989,10 +4103,10 @@ def discover_gemini_models(workspace: str, token: str) -> tuple[list[str], str |
 
 
 def discover_codex_models(workspace: str, token: str) -> tuple[list[str], str | None]:
-    # Order newest model version first (like `discover_gemini_models`), so the picker's top choice
-    # and default is e.g. gpt-5-4 rather than the alphabetically-first gpt-5.
+    # Order GPT first, then newest model version first (like `discover_gemini_models`), so the
+    # picker's top choice and default is e.g. gpt-5-4 rather than the alphabetically-first gpt-5.
     return discover_endpoints_with_api_type(
-        workspace, token, API_OPENAI_RESPONSES, sort_key=model_version_sort_key
+        workspace, token, API_OPENAI_RESPONSES, sort_key=responses_model_sort_key
     )
 
 

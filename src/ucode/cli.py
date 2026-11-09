@@ -92,6 +92,7 @@ from ucode.databricks import (
     get_databricks_token,
     install_databricks_cli,
     is_model_provider_feature_unavailable,
+    is_oss_family_model,
     list_anthropic_model_catalog,
     list_profile_entries,
     list_tool_provider_services,
@@ -103,6 +104,7 @@ from ucode.databricks import (
     resolve_provider_launch_model,
     resolve_provider_service,
     run_databricks_login,
+    runs_web_search_tool,
     ug_binary,
 )
 from ucode.env import env_bool
@@ -807,8 +809,7 @@ def configure_shared_state(
         if want_claude:
             with spinner("Fetching available models..."):
                 ws_models, _ = discover_codex_models(workspace, token)
-            if ws_models:
-                web_search_model = ws_models[0]
+            web_search_model = next((m for m in ws_models if runs_web_search_tool(m)), None)
     else:
         # UC-first, best-effort: one UC model-services call yields all families
         # as `system.ai.<model-name>` ids, bucketed by name. If a family comes
@@ -843,8 +844,10 @@ def configure_shared_state(
             opencode_models["anthropic"] = list(claude_models.values())
         if gemini_models:
             opencode_models["gemini"] = gemini_models
-        if oss_models:
-            opencode_models["oss"] = oss_models
+        # OpenCode and Kilo serve only the OSS families validated for every agent.
+        opencode_oss = [m for m in oss_models if is_oss_family_model(m)]
+        if opencode_oss:
+            opencode_models["oss"] = opencode_oss
 
     if skip_model_discovery:
         # Don't clobber any previously-discovered Databricks model lists; provider
@@ -1755,8 +1758,9 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
         opencode_models["anthropic"] = list(claude_models.values())
     if gemini_models:
         opencode_models["gemini"] = gemini_models
-    if oss_models:
-        opencode_models["oss"] = oss_models
+    opencode_oss = [m for m in oss_models if is_oss_family_model(m)]
+    if opencode_oss:
+        opencode_models["oss"] = opencode_oss
     live["opencode_models"] = opencode_models
     if "copilot" in tools:
         copilot_models = copilot_agent.catalog_from_listings(

@@ -853,8 +853,17 @@ class TestResolveWebSearchModel:
         assert claude._resolve_web_search_model({"web_search_model": "explicit"}) == "explicit"
 
     def test_falls_back_to_first_codex_model(self):
-        state = {"codex_models": ["m1", "m2"]}
-        assert claude._resolve_web_search_model(state) == "m1"
+        state = {"codex_models": ["system.ai.gpt-5-5", "system.ai.gpt-5-4"]}
+        assert claude._resolve_web_search_model(state) == "system.ai.gpt-5-5"
+
+    def test_skips_grok_for_the_first_gpt_model(self):
+        # Grok answers on the Responses route but never runs the `web_search` tool.
+        state = {"codex_models": ["system.ai.grok-4-7", "system.ai.gpt-5-4"]}
+        assert claude._resolve_web_search_model(state) == "system.ai.gpt-5-4"
+
+    def test_returns_none_when_only_non_gpt_responses_models(self):
+        state = {"codex_models": ["system.ai.grok-4-7", "system.ai.gpt-oss-120b"]}
+        assert claude._resolve_web_search_model(state) is None
 
     def test_returns_none_when_no_codex_models(self):
         assert claude._resolve_web_search_model({}) is None
@@ -3108,12 +3117,12 @@ class TestRegisterWebSearchMcp:
 
     def test_configuration_uses_saved_custom_oauth_profile(self, monkeypatch):
         # Isolate config writes and Claude CLI registration; execute the actual config writer.
-        prior_entry = claude._web_search_mcp_entry(WS, "search-model", "workspace-profile")
+        prior_entry = claude._web_search_mcp_entry(WS, "system.ai.gpt-5-5", "workspace-profile")
         config = {"mcpServers": {claude.WEB_SEARCH_MCP_NAME: prior_entry}}
         state = {
             "workspace": WS,
             "profile": "workspace-profile",
-            "codex_models": ["search-model"],
+            "codex_models": ["system.ai.gpt-5-5"],
             "custom_oauth": {
                 "client_id": "custom-client",
                 "redirect_url": "http://localhost:8020/callback",
