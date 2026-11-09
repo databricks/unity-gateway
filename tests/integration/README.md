@@ -1,19 +1,5 @@
 # Integration tests
 
-Routed child identity regressions cover model-visible launch context, original-result
-preservation, reversed parallel completion, missing model information, denied/failed
-spawns, native role menus, and rejection of explanation rows outside the offered menu.
-Native auto-mode tests verify both foreground and background Agent calls deliver the
-host-reported model to the parent's next request while preserving reviewed inputs and
-denials. These controlled tests do not establish deployed-service explanation coverage.
-
-Routing explanation component tests cover opt-in native panes, per-model selection,
-optional numeric estimates, missing or invalid diagnostics, and preservation of the
-selected model and reviewed tool input. Python tests cover optional metadata transport
-and audit records; native tests exercise the command and pane controls. These checks do
-not establish deployed-service explanation availability. See the Claude mod guide for
-the optional service response contract.
-
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They
@@ -1905,3 +1891,17 @@ Missing, malformed, and other-workspace profiles leave plugin setup untouched.
 Installed-CLI Desktop journeys read MCP commands from `managedMcpServers` and require the
 installed plugin to contain no duplicate servers. These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
+
+Routed child identity regressions cover model-visible launch context, original-result
+preservation, reversed parallel completion, missing model information, denied/failed
+spawns, native role menus, and rejection of explanation rows outside the offered menu.
+Native auto-mode tests verify both foreground and background Agent calls deliver the
+host-reported model to the parent's next request while preserving reviewed inputs and
+denials. These controlled tests do not establish deployed-service explanation coverage.
+
+Routing explanation component tests cover opt-in native panes, per-model selection,
+optional numeric estimates, missing or invalid diagnostics, and preservation of the
+selected model and reviewed tool input. Python tests cover optional metadata transport
+and audit records; native tests exercise the command and pane controls. These checks do
+not establish deployed-service explanation availability. See the Claude mod guide for
+the optional service response contract.
