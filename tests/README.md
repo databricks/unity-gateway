@@ -962,7 +962,8 @@ exclusion of pre-4.5 Claude, and the move of gpt-oss from the Responses provider
 MLflow provider (providers, selector, default model and managed `pi_models`). They also pin
 the MLflow provider's compat flags, its base URL for state saved without one, and the Vertex
 environment pinning. `test_databricks.py` covers the shared GPT, Gemini and MLflow limit
-tables. These render `models.json` only; they do not establish that the gateway accepts the
+tables; `test_cli.py` and `test_agents_init.py` cover Pi-only OSS discovery, availability
+and status inventory. These render `models.json` only; they do not establish that the gateway accepts the
 levels or limits, which was checked manually on Pi 1.5.0 for a subset.
 
 Shared native transcript parsing is checked by `test_integration_agent_helpers.py` and

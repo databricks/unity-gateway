@@ -610,8 +610,7 @@ def _serves_model(model: str) -> bool:
 
 def _excluded_model(model: str) -> bool:
     """Whether ``model`` is a Claude model Pi leaves out (older than 4.5)."""
-    family = classify_model_family(model)
-    return family in ANTHROPIC_FAMILIES and not _serves_model(model)
+    return classify_model_family(model) in ANTHROPIC_FAMILIES and not _serves_claude_model(model)
 
 
 def default_model(state: dict) -> str | None:
