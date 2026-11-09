@@ -20,6 +20,12 @@ and failure when any required task control is missing.
 Those component tests control native boundaries and use an isolated subprocess for
 termination checks; they do not replace the native desktop inference jobs.
 
+Windows Cowork desktop coverage and required integration gating are
+documented in the [main test guide](../README.md). The same native Windows job runs
+inference, a selected-folder file read, and local plugin skill execution sequentially.
+The file/skill assertions require real native tool results and completed answers;
+UC skill downloads and external MCP execution are not covered by this job.
+
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
 metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They

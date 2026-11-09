@@ -39,7 +39,12 @@ Windows first-launch configuration has component coverage in
 store; absent installations, package-query failures, and timeouts leave it absent.
 The native Windows Cowork inference job in `.github/workflows/integration.yml`
 exercises real installation, UG configuration before first launch, and completed
-`system.ai.claude-haiku-4-5` inference through the desktop UI. CI contract checks
+`system.ai.claude-haiku-4-5` inference through the desktop UI. The same blocking job
+then checks a selected local file and a user-authored native plugin skill, requiring
+successful tool results and completed answers with random values absent from the prompts.
+`test_cowork_session_evidence.py` rejects wrong-session/file/value evidence, tool errors,
+mismatched result IDs, missing skill calls, and incomplete answers. UC skill downloads,
+external MCP calls, and file writes remain outside this native coverage. CI contract checks
 verify workspace-credential event guards, installation without OIDC permissions,
 and required Cowork success in the integration gate. Desktop jobs always test the checkout
 with pinned dependencies; manual CLI version/dependency inputs apply to CLI jobs only.

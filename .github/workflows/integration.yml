@@ -150,10 +150,10 @@ jobs:
             ${{ runner.temp }}/ug-integration/wheels/
 
   cowork-inference-windows:
-    name: Cowork inference · Windows
+    name: Cowork desktop tasks · Windows
     runs-on: windows-latest
     if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       PYTHONUTF8: 1
     steps:
@@ -206,6 +206,24 @@ jobs:
           & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-inference.ps1 `
             -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assert Cowork file read
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
+            -Capability file -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/file"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assert Cowork skill execution
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
+            -Capability skill -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/skill"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload Cowork inference evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -216,6 +234,8 @@ jobs:
             ${{ runner.temp }}/cowork-inference/*.json
             ${{ runner.temp }}/cowork-inference/*.png
             ${{ runner.temp }}/cowork-inference/native-*.log
+            ${{ runner.temp }}/cowork-inference/file/
+            ${{ runner.temp }}/cowork-inference/skill/
           if-no-files-found: warn
 
   cowork-inference-macos:
