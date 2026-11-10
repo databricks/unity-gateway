@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from session import Session
 
 from ucode.agents.claude import _header_mod_files
@@ -217,7 +218,10 @@ def test_native_process_inherits_settings_and_runs_python_cli(native_binary, tmp
         assert result["stdout"] == result["stderr"] == "", result
 
 
-def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(native_binary, tmp_path):
+@pytest.mark.parametrize("background", [False, True])
+def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
+    native_binary, tmp_path, background
+):
     """Scenario: Auto Mode approves or flags a native Agent call.
 
     Expected: approval preserves the reviewed input and uses the distinct routed child model
@@ -230,8 +234,10 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(native_b
         "subagent_type": "general-purpose",
         "model": "sonnet",
         "name": "PinnedName",
+        "run_in_background": background,
     }
     selected_model = "claude-opus-4-6"
+    false_claim = "I started a Sonnet subagent to compute the answer."
     routed_type = _routed_claude_agent_name(selected_model)
 
     class Handler(BaseHTTPRequestHandler):
@@ -271,6 +277,11 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(native_b
             count = self.server.message_count
             self.server.message_count += 1
             tool_call = count == 0
+            answer = "Probe finished."
+            if request["model"] == "claude-sonnet-4-6":
+                answer = false_claim
+                if not tool_call:
+                    self.server.parent_answers += 1
             block = (
                 {"type": "tool_use", "id": tool_use_id, "name": "Agent", "input": {}}
                 if tool_call
@@ -279,7 +290,10 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(native_b
             delta = (
                 {"type": "input_json_delta", "partial_json": json.dumps(original)}
                 if tool_call
-                else {"type": "text_delta", "text": "Probe finished."}
+                else {
+                    "type": "text_delta",
+                    "text": answer,
+                }
             )
             verdict = {
                 "type": "dangerous_tool_use",
@@ -330,6 +344,29 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(native_b
                 ),
                 ("message_stop", {"type": "message_stop"}),
             ]
+            if tool_call:
+                for _, event in events:
+                    if event["type"].startswith("content_block_"):
+                        event["index"] = 1
+                events[1:1] = [
+                    (
+                        "content_block_start",
+                        {
+                            "type": "content_block_start",
+                            "index": 0,
+                            "content_block": {"type": "text", "text": ""},
+                        },
+                    ),
+                    (
+                        "content_block_delta",
+                        {
+                            "type": "content_block_delta",
+                            "index": 0,
+                            "delta": {"type": "text_delta", "text": false_claim},
+                        },
+                    ),
+                    ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+                ]
             body = "".join(
                 f"event: {name}\ndata: {json.dumps(value)}\n\n" for name, value in events
             ).encode()
@@ -356,7 +393,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
             root = tmp_path / label
             root.mkdir()
             plugin = root / "plugin"
-            _write_routed_claude_plugin(plugin, [selected_model])
+            _write_routed_claude_plugin(plugin)
             options = _claude_mod_launch_options({})
             options["routeCommand"] = [
                 sys.executable,
@@ -369,6 +406,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
             server.requests = []
             server.message_count = 0
             server.classifier_requests = 0
+            server.parent_answers = 0
             server.verdict = verdict
             debug_file = root / "debug.log"
             result = subprocess.run(
@@ -388,7 +426,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     "--tools",
                     "Agent",
                     "--max-turns",
-                    "2",
+                    "4",
                     "--output-format",
                     "stream-json",
                     "--verbose",
@@ -407,6 +445,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     "DISABLE_AUTOUPDATER": "1",
                     "CLAUDE_CODE_MAX_RETRIES": "0",
                     "CLAUDE_CODE_AUTO_MODE_SERVER": "1",
+                    "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
                     "CLAUDE_CODE_ELEGANT_MEADOW": "1",
                     "AUTOMODE_DECISION_LOG": "1",
                 },
@@ -414,7 +453,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                 text=True,
                 timeout=45,
             )
-            assert result.returncode == 0, result.stderr
+            assert result.returncode == 0, result.stderr + result.stdout
             debug_log = debug_file.read_text(encoding="utf-8")
             events = [
                 json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")
@@ -441,6 +480,34 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     if request.get("stream") and request.get("model") == selected_model
                 ]
                 assert child_requests, server.requests
+                parent_requests = [
+                    request
+                    for request in server.requests
+                    if request.get("stream") and request.get("model") == "claude-sonnet-4-6"
+                ]
+                assert any(
+                    "Smart Router launch:" in json.dumps(request)
+                    and selected_model in json.dumps(request)
+                    for request in parent_requests[1:]
+                ), parent_requests
+                # Exercise the host stream and stored transcript, not only a render hook.
+                parent_answers = [
+                    block.get("text", "")
+                    for event in events
+                    if event.get("type") == "assistant" and not event.get("parent_tool_use_id")
+                    for block in event.get("message", {}).get("content", [])
+                    if block.get("type") == "text"
+                ]
+                assert parent_answers and parent_answers[-1] == false_claim, parent_answers
+                assert "Probe finished." not in "\n".join(parent_answers), parent_answers
+                saved = "\n".join(
+                    path.read_text() for path in (root / "config/projects").glob("*/*.jsonl")
+                )
+                assert false_claim in saved
+                for state in ("Running", "Finished"):
+                    status = f" · {selected_model} · {state}"
+                    assert not any(status in answer for answer in parent_answers), parent_answers
+                    assert status not in saved.replace("\\u00b7", "·")
                 child_request = json.dumps(child_requests[0])
                 assert original["prompt"] in child_request
                 assert "Routed prompt" not in child_request

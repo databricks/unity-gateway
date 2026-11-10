@@ -1,6 +1,6 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
 import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
-import { registerSubagentRouting } from './subagent-routing.ts';
+import { registerSubagentRouting, routedModels } from './subagent-routing.ts';
 import {
   CLI_AGENT,
   CLI_MODULE,
@@ -35,8 +35,7 @@ async function readEnvironment($: EngineInterface): Promise<Environment> {
   };
 }
 
-async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
-  if (!options.orchestratorInstructions) return false;
+async function readSessionEnvironment($: EngineInterface): Promise<Environment> {
   const current = await readEnvironment($);
   const sessionFile = await $.env.get('UCODE_SESSION_ENV_FILE');
   if (sessionFile) {
@@ -53,6 +52,12 @@ async function readOrchestratorState($: EngineInterface, options: PluginOptions)
       // Match the routing hooks' inherited-environment fallback for unreadable controls.
     }
   }
+  return current;
+}
+
+async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
+  if (!options.orchestratorInstructions) return false;
+  const current = await readSessionEnvironment($);
   return isRoutingEnabled(current) && current.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1';
 }
 
@@ -142,15 +147,24 @@ export function register(on: On, options: PluginOptions): void {
       // A CLI/skill toggle changes the session file without notifying this process.
       $.ui.invalidate('tool.describe');
     }
-    return yield* next(e);
+    const model = routedModels.model(e.agentId);
+    return yield* next(model ? {...e, model} : e);
   });
 
   on('tool.describe', {tool: ['Agent', 'Task']}, async ($, e, next) => {
     const instructions = options.orchestratorInstructions as string;
-    if (!await readOrchestratorState($, options)) return next(e);
+    const orchestrating = await readOrchestratorState($, options);
+    if (!orchestrating && (!options.routeCommand?.length || !isRoutingEnabled(await readSessionEnvironment($)))) return next(e);
+    const guidance = 'Smart Router selects the execution model for each task-role subagent. '
+      + "This tool's built-in model choices are not Smart Router's model catalog. "
+      + "Do not infer that a requested model is unavailable because it is absent from this tool's choices. "
+      + 'For a requested name outside those choices, launch a general-purpose subagent without the model argument. '
+      + 'Do not refuse a requested spawn on that basis. After launch, use the launch receipt to identify the model actually used. '
+      + 'In ordinary progress updates and answers, identify only the model actually launched. Do not repeat or contrast the requested model, or discuss model availability or tool limitations, unless the user explicitly asks about that difference.';
+    if (!orchestrating) return next({...e, description: `${e.description}\n\n${guidance}`});
     // Preserve the host's waiting and follow-up mechanics without its ownership policy.
     const notes = e.description.split('\n## Usage notes\n')[1]?.split('\n## ')[0].trim() || continuationNote(e.description);
-    return next({...e, description: `${instructions}\n\n## Usage notes\n\n${notes}`});
+    return next({...e, description: `${instructions}\n\n## Usage notes\n\n${notes}\n\n${guidance}`});
   });
 
   // The installed smart-router skill already supplies the slash command.
