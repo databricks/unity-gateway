@@ -8547,7 +8547,8 @@ class TestInstalledMachineWorkspace:
         result = runner.invoke(app, args)
         assert result.exit_code == 1, result.output
         output = " ".join(_strip_ansi(result.output).split())
-        assert "Launch refused" in output
+        assert "the launch was refused" in output
+        assert f"Run `ug configure --workspace {self.SELECTED}`" in output
         assert self.INSTALLED in output
         assert self.SELECTED in output
         assert "IT team or an administrator" in output
