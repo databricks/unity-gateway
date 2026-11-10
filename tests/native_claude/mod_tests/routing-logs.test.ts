@@ -79,10 +79,12 @@ test('pressing a row fetches the decision and Back returns to the list', { optio
   const tree = JSON.stringify(await ui.drawn());
   expect(tree).toContain('Recorded prompt preview');
   expect(tree).toContain('Prompt preview (Explore)');
-  expect(tree).toContain('Length: 23 characters · SHA-256: aaaaaaaaaaaa');
-  expect(tree).toContain('Full prompt is not stored.');
-  expect(tree).toContain('claude-sonnet');
-  expect(tree).toContain('0.8s');
+  expect(tree).not.toContain('SHA-256');
+  expect(tree).not.toContain('Full prompt is not stored.');
+  // The routing outcome is three labeled lines in order.
+  expect(tree.indexOf('Selected: ')).toBeGreaterThanOrEqual(0);
+  expect(tree.indexOf('Selected: ')).toBeLessThan(tree.indexOf('Routing Time: 0.8s'));
+  expect(tree.indexOf('Routing Time: 0.8s')).toBeLessThan(tree.indexOf('Rationale: Because it is a search.'));
   expect(tree).toContain('Requested: claude-opus');
   expect(tree).toContain('Because it is a search.');
   expect(tree).toContain('● claude-sonnet');
@@ -172,7 +174,7 @@ test('hides the requested model when it matches the selection', { options }, asy
   const tree = JSON.stringify(await ui.drawn());
   expect(tree).not.toContain('Requested:');
   expect(tree).toContain('(prompt not recorded)');
-  expect(tree).toContain('No rationale returned.');
+  expect(tree).toContain('Rationale: No rationale returned.');
   await ui.unmount();
 });
 
