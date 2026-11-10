@@ -193,8 +193,19 @@ Omitted selectors stay null. These local audit checks do not establish a resolve
 inherited model, an executed-model match, or a remote metrics export.
 `test_smart_router_session_log.py` covers per-session records, privacy, retention,
 permissions, failure handling and Claude subagent wiring; these are local component checks,
-not live agent, Windows, or gateway coverage.
+<<<<<<< HEAD
+not live agent, Windows, or gateway coverage. The session log records the gateway's
+optional routing explanation when present and omits the key otherwise;
+`test_claude_smart_routing_v2.py` covers keeping only well-formed, size-capped
+explanations whose model list covers exactly the offered models (mocked router responses).
 `test_smart_router_logs_cli.py` covers the hidden `ug smart-router-logs` JSON reader:
+=======
+not live agent, Windows, or gateway coverage. The session log records the gateway's
+optional routing explanation when present and omits the key otherwise;
+`test_claude_smart_routing_v2.py` covers keeping only well-formed, size-capped
+explanations whose model list covers exactly the offered models (mocked router responses).
+`test_smart_router_logs_cli.py` covers the hidden `ug smart-router-logs --json` reader:
+>>>>>>> f66c022f (Record Smart Router routing explanations)
 overview shape/order, malformed/foreign-version/unknown-type line skipping, missing sessions,
 and `--decision` hit/miss; local component checks only, no pane or live-session coverage.
 Native mod tests cover preview-only decision details and metadata, detail-load failures,

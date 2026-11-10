@@ -67,6 +67,24 @@ def test_record_shape(log_dir, decision):
     }
 
 
+def test_explanation_key_present_when_set_and_absent_when_none(log_dir, decision):
+    payload = {"session_id": "s1"}
+    write(payload, decision)
+    explained = routing.RoutingDecision(
+        "selected",
+        "reason",
+        (("selected", "claude"),),
+        "stable",
+        explanation={"models": [{"id": "selected"}]},
+    )
+    write(payload, explained)
+    first, second = [
+        json.loads(line) for line in (log_dir / "claude-s1.jsonl").read_text().splitlines()
+    ]
+    assert "explanation" not in first
+    assert second["explanation"] == {"models": [{"id": "selected"}]}
+
+
 def test_preview_first_nonblank_line_truncated(log_dir, decision):
     task = "\n  \n  " + "x" * 161 + "  \nsecond line"
     write({"session_id": "s1"}, decision, task)
