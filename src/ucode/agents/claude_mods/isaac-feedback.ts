@@ -225,7 +225,6 @@ export function registerIsaacFeedback(
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
     if (e.args.trim() !== 'off') return next(e);
     const feedbackRequired = envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'));
-    // An omni launch's UI asks for the reason before it sends the off.
     if (!feedbackRequired || await $.env.get('ISAAC_LAUNCH_MODE') === 'omni') return next(e);
     if (state.submitted) return { text: 'Feedback is being prepared.' };
     try {
