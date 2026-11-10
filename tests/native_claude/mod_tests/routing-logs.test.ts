@@ -32,9 +32,12 @@ test('opens and refreshes session rows newest first', { options }, async ($, on)
   expect(tree.indexOf('(prompt not recorded)')).toBeLessThan(tree.indexOf('older task'));
   expect(tree).toContain('claude-sonnet');
   expect(tree).toContain('fast');
-  expect(tree).toContain('1.4s');
-  expect(tree).toContain('0.3s');
+  expect(tree).not.toContain('1.4s');
+  expect(tree).not.toContain('0.3s');
   expect(tree).toContain('green');
+  // Each row fills bodyColumns exactly, so the model name is right-aligned.
+  expect(tree).toContain(`"${'older task'.padEnd(80 - 'claude-sonnet'.length - 9)}  "`);
+  expect(tree).toContain(`"${'(prompt not recorded)'.padEnd(80 - 'fast'.length - 9)}  "`);
   await $.command.run(command);
   expect(JSON.stringify(await ui.drawn())).toContain('No routed subagents in this session yet.');
   expect(count).toBe(2);

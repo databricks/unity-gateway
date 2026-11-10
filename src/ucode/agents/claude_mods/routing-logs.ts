@@ -54,16 +54,15 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
     if (!rows.length) children.push(Text({ dimColor: true, children: ['No routed subagents in this session yet.'] }));
     for (const row of rows) {
       const model = row.selected_model.replace(/^system\.ai\./, '').replace(/^databricks-/, '');
-      const seconds = `${(row.routing_ms / 1000).toFixed(1)}s`;
       const columns = Number.isFinite(e.props.bodyColumns) ? e.props.bodyColumns : 80;
-      const room = Math.max(1, columns - model.length - seconds.length - 11);
+      // "HH:MM  " (7) + preview + "  " (2) + model fills the row, so the model ends at the right edge.
+      const room = Math.max(1, columns - model.length - 9);
       const preview = (row.preview || '(prompt not recorded)').replace(/\s+/g, ' ');
       const label = preview.length > room ? preview.slice(0, Math.max(0, room - 1)) + '…' : preview;
       children.push(Box({ flexDirection: 'row', children: [
         Text({ dimColor: true, children: [`${new Date(row.at * 1000).toTimeString().slice(0, 5)}  `] }),
-        Text({ children: [`${label}  `] }),
+        Text({ children: [`${label.padEnd(room)}  `] }),
         Text({ color: 'green', bold: true, children: [model] }),
-        Text({ dimColor: true, children: [`  ${seconds}`] }),
       ] }));
     }
     return Box({ flexDirection: 'column', children });
