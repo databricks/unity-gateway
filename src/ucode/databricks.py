@@ -4171,29 +4171,54 @@ def list_provider_service_models(
     catalog, the rest the Codex-shaped catalog.
     """
 
-    def codex_catalog() -> tuple[list[str], str | None]:
-        try:
-            catalog = _fetch_codex_model_catalog(
-                workspace, token, source=CodexCatalogSource.PROVIDER, identifier=service_name
-            )
-        except CodexModelCatalogEmpty:
-            return [], None
-        except RuntimeError as exc:
-            return [], str(exc)
-        return catalog_slugs(catalog), None
-
-    if tool == "codex":
-        return codex_catalog()
-    if tool == "claude" or provider_type in ANTHROPIC_API_PROVIDER_TYPES:
+    if tool != "codex" and (tool == "claude" or provider_type in ANTHROPIC_API_PROVIDER_TYPES):
         listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
         reason = listing.error_msg
         return listing.model_ids, None if reason == _NO_ANTHROPIC_MODEL_IDS else reason
-    return codex_catalog()
+    try:
+        catalog = _fetch_codex_model_catalog(
+            workspace, token, source=CodexCatalogSource.PROVIDER, identifier=service_name
+        )
+    except CodexModelCatalogEmpty:
+        return [], None
+    except RuntimeError as exc:
+        return [], str(exc)
+    return catalog_slugs(catalog), None
 
 
 def is_model_source_wildcard(model: str) -> bool:
     parts = model.split(".")
     return len(parts) in (3, 4) and parts[-1] == "*" and all(p and "*" not in p for p in parts[:-1])
+
+
+def _expand_wildcard_source(
+    model: str, tool: str, workspace: str, token: str
+) -> tuple[list[str], str | None]:
+    source_name = model[:-2]
+    if len(model.split(".")) == 3:
+        if tool == "codex":
+            catalog = _fetch_codex_model_catalog(
+                workspace, token, source=CodexCatalogSource.PARENT_SCHEMA, identifier=source_name
+            )
+            return catalog_slugs(catalog), None
+        listing = list_anthropic_model_catalog(workspace, token, parent_schema=source_name)
+        targets = listing.model_ids
+        if tool == "copilot":
+            from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
+
+            targets = [unwrap_anthropic_gateway_model(target) for target in targets]
+        return targets, listing.error_msg
+
+    service, reason = get_model_provider_service(source_name, workspace, token)
+    if service is None:
+        return [], reason
+    targets, reason = list_provider_service_models(
+        workspace, token, source_name, service.get("provider_type", ""), tool=tool
+    )
+    return [
+        target if target.startswith(f"{source_name}.") else f"{source_name}.{target}"
+        for target in targets
+    ], reason
 
 
 def expand_wildcard_sources(models: list[str], tool: str, workspace: str, token: str) -> list[str]:
@@ -4204,44 +4229,11 @@ def expand_wildcard_sources(models: list[str], tool: str, workspace: str, token:
             expanded.append(model)
             continue
         if model not in lookups:
-            service_name = model[:-2]
-            schema_source = len(model.split(".")) == 3
             targets: list[str] = []
             reason: str | None = None
             if token:
                 try:
-                    if schema_source:
-                        if tool == "codex":
-                            catalog = _fetch_codex_model_catalog(
-                                workspace,
-                                token,
-                                source=CodexCatalogSource.PARENT_SCHEMA,
-                                identifier=service_name,
-                            )
-                            targets = catalog_slugs(catalog)
-                        else:
-                            listing = list_anthropic_model_catalog(
-                                workspace, token, parent_schema=service_name
-                            )
-                            targets, reason = listing.model_ids, listing.error_msg
-                            if tool == "copilot":
-                                from ucode.smart_routing.routing import (
-                                    unwrap_anthropic_gateway_model,
-                                )
-
-                                targets = [
-                                    unwrap_anthropic_gateway_model(target) for target in targets
-                                ]
-                    else:
-                        service, reason = get_model_provider_service(service_name, workspace, token)
-                        if service is not None:
-                            targets, reason = list_provider_service_models(
-                                workspace,
-                                token,
-                                service_name,
-                                service.get("provider_type", ""),
-                                tool=tool,
-                            )
+                    targets, reason = _expand_wildcard_source(model, tool, workspace, token)
                 except RuntimeError as exc:
                     reason = str(exc)
             if not targets:
@@ -4252,12 +4244,7 @@ def expand_wildcard_sources(models: list[str], tool: str, workspace: str, token:
                     f"Could not expand managed model source {model}{detail}; "
                     "check service access and compatible models, then retry."
                 )
-            lookups[model] = [
-                target
-                if schema_source or target.startswith(f"{service_name}.")
-                else f"{service_name}.{target}"
-                for target in targets
-            ]
+            lookups[model] = targets
         expanded.extend(lookups[model])
     return list(dict.fromkeys(expanded))
 
