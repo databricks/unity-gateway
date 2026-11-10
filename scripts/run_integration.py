@@ -73,6 +73,8 @@ WINDOWS_UNSUPPORTED_MODULES = {
     # Uses sudo and the Linux/macOS OS-managed settings paths.
     "test_ug_configure_scope.py",
 }
+# Drive the installed ChatGPT desktop app, so they run only with --macos-desktop (the macOS CI job).
+MACOS_ONLY_MODULES = {"test_ug_codex_desktop_macos.py"}
 WINDOWS_UNSUPPORTED_NODES = {
     # Seeds machine-wide managed settings, which ug has no Windows path for.
     "test_ug_configure_claude_lifecycle.py::test_unmanaged_claude_preserves_preexisting_family_defaults",
@@ -174,6 +176,7 @@ def integration_test_targets(
     agents: Iterable[str],
     *,
     platform_name: str,
+    macos_desktop: bool,
     installation_only: bool,
     headless_only: bool,
 ) -> list[str]:
@@ -189,11 +192,13 @@ def integration_test_targets(
         modules = [
             str(module)
             for module in sorted(suite.glob("test_*.py"))
-            if module.name not in WINDOWS_UNSUPPORTED_MODULES
+            if module.name not in WINDOWS_UNSUPPORTED_MODULES | MACOS_ONLY_MODULES
         ]
         # pytest matches --deselect against node IDs relative to the suite's pytest.ini.
         deselected = [f"--deselect={node}" for node in sorted(WINDOWS_UNSUPPORTED_NODES)]
         return [*modules, *deselected]
+    if not macos_desktop:
+        return [str(suite), *(f"--ignore={suite / name}" for name in sorted(MACOS_ONLY_MODULES))]
     return [str(suite)]
 
 
@@ -585,6 +590,11 @@ def arguments(
         "--headless-only",
         action="store_true",
         help="Run one real noninteractive prompt journey for each selected agent.",
+    )
+    mode.add_argument(
+        "--macos-desktop",
+        action="store_true",
+        help="Also collect the journeys that drive the installed ChatGPT desktop app.",
     )
     parser.add_argument(
         "pytest_args", nargs=argparse.REMAINDER, help="After --, pass pytest filters."
@@ -1168,6 +1178,7 @@ def main() -> int:
             suite,
             agents,
             platform_name=os.name,
+            macos_desktop=args.macos_desktop,
             installation_only=args.installation_only,
             headless_only=args.headless_only,
         )
