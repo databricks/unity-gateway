@@ -260,14 +260,15 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
     if (!rows.length) children.push(Text({ dimColor: true, children: ['No routed subagents in this session yet.'] }));
     for (const row of rows) {
       const model = shortModel(row.selected_model);
-      const room = Math.max(1, columns - model.length - 4);
+      // Age (8) + "  " + preview + "  " + model fills the row, so the model ends at the right edge.
+      const room = Math.max(1, columns - model.length - 12);
       const preview = (row.preview || '(prompt not recorded)').replace(/\s+/g, ' ');
       const label = preview.length > room ? preview.slice(0, Math.max(0, room - 1)) + '…' : preview;
       children.push(Button({
         key: row.decision_id, plain: true,
         // The label prop is the only portable form: 2.1.290 rejects mixed
         // string/Text children ("takes one string child, its label, or none").
-        label: `${label}  ${model}`,
+        label: `${age(row.at).padStart(8)}  ${label.padEnd(room)}  ${model}`,
         onPress: async () => {
           const request = ++detailRequest;
           const loaded = await openDecision($, options, row.decision_id);
