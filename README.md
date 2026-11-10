@@ -543,6 +543,15 @@ An explicit `--model`, from `ug claude --model` or a launcher such as Omnigent, 
 subagent routing when first-prompt routing is off; the main session stays on that model.
 With first-prompt routing on, an explicit model still skips routing.
 
+When a model response launches a subagent, UG buffers that step and removes
+premature model claims before displaying or storing them. After launch, UG renders
+the parent's report directly from that request's child records: animal name,
+verified model, completion state and the recorded child answer. No special parent
+output format or Stop-hook retry is required. This replaces free-form parent
+summaries for that delegated request. Tool calls remain available, background
+completion follows the same path, and a fresh main-agent request replies normally.
+Routing-enabled responses are buffered until each model step completes.
+
 ### Codex smart-routing compatibility
 
 Smart routing now requires Codex 0.164.0
