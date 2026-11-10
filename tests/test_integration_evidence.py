@@ -150,20 +150,50 @@ def test_claude_send_requires_matching_native_result():
 
 def test_claude_follow_ups_tolerate_queued_and_rejected_alongside_a_resume():
     calls = [_call(1), _call(2), _call(3)]
-    claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _QUEUED, _REJECTED), "child-id")
+    resumed = claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _QUEUED, _REJECTED))
+    assert resumed == "child-id"
 
 
 @pytest.mark.parametrize("results", [(_QUEUED,), (_REJECTED,), (_QUEUED, _REJECTED)])
 def test_claude_follow_ups_require_a_real_resume(results):
     calls = [_call(i) for i in range(1, len(results) + 1)]
-    with pytest.raises(AssertionError, match="No SendMessage resumed child-id"):
-        claude.assert_follow_ups_resumed(calls, _records(*results), "child-id")
+    with pytest.raises(AssertionError, match="resume exactly one child"):
+        claude.assert_follow_ups_resumed(calls, _records(*results))
 
 
 def test_claude_follow_ups_fail_when_any_send_targets_another_agent():
     calls = [_call(1), _call(2, to="other-child")]
     with pytest.raises(AssertionError, match="neither resumed nor was queued or rejected"):
-        claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _REJECTED), "child-id")
+        claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _REJECTED))
+
+
+def test_claude_follow_ups_resolve_the_single_resumed_child():
+    calls = [_call(1), _call(2), _call(3)]
+    assert (
+        claude.assert_follow_ups_resumed(calls, _records(_QUEUED, _RESUMED, _REJECTED))
+        == "child-id"
+    )
+
+
+@pytest.mark.parametrize(
+    "results",
+    [
+        (
+            {"success": True, "resumedAgentId": "child-id"},
+            {"success": True, "resumedAgentId": "other-child"},
+        ),
+        ({"success": True},),
+    ],
+)
+def test_claude_follow_ups_require_exactly_one_resumed_child(results):
+    calls = [_call(i) for i in range(1, len(results) + 1)]
+    with pytest.raises(AssertionError, match="resume exactly one child"):
+        claude.assert_follow_ups_resumed(calls, _records(*results))
+
+
+def test_claude_follow_ups_require_a_native_result():
+    with pytest.raises(AssertionError, match="No native tool result for SendMessage send-1"):
+        claude.assert_follow_ups_resumed([_call()], [])
 
 
 def _transcript_session(home, agent, transcripts):
@@ -173,6 +203,94 @@ def _transcript_session(home, agent, transcripts):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("".join(json.dumps(record) + "\n" for record in records))
     return _Session(home)
+
+
+def _claude_peer_delivery(child_id, value):
+    body = "[Subagent hand-back] The report follows:\n  " + value
+    return {
+        "type": "user",
+        "isMeta": True,
+        "message": {
+            "role": "user",
+            "content": f'Another Claude session sent a message:\n<agent-message from="{child_id}">\n'
+            f"{body}\n</agent-message>",
+        },
+        "origin": {"kind": "peer", "from": child_id, "senderTaskId": child_id, "body": body},
+    }
+
+
+def _claude_child_handback(value):
+    return {
+        "type": "assistant",
+        "isSidechain": True,
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "SubagentHandback",
+                    "id": "handback-1",
+                    "input": {"message": value},
+                }
+            ],
+        },
+    }
+
+
+def _claude_parent_text(value):
+    return {
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": value}]},
+    }
+
+
+def test_claude_child_answer_requires_delivery_even_when_parent_hallucinates():
+    value = "3d3faaf02749"
+    fabricated = _claude_parent_text(
+        'Waiting for the subagent... <task-notification>"a fabricated quote"</task-notification>'
+    )
+    parent = "project/session.jsonl"
+    child = "project/session/subagents/agent-ae73fb7e161b59bbb.jsonl"
+    sessions = {parent: [fabricated], child: [_claude_child_handback(value)]}
+    assert not claude.claude_delivered_child_answers(sessions, value)
+    sessions[parent].append(_claude_peer_delivery("ae73fb7e161b59bbb", value))
+    assert claude.claude_delivered_child_answers(sessions, value) == {"ae73fb7e161b59bbb"}
+
+
+def test_claude_child_delivery_ignores_prompt_and_tool_input_echoes():
+    value = "3d3faaf02749"
+    parent = "project/session.jsonl"
+    child = "project/session/subagents/agent-child-id.jsonl"
+    sessions = {
+        parent: [
+            {"type": "user", "message": {"role": "user", "content": value}},
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "name": "Agent", "input": {"prompt": value}}],
+                },
+            },
+        ],
+        child: [_claude_child_handback(value)],
+    }
+    assert not claude.claude_delivered_child_answers(sessions, value)
+    sessions[parent].append(_claude_peer_delivery("other-child", value))
+    assert not claude.claude_delivered_child_answers(sessions, value)
+    sessions[parent].append(_claude_parent_text(value))
+    assert claude.claude_delivered_child_answers(sessions, value) == {"child-id"}
+    sessions[child] = [{"type": "user", "message": {"role": "user", "content": value}}]
+    assert not claude.claude_delivered_child_answers(sessions, value)
+
+
+def test_claude_child_delivery_must_belong_to_same_parent_session():
+    value = "3d3faaf02749"
+    sessions = {
+        "project/other.jsonl": [_claude_peer_delivery("child-id", value)],
+        "project/session.jsonl": [],
+        "project/session/subagents/agent-child-id.jsonl": [_claude_child_handback(value)],
+    }
+    assert not claude.claude_delivered_child_answers(sessions, value)
 
 
 def _write_answer(home, agent, *, child, value):
@@ -743,3 +861,64 @@ def test_codex_compacted_prompt_uses_adjacent_native_spawn():
         "ug_subagent_ab12",
         orchestrator_on=True,
     )
+
+
+def test_claude_follow_ups_accept_repeated_resumes_of_the_same_child():
+    calls = [_call(1), _call(2)]
+    assert claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _RESUMED)) == "child-id"
+
+
+_PARENT = "/home/.claude/projects/p/parent.jsonl"
+
+
+def _spawn(call_id, prompt="read input.txt"):
+    return {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "tool_use", "id": call_id, "name": "Agent", "input": {"prompt": prompt}}
+            ]
+        },
+    }
+
+
+def _child(name):
+    return {f"/home/.claude/projects/p/parent/subagents/agent-{name}.jsonl": [{"type": "user"}]}
+
+
+def test_claude_one_delegated_task_tolerates_identical_duplicate_spawns():
+    sessions = {_PARENT: [_spawn("a"), _spawn("b")], **_child("one"), **_child("two")}
+    claude.assert_one_delegated_task(sessions)
+
+
+@pytest.mark.parametrize(
+    "sessions",
+    [
+        {_PARENT: [_spawn("a"), _spawn("b", "read other.txt")], **_child("one"), **_child("two")},
+        {_PARENT: [_spawn("a")]},
+    ],
+    ids=["differently-tasked-spawn", "no-child"],
+)
+def test_claude_one_delegated_task_rejects_other_shapes(sessions):
+    with pytest.raises(AssertionError):
+        claude.assert_one_delegated_task(sessions)
+
+
+def test_claude_follow_up_spawned_nothing_accepts_unchanged_children_and_spawns():
+    before = {_PARENT: [_spawn("a")], **_child("one")}
+    after = {_PARENT: [_spawn("a"), {"type": "user"}], **_child("one")}
+    claude.assert_follow_up_spawned_nothing(before, after)
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        {_PARENT: [_spawn("a")], **_child("one"), **_child("two")},
+        {_PARENT: [_spawn("a"), _spawn("b")], **_child("one")},
+    ],
+    ids=["new-child", "new-spawn"],
+)
+def test_claude_follow_up_spawned_nothing_rejects_new_children_or_spawns(after):
+    before = {_PARENT: [_spawn("a")], **_child("one")}
+    with pytest.raises(AssertionError):
+        claude.assert_follow_up_spawned_nothing(before, after)

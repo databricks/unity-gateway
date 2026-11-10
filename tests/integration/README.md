@@ -72,12 +72,19 @@ including null omitted selectors. They do not verify inherited model resolution,
 actual execution or a remote metrics export.
 
 `test_ug_smart_routing_hooks.py::test_smart_router_claude_resumes_same_subagent_with_send_message`
-checks live continuation with orchestration enabled on Claude 2.1.314+: one initial
-Agent/Task call, a `SendMessage` addressed by ID or name whose native result
-resolves to the original child's ID, and two completed
-hidden file tasks in the same child transcript. Continuation checks use only parent
-calls/results, allowing the child to reply through SendMessage. A second spawn or child session
-fails the test. Select it through the runner with `--claude-version 2.1.314` and
+checks live continuation with orchestration enabled on Claude 2.1.314+: Agent/Task calls
+for one byte-identical task (a redundant identical re-spawn while waiting for the first
+child's completion notification is tolerated, run 42721826953), a `SendMessage` addressed
+by ID or name whose native result resolves to one of those pre-existing children's IDs,
+and two completed hidden file tasks in the resumed child's transcript, both reaching
+the parent as native child-ID peer messages or parent assistant answers. The parent need
+not restate the values: its fabricated answers remain in the session artifacts
+(Windows job 129537991866). Offline checks reject prompt and tool-input echoes, missing
+deliveries, and wrong-child or unrelated parent peer messages. Continuation checks use
+only parent calls/results, allowing the child to reply through SendMessage. A
+differently tasked spawn, a second child session or Agent/Task call during the follow-up
+phase, or a follow-up resumed child that was not spawned before it fails the test.
+Select it through the runner with `--claude-version 2.1.314` and
 `-- -k test_smart_router_claude_resumes_same_subagent_with_send_message`.
 Offline evidence checks accept both recipient forms and reject a missing recipient,
 a wrong resumed child, a failed send, or a missing/crossed tool result.
