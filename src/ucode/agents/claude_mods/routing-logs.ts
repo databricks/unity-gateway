@@ -1,12 +1,105 @@
-import type { On, PluginOptions } from 'claude-code';
+import type { EngineInterface, On, PluginOptions } from 'claude-code';
 
 export const ROUTING_LOGS_PANE = 'smart-router-logs';
-type Decision = { at: number; preview: string | null; selected_model: string; routing_ms: number };
+type Decision = {
+  decision_id: string;
+  at: number;
+  preview: string | null;
+  selected_model: string;
+  routing_ms: number;
+};
+type Detail = {
+  id: string;
+  failed: boolean;
+  // The reader CLI's own error hint, when its failure carries one.
+  hint?: string;
+  preview: string | null;
+  subagent: string | null;
+  selected: string;
+  routing_ms: number;
+  rationale: string | null;
+  candidates: string[];
+};
+
+const shortModel = (model: string): string => model.replace(/^system\.ai\./, '').replace(/^databricks-/, '');
 
 const isDecision = (d: Decision): boolean =>
-  Boolean(d) && Number.isFinite(d.at) && Number.isFinite(new Date(d.at * 1000).getTime()) &&
+  Boolean(d) && typeof d.decision_id === 'string' && Boolean(d.decision_id) &&
+  Number.isFinite(d.at) && Number.isFinite(new Date(d.at * 1000).getTime()) &&
   (d.preview === null || typeof d.preview === 'string') && typeof d.selected_model === 'string' &&
   Number.isFinite(d.routing_ms);
+
+// A v1 decision record: ignores unknown keys (a later `explanation`, for one).
+function parseDecision(raw: string, id: string): Detail {
+  let data: { v?: unknown; decision?: unknown } | null;
+  try { data = JSON.parse(raw); } catch { throw new Error('invalid decision JSON'); }
+  const d = data?.decision as Record<string, unknown> | null | undefined;
+  const prompt = d?.prompt as { preview?: unknown } | null | undefined;
+  const original = d?.original as { subagent_type?: unknown } | null | undefined;
+  const candidates = Array.isArray(d?.candidates) ? d.candidates : [];
+  const validPrompt = prompt == null || (typeof prompt === 'object' && !Array.isArray(prompt) &&
+    (prompt.preview === null || typeof prompt.preview === 'string'));
+  const validOriginal = original == null || (typeof original === 'object' && !Array.isArray(original) &&
+    (original.subagent_type === null || typeof original.subagent_type === 'string'));
+  const validCandidates = Array.isArray(d?.candidates) && candidates.every(candidate =>
+    candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate) &&
+    typeof (candidate as { model?: unknown }).model === 'string');
+  if (data?.v !== 1 || !d || d.decision_id !== id || !validPrompt || !validOriginal ||
+    typeof d.selected_model !== 'string' || !Number.isFinite(d.routing_ms) ||
+    (d.rationale !== null && typeof d.rationale !== 'string') || !validCandidates) {
+    throw new Error('invalid decision response');
+  }
+  return {
+    id,
+    failed: false,
+    preview: typeof prompt?.preview === 'string' ? prompt.preview : null,
+    // UG's own route agents (`ucode-route-<model>`) name a model, not a task type, and
+    // would contradict the selected model, so only other subagent types are shown.
+    subagent: typeof original?.subagent_type === 'string' && !/(^|:)ucode-route-/.test(original.subagent_type)
+      ? original.subagent_type : null,
+    selected: d.selected_model,
+    routing_ms: d.routing_ms,
+    rationale: typeof d.rationale === 'string' ? d.rationale : null,
+    candidates: candidates.map(candidate => (candidate as { model: string }).model),
+  };
+}
+
+function failedDetail(id: string): Detail {
+  return {
+    id, failed: true, preview: null,
+    subagent: null, selected: '', routing_ms: 0, rationale: null, candidates: [],
+  };
+}
+
+async function openDecision($: EngineInterface, options: PluginOptions, id: string): Promise<Detail> {
+  let result: { exitCode: number; stdout: string; isStdoutTruncated?: boolean };
+  try {
+    result = await $.process.run(
+      [...logsReaderCommand(options), '--session', await $.session.id(), '--decision', id],
+      { timeoutMs: 10000 },
+    );
+  } catch (error) {
+    $.ui.log(`Smart Router logs: ${error instanceof Error ? error.message : 'load failed'}`, { to: 'debug' });
+    return failedDetail(id);
+  }
+  try {
+    if (result.exitCode !== 0 || result.isStdoutTruncated) {
+      throw new Error(`decision command exited ${result.exitCode} or truncated output`);
+    }
+    return parseDecision(result.stdout, id);
+  } catch (error) {
+    $.ui.log(`Smart Router logs: ${error instanceof Error ? error.message : 'load failed'}`, { to: 'debug' });
+    const detail = failedDetail(id);
+    // A failed load is reported as {"v":1,"error":"..."}; surface that hint under the notice.
+    try {
+      const envelope = JSON.parse(result.stdout);
+      if (typeof envelope?.error === 'string' && envelope.error.trim()) {
+        detail.hint = envelope.error.trim().slice(0, 200);
+      }
+    } catch {}
+    return detail;
+  }
+}
 
 // Relative age avoids showing a wall-clock time in an unknown time zone.
 function age(at: number): string {
@@ -111,9 +204,15 @@ async function load($: any, options: PluginOptions): Promise<void> {
 }
 
 export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnabled: boolean): void {
+  // The open decision and its request token: a newer open or a logs rerun retires a load.
+  let detail: Detail | null = null;
+  let detailRequest = 0;
+
   on('command.run', { command: 'smart-router' }, async ($, e, next) => {
     if (e.args.trim() !== 'logs') return next(e);
     if (!launchedEnabled) return { text: 'Smart Router was not enabled for this session.' };
+    detailRequest++;
+    detail = null;
     await load($, options);
     try {
       const pane = await $.ui.open({ id: ROUTING_LOGS_PANE, title: 'Smart Router logs', focus: true, closeOnEscape: true });
@@ -131,8 +230,44 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
   });
 
   on('ui.render', { component: 'Pane', requestId: ROUTING_LOGS_PANE }, ($, e) => {
-    const { Box, Text } = $.ui.resolve(e);
+    const { Box, Text, Button } = $.ui.resolve(e);
     const columns = Number.isFinite(e.props.bodyColumns) ? e.props.bodyColumns : 80;
+    if (detail) {
+      const children = [
+        Button({
+          key: 'back', plain: true, autoFocus: true, children: ['← Back'],
+          onPress: () => { detailRequest++; detail = null; $.ui.invalidate('ui.render'); },
+        }),
+      ];
+      if (detail.failed) {
+        children.push(Text({ children: ['Could not load this routing decision.'] }));
+        if (detail.hint) children.push(Text({ dimColor: true, children: [detail.hint.slice(0, columns)] }));
+      } else {
+        // One labeled line per routing outcome; every label is dim so the block
+        // reads consistently, and each value wraps in its own column. The label
+        // column is fixed at the longest label plus a one-space gutter, so no
+        // label ever wraps or shrinks and every value starts at the same column.
+        const labelWidth = 'Prompt preview: '.length + 1;
+        const labeledRow = (label: string, value: ReturnType<typeof Text>) =>
+          Box({
+            flexDirection: 'row',
+            children: [
+              Box({ width: labelWidth, flexShrink: 0, children: [Text({ dimColor: true, children: [label] })] }),
+              Box({ flexGrow: 1, children: [value] }),
+            ],
+          });
+        children.push(labeledRow('Prompt preview: ', Text({ children: [detail.preview ?? '(prompt not recorded)'] })));
+        if (detail.subagent) children.push(labeledRow('Agent type: ', Text({ children: [detail.subagent] })));
+        children.push(labeledRow('Selected: ', Text({ color: 'green', bold: true, children: [shortModel(detail.selected)] })));
+        children.push(labeledRow('Routing Time: ', Text({ children: [`${(detail.routing_ms / 1000).toFixed(1)}s`] })));
+        children.push(labeledRow('Rationale: ', Text({ children: [detail.rationale?.trim() || 'No rationale returned.'] })));
+        children.push(Text({ dimColor: true, children: ['Candidates'] }));
+        for (const candidate of detail.candidates) {
+          children.push(Text({ children: [`${candidate === detail.selected ? '● ' : '○ '}${shortModel(candidate)}`] }));
+        }
+      }
+      return Box({ flexDirection: 'column', children });
+    }
     if (failed) {
       const children = [Text({ children: ['Could not read Smart Router logs.'] })];
       if (cliError) children.push(Text({ dimColor: true, children: [cliError.slice(0, columns)] }));
@@ -141,16 +276,24 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
     const children = [Text({ dimColor: true, children: [`${rows.length} routed prompt${rows.length === 1 ? '' : 's'} this session`] })];
     if (!rows.length) children.push(Text({ dimColor: true, children: ['No routed subagents in this session yet.'] }));
     for (const row of rows) {
-      const model = row.selected_model.replace(/^system\.ai\./, '').replace(/^databricks-/, '');
+      const model = shortModel(row.selected_model);
       // Age (8) + "  " + preview + "  " + model fills the row, so the model ends at the right edge.
       const room = Math.max(1, columns - model.length - 12);
       const preview = (row.preview || '(prompt not recorded)').replace(/\s+/g, ' ');
       const label = preview.length > room ? preview.slice(0, Math.max(0, room - 1)) + '…' : preview;
-      children.push(Box({ flexDirection: 'row', children: [
-        Text({ dimColor: true, children: [`${age(row.at).padStart(8)}  `] }),
-        Text({ children: [`${label.padEnd(room)}  `] }),
-        Text({ color: 'green', bold: true, children: [model] }),
-      ] }));
+      children.push(Button({
+        key: row.decision_id, plain: true,
+        // The label prop is the only portable form: 2.1.290 rejects mixed
+        // string/Text children ("takes one string child, its label, or none").
+        label: `${age(row.at).padStart(8)}  ${label.padEnd(room)}  ${model}`,
+        onPress: async () => {
+          const request = ++detailRequest;
+          const loaded = await openDecision($, options, row.decision_id);
+          if (request !== detailRequest) return;
+          detail = loaded;
+          $.ui.invalidate('ui.render');
+        },
+      }));
     }
     return Box({ flexDirection: 'column', children });
   });
