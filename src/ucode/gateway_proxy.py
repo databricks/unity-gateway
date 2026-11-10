@@ -577,13 +577,7 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
         ):
             return super()._relay_response(resp, **kwargs)
         body_chunks = kwargs.get("body_chunks")
-        body = (
-            resp.read()
-            if body_chunks is None
-            else httpx.Response(
-                resp.status_code, headers=resp.headers, content=b"".join(body_chunks)
-            ).content
-        )
+        body = resp.read() if body_chunks is None else b"".join(body_chunks)
         body = self.bad_request_rewriter(body) or body
         try:
             self.send_response(400)

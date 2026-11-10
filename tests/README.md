@@ -40,6 +40,9 @@ Proxy authentication component checks also cover a bounded, identity-encoded HTT
 bytes. Other 400 bodies, oversized errors, persistent rejection and compressed passthrough
 remain covered. Existing local socket scenarios exercise both proxy routes and error-body
 rewriters. This does not establish which route a production session used or live token renewal.
+The component matrix checks 4,095/4,096-byte token errors, exact 4,096/4,097-byte
+passthrough boundaries, and single-pass split chunks. Its 8,192-byte case leaves
+the third chunk unread at the inspection cutoff and verifies exact full-body relay.
 
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including
