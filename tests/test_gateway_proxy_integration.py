@@ -235,13 +235,14 @@ class TestRelayedProxyEndToEnd:
                     body = b"".join(resp.iter_raw())
         assert body == b"".join(chunks)
 
-    def test_upstream_401_triggers_refresh_and_relays_over_socket(self, make_gateway):
+    @pytest.mark.parametrize("status", [400, 401])
+    def test_upstream_401_triggers_refresh_and_relays_over_socket(self, make_gateway, status):
         # A 401 may be a stale swap token, so the proxy force-refreshes and retries
         # once; when the retry still 401s it's genuinely the Anthropic layer and the
         # 401 is relayed verbatim (Claude Code then re-auths Anthropic). Exercised
         # here end-to-end over real sockets, not just the _handle fake path.
         token_fn = _counting_token("swap-tok")
-        gw = make_gateway(status=401, chunks=[b'{"type":"error"}'])
+        gw = make_gateway(status=status, chunks=[b"Invalid Token"])
         with _running_proxy(gw, token_fn) as proxy_url:
             resp = httpx.post(
                 f"{proxy_url}/v1/messages",
@@ -249,11 +250,27 @@ class TestRelayedProxyEndToEnd:
                 content=b"{}",
                 timeout=10,
             )
-        assert resp.status_code == 401
+        assert resp.status_code == status
+        assert resp.content == b"Invalid Token"
         # Init mint isn't forced (force_refresh_near_expiry=False); the first 401 is
         # what forces a fresh mint before the single retry.
         assert token_fn.calls == [False, True]  # type: ignore[attr-defined]
         assert len(gw.requests) == 2  # original attempt + one retry
+
+    def test_compressed_400_is_relayed_without_refresh(self, make_gateway):
+        body = gzip.compress(b"Invalid Token")
+        gateway = make_gateway(status=400, chunks=[body], headers={"Content-Encoding": "gzip"})
+        token = _counting_token()
+        with _running_proxy(gateway, token) as proxy_url:
+            with httpx.stream(
+                "POST", f"{proxy_url}/v1/messages", content=b"{}", timeout=10
+            ) as response:
+                raw = b"".join(response.iter_raw())
+        assert response.status_code == 400
+        assert response.headers["Content-Encoding"] == "gzip"
+        assert raw == body
+        assert token.calls == [False]
+        assert len(gateway.requests) == 1
 
 
 class TestOtelProxyEndToEnd:
@@ -543,7 +560,8 @@ class TestGatewayAuthProxyEndToEnd:
         assert resp.status_code == 404
         assert gw.requests == []
 
-    def test_expired_token_is_refreshed_and_request_retried(self, make_gateway):
+    @pytest.mark.parametrize("status", [400, 401])
+    def test_expired_token_is_refreshed_and_request_retried(self, make_gateway, status):
         # The session outlives the token: the gateway rejects the first one, the proxy
         # mints a new one and the same request succeeds without the agent restarting.
         tokens = iter(["expired-token", "fresh-token"])
@@ -553,7 +571,7 @@ class TestGatewayAuthProxyEndToEnd:
             calls.append(force_refresh)
             return next(tokens)
 
-        gw = make_gateway(statuses=[401, 200])
+        gw = make_gateway(statuses=[status, 200], chunks=[b"Invalid Token"])
         with _running_gateway_auth_proxy(gw, provider) as proxy_url:
             resp = httpx.post(
                 f"{proxy_url}/ai-gateway/anthropic/v1/messages",
@@ -562,11 +580,13 @@ class TestGatewayAuthProxyEndToEnd:
                 timeout=10,
             )
         assert resp.status_code == 200
+        assert resp.content == b"Invalid Token"
         assert calls == [True, True]
         assert [req.header("Authorization") for req in gw.requests] == [
             "Bearer expired-token",
             "Bearer fresh-token",
         ]
+        assert [req.body for req in gw.requests] == [b"{}", b"{}"]
 
     @pytest.mark.parametrize(
         ("path", "expected_error"),

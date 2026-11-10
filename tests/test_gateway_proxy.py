@@ -487,7 +487,7 @@ class _Collect(io.RawIOBase):
 
 
 class TestRetryOn401:
-    @pytest.mark.parametrize("status", [401, 403])
+    @pytest.mark.parametrize("status", [400, 401, 403])
     @pytest.mark.parametrize("same_token", [False, True])
     def test_concurrent_rejections_share_one_refresh(self, status, same_token):
         forces = []
@@ -506,7 +506,10 @@ class TestRetryOn401:
                     barrier.wait()
                 return response
 
-        clients = [RejectedClient([_FakeResp(status), _FakeResp(200, b"ok")]) for _ in range(8)]
+        clients = [
+            RejectedClient([_FakeResp(status, b"Invalid Token"), _FakeResp(200, b"ok")])
+            for _ in range(8)
+        ]
         outputs = [_Collect() for _ in clients]
         with ThreadPoolExecutor(max_workers=8) as pool:
             futures = [
@@ -573,10 +576,19 @@ class TestRetryOn401:
         assert client.sent_tokens == ["Bearer tok1", "Bearer tok2"]
         assert bytes(output.data).endswith(b"ok")
 
-    def test_401_forces_refresh_and_retries(self):
+    @pytest.mark.parametrize(
+        ("status", "body"),
+        [
+            (401, b'{"e":1}'),
+            (400, b"Invalid Token"),
+            (400, b'{"error_code":"UNAUTHENTICATED","message":"Invalid Token"}'),
+            (400, b'{"error":{"type":"authentication_error","message":"Invalid Token"}}'),
+        ],
+    )
+    def test_401_forces_refresh_and_retries(self, status, body):
         # A stale swap token yields 401; the proxy force-refreshes and retries,
         # this time succeeding, so Claude Code never sees the 401.
-        client = _FakeClient([_FakeResp(401, b'{"e":1}'), _FakeResp(200, b"ok")])
+        client = _FakeClient([_FakeResp(status, body), _FakeResp(200, b"ok")])
         cache = _FakeCache()
         out = _Collect()
         _handle_handler(client, cache, out)._handle()
@@ -585,15 +597,42 @@ class TestRetryOn401:
         assert b"200" in bytes(out.data)
         assert b"ok" in bytes(out.data)
 
-    def test_persistent_401_is_relayed(self):
+    @pytest.mark.parametrize("status", [400, 401])
+    def test_persistent_401_is_relayed(self, status):
         # If the retry also 401s, it's genuinely the Anthropic layer — relay it so
         # Claude Code re-auths Anthropic (correct), rather than looping forever.
-        client = _FakeClient([_FakeResp(401, b"a"), _FakeResp(401, b"b")])
+        client = _FakeClient(
+            [_FakeResp(status, b"Invalid Token"), _FakeResp(status, b"still invalid")]
+        )
         cache = _FakeCache()
         out = _Collect()
         _handle_handler(client, cache, out)._handle()
         assert cache.refreshed == 1
-        assert b"401" in bytes(out.data)
+        assert str(status).encode() in bytes(out.data)
+        assert bytes(out.data).endswith(b"still invalid")
+        assert len(client.sent_tokens) == 2
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b"Invalid model",
+            b'{"error":{"message":"Invalid token budget"}}',
+            b'{"message":"Invalid Token length"}',
+            b'{"error":"Invalid Token",',
+            b'{"input":"Invalid Token"}',
+            b'{"message":"Invalid Token","padding":"' + b"x" * 8192 + b'"}',
+        ],
+    )
+    def test_other_400_is_relayed_without_refresh(self, body):
+        client = _FakeClient([_FakeResp(400, body, {"X-Request-Id": "original"})])
+        cache = _FakeCache()
+        output = _Collect()
+        _handle_handler(client, cache, output)._handle()
+        assert cache.refreshed == 0
+        assert client.sent_tokens == ["Bearer tok1"]
+        assert b"400" in bytes(output.data)
+        assert b"X-Request-Id: original" in bytes(output.data)
+        assert bytes(output.data).endswith(body)
 
     def test_success_first_try_does_not_refresh(self):
         client = _FakeClient([_FakeResp(200, b"hi")])
