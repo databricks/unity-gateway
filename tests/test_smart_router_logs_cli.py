@@ -102,6 +102,23 @@ def test_missing_session_returns_empty_list(log_dir):
     assert read_overviews(session="absent") == []
 
 
+def test_unreadable_log_returns_error_envelope(log_dir, monkeypatch):
+    """A log that exists but cannot be read must not be reported as empty history."""
+
+    def deny_read(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    write(payload())
+    path = log_dir / "claude-s1.jsonl"
+    monkeypatch.setattr(type(path), "read_text", deny_read)
+    result = runner.invoke(cli.app, ["smart-router-logs", "--session", "s1"])
+    assert result.exit_code == 1
+    document = json.loads(result.output)
+    assert document["v"] == 1
+    assert "cannot read session log at" in document["error"]
+    assert "claude-s1.jsonl" in document["error"]
+
+
 def test_decision_hit_returns_full_record(log_dir):
     write(payload())
     record = json.loads((log_dir / "claude-s1.jsonl").read_text())
