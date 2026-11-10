@@ -52,8 +52,9 @@ def test_managed_fixture_claude_mcp_lists_configured_server(live_session, worksp
 def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspace):
     """Scenario: an interactive configure with a managed MCP server writes Codex's managed file.
 
-    Expected: the server lands in the `[mcp_servers]` table of the OS-managed config with its
-    native HTTP URL and pinned Codex OAuth client, without a user-scope copy.
+    Expected: the server lands in the `[mcp_servers]` table of the OS-managed config as the
+    `ug mcp-proxy` stdio command (so the Codex app can sign in from chat through the proxy's
+    authenticate tool), with a tool timeout covering sign-in, without a user-scope copy.
     """
     session = live_session
     use_managed_config_fixture(session, "codex_mcp")
@@ -66,11 +67,11 @@ def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspa
     )
     servers = managed.get("mcp_servers") or {}
     url = f"{workspace.rstrip('/')}/ai-gateway/mcp-services/system.ai.github"
-    assert servers.get("system-ai-github") == {
-        "url": url,
-        "oauth_resource": url,
-        "oauth": {"client_id": "https://chatgpt.com/oauth/codex/client.json"},
-    }, servers
+    entry = servers.get("system-ai-github") or {}
+    assert "url" not in entry, servers
+    args = entry.get("args") or []
+    assert args[:3] == ["mcp-proxy", "--url", url], servers
+    assert entry.get("tool_timeout_sec") == 330, servers
 
     personal_path = session.home / ".codex" / "config.toml"
     personal = tomllib.loads(personal_path.read_text()) if personal_path.exists() else {}

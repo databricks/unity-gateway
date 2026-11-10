@@ -3220,6 +3220,7 @@ class TestWriteUserMcpServers:
                 "DATABRICKS_BEARER_COMMAND",
                 "DATABRICKS_CONFIG_FILE",
             ],
+            "tool_timeout_sec": 330,
         }
 
     def test_removes_named_entries_only(self, tmp_path, monkeypatch):

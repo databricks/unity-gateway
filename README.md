@@ -355,11 +355,15 @@ ug mcp list
 ug mcp list --agents claude,codex
 ```
 
-Connection-backed AI Gateway MCP services use native HTTP OAuth in Claude Code,
-Codex, and Cursor when the workspace publishes a compatible client. Claude Code
+Connection-backed AI Gateway MCP services use native HTTP OAuth in Claude Code
+and Cursor when the workspace publishes a compatible client. Claude Code
 uses its URL-based client ID metadata document; if it is unavailable, `ug` uses
 the local `ug mcp-proxy` stdio server with the Databricks CLI's OAuth client.
-Other servers and agents also use that proxy. When a proxied connection needs
+Other servers and agents, including Codex and the Codex app, also use that proxy.
+Before sign-in it lists an `authenticate` tool, so you can sign in from the chat;
+Codex entries get a 330-second tool timeout so sign-in isn't cut off.
+Rerunning `ug configure` or `ug mcp add` moves native Codex entries from earlier
+versions to the proxy. When a proxied connection needs
 provider authentication, UG opens the workspace's MCP service sign-in page and
 waits up to five minutes for the selected CLI profile's user credential, then retries
 the original request. Use the same Databricks account in the browser and CLI profile.
