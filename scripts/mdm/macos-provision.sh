@@ -3,10 +3,9 @@
 # macOS MDM provisioning script, written for Jamf Pro policies: install
 # ug, the Databricks CLI, Claude Code and Codex machine-wide and run
 # `ug configure` as root, which installs the workspace policy at
-# /etc/unitygateway/managed-settings.json.
-# Users then launch with no sudo:
-#
-#   UG_SKIP_OS_SETTINGS=1 ug claude    (or: ug codex)
+# /etc/unitygateway/managed-settings.json. It also adds `claude` and
+# `codex` aliases to /etc/zshrc and /etc/bashrc, so users launch with
+# `claude` or `codex` in a new terminal, with no sudo.
 #
 # Jamf parameters ($1-$3 are reserved by Jamf):
 #   $4  Databricks workspace URL, starting with https://
@@ -105,3 +104,17 @@ export DATABRICKS_BEARER
 
 ug configure --global --workspace "$WORKSPACE" \
   --agents claude,codex </dev/null
+
+# Aliases for every user's interactive zsh and bash shells. The block is
+# rewritten on each run, which restores it if a macOS update resets
+# the file.
+for rc in /etc/zshrc /etc/bashrc; do
+  [ -f "$rc" ] || continue
+  sed -i '' '/^# BEGIN unity-gateway/,/^# END unity-gateway/d' "$rc"
+  cat >>"$rc" <<'ALIASES'
+# BEGIN unity-gateway (managed by MDM)
+alias claude='UG_SKIP_OS_SETTINGS=1 ug claude'
+alias codex='UG_SKIP_OS_SETTINGS=1 ug codex'
+# END unity-gateway
+ALIASES
+done

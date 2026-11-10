@@ -22,8 +22,10 @@ A service principal is used only while the Jamf policy runs, to download the wor
    `ug` must be installed in a shared path such as `/usr/local/bin`, not under root's home
    directory: `ug configure` records the absolute path to `ug` in the machine-wide agent settings,
    and every developer's agent runs it from there to authenticate.
-3. Developers launch with `UG_SKIP_OS_SETTINGS=1 ug claude` (or `ug codex`). The launch reads the
-   installed policy, writes only the developer's own settings, and authenticates as the developer.
+3. The script adds `claude` and `codex` aliases for every user's zsh and bash (in `/etc/zshrc` and
+   `/etc/bashrc`), so developers launch with `claude` or `codex` in a new terminal. Each alias runs
+   `UG_SKIP_OS_SETTINGS=1 ug claude` (or `ug codex`): the launch reads the installed policy, writes
+   only the developer's own settings, and authenticates as the developer.
 
 ## Before you start
 
@@ -101,28 +103,28 @@ Go to **Computers → Policies → New**:
 After the policy runs (check the computer's **History → Policy Logs**), as a user, with no sudo:
 
 ```bash
-which ug databricks claude codex                 # /usr/local/bin/...
+ls -l /usr/local/bin/ug /usr/local/bin/databricks /usr/local/bin/claude /usr/local/bin/codex
 cat /etc/unitygateway/managed-settings.json      # your workspace's policy
-UG_SKIP_OS_SETTINGS=1 ug claude
+alias claude codex                               # in a new terminal: the UG aliases
+claude
 ```
 
 The first launch opens a browser so the developer can sign in to Databricks.
 
 ## 5. Tell developers how to launch
 
-```bash
-UG_SKIP_OS_SETTINGS=1 ug claude
-UG_SKIP_OS_SETTINGS=1 ug codex
-```
-
-To avoid typing the variable, they can add `export UG_SKIP_OS_SETTINGS=1` to `~/.zshrc`. Without it,
-a launch may try to update the machine-wide settings with sudo and stop. Admins may also deploy
-aliases in a shell profile:
+Open a new terminal and run `claude` or `codex`. The script's aliases, in a block between
+`# BEGIN unity-gateway` and `# END unity-gateway` in `/etc/zshrc` and `/etc/bashrc`, expand them to:
 
 ```bash
 alias claude='UG_SKIP_OS_SETTINGS=1 ug claude'
 alias codex='UG_SKIP_OS_SETTINGS=1 ug codex'
 ```
+
+Each policy run rewrites that block, which restores it if a macOS update resets the file. The
+aliases apply only to interactive zsh and bash. In scripts, other shells, or to run the agent
+without ug, use `UG_SKIP_OS_SETTINGS=1 ug claude` or `command claude` directly. Without the variable,
+a launch may try to update the machine-wide settings with sudo and stop.
 
 ## Rotate the secret
 
