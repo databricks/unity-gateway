@@ -742,3 +742,64 @@ def test_codex_compacted_prompt_uses_adjacent_native_spawn():
         "ug_subagent_ab12",
         orchestrator_on=True,
     )
+
+
+def test_claude_follow_ups_accept_repeated_resumes_of_the_same_child():
+    calls = [_call(1), _call(2)]
+    assert claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _RESUMED)) == "child-id"
+
+
+_PARENT = "/home/.claude/projects/p/parent.jsonl"
+
+
+def _spawn(call_id, prompt="read input.txt"):
+    return {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "tool_use", "id": call_id, "name": "Agent", "input": {"prompt": prompt}}
+            ]
+        },
+    }
+
+
+def _child(name):
+    return {f"/home/.claude/projects/p/parent/subagents/agent-{name}.jsonl": [{"type": "user"}]}
+
+
+def test_claude_one_delegated_task_tolerates_identical_duplicate_spawns():
+    sessions = {_PARENT: [_spawn("a"), _spawn("b")], **_child("one"), **_child("two")}
+    claude.assert_one_delegated_task(sessions)
+
+
+@pytest.mark.parametrize(
+    "sessions",
+    [
+        {_PARENT: [_spawn("a"), _spawn("b", "read other.txt")], **_child("one"), **_child("two")},
+        {_PARENT: [_spawn("a")]},
+    ],
+    ids=["differently-tasked-spawn", "no-child"],
+)
+def test_claude_one_delegated_task_rejects_other_shapes(sessions):
+    with pytest.raises(AssertionError):
+        claude.assert_one_delegated_task(sessions)
+
+
+def test_claude_follow_up_spawned_nothing_accepts_unchanged_children_and_spawns():
+    before = {_PARENT: [_spawn("a")], **_child("one")}
+    after = {_PARENT: [_spawn("a"), {"type": "user"}], **_child("one")}
+    claude.assert_follow_up_spawned_nothing(before, after)
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        {_PARENT: [_spawn("a")], **_child("one"), **_child("two")},
+        {_PARENT: [_spawn("a"), _spawn("b")], **_child("one")},
+    ],
+    ids=["new-child", "new-spawn"],
+)
+def test_claude_follow_up_spawned_nothing_rejects_new_children_or_spawns(after):
+    before = {_PARENT: [_spawn("a")], **_child("one")}
+    with pytest.raises(AssertionError):
+        claude.assert_follow_up_spawned_nothing(before, after)

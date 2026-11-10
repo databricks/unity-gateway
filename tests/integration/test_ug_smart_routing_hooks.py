@@ -15,9 +15,13 @@ from pathlib import Path
 
 import pytest
 from utils.agents.claude import (
+    assert_follow_up_spawned_nothing,
     assert_follow_ups_resumed,
+    assert_one_delegated_task,
     child_id,
+    child_paths,
     claude_delivered_child_answers,
+    parent_tool_calls,
 )
 from utils.evidence import (
     FileTask,
@@ -562,19 +566,6 @@ def _assert_claude_session_finished(session, tui) -> str:
     return "".join(tui.output)
 
 
-def _parent_tool_calls(sessions: dict[str, list[dict]], names: set[str]) -> dict[str, dict]:
-    """Collect parent tool_use calls by ID from a sessions mapping."""
-    return {
-        part["id"]: part
-        for path, records in sessions.items()
-        if not is_child_session("claude", path, records)
-        for record in records
-        if record.get("type") == "assistant"
-        for part in record.get("message", {}).get("content", [])
-        if part.get("type") == "tool_use" and part.get("name") in names
-    }
-
-
 def _assert_claude_not_wrapped(session, transcript: str) -> None:
     assert SMART_ROUTING_BANNER not in transcript, transcript
     session.assert_not_routed()
@@ -621,19 +612,7 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
         tui.wait_for_background_tasks()
         pre_followup = agent_sessions(session, "claude")
         session.record("agent-sessions-before-followup.json", pre_followup)
-        children = {
-            path
-            for path, records in pre_followup.items()
-            if is_child_session("claude", path, records)
-        }
-        assert children, "the parent spawned no child session"
-        # Claude may redundantly re-spawn the identical task while waiting for the first
-        # child's completion notification (run 42721826953). Tolerate only byte-identical
-        # duplicate spawns of one task; a differently tasked second child still fails.
-        pre_spawns = _parent_tool_calls(pre_followup, {"Agent", "Task"})
-        assert (
-            len({json.dumps(call["input"], sort_keys=True) for call in pre_spawns.values()}) == 1
-        ), sorted(pre_spawns.values(), key=lambda call: call["id"])
+        assert_one_delegated_task(pre_followup)
 
         second = FileTask(session)
         tui.submit(
@@ -652,20 +631,14 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
 
     sessions = agent_sessions(session, "claude")
     session.record("agent-sessions.json", sessions)
-    # The follow-up phase must not create children: every child at the end was spawned
-    # before it began, and the follow-ups resumed one of those existing children.
-    end_children = {
-        path for path, records in sessions.items() if is_child_session("claude", path, records)
-    }
-    assert end_children == children, (sorted(children), sorted(end_children))
-    spawns = _parent_tool_calls(sessions, {"Agent", "Task"})
-    assert set(spawns) == set(pre_spawns), sorted(set(spawns) ^ set(pre_spawns))
-    followups = _parent_tool_calls(sessions, {"SendMessage"})
-    assert followups, sorted(spawns)
+    # The follow-up must resume an existing child: no new child session or spawn.
+    assert_follow_up_spawned_nothing(pre_followup, sessions)
+    followups = parent_tool_calls(sessions, {"SendMessage"})
+    assert followups, "the follow-up sent no SendMessage"
     resumed_child = assert_follow_ups_resumed(
         list(followups.values()), [r for records in sessions.values() for r in records]
     )
-    assert any(child_id(path) == resumed_child for path in children), (
+    assert any(child_id(path) == resumed_child for path in child_paths(pre_followup)), (
         f"the follow-up resumed {resumed_child}, which is not one of the spawned children"
     )
     for task in (first, second):

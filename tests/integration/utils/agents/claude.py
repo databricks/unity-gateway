@@ -1,5 +1,6 @@
 """Claude-specific integration evidence and model discovery helpers."""
 
+import json
 from pathlib import Path
 from typing import Literal
 
@@ -176,6 +177,52 @@ def completed_task_models(records: list[dict], answer_value: str) -> set[str]:
 def child_id(path: str) -> str:
     """The child ID encoded in a Claude child transcript path's file name."""
     return Path(path).stem.removeprefix("agent-")
+
+
+SPAWN_TOOLS = {"Agent", "Task"}
+
+
+def parent_tool_calls(sessions: dict[str, list[dict]], names: set[str]) -> dict[str, dict]:
+    """Parent tool_use calls with one of ``names``, keyed by call ID."""
+    return {
+        part["id"]: part
+        for path, records in sessions.items()
+        if not is_child_session(path, records)
+        for record in records
+        if record.get("type") == "assistant"
+        for part in record.get("message", {}).get("content", [])
+        if part.get("type") == "tool_use" and part.get("name") in names
+    }
+
+
+def child_paths(sessions: dict[str, list[dict]]) -> set[str]:
+    return {path for path, records in sessions.items() if is_child_session(path, records)}
+
+
+def assert_one_delegated_task(sessions: dict[str, list[dict]]) -> None:
+    """At least one child, and every parent spawn is a byte-identical copy of one task.
+
+    Claude may re-spawn the identical task while it waits for the first child's
+    completion notification (run 42721826953); a differently tasked spawn still fails.
+    """
+    assert child_paths(sessions), "the parent spawned no child session"
+    spawns = parent_tool_calls(sessions, SPAWN_TOOLS)
+    assert len({json.dumps(call["input"], sort_keys=True) for call in spawns.values()}) == 1, (
+        sorted(spawns.values(), key=lambda call: call["id"])
+    )
+
+
+def assert_follow_up_spawned_nothing(
+    before: dict[str, list[dict]], after: dict[str, list[dict]]
+) -> None:
+    """The follow-up phase created no child session and made no spawn call."""
+    assert child_paths(after) == child_paths(before), (
+        sorted(child_paths(before)),
+        sorted(child_paths(after)),
+    )
+    spawns_before = set(parent_tool_calls(before, SPAWN_TOOLS))
+    spawns_after = set(parent_tool_calls(after, SPAWN_TOOLS))
+    assert spawns_after == spawns_before, sorted(spawns_after ^ spawns_before)
 
 
 def claude_delivered_child_answers(sessions: dict[str, list[dict]], value: str) -> set[str]:
