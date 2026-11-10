@@ -341,6 +341,9 @@ class TestRenderOverlay:
 
     def test_sets_api_key_helper(self, monkeypatch):
         monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/my tools/{command}")
+        monkeypatch.setattr(
+            "ucode.os_compatibility.subprocess_cross_os.platform.system", lambda: "Linux"
+        )
         overlay, _ = claude.render_overlay(WS, "s4")
         assert shlex.split(overlay["apiKeyHelper"]) == [
             sys.executable,

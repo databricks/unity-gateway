@@ -2637,13 +2637,22 @@ class TestBuildAuthShellCommand:
         assert "jq" not in cmd
         assert "if [ -n" not in cmd
 
-    def test_windows_quotes_interpreter_path_with_spaces(self, monkeypatch):
-        executable = r"C:\Program Files\Unity Gateway\python.exe"
+    @pytest.mark.parametrize(
+        ("executable", "quoted"),
+        [
+            (r"C:\Tools\python.exe", r"C:\Tools\python.exe"),
+            (
+                r"C:\Program Files\Unity Gateway\python.exe",
+                '"C:\\Program Files\\Unity Gateway\\python.exe"',
+            ),
+        ],
+    )
+    def test_windows_quotes_interpreter_path(self, monkeypatch, executable, quoted):
         monkeypatch.setattr(sys, "executable", executable)
         monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
 
         assert build_auth_shell_command(WS, "my profile") == (
-            f'"{executable}" -P -m ucode.cli auth-token --host {WS} --profile "my profile"'
+            f'{quoted} -P -m ucode.cli auth-token --host {WS} --profile "my profile"'
         )
 
     def test_embeds_profile_when_provided(self):

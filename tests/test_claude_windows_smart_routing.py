@@ -57,7 +57,7 @@ def test_windows_subagent_routing_uses_native_binary_without_unix_imports(tmp_pa
     monkeypatch.setattr(v2, "install_skill", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
     monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
-    monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+    monkeypatch.setattr(v2, "ug_binary", lambda: "ug")
     monkeypatch.setattr(
         v2,
         "list_anthropic_model_catalog",
