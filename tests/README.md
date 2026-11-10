@@ -169,6 +169,9 @@ header at the gateway.
 original model selector, agent type and tool-call ID alongside the routed target.
 Omitted selectors stay null. These local audit checks do not establish a resolved
 inherited model, an executed-model match, or a remote metrics export.
+`test_smart_router_session_log.py` covers per-session records, privacy, retention,
+permissions, failure handling and Claude subagent wiring; these are local component checks,
+not live agent, Windows, or gateway coverage.
 
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
