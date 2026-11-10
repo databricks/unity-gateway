@@ -6,7 +6,7 @@ try {
     $cases = @(
         @{ input = 'error: known-fixture-token'; expected = 'error: [REDACTED]' },
         @{ input = 'Authorization: Bearer unrelated-token'; expected = 'Authorization: Bearer [REDACTED]' },
-        @{ input = 'token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmaXh0dXJlIn0.c2lnbmF0dXJl'; expected = 'token=[REDACTED]' },
+        @{ input = 'token=eyJhbGci.eyJzdWI.signature'; expected = 'token=[REDACTED]' },
         @{ input = 'Claude responded: 48213'; expected = 'Claude responded: 48213' },
         @{ input = ''; expected = '' }
     )

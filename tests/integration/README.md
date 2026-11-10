@@ -1,5 +1,16 @@
 # Integration tests
 
+Smart Router preserves the parent's native streamed response, including its synthesis
+of subagent results. It does not inject an animal-labeled answer or replace parent prose.
+Native component checks cover original text/thinking chunks, tool calls, errors,
+foreground/background completion, and selected-model pinning through child continuations.
+The launch receipt supplies selected and launched model identities without changing
+inputs already reviewed by auto mode. These are controlled-provider checks, not live
+router or model-quality measurements. Guidance identifies the launched model without
+unsolicited comparisons with the requested model; comparisons remain available when asked.
+Native registration checks cover model-catalog guidance in routing-only and orchestration
+modes, retained host Usage notes, and unchanged descriptions when routing is off.
+
 Windows Desktop detection allows up to 30 seconds for the native package query.
 Component coverage in `test_desktop_setup.py` verifies slow successful detection creates
 UG's profile, while missing packages, timeouts, launch errors, and query failures leave
@@ -358,8 +369,10 @@ evidence is checked, because Claude can resume a child after its first completed
 
 `../test_startup_imports.py` covers the bare version fast path, deferred imports,
 metadata fallback, and other-argument dispatch as component checks. Installation
-checks still exercise real console-script help and version output; neither suite
-asserts end-to-end agent startup latency. The component suite also checks that
+checks exercise both `ug` and `ucode` help and version output with freshly resolved
+dependencies, including Typer's type-display API. `../test_cli.py::TestHelp` protects
+the help layout across supported Typer versions. Neither suite asserts end-to-end
+agent startup latency. The component suite also checks that
 version output alone cannot establish CLI health when startup dependencies are
 absent; use `--help` for the startup-import probe.
 
@@ -550,8 +563,9 @@ sign-in-expired message. It also covers configure/revert, including upgrading fr
 covered by the hermetic proxy tests in `tests/test_gateway_proxy_integration.py`.
 `test_ug_copilot_models.py` covers the per-session model registry: one setup runs a
 Claude task on a model older than its family's newest (only the full catalog registers it)
-and then a GPT task chosen with Copilot's `dbx-responses/<model>` form, an unknown model
-fails before Copilot starts,
+and then a GPT task chosen with Copilot's `dbx-responses/<model>` form, another setup runs a
+GLM, a Kimi and a DeepSeek task on `dbx-completions`, an unknown model fails before Copilot
+starts,
 and the TUI switches from Claude to GPT with `/model` mid-session. Model evidence comes
 from Copilot's own `~/.copilot/session-state/*/events.jsonl` (`utils/agents/copilot.py`).
 `test_ug_copilot_model_location.py` launches Copilot from fresh state with `--model-location` on the
@@ -905,7 +919,7 @@ test_ug_claude_tracing.py               # Claude OTLP export reaches the configu
 test_ug_codex_headless.py               # script prompts and model arguments
 test_ug_copilot_headless.py             # Copilot via the session proxy: Claude + GPT tasks, no token on disk
 test_ug_copilot_lifecycle.py            # Copilot refresh after revocation, sign-in expired, configure/revert, upgrade
-test_ug_copilot_models.py               # Copilot model registry: Claude then GPT, unknown model, TUI /model switch
+test_ug_copilot_models.py               # Copilot model registry: Claude then GPT, GLM/Kimi/DeepSeek, unknown model, TUI /model switch
 test_ug_copilot_providers.py            # Copilot via Model Provider Services: Anthropic, OpenAI, Azure OpenAI, Foundry, Bedrock allow-all; relayed refused
 test_ug_copilot_model_location.py       # Copilot on a Unity Catalog model location: fresh --model-location file task
 test_ug_copilot_mcp.py                  # Copilot MCP: ug mcp add, tool call, ug mcp list, revert keeps the user's server
@@ -1910,3 +1924,9 @@ Missing, malformed, and other-workspace profiles leave plugin setup untouched.
 Installed-CLI Desktop journeys read MCP commands from `managedMcpServers` and require the
 installed plugin to contain no duplicate servers. These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
+
+Routed child identity regressions cover model-visible launch context, original-result
+preservation, reversed parallel completion, missing model information, denied/failed
+spawns, and native role menus. Native auto-mode tests verify both foreground and
+background Agent calls deliver the host-reported model to the parent's next request
+while preserving reviewed inputs and denials.
