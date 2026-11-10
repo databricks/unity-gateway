@@ -620,6 +620,9 @@ class TestRetryOn401:
             b'{"message":"Invalid Token length"}',
             b'{"error":"Invalid Token",',
             b'{"input":"Invalid Token"}',
+            b"null",
+            b"\xff",
+            b"[" * 1500 + b"]" * 1500,
             b'{"message":"Invalid Token","padding":"' + b"x" * 8192 + b'"}',
         ],
     )

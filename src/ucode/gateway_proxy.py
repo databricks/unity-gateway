@@ -279,7 +279,7 @@ def _is_invalid_token_error(body: bytes) -> bool:
         return True
     try:
         payload = json.loads(message)
-    except ValueError:
+    except (ValueError, RecursionError):
         return False
     if not isinstance(payload, dict):
         return False
