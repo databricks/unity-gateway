@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing';
+import { register } from '../hooks/register.ts';
 
 const config = {
   model: 'ug-auto', mainModel: 'opus', storeKey: 'workspace-main',
@@ -27,7 +28,7 @@ function host(on: any, selected = 'ug-auto') {
   on('fs.read', () => ({value: '{}'}));
   on('session.model', () => ({value: state.selected}));
   on('session.start', () => ({cwd: '/work'}));
-  mock.session(on);
+  on('ui.invalidate', () => ({value: undefined}));
   on('command.register', () => ({value: {}}));
   on('store.get', () => ({value: state.saved}));
   on('store.set', ($: any, e: any) => {state.saved = e.value; return {value: undefined};});
@@ -45,6 +46,46 @@ function host(on: any, selected = 'ug-auto') {
     return {turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn', usage: null};
   });
   return {state, env, clock};
+}
+
+// Claude 2.1.290 has no mock.session host implementation. Exercise the real
+// append middleware with an explicit continuation; the terminal integration
+// journey covers native transcript dispatch as well as the resulting UI.
+function commandTranscript({state, env}: ReturnType<typeof host>) {
+  let append: any;
+  register(((event: string, ...args: any[]) => {
+    if (event === 'session.append' && args[0]?.door === 'command') append = args.at(-1);
+  }) as any, options);
+  return async (text: string) => {
+    const pending: Array<() => Promise<void>> = [];
+    const engine = {
+      session: {model: async () => state.selected},
+      env: {
+        get: async (key: string) => env[key],
+        set: async (key: string, value: string) => {env[key] = value;},
+      },
+      fs: {read: async () => '{}'},
+      process: {run: async (args: any) => {
+        state.calls.push(args);
+        return {exitCode: 0, stdout: '', stderr: ''};
+      }},
+      ui: {
+        open: async (request: any) => {state.questions.push(request);},
+        close: async (request: any) => {state.closed.push(request);},
+        invalidate: () => {},
+      },
+      clock: {after: (_delay: number, callback: () => Promise<void>) => {
+        let cancelled = false;
+        pending.push(async () => {if (!cancelled) await callback();});
+        return {cancel: () => {cancelled = true;}};
+      }},
+    };
+    const event = {door: 'command', uuid: text, message: {type: 'user', content: [
+      {type: 'text', text: `<local-command-stdout>${text}</local-command-stdout>`},
+    ]}};
+    await append(engine, event, async (forwarded: any) => ({message: forwarded.message, uuid: forwarded.uuid}));
+    for (const callback of pending) await callback();
+  };
 }
 
 async function step($: any, agentId?: string) {
@@ -100,10 +141,11 @@ test('cancellation and a removed saved model preserve a valid default', {options
 });
 
 test('reselecting Auto opens the next step and manual selection disables routing', {options}, async ($, on) => {
-  const {state, env, clock} = host(on);
+  const context = host(on);
+  const {state, env} = context;
+  const confirm = commandTranscript(context);
   const select = async (label: string) => {
-    await $.session.append({door: 'command', uuid: label, message: {type: 'user', content: [{type: 'text', text: `<local-command-stdout>Set model to \`${label}\`</local-command-stdout>`}]}});
-    await clock.advance(0);
+    await confirm(`Set model to \`${label}\``);
   };
   await select('Auto');
   expect(state.saved).toBeUndefined();
@@ -116,12 +158,10 @@ test('reselecting Auto opens the next step and manual selection disables routing
 });
 
 test('native model panel places Auto before its transcript and dismisses it on cancellation', {options}, async ($, on) => {
-  const {state, clock} = host(on);
+  const context = host(on);
+  const {state} = context;
   on('command.run', {command: 'model'}, () => ({ref: 1}));
-  const confirm = async (text: string) => {
-    await $.session.append({door: 'command', uuid: text, message: {type: 'user', content: [{type: 'text', text: `<local-command-stdout>${text}</local-command-stdout>`}]}});
-    await clock.advance(0);
-  };
+  const confirm = commandTranscript(context);
   await $.command.run({command: 'model', args: ''});
   expect(state.questions.length).toBe(1);
   expect(state.questions[0].id).toBe('auto-main');

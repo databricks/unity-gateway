@@ -1,20 +1,23 @@
 # Integration tests
 
-The Claude Auto model-picker flow currently has Python and native Claude 2.1.322
+The Claude Auto model-picker flow has Python and native Claude 2.1.290
 component coverage (see `../README.md`). That verifies model selection, preference
 persistence, session routing controls and native render properties with controlled
 engine boundaries, including the native model panel returning before its confirmation
-is appended. `test_ug_claude_auto.py` now exercises `/model` → Auto → main-model choice,
+is appended. The two confirmation component cases invoke the registered middleware
+directly; real transcript dispatch is verified by the terminal journey.
+`test_ug_claude_auto.py` now exercises `/model` → Auto → main-model choice,
 cancellation and reselection, a real routed child task, and a subsequent manual
 model task with no new routing decision in an 80-column terminal. It uses the
 checked-in managed routing catalog, or the 5.5 catalog for the explicitly
 selected agent-bricks staging workspace. This does not assert absence of transient pane
-flash or dynamic capability changes. The native-mod and integration CI pin is
-2.1.322. Component checks alone are not gateway inference evidence. A manual Ubuntu 24.04 check
+flash or dynamic capability changes. The existing CI version pins are unchanged.
+Component checks alone are not gateway inference evidence. A manual Ubuntu 24.04 check
 on Claude 2.1.322 completed a real Auto-routed task (Sonnet 5.5 parent,
 Haiku 5.5 child) and a subsequent manual Opus 5.5 task with no new routing
 decision. Native child handbacks and parent answers were verified. The automated
-managed 80-column journey also passed on clean Ubuntu ARM64 with Claude 2.1.322
+managed 80-column journey also passed on clean Ubuntu ARM64 with Claude 2.1.290
+and 2.1.322
 against the staging gateway, including parent/child answers and routing decisions.
 The brief pane flash on cancellation/manual selection remains a known UX failure.
 Auto capability metadata has component regression coverage for static managed

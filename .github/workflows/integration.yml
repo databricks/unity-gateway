@@ -20,7 +20,7 @@ on:
         default: ug
       claude_version:
         description: Exact Claude Code version
-        default: 2.1.322
+        default: 2.1.290
         required: true
       codex_version:
         description: Exact Codex version
@@ -58,7 +58,7 @@ env:
   EXPECTED_WORKSPACE: https://eng-ml-inference-team-us-east-1.cloud.databricks.com
   UG_VERSION: ${{ inputs.ug_version || 'checkout' }}
   ENTRY_POINT: ${{ inputs.entry_point || 'ug' }}
-  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.322' }}
+  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.290' }}
   CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}
   OPENCODE_VERSION: ${{ inputs.opencode_version || '1.18.31' }}
   COPILOT_VERSION: ${{ inputs.copilot_version || '1.0.91' }}
@@ -152,7 +152,7 @@ jobs:
   cowork-inference-windows:
     name: Cowork inference · Windows
     runs-on: windows-latest
-    if: ${{ github.event_name != 'merge_group' && (inputs.ug_version == '' || inputs.ug_version == 'checkout') && (inputs.claude_version == '' || inputs.claude_version == '2.1.322') && (inputs.dependency == '') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ github.event_name != 'merge_group' && (inputs.ug_version == '' || inputs.ug_version == 'checkout') && (inputs.claude_version == '' || inputs.claude_version == '2.1.290') && (inputs.dependency == '') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     timeout-minutes: 25
     env:
       PYTHONUTF8: 1
@@ -718,7 +718,7 @@ jobs:
       - name: Require every integration job to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
-          COWORK_EXPECTED: ${{ (inputs.ug_version == '' || inputs.ug_version == 'checkout') && (inputs.claude_version == '' || inputs.claude_version == '2.1.322') && inputs.dependency == '' && 'success' || 'skipped' }}
+          COWORK_EXPECTED: ${{ (inputs.ug_version == '' || inputs.ug_version == 'checkout') && (inputs.claude_version == '' || inputs.claude_version == '2.1.290') && inputs.dependency == '' && 'success' || 'skipped' }}
         run: |
           python3 - <<'PY'
           import json

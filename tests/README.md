@@ -7,15 +7,18 @@ empty authoritative catalogs that fail closed, Auto fallback capability metadata
 (including context suffixes and explicit admin hints), unchanged native settings, complete catalog selection,
 cancellation, Auto reselection, command-before-transcript pane placement, root-only inference model substitution, and hiding
 the separate indicator while ordinary models disable session routing. Native
-checks ran with Claude Code 2.1.322; the native-mod CI job now pins that version. These controlled checks do not establish a
-live gateway routing decision or a completed interactive task.
+checks pass on the existing Claude Code 2.1.290 pin (and previously on 2.1.322).
+The two transcript-confirmation cases invoke the actual registered middleware with
+controlled engine boundaries because 2.1.290 has no `mock.session` helper; native
+transcript dispatch is covered by the terminal journey. These component checks do
+not establish a live gateway routing decision or a completed interactive task.
 
 `integration/test_ug_claude_auto.py` adds an 80-column real terminal journey for
 managed configure, the complete selector, cancellation/reselection, and real routed
 then unrouted child tasks. It checks settled UI states, not transient flash or dynamic
 capabilities. It uses the existing CI routing fixture, or the checked-in 5.5 catalog when the
 caller selects the agent-bricks staging workspace. This journey passed on clean
-Ubuntu ARM64 with Claude 2.1.322. Terminal component tests also cover transcript
+Ubuntu ARM64 with Claude 2.1.290 and 2.1.322. Terminal component tests also cover transcript
 prompts preceding a picker and the native task menu's collapsed history heading,
 while continuing to reject running tasks and mismatched completion counts.
 
@@ -113,7 +116,7 @@ unit/component checks, not live workspace or sign-in coverage; CLI wiring is sep
 
 Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin contents),
 `test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
-`native_claude/test_mod.py` suite. Claude 2.1.322 validates the module and runs its
+`native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journeys check the live recipe payload field (launch recipe at
 launch and after off/on, DISABLED after off) and Agent/Task delegation descriptions.
@@ -208,7 +211,7 @@ not live agent, Windows, or gateway coverage.
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
 making no privileged write after another writer drops them, skip mode, revert, and admin passthrough
-not overriding them. `native_claude/test_credentials.py` runs the CI-pinned Claude (2.1.322) against a
+not overriding them. `native_claude/test_credentials.py` runs the CI-pinned Claude (2.1.290) against a
 fake API with both shell variables set: the blanks make it send the `apiKeyHelper` token, or on the relayed
 path its own OAuth token, with no empty header; without them the shell's values win (control cases). It
 skips on a machine with Claude managed settings, which would replace the fixture's.

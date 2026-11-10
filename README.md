@@ -523,7 +523,6 @@ so these logs may still contain sensitive details. Claude's audit format is unch
 
 ### Auto in Claude Code
 
-The Auto flow is validated with Claude Code 2.1.322, the native-mod and integration CI pin.
 After upgrading UG, run `ug configure --agent claude` once to add Auto to the native model configuration,
 then launch normally with `ug claude`. The native `/model` picker includes **Auto**:
 “Automatically picks the best model to balance quality and cost.” Selecting it
