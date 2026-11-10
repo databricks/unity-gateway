@@ -240,6 +240,20 @@ class TestHelp:
         toggle.assert_called_once_with(True, None)
         launch.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("args", "expected"), [([], None), (["--mdm"], True), (["--no-mdm"], False)]
+    )
+    def test_configure_forwards_mdm_flag(self, monkeypatch, args, expected):
+        requests = []
+        monkeypatch.setattr(cli_mod, "request_mdm_os", requests.append)
+
+        def stop():
+            raise RuntimeError("stop")
+
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", stop)
+        runner.invoke(app, ["configure", *args])
+        assert requests == [expected, None]
+
     def test_configure_help_lists_agents_flag(self):
         result = runner.invoke(app, ["configure", "--help"])
         assert result.exit_code == 0

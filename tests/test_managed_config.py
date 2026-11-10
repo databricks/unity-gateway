@@ -2004,3 +2004,77 @@ class TestRevertMachinePolicy:
         assert mc_mod.revert_machine_policy() == "failed"
         assert mc_mod.MANAGED_CONFIG_PATH.exists()
         assert "ug revert" in warnings[0]
+
+
+class TestMdmOs:
+    """`ug configure --mdm` saves `mdm_os` beside the policy; every run exports it as `MDM_OS`."""
+
+    def _saved(self, path=None) -> dict:
+        return json.loads((path or mc_mod.MANAGED_CONFIG_PATH).read_text())
+
+    @pytest.mark.parametrize(
+        ("host_os", "expected"),
+        [("MACOS", "Mac"), ("LINUX", "Linux"), ("WINDOWS", "Windows"), ("OTHER", "None")],
+    )
+    def test_request_resolves_the_host_os(self, monkeypatch, host_os, expected):
+        monkeypatch.setattr(mc_mod, "current_os", lambda: mc_mod.OS[host_os])
+        mc_mod.request_mdm_os(True)
+        assert os.environ["MDM_OS"] == expected
+
+    def test_saved_with_the_policy_and_exported(self):
+        mc_mod.request_mdm_os(True)
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        mc_mod.request_mdm_os(None)
+        os.environ.pop("MDM_OS")
+
+        assert self._saved() == {"workspace": WORKSPACE, "config": RAW_MANIFEST, "mdm_os": "Linux"}
+        mc_mod.export_mdm_os()
+        assert os.environ["MDM_OS"] == "Linux"
+
+    def test_unset_exports_none(self):
+        mc_mod.export_mdm_os()
+        assert os.environ["MDM_OS"] == "None"
+
+    def test_kept_when_the_policy_changes_or_is_removed(self):
+        mc_mod.request_mdm_os(True)
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        mc_mod.request_mdm_os(None)
+
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        save_managed_state(WORKSPACE, changed)
+        assert self._saved()["mdm_os"] == "Linux"
+        save_managed_state(WORKSPACE, {}, sets_machine_workspace=True)
+        assert self._saved() == {"mdm_os": "Linux"}
+        assert mc_mod.load_managed_configuration(WORKSPACE) is None
+        assert mc_mod.managed_state_workspace() is None
+
+    def test_saved_without_a_policy(self):
+        mc_mod.request_mdm_os(True)
+        save_managed_state(WORKSPACE, {}, sets_machine_workspace=True)
+        assert self._saved() == {"mdm_os": "Linux"}
+
+    def test_unchanged_policy_still_saves_a_new_request(self):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        mc_mod.request_mdm_os(True)
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        assert self._saved()["mdm_os"] == "Linux"
+
+    def test_no_mdm_clears_it(self):
+        mc_mod.request_mdm_os(True)
+        save_managed_state(WORKSPACE, {}, sets_machine_workspace=True)
+        mc_mod.request_mdm_os(False)
+        save_managed_state(WORKSPACE, {}, sets_machine_workspace=True)
+        assert not mc_mod.MANAGED_CONFIG_PATH.exists()
+        assert os.environ["MDM_OS"] == "None"
+
+    def test_windows_saves_in_the_per_user_cache(self, monkeypatch):
+        monkeypatch.setattr(mc_mod, "current_os", lambda: mc_mod.OS.WINDOWS)
+        monkeypatch.setattr(mc_mod, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (RAW_MANIFEST, None))
+        mc_mod.request_mdm_os(True)
+        refresh_managed_config(_state(), force_refresh=True)
+        mc_mod.request_mdm_os(None)
+
+        assert self._saved(mc_mod.USER_MANAGED_CONFIG_PATH)["mdm_os"] == "Windows"
+        refresh_managed_config(_state(), force_refresh=True)
+        assert mc_mod.saved_mdm_os() == "Windows"

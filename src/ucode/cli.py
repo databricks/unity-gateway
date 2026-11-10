@@ -125,6 +125,7 @@ from ucode.managed_config import (
     AGENT_ENUM_TO_TOOL,
     ManagedConfigResult,
     ManagedPolicyInstallDenied,
+    export_mdm_os,
     get_managed_config,
     get_model_recommendation,
     load_managed_state,
@@ -132,6 +133,7 @@ from ucode.managed_config import (
     managed_state_workspace,
     normalize_managed_config,
     refresh_managed_config,
+    request_mdm_os,
     revert_machine_policy,
 )
 from ucode.managed_files import (
@@ -4602,6 +4604,7 @@ def default(
         os.environ[UG_HEADERS_ENV_VAR] = "\n".join(filter(None, [existing, *header]))
     if ctx.invoked_subcommand != "revert":
         set_config_scope(load_config_scope())
+    ctx.call_on_close(export_mdm_os())
     if ctx.invoked_subcommand is not None:
         return
     set_dry_run(dry_run)
@@ -5263,6 +5266,14 @@ def configure(
             "The choice is saved for later commands.",
         ),
     ] = False,
+    mdm: Annotated[
+        bool | None,
+        typer.Option(
+            "--mdm/--no-mdm",
+            help="Mark this machine as provisioned through MDM, saved in the Unity Gateway "
+            "managed settings and exported as MDM_OS for telemetry. Omit to keep the saved choice.",
+        ),
+    ] = None,
     verbose: Annotated[
         str,
         typer.Option(
@@ -5285,6 +5296,7 @@ def configure(
             raise RuntimeError("Use either --global or --user, not both.")
         scope = "user" if user_scope else "global"
         set_config_scope(scope)
+        request_mdm_os(mdm)
         if global_scope:
             _check_machine_wide_only_request(
                 mcp=mcp, enable_databricks_ai_tools=enable_databricks_ai_tools
@@ -5507,6 +5519,7 @@ def configure(
         raise typer.Exit(130) from None
     finally:
         set_machine_wide_only(False)
+        request_mdm_os(None)
 
 
 # Only these agents have machine-wide settings; every other agent is configured per user.
