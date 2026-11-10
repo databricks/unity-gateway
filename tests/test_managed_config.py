@@ -182,19 +182,14 @@ class TestNormalize:
                                 "main.anthropic.byok.claude-opus-5-5",
                                 "system.ai.kimi-k3",
                             ],
-                            "model_services": ["system.ai.claude-haiku-4-5"],
                         }
                     },
                 }
             ]
         }
         claude = normalize_managed_config(raw)["enabled_agents"]["claude"]
-        expected = (
-            ["main.anthropic.byok.claude-opus-5-5", "system.ai.kimi-k3"]
-            if gate
-            else ["system.ai.claude-haiku-4-5"]
-        )
-        assert claude["model_config"]["model_services"] == expected
+        expected = ["main.anthropic.byok.claude-opus-5-5", "system.ai.kimi-k3"] if gate else None
+        assert claude.get("model_config", {}).get("model_services") == expected
 
     def test_unity_catalog_location_is_carried(self):
         raw = {
