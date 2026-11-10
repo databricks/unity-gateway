@@ -27,15 +27,18 @@ def _configure(session, workspace):
 
 
 def _ask(session, prompt, *ug_options, command="antigravity", timeout=300):
-    return session.run(
-        command,
-        *ug_options,
-        "--",
-        "-p",
-        prompt,
-        *antigravity.HEADLESS_ARGS,
-        timeout=timeout,
-    )
+    try:
+        return session.run(
+            command,
+            *ug_options,
+            "--",
+            "-p",
+            prompt,
+            *antigravity.HEADLESS_ARGS,
+            timeout=timeout,
+        )
+    finally:
+        antigravity.requested_urls(session)
 
 
 def _allow_tools(session, *rules):

@@ -122,7 +122,8 @@ These are component checks, not live gateway evidence. Forks and resumed agents 
 `test_agent_antigravity.py` covers the Antigravity CLI agent: Databricks-to-Antigravity model
 names (dotted versions, `-preview` names and their tiers, image models dropped), the `agy models`
 selection-id lookup, the gateway-mode environment, skills.json/mcp_config.json merges and the
-entry-scoped skills.json revert, provider-service pinning, and launch cleanup (spawn failure,
+entry-scoped skills.json revert, explicit selection of the discovered default or saved provider
+target on bare launches (including preview-model tiers), and launch cleanup (spawn failure,
 nonzero exit, Ctrl-C). `test_gateway_proxy_integration.py` runs the Antigravity proxy hooks over
 real local HTTP (model path rewrite, `includeThoughts` body fix, provider header, Gemini-only
 route). `test_agents_init.py`, `test_mcp.py`, `test_cli.py` (including `ug revert` keeping
@@ -137,7 +138,8 @@ Native file-reader guidance avoids shell-based tool discovery; permissions remai
 reads and that MCP server. Offline evidence checks reject denied actions, provider/tool errors,
 missing or unrelated calls, empty answers, misleading domains, and answers absent from the
 search output. These checks do not establish live reliability; SQL execution is no longer
-covered by the Antigravity MCP case.
+covered by the Antigravity MCP case. Headless journeys save model request URLs even when
+the command fails or times out.
 
 `ug configure --global` (machine-wide settings only) is covered by unit/component checks:
 `TestConfigureScopeFlags` in `test_cli.py` (the flag lasts one run, per-user-only agents are

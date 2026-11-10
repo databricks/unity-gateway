@@ -570,7 +570,9 @@ Antigravity CLI has five live headless journeys in `test_ug_antigravity_headless
 `test_ug_configure_antigravity.py`. Headless runs use `agy -p --output-format stream-json`; the
 file task requires a finished `read_file` step on the fixture and the value in the `result`
 event, every logged model request on ug's loopback proxy (`/ai-gateway/gemini/v1beta/models/`)
-with gateway authentication, and no Databricks credential on disk. The explicit-model case picks
+with gateway authentication, and no Databricks credential on disk. UG passes its resolved
+default model explicitly to Antigravity on bare launches. Every headless launch saves
+`antigravity-requests.json`, including nonzero exits and timeouts. The explicit-model case picks
 a second discovered `system.ai.gemini-*` model and requires every request to name its
 Antigravity name (`gemini-3.8-flash`), launched through the `ug agy` alias; that is the agent's
 request, not the gateway's destination. Two journeys use the Gemini Enterprise MPS below: one
