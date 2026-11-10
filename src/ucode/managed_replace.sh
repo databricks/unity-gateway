@@ -38,6 +38,9 @@ target_is_allowed() {
         "linux:/etc/claude-code/ucode-plugins/ug-headers/hooks/hooks.json"|\
         "linux:/etc/claude-code/ucode-plugins/ug-headers/hooks/register.ts"|\
         "macos:/Library/Application Support/ClaudeCode/managed-settings.json"|\
+        "macos:/Library/Managed Preferences/com.anthropic.claudefordesktop.plist"|\
+        "macos:/Library/Application Support/UnityGateway/claude-desktop-mdm/ug"|\
+        "macos:/Library/Application Support/UnityGateway/claude-desktop-mdm/otel-headers.sh"|\
         "macos:/etc/codex/managed_config.toml"|\
         "macos:/etc/unitygateway/managed-settings.json"|\
         "macos:/Library/Application Support/ClaudeCode/ucode-plugins/.claude-plugin/marketplace.json"|\
@@ -212,6 +215,18 @@ replace_one() (
         run_step chmod 0644 "$staging"
     fi
 
+    case "$platform:$target" in
+        "macos:/Library/Application Support/UnityGateway/claude-desktop-mdm/ug"|\
+        "macos:/Library/Application Support/UnityGateway/claude-desktop-mdm/otel-headers.sh")
+            run_step chown 0:0 "$staging"
+            run_step chmod 0755 "$staging"
+            ;;
+        "macos:/Library/Managed Preferences/com.anthropic.claudefordesktop.plist")
+            run_step chown 0:0 "$staging"
+            run_step chmod 0644 "$staging"
+            ;;
+    esac
+
     if [ -L "$parent" ] || [ -L "$target" ] || { [ -e "$target" ] && [ ! -f "$target" ]; }; then
         printf '%s\n' "Refusing to replace symlinked managed settings: $target" >&2
         exit 1
@@ -260,6 +275,73 @@ remove_one() (
     rmdir "$(dirname "$target")" 2>/dev/null || true
 )
 
+replace_bundle() (
+    set -eu
+    source_path=$1
+    target=$2
+    if [ "$platform:$target" != "macos:/Library/Application Support/Claude/org-plugins/ug" ]; then
+        printf '%s\n' "Refusing unexpected Desktop plugin target: $target" >&2
+        exit 1
+    fi
+    parent=${target%/*}
+    for folder in /Library "/Library/Application Support" "$parent" "$target"; do
+        if [ -L "$folder" ] || { [ -e "$folder" ] && [ ! -d "$folder" ]; }; then
+            printf '%s\n' "Refusing linked or non-directory Desktop plugin path: $folder" >&2
+            exit 1
+        fi
+    done
+    if [ "$source_path" = - ]; then
+        rm -rf "$target" || exit 1
+        exit 0
+    fi
+    if [ ! -d "$source_path" ] || [ -L "$source_path" ]; then
+        printf '%s\n' "Invalid Desktop plugin source: $source_path" >&2
+        exit 1
+    fi
+    source_owner=$(/usr/bin/stat -f %u "$source_path") || exit 1
+    if [ -z "${SUDO_UID:-}" ] || [ "$source_owner" != "$SUDO_UID" ]; then
+        printf '%s\n' "Invalid Desktop plugin source owner" >&2
+        exit 1
+    fi
+    invalid=$(find "$source_path" \( ! -user "$SUDO_UID" -o \( ! -type d ! -type f \) -o \( -type f -links +1 \) \) -print) || exit 1
+    if [ -n "$invalid" ]; then
+        printf '%s\n' "Desktop plugin source must contain only caller-owned directories and regular files without hard links" >&2
+        exit 1
+    fi
+    mkdir -p "$parent" || exit 1
+    staging=$(mktemp -d "$parent/.ug-install.XXXXXX") || exit 1
+    trap 'rm -rf "$staging"' 0
+    cp -R -P "$source_path" "$staging/new" || exit 1
+    invalid=$(find "$staging/new" ! -type d ! -type f -print) || exit 1
+    if [ -n "$invalid" ]; then
+        printf '%s\n' "Desktop plugin contains non-regular files" >&2
+        exit 1
+    fi
+    for manifest in .claude-plugin/plugin.json version.json; do
+        if [ ! -f "$staging/new/$manifest" ]; then
+            printf 'Desktop plugin source is missing manifest: %s\n' "$manifest" >&2
+            exit 1
+        fi
+    done
+    chown -R 0:0 "$staging/new" || exit 1
+    find "$staging/new" -type d -exec chmod 0755 {} + || exit 1
+    find "$staging/new" -type f ! -perm -0100 -exec chmod 0644 {} + || exit 1
+    find "$staging/new" -type f -perm -0100 -exec chmod 0755 {} + || exit 1
+    if [ -e "$target" ]; then
+        mv "$target" "$staging/previous" || exit 1
+    fi
+    if ! mv "$staging/new" "$target"; then
+        if [ -d "$staging/previous" ]; then
+            mv "$staging/previous" "$target" || {
+                trap - 0
+                printf '%s\n' "Could not restore Desktop plugin; previous bundle retained at $staging/previous" >&2
+                exit 1
+            }
+        fi
+        exit 1
+    fi
+)
+
 case "$mode" in
     once)
         replace_one "$1" "$2"
@@ -270,10 +352,12 @@ case "$mode" in
     session)
         while IFS=' ' read -r operation request_id source_arg target_arg; do
             case "$operation" in
-                REPLACE)
+                REPLACE|BUNDLE)
                     source_path=$(decode_arg "$source_arg")
                     target=$(decode_arg "$target_arg")
-                    if error_output=$(replace_one "$source_path" "$target" 2>&1); then
+                    handler=replace_one
+                    if [ "$operation" = BUNDLE ]; then handler=replace_bundle; fi
+                    if error_output=$("$handler" "$source_path" "$target" 2>&1); then
                         printf 'OK %s\n' "$request_id"
                     else
                         status=$?
