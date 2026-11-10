@@ -2946,6 +2946,9 @@ def auth_token_cmd(
         bool,
         typer.Option("--force-refresh", help="Force the Databricks CLI to mint a new token."),
     ] = False,
+    minimum_lifetime_seconds: Annotated[
+        int, typer.Option("--minimum-lifetime-seconds", min=0, hidden=True)
+    ] = 0,
     browser_login: Annotated[bool, typer.Option("--browser-login", hidden=True)] = False,
     client_id: Annotated[
         str | None,
@@ -3026,9 +3029,18 @@ def auth_token_cmd(
                 force_refresh=force_refresh,
             )
         else:
-            token = get_databricks_token(
-                workspace, profile, force_refresh=force_refresh, browser_login=browser_login
-            )
+            if minimum_lifetime_seconds:
+                token = get_databricks_token(
+                    workspace,
+                    profile,
+                    force_refresh=force_refresh,
+                    browser_login=browser_login,
+                    minimum_lifetime_s=minimum_lifetime_seconds,
+                )
+            else:
+                token = get_databricks_token(
+                    workspace, profile, force_refresh=force_refresh, browser_login=browser_login
+                )
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None

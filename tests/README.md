@@ -1,5 +1,13 @@
 # Test suites and user journeys
 
+Claude OAuth-helper lifetime tests in `test_databricks.py` run the generated
+helper command against the existing fake CLI. A token with ten minutes left
+refreshes once before entering Claude's fifteen-minute cache; fresh and
+unknown-lifetime tokens do not force a refresh. The same scenarios cover memoized
+tokens, permanently short refreshed tokens, and static credentials. CLI and
+Claude-config tests check the minimum-lifetime argument and unchanged PAT/custom
+OAuth commands. These are controlled component checks, not live token renewal.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,

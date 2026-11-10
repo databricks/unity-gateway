@@ -1,5 +1,13 @@
 # Integration tests
 
+The normal Claude OAuth-helper cache contract has component coverage in
+`../test_databricks.py`, `../test_cli.py`, and `../test_agent_claude.py`. The
+generated command requires a known token lifetime longer than the fifteen-minute
+cache, refreshes once when needed, and fails if a refreshed token is still too
+short. Unknown expiry, static bearers, PATs, and custom OAuth keep their existing
+behavior. Live long-running Claude token-expiry recovery is not covered by these
+component tests; no production error-rate improvement is claimed.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,
