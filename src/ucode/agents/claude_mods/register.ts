@@ -1,6 +1,6 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
 import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
-import { registerSubagentRouting } from './subagent-routing.ts';
+import { registerSubagentRouting, routedModels } from './subagent-routing.ts';
 import {
   CLI_AGENT,
   CLI_MODULE,
@@ -12,7 +12,14 @@ import {
 import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, registerIsaacFeedback } from './isaac-feedback.ts';
 import { isRoutingEnabled } from './routing-state.ts';
-import { registerRoutingLogs } from './routing-logs.ts';
+import {
+  ROUTING_LOGS_PANE,
+  applyRoutingLogsRead,
+  logsReaderCommand,
+  registerRoutingLogs,
+  routingLogsPaneClosed,
+  routingLogsPaneOpen,
+} from './routing-logs.ts';
 
 type Environment = Record<string, string | undefined>;
 
@@ -35,8 +42,7 @@ async function readEnvironment($: EngineInterface): Promise<Environment> {
   };
 }
 
-async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
-  if (!options.orchestratorInstructions) return false;
+async function readSessionEnvironment($: EngineInterface): Promise<Environment> {
   const current = await readEnvironment($);
   const sessionFile = await $.env.get('UCODE_SESSION_ENV_FILE');
   if (sessionFile) {
@@ -53,6 +59,42 @@ async function readOrchestratorState($: EngineInterface, options: PluginOptions)
       // Match the routing hooks' inherited-environment fallback for unreadable controls.
     }
   }
+  return current;
+}
+
+// While the Smart Router logs pane is open, a finished turn reruns the reader, so
+// decisions routed after the pane opened appear and the relative ages stay fresh. The
+// reader runs here rather than in routing-logs because the engine stays at its call site.
+async function refreshRoutingLogsPane($: EngineInterface, options: PluginOptions): Promise<void> {
+  if (!routingLogsPaneOpen()) return;
+  try {
+    const open = await $.ui.panes();
+    if (!Array.isArray(open) || !open.some((pane) => pane?.id === ROUTING_LOGS_PANE)) {
+      routingLogsPaneClosed();
+      return;
+    }
+  } catch {
+    return;
+  }
+  let note: string | undefined;
+  try {
+    const command = logsReaderCommand(options);
+    const session = await $.session.id();
+    const result = await $.process.run([...command, '--session', session], { timeoutMs: 10000 });
+    note = applyRoutingLogsRead(result.stdout,
+      result.exitCode !== 0 || result.isStdoutTruncated
+        ? `logs command exited ${result.exitCode} or truncated output`
+        : undefined);
+  } catch (error) {
+    note = applyRoutingLogsRead('', error instanceof Error ? error.message : 'read failed');
+  }
+  $.ui.invalidate('ui.render');
+  if (note) $.ui.log(note, { to: 'debug' });
+}
+
+async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
+  if (!options.orchestratorInstructions) return false;
+  const current = await readSessionEnvironment($);
   return isRoutingEnabled(current) && current.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1';
 }
 
@@ -142,15 +184,24 @@ export function register(on: On, options: PluginOptions): void {
       // A CLI/skill toggle changes the session file without notifying this process.
       $.ui.invalidate('tool.describe');
     }
-    return yield* next(e);
+    const model = routedModels.model(e.agentId);
+    return yield* next(model ? {...e, model} : e);
   });
 
   on('tool.describe', {tool: ['Agent', 'Task']}, async ($, e, next) => {
     const instructions = options.orchestratorInstructions as string;
-    if (!await readOrchestratorState($, options)) return next(e);
+    const orchestrating = await readOrchestratorState($, options);
+    if (!orchestrating && (!options.routeCommand?.length || !isRoutingEnabled(await readSessionEnvironment($)))) return next(e);
+    const guidance = 'Smart Router selects the execution model for each task-role subagent. '
+      + "This tool's built-in model choices are not Smart Router's model catalog. "
+      + "Do not infer that a requested model is unavailable because it is absent from this tool's choices. "
+      + 'For a requested name outside those choices, launch a general-purpose subagent without the model argument. '
+      + 'Do not refuse a requested spawn on that basis. After launch, use the launch receipt to identify the model actually used. '
+      + 'In ordinary progress updates and answers, identify only the model actually launched. Do not repeat or contrast the requested model, or discuss model availability or tool limitations, unless the user explicitly asks about that difference.';
+    if (!orchestrating) return next({...e, description: `${e.description}\n\n${guidance}`});
     // Preserve the host's waiting and follow-up mechanics without its ownership policy.
     const notes = e.description.split('\n## Usage notes\n')[1]?.split('\n## ')[0].trim() || continuationNote(e.description);
-    return next({...e, description: `${instructions}\n\n## Usage notes\n\n${notes}`});
+    return next({...e, description: `${instructions}\n\n## Usage notes\n\n${notes}\n\n${guidance}`});
   });
 
   // The installed smart-router skill already supplies the slash command.
@@ -185,7 +236,8 @@ export function register(on: On, options: PluginOptions): void {
   registerStatusBand(on);
   registerSubagentRouting(on, options);
   // Claude allows one unmatched turn.complete handler per plugin, so both modules share it.
-  on('turn.complete', ($, e, next) => {
+  on('turn.complete', async ($, e, next) => {
+    await refreshRoutingLogsPane($, options);
     if (endStatusBandTurn()) $.ui.invalidate('ui.render');
     return next(e);
   });

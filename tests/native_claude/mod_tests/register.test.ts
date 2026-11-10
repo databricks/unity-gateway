@@ -246,6 +246,7 @@ test('the band is gone by the second turn after either toggle', { options: ROUTE
 
 const ORCHESTRATED = { ...ROUTED, orchestratorInstructions: 'Delegate under the orchestrator.' };
 const CONTINUE = 'To continue a previously spawned agent, use SendMessage';
+const ROUTING_GUIDANCE = "Smart Router selects the execution model for each task-role subagent. This tool's built-in model choices are not Smart Router's model catalog. Do not infer that a requested model is unavailable because it is absent from this tool's choices. For a requested name outside those choices, launch a general-purpose subagent without the model argument. Do not refuse a requested spawn on that basis. After launch, use the launch receipt to identify the model actually used. In ordinary progress updates and answers, identify only the model actually launched. Do not repeat or contrast the requested model, or discuss model availability or tool limitations, unless the user explicitly asks about that difference.";
 
 // The orchestrator replaces the host's Agent advice but keeps its Usage notes section.
 function agentDescriber($: any, on: On) {
@@ -259,7 +260,7 @@ test('the host Usage notes survive the orchestrator description', { options: ORC
   const describe = agentDescriber($, on);
   const host = 'When in doubt, don\'t spawn.\n## Usage notes\n- Runs in the background.\n- Resume with SendMessage.\n## When to fork\nPolicy.';
   expect(await describe(host))
-    .toBe('Delegate under the orchestrator.\n\n## Usage notes\n\n- Runs in the background.\n- Resume with SendMessage.');
+    .toBe(`Delegate under the orchestrator.\n\n## Usage notes\n\n- Runs in the background.\n- Resume with SendMessage.\n\n${ROUTING_GUIDANCE}`);
 });
 
 test('a host description without Usage notes keeps the continuation note', { options: ORCHESTRATED }, async ($, on) => {
@@ -281,4 +282,16 @@ test('the continuation note keeps the fork exception when the host offers forks'
   const description = await describe(host);
   expect(description).toContain('starts a fresh agent with no memory of prior runs (except subagent_type: "fork"), so the prompt');
   expect(description).not.toContain('Policy');
+});
+
+
+test('subagent routing guidance preserves the host description and is absent when routing is off', {options: ROUTED}, async ($, on) => {
+  const {env} = setup(on);
+  on('tool.describe', ($, e) => ({description: e.description}));
+  const host = 'Native tool instructions and permissions.';
+  const describe = () => $.tool.describe({tool: 'Agent', description: host});
+  const routed = (await describe()).description;
+  expect(routed).toBe(`${host}\n\n${ROUTING_GUIDANCE}`);
+  env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY = '0';
+  expect((await describe()).description).toBe(host);
 });
