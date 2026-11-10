@@ -64,6 +64,8 @@ from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
     AGENT_COPILOT,
+    API_GEMINI_GENERATE_CONTENT,
+    API_OPENAI_RESPONSES,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
     ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
@@ -83,6 +85,7 @@ from ucode.databricks import (
     databricks_cli_installed,
     discover_claude_models,
     discover_codex_models,
+    discover_endpoints_with_api_types,
     discover_gemini_models,
     discover_model_services,
     ensure_databricks_auth,
@@ -97,6 +100,7 @@ from ucode.databricks import (
     list_profile_entries,
     list_tool_provider_services,
     map_claude_family_models,
+    model_version_sort_key,
     normalize_workspace_url,
     probe_unity_gateway_capabilities,
     profile_choices,
@@ -818,6 +822,16 @@ def configure_shared_state(
         assert model_services_discovery is not None
         with spinner("Fetching available models..."):
             ms_claude, ms_codex, ms_gemini, ms_oss, ms_reason = model_services_discovery.result()
+            foundation_models = (
+                discover_endpoints_with_api_types(
+                    workspace,
+                    token,
+                    [API_GEMINI_GENERATE_CONTENT, API_OPENAI_RESPONSES],
+                    sort_key=model_version_sort_key,
+                )
+                if want_gemini and not ms_gemini and want_codex and not ms_codex
+                else None
+            )
             if want_claude:
                 claude_models, claude_reason = ms_claude, ms_reason
                 if not claude_models:
@@ -825,11 +839,19 @@ def configure_shared_state(
             if want_gemini:
                 gemini_models, gemini_reason = ms_gemini, ms_reason
                 if not gemini_models:
-                    gemini_models, gemini_reason = discover_gemini_models(workspace, token)
+                    gemini_models, gemini_reason = (
+                        foundation_models[API_GEMINI_GENERATE_CONTENT]
+                        if foundation_models is not None
+                        else discover_gemini_models(workspace, token)
+                    )
             if want_codex:
                 codex_models, codex_reason = ms_codex, ms_reason
                 if not codex_models:
-                    codex_models, codex_reason = discover_codex_models(workspace, token)
+                    codex_models, codex_reason = (
+                        foundation_models[API_OPENAI_RESPONSES]
+                        if foundation_models is not None
+                        else discover_codex_models(workspace, token)
+                    )
             if want_oss:
                 oss_models, oss_reason = ms_oss, ms_reason
             if want_copilot:

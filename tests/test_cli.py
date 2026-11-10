@@ -7067,6 +7067,11 @@ class TestConfigureSharedStateUsePat:
         monkeypatch.setattr(cli_mod, "discover_claude_models", lambda w, t: ({}, None))
         monkeypatch.setattr(cli_mod, "discover_gemini_models", lambda w, t: ([], None))
         monkeypatch.setattr(cli_mod, "discover_codex_models", lambda w, t: ([], None))
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_endpoints_with_api_types",
+            lambda w, t, types, **kwargs: dict.fromkeys(types, ([], None)),
+        )
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {})
         return cli_mod, logins, ensures, saved
 
@@ -7623,6 +7628,66 @@ class TestConfigureNoLongerValidates:
         assert result == 0
 
 
+class TestConfigureSharedStateFoundationDiscovery:
+    @pytest.mark.parametrize(
+        "tools, uc_gemini, uc_codex, expected_requests",
+        [
+            (["pi"], [], [], 1),
+            (None, [], [], 1),
+            (["gemini"], [], [], 1),
+            (["codex"], [], [], 1),
+            (["pi"], ["uc-gemini"], [], 1),
+            (["pi"], [], ["uc-codex"], 1),
+            (["pi"], ["uc-gemini"], ["uc-codex"], 0),
+        ],
+    )
+    def test_only_missing_families_use_one_fresh_listing(
+        self, monkeypatch, tools, uc_gemini, uc_codex, expected_requests
+    ):
+        """Scenario: launch with missing UC families. Expected: at most one fallback listing."""
+        TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda *_: ({"sonnet": "uc-claude"}, uc_codex, uc_gemini, [], None),
+        )
+        for name in (
+            "discover_gemini_models",
+            "discover_codex_models",
+            "discover_endpoints_with_api_types",
+        ):
+            monkeypatch.setattr(cli_mod, name, getattr(db_mod, name))
+        payload = {
+            "endpoints": [
+                {
+                    "name": "shared-model",
+                    "config": {
+                        "served_entities": [
+                            {
+                                "foundation_model": {
+                                    "ai_gateway_v2_supported": True,
+                                    "api_types": [
+                                        cli_mod.API_GEMINI_GENERATE_CONTENT,
+                                        cli_mod.API_OPENAI_RESPONSES,
+                                    ],
+                                }
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+        with patch.object(db_mod, "_http_get_json", return_value=(payload, None)) as get:
+            state = cli_mod.configure_shared_state(
+                TestConfigureSharedStateUsePat.WS, profile="DEFAULT", tools=tools
+            )
+        assert get.call_count == expected_requests
+        if tools is None or "pi" in tools or "gemini" in tools:
+            assert state["gemini_models"] == (uc_gemini or ["shared-model"])
+        if tools is None or "pi" in tools or "codex" in tools:
+            assert state["codex_models"] == (uc_codex or ["shared-model"])
+
+
 class TestConfigureSharedStateMcpCleanup:
     """A workspace switch should scrub the previous workspace's MCP entries from
     installed client configs. Switching to the same workspace must not."""
@@ -7644,6 +7709,11 @@ class TestConfigureSharedStateMcpCleanup:
         monkeypatch.setattr(cli_mod, "discover_claude_models", lambda w, t: ({}, None))
         monkeypatch.setattr(cli_mod, "discover_gemini_models", lambda w, t: ([], None))
         monkeypatch.setattr(cli_mod, "discover_codex_models", lambda w, t: ([], None))
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_endpoints_with_api_types",
+            lambda w, t, types, **kwargs: dict.fromkeys(types, ([], None)),
+        )
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {})
 
     def test_switch_reconciles_source_managed_fallback_without_losing_destination_choices(

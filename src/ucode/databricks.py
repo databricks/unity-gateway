@@ -3861,10 +3861,38 @@ def discover_endpoints_with_api_type(
     describes why the list is empty. `sort_key` overrides the default
     alphabetical ordering of the returned names.
     """
+    return discover_endpoints_with_api_types(workspace, token, [api_type], sort_key=sort_key)[
+        api_type
+    ]
+
+
+def discover_endpoints_with_api_types(
+    workspace: str,
+    token: str,
+    api_types: list[str],
+    *,
+    sort_key=None,
+) -> dict[str, tuple[list[str], str | None]]:
+    """Resolve several API families from one fresh foundation-models response."""
+    if not api_types:
+        return {}
     hostname = workspace_hostname(workspace)
     payload, reason = _http_get_json(
         f"https://{hostname}/api/2.0/serving-endpoints:foundation-models", token
     )
+    return {
+        api_type: _endpoints_with_api_type(payload, reason, api_type, sort_key=sort_key)
+        for api_type in api_types
+    }
+
+
+def _endpoints_with_api_type(
+    payload: dict | list | None,
+    reason: str | None,
+    api_type: str,
+    *,
+    sort_key=None,
+) -> tuple[list[str], str | None]:
     if payload is None:
         return [], reason
 

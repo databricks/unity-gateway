@@ -1,5 +1,11 @@
 # Test suites and user journeys
 
+Foundation-model fallback component coverage (`test_foundation_discovery.py` and
+`TestConfigureSharedStateFoundationDiscovery` in `test_cli.py`) checks one fresh HTTP
+listing for missing Gemini and Responses families, per-family diagnostics, v2 filtering,
+version ordering, UC precedence and single-family requests. Transport is mocked;
+these checks do not measure live gateway or native-agent startup latency.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,
