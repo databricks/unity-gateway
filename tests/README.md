@@ -718,7 +718,12 @@ short-lived failure entries only for confirmed invalid/missing credentials,
 forced refresh, and login invalidation. Unknown CLI failures, network errors,
 and malformed token responses retry on the next call without a stale-profile hint.
 Concurrent callers share a per-profile fetch, and an in-flight result cannot
-restore a memo invalidated by login.
+restore a memo invalidated by login. A synthetic cross-process refresh-token rotation
+checks that a losing non-forced helper re-reads the winner's cache before reporting
+stale credentials; persistent failures retain that advice and forced refresh never
+falls back to a rejected cached token. Router hooks reuse the CLI cache rather than
+forcing refresh per subagent, while SDK custom OAuth keeps serialized forced refresh.
+These component checks do not establish live token rotation or agent recovery.
 Fake CLI subprocesses check that re-auth runs only when a successful help probe
 advertises `--no-browser`. Search component tests verify token reuse and transient
 timeout retries.

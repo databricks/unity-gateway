@@ -3138,10 +3138,15 @@ def _router_hook_token(host: str, profile: str | None, use_pat: bool) -> str | N
     token = os.environ.get("OAUTH_TOKEN", "").strip()
     if _oauth_token_is_fresh(token):
         return token
-    # Refresh through the same client the launch used, including CLI-backed custom OAuth.
+    # The inherited token cannot be updated in the parent. Re-read the CLI
+    # cache instead of forcing a rotation on every subsequent subagent hook;
+    # the CLI refreshes its cached credential when it is near expiry. The SDK
+    # custom-OAuth backend already serializes refreshes and keeps its behavior.
     state = {**load_full_state().get("workspaces", {}).get(host, {}), "profile": profile}
+    oauth_config = state.get("custom_oauth")
+    force_refresh = isinstance(oauth_config, dict) and not custom_oauth_cli_enabled(oauth_config)
     try:
-        return custom_oauth.launch_token(state, host, force_refresh=True)
+        return custom_oauth.launch_token(state, host, force_refresh=force_refresh)
     except RuntimeError:
         return None
 

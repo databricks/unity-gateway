@@ -1723,7 +1723,7 @@ class TestSubcommandRouting:
             {"OAUTH_TOKEN": _jwt(time.time() + 90)}
         )
 
-        mock_token.assert_called_once_with("https://example.com", "my-profile", force_refresh=True)
+        mock_token.assert_called_once_with("https://example.com", "my-profile", force_refresh=False)
         assert mock_route.call_args.kwargs["token"] == "fresh-token"
 
     def test_codex_subagent_hook_refreshes_opaque_oauth_token(self, monkeypatch):
@@ -1731,7 +1731,7 @@ class TestSubcommandRouting:
 
         mock_token, mock_route = self._invoke_codex_subagent_hook({"OAUTH_TOKEN": "opaque-token"})
 
-        mock_token.assert_called_once_with("https://example.com", "my-profile", force_refresh=True)
+        mock_token.assert_called_once_with("https://example.com", "my-profile", force_refresh=False)
         assert mock_route.call_args.kwargs["token"] == "fresh-token"
 
     def test_codex_subagent_hook_reuses_bearer(self):
@@ -1830,9 +1830,13 @@ class TestSubcommandRouting:
             assert result.output == ""
             route.assert_not_called()
 
-    def test_claude_mod_route_refreshes_through_custom_oauth_client(self, monkeypatch):
+    @pytest.mark.parametrize("cli_backend", [False, True])
+    def test_claude_mod_route_refreshes_through_custom_oauth_client(self, monkeypatch, cli_backend):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
-        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
+        if cli_backend:
+            monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
+        else:
+            monkeypatch.delenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", raising=False)
         monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
         monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
         custom = {
@@ -1875,7 +1879,7 @@ class TestSubcommandRouting:
             "http://localhost:8020",
             scopes=["offline_access", "all-apis"],
             profile="custom-profile",
-            force_refresh=True,
+            force_refresh=not cli_backend,
         )
         assert route.call_args.kwargs["token"] == "custom-token"
 

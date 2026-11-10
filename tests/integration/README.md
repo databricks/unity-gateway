@@ -491,7 +491,9 @@ CLI token memoization and capability-gated `--no-browser` re-auth are covered by
 component tests in `../test_databricks.py` and `../test_mcp_web_search.py`, including
 wall/monotonic expiry across suspend or clock rollback, forced refresh, concurrent
 fetches, login invalidation, confirmed credential-error caching, and transient-failure
-recovery. Connection-login component tests also check invalidation on every login
+recovery. A synthetic cross-process token-rotation race and hook cache reuse are
+component-covered, not validated against live OAuth rotation in this suite.
+Connection-login component tests also check invalidation on every login
 attempt and fresh tokens on async proxy retries. This suite
 does not assert live token-fetch counts, stale-profile recovery, or launch-time
 savings; credential/profile routing is unchanged.
