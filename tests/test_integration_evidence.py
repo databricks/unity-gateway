@@ -11,6 +11,7 @@ from tests.integration.utils.evidence import (
     SubagentCalculation,
     assert_no_terminal_api_error,
     assistant_answer_contains,
+    claude_delivered_child_answers,
     tool_outputs,
 )
 from tests.integration.utils.terminal import codex_command_approval_pending
@@ -200,6 +201,94 @@ def _transcript_session(home, agent, transcripts):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("".join(json.dumps(record) + "\n" for record in records))
     return _Session(home)
+
+
+def _claude_peer_delivery(child_id, value):
+    body = "[Subagent hand-back] The report follows:\n  " + value
+    return {
+        "type": "user",
+        "isMeta": True,
+        "message": {
+            "role": "user",
+            "content": f'Another Claude session sent a message:\n<agent-message from="{child_id}">\n'
+            f"{body}\n</agent-message>",
+        },
+        "origin": {"kind": "peer", "from": child_id, "senderTaskId": child_id, "body": body},
+    }
+
+
+def _claude_child_handback(value):
+    return {
+        "type": "assistant",
+        "isSidechain": True,
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "SubagentHandback",
+                    "id": "handback-1",
+                    "input": {"message": value},
+                }
+            ],
+        },
+    }
+
+
+def _claude_parent_text(value):
+    return {
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": value}]},
+    }
+
+
+def test_claude_child_answer_requires_delivery_even_when_parent_hallucinates():
+    value = "3d3faaf02749"
+    fabricated = _claude_parent_text(
+        'Waiting for the subagent... <task-notification>"a fabricated quote"</task-notification>'
+    )
+    parent = "project/session.jsonl"
+    child = "project/session/subagents/agent-ae73fb7e161b59bbb.jsonl"
+    sessions = {parent: [fabricated], child: [_claude_child_handback(value)]}
+    assert not claude_delivered_child_answers(sessions, value)
+    sessions[parent].append(_claude_peer_delivery("ae73fb7e161b59bbb", value))
+    assert claude_delivered_child_answers(sessions, value) == {"ae73fb7e161b59bbb"}
+
+
+def test_claude_child_delivery_ignores_prompt_and_tool_input_echoes():
+    value = "3d3faaf02749"
+    parent = "project/session.jsonl"
+    child = "project/session/subagents/agent-child-id.jsonl"
+    sessions = {
+        parent: [
+            {"type": "user", "message": {"role": "user", "content": value}},
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "name": "Agent", "input": {"prompt": value}}],
+                },
+            },
+        ],
+        child: [_claude_child_handback(value)],
+    }
+    assert not claude_delivered_child_answers(sessions, value)
+    sessions[parent].append(_claude_peer_delivery("other-child", value))
+    assert not claude_delivered_child_answers(sessions, value)
+    sessions[parent].append(_claude_parent_text(value))
+    assert claude_delivered_child_answers(sessions, value) == {"child-id"}
+    sessions[child] = [{"type": "user", "message": {"role": "user", "content": value}}]
+    assert not claude_delivered_child_answers(sessions, value)
+
+
+def test_claude_child_delivery_must_belong_to_same_parent_session():
+    value = "3d3faaf02749"
+    sessions = {
+        "project/other.jsonl": [_claude_peer_delivery("child-id", value)],
+        "project/session.jsonl": [],
+        "project/session/subagents/agent-child-id.jsonl": [_claude_child_handback(value)],
+    }
+    assert not claude_delivered_child_answers(sessions, value)
 
 
 def _write_answer(home, agent, *, child, value):

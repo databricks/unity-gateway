@@ -246,7 +246,12 @@ continuation note, with the `fork` exception only when the host offers fork suba
 
 The live `test_smart_router_claude_resumes_same_subagent_with_send_message` journey
 spawns one child and follows up through `SendMessage` by ID or name, requiring
-both hidden file answers in the resumed child's transcript. Claude may redundantly
+both hidden file answers in the resumed child's transcript and delivered to the parent.
+Delivery may be a native peer message identified by the child ID or a parent assistant
+answer; a parent hallucination is retained in the artifacts but need not restate the value
+(Windows job 129537991866). The resumed child's answer models must match its linked
+routing decision. Offline evidence checks reject prompt/tool-input echoes, missing delivery,
+wrong-child peer messages, and child answers from another parent. Claude may redundantly
 re-spawn the byte-identical task while waiting for the first child's completion
 notification (run 42721826953), so duplicate identical Agent/Task calls are tolerated
 before the follow-up; a differently tasked spawn or any child session or Agent/Task

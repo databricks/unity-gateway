@@ -21,6 +21,7 @@ from utils.evidence import (
     agent_sessions,
     assert_subagent_routed,
     assistant_answers,
+    claude_delivered_child_answers,
     codex_routing_display_for_task,
     is_child_session,
     read_jsonl,
@@ -586,10 +587,10 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
 ):
     """Scenario: with orchestration on, spawn one Claude child, then give it a follow-up.
 
-    Expected: on Claude 2.1.314+ the parent uses SendMessage to continue the original
-    child. Both hidden file values appear in that same child's completed answers, the
-    follow-up phase creates no child session or Agent/Task call, and the SendMessage
-    results resolve to a child spawned before the follow-up.
+    Expected: on Claude 2.1.314+ the parent uses SendMessage to continue a routed
+    child. Both hidden file values appear in that child's completed answers and reach
+    the parent, without requiring the parent to restate them. The follow-up creates
+    no child session or Agent/Task call, and SendMessage resolves to a pre-existing child.
     """
     session = live_session
     _select_smart_router_version(session, "claude", workspace, tmp_path, True, "subagent_orch_v0")
@@ -607,11 +608,12 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
     ) as tui:
         tui.boot()
         tui.submit(first.delegate_prompt + " Spawn exactly one agent in total.")
-        tui.wait_for_task(first)
-        tui.wait_for(
-            lambda _: first.completed(session, "claude", child=True),
-            "the original child's completed answer",
-            timeout=180,
+        tui.wait_for_task(
+            first,
+            completion=lambda: bool(
+                claude_delivered_child_answers(agent_sessions(session, "claude"), first.value)
+            ),
+            description="the child's answer delivered to the parent",
         )
         tui.wait_for_background_tasks()
         pre_followup = agent_sessions(session, "claude")
@@ -636,16 +638,12 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
             f"{second.prompt} Do not spawn another agent or read the file yourself. "
             "Wait for that agent's answer and reply with only the value it returned."
         )
-        tui.wait_for_task(second)
-        tui.wait_for(
-            lambda _: any(
-                second.value in answer
-                for path, records in agent_sessions(session, "claude").items()
-                if is_child_session("claude", path, records)
-                for answer in assistant_answers("claude", records)
+        tui.wait_for_task(
+            second,
+            completion=lambda: bool(
+                claude_delivered_child_answers(agent_sessions(session, "claude"), second.value)
             ),
-            "the resumed child's completed follow-up answer",
-            timeout=180,
+            description="the follow-up child answer delivered to the parent",
         )
         _assert_claude_session_finished(session, tui)
 
@@ -689,11 +687,42 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
     assert child_path is not None, (
         f"the follow-up resumed {child_id}, which is not one of the spawned children"
     )
+    # Keep even incorrect parent responses in the artifacts; they are not the
+    # continuation contract. The transcript artifact also retains their original order.
+    session.record(
+        "resume-parent-answers.json",
+        {
+            "answers": assistant_answers("claude", parent_records),
+            "expected_values": [first.value, second.value],
+        },
+    )
+    decisions = _routing_decisions(session, "claude")
+    starts = read_jsonl(session.home / ".ucode" / "claude-smart-routing-audit.jsonl")
+    routed_models = {
+        decision["requested_model"].removesuffix("[1m]")
+        for start in starts
+        if start.get("agent_id") == child_id and start.get("matches_router_decision") is not False
+        for decision in decisions
+        if decision.get("decision_id") == start.get("decision_id")
+        and isinstance(decision.get("requested_model"), str)
+        and decision.get("router_model")
+    }
+    session.record("resume-routing.json", {"decisions": decisions, "starts": starts})
+    assert routed_models, f"No routing decision linked to resumed child {child_id}"
     for task in (first, second):
-        task.assert_completed(session, "claude")
-        assert any(
-            task.value in answer for answer in assistant_answers("claude", sessions[child_path])
+        assert child_id in claude_delivered_child_answers(sessions, task.value), (
+            f"Child {child_id} did not answer and deliver {task.value}"
         )
+        answer_models = {
+            record.get("message", {}).get("model", "").removesuffix("[1m]")
+            for record in sessions[child_path]
+            if any(task.value in answer for answer in assistant_answers("claude", [record]))
+        }
+        assert answer_models & routed_models, {
+            "child": child_id,
+            "answer_models": sorted(answer_models),
+            "routed_models": sorted(routed_models),
+        }
 
 
 @pytest.mark.live
