@@ -129,7 +129,7 @@ jobs:
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
             --claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION" \
-            ${{ matrix.suite == 'desktop' && '--macos-desktop' || '' }} -- -m "$TEST_MARKER"
+            ${{ matrix.suite == 'desktop' && '--desktop-app' || '' }} -- -m "$TEST_MARKER"
       - name: Upload latest harness evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2

@@ -266,6 +266,10 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 
 </details>
 
+The ChatGPT desktop app (Codex desktop) reads these files too. The required **Codex desktop
+inference** integration jobs on macOS and Windows open a pinned build after managed `ug configure`
+and require a completed system.ai turn; see `tests/integration/README.md` to bump a pin.
+
 <details>
 <summary>GitHub Copilot in VS Code</summary>
 
