@@ -4599,7 +4599,10 @@ class TestOpenCodeModelFlag:
             result = runner.invoke(app, ["opencode", flag, "databricks-claude-sonnet-4"])
 
         assert result.exit_code == 0, result.output
-        assert calls["configure"].call_args.args[2] == "databricks-claude-sonnet-4"
+        calls["configure"].assert_not_called()
+        assert (
+            calls["launch"].call_args.kwargs["options"].launch_model == "databricks-claude-sonnet-4"
+        )
         assert (
             calls["launch"].call_args.kwargs["options"].user_pinned_model
             == "databricks-claude-sonnet-4"
@@ -4622,7 +4625,10 @@ class TestOpenCodeModelFlag:
             )
 
         assert result.exit_code == 0, result.output
-        assert calls["configure"].call_args.args[2] == "databricks-claude-sonnet-4"
+        calls["configure"].assert_not_called()
+        assert (
+            calls["launch"].call_args.kwargs["options"].launch_model == "databricks-claude-sonnet-4"
+        )
         assert calls["launch"].call_args.args[2] == ["run", "--model", native]
         # The launcher receives both raw selections and applies native argument precedence.
         assert (
@@ -4666,7 +4672,10 @@ class TestOpenCodeModelFlag:
             result = runner.invoke(app, ["opencode", "run", "--", "--", "--model", "literal"])
 
         assert result.exit_code == 0, result.output
-        assert calls["configure"].call_args.args[2] == "databricks-claude-sonnet-4"
+        calls["configure"].assert_not_called()
+        assert (
+            calls["launch"].call_args.kwargs["options"].launch_model == "databricks-claude-sonnet-4"
+        )
         assert calls["launch"].call_args.args[2] == ["run", "--", "--model", "literal"]
         assert calls["launch"].call_args.kwargs["options"].user_pinned_model is None
 

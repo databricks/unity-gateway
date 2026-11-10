@@ -3761,6 +3761,7 @@ def _launch_options(
 ) -> LaunchOptions:
     return LaunchOptions(
         launch_model=launch_model,
+        launch_provider=provider if tool == "gemini" else None,
         # Pinned models for providers are resolved above through the provider-specific launch path.
         user_pinned_model=user_pinned_model if provider is None else None,
         launch_smart_routing=_routes_launch(
@@ -4273,19 +4274,23 @@ def _launch_tool(
                 launch_model=model or forwarded_model or route_root_model,
                 discovered_catalog=picker_catalog,
             )
-        state = configure_tool(
-            tool,
-            state,
-            resolved_model,
-            provider=provider,
-            provider_models=provider_models,
-            picker_catalog=picker_catalog,
-            relayed=relayed,
-            route_root_model=route_root_model,
-            custom_model=None,
-            coding_agent_config_defaults=coding_agent_config_defaults,
-            parent_schema=parent_schema,
-        )
+        # These adapters prepare their config with fresh credentials immediately before spawning.
+        # Running the shared writer here as well repeats the complete read/merge/write/state cycle.
+        configures_at_launch = tool in {"gemini", "opencode", "kilo", "pi"}
+        if not configures_at_launch:
+            state = configure_tool(
+                tool,
+                state,
+                resolved_model,
+                provider=provider,
+                provider_models=provider_models,
+                picker_catalog=picker_catalog,
+                relayed=relayed,
+                route_root_model=route_root_model,
+                custom_model=None,
+                coding_agent_config_defaults=coding_agent_config_defaults,
+                parent_schema=parent_schema,
+            )
         # A plain launch keeps Claude Code's own starting model, as its own picker did.
         if (
             picker_catalog
@@ -4350,6 +4355,12 @@ def _launch_tool(
                 state[copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY] = provider
             elif parent_schema:
                 state[copilot_agent.LAUNCH_MODEL_LOCATION_KEY] = parent_schema
+        # Adapters that configure at launch need the resolved model, including managed
+        # defaults and provider targets. Copilot resolves its own catalog; Claude uses a
+        # launch-only session model.
+        launch_model = resolved_model if configures_at_launch else session_model
+        if tool == AGENT_COPILOT:
+            launch_model = managed_model
         launch_options = _launch_options(
             tool,
             ctx.args,
@@ -4359,9 +4370,7 @@ def _launch_tool(
             # the initial/fallback model and still participates in a routed session.
             user_pinned_model=model or forwarded_model,
             provider=provider,
-            # Copilot picks its start model from its own catalog; the admin's or budget pick leads.
-            # session_model is set for claude only.
-            launch_model=managed_model if tool == "copilot" else session_model,
+            launch_model=launch_model,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):

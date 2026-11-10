@@ -426,7 +426,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     model = explicit_model_arg_value(tool_args) or options.user_pinned_model
     if model is not None:
         model = resolve_explicit_model(model, state)
-    token = _configure_launch(state, model)
+    token = _configure_launch(state, model or options.launch_model)
     env = build_runtime_env(token, state)
 
     if model is not None and not has_explicit_model_arg(tool_args):

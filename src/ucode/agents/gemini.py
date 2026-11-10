@@ -252,11 +252,11 @@ def _refresh_forever(state: dict, stop_event: threading.Event) -> None:
 
 
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
-    provider = get_provider_service(state, "gemini")
-    token = _refresh_token_once(state)
-    model = _launch_model(state, provider)
+    provider = options.launch_provider or get_provider_service(state, "gemini")
+    model = options.launch_model or _launch_model(state, provider)
     if not model:
         raise RuntimeError("No Gemini model is configured.")
+    state, token = write_tool_config(state, model, provider=provider)
     env = build_runtime_env(state["workspace"], model, token, provider=provider)
 
     stop_event = threading.Event()

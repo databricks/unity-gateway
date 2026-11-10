@@ -1,5 +1,12 @@
 # Integration tests
 
+`../test_launch_config_preparation.py` exercises CLI dispatch through the real Gemini, OpenCode,
+Kilo, and Pi adapters with isolated config/state files and controlled authentication/process
+boundaries. It verifies one config preparation per launch, resolved and forwarded model
+precedence, Gemini provider persistence and periodic refresh, managed-overlay preservation,
+standalone preparation, and dry-run writes. These component checks establish removed duplicate
+work; they do not measure live agent readiness or gateway latency.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,

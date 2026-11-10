@@ -295,8 +295,8 @@ def default_model(state: dict) -> str | None:
     return gemini_models[0] if gemini_models else next(iter(claude_models.values()), None)
 
 
-def _configure_launch(state: dict) -> str:
-    model = default_model(state)
+def _configure_launch(state: dict, model: str | None = None) -> str:
+    model = model or default_model(state)
     if not model:
         raise RuntimeError("No Pi model is available on this workspace.")
     _, token = write_tool_config(state, model)
@@ -312,7 +312,7 @@ def build_runtime_env(token: str) -> dict[str, str]:
 
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
     """Launch Pi; it re-resolves its apiKey command per request, so no refresher."""
-    token = _configure_launch(state)
+    token = _configure_launch(state, options.launch_model)
     env = build_runtime_env(token)
 
     proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
