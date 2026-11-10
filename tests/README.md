@@ -1353,6 +1353,7 @@ Native launch-option component tests (`native_claude/test_mod.py`) check two rea
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
 Native hook tests also cover confirmed subagent 429s: temporary parent-model fallback,
+notifications with and without request IDs, refusal when both models are cooling down,
 cooldown expiry, unchanged unrelated/disabled routing, and the model reported to the parent.
 
 The real session-control process call is covered by the live skill-toggle journeys;

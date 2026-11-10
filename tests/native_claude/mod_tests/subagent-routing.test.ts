@@ -718,4 +718,12 @@ test('a confirmed 429 temporarily uses the parent model and reports the actual l
   expect((await launch('before-expiry')).result.resolvedModel).toBe(parent);
   timestamp += 1;
   expect((await launch('after-expiry')).result.resolvedModel).toBe(blocked);
+  await $.prompt.submit({ ...notice, text: notice.text.replace('HTTP 429,', 'HTTP 429, request id synthetic-request,') });
+  expect((await launch('request-id')).result.resolvedModel).toBe(parent);
+  selected = parent;
+  await launch('parent-limited');
+  await $.prompt.submit({ ...notice, text: notice.text
+    .replace('child-first', 'child-parent-limited').replace('system.ai.glm-5-3-flash', parent) });
+  selected = blocked;
+  expect((await launch('both-limited')).deny).toContain('routed and parent models are rate-limited');
 });

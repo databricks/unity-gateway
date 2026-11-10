@@ -49,6 +49,7 @@ const ANIMALS = [
 ]
 
 const shortModel = (model: string): string => model.replace(/^system\.ai\./, '').replace(/^databricks-/, '')
+// Native terminal notices omit Retry-After, so expire this local hint after one minute.
 const RATE_LIMIT_COOLDOWN_MS = 60_000
 // Claude's own spinner glyphs, played forwards then back as Claude does.
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
@@ -115,7 +116,7 @@ const cards = { unplaced: [] as string[] }
 // Keep the cooldown local to this launch's workspace and confirm the failed child's model.
 export function recordSubagentRateLimit(text: string, timestamp: number): void {
   const task = text.match(/^<task-notification>\s*<task-id>([^<\s]+)<\/task-id>/)
-  const failure = text.match(/<status>failed<\/status>\s*<summary>[^<]*\(error type rate_limit, HTTP 429, model sent to the API: ([^\s()<]+)\)<\/summary>/)
+  const failure = text.match(/<status>failed<\/status>\s*<summary>[^<]*\(error type rate_limit, HTTP 429,(?: request id [^,\s<>]+,)? model sent to the API: ([^\s()<]+)\)<\/summary>/)
   const model = task ? routedModels.model(task[1]) : undefined
   if (model && failure && canonicalModel(model) === canonicalModel(failure[1])) {
     rateLimitedUntil.set(canonicalModel(model), timestamp + RATE_LIMIT_COOLDOWN_MS)
@@ -230,6 +231,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     let route = e.resume ? undefined : records.get(e.tool_use_id)
     const timestamp = route ? await now($) : undefined
     if (route && timestamp !== undefined && (rateLimitedUntil.get(canonicalModel(route.model)) ?? 0) > timestamp) {
+      // Use the running parent's resolved model; the call's alias can select the failed model again.
       if ((rateLimitedUntil.get(canonicalModel(e.parentModel)) ?? 0) > timestamp) {
         return { deny: 'The routed and parent models are rate-limited. Wait for the limit to reset before starting another subagent.' }
       }

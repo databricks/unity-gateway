@@ -59,7 +59,9 @@ export const registerStatusBand = (on: On): void => {
   let refresh: { cancel: () => void } | undefined
   on('prompt.submit', async ($, e, next) => {
     // The native client permits one unmatched prompt handler, shared with routing recovery.
-    if (e.origin?.kind === 'task-notification') recordSubagentRateLimit(e.text, await $.clock.now())
+    if (e.origin?.kind === 'task-notification') {
+      try { recordSubagentRateLimit(e.text, await $.clock.now()) } catch {}
+    }
     if (band.isVisible) band.isHideArmed = true
     return next(e)
   })
