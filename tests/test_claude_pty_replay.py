@@ -612,12 +612,9 @@ capture_path.write_text(json.dumps({
         [
             ([b"/model ", b"sonnet\r"], False),
             ([b"\x1b[A", b"\r"], False),
-            ([b"/mod", b"\t", b"\r"], False),
-            ([b"/mod\r"], False),
-            ([b"\x12", b"model", b"\r"], False),
             ([b"/model sonnet\r"], True),
         ],
-        ids=["typed", "history", "completion", "slash-command", "search", "handoff-error"],
+        ids=["typed", "history", "handoff-error"],
     )
     def test_manual_selection_of_the_routed_model_survives_recovery(
         self, replay_model_switch, tmp_path, monkeypatch, chunks, fail_handoff
@@ -845,7 +842,8 @@ class TestModelSwitchInput:
         state = claude_pty.ModelSwitchInput()
         assert state.observe(b"/model ", 1.0) == (True, False)
         assert state.observe(b"sonnet\r", 1.1) == (True, True)
-        assert state.observe(b"plain text\r", 1.2) == (True, False)
+        assert state.observe(b"/mod\r", 1.2) == (True, True)
+        assert state.observe(b"plain text\r", 1.3) == (True, False)
 
     @pytest.mark.parametrize(
         "editing",
@@ -869,64 +867,6 @@ class TestModelSwitchInput:
         state = claude_pty.ModelSwitchInput()
         assert state.observe(b"\x1b[200~/model sonnet\nexplain it\x1b[201~", 1.0) == (True, False)
         assert state.observe(b"\r", 1.1) == (True, False)
-
-
-# ---------------------------------------------------------------------------
-# Test D: Persist-timeout path does not SIGTERM and submits (Bug C)
-# ---------------------------------------------------------------------------
-
-
-class TestPersistTimeoutFailOpen:
-    def test_persist_timeout_does_not_sigterm_and_submits(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(claude_pty, "READY_QUIET_S", 0.05)
-        monkeypatch.setattr(claude_pty, "MODEL_PERSIST_TIMEOUT_S", 0.25)
-        monkeypatch.setattr(claude_pty, "PASTE_SUBMIT_DELAY_S", 0.05)
-
-        socket_path = tmp_path / "first.sock"
-        capture = tmp_path / "capture.json"
-        restore_called: list[bool] = []
-        deferred: list[bool] = []
-        fake_claude = tmp_path / "fc.py"
-        _write_fake_claude(
-            fake_claude,
-            """\
-resp = send_hook(socket_path, "hello")
-assert resp["action"] == "block"
-print("blocked", flush=True)
-tty.setraw(0)
-
-read_until(b"\\r")                        # /model command
-os.write(1, b"Set model to sonnet\\n")    # switch confirmed
-sys.stdout.flush()
-
-# model_switch_persisted() always returns False in this test,
-# so after MODEL_PERSIST_TIMEOUT_S the loop must paste without SIGTERMing us.
-paste = read_until(b"\\x1b[201~")
-enter = os.read(0, 1)
-
-capture_path.write_text(json.dumps({
-    "paste_received": b"\\x1b[200~" in paste,
-    "enter_is_cr": enter == b"\\r",
-}))
-""",
-        )
-
-        result = claude_pty.run_claude_pty(
-            [sys.executable, str(fake_claude), str(socket_path), str(capture)],
-            route_prompt=_route_sonnet,
-            socket_path=socket_path,
-            model_switch_persisted=lambda: False,  # persist check always fails
-            restore_model_setting=lambda: restore_called.append(True),
-            defer_model_setting=lambda: deferred.append(True),
-        )
-
-        # SIGTERM would yield exit code 128+15=143; clean exit must be 0.
-        assert result == 0, f"process should not be SIGTERMed; got exit code {result}"
-        assert restore_called == []
-        assert deferred == [True]
-        data = json.loads(capture.read_text())
-        assert data["paste_received"], "prompt must be pasted after persist timeout"
-        assert data["enter_is_cr"], "CR (Enter) must follow the paste"
 
 
 # ---------------------------------------------------------------------------

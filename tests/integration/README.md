@@ -1461,16 +1461,18 @@ the file task, and normal exit. The managed default alone routes only Claude sub
 orchestrator; Codex's managed default is opted out and covered by its launch-only test.
 
 `tests/test_claude_pty_replay.py` covers delayed switches, terminal input during recovery,
-history/autocomplete model choices, completed versus ambiguous cancellation, and throttled
-settings recovery before child exit. Fragmented navigation and terminal replies complete across
+typed and history-based model choices, completed versus ambiguous cancellation, and throttled
+settings recovery before child exit. Parser cases cover completion, search, other unknown-line
+edits, and submitted slash commands. Fragmented navigation and terminal replies complete across
 settings restoration; unfinished sequences and editing input produce resend guidance. Navigation
 and fragmented replies share a process case, with tilde-form Home/End keys covered in unit tests.
+The late-write case checks prompt submission after the persistence deadline and a clean child exit.
 A missing late write must release launch ownership.
 `tests/test_claude_smart_routing_v2.py` checks competing processes with bounded deferred ownership,
 late writes across a second switch, same-model and crashed-owner recovery, manual choices,
 failed atomic writes, and bounded exit cleanup. Atomic restoration preserves surviving settings
-symlinks and existing POSIX file permissions. `tests/test_config_io.py` checks permissions before
-replacement and preserves the original file when setting permissions fails.
+symlinks and existing POSIX file permissions. Permissions are asserted after replacement;
+chmod failure is not separately covered.
 These component checks use temporary settings and fake TUIs;
 they do not establish live Claude or gateway coverage.
 These checks do not replace the completed file task required by the live journeys.

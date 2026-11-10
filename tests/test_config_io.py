@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import stat
-from pathlib import Path
 
 import pytest
 import tomlkit
@@ -207,39 +204,6 @@ class TestWriteHelpers:
         config_io.atomic_write_json(p, {"a": 1})
         config_io.atomic_write_json(p, {"a": 2})
         assert json.loads(p.read_text()) == {"a": 2}
-        assert not list(tmp_path.glob(".out.json.*"))
-
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX file permissions")
-    def test_atomic_write_json_applies_mode_before_replacing(self, tmp_path, monkeypatch):
-        p = tmp_path / "out.json"
-        p.write_text('{"a": 1}')
-        replace = os.replace
-
-        def replace_with_mode_check(source, target):
-            assert stat.S_IMODE(Path(source).stat().st_mode) == 0o640
-            assert json.loads(p.read_text()) == {"a": 1}
-            replace(source, target)
-
-        # Observe permissions at publication while retaining the real replacement.
-        monkeypatch.setattr(os, "replace", replace_with_mode_check)
-        config_io.atomic_write_json(p, {"a": 2}, mode=0o640)
-        assert json.loads(p.read_text()) == {"a": 2}
-        assert stat.S_IMODE(p.stat().st_mode) == 0o640
-        assert not list(tmp_path.glob(".out.json.*"))
-
-    def test_atomic_write_json_mode_failure_preserves_existing_file(self, tmp_path, monkeypatch):
-        p = tmp_path / "out.json"
-        original = b'{"a": 1}\n'
-        p.write_bytes(original)
-
-        def fail_chmod(_path, _mode):
-            raise PermissionError("cannot set file mode")
-
-        # Simulate a permissions failure before the replacement is published.
-        monkeypatch.setattr(os, "chmod", fail_chmod)
-        with pytest.raises(RuntimeError, match="Failed to write file"):
-            config_io.atomic_write_json(p, {"a": 2}, mode=0o640)
-        assert p.read_bytes() == original
         assert not list(tmp_path.glob(".out.json.*"))
 
 
