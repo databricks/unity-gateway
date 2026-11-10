@@ -47,7 +47,7 @@ from ucode.ui import (
     status_subprocess_stdout,
 )
 
-from . import antigravity, claude, claude_models, codex, copilot, gemini, kilo, opencode, pi
+from . import antigravity, claude, codex, copilot, gemini, kilo, opencode, pi
 from .args import LaunchOptions as LaunchOptions
 from .args import explicit_model_arg_value as explicit_model_arg_value
 
@@ -120,7 +120,7 @@ def _expand_wildcard_source(
     model: str, tool: str, workspace: str, token: str
 ) -> tuple[list[str], str | None]:
     source_name = model[:-2]
-    module = {"claude": claude_models, "codex": codex, "copilot": copilot}[tool]
+    module = {"claude": claude, "codex": codex, "copilot": copilot}[tool]
     if len(model.split(".")) == 3:
         return module.source_models(workspace, token, parent_schema=source_name)
 

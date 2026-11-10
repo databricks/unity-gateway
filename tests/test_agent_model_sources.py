@@ -4,7 +4,7 @@ import pytest
 
 import ucode.agents as agents
 import ucode.databricks as db_mod
-from ucode.agents import claude_models, codex, copilot
+from ucode.agents import claude, codex, copilot
 
 WS = "https://example.cloud.databricks.com"
 
@@ -32,7 +32,7 @@ def test_expand_schema_wildcard_uses_native_ids_and_deduplicates(monkeypatch, to
             ]
         }
 
-    monkeypatch.setattr(db_mod, "list_anthropic_model_catalog", catalog)
+    monkeypatch.setattr(claude, "list_anthropic_model_catalog", catalog)
     monkeypatch.setattr(copilot, "list_anthropic_model_catalog", catalog)
     monkeypatch.setattr(codex, "_fetch_codex_model_catalog", codex_catalog)
     assert agents.expand_wildcard_sources(
@@ -63,7 +63,7 @@ def test_expand_wildcard_sources_in_place_and_deduplicates(monkeypatch, tool):
             return ["one", "c.s.mps.two"], None
         return ["system.ai.kimi", "system.ai.claude-sonnet"], None
 
-    monkeypatch.setattr(claude_models if tool == "claude" else codex, "source_models", catalog)
+    monkeypatch.setattr(claude if tool == "claude" else codex, "source_models", catalog)
     models = ["system.ai.kimi", "c.s.mps.*", "c.s.mps.one", "system.ai.*"]
     assert agents.expand_wildcard_sources(models, tool, WS, "token") == [
         "system.ai.kimi",
@@ -77,7 +77,7 @@ def test_expand_wildcard_sources_in_place_and_deduplicates(monkeypatch, tool):
 @pytest.mark.parametrize("service", [(None, "403"), ({"provider_type": "custom"}, None)])
 def test_expand_wildcard_sources_drops_failed_lookup(monkeypatch, service):
     monkeypatch.setattr(agents, "get_model_provider_service", lambda *_: service)
-    monkeypatch.setattr(claude_models, "source_models", lambda *a, **k: ([], None))
+    monkeypatch.setattr(claude, "source_models", lambda *a, **k: ([], None))
     warnings = []
     monkeypatch.setattr(agents, "print_warning", warnings.append)
     models = ["c.s.mps.*", "system.ai.model", "c.s.mps.*"]

@@ -1973,6 +1973,9 @@ def test_managed_schema_wildcard_fails_closed(monkeypatch, tool, failure):
         raise db_mod.CodexModelCatalogEmpty("no models")
 
     monkeypatch.setattr(
+        cli_mod.claude_agent, "list_anthropic_model_catalog", db_mod.list_anthropic_model_catalog
+    )
+    monkeypatch.setattr(
         cli_mod.copilot_agent, "list_anthropic_model_catalog", db_mod.list_anthropic_model_catalog
     )
     monkeypatch.setattr(cli_mod.codex_agent, "_fetch_codex_model_catalog", codex_catalog)

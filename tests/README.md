@@ -1461,8 +1461,8 @@ Mixed lists expand in order and deduplicate, schema catalogs preserve advertised
 only sources trigger expansion, and empty or failed schema discovery fails closed for Claude,
 Codex, and Copilot. These are component checks; they do not establish live inference coverage.
 
-`test_agent_claude_models.py` and `test_agent_claude.py` cover short Claude picker labels for qualified
-MPS model IDs, preserve dotted GPT versions, and retain the full model IDs in picker options
+`test_agent_claude.py` covers short Claude picker labels for qualified MPS model IDs.
+The checks preserve dotted GPT versions and retain the full model IDs in picker options
 and the allow-list. These component checks do not establish live picker or inference coverage.
 
 `test_agent_claude.py` covers gateway-alias picker text for GLM, GPT, and Kimi models.

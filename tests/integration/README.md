@@ -1948,7 +1948,7 @@ schema-only sources, and empty/error fail-closed behavior. No installed-agent in
 journey currently covers mixed wildcard sources or proves inference with qualified MPS models.
 
 Short Claude picker labels for qualified MPS IDs have component coverage in
-`../test_agent_claude_models.py` and `../test_agent_claude.py`. The checks retain the full option and
+`../test_agent_claude.py`. The checks retain the full option and
 allow-list IDs and preserve dotted GPT versions. No installed-agent journey covers these labels.
 
 Gateway-alias picker text has component coverage in `../test_agent_claude.py` for short labels,
