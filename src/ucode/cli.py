@@ -1482,7 +1482,14 @@ def _configure_workspace_command(
         configured_tools: list[str] = []
         failed_tools: list[str] = []
         for tool_name in managed_tools:
-            expanded_managed = _expand_managed_model_sources(managed, state, tool_name)
+            try:
+                expanded_managed = _expand_managed_model_sources(managed, state, tool_name)
+            except RuntimeError as exc:
+                # One agent's failed wildcard expansion must not stop the others; the run still
+                # fails at the end (`_fail_machine_wide_run`), matching other per-tool failures.
+                print_warning(str(exc))
+                failed_tools.append(tool_name)
+                continue
             resolved = resolve_state(expanded_managed, state, tool_name)
             parent_schema = (
                 managed_unity_catalog_location(managed, tool_name)

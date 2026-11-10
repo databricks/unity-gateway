@@ -6981,6 +6981,54 @@ class TestConfigureScopeFlags:
         assert attempted == ["claude", "codex"]
         mock_mcp.assert_called_once()
 
+    def test_managed_wildcard_failure_does_not_abort_other_agents(self):
+        # A wildcard expansion failure for one managed agent must not stop the others: it warns,
+        # records the per-tool failure, and the other agents still configure (the run still fails
+        # at the end under --global, like any other per-tool failure).
+        managed_files.set_machine_wide_only(True)
+        attempted: list = []
+        warned: list = []
+
+        def expand(_managed, _state, tool):
+            if tool == "claude":
+                raise RuntimeError(
+                    "Could not expand managed model sources (main.default.mps.*); refusing to "
+                    "fall back to workspace discovery. Check service access, then retry."
+                )
+            return _managed
+
+        with (
+            patch(
+                "ucode.cli._configure_shared_workspace_states",
+                return_value=[{"workspace": "https://first.databricks.com"}],
+            ),
+            patch("ucode.cli.save_state"),
+            patch(
+                "ucode.cli.refresh_managed_config",
+                return_value=({"enabled": True}, None),
+            ),
+            patch("ucode.cli.managed_enabled_tools", return_value=["claude", "codex"]),
+            patch("ucode.cli.resolve_state", side_effect=lambda _m, state, _t: state),
+            patch("ucode.cli.check_gateway_endpoint", return_value=True),
+            patch("ucode.cli.install_tool_binary", return_value=True),
+            patch("ucode.cli._expand_managed_model_sources", side_effect=expand),
+            patch(
+                "ucode.cli.configure_selected_tools",
+                side_effect=lambda state, tools, **_kw: (
+                    attempted.extend(tools) or {**state, "last_configured_tools": tools}
+                ),
+            ),
+            patch("ucode.cli._configure_managed_mcp_servers", return_value=[]),
+            patch("ucode.cli._summarize_managed_config"),
+            patch("ucode.cli.print_warning", side_effect=warned.append),
+        ):
+            with pytest.raises(RuntimeError, match="could not configure Claude Code"):
+                cli_mod._configure_workspace_command(
+                    workspaces=[("https://first.databricks.com", None)]
+                )
+        assert attempted == ["codex"]
+        assert any("main.default.mps.*" in warning for warning in warned)
+
     def test_global_flag_skips_per_user_setup(self):
         managed_files.set_machine_wide_only(True)
         with (
