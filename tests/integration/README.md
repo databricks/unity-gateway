@@ -1,5 +1,9 @@
 # Integration tests
 
+`../test_launch_model_catalog.py` checks launch-scoped catalog reuse against a local HTTP
+server, including recovery after exhausted transient retries and caching after a successful
+retry. This component coverage does not establish live agent startup.
+
 The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
 including exact service URLs, native OAuth metadata, and real `codex mcp get`
 readback. The per-user configuration remains separate.

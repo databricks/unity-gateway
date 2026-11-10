@@ -5,8 +5,9 @@ including exact service URLs, native OAuth metadata, and real `codex mcp get`
 readback. The per-user configuration remains separate.
 
 `test_launch_model_catalog.py` exercises launch-scoped Claude catalog reuse against a local HTTP
-server. It checks family/picker results, authentication and source isolation, failed-read recovery,
-and a fresh catalog on the next launch. This is component coverage, not live agent startup.
+server. It checks family/picker results, authentication and source isolation, failed-read recovery
+after exhausting transient retries, reuse after a successful retry, and a fresh catalog on the
+next launch. This is component coverage, not live agent startup.
 
 Proxy authentication regressions in `test_gateway_proxy.py` synchronize concurrent
 401/403 responses and verify one refresh per rejected token generation, including

@@ -76,17 +76,43 @@ def test_next_launch_fetches_changed_catalog(catalog_endpoint):
     assert len(requests) == 2
 
 
-@pytest.mark.parametrize("failure", [(403, {}), (503, {}), (200, {"unexpected": []})])
-def test_failure_is_not_remembered(catalog_endpoint, failure):
+@pytest.mark.parametrize(
+    ("failure", "attempts"),
+    [
+        pytest.param((403, {}), 1, id="forbidden"),
+        pytest.param((503, {}), 3, id="retries-exhausted"),
+        pytest.param((200, {"unexpected": []}), 1, id="malformed"),
+    ],
+)
+def test_failure_is_not_remembered(catalog_endpoint, failure, attempts):
     workspace, requests, outcomes, _ = catalog_endpoint
-    outcomes.append(failure)
+    outcomes.extend([failure] * attempts)
+    with databricks.model_discovery_session():
+        first = databricks.list_anthropic_model_catalog(workspace, "test-token")
+        assert first.error_msg
+        assert not first.model_ids
+        assert len(requests) == attempts
+        assert not outcomes
+
+        second = databricks.list_anthropic_model_catalog(workspace, "test-token")
+        third = databricks.list_anthropic_model_catalog(workspace, "test-token")
+
+    assert second.model_ids == ["databricks-claude-sonnet-4"]
+    assert second.error_msg is None
+    assert third == second
+    assert len(requests) == attempts + 1
+
+
+def test_successful_retry_is_remembered(catalog_endpoint):
+    workspace, requests, outcomes, _ = catalog_endpoint
+    outcomes.append((503, {}))
     with databricks.model_discovery_session():
         first = databricks.list_anthropic_model_catalog(workspace, "test-token")
         second = databricks.list_anthropic_model_catalog(workspace, "test-token")
 
-    assert first.error_msg
-    assert second.model_ids == ["databricks-claude-sonnet-4"]
-    assert second.error_msg is None
+    assert first.model_ids == ["databricks-claude-sonnet-4"]
+    assert first.error_msg is None
+    assert second == first
     assert len(requests) == 2
 
 
