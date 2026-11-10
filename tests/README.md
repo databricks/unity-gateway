@@ -1,5 +1,18 @@
 # Test suites and user journeys
 
+Smart Router preserves the parent's native streamed response, including its synthesis
+of subagent results. It does not inject an animal-labeled answer or replace parent prose.
+Native component checks cover original text/thinking chunks, tool calls, errors,
+foreground/background completion, and selected-model pinning through child continuations.
+The launch receipt supplies selected and launched model identities without changing
+inputs already reviewed by auto mode. These are controlled-provider checks, not live
+router or model-quality measurements. Guidance identifies the launched model without
+unsolicited comparisons with the requested model; comparisons remain available when asked.
+Native Claude registration component checks distinguish the Agent model enum from the
+Smart Router catalog, preserve the host description in routing-only mode, append the same
+receipt-based guidance after orchestrator instructions and Usage notes, and leave the
+description unchanged when routing is off.
+
 Windows Desktop detection allows up to 30 seconds for the native package query.
 Component coverage in `test_desktop_setup.py` verifies slow successful detection creates
 UG's profile, while missing packages, timeouts, launch errors, and query failures leave
@@ -122,7 +135,8 @@ These are component checks, not live gateway evidence. Forks and resumed agents 
 `test_agent_antigravity.py` covers the Antigravity CLI agent: Databricks-to-Antigravity model
 names (dotted versions, `-preview` names and their tiers, image models dropped), the `agy models`
 selection-id lookup, the gateway-mode environment, skills.json/mcp_config.json merges and the
-entry-scoped skills.json revert, provider-service pinning, and launch cleanup (spawn failure,
+entry-scoped skills.json revert, explicit selection of the discovered default or saved provider
+target on bare launches (including preview-model tiers), and launch cleanup (spawn failure,
 nonzero exit, Ctrl-C). `test_gateway_proxy_integration.py` runs the Antigravity proxy hooks over
 real local HTTP (model path rewrite, `includeThoughts` body fix, provider header, Gemini-only
 route). `test_agents_init.py`, `test_mcp.py`, `test_cli.py` (including `ug revert` keeping
@@ -130,7 +144,15 @@ skills.json entries added after configure) and `test_agents_commands.py` cover d
 native installer, `agy mcp list` parsing, `ug antigravity`/`ug agy`, and
 `ug agents add antigravity`. These are unit/component checks. Automated live coverage is the
 eight journeys in `integration/` (blocking Linux CI lane, Databricks Hosted and the Gemini
-Enterprise MPS; see `integration/README.md`).
+Enterprise MPS; see `integration/README.md`). The MCP journey uses `system.ai.web_search`
+on pinned Gemini 3.8 Flash instead of SQL. It requires a completed call to the exact server,
+tool and query, and an official Databricks URL present in both its result and the final answer.
+Native file-reader guidance avoids shell-based tool discovery; permissions remain scoped to
+reads and that MCP server. Offline evidence checks reject denied actions, provider/tool errors,
+missing or unrelated calls, empty answers, misleading domains, and answers absent from the
+search output. These checks do not establish live reliability; SQL execution is no longer
+covered by the Antigravity MCP case. Headless journeys save model request URLs even when
+the command fails or times out.
 
 `ug configure --global` (machine-wide settings only) is covered by unit/component checks:
 `TestConfigureScopeFlags` in `test_cli.py` (the flag lasts one run, per-user-only agents are
@@ -169,6 +191,12 @@ header at the gateway.
 original model selector, agent type and tool-call ID alongside the routed target.
 Omitted selectors stay null. These local audit checks do not establish a resolved
 inherited model, an executed-model match, or a remote metrics export.
+`test_smart_router_session_log.py` covers per-session records, privacy, retention,
+permissions, failure handling and Claude subagent wiring; these are local component checks,
+not live agent, Windows, or gateway coverage.
+`test_smart_router_logs_cli.py` covers the hidden `ug smart-router-logs` JSON reader:
+overview shape/order, malformed/foreign-version/unknown-type line skipping, missing sessions,
+and `--decision` hit/miss; local component checks only, no pane or live-session coverage.
 
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
@@ -1423,3 +1451,9 @@ installed plugin to contain no duplicate servers. Reconfigure comparisons includ
 added through `ug mcp add`, while retaining the original model/authentication-field assertions.
 These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
+
+Routed child identity regressions cover model-visible launch context, original-result
+preservation, reversed parallel completion, missing model information, denied/failed
+spawns, and native role menus. Native auto-mode tests verify both foreground and
+background Agent calls deliver the host-reported model to the parent's next request
+while preserving reviewed inputs and denials.

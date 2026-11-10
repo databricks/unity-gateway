@@ -141,6 +141,7 @@ from ucode.managed_files import (
     set_machine_wide_only,
 )
 from ucode.managed_resolve import (
+    OTEL_TRACING_TOOLS,
     managed_claude_family_models,
     managed_default_model,
     managed_enabled_tools,
@@ -1874,7 +1875,7 @@ def status() -> int:
         default_model = _status_default_model(tool, effective_state, models)
         if default_model:
             rows.append(("Default model", default_model))
-        if tool in ("claude", "codex"):
+        if tool in OTEL_TRACING_TOOLS:
             rows.append(
                 (
                     "Tracing",
@@ -3235,6 +3236,37 @@ def smart_router_describe_cmd() -> None:
     sys.stdout.write(json.dumps(asdict(smart_routing_v2.describe_routing())) + "\n")
 
 
+@app.command("smart-router-logs", hidden=True)
+def smart_router_logs_cmd(
+    session: Annotated[str, typer.Option("--session")],
+    decision: Annotated[str | None, typer.Option("--decision")] = None,
+) -> None:
+    """Print a session's recorded smart-routing decisions as JSON on stdout."""
+    from ucode.smart_routing import session_log
+
+    def emit(payload: dict[str, object]) -> None:
+        sys.stdout.write(json.dumps({"v": 1, **payload}) + "\n")
+
+    try:
+        records = session_log.read_decisions("claude", session)
+    except OSError as exc:
+        emit(
+            {
+                "error": f"cannot read session log at "
+                f"{session_log.session_log_path('claude', session)}: {exc.strerror or exc}"
+            }
+        )
+        raise typer.Exit(1) from exc
+    if decision is None:
+        emit({"decisions": [session_log.overview(record) for record in records]})
+        return
+    record = next((r for r in records if r.get("decision_id") == decision), None)
+    if record is None:
+        emit({"error": "decision not found"})
+        raise typer.Exit(1)
+    emit({"decision": record})
+
+
 @app.command("claude-router-hook", hidden=True)
 def claude_router_hook_cmd(
     event: str,
@@ -3807,6 +3839,7 @@ def _launch_tool(
     custom_oauth: CustomOAuthConfig | None = None,
     routing_already_chosen: bool = False,
     routing_unsupported: bool = False,
+    recommendation_fetched: bool = False,
 ) -> None:
     previous = {}
     try:
@@ -4002,8 +4035,9 @@ def _launch_tool(
         # An admin-published managed config wins over the developer's own settings. Layered on after
         # `configure_shared_state`, whose returned state it overrides, and before the provider and
         # model are settled below — the two state files are never merged on disk.
-        # Bare `ucode` already read one to choose the agent; refetching would double the round trip.
-        if recommendation is None:
+        # A bare launch already checked the budget to select its agent. An empty or failed
+        # read is a completed check too: retrying here adds another timeout and warning.
+        if recommendation is None and not recommendation_fetched:
             recommendation = _fetch_budget_recommendation(state, managed)
         _note_recommended_agent(recommendation, tool)
         if managed is not None:
@@ -4508,6 +4542,7 @@ def _launch_managed_default(
         workspace_url=workspace,
         managed=managed,
         recommendation=recommendation,
+        recommendation_fetched=True,
     )
 
 

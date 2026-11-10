@@ -823,10 +823,12 @@ def managed_launch_workspace(workspace: str | None) -> str | None:
     if installed and selected and selected != installed:
         # UG_SKIP_OS_SETTINGS never writes the policy, so the switch must run without it.
         without_skip = f" without {SKIP_OS_SETTINGS_ENV}" if managed_settings_skipped() else ""
+        # Lead with the fix: a `--workspace` launch can't switch the machine, only configure can.
         raise RuntimeError(
-            f"This machine is managed for {installed}, but your selected workspace is {selected}. "
-            f"Launch refused. Use `--workspace {installed}`, or ask your IT team or an administrator "
-            f"to switch the machine with `ug configure --workspace {selected}`{without_skip}."
+            f"Run `ug configure --workspace {selected}`{without_skip} to use {selected}. This "
+            f"machine is managed for {installed}, so the launch was refused. Switching needs sudo; "
+            f"without it, ask your IT team or an administrator. To keep using {installed}, launch "
+            f"with `--workspace {installed}`."
         )
     return installed or selected
 

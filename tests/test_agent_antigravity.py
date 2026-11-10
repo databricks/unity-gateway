@@ -480,15 +480,32 @@ class TestLaunch:
         assert exc.value.code == 0
         return captured
 
-    def test_launches_agy_in_gateway_mode_on_newest_model(self, monkeypatch):
-        captured = self._launch(monkeypatch, _state(), ["-p", "hi"])
+    @pytest.mark.parametrize(
+        ("models", "expected", "selection"),
+        [
+            (GEMINI_MODELS, "gemini-4-argon", "gemini-4-argon"),
+            (
+                ["system.ai.gemini-3-8-flash", "system.ai.gemini-3-7-flash"],
+                "gemini-3.8-flash",
+                "gemini-3.8-flash",
+            ),
+            (
+                ["system.ai.gemini-3-1-pro"],
+                "gemini-3.1-pro-preview",
+                "gemini-3.1-pro-low-thinking",
+            ),
+        ],
+    )
+    def test_launches_agy_in_gateway_mode_on_newest_model(
+        self, monkeypatch, models, expected, selection
+    ):
+        captured = self._launch(monkeypatch, _state(gemini_models=models), ["-p", "hi"])
 
-        # Antigravity starts on the first listed model, so no `--model` is passed.
-        assert captured["argv"] == ["/opt/bin/agy", "-p", "hi"]
+        assert captured["argv"] == ["/opt/bin/agy", "--model", selection, "-p", "hi"]
         env = captured["env"]
         assert env["AGY_LLM_GATEWAY_URL"] == "http://127.0.0.1:4321/ai-gateway/gemini"
         assert env["AGY_LLM_GATEWAY_API_KEY"] == captured["proxy"]["session_secret"]
-        assert env["AGY_LLM_GATEWAY_MODELS"].split(",")[0] == "gemini-4-argon"
+        assert env["AGY_LLM_GATEWAY_MODELS"].split(",")[0] == expected
         assert captured["proxy"]["allowed_path_prefixes"] == ("/ai-gateway/gemini/",)
         assert captured["proxy"]["workspace"] == WS
 
@@ -521,8 +538,11 @@ class TestLaunch:
         assert captured["argv"] == ["/opt/bin/agy", "--model", "gemini-3.1-pro-low-thinking"]
         assert captured["env"]["AGY_LLM_GATEWAY_MODELS"].split(",")[0] == "gemini-3.1-pro-preview"
 
-    def test_subcommands_run_without_model(self, monkeypatch):
-        captured = self._launch(monkeypatch, _state(), ["mcp", "list"])
+    @pytest.mark.parametrize("model", [None, "system.ai.gemini-3-8-flash"])
+    def test_subcommands_run_without_model(self, monkeypatch, model):
+        captured = self._launch(
+            monkeypatch, _state(), ["mcp", "list"], LaunchOptions(user_pinned_model=model)
+        )
 
         assert captured["argv"] == ["/opt/bin/agy", "mcp", "list"]
 
@@ -534,7 +554,7 @@ class TestLaunch:
 
         captured = self._launch(monkeypatch, state, [])
 
-        assert captured["argv"] == ["/opt/bin/agy"]
+        assert captured["argv"] == ["/opt/bin/agy", "--model", "gemini-3.1-pro-low-thinking"]
         assert captured["env"]["AGY_LLM_GATEWAY_MODELS"] == "gemini-3.1-pro-preview"
         assert captured["proxy"]["added_headers"][MODEL_PROVIDER_SERVICE_HEADER] == "cat.sch.svc"
 

@@ -1186,7 +1186,7 @@ class TestMachinePolicyRefresh:
         """Only `ug configure` changes the machine's workspace; a launch is refused instead."""
         save_managed_state("https://other.example.com", RAW_MANIFEST)
 
-        with pytest.raises(RuntimeError, match="Launch refused"):
+        with pytest.raises(RuntimeError, match="the launch was refused"):
             refresh_managed_config(_state())
 
         assert load_managed_configuration("https://other.example.com") == RAW_MANIFEST
@@ -1733,11 +1733,14 @@ class TestInstalledWorkspaceLaunch:
             monkeypatch.setattr(
                 mc_mod, helper, lambda *args, **kwargs: pytest.fail("mismatch must fail first")
             )
-        with pytest.raises(RuntimeError, match="Launch refused") as error:
+        with pytest.raises(RuntimeError, match="the launch was refused") as error:
             refresh_managed_config(_state())
         assert "https://installed.example.com" in str(error.value)
         assert WORKSPACE in str(error.value)
         assert "IT team or an administrator" in str(error.value)
+        # The fix comes first: only `ug configure` can switch the machine's workspace.
+        assert str(error.value).startswith(f"Run `ug configure --workspace {WORKSPACE}`")
+        assert "launch with `--workspace https://installed.example.com`" in str(error.value)
         assert mc_mod.MANAGED_CONFIG_PATH.read_bytes() == original
         assert not mc_mod.REFRESH_TS_PATH.exists()
 
@@ -1772,7 +1775,7 @@ class TestInstalledWorkspaceLaunch:
             mc_mod.MANAGED_CONFIG_PATH
         )
         mc_mod.REFRESH_TS_PATH.write_text(json.dumps(entry))
-        with pytest.raises(RuntimeError, match="Launch refused"):
+        with pytest.raises(RuntimeError, match="the launch was refused"):
             refresh_managed_config(_state())
 
     def test_explicit_configure_can_replace_the_machine_workspace(self, monkeypatch):

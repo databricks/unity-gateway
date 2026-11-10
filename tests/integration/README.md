@@ -1,5 +1,16 @@
 # Integration tests
 
+Smart Router preserves the parent's native streamed response, including its synthesis
+of subagent results. It does not inject an animal-labeled answer or replace parent prose.
+Native component checks cover original text/thinking chunks, tool calls, errors,
+foreground/background completion, and selected-model pinning through child continuations.
+The launch receipt supplies selected and launched model identities without changing
+inputs already reviewed by auto mode. These are controlled-provider checks, not live
+router or model-quality measurements. Guidance identifies the launched model without
+unsolicited comparisons with the requested model; comparisons remain available when asked.
+Native registration checks cover model-catalog guidance in routing-only and orchestration
+modes, retained host Usage notes, and unchanged descriptions when routing is off.
+
 Windows Desktop detection allows up to 30 seconds for the native package query.
 Component coverage in `test_desktop_setup.py` verifies slow successful detection creates
 UG's profile, while missing packages, timeouts, launch errors, and query failures leave
@@ -570,17 +581,27 @@ Antigravity CLI has five live headless journeys in `test_ug_antigravity_headless
 `test_ug_configure_antigravity.py`. Headless runs use `agy -p --output-format stream-json`; the
 file task requires a finished `read_file` step on the fixture and the value in the `result`
 event, every logged model request on ug's loopback proxy (`/ai-gateway/gemini/v1beta/models/`)
-with gateway authentication, and no Databricks credential on disk. The explicit-model case picks
+with gateway authentication, and no Databricks credential on disk. UG passes its resolved
+default model explicitly to Antigravity on bare launches. Every headless launch saves
+`antigravity-requests.json`, including nonzero exits and timeouts. The explicit-model case picks
 a second discovered `system.ai.gemini-*` model and requires every request to name its
 Antigravity name (`gemini-3.8-flash`), launched through the `ug agy` alias; that is the agent's
 request, not the gateway's destination. Two journeys use the Gemini Enterprise MPS below: one
 launches `--provider` with `--model` for each listed target and requires that launch's requests to
 name it; the other picks External Models in `ug configure`, answers the start-model prompt an
-allow-all service gets (it declares no targets), and completes a bare launch on that model. The MCP case registers `system.ai.dbsql` with `ug mcp add` and requires a finished
-`call_mcp_tool` step and the query's `md5` in the answer. The skill case places a user skill in
+allow-all service gets (it declares no targets), and completes a bare launch on that model.
+The MCP case registers `system.ai.web_search` with `ug mcp add` and pins
+`system.ai.gemini-3-8-flash`, checking the model in Antigravity's request log. Its prompt points
+the native file reader at the server's generated tool definition and instructions, avoiding
+shell-based directory discovery that headless permissions deny. It requires a successful native
+`call_mcp_tool` for the exact server, `web_search` tool, and query, plus an official Databricks
+URL shared by the returned search output and final answer. Search ranking and wording are not
+asserted. This replaces the SQL digest task; SQL execution is no longer covered by this case.
+Denied actions, empty answers, tool errors, and provider errors still fail.
+The skill case places a user skill in
 `~/.agents/skills` and requires its code word. Headless Antigravity cannot answer permission
 prompts, so those two cases start from the user's own `permissions.allow` rules
-(`mcp(system-ai-dbsql/*)`, `read_file(*)`), which ug must leave unchanged. The TUI journey picks
+(`mcp(system-ai-web_search/*)`, `read_file(*)`), which ug must leave unchanged. The TUI journey picks
 Antigravity in `ug configure`'s agent picker, answers first-run color-scheme, terms, and folder
 trust screens through visible choices, and reads the answer from a finished agent-response step
 (type 15 on 1.4.9) in Antigravity's SQLite conversation store (`utils/agents/antigravity.py`); the
@@ -912,6 +933,7 @@ test_ug_copilot_models.py               # Copilot model registry: Claude then GP
 test_ug_copilot_providers.py            # Copilot via Model Provider Services: Anthropic, OpenAI, Azure OpenAI, Foundry, Bedrock allow-all; relayed refused
 test_ug_copilot_model_location.py       # Copilot on a Unity Catalog model location: fresh --model-location file task
 test_ug_copilot_mcp.py                  # Copilot MCP: ug mcp add, tool call, ug mcp list, revert keeps the user's server
+test_ug_copilot_tracing.py              # Copilot CLI OTLP export through the session proxy reaches the configured trace table
 test_ug_antigravity_headless.py         # Antigravity via ug's proxy: file task, --model (ug agy), Gemini MPS targets, MCP SQL tool, skill dir
 test_ug_configure_antigravity.py        # Antigravity: configure picker + TUI task + reopen; External Models picker; revert keeps user files
 test_ug_codex_tracing.py                # Codex OTLP export reaches the configured trace table
@@ -1113,7 +1135,7 @@ journeys also check its app-server model catalog.
 The tracing journeys are part of their respective Full agent lanes and use the existing
 e2e workspace and bearer. Because that workspace deliberately has no published managed
 configuration, each journey injects only a tracing-enabled CodingAgentConfig input (the
-`claude_tracing.json` / `codex_tracing.json` fixtures) through the suite's managed-config stub; the agents, inference, OTLP export, and table
+`claude_tracing.json` / `codex_tracing.json` / `copilot_tracing.json` fixtures) through the suite's managed-config stub; the agents, inference, OTLP export, and table
 verification remain real. Each adds the prompt's UUID as a trace-safe
 `ug_integration_marker` attribute, resolves the destination table from the workspace tracing
 configuration, waits 30 seconds, and queries that table through an existing SQL warehouse.
@@ -1913,3 +1935,9 @@ Missing, malformed, and other-workspace profiles leave plugin setup untouched.
 Installed-CLI Desktop journeys read MCP commands from `managedMcpServers` and require the
 installed plugin to contain no duplicate servers. These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
+
+Routed child identity regressions cover model-visible launch context, original-result
+preservation, reversed parallel completion, missing model information, denied/failed
+spawns, and native role menus. Native auto-mode tests verify both foreground and
+background Agent calls deliver the host-reported model to the parent's next request
+while preserving reviewed inputs and denials.

@@ -490,7 +490,6 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     start = _catalog_name(selected, catalog) if selected else None
     if start is None and default:
         start = _catalog_name(_resolve_launch_model(default, catalog), catalog)
-    # Antigravity starts on the first listed model, so a plain launch passes no `--model`.
     models = list(dict.fromkeys([*([start] if start else []), *catalog]))
     binary = resolve_binary() or SPEC["binary"]
 
@@ -515,8 +514,11 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         port = server.server_address[1]
         proxy_url = f"http://{LOOPBACK_HOST}:{port}{GEMINI_GATEWAY_PATH.rstrip('/')}"
         env = build_runtime_env(proxy_url, session_secret, models)
-        if selected and not _is_subcommand(tool_args):
-            tool_args = _with_model_arg(tool_args, _selection_id(binary, env, selected, catalog))
+        launch_model = selected or start
+        if launch_model and not _is_subcommand(tool_args):
+            tool_args = _with_model_arg(
+                tool_args, _selection_id(binary, env, launch_model, catalog)
+            )
         proc = subprocess_cross_os.popen([binary, *tool_args], env=env)
         returncode = _wait_for_exit(proc)
     finally:
