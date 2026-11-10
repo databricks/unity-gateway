@@ -11,30 +11,29 @@ unsolicited comparisons with the requested model; comparisons remain available w
 Native registration checks cover model-catalog guidance in routing-only and orchestration
 modes, retained host Usage notes, and unchanged descriptions when routing is off.
 
-`test_codex_routing_reload.py` (under `tests/`) covers reload races, held input,
-permission preservation, multiple roots, rapid toggles, reconnects, Escape, and
-bounded failure handling with controlled transports. Navigation cases preserve
-root ownership and settings while selecting children, nested descendants, and
-already tracked roots, then verify a subsequent toggle still reloads the tree.
+`test_codex_routing_reload.py` covers app-server restarts, off/on recipe config,
+bounded cleanup, failed startup/restart, unexpected exits, reconnect without
+rerouting, parent-only continuation, rapid notices, and private internal responses.
+These replace obsolete tests of manual descendant unloading, permission reconstruction,
+held input, approval draining, and Escape suppression. Native Codex owns resume and
+reconnect behavior; those removed controller guarantees are no longer provided.
 
-`test_smart_router_codex_agent_navigation_preserves_running_child` uses the real
-`/subagents` picker to open a busy child and return to the parent without a toggle.
-It requires no reload or interruption, exactly one completed command, stable IDs,
-a child-owned final answer, and a successful follow-up parent turn. On Linux with
-Codex 0.167.0 it reproduced the accidental reload before the fix and passed after it.
+`test_smart_router_codex_agent_navigation_preserves_running_child` retains the real
+`/subagents` navigation journey: no restart, stable IDs, no interrupted or duplicated
+command, a child-owned answer, and a working parent follow-up.
 
 `test_smart_router_codex_reload_updates_parent_and_existing_child_inference`
-is an installed-wheel, real-TUI journey. It invokes the actual skill from the
-main agent: off with two children running, then on with all three existing
-children running. It checks stable IDs and permissions, child-owned final
-answers, and both recipe fields on every resumed parent and child request.
-New children must inherit the current recipe after each toggle. Its recorder forwards
-requests unchanged to the selected workspace and requires successful responses.
-Linux runs on Codex 0.164.0 and 0.165.0 passed, with independent mitmproxy
-verification of all requests after reload in both toggle phases. After the navigation
-fix, the busy-child journey also passed on 0.167.0: its test recorder verified all
-19 requests after off and 22 after on. No independent mitmproxy rerun on 0.167.0.
-See [reload behavior and validation limits](../../docs/codex-routing-reload.md).
+retains the installed-wheel busy-child off/on journey. It requires stable IDs and
+permissions, child-owned answers, and matching recipe fields on successful parent,
+existing-child, and new-child inference. Neither installed-wheel journey has passed
+for the new restart implementation yet. Earlier live results on Codex
+0.164.0/0.165.0/0.167.0 tested the removed in-process controller.
+
+Separate Linux Codex 0.167.0 native checks passed same-ID child recovery with
+saved tool history and root sandbox preservation, plus real TUI reconnect and
+inference before/after restart. Selected-workspace attribution remains unverified
+because host-managed provider configuration overrides launch settings.
+See [restart behavior and validation limits](../../docs/codex-routing-reload.md).
 
 Windows and macOS Cowork desktop coverage, installation detection, and required
 integration gating are documented in the [main test guide](../README.md).
@@ -1063,8 +1062,8 @@ the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only
 for routing-only cases, and both `smart-router-orchestrator` and `smart-router` when orchestration
 is enabled. Claude checks each local mod confirmation and the recorded `smart_router_recipe_name`
 on the following calculation's real gateway requests. Codex verifies saved session controls,
-a successful tree reload and a new parent answer after each skill invocation. The
-busy-child reload journey additionally checks recipe metadata on actual inference requests.
+a successful app-server restart and a new parent answer after each skill invocation. The
+busy-child restart journey additionally checks recipe metadata on actual inference requests.
 If Codex requests permission to read the controls, the driver approves only the exact
 public toggle command through the native dialog, leaving the sandbox intact.
 Offline cases in `../test_integration_evidence.py` cover wrong commands, non-local

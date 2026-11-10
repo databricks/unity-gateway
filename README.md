@@ -562,10 +562,11 @@ run `ug codex --disable-smart-routing`. UG offers its usual upgrade prompt for a
 known older version and checks the result before launching. Declining, failing, or
 remaining below 0.164.0 after the upgrade keeps the routed launch blocked. This
 intentional requirement ensures native v2 provides readable delegated assignments
-and supports the conversation-reload protocol;
+and supports native conversation resume;
 UG does not silently disable routing. Ordinary launches still support Codex 0.145.0
 and newer. The general integration CI baseline remains 0.154.0; routing cases use
-0.165.0. The reload feature does not raise either version requirement.
+0.165.0. The restart path does not raise either version requirement; native restart
+checks so far used 0.167.0.
 
 An inconclusive Codex version probe is retried once with a longer timeout. If the
 version is still unknown, UG stops without offering or running an update and asks
@@ -581,10 +582,11 @@ files are unchanged, as are native delegation-mode controls. Requests use the
 configured Databricks provider directly. Smart-routed launches use the native
 app-server and UG control interposer, including subagent-only presets.
 
-`$smart-router off/on` [interrupts and reloads the conversation tree](docs/codex-routing-reload.md)
+`$smart-router off/on` [restarts app-server and resumes saved conversations](docs/codex-routing-reload.md)
 to refresh inference attribution in body metadata and, where supported, the recipe
 header. Configure removes old persisted recipe headers that would pin attribution.
-Conversation and child IDs survive. Running commands stop; agents must inspect
+The TUI reconnects; existing children stay stopped until the parent reopens them
+with `followup_task` under their saved IDs. Running commands stop; agents must inspect
 completed effects before retrying. This uses no gateway proxy or backend session
 state. The managed default remains Claude-only; Codex routing requires an explicit
 Codex-enabled preset.

@@ -18,30 +18,29 @@ Smart Router catalog, preserve the host description in routing-only mode, append
 receipt-based guidance after orchestrator instructions and Usage notes, and leave the
 description unchanged when routing is off.
 
-`test_codex_routing_reload.py` (under `tests/`) covers reload races, held input,
-permission preservation, multiple roots, rapid toggles, reconnects, Escape, and
-bounded failure handling with controlled transports. Navigation cases preserve
-root ownership and settings while selecting children, nested descendants, and
-already tracked roots, then verify a subsequent toggle still reloads the tree.
+`test_codex_routing_reload.py` covers app-server restarts, off/on recipe config,
+bounded cleanup, failed startup/restart, unexpected exits, reconnect without
+rerouting, parent-only continuation, rapid notices, and private internal responses.
+These replace obsolete tests of manual descendant unloading, permission reconstruction,
+held input, approval draining, and Escape suppression. Native Codex owns resume and
+reconnect behavior; those removed controller guarantees are no longer provided.
 
-`test_smart_router_codex_agent_navigation_preserves_running_child` uses the real
-`/subagents` picker to open a busy child and return to the parent without a toggle.
-It requires no reload or interruption, exactly one completed command, stable IDs,
-a child-owned final answer, and a successful follow-up parent turn. On Linux with
-Codex 0.167.0 it reproduced the accidental reload before the fix and passed after it.
+`test_smart_router_codex_agent_navigation_preserves_running_child` retains the real
+`/subagents` navigation journey: no restart, stable IDs, no interrupted or duplicated
+command, a child-owned answer, and a working parent follow-up.
 
 `test_smart_router_codex_reload_updates_parent_and_existing_child_inference`
-is an installed-wheel, real-TUI journey. It invokes the actual skill from the
-main agent: off with two children running, then on with all three existing
-children running. It checks stable IDs and permissions, child-owned final
-answers, and both recipe fields on every resumed parent and child request.
-New children must inherit the current recipe after each toggle. Its recorder forwards
-requests unchanged to the selected workspace and requires successful responses.
-Linux runs on Codex 0.164.0 and 0.165.0 passed, with independent mitmproxy
-verification of all requests after reload in both toggle phases. After the navigation
-fix, the busy-child journey also passed on 0.167.0: its test recorder verified all
-19 requests after off and 22 after on. No independent mitmproxy rerun on 0.167.0.
-See [reload behavior and validation limits](../docs/codex-routing-reload.md).
+retains the installed-wheel busy-child off/on journey. It requires stable IDs and
+permissions, child-owned answers, and matching recipe fields on successful parent,
+existing-child, and new-child inference. Neither installed-wheel journey has passed
+for the new restart implementation yet. Earlier live results on Codex
+0.164.0/0.165.0/0.167.0 tested the removed in-process controller.
+
+Separate Linux Codex 0.167.0 native checks passed same-ID child recovery with
+saved tool history and root sandbox preservation, plus real TUI reconnect and
+inference before/after restart. Selected-workspace attribution remains unverified
+because host-managed provider configuration overrides launch settings.
+See [restart behavior and validation limits](../docs/codex-routing-reload.md).
 
 Windows Desktop detection allows up to 30 seconds for the native package query.
 Component coverage in `test_desktop_setup.py` verifies slow successful detection creates
@@ -1040,7 +1039,7 @@ The toggle integration journeys retain the legacy routing-only and orchestration
 add the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only
 `smart-router` for routing-only cases, and both bundled skills when orchestration is enabled;
 Claude checks local mod confirmations and the inference payload's `smart_router_recipe_name`;
-Codex checks saved session controls, successful tree reloads, and a parent answer after each toggle.
+Codex checks saved session controls, successful app-server restarts, and a parent answer after each toggle.
 If Codex requests permission to read the controls, the driver approves only the exact
 public toggle command through the native dialog, leaving the sandbox intact.
 Both explicitly request their children,
@@ -1148,7 +1147,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_codex_app_reports_unknown_argument` | Pass an invalid option directly to `ug codex app` with legacy smart routing off/on | Real Codex parser error and status preserved |
 | `test_ug_codex_app_server_client_initializes` | Connect a stdio client, direct/`--` separator, with legacy smart routing off/on | Actual JSON-RPC initialize response; no non-JSON stdout; no routing |
 | `test_smart_routing_claude_route_subagent_hook`, `test_smart_routing_codex_route_subagent_hook` | Pipe a native spawn payload to the installed Claude mod command or Codex PreToolUse hook with legacy subagent routing or each supported routing preset | Claude returns model/rationale/updatedInput JSON naming the routed agent the mod labels; Codex returns an allow-hook decision; requested model replaced by a routed agent definition (Claude) or bundled catalog slug (Codex) from the offered models; one audited decision matching the session and task |
-| `test_smart_router_routes_{claude,codex}_subagent_at_launch`, `test_smart_router_skill_turns_{claude,codex}_subagent_routing_off`, `test_smart_router_skill_turns_{claude,codex}_subagent_routing_back_on` | Configure, launch a real subagent-only TUI with legacy routing-only/orchestration flags or the three subagent-only presets, each in its own fresh session: spawn a tagged child at launch; invoke the installed Smart Router skill to turn routing off then spawn a child; or spawn a routed child, turn routing off and spawn an unrouted child, then turn routing back on and spawn a routed child | Routing-only cases install `smart-router`; orchestration cases also install `smart-router-orchestrator`; each tagged native child completes; routed children (launch, before off and after back on) show a native model/rationale row (Claude) or subagent banner (Codex) and produce a live routing decision correlated with the child, while each child after off shows neither and has no decision; Claude's recorded task inference payloads carry `smart_router_recipe_name` as the launch recipe (`at_launch`, `back_on`, where the second child must match the launch child) or DISABLED (after off), omit the recipe header, and receive successful gateway responses; opted-in Codex banners include `[orchestrator on]`; no first-prompt routing decision; Codex uses the reload control interposer; the customer full-mode preset is intentionally outside this journey; normal exit |
+| `test_smart_router_routes_{claude,codex}_subagent_at_launch`, `test_smart_router_skill_turns_{claude,codex}_subagent_routing_off`, `test_smart_router_skill_turns_{claude,codex}_subagent_routing_back_on` | Configure, launch a real subagent-only TUI with legacy routing-only/orchestration flags or the three subagent-only presets, each in its own fresh session: spawn a tagged child at launch; invoke the installed Smart Router skill to turn routing off then spawn a child; or spawn a routed child, turn routing off and spawn an unrouted child, then turn routing back on and spawn a routed child | Routing-only cases install `smart-router`; orchestration cases also install `smart-router-orchestrator`; each tagged native child completes; routed children (launch, before off and after back on) show a native model/rationale row (Claude) or subagent banner (Codex) and produce a live routing decision correlated with the child, while each child after off shows neither and has no decision; Claude's recorded task inference payloads carry `smart_router_recipe_name` as the launch recipe (`at_launch`, `back_on`, where the second child must match the launch child) or DISABLED (after off), omit the recipe header, and receive successful gateway responses; opted-in Codex banners include `[orchestrator on]`; no first-prompt routing decision; Codex uses the restart control interposer; the customer full-mode preset is intentionally outside this journey; normal exit |
 | `test_smart_router_codex_reload_updates_parent_and_existing_child_inference` | Invoke the skill on the main agent: off with two busy children, then on with all three existing children busy; spawn a new child after each toggle | Original IDs and permissions survive; actual parent/old/new child inference carries DISABLED after off and the launch recipe after on in body metadata and the header when supported; successful gateway responses, child-owned final answers, normal exit |
 | `test_smart_router_managed_default_leaves_codex_unrouted_at_launch` | Configure with only the managed config's `smart_routing.enabled` (selects `subagent_orch_v0_claude_only`), launch the real Codex TUI, and spawn one tagged child without touching the Smart Router skill | ug warns that smart routing is enabled for Codex in this workspace but currently only supported for Claude Code; neither `smart-router` nor the orchestrator skill is installed; the tagged child completes natively with no subagent-routing banner and no live routing decision; no first-prompt interposer; normal exit |
 | `test_ug_codex_native_v2_plain_assignment_routing` | Configure and launch subagent-only routing with a native v2 catalog and a user-owned observer hook; delegate a multiline Unicode file task | Exact plaintext at the hook, router, and native child; completed child uses the routed model; parent model, Databricks provider, and user settings are preserved |

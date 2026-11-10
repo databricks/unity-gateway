@@ -13,6 +13,7 @@ import urllib.request
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from queue import SimpleQueue
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
@@ -857,6 +858,15 @@ def _v2_hooks(state: dict, available_models: list[str]) -> dict:
     return doc["hooks"]
 
 
+def _stop_codex_process(process) -> None:
+    process.terminate()
+    try:
+        process.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+
+
 def launch_codex(
     state: dict,
     tool_args: list[str],
@@ -913,11 +923,9 @@ def launch_codex(
     overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
         SESSION_PYTHON_ENV_VAR
     ]
-    from ucode.smart_routing.codex_reload import routing_config
+    from ucode.smart_routing.codex_reload import routing_config, session_routing_enabled
 
-    overlay["thread_unload_delay_secs"] = 0
     overlay = routing_config(overlay, enabled=True)
-    config_args = codex_config_args(overlay)
     first_prompt = first_prompt_routing_enabled(agent=AGENT_CODEX)
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
@@ -927,13 +935,25 @@ def launch_codex(
 
     # Preserve the user's normal CODEX_HOME (including MCP servers, skills, and
     # preferences) and layer only ucode's gateway settings at CLI precedence.
-    app_server = subprocess_cross_os.popen(
-        [binary, "app-server", *config_args, "--listen", app_server_url],
-        env=os.environ.copy(),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    def start_app_server(enabled: bool):
+        return subprocess_cross_os.popen(
+            [
+                binary,
+                "app-server",
+                *codex_config_args(routing_config(overlay, enabled)),
+                "--listen",
+                app_server_url,
+            ],
+            env=os.environ.copy(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    app_server = start_app_server(enabled=True)
+    restart_notices: SimpleQueue[str] = SimpleQueue()
+    applied = True
+    tui = None
     stop_interposer = None
     try:
         if not _wait_for_app_server(app_port, timeout=APP_SERVER_READY_TIMEOUT_SECONDS):
@@ -948,8 +968,7 @@ def launch_codex(
             token_provider=(lambda: launch_token(state, workspace)) if first_prompt else None,
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
-            reload_config=overlay,
-            session_controls=session_env_path,
+            restart_notices=restart_notices,
         )
         tui_url = _loopback_websocket_url(tui_port)
         provider_args = []
@@ -966,17 +985,45 @@ def launch_codex(
             [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
         )
         try:
-            returncode = tui.wait()
+            while True:
+                try:
+                    returncode = tui.wait(timeout=0.1)
+                    tui = None
+                    break
+                except subprocess.TimeoutExpired:
+                    if app_server.poll() is not None:
+                        raise RuntimeError(
+                            "Codex app-server exited unexpectedly. Restart ug codex and resume "
+                            "your saved conversation."
+                        ) from None
+                    enabled = session_routing_enabled(session_env_path)
+                    if enabled == applied:
+                        continue
+                    _stop_codex_process(app_server)
+                    restart_notices.put(
+                        routing_config(overlay, enabled)["responses_api_metadata"][
+                            "smart_router_recipe_name"
+                        ]
+                    )
+                    app_server = start_app_server(enabled)
+                    if not _wait_for_app_server(app_port, timeout=APP_SERVER_READY_TIMEOUT_SECONDS):
+                        raise RuntimeError(
+                            "Codex app-server restart failed. Restart ug codex and resume "
+                            "your saved conversation; check workspace auth."
+                        ) from None
+                    applied = enabled
         except KeyboardInterrupt:
             tui.send_signal(signal.SIGINT)
-            returncode = tui.wait()
+            returncode = tui.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+            tui = None
     finally:
-        if stop_interposer is not None:
-            stop_interposer()
-        app_server.terminate()
         try:
-            app_server.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
-        except Exception:  # noqa: BLE001
-            app_server.kill()
-            app_server.wait()
+            if tui is not None:
+                _stop_codex_process(tui)
+        finally:
+            try:
+                if stop_interposer is not None:
+                    stop_interposer()
+            finally:
+                _stop_codex_process(app_server)
     sys.exit(returncode)

@@ -280,7 +280,7 @@ class TestLaunchCodex:
                 processes.append(self)
 
             def wait(self, timeout=None):
-                return 0 if timeout is not None else 7
+                return 7 if "--remote" in self.argv else 0
 
             def terminate(self):
                 self.terminated = True
@@ -458,7 +458,7 @@ class TestLaunchCodex:
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
 
-    def test_subagent_only_launch_enables_reload_without_first_prompt_routing(
+    def test_subagent_only_launch_enables_restart_without_first_prompt_routing(
         self, tmp_path, monkeypatch
     ):
         user_config = tmp_path / "config.toml"
@@ -513,14 +513,10 @@ class TestLaunchCodex:
         assert processes[0].terminated
         assert interposer_options["workspace"] is None
         assert interposer_options["token_provider"] is None
-        assert interposer_options["session_controls"].is_file()
-        assert interposer_options["reload_config"]["thread_unload_delay_secs"] == 0
-        assert (
-            interposer_options["reload_config"]["responses_api_metadata"][
-                "smart_router_recipe_name"
-            ]
-            == "stable"
-        )
+        assert interposer_options["restart_notices"].empty()
+        assert "thread_unload_delay_secs=0" not in argv
+        config = tomllib.loads("\n".join(argv[3:-2:2]))
+        assert config["responses_api_metadata"]["smart_router_recipe_name"] == "stable"
         assert 'model="gpt-start"' in argv
         config_values = [argv[index + 1] for index, arg in enumerate(argv) if arg == "--config"]
         native_overrides = tomllib.loads("\n".join(config_values))["features"]["multi_agent_v2"]
