@@ -190,6 +190,20 @@ def test_no_session_record_without_audit_or_route(log_dir, decision, monkeypatch
     assert not log_dir.exists()
 
 
+def test_read_decisions_distinguishes_missing_from_unreadable(log_dir, decision, monkeypatch):
+    """A missing log is empty history; a permission failure must not look empty."""
+
+    def deny_read(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    assert session_log.read_decisions("claude", "absent") == []
+    write({"session_id": "s1"}, decision)
+    path = log_dir / "claude-s1.jsonl"
+    monkeypatch.setattr(type(path), "read_text", deny_read)
+    with pytest.raises(PermissionError):
+        session_log.read_decisions("claude", "s1")
+
+
 def test_clear_routing_artifacts_removes_session_logs(log_dir, decision, tmp_path, monkeypatch):
     monkeypatch.setattr(claude_routing, "CANARY_PATH", tmp_path / "canary.json")
     monkeypatch.setattr(claude_routing, "AUDIT_PATH", tmp_path / "audit.jsonl")

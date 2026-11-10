@@ -3246,7 +3246,16 @@ def smart_router_logs_cmd(
     def emit(payload: dict[str, object]) -> None:
         sys.stdout.write(json.dumps({"v": 1, **payload}) + "\n")
 
-    records = session_log.read_decisions("claude", session)
+    try:
+        records = session_log.read_decisions("claude", session)
+    except OSError as exc:
+        emit(
+            {
+                "error": f"cannot read session log at "
+                f"{session_log.session_log_path('claude', session)}: {exc.strerror or exc}"
+            }
+        )
+        raise typer.Exit(1) from exc
     if decision is None:
         emit({"decisions": [session_log.overview(record) for record in records]})
         return
