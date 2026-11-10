@@ -54,10 +54,6 @@ ANTIGRAVITY_SHA512 = {
     ): "1431a409ef7c7bce23f4abf03f988afab728ba87d91d24ed7db0d5eea3ab71a4b590bf0bf2c79cec84f79b32b674ea38df0417356ce8d5d4f698cd62ea9ee6be",
     (
         "1.4.9-4962164969177088",
-        "linux-x64/cli_linux_x64.tar.gz",
-    ): "96a259b7475ae70a5b002ea8a83b804bba9b6ad2171af0cd0839b3959d9e6046ba36e181bc2d5597522aeceaacc06023564c46232fdb958f26f8c72267d9f0fd",
-    (
-        "1.4.9-4962164969177088",
         "linux-arm/cli_linux_arm64.tar.gz",
     ): "a703d10ea96d20d35c2ab6a056ce07ac196fac215cdf1ac3a8750a519fa42c3ac1bc4ac8776c98c94e0a816b6b37beaf0e5d98d30eed3e60a90d18ac9a060130",
     (
