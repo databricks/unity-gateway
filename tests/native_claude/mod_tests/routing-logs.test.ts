@@ -354,6 +354,95 @@ test('unrouted launch declines logs and usage includes logs', { options: { ENABL
   expect((await $.command.run({ command: 'smart-router', args: 'wrong' })).text).toBe('Usage: /smart-router on|off|logs');
 });
 
+const explanation = {
+  selected_model: 'claude-sonnet',
+  summary: 'Claude Sonnet offered the best quality for a search task.',
+  task_understanding: ['Search: broad lookup', 'Depth: moderate'],
+  models: [
+    { id: 'claude-sonnet', name: 'Claude Sonnet', selected: true, considered: true,
+      reason: 'Best expected quality.', quality_estimate: 0.9, routing_score: 0.85, estimated_cost_usd: 0.24 },
+    { id: 'glm-5', name: 'GLM 5', selected: false, considered: true, reason: 'Cheaper but a weaker fit.' },
+    { id: 'gpt-6', name: 'GPT 6', selected: false, considered: false, reason: 'Skipped: unavailable.' },
+  ],
+};
+const decisionWith = (explanationValue: unknown): string => JSON.stringify({
+  ...decision, decision: { ...decision.decision, ...(explanationValue === undefined ? {} : { explanation: explanationValue }) },
+});
+
+test('a valid explanation shows the summary, reasons, and an opt-in numbers toggle', { options }, async ($, on) => {
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('process.run', ($, e) => {
+    if (e.argv.includes('--decision')) return { value: { exitCode: 0, stderr: '', stdout: decisionWith(explanation) } };
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: records }) } };
+  });
+  await $.command.run(command);
+  const ui = await $.ui.mount(pane);
+  await ui.press({ key: 'd1' });
+  const tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain('best quality for a search task');
+  expect(tree).toContain('Search: broad lookup');
+  expect(tree).toContain('Best expected quality.');
+  expect(tree).toContain('Cheaper but a weaker fit.');
+  expect(tree).toContain('(not considered)');
+  expect(tree).toContain('Show numbers');
+  expect(tree).not.toContain('quality 0.900');
+  await ui.press({ key: 'numbers' });
+  const shown = JSON.stringify(await ui.drawn());
+  expect(shown).toContain('quality 0.900');
+  expect(shown).toContain('score 0.850');
+  expect(shown).toContain('cost $0.240');
+  expect(shown).toContain('Hide numbers');
+  await ui.unmount();
+});
+
+for (const [name, broken] of [
+  ['two selected', { ...explanation, models: explanation.models.map((m) => ({ ...m, selected: true, considered: true })) }],
+  ['selected id mismatch', { ...explanation, models: [{ ...explanation.models[0], id: 'other' }, ...explanation.models.slice(1)] }],
+  ['blank reason', { ...explanation, models: [{ ...explanation.models[0], reason: '  ' }, ...explanation.models.slice(1)] }],
+  ['wrong selected model', { ...explanation, selected_model: 'glm-5' }],
+] as const) {
+  test(`an invalid explanation (${name}) falls back to the basic view and logs once`, { options }, async ($, on) => {
+    const logs: string[] = [];
+    on('session.id', () => ({ value: 'session-one' }));
+    on('ui.open', () => ({ value: { isPlaced: true } }));
+    on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
+    on('process.run', ($, e) => {
+      if (e.argv.includes('--decision')) return { value: { exitCode: 0, stderr: '', stdout: decisionWith(broken) } };
+      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: records }) } };
+    });
+    await $.command.run(command);
+    const ui = await $.ui.mount(pane);
+    await ui.press({ key: 'd1' });
+    const tree = JSON.stringify(await ui.drawn());
+    expect(tree).toContain('Because it is a search.');
+    expect(tree).toContain('● claude-sonnet');
+    expect(tree).toContain('○ glm-5');
+    expect(tree).not.toContain('Show numbers');
+    expect(tree).not.toContain('Best expected quality.');
+    expect(logs).toEqual(['Smart Router logs: invalid routing explanation; showing the basic view']);
+    await ui.unmount();
+  });
+}
+
+test('an over-limit reason is cut rather than dropping the explanation', { options }, async ($, on) => {
+  const long = { ...explanation, models: [{ ...explanation.models[0], reason: 'x'.repeat(1300) }, ...explanation.models.slice(1)] };
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('process.run', ($, e) => {
+    if (e.argv.includes('--decision')) return { value: { exitCode: 0, stderr: '', stdout: decisionWith(long) } };
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: records }) } };
+  });
+  await $.command.run(command);
+  const ui = await $.ui.mount(pane);
+  await ui.press({ key: 'd1' });
+  const tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain('x'.repeat(1200));
+  expect(tree).not.toContain('x'.repeat(1201));
+  expect(tree).toContain('Cheaper but a weaker fit.');
+  await ui.unmount();
+});
+
 test('a UG route agent type is not shown as the prompt label', { options }, async ($, on) => {
   const routed = JSON.stringify({ ...decision, decision: { ...decision.decision,
     original: { model: null, subagent_type: 'ug-smart-router:ucode-route-claude-haiku-5-5-009ef3ad' } } });

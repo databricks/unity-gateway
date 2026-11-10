@@ -191,7 +191,9 @@ explanations whose model list covers exactly the offered models (mocked router r
 overview shape/order, malformed/foreign-version/unknown-type line skipping, missing sessions,
 and `--decision` hit/miss; local component checks only, no pane or live-session coverage.
 Native mod tests cover preview-only decision details and metadata, detail-load failures,
-stale-request handling, Back navigation, pane refresh and launch gating with a fake logs reader;
+stale-request handling, Back navigation, pane refresh and launch gating with a fake logs reader,
+plus the detail view's explanation rendering, its invalid-explanation fallback to the basic
+view, and the opt-in numbers toggle;
 they do not establish interactive pane or live-session coverage.
 
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
