@@ -769,8 +769,10 @@ Codex decisions carry the same request metadata. These use mocked HTTP responses
 `test_claude_pty_replay.py` drives `run_claude_pty` against fake TUIs. One models Claude Code
 2.1.295 and later, which keep a hook-blocked prompt in the input box: `/model` must run as a
 command. Delayed completion must replay the prompt exactly once and restore the saved default.
-Arrow keys and fragmented terminal replies keep recovery active. Typed input stops replay with
-a notice but retains cleanup. Submitting a slash command or text changed through history,
+Arrow keys and fragmented terminal replies keep recovery active, including sequences split across
+settings restoration. Unfinished sequences and typed input stop replay with a notice but retain
+cleanup. Navigation and fragmented replies share a process case; unit cases include the
+`ESC[1~` and `ESC[4~` Home/End keys. Submitting a slash command or text changed through history,
 completion, or untracked editing transfers the saved default back to the user. Manual-choice
 checks include selecting the routed model itself. Claude's completed `Kept model as` cancellation
 result permits replay, while generic cancel messages and unconfirmed switches stop automatic input.
@@ -780,6 +782,9 @@ write, and a write arriving after the persistence deadline without duplicating t
 
 `test_claude_smart_routing_v2.py` also covers settings restoration after a failed atomic write or
 temporary parse error, bounded exit cleanup under lock contention, and actionable failure output.
+Atomic restoration preserves surviving settings symlinks and existing POSIX file permissions.
+`test_config_io.py` checks permissions before atomic replacement and preserves the original file
+when setting permissions fails.
 Deferred cleanup releases launch ownership after a two-second grace period and retains the
 original default in shared recovery state. Competing-process tests check that late writes before,
 during, and after a second switch cannot become its saved default, including an originally absent

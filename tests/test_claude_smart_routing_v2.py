@@ -6,6 +6,7 @@ import io
 import json
 import os
 import select
+import stat
 import subprocess
 import sys
 import threading
@@ -1022,6 +1023,31 @@ class TestModelSettingRecovery:
         yield guard, settings
         guard.finish(timeout=0)
 
+    @requires_pty
+    @pytest.mark.parametrize("linked", [False, True], ids=["regular-file", "symlink"])
+    def test_restoration_preserves_user_file_mode_and_symlink(self, tmp_path, monkeypatch, linked):
+        target = tmp_path / "user-settings.json"
+        target.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
+        target.chmod(0o640)
+        settings = tmp_path / "settings.json" if linked else target
+        if linked:
+            settings.symlink_to(target.name)
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        guard = v2._ClaudeModelSettingGuard(settings)
+        try:
+            assert guard.begin("sonnet")
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+            before = target.stat()
+            assert guard.restore()
+            assert settings.is_symlink() is linked
+            if linked:
+                assert os.readlink(settings) == target.name
+            assert json.loads(target.read_text()) == {"model": "haiku", "theme": "light"}
+            assert stat.S_IMODE(target.stat().st_mode) == 0o640
+            assert target.stat().st_ino != before.st_ino
+        finally:
+            guard.finish(timeout=0)
+
     @pytest.fixture
     def competing_session(self, settings_guard):
         _, settings = settings_guard
@@ -1192,7 +1218,7 @@ os._exit(0)
         def fail_replace(_source, _target):
             raise PermissionError("read-only directory")
 
-        # Exercise an actual failed atomic write, without mocking the guard.
+        # Simulate a failed atomic replacement.
         monkeypatch.setattr(os, "replace", fail_replace)
         with pytest.raises(RuntimeError, match="Failed to write file"):
             guard.restore()
@@ -1210,7 +1236,7 @@ os._exit(0)
         guard, settings = settings_guard
         write = v2.config_io.atomic_write_json
 
-        def read_only(_path, _payload):
+        def read_only(_path, _payload, **_kwargs):
             raise RuntimeError("recovery directory is read-only")
 
         monkeypatch.setattr(v2.config_io, "atomic_write_json", read_only)
@@ -1290,7 +1316,7 @@ os._exit(0)
         assert guard.begin("sonnet")
         settings.write_text(json.dumps({"model": "sonnet"}))
 
-        def read_only(_path, _payload):
+        def read_only(_path, _payload, **_kwargs):
             raise PermissionError("read-only directory")
 
         monkeypatch.setattr(v2.config_io, "atomic_write_json", read_only)

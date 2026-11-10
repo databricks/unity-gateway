@@ -79,7 +79,7 @@ def read_until(suffix):
 
 
 @contextmanager
-def _stdin_after(ready: Path, chunks: list[bytes]):
+def _stdin_after(ready: Path, chunks: list[bytes], *, after_first: Path | None = None):
     pipe_read, pipe_write = os.pipe()
     saved_stdin = os.dup(0)
     sent = []
@@ -92,6 +92,12 @@ def _stdin_after(ready: Path, chunks: list[bytes]):
             for chunk in chunks:
                 os.write(pipe_write, chunk)
                 sent.append(chunk)
+                if len(sent) == 1 and after_first is not None:
+                    deadline = time.monotonic() + 3
+                    while not after_first.exists() and time.monotonic() < deadline:
+                        time.sleep(0.005)
+                    if not after_first.exists():
+                        return
                 time.sleep(0.01)
 
     writer = threading.Thread(target=send)
@@ -307,9 +313,17 @@ def replay_model_switch(tmp_path, monkeypatch):
     guard = v2._ClaudeModelSettingGuard(settings)
     restorations = []
 
+    def persisted():
+        result = guard.is_routed()
+        (tmp_path / "persistence-checked").touch()
+        return result
+
     def restore():
         restorations.append(guard.is_routed())
-        return guard.restore()
+        restored = guard.restore()
+        if restored:
+            (tmp_path / "restored").touch()
+        return restored
 
     def run(body):
         socket_path = tmp_path / "first.sock"
@@ -322,7 +336,7 @@ def replay_model_switch(tmp_path, monkeypatch):
                 route_prompt=_route_sonnet,
                 socket_path=socket_path,
                 prepare_model_switch=guard.begin,
-                model_switch_persisted=guard.is_routed,
+                model_switch_persisted=persisted,
                 restore_model_setting=restore,
                 defer_model_setting=guard.defer,
                 abandon_model_setting=guard.abandon,
@@ -432,8 +446,8 @@ capture_path.write_text(json.dumps({"submitted": submitted}))
 
     @pytest.mark.parametrize(
         ("chunks", "replay"),
-        [([b"\x1b[A"], True), ([b"\x1b[?1;", b"2c"], True), ([b"new input"], False)],
-        ids=["arrow", "fragmented-terminal-reply", "user-edit"],
+        [([b"\x1b[A", b"\x1b[?1;", b"2c"], True), ([b"new input"], False)],
+        ids=["navigation-and-fragmented-terminal-reply", "user-edit"],
     )
     def test_input_during_switch_keeps_default_recovery(
         self, replay_model_switch, tmp_path, chunks, replay, capfd
@@ -485,6 +499,62 @@ capture_path.write_text(json.dumps({
         )
         if not replay:
             assert "Resend your prompt" in capfd.readouterr().out
+
+    @pytest.mark.parametrize(
+        ("suffix", "replay"),
+        [(b"A", True), (b"?1;2c", True), (b"Anew input", False), (b"", False)],
+        ids=["arrow", "terminal-reply", "edited-after-reply", "unfinished-reply"],
+    )
+    def test_fragmented_input_crossing_restoration_does_not_stall_replay(
+        self, replay_model_switch, tmp_path, monkeypatch, capfd, suffix, replay
+    ):
+        monkeypatch.setattr(claude_pty, "ESC_GAP_S", 0.5)
+        monkeypatch.setattr(claude_pty, "SWITCH_TIMEOUT_S", 2.0)
+        monkeypatch.setattr(claude_pty, "MODEL_PERSIST_TIMEOUT_S", 2.0)
+        chunks = [b"\x1b["] + ([suffix] if suffix else [])
+        body = """\
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\\r")
+settings = Path(sys.argv[3])
+os.write(1, b"Set model to sonnet\\n")
+while not settings.with_name("persistence-checked").exists():
+    time.sleep(0.005)
+settings.with_name("ready").touch()
+assert os.read(0, 1) + os.read(0, 1) == b"\\x1b["
+settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
+received = b""
+submitted = []
+deadline = time.monotonic() + 0.8
+while time.monotonic() < deadline:
+    if sel.select([0], [], [], 0.01)[0]:
+        received += os.read(0, 4096)
+    if b"\\x1b[200~" in received and b"\\x1b[201~\\r" in received:
+        prompt = received.split(b"\\x1b[200~", 1)[1].split(b"\\x1b[201~", 1)[0].decode()
+        submitted.append(prompt)
+        assert send_hook(socket_path, prompt)["action"] == "allow"
+        received = b""
+capture_path.write_text(json.dumps({
+    "submitted": submitted, "settings_while_running": json.loads(settings.read_text()),
+}))
+"""
+        restored = tmp_path / "restored"
+        with _stdin_after(tmp_path / "ready", chunks, after_first=restored):
+            capture, settings, _ = replay_model_switch(body)
+
+        assert restored.exists()
+        assert capture["submitted"] == (["hello"] if replay else [])
+        assert (
+            capture["settings_while_running"]
+            == settings
+            == {
+                "model": "haiku",
+                "unrelated": "preserved",
+            }
+        )
+        output = capfd.readouterr().out
+        assert ("Resend your prompt" in output) == (not replay)
 
     @pytest.mark.parametrize("later_model", ["user-selected", "sonnet"])
     def test_abandoned_switch_releases_guard_and_preserves_manual_choice(
@@ -597,14 +667,14 @@ capture_path.write_text(json.dumps({
         write = config_io.atomic_write_json
         attempts = []
 
-        def fail_once(path, payload):
+        def fail_once(path, payload, **kwargs):
             if path.name == "settings.json":
                 attempts.append(path)
                 if len(attempts) == 1:
                     raise PermissionError("settings temporarily read-only")
-            write(path, payload)
+            write(path, payload, **kwargs)
 
-        # Fail only the filesystem boundary; both the PTY loop and guard remain real.
+        # Simulate a transient settings write failure.
         monkeypatch.setattr(config_io, "atomic_write_json", fail_once)
         capture, settings, _ = replay_model_switch(
             """\
@@ -749,7 +819,16 @@ capture_path.write_text(json.dumps({
 class TestModelSwitchInput:
     @pytest.mark.parametrize(
         "sequence",
-        [b"\x1b[A", b"\x1bOD", b"\x1b[I", b"\x1b[O", b"\x1b[?1;2c", b"\x1b[12;45R"],
+        [
+            b"\x1b[A",
+            b"\x1bOD",
+            b"\x1b[1~",
+            b"\x1b[4~",
+            b"\x1b[I",
+            b"\x1b[O",
+            b"\x1b[?1;2c",
+            b"\x1b[12;45R",
+        ],
     )
     def test_fragmented_navigation_and_terminal_replies_are_not_edits(self, sequence):
         state = claude_pty.ModelSwitchInput()

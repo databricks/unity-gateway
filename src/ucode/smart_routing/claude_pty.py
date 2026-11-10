@@ -154,13 +154,10 @@ class ModelSwitchInput:
                     self._pending = self._pending[match.end() :]
                     if sequence in (b"\x1b[200~", b"\x1b[201~"):
                         self._pasting = sequence == b"\x1b[200~"
-                    elif sequence.startswith(b"\x1bO") or sequence[-1:] in (
-                        b"A",
-                        b"B",
-                        b"C",
-                        b"D",
-                        b"F",
-                        b"H",
+                    elif (
+                        sequence.startswith(b"\x1bO")
+                        or sequence in (b"\x1b[1~", b"\x1b[4~")
+                        or sequence[-1:] in (b"A", b"B", b"C", b"D", b"F", b"H")
                     ):
                         # History and cursor motion leave the submitted text unknown,
                         # but navigation alone must not interrupt automatic replay.
@@ -513,11 +510,16 @@ def run_claude_pty(
 
             def observe_input(data: bytes, now: float) -> None:
                 nonlocal phase, model_pending, deferred_restore, restore_ready
-                if not model_pending and phase not in ("waiting_to_switch", "pasting", "verifying"):
-                    return
-                if phase == "verifying" and submitted_event.is_set():
+                if not model_pending and phase not in (
+                    "waiting_to_switch",
+                    "waiting_persist",
+                    "pasting",
+                    "verifying",
+                ):
                     return
                 edited, selected_model = user_input.observe(data, now)
+                if phase == "verifying" and submitted_event.is_set():
+                    return
                 if not edited:
                     return
                 if phase != "done":

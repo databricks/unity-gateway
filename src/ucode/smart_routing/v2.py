@@ -6,6 +6,7 @@ import os
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -849,7 +850,10 @@ class _ClaudeModelSettingGuard:
                     if config_io.is_dry_run():
                         write_json_file(self.settings_path, current)
                     else:
-                        config_io.atomic_write_json(self.settings_path, current)
+                        target = self.settings_path.resolve()
+                        config_io.atomic_write_json(
+                            target, current, mode=stat.S_IMODE(target.stat().st_mode)
+                        )
                 del recovery["pending"][self._token]
                 self._write_recovery(recovery)
         except BaseException:
