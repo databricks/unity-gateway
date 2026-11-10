@@ -1,5 +1,8 @@
 # Integration tests
 
+Catalog-browser component tests wait for rendered scroll changes with a bounded
+timeout, including Windows pipe-input delivery. Live browsing coverage is unchanged.
+
 The spend-status client's workspace authentication, optional percentage handling,
 pagination, validation, and failure propagation are covered by component tests in
 `../test_budget.py`, importing the client from `src/ucode/budget.py`.

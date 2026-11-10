@@ -1,5 +1,8 @@
 # Test suites and user journeys
 
+Catalog-browser component tests wait for rendered scroll changes with a bounded
+timeout, including Windows pipe-input delivery. Live browsing coverage is unchanged.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered
