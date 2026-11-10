@@ -7,6 +7,7 @@ import functools
 import json
 import os
 import re
+import secrets
 import shutil
 import signal
 import socket
@@ -2162,7 +2163,7 @@ def _remove_header_mod() -> None:
         print_warning(f"Couldn't remove ug's Claude header mod at {root}: {exc}")
 
 
-def header_mod_active() -> bool:
+def header_mod_active(*, require_ug: bool = False) -> bool:
     """Whether a header mod is installed and enabled, so ``UG_HEADERS`` reaches Claude.
 
     That is ug's own mod, or another installer's copy enabled in the managed settings.
@@ -2177,7 +2178,7 @@ def header_mod_active() -> bool:
         if not isinstance(plugins, dict):
             return False
         # TODO: remove once other installers use ug to update managed settings.
-        if any(
+        if not require_ug and any(
             key.startswith(_HEADER_MOD_PREFIX) and key != CLAUDE_HEADER_MOD_ID and value is True
             for key, value in plugins.items()
         ):
@@ -2190,6 +2191,44 @@ def header_mod_active() -> bool:
     except (OSError, RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
         return False
     return True
+
+
+@contextmanager
+def subagent_language_transport(state: dict) -> Iterator[None]:
+    """Give the managed mod a launch-local transport without changing saved settings."""
+    if not header_mod_active(require_ug=True):
+        yield
+        return
+    from ucode.custom_oauth import launch_token
+    from ucode.gateway_proxy import start_claude_language_proxy
+
+    workspace = state["workspace"]
+    secret = secrets.token_urlsafe(32)
+    server, cache, client = start_claude_language_proxy(
+        workspace,
+        lambda force: launch_token(state, workspace, force_refresh=force),
+        session_secret=secret,
+    )
+    previous = os.environ.get("UG_CLAUDE_LANGUAGE_PROXY")
+    os.environ["UG_CLAUDE_LANGUAGE_PROXY"] = json.dumps(
+        {
+            "url": f"http://127.0.0.1:{server.server_port}/ai-gateway/anthropic",
+            "upstream": build_tool_base_url("claude", workspace),
+            "secret": secret,
+        }
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("UG_CLAUDE_LANGUAGE_PROXY", None)
+        else:
+            os.environ["UG_CLAUDE_LANGUAGE_PROXY"] = previous
+        cache.stop()
+        server.shutdown()
+        server.server_close()
+        client.close()
 
 
 def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> None:

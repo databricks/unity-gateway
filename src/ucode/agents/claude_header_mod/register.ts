@@ -39,6 +39,34 @@ async function apply($: EngineInterface): Promise<void> {
     await $.env.get('UG_HEADERS'),
   );
   if (merged !== undefined) await $.env.set('ANTHROPIC_CUSTOM_HEADERS', merged);
+  await applyLanguageTransport($);
+}
+
+async function applyLanguageTransport($: EngineInterface): Promise<void> {
+  const raw = await $.env.get('UG_CLAUDE_LANGUAGE_PROXY');
+  if (!raw) return;
+  const transport = JSON.parse(raw);
+  if (
+    typeof transport.url !== 'string' ||
+    !/^http:\/\/127\.0\.0\.1:\d+\/ai-gateway\/anthropic$/.test(transport.url) ||
+    typeof transport.upstream !== 'string' ||
+    typeof transport.secret !== 'string' || !transport.secret
+  ) throw new Error('Invalid Unity Gateway language transport.');
+  const base = await $.env.get('ANTHROPIC_BASE_URL');
+  if (base !== transport.upstream && base !== transport.url) return;
+  const { language } = await $.settings.read();
+  const configured = typeof language === 'string' && language.trim() !== '';
+  const headers = (await $.env.get('ANTHROPIC_CUSTOM_HEADERS') ?? '')
+    .split(/\r?\n/).filter(line => !/^x-ug-(response-language|language-session):/i.test(line));
+  if (configured) {
+    headers.push(`X-UG-Response-Language: ${encodeURIComponent(language.trim())}`);
+    headers.push(`X-UG-Language-Session: ${transport.secret}`);
+  }
+  await $.env.set('ANTHROPIC_CUSTOM_HEADERS', headers.filter(Boolean).join('\n'));
+  await $.env.set('ANTHROPIC_BASE_URL', configured ? transport.url : transport.upstream);
+  if (configured && await $.env.get('CLAUDE_CODE_GATEWAY_HINT_HEADERS') === undefined) {
+    await $.env.set('CLAUDE_CODE_GATEWAY_HINT_HEADERS', '1');
+  }
 }
 
 export function register(on: On): void {

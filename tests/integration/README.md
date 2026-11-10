@@ -40,7 +40,13 @@ parallel calls as cards above the parent's next reply in call order, calls
 `../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
 behavior with controlled authentication and transport boundaries. The local-socket
 proxy suite also covers refresh/retry wiring; these checks do not establish live
-provider latency or token renewal behavior.
+provider latency or token renewal behavior. Child-language component coverage also checks
+configured language on child and summary requests, parent/classifier passthrough,
+authentication, and private-header stripping. Live language checks must inspect both
+child replies and progress summaries with English and non-English settings; request
+construction alone does not establish generated language. The native task-view parser
+also recognizes an empty earlier-session section without treating running or
+partially rendered task lists as complete.
 
 `../test_configure_managed_writes.py` covers `ug revert` output after Claude/Codex managed-file
 deletion fails, its nonzero exit, and retention of the file, backup, and ug state. These component

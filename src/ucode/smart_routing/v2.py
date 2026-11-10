@@ -686,7 +686,7 @@ def launch_claude(
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.args import has_explicit_model_arg
-    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
+    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR, subagent_language_transport
 
     if os.name != "nt":
         from ucode.smart_routing import claude_pty
@@ -773,7 +773,10 @@ def launch_claude(
 
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
-        with TemporaryDirectory(prefix="claude-v2-", dir=APP_DIR) as directory:
+        with (
+            subagent_language_transport(state),
+            TemporaryDirectory(prefix="claude-v2-", dir=APP_DIR) as directory,
+        ):
             launch_dir = Path(directory)
             settings_path = launch_dir / "settings.json"
             socket_path = launch_dir / "first.sock"

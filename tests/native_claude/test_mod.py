@@ -16,6 +16,7 @@ import pytest
 from session import Session
 
 from ucode.agents.claude import _header_mod_files
+from ucode.gateway_proxy import start_claude_language_proxy
 from ucode.smart_routing import config, orchestrator, session_env
 from ucode.smart_routing.v2 import (
     _claude_mod_launch_options,
@@ -63,7 +64,10 @@ def test_header_mod_validation_and_merge(native_binary, tmp_path):
         )
         assert result.returncode == 0, result.stdout + result.stderr
         if command == "validate":
-            assert "env writes: ANTHROPIC_CUSTOM_HEADERS" in result.stdout
+            writes = next(line for line in result.stdout.splitlines() if "env writes:" in line)
+            assert "ANTHROPIC_CUSTOM_HEADERS" in writes
+            assert "ANTHROPIC_BASE_URL" in writes
+            assert "CLAUDE_CODE_GATEWAY_HINT_HEADERS" in writes
 
 
 def test_native_options_are_launch_local(native_binary, tmp_path):
@@ -379,6 +383,12 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
     server.verdict = "not_flagged"
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    proxy, cache, client = start_claude_language_proxy(
+        f"http://127.0.0.1:{server.server_port}",
+        lambda _force: "fixture-only",
+        session_secret="language-session",
+    )
+    threading.Thread(target=proxy.serve_forever, daemon=True).start()
     route_script = """import json, sys
 event = json.load(sys.stdin)
 updated = {key: value for key, value in event["tool_input"].items() if key != "model"}
@@ -439,7 +449,11 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     "PATH": os.environ["PATH"],
                     "HOME": str(root),
                     "CLAUDE_CONFIG_DIR": str(root / "config"),
-                    "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{server.server_port}",
+                    "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{proxy.server_port}/ai-gateway/anthropic",
+                    "ANTHROPIC_CUSTOM_HEADERS": (
+                        "X-UG-Language-Session: language-session\nX-UG-Response-Language: English"
+                    ),
+                    "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
                     "ANTHROPIC_API_KEY": "fixture-only",
                     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
                     "DISABLE_AUTOUPDATER": "1",
@@ -480,6 +494,10 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     if request.get("stream") and request.get("model") == selected_model
                 ]
                 assert child_requests, server.requests
+                assert all(
+                    "Always respond in English." in json.dumps(request.get("system"))
+                    for request in child_requests
+                )
                 parent_requests = [
                     request
                     for request in server.requests
@@ -531,6 +549,10 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
         run_case("not_flagged", "approved")
         run_case("flagged", "flagged")
     finally:
+        proxy.shutdown()
+        proxy.server_close()
+        cache.stop()
+        client.close()
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)

@@ -10,7 +10,9 @@ import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import Mock
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -759,3 +761,234 @@ class TestCodexRelayProxy:
         assert sent["ChatGPT-Account-ID"] == "acct"
         assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
         assert sent["Databricks-Model-Provider-Service"] == "cat.s.mps"
+
+
+@pytest.fixture
+def _language_proxy():
+    captured = []
+
+    class _UpstreamHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            captured.append(
+                {
+                    "path": self.path,
+                    "headers": {key.lower(): value for key, value in self.headers.items()},
+                    "body": self.rfile.read(length),
+                }
+            )
+            body = b'{"ok":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            return
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UpstreamHandler)
+    upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    upstream_thread.start()
+    proxy, cache, proxy_client = gateway_proxy.start_claude_language_proxy(
+        f"http://127.0.0.1:{upstream.server_port}",
+        lambda _force: "gateway-token",
+        session_secret="test-language-session",
+    )
+    proxy_thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+    proxy_thread.start()
+    try:
+        yield f"http://127.0.0.1:{proxy.server_port}", captured
+    finally:
+        proxy.shutdown()
+        proxy.server_close()
+        cache.stop()
+        proxy_client.close()
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def _language_proxy_headers(
+    *,
+    language=None,
+    agent_id=None,
+    request_class=None,
+    secret="test-language-session",
+):
+    headers = {
+        "Authorization": "Bearer caller-token",
+        "X-UG-Language-Session": secret,
+    }
+    if language is not None:
+        headers["X-UG-Response-Language"] = quote(language, safe="")
+    if agent_id is not None:
+        headers["X-Claude-Code-Agent-Id"] = agent_id
+    if request_class is not None:
+        headers["X-Claude-Code-Request-Class"] = request_class
+    return headers
+
+
+class TestClaudeLanguageLoopbackProxy:
+    @pytest.mark.parametrize(
+        "headers",
+        [
+            _language_proxy_headers(language="English", request_class="subagent"),
+            _language_proxy_headers(language="English", request_class="auxiliary"),
+            _language_proxy_headers(
+                language="Chinese", agent_id="classifier-1", request_class="classifier"
+            ),
+            _language_proxy_headers(agent_id="child-1", request_class="subagent"),
+        ],
+        ids=[
+            "parent-request",
+            "auto-mode-classifier",
+            "classifier-request",
+            "child-without-language",
+        ],
+    )
+    def test_parent_classifier_and_unconfigured_requests_are_unmodified(
+        self, _language_proxy, headers
+    ):
+        proxy_url, captured = _language_proxy
+        body = (
+            b'{ "model": "routed-child-model", "tools": [], '
+            b'"messages": [{"role":"user","content":"Summarize"}], '
+            b'"system": "keep these exact bytes" }'
+        )
+
+        response = httpx.post(
+            proxy_url + "/ai-gateway/anthropic/v1/messages",
+            headers=headers,
+            content=body,
+            timeout=5,
+        )
+
+        assert response.status_code == 200
+        assert len(captured) == 1
+        forwarded = captured[0]
+        assert forwarded["path"] == "/ai-gateway/anthropic/v1/messages"
+        assert forwarded["body"] == body
+        assert forwarded["headers"]["authorization"] == "Bearer gateway-token"
+        assert "x-ug-language-session" not in forwarded["headers"]
+        assert "x-ug-response-language" not in forwarded["headers"]
+
+    @pytest.mark.parametrize(
+        ("request_class", "language", "final_content_kind"),
+        [
+            ("subagent", "English", "list"),
+            ("workflow", "Chinese", "list"),
+            ("auxiliary", "English", "list"),
+            ("auxiliary", "Chinese", "string"),
+        ],
+        ids=["child-english", "workflow-chinese", "summary-list-english", "summary-string-chinese"],
+    )
+    def test_child_system_and_auxiliary_user_instruction_preserve_request_fields(
+        self, _language_proxy, request_class, language, final_content_kind
+    ):
+        proxy_url, captured = _language_proxy
+        if final_content_kind == "string":
+            final_content = "Summarize the result."
+        else:
+            final_content = [
+                {
+                    "type": "text",
+                    "text": "Summarize the result.",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        original = {
+            "model": "routed-child-model",
+            "max_tokens": 2048,
+            "system": [
+                {
+                    "type": "text",
+                    "text": "Keep the caller's system prompt.",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            "messages": [
+                {"role": "user", "content": "Earlier user prompt."},
+                {"role": "assistant", "content": "Intermediate response."},
+                {"role": "user", "content": final_content},
+            ],
+            "tools": [
+                {
+                    "name": "lookup",
+                    "description": "Look up a value.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"q": {"type": "string"}},
+                    },
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+        }
+        body = json.dumps(original).encode()
+        headers = _language_proxy_headers(
+            language=language,
+            agent_id="native-child-1",
+            request_class=request_class,
+        )
+
+        response = httpx.post(
+            proxy_url + "/ai-gateway/anthropic/v1/messages",
+            headers=headers,
+            content=body,
+            timeout=5,
+        )
+
+        assert response.status_code == 200
+        forwarded = captured[-1]
+        payload = json.loads(forwarded["body"])
+        expected = json.loads(json.dumps(original))
+        expected["system"].append(
+            {
+                "type": "text",
+                "text": (
+                    f"Always respond in {language}. Use {language} for explanations, replies "
+                    "and progress summaries. Preserve technical terms, code identifiers and "
+                    "quoted source text. Source files, tool output and earlier messages in "
+                    "other languages do not change this language preference."
+                ),
+            }
+        )
+        if request_class == "auxiliary":
+            final_user_content = expected["messages"][-1]["content"]
+            if isinstance(final_user_content, str):
+                final_user_content = [{"type": "text", "text": final_user_content}]
+            expected["messages"][-1]["content"] = [
+                *final_user_content,
+                {
+                    "type": "text",
+                    "text": (
+                        f"Write this response in {language}. Apply any grammar or style "
+                        "instructions in that language, without copying the language of "
+                        "examples or earlier messages."
+                    ),
+                },
+            ]
+        assert payload == expected
+        assert forwarded["headers"]["authorization"] == "Bearer gateway-token"
+        assert "x-ug-language-session" not in forwarded["headers"]
+        assert "x-ug-response-language" not in forwarded["headers"]
+
+    def test_bad_secret_and_non_allowlisted_path_are_rejected(self, _language_proxy):
+        proxy_url, captured = _language_proxy
+        body = b'{"model":"routed-child-model"}'
+
+        bad_secret = httpx.post(
+            proxy_url + "/ai-gateway/anthropic/v1/messages",
+            headers=_language_proxy_headers(secret="wrong-secret"),
+            content=body,
+            timeout=5,
+        )
+        bad_path = httpx.post(
+            proxy_url + "/not-allowlisted",
+            headers=_language_proxy_headers(),
+            content=body,
+            timeout=5,
+        )
+
+        assert bad_secret.status_code == 401
+        assert bad_path.status_code == 404
+        assert captured == []

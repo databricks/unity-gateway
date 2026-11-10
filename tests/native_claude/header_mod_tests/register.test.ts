@@ -51,3 +51,43 @@ test('without launch headers the variable is left alone', async ($, on) => {
   expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: eng');
   expect(headerLines(undefined, '\n')).toBeUndefined();
 });
+
+test('language transport follows settings changes and preserves other headers', async ($, on) => {
+  const upstream = 'https://workspace.example/ai-gateway/anthropic';
+  const url = 'http://127.0.0.1:12345/ai-gateway/anthropic';
+  const env = setup(on, {
+    ANTHROPIC_BASE_URL: upstream,
+    ANTHROPIC_CUSTOM_HEADERS: 'X-Team: eng',
+    UG_CLAUDE_LANGUAGE_PROXY: JSON.stringify({ url, upstream, secret: 'session-secret' }),
+  });
+  let language: unknown;
+  on('settings.read', () => ({ value: { language } }));
+  for (const value of ['English', '中文', 'Português', '', undefined]) {
+    language = value;
+    await $.session.start(start);
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toContain('X-Team: eng');
+    if (value) {
+      expect(env.ANTHROPIC_BASE_URL).toBe(url);
+      expect(env.ANTHROPIC_CUSTOM_HEADERS).toContain(`X-UG-Response-Language: ${encodeURIComponent(value)}`);
+      expect(env.ANTHROPIC_CUSTOM_HEADERS).toContain('X-UG-Language-Session: session-secret');
+    } else {
+      expect(env.ANTHROPIC_BASE_URL).toBe(upstream);
+      expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: eng');
+    }
+  }
+});
+
+test('language transport does not replace another provider endpoint', async ($, on) => {
+  const env = setup(on, {
+    ANTHROPIC_BASE_URL: 'https://other.example',
+    ANTHROPIC_CUSTOM_HEADERS: 'X-Team: eng',
+    UG_CLAUDE_LANGUAGE_PROXY: JSON.stringify({
+      url: 'http://127.0.0.1:12345/ai-gateway/anthropic',
+      upstream: 'https://workspace.example/ai-gateway/anthropic', secret: 'session-secret',
+    }),
+  });
+  on('settings.read', () => ({ value: { language: 'English' } }));
+  await $.session.start(start);
+  expect(env.ANTHROPIC_BASE_URL).toBe('https://other.example');
+  expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: eng');
+});

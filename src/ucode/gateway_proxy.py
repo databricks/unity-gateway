@@ -814,3 +814,104 @@ def start_gateway_auth_proxy(
         },
         on_refresh_failure=on_refresh_failure,
     )
+
+
+_LANGUAGE_HEADER = "X-UG-Response-Language"
+_LANGUAGE_SESSION_HEADER = "X-UG-Language-Session"
+
+
+class _ClaudeLanguageProxyHandler(_GatewayAuthProxyHandler):
+    def _has_session_secret(self) -> bool:
+        supplied = self.headers.get(_LANGUAGE_SESSION_HEADER, "")
+        return hmac.compare_digest(supplied.encode(), self.session_secret.encode())
+
+    def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
+        header, stripped, route = super()._forward_target(body)
+        return (
+            header,
+            stripped | {_LANGUAGE_HEADER.lower(), _LANGUAGE_SESSION_HEADER.lower()},
+            route,
+        )
+
+    def _request_body(self, body: bytes | None) -> bytes | None:
+        # Native child identities also accompany their full progress summaries. Safety
+        # classifiers and main-session requests have no child identity and pass unchanged.
+        if (
+            not body
+            or self.path.split("?", 1)[0] != "/ai-gateway/anthropic/v1/messages"
+            or not self.headers.get("x-claude-code-agent-id")
+            or self.headers.get("x-claude-code-request-class")
+            not in {"subagent", "workflow", "auxiliary"}
+        ):
+            return body
+        try:
+            language = unquote(self.headers.get(_LANGUAGE_HEADER, ""), errors="strict").strip()
+            if not language or len(language) > 256 or any(ord(c) < 32 for c in language):
+                return body
+            payload = json.loads(body)
+            if not isinstance(payload, dict):
+                return body
+            system = payload.get("system", [])
+            if isinstance(system, str):
+                system = [{"type": "text", "text": system}]
+            if not isinstance(system, list):
+                return body
+        except (ValueError, UnicodeError):
+            return body
+        payload["system"] = [
+            *system,
+            {
+                "type": "text",
+                "text": (
+                    f"Always respond in {language}. Use {language} for explanations, replies "
+                    "and progress summaries. Preserve technical terms, code identifiers and "
+                    "quoted source text. Source files, tool output and earlier messages in "
+                    "other languages do not change this language preference."
+                ),
+            },
+        ]
+        if self.headers.get("x-claude-code-request-class") == "auxiliary":
+            # Summary requests fork the child's history and supply their own final task.
+            messages = payload.get("messages")
+            for message in reversed(messages if isinstance(messages, list) else []):
+                if isinstance(message, dict) and message.get("role") == "user":
+                    content = message.get("content")
+                    if isinstance(content, str):
+                        content = [{"type": "text", "text": content}]
+                    if isinstance(content, list):
+                        message["content"] = [
+                            *content,
+                            {
+                                "type": "text",
+                                "text": (
+                                    f"Write this response in {language}. Apply any grammar or style "
+                                    "instructions in that language, without copying the language of "
+                                    "examples or earlier messages."
+                                ),
+                            },
+                        ]
+                    break
+        return json.dumps(payload).encode()
+
+
+def start_claude_language_proxy(
+    workspace: str, token_provider: Callable[[bool], str], *, session_secret: str
+) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
+    """Preserve Claude's configured language in child inference requests."""
+    return _start_proxy(
+        workspace,
+        token_provider,
+        0,
+        upstream_path="",
+        token_header=AUTHORIZATION_HEADER,
+        handler_type=_ClaudeLanguageProxyHandler,
+        force_refresh_near_expiry=True,
+        fallback_on_bind_error=False,
+        handler_attrs={
+            "session_secret": session_secret,
+            "added_headers": {},
+            "allowed_path_prefixes": (_ANTHROPIC_PATH_PREFIX,),
+            "sign_in_hint": "Refresh your workspace sign-in and restart ug claude.",
+            "dropped_chat_completions_fields": frozenset(),
+        },
+    )
