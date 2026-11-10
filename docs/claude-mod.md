@@ -225,3 +225,51 @@ but no inherited model or counterfactual native choice is guessed. The existing
 `requested_model` remains UG's routed target, not Claude's original choice.
 Actual execution still requires the child transcript or the separate subagent-start
 audit; that event can omit its model. Existing records are not backfilled.
+
+## Savings estimate
+
+`hooks/register.ts` draws a row above the prompt, styled like the status band: the
+estimated savings from smart routing, with the amount in a pill (green for a saving,
+yellow when routing cost more), and, when the launch activates Smart Router Orchestrator,
+the skill's `metadata.version` from `SKILL.claude.md`, labeled
+`Unity Gateway Smart Router v<version>`. The row appears only once there is an estimate,
+and then takes the status band's place, so the two never stack; the prompt hint row still
+shows the routing state. Its handler decides before running the other `AbovePrompt`
+handlers, so the band steps aside whichever order Claude runs them in. For each turn
+request, main agent and subagents, the mod sums token usage by the model that served it
+and its baseline. Main is its own baseline, and a subagent's baseline is the main model
+in effect when it ran.
+Under first-prompt routing, requests before the user changes the main model are priced
+against the model selected when the first prompt was submitted, before the router's
+`/model` command. A manual selection before that prompt becomes the baseline. Later
+model changes affect only subsequent usage. Claude's native `$.session.model()` returns
+the resolved model ID, including for configured family aliases such as `sonnet`.
+
+After each turn the mod writes those sums to `savings_usage`, a file in the launch's
+temporary directory. It then runs the `savings_pricer` argv
+(`python -P -m ucode.smart_routing.savings`), which prices the sums from the
+workspace's cached endpoint rates and prints the estimate's parts (direction, amount,
+percent) as one JSON line. Each savings-enabled routed launch
+refreshes that cache on a background thread. The cache key includes the workspace ID
+on shared hosts, since dollar rates can differ between organizations. An estimate is hidden, not undercounted,
+when any served or baseline model has no rate. The orchestrator version is passed
+as `orchestrator_version`.
+
+Savings hooks live in `hooks/register.ts` alongside the routing controls: Claude
+allows one hook module per plugin and its capability scanner follows engine API
+calls only within that module. The shared `session.start` handler seeds the start model,
+and `prompt.submit` captures the baseline before first-prompt routing. That capture is
+persisted with the totals so a mod reload does not replace it with the routed model.
+Savings failures, including denied reads of its environment flag, leave model requests
+running. Savings handlers are registered only when the launch options explicitly enable
+the feature. A failed usage-file write hides the estimate and retains the in-memory
+totals for the next turn's write.
+
+The entire savings mod requires `ENABLE_SMART_ROUTING_SAVINGS=1`. Otherwise no usage
+is tracked or written, no endpoint rates are fetched, no pricer runs, and no savings row is
+shown; the three options stay at their declared defaults.
+All existing versioned configurations set the flag to `"0"`. Select
+`SMART_ROUTER_CONFIG_VERSION=subagent_orch_savings_v0` to enable it with subagent
+routing and orchestration. Session routing off/on also disables/restores savings
+from the launch baseline. Both the mod and pricer read the saved session controls;
+CLI toggles update a mounted savings row within one second.

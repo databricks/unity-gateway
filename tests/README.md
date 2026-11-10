@@ -247,6 +247,34 @@ Its Claude decoy catalog includes both Claude and Codex decoys; neither belongs 
 The managed Claude parent-schema journey expects numbered GPT models to carry `[1m]` in the
 picker while retaining the catalog's display label.
 
+Savings estimate coverage: `test_smart_routing_savings.py` prices the mod's token sums
+(per-entry and first-prompt baselines, unpriced or malformed entries, the pricer's single
+JSON line). `test_smart_routing_pricing.py` covers endpoint rates, distinct model versions,
+and distinct price-cache paths for workspaces sharing a host. Shared-host launch wiring
+is not covered by these component checks.
+The pricer subprocess checks explicit opt-in; unset, empty, zero, and invalid values
+stay off. Preset coverage in
+`test_smart_routing_config.py` checks the savings flag, inherited-value precedence,
+restoration, and launch/session off controls. `test_smart_router.py` checks that the skill
+toggle writes all managed flags.
+`test_claude_mod.py` checks native literal setters against the flag registry. In the
+native suite, options reach the mod unchanged, configured aliases resolve to model IDs,
+and disabled sessions create no usage file even with stale savings options. A controlled
+local Messages API drives real main and subagent requests and checks exact input, output,
+and cache-token totals, including a routed child whose requested and execution models differ.
+These sessions explicitly allow Agent in the default permission
+mode, keeping auto-mode classifier requests out of the prepared model responses.
+Alias checks accept the context selector retained by Claude 2.1.290. Native model commands
+and a blocked-prompt replay check the pre-routing baseline and preserve earlier usage after
+a later model change. CLI off/on controls exclude disabled turns from the totals; pricer
+subprocesses honor the saved
+controls and fall back to inherited settings when the file is malformed. Native UI
+component tests check that off/on hides/restores a mounted row and failed usage writes
+hide stale estimates until a successful write. Capability tests deny the savings flag
+read and verify that startup and requests still run.
+These are native component checks, not live gateway/model or TUI coverage.
+Endpoint-price refresh failures and orchestrator-version display are not covered automatically.
+
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
 correlation remains CUJ-specific. Concurrent runs may read the same CUJ workspace.
@@ -899,9 +927,9 @@ dialog cannot borrow the confirmation footer from a previous dialog.
 and matching prompt/compaction hook content for Claude and Codex. It also covers
 shared `SKILL.md` bundles. These are component checks, not live agent execution.
 
-`test_smart_routing_config.py` includes a 162-case Cartesian component oracle: all three legacy
-routing flags take unset, `0`, and `1`, while the selector takes unset or one of the five
-supported presets, including the customer first-prompt-and-subagent mode. It uses the named
+`test_smart_routing_config.py` checks unset, disabled, enabled, and conflicting combinations of
+the routing, orchestration, and savings flags against the supported presets, including the
+first-prompt-and-subagent and savings modes. It uses the named
 version constants but independently hardcodes each preset's settings and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.

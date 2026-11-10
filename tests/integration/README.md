@@ -1026,9 +1026,9 @@ selected model and rationale and matches the decision log. The native mod applie
 that model at spawn without rewriting the reviewed tool input. Native task-header
 rendering is outside that CLI-contract check.
 
-The unit/component `../test_smart_routing_config.py` includes a 162-case Cartesian oracle over all
-three legacy routing flags (`None`, `0`, `1`) and six selector forms (`None` plus the five
-supported presets, including the internal first-prompt-and-subagent mode). It independently
+The unit/component `../test_smart_routing_config.py` checks unset, disabled, enabled, and
+conflicting combinations of the routing, orchestration, and savings flags against the
+supported presets, including first-prompt-and-subagent and savings modes. It independently
 hardcodes preset values and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.
@@ -1841,6 +1841,24 @@ recipe change does not require editing the test.
 Local Claude mod confirmation replaces the old saved-control-file/assistant-turn wait;
 Codex retains its CLI control-file checks. No extra TUI sessions or tasks are added.
 Clear/reload, compaction, and denied-write rollback are not independently checked.
+
+Savings gating and `subagent_orch_savings_v0` have component coverage in
+`test_smart_routing_config.py` and the pricer subprocess tests in `test_smart_routing_savings.py`.
+Native component tests check opt-in usage-file creation, opt-out preservation, resolved
+model aliases, and continued requests after a denied savings-flag read. A controlled
+local Messages API exercises real Claude main/subagent requests and token accounting.
+This includes a routed child whose requested and execution models differ.
+Those component sessions explicitly allow Agent in the default permission mode; they
+do not exercise the auto-mode safety classifier. Alias checks also accept the context
+selector retained by Claude 2.1.290.
+Native model commands and a blocked-prompt replay verify baseline capture before routing
+and preserve prior usage after later model changes. CLI off/on excludes disabled turns
+from native usage totals. Native UI component tests cover mounted-row updates after
+CLI toggles and hiding stale estimates on failed usage writes. Pricer subprocesses read
+the saved session controls. Pricing tests keep shared-host workspace cache paths and
+model versions distinct; shared-host launch wiring is not covered.
+Live savings accumulation, display, and session off/on are not covered by the
+integration suite.
 
 Subagent-routing failures have shared warning coverage in `test_codex_routing.py`;
 the live hook journeys retain their routing assertions and include stderr when no
