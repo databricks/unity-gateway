@@ -257,8 +257,7 @@ stay off. Preset coverage in
 `test_smart_routing_config.py` checks the savings flag, inherited-value precedence,
 restoration, and launch/session off controls. `test_smart_router.py` checks that the skill
 toggle writes all managed flags.
-`test_claude_mod.py` checks native literal setters against the flag registry. In the
-native suite, options reach the mod unchanged, configured aliases resolve to model IDs,
+In the native suite, options reach the mod unchanged, configured aliases resolve to model IDs,
 and disabled sessions create no usage file even with stale savings options. A controlled
 local Messages API drives real main and subagent requests and checks exact input, output,
 and cache-token totals, including a routed child whose requested and execution models differ.

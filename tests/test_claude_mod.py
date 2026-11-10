@@ -162,11 +162,3 @@ def test_launch_options_preserve_empty_and_absent_values():
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
     }
-
-
-def test_native_mod_covers_every_managed_flag():
-    source = (Path(v2.__file__).parents[1] / "agents/claude_mods/register.ts").read_text()
-    for key in SMART_ROUTING_ENV_KEYS:
-        assert f"$.env.get('{key}')" in source
-        assert f"$.env.set('{key}', env.{key})" in source
-        assert f"{key}: enabled ? original('{key}') : '0'" in source

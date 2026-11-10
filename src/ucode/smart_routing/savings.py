@@ -88,10 +88,9 @@ def usage_savings(
         if not isinstance(start, str) or not start:
             return None
         fixed_baseline = start
-    cached = read_price_cache(price_cache)
-    if cached is None:
+    prices = read_price_cache(price_cache)
+    if prices is None:
         return None
-    prices = cached[0]
 
     actual_total = baseline_total = Decimal(0)
     rerouted = False
