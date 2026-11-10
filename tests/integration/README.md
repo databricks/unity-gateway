@@ -1,5 +1,8 @@
 # Integration tests
 
+Windows launch-settings component tests isolate the launcher's startup telemetry
+environment. They do not establish live Isaac startup telemetry coverage.
+
 The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
 including exact service URLs, native OAuth metadata, and real `codex mcp get`
 readback. The per-user configuration remains separate.

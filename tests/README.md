@@ -1,5 +1,8 @@
 # Test suites and user journeys
 
+Windows launch-settings component tests provide an isolated launcher environment,
+including the startup telemetry opt-in, while exercising temporary settings cleanup.
+
 The managed Codex MCP journey checks native HTTP/OAuth and stdio registrations,
 including exact service URLs, native OAuth metadata, and real `codex mcp get`
 readback. The per-user configuration remains separate.

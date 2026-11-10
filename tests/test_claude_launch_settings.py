@@ -30,7 +30,7 @@ def large_settings(tmp_path, monkeypatch):
     path.write_text(json.dumps(settings), encoding="utf-8")
     monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", path)
     monkeypatch.setattr(claude, "current_os", lambda: OS.WINDOWS)
-    monkeypatch.setattr(launcher, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(launcher, "os", SimpleNamespace(name="nt", environ={}))
     monkeypatch.setattr(
         claude.shutil, "which", lambda name: str(tmp_path / "Claude Code" / "claude.exe")
     )
