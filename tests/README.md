@@ -17,6 +17,13 @@ inference, subagent routing, or actual `/compact` coverage. Native version pins 
 unchanged. It also guards against putting the custom option in settings env, which
 Claude reapplies after `/model` saves a selection.
 
+`native_claude/test_auto_effort.py` exercises Auto's custom main-model pane
+on the existing Claude 2.1.290 pin: h/l effort adjustment without moving model
+focus, Enter confirmation, a single checked Auto row, and Escape cancellation.
+The change is applied through native `/effort` after model confirmation. This uses
+no inference. Profile component tests cover supported levels, settings caps and
+environment overrides. The stock `/model` picker remains unchanged.
+
 The existing `integration/test_ug_claude_auto.py` managed 80-column journey requires
 real parent/child answers and correlated routing decisions before and after a manual
 model choice. The fixed-variant journey passed on Ubuntu ARM64 with the existing Claude 2.1.290

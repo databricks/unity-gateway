@@ -20,6 +20,7 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     mods = Path(v2.__file__).parents[1] / "agents" / "claude_mods"
     # The entry point imports these, so they ship beside it unmodified.
     for name in (
+        "auto-effort.ts",
         "register.ts",
         "constants.ts",
         "extra-body.ts",
@@ -31,6 +32,7 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     ):
         assert (tmp_path / "hooks" / name).read_bytes() == (mods / name).read_bytes()
     assert sorted(path.name for path in (tmp_path / "hooks").iterdir()) == [
+        "auto-effort.ts",
         "constants.ts",
         "extra-body.ts",
         "hooks.json",

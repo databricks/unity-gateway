@@ -480,6 +480,7 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
     mods = Path(__file__).parents[1] / "agents" / "claude_mods"
     # These are imported by the entry point, so they ship beside it rather than as modules.
     for name in (
+        "auto-effort.ts",
         "register.ts",
         "constants.ts",
         "extra-body.ts",

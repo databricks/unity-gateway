@@ -11,6 +11,7 @@ import {
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, registerIsaacFeedback } from './isaac-feedback.ts';
+import { effortProfile, EFFORT_LEVELS } from './auto-effort.ts';
 import { isRoutingEnabled } from './routing-state.ts';
 
 type Environment = Record<string, string | undefined>;
@@ -42,8 +43,13 @@ async function customAutoRow($: EngineInterface, auto: AutoPicker, model: string
   await $.env.set('ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION', auto.description);
 }
 
-async function chooseMainModel($: EngineInterface, auto: AutoPicker): Promise<void> {
+type AutoEffortState = {model?: string; drafts: Record<string, string>; native: Record<string, string | undefined>};
+
+async function chooseMainModel($: EngineInterface, auto: AutoPicker, state: AutoEffortState): Promise<void> {
+  state.model = await mainModel($, auto);
+  state.drafts = {};
   await $.ui.open({ id: 'auto-main', title: 'Choose your main model', focus: true, closeOnEscape: true, rows: 18 });
+  $.ui.invalidate('ui.render');
 }
 
 async function syncAutoRouting($: EngineInterface, options: PluginOptions, auto: AutoPicker): Promise<void> {
@@ -167,6 +173,7 @@ export function register(on: On, options: PluginOptions): void {
   const auto: AutoPicker | undefined = options.autoPicker ? JSON.parse(options.autoPicker as string) : undefined;
   let choosing = false;
   let switchingAuto = false;
+  const effortState: AutoEffortState = {drafts:{}, native:{}};
   let pendingSelection: { cancel: () => void } | undefined;
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
@@ -208,46 +215,98 @@ export function register(on: On, options: PluginOptions): void {
       // Direct /model <name> commands have no panel handoff. In particular,
       // never reopen a pane after their manual-model confirmation closed it.
       if ((!e.args.trim() && typeof result.ref === 'number') || (e.args.trim() && await autoSelected($, auto))) {
-        await chooseMainModel($, auto);
+        await chooseMainModel($, auto, effortState);
       }
       return result;
     });
+    on('command.run', {command:'effort'}, async ($, e, next) => {
+      const result = await next(e);
+      if (result.text) effortState.native[await $.session.model()] = result.text;
+      $.ui.invalidate('ui.render');
+      return result;
+    });
+    on('ui.focus', {requestId:'auto-main'}, async ($, e, next) => {
+      const row = auto.models.find((_, index) => e.element === 'auto-main-model-' + index);
+      if (row && effortState.model !== row.model) {
+        effortState.model = row.model;
+        $.ui.invalidate('ui.render');
+      }
+      return next(e);
+    });
     on('ui.render', { component: 'Pane' }, async ($, e, next) => {
       if (e.requestId !== 'auto-main') return next(e);
-      const { Box, Text, Select } = $.ui.resolve(e);
+      const { Box, Text, Button } = $.ui.resolve(e);
+      const layers = await Promise.all([
+        $.settings.read({source:'user'}), $.settings.read({source:'project'}),
+        $.settings.read({source:'local'}), $.settings.read({source:'flag'}), $.settings.read({source:'policy'}),
+      ]);
+      const environment = await $.env.get('CLAUDE_CODE_EFFORT_LEVEL');
+      const active = await autoSelected($, auto);
+      const model = effortState.model ?? await mainModel($, auto);
+      const row = auto.models.find(row => row.model === model) ?? auto.models[0];
+      const profile = effortProfile(row.autoModel, layers, environment, effortState.native[row.autoModel]);
+      const effort = effortState.drafts[row.model] ?? profile.level;
+      const editable = active && profile.levels.length > 0 && !profile.locked;
+      const adjust = (delta: number) => {
+        if (!editable) return;
+        const index = Math.max(0, Math.min(profile.levels.length - 1, profile.levels.indexOf(effort) + delta));
+        effortState.drafts[row.model] = profile.levels[index];
+        $.ui.invalidate('ui.render');
+      };
+      const save = async (selected: AutoPicker['models'][number]) => {
+        const draft = effortState.drafts[selected.model];
+        const previous = await mainModel($, auto);
+        const active = await autoSelected($, auto);
+        switchingAuto = true;
+        pendingSelection?.cancel();
+        try {
+          await customAutoRow($, auto, selected.model);
+          if (active) {
+            await $.command.run({ command: 'model', args: selected.autoModel });
+            if (await $.session.model() !== selected.autoModel) {
+              throw new Error('Claude did not accept the selected main model.');
+            }
+          }
+          if (active && typeof draft === 'string' && EFFORT_LEVELS.includes(draft)) {
+            const result = await $.command.run({command: 'effort', args: draft});
+            if (result.text) effortState.native[selected.autoModel] = result.text;
+          }
+          await $.store.set(auto.storeKey, selected.model);
+        } catch (error) {
+          // Preserve the selected profile and the single row after a rejected switch.
+          await customAutoRow($, auto, await mainModel($, auto) || previous);
+          throw error;
+        } finally {
+          switchingAuto = false;
+        }
+        await $.ui.close({ id: 'auto-main' });
+        $.ui.invalidate('ui.render');
+        $.ui.toast(`Auto(${selected.label}) saved`);
+      };
+      const symbols: Record<string,string> = {low:'○',medium:'◐',high:'●',xhigh:'◉',max:'✦',auto:'○'};
+      const hint = !active ? 'Select Auto in /model to adjust effort'
+        : !profile.levels.length ? `Effort not supported for ${row.label}`
+        : `${symbols[effort] ?? '○'} ${effort[0].toUpperCase() + effort.slice(1)} effort${!effortState.drafts[row.model] && profile.note ? ` (${profile.note})` : ''}`;
       return Box({ flexDirection: 'column', children: [
         Text({ bold: true, children: ['Choose your main model'] }),
         Text({ dimColor: true, children: ['Leads your session. Auto routes subagent tasks.'] }),
-        Select({ key: 'auto-main', autoFocus: true, value: await mainModel($, auto),
-          options: auto.models.map((row) => ({ value: row.model, label: row.label })),
-          onSelect: async (value) => {
-            const selected = auto.models.find((row) => row.model === value);
-            if (!selected) return;
-            const previous = await mainModel($, auto);
-            const active = await autoSelected($, auto);
-            switchingAuto = true;
-            pendingSelection?.cancel();
-            try {
-              await customAutoRow($, auto, selected.model);
-              if (active) {
-                await $.command.run({ command: 'model', args: selected.autoModel });
-                if (await $.session.model() !== selected.autoModel) {
-                  throw new Error('Claude did not accept the selected main model.');
-                }
-              }
-              await $.store.set(auto.storeKey, selected.model);
-            } catch (error) {
-              // Preserve the selected profile and the single row after a rejected switch.
-              await customAutoRow($, auto, await mainModel($, auto) || previous);
-              throw error;
-            } finally {
-              switchingAuto = false;
-            }
-            await $.ui.close({ id: 'auto-main' });
-            $.ui.invalidate('ui.render');
-            $.ui.toast(`Auto(${selected.label}) saved`);
-          },
-        }),
+        Box({flexDirection:'column', marginTop:1, children:auto.models.map((item,index) =>
+          Button({key:'auto-main-model-' + index,
+            plain:true, autoFocus:item.model === model ? true : undefined,
+            label:`${item.model === model ? '❯' : ' '} ${item.label}`, onPress:() => save(item)}))}),
+        Box({flexDirection:'row', marginY:1, children:[
+          Text({children:[hint, ...(editable ? [
+            Text({dimColor:true,children:[' · h/l to adjust effort']}),
+          ] : [])]}),
+          ...(editable ? [
+            // Keep pane shortcuts mounted without Claude's automatic button captions.
+            Box({width:0,height:0,overflow:'hidden',children:[
+              Button({key:'auto-effort-less',plain:true,hotkey:'h',label:'Lower effort',onPress:() => adjust(-1)}),
+              Button({key:'auto-effort-more',plain:true,hotkey:'l',label:'Raise effort',onPress:() => adjust(1)}),
+            ]}),
+          ] : []),
+        ]}),
+        Text({dimColor:true,children:['Enter to save · Esc to cancel']}),
       ] });
     });
     on('command.describe', { command: ['smart-router', 'smart-router-orchestrator'] }, ($, e, next) =>
@@ -258,7 +317,7 @@ export function register(on: On, options: PluginOptions): void {
       if (choosing) return {};
       choosing = true;
       try {
-        await chooseMainModel($, auto);
+        await chooseMainModel($, auto, effortState);
       } finally {
         choosing = false;
       }
@@ -270,9 +329,15 @@ export function register(on: On, options: PluginOptions): void {
     on('session.append', { door: 'command' }, async ($, e, next) => {
       const internalSwitch = switchingAuto;
       const result = await next(e);
-      if (internalSwitch) return result;
       const content = e.message?.content;
       const text = Array.isArray(content) ? content.filter((b) => b.type === 'text').map((b) => b.text).join('\n') : '';
+      if (/^<local-command-stdout>(?:Set effort level|Current effort level|Effort level)/i.test(text)) {
+        effortState.native[await $.session.model()] = text;
+        $.ui.invalidate('ui.render');
+      }
+      const modelEffort = text.match(/^<local-command-stdout>Set model to .*? with `?(low|medium|high|xhigh|max)`? effort/i)?.[1];
+      if (modelEffort) effortState.native[await $.session.model()] = 'Effort level: ' + modelEffort;
+      if (internalSwitch) return result;
       if (/^<local-command-stdout>Kept model/.test(text)) await $.ui.close({ id: 'auto-main' });
       if (/^<local-command-stdout>Set model to /.test(text)) {
         pendingSelection?.cancel();
@@ -286,7 +351,7 @@ export function register(on: On, options: PluginOptions): void {
           if (choosing) return;
           choosing = true;
           try {
-            await chooseMainModel($, auto);
+            await chooseMainModel($, auto, effortState);
           } finally {
             choosing = false;
           }

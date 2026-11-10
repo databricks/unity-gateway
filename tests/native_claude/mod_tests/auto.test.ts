@@ -30,6 +30,7 @@ function host(on: any, selected = 'ug-auto-opus') {
     if (!e.args) return next(e);
     state.selected = e.args; return state.modelResult;
   });
+  on('settings.read', () => ({value:{}}));
   on('session.model', () => ({value: state.selected}));
   on('session.start', () => ({cwd: '/work'}));
   on('ui.invalidate', () => ({value: undefined}));
@@ -121,7 +122,7 @@ test('/auto changes only the main preference and offers the complete catalog', {
   await $.command.run({command: 'auto'});
   expect(state.questions[0].id).toBe('auto-main');
   const pane = await $.ui.mount({plugin: 'ug-smart-router', component: 'Pane', requestId: 'auto-main', surface: 'terminal', props: {} as any});
-  await pane.select({key: 'auto-main', value: 'astra'});
+  await pane.press({key:'auto-main-model-3'});
   await pane.unmount();
   expect(state.saved).toBe('astra');
   expect(state.selected).toBe('opus');
@@ -199,7 +200,7 @@ test('/auto switches the native identity while Auto is selected', {options}, asy
   await $.session.start(start);
   await $.command.run({command: 'auto'});
   const pane = await $.ui.mount({plugin: 'ug-smart-router', component: 'Pane', requestId: 'auto-main', surface: 'terminal', props: {} as any});
-  await pane.select({key: 'auto-main', value: 'astra'});
+  await pane.press({key:'auto-main-model-3'});
   await pane.unmount();
   expect(state.selected).toBe('ug-auto-astra');
   expect(state.saved).toBe('astra');
