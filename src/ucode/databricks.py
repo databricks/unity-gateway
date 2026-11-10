@@ -4166,21 +4166,29 @@ def list_provider_service_models(
     """The models the gateway lists for Model Provider Service ``service_name``, and why listing
     failed. An empty listing is not a failure.
 
-    When a tool is specified, use its API catalog; otherwise choose by provider type.
+    Codex always reads its own API catalog and Claude always the Anthropic one; other tools (and
+    an unspecified tool) route by provider type — Anthropic-API providers speak the Anthropic
+    catalog, the rest the Codex-shaped catalog.
     """
-    if tool == "claude" or (tool != "codex" and provider_type in ANTHROPIC_API_PROVIDER_TYPES):
+
+    def codex_catalog() -> tuple[list[str], str | None]:
+        try:
+            catalog = _fetch_codex_model_catalog(
+                workspace, token, source=CodexCatalogSource.PROVIDER, identifier=service_name
+            )
+        except CodexModelCatalogEmpty:
+            return [], None
+        except RuntimeError as exc:
+            return [], str(exc)
+        return catalog_slugs(catalog), None
+
+    if tool == "codex":
+        return codex_catalog()
+    if tool == "claude" or provider_type in ANTHROPIC_API_PROVIDER_TYPES:
         listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
         reason = listing.error_msg
         return listing.model_ids, None if reason == _NO_ANTHROPIC_MODEL_IDS else reason
-    try:
-        catalog = _fetch_codex_model_catalog(
-            workspace, token, source=CodexCatalogSource.PROVIDER, identifier=service_name
-        )
-    except CodexModelCatalogEmpty:
-        return [], None
-    except RuntimeError as exc:
-        return [], str(exc)
-    return catalog_slugs(catalog), None
+    return codex_catalog()
 
 
 def is_mps_wildcard(model: str) -> bool:
@@ -4198,10 +4206,9 @@ def expand_wildcard_sources(models: list[str], tool: str, workspace: str, token:
         if model not in lookups:
             service_name = model[:-2]
             targets: list[str] = []
-            # Only read when no token was available; real lookups set their own reason below.
-            reason = "no Databricks token; run `ug configure`"
-            try:
-                if token:
+            reason: str | None = None
+            if token:
+                try:
                     service, reason = get_model_provider_service(service_name, workspace, token)
                     if service is not None:
                         targets, reason = list_provider_service_models(
@@ -4211,9 +4218,11 @@ def expand_wildcard_sources(models: list[str], tool: str, workspace: str, token:
                             service.get("provider_type", ""),
                             tool=tool,
                         )
-            except RuntimeError as exc:
-                reason = str(exc)
+                except RuntimeError as exc:
+                    reason = str(exc)
             if not targets:
+                if not token:
+                    reason = "no Databricks token; run `ug configure`"
                 detail = f" ({reason})" if reason else ""
                 print_warning(
                     f"Could not expand managed model source {model}{detail}; "

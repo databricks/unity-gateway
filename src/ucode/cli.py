@@ -145,6 +145,7 @@ from ucode.managed_files import (
 )
 from ucode.managed_resolve import (
     OTEL_TRACING_TOOLS,
+    STATIC_MODEL_LIST_TOOLS,
     managed_claude_family_models,
     managed_default_model,
     managed_enabled_tools,
@@ -157,6 +158,7 @@ from ucode.managed_resolve import (
     managed_unservable_models,
     recommended_agent,
     resolve_state,
+    set_static_model_list,
 )
 from ucode.mcp import (
     CONFIG_WRITABLE_MCP_CLIENTS,
@@ -1092,9 +1094,8 @@ def _launch_workspace_state(workspace: str | None) -> dict:
 
 def _expand_managed_model_sources(managed: dict, state: dict, tool: str) -> dict:
     models = managed_static_models(managed, tool) or []
-    if tool not in ("claude", "codex", "copilot") or not any(
-        is_mps_wildcard(model) for model in models
-    ):
+    wildcards = [model for model in models if is_mps_wildcard(model)]
+    if tool not in STATIC_MODEL_LIST_TOOLS or not wildcards:
         return managed
     try:
         token = get_databricks_token(state["workspace"], _get_catalog_profile(state))
@@ -1104,16 +1105,12 @@ def _expand_managed_model_sources(managed: dict, state: dict, tool: str) -> dict
     if not expanded:
         # Every wildcard failed to expand. An empty static list reads as unset, which would
         # silently replace the admin's allow-list with workspace discovery; fail closed instead.
-        failed = ", ".join(model for model in models if is_mps_wildcard(model))
         raise RuntimeError(
-            f"Could not expand managed model sources ({failed}); refusing to fall back to "
-            "workspace discovery. Check service access and compatible models, then retry."
+            f"Could not expand managed model sources ({', '.join(wildcards)}); refusing to fall "
+            "back to workspace discovery. Check service access and compatible models, then retry."
         )
     managed = copy.deepcopy(managed)
-    model_config = managed["enabled_agents"][tool]["model_config"]
-    # Write back to the key the list was read from; `sources` wins over legacy `model_services`.
-    key = "sources" if "sources" in model_config else "model_services"
-    model_config[key] = expanded
+    set_static_model_list(managed["enabled_agents"][tool]["model_config"], expanded)
     return managed
 
 

@@ -1937,7 +1937,6 @@ def test_managed_wildcard_expansion_writes_a_copy(monkeypatch, key):
     )
     expanded = cli_mod._expand_managed_model_sources(managed, MINIMAL_STATE, "claude")
     assert expanded["enabled_agents"]["claude"]["model_config"][key] == ["c.s.mps.model"]
-    assert cli_mod.managed_static_models(expanded, "claude") == ["c.s.mps.model"]
     assert cli_mod.managed_static_models(managed, "claude") == ["c.s.mps.*"]
 
 

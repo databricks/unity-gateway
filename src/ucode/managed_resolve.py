@@ -42,6 +42,10 @@ OTEL_TRACING_TOOLS = ("claude", "codex", "copilot")
 # write yet.
 SETTINGS_PASSTHROUGH_TOOLS = ("claude",)
 
+# Agents whose managed `model_config` carries a static model allow-list (`sources` or the legacy
+# `model_services`), the list managed MPS wildcard entries are expanded against.
+STATIC_MODEL_LIST_TOOLS = ("claude", "codex", "copilot")
+
 
 def _as_dict(value: object) -> dict[str, object]:
     """Return ``value`` as a ``dict[str, object]`` when it is a dict, else an empty dict."""
@@ -99,7 +103,7 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
                 overrides["opencode_models"] = buckets
         else:
             overrides[f"{tool}_models"] = models
-    if tool in ("claude", "codex", "copilot"):
+    if tool in STATIC_MODEL_LIST_TOOLS:
         static_models = managed_static_models(managed, tool)
         if static_models:
             overrides[f"{tool}_static_models"] = static_models
@@ -230,18 +234,30 @@ def managed_static_models(managed: dict, tool: str) -> list[str] | None:
     return static_model_list(_agent_model_config(managed, tool)) or None
 
 
+def _static_model_list_key(model_config: dict) -> str | None:
+    """The key carrying one agent's static model list: ``sources`` wins over the legacy
+    ``model_services`` (a oneof). None when neither is set."""
+    if "sources" in model_config:
+        return "sources"
+    if "model_services" in model_config:
+        return "model_services"
+    return None
+
+
 def static_model_list(model_config: dict) -> list[str]:
     """The static model list from one agent's ``model_config``: ``sources`` or the legacy
     ``model_services`` (a oneof). Empty and non-string entries are dropped; empty when unset."""
-    if "sources" in model_config:
-        models = model_config["sources"]
-    elif "model_services" in model_config:
-        models = model_config["model_services"]
-    else:
-        models = None
+    key = _static_model_list_key(model_config)
+    models = model_config[key] if key else None
     if not isinstance(models, list):
         return []
     return [model for model in (_str(item) for item in models) if model]
+
+
+def set_static_model_list(model_config: dict, models: list[str]) -> None:
+    """Write the static model list to the key it was read from (``sources`` over the legacy
+    ``model_services``), so a reader of :func:`static_model_list` sees the written list."""
+    model_config[_static_model_list_key(model_config) or "model_services"] = models
 
 
 def managed_default_model(managed: dict, tool: str) -> str | None:
