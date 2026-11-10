@@ -1,5 +1,10 @@
 # Integration tests
 
+`../test_databricks.py::TestGetDatabricksProfiles` covers metadata-only profile
+discovery, implicit PAT classification, and the separate selected-workspace authentication check at controlled
+subprocess boundaries. Unrelated-profile network isolation and startup latency are
+not currently measured by a live integration journey.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,

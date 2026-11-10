@@ -1,5 +1,11 @@
 # Test suites and user journeys
 
+Profile discovery component checks in `test_databricks.py::TestGetDatabricksProfiles`
+require local metadata listing without validating unrelated workspaces, preserve PAT
+filtering (including implicit PATs without DEFAULT inheritance), tolerate unreadable
+local classification hints, and verify that the selected workspace still gets an
+authentication check. They do not establish live login or end-to-end startup latency.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,
