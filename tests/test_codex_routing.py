@@ -150,16 +150,19 @@ def test_router_failure_fails_open(monkeypatch):
     assert "offline" in str(error)
 
 
-def test_spawn_rewrite_preserves_original_input(monkeypatch):
+@pytest.mark.parametrize("assignment_field", ["message", "description"])
+def test_spawn_rewrite_preserves_original_input(monkeypatch, assignment_field):
     monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "0")
     assignment = "Review the parser's error handling."
+    tool_input = {
+        "task_name": "reviewer",
+        "message": "",
+        assignment_field: assignment,
+        "fork": False,
+    }
     payload = {
         "tool_name": "collaborationspawn_agent",
-        "tool_input": {
-            "task_name": "reviewer",
-            "message": assignment,
-            "fork": False,
-        },
+        "tool_input": tool_input,
     }
     monkeypatch.setattr(
         codex_routing,
@@ -185,6 +188,7 @@ def test_spawn_rewrite_preserves_original_input(monkeypatch):
         "\n┌───────────────────────────────────────────────────────────────────────────┐\n"
         "│ Using Unity Gateway Smart Router - Subagent                               │\n"
         "│ Subagent : reviewer                                                       │\n"
+        "│ Prompt preview : Review the parser's error handling.                      │\n"
         "│ Selected Model : gpt-5.5                                                  │\n"
         "│ Reason : Review needs deeper reasoning.                                   │\n"
         "└───────────────────────────────────────────────────────────────────────────┘"
@@ -193,12 +197,7 @@ def test_spawn_rewrite_preserves_original_input(monkeypatch):
     assert "Using Unity Gateway Smart Router - Subagent" in expected_message
     assert codex_routing.routing.SUBAGENT_ROUTING_DISCLAIMER not in expected_message
     assert hook["permissionDecision"] == "allow"
-    assert hook["updatedInput"] == {
-        "task_name": "reviewer",
-        "message": assignment,
-        "fork": False,
-        "model": "gpt-5.5",
-    }
+    assert hook["updatedInput"] == {**tool_input, "model": "gpt-5.5"}
     assert hook["permissionDecisionReason"] == expected_message
 
 
@@ -370,6 +369,10 @@ def test_spawn_routes_on_plaintext_message_when_present(tmp_path, monkeypatch):
         audit_decision=True,
     )
     assert captured["task"] == assignment
+    assert (
+        "Prompt preview : Review the parser's café/日本語 error handling."
+        in output["systemMessage"]
+    )
     assert output["hookSpecificOutput"]["updatedInput"]["message"] == assignment
     record = json.loads(decisions.read_text())
     assert record["task_sha256"] == hashlib.sha256(assignment.encode("utf-8")).hexdigest()
@@ -391,7 +394,7 @@ def test_spawn_routes_on_plaintext_message_when_present(tmp_path, monkeypatch):
         "gAAAAABqqU8EOCRSZac8zPpmJqgyznI8gFYExjTbUKzfT9vq7EAz722mbQxTY2ctkVwoX69",
     ],
 )
-def test_spawn_without_plaintext_keeps_requested_model(tmp_path, monkeypatch, message):
+def test_spawn_without_plaintext_keeps_requested_model(tmp_path, monkeypatch, capsys, message):
     def unexpected_decision(*args, **kwargs):
         pytest.fail("Router must not receive a label or encrypted assignment")
 
@@ -420,6 +423,15 @@ def test_spawn_without_plaintext_keeps_requested_model(tmp_path, monkeypatch, me
     )
     assert json.dumps(payload) == before
     assert not decisions.exists()
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert not captured.err
+    notice = codex_routing.SUBAGENT_NOTICE_CONFIG.message(
+        codex_routing.RoutingDecision(model="requested-model"),
+        "requested-model",
+        payload["tool_input"],
+    )
+    assert "Prompt preview :" not in notice
 
 
 def test_canary_and_audit_are_written(tmp_path, monkeypatch):
@@ -617,7 +629,7 @@ def test_codex_session_log_record_matches_claude_record_shape(tmp_path, monkeypa
     (codex,) = session_log.read_decisions("codex", "s1")
     (claude,) = session_log.read_decisions("claude", "s1")
     assert codex.keys() == claude.keys()
-    assert codex["prompt"]["preview"] == "y" * 160 + "…"
+    assert codex["prompt"]["preview"] == "y" * 237 + "..."
     assert codex["prompt"] == claude["prompt"]
     assert codex["prompt"]["length"] == len(assignment)
     assert len(codex["prompt"]["sha256"]) == 64
