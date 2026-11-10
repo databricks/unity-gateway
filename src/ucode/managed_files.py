@@ -321,6 +321,25 @@ def read_managed_file(path: Path) -> str | None:
         raise RuntimeError(f"Cannot read managed settings at {path}: {exc}") from exc
 
 
+def warn_remaining_managed_routing(
+    path: Path, *, display: str, inspect: Callable[[Path], list[str]]
+) -> None:
+    try:
+        keys = inspect(path)
+    except Exception:  # noqa: BLE001 -- Reporting must not interrupt completed revert operations.
+        print_warning(
+            f"Could not inspect {display} managed settings at {path} after revert. "
+            "Check this file manually or ask your administrator."
+        )
+        return
+    if keys:
+        print_warning(
+            f"{display} managed settings at {path} still define {', '.join(keys)} after revert. "
+            "These settings can override subscription authentication or routing. Remove those "
+            "entries manually if no longer needed, or ask your administrator."
+        )
+
+
 def managed_file_fingerprint(path: Path) -> dict[str, int | bool]:
     """Return metadata sufficient to detect normal MDM replacement or in-place edits."""
     try:

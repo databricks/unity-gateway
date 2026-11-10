@@ -49,6 +49,11 @@ The same component suite covers an existing file without a UG backup record, inc
 blocks Claude relay setup: revert names the retained file and advises manual cleanup, with existing
 exit status and state cleanup preserved. Absent/unsupported paths, inspection failures, and tracked
 baseline restoration are covered separately. These checks do not exercise a live relay MPS.
+Post-revert component cases also cover retained routing after baseline restoration or external
+edits, Codex requirements files, and Claude drop-ins after the main file is absent or removed.
+They verify key-only warnings, malformed/unreadable policy reporting, continued cleanup, and
+no routing warning after full removal or restoration of unrelated settings. Native MDM policy
+and subscription login are not exercised.
 
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls

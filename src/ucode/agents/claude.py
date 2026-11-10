@@ -91,6 +91,7 @@ from ucode.managed_files import (
     remove_privileged_tree,
     revert_managed_file,
     warn_managed_write_skipped,
+    warn_remaining_managed_routing,
     warn_skipped_settings_passthrough,
     windows_claude_managed_settings_path,
     withdrawn_list_items,
@@ -475,6 +476,34 @@ def _managed_prepend_plugins() -> list:
     except RuntimeError:
         return []
     return prepend if isinstance(prepend, list) else []
+
+
+def report_remaining_managed_routing() -> None:
+    path = _managed_settings_path()
+    if path is None:
+        return
+    warn_remaining_managed_routing(path, display="Claude Code", inspect=_managed_relayed_conflicts)
+    drop_ins = path.with_name("managed-settings.d")
+    try:
+        paths = sorted(
+            p
+            for p in drop_ins.iterdir()
+            if p.suffix == ".json"
+            and not p.name.startswith(".")
+            and (p.is_file() or p.is_symlink())
+        )
+    except FileNotFoundError:
+        return
+    except OSError:
+        print_warning(
+            f"Could not inspect Claude Code managed settings at {drop_ins} after revert. "
+            "Check this directory manually or ask your administrator."
+        )
+        return
+    for fragment in paths:
+        warn_remaining_managed_routing(
+            fragment, display="Claude Code", inspect=_managed_relayed_conflicts
+        )
 
 
 def _managed_relayed_conflicts(path: Path) -> list[str]:

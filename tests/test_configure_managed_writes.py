@@ -355,7 +355,159 @@ def test_revert_cli_does_not_warn_for_a_restored_managed_file(
     assert f"{display} OS-managed settings: restored" in result.output
     assert "no UG backup record" not in result.output
     assert "remove the file manually" not in result.output
+    assert "still define" not in result.output
     assert path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("tool", ["claude", "codex", "codex-requirements"])
+@pytest.mark.parametrize("outcome", ["restored", "external", "removed"])
+def test_revert_cli_checks_remaining_routing_after_tracked_revert(
+    tmp_path, monkeypatch, isolated_revert, tool, outcome
+):
+    path = _write_policy_env(tmp_path, monkeypatch).with_name(
+        "managed-settings.json"
+        if tool == "claude"
+        else "requirements.toml"
+        if tool == "codex-requirements"
+        else "managed_config.toml"
+    )
+    agent = claude if tool == "claude" else codex
+    monkeypatch.setattr(
+        agent,
+        "_managed_settings_path" if tool == "claude" else "codex_managed_config_path",
+        lambda: path,
+    )
+    if tool == "claude":
+        baseline = {"apiKeyHelper": "original-auth-helper"}
+        applied = {"apiKeyHelper": "ug-auth-helper"}
+        edited = {"apiKeyHelper": "externally-edited-auth-helper"}
+        owned_paths = [["apiKeyHelper"]]
+        key = "apiKeyHelper"
+        dump, parser = json.dumps, json.loads
+    else:
+        baseline = {"model_providers": {"Databricks": {"base_url": "https://original.example"}}}
+        applied = {"model_providers": {"Databricks": {"base_url": "https://ug.example"}}}
+        edited = {"model_providers": {"Databricks": {"base_url": "https://external.example"}}}
+        owned_paths = [["model_providers", "Databricks", "base_url"]]
+        key = "model_providers.Databricks"
+        dump, parser = codex.tomlkit.dumps, tomllib.loads
+    if outcome != "removed":
+        path.write_text(dump(baseline), encoding="utf-8")
+    managed_files.request_explicit_managed_writes()
+    managed_files.reconcile_managed_file(
+        path,
+        dump(applied),
+        tool="claude" if tool == "claude" else "codex",
+        display="Claude Code" if tool == "claude" else "Codex",
+        owned_paths=owned_paths,
+        parser=parser,
+    )
+    if outcome == "external":
+        path.write_text(dump(edited), encoding="utf-8")
+    cli_mod.save_state({"workspace": WS})
+
+    result = CliRunner().invoke(cli_mod.app, ["revert"], env={"COLUMNS": "240"})
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 0, output
+    assert cli_mod.load_state() == {}
+    if outcome == "removed":
+        assert not path.exists()
+        assert "still define" not in output
+        return
+    assert parser(path.read_text(encoding="utf-8")) == (
+        edited if outcome == "external" else baseline
+    )
+    assert f"at {path} still define {key}" in output
+    assert "subscription authentication or routing" in output
+    assert "Remove those entries manually" in output
+    assert "original-auth-helper" not in output
+    assert "externally-edited-auth-helper" not in output
+    assert "https://original.example" not in output
+    assert "https://external.example" not in output
+    assert (
+        "ucode entries removed; external changes preserved" if outcome == "external" else "restored"
+    ) in output
+
+
+@pytest.mark.parametrize("tracked_main_file", [False, True])
+def test_revert_cli_reports_drop_in_routing_without_a_remaining_main_file(
+    tmp_path, monkeypatch, isolated_revert, tracked_main_file
+):
+    path = _write_policy_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: path)
+    if tracked_main_file:
+        managed_files.request_explicit_managed_writes()
+        _reconcile(path)
+    drop_ins = path.with_name("managed-settings.d")
+    drop_ins.mkdir()
+    fragment = drop_ins / "routing.json"
+    contents = b'\xef\xbb\xbf{"env": {"ANTHROPIC_BASE_URL": "https://policy.example"}}'
+    fragment.write_bytes(contents)
+    (drop_ins / ".hidden.json").write_text('{"apiKeyHelper": "hidden"}')
+    (drop_ins / "ignored.txt").write_text('{"apiKeyHelper": "ignored"}')
+    (drop_ins / "directory.json").mkdir()
+
+    result = CliRunner().invoke(cli_mod.app, ["revert"], env={"COLUMNS": "240"})
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 0, output
+    assert not path.exists()
+    assert f"at {fragment} still define env.ANTHROPIC_BASE_URL after revert" in output
+    assert "Remove those entries manually" in output
+    assert "https://policy.example" not in output
+    assert ".hidden.json" not in output
+    assert "ignored.txt" not in output
+    assert "directory.json" not in output
+    assert fragment.read_bytes() == contents
+
+
+@pytest.mark.parametrize("contents", [b'{"apiKeyHelper":', b"\xff"])
+def test_revert_cli_reports_invalid_drop_ins_and_continues_inspection(
+    tmp_path, monkeypatch, isolated_revert, contents
+):
+    path = tmp_path / "managed-settings.json"
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: path)
+    drop_ins = path.with_name("managed-settings.d")
+    drop_ins.mkdir()
+    invalid = drop_ins / "01-invalid.json"
+    invalid.write_bytes(contents)
+    valid = drop_ins / "02-valid.json"
+    valid.write_text('{"apiKeyHelper": "private-helper-command"}')
+    cli_mod.save_state({"workspace": WS})
+
+    result = CliRunner().invoke(cli_mod.app, ["revert"], env={"COLUMNS": "240"})
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 0, output
+    assert f"Could not inspect Claude Code managed settings at {invalid} after revert" in output
+    assert f"at {valid} still define apiKeyHelper" in output
+    assert "private-helper-command" not in output
+    assert cli_mod.load_state() == {}
+    assert invalid.read_bytes() == contents
+
+
+def test_revert_cli_reports_inaccessible_drop_in_directory(tmp_path, monkeypatch, isolated_revert):
+    path = tmp_path / "managed-settings.json"
+    drop_ins = path.with_name("managed-settings.d")
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: path)
+    real_iterdir = Path.iterdir
+
+    def iterdir(target):
+        if target == drop_ins:
+            raise PermissionError("Permission denied")
+        return real_iterdir(target)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    cli_mod.save_state({"workspace": WS})
+
+    result = CliRunner().invoke(cli_mod.app, ["revert"], env={"COLUMNS": "240"})
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 0, output
+    assert f"Could not inspect Claude Code managed settings at {drop_ins} after revert" in output
+    assert "Check this directory manually or ask your administrator" in output
+    assert cli_mod.load_state() == {}
 
 
 def test_revert_cli_explains_untracked_settings_after_relay_conflict(

@@ -87,6 +87,7 @@ from ucode.managed_files import (
     reconcile_managed_file,
     revert_managed_file,
     warn_managed_write_skipped,
+    warn_remaining_managed_routing,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
@@ -1099,6 +1100,12 @@ def _sync_desktop_relay(
     except (OSError, RuntimeError, ValueError) as exc:
         print_warning_err(f"Could not update the Codex app ChatGPT relay: {exc}")
         return False
+
+
+def report_remaining_managed_routing() -> None:
+    path = codex_managed_config_path()
+    if path is not None:
+        warn_remaining_managed_routing(path, display="Codex", inspect=_managed_relayed_conflicts)
 
 
 def _managed_relayed_conflicts(path: Path) -> list[str]:

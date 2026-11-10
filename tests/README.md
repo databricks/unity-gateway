@@ -1308,6 +1308,13 @@ and ug state without attempting a replacement write.
 It also covers manual-cleanup guidance for existing Claude/Codex files without backup records,
 including after a Claude relay conflict, unchanged file contents and normal state cleanup,
 missing/unsupported paths, inaccessible paths, and restored baseline files that need no warning.
+Post-revert reporting covers restored Claude/Codex routing baselines, preserved external routing
+edits, Windows Codex requirements, and Claude drop-ins with an absent or removed main file.
+It checks BOM-prefixed drop-ins, ignored hidden/non-JSON/directory entries, continued inspection
+after invalid JSON or UTF-8, inaccessible drop-in directories, successful state cleanup, and
+warnings that name keys without exposing values. Fully removed files and unrelated restored
+settings produce no routing warning. These are file-level component checks, not native MDM
+or subscription-login validation.
 `test_cli.py` covers the workspace configure session boundary.
 These are unit/component checks; they do not establish live sudo password-prompt behavior.
 

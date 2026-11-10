@@ -217,6 +217,13 @@ If ucode cannot complete a write or revert, the backup remains available for a l
   Revert keeps its existing exit status and state cleanup. This includes existing authentication
   settings that block Claude subscription relay setup before ug creates a backup.
 - If an administrator or MDM changed the file later, perform a three-way revert.
+- After restoration, inspect the remaining Claude/Codex managed files and Claude's visible
+  `managed-settings.d/*.json` drop-ins for settings that can override subscription authentication
+  or routing. This also runs when a baseline was restored or external edits were preserved.
+  Warnings name files and setting keys, never their values, and advise manual removal of entries
+  if no longer needed or administrator help. Unreadable or invalid files produce manual-check
+  guidance without interrupting cleanup. This is file inspection, not a check of live MDM policy
+  or running agent sessions; file ownership, restoration, exit status, and state cleanup are unchanged.
 - Restore original values only where the current value still matches ucode's last-applied value.
 - Remove only list entries added by ucode while preserving externally added entries.
 - Preserve externally changed values rather than replacing them with stale baseline values.

@@ -1991,6 +1991,8 @@ def revert() -> int:
         "Codex", codex_managed_result, codex_agent.codex_managed_config_path()
     )
     print_kv("Unity Gateway workspace policy", workspace_policy_result)
+    claude_agent.report_remaining_managed_routing()
+    codex_agent.report_remaining_managed_routing()
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     print_kv("VS Code extension", vscode_result)
     for client, spec in MCP_CLIENTS.items():
