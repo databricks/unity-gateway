@@ -36,7 +36,6 @@ from pathlib import Path
 from typing import NamedTuple, cast
 
 import ucode.config_io as config_io
-from ucode.constants import ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR
 from ucode.databricks import (
     fetch_managed_coding_agent_configs,
     fetch_model_recommendation,
@@ -129,12 +128,10 @@ class AgentModels:
             if isinstance(key, str) and _FAMILY_SLOT_RE.fullmatch(key) and (model := _str(value))
         }
         # The server validates that at most one model source is set. `sources` may mix 3-part model
-        # services and 4-part MPS model refs, used as-is; it is read only with
-        # ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS=1 while external models roll out.
+        # services and 4-part MPS model refs, used as-is.
         provider = location = model_services = None
         if "sources" in models_dict:
-            if os.environ.get(ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR) == "1":
-                model_services = _str_list(models_dict["sources"]) or None
+            model_services = _str_list(models_dict["sources"]) or None
         elif "model_provider_service" in models_dict:
             provider = _str(models_dict["model_provider_service"])
         elif "unity_catalog_location" in models_dict:
