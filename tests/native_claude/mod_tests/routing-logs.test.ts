@@ -6,9 +6,10 @@ const pane = {
   props: { title: 'Smart Router logs', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 20 }, view: {} },
 } as const;
 const command = { command: 'smart-router', args: 'logs' };
+const now = Date.now() / 1000;
 const records = [
-  { at: 1000, preview: 'older task', selected_model: 'system.ai.claude-sonnet', routing_ms: 1400 },
-  { at: 2000, preview: null, selected_model: 'databricks-fast', routing_ms: 250 },
+  { at: now - 2 * 3600, preview: 'older task', selected_model: 'system.ai.claude-sonnet', routing_ms: 1400 },
+  { at: now - 5, preview: null, selected_model: 'databricks-fast', routing_ms: 250 },
 ];
 
 test('opens and refreshes session rows newest first', { options }, async ($, on) => {
@@ -26,7 +27,9 @@ test('opens and refreshes session rows newest first', { options }, async ($, on)
   const ui = await $.ui.mount(pane);
   const tree = JSON.stringify(await ui.drawn());
   expect(tree).toContain('2 routed prompts this session');
-  expect(tree).toMatch(/\d{2}:\d{2}/);
+  expect(tree).toContain('  2h ago  ');
+  expect(tree).toContain('just now  ');
+  expect(tree).not.toMatch(/\d{2}:\d{2}/);
   expect(tree.indexOf('(prompt not recorded)')).toBeGreaterThanOrEqual(0);
   expect(tree.indexOf('older task')).toBeGreaterThanOrEqual(0);
   expect(tree.indexOf('(prompt not recorded)')).toBeLessThan(tree.indexOf('older task'));
@@ -36,8 +39,8 @@ test('opens and refreshes session rows newest first', { options }, async ($, on)
   expect(tree).not.toContain('0.3s');
   expect(tree).toContain('green');
   // Each row fills bodyColumns exactly, so the model name is right-aligned.
-  expect(tree).toContain(`"${'older task'.padEnd(80 - 'claude-sonnet'.length - 9)}  "`);
-  expect(tree).toContain(`"${'(prompt not recorded)'.padEnd(80 - 'fast'.length - 9)}  "`);
+  expect(tree).toContain(`"${'older task'.padEnd(80 - 'claude-sonnet'.length - 12)}  "`);
+  expect(tree).toContain(`"${'(prompt not recorded)'.padEnd(80 - 'fast'.length - 12)}  "`);
   await $.command.run(command);
   expect(JSON.stringify(await ui.drawn())).toContain('No routed subagents in this session yet.');
   expect(count).toBe(2);

@@ -8,6 +8,15 @@ const isDecision = (d: Decision): boolean =>
   (d.preview === null || typeof d.preview === 'string') && typeof d.selected_model === 'string' &&
   Number.isFinite(d.routing_ms);
 
+// Relative age avoids showing a wall-clock time in an unknown time zone.
+function age(at: number): string {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - at));
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
 export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnabled: boolean): void {
   let rows: Decision[] = [];
   let failed = false;
@@ -55,12 +64,12 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
     for (const row of rows) {
       const model = row.selected_model.replace(/^system\.ai\./, '').replace(/^databricks-/, '');
       const columns = Number.isFinite(e.props.bodyColumns) ? e.props.bodyColumns : 80;
-      // "HH:MM  " (7) + preview + "  " (2) + model fills the row, so the model ends at the right edge.
-      const room = Math.max(1, columns - model.length - 9);
+      // Age (8) + "  " + preview + "  " + model fills the row, so the model ends at the right edge.
+      const room = Math.max(1, columns - model.length - 12);
       const preview = (row.preview || '(prompt not recorded)').replace(/\s+/g, ' ');
       const label = preview.length > room ? preview.slice(0, Math.max(0, room - 1)) + '…' : preview;
       children.push(Box({ flexDirection: 'row', children: [
-        Text({ dimColor: true, children: [`${new Date(row.at * 1000).toTimeString().slice(0, 5)}  `] }),
+        Text({ dimColor: true, children: [`${age(row.at).padStart(8)}  `] }),
         Text({ children: [`${label.padEnd(room)}  `] }),
         Text({ color: 'green', bold: true, children: [model] }),
       ] }));
