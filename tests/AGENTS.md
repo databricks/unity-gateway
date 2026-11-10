@@ -93,8 +93,9 @@ exercise.
   and run documentation at the suite root.
 - Current scope is basic Claude/Codex configuration, routing, script usage,
   command forwarding, and configure/revert CUJs, plus Copilot CLI headless
-  model tasks, one TUI model-switch journey, one MCP add, tool-call and revert journey and
-  one OTLP trace-export journey (non-blocking lane), plus Antigravity CLI configure, TUI, headless, External Models,
+  model tasks, one TUI model-switch journey, one MCP add, tool-call and revert journey,
+  one OTLP trace-export journey and one managed-config journey turning off VS Code
+  (non-blocking lane), plus Antigravity CLI configure, TUI, headless, External Models,
   MCP-tool, skill-directory, and revert journeys (blocking Linux lane). Do not add other
   MCP/skills functionality,
   tracing, or the broad configure-option matrix without a new scope request.
