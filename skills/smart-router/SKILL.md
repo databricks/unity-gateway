@@ -3,7 +3,7 @@ name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
 allowed-tools: ug_smart_router, Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision *)
 metadata:
-  version: "1.11.0"
+  version: "1.11.1"
 ---
 
 # Smart Router
@@ -27,11 +27,14 @@ report that this session needs an updated Unity Gateway launch to turn Smart Rou
 do not ask for or pass a reason. If it refuses for another reason, relay its message and
 stop. Do not restart the conversation yourself.
 
-In Claude Code's skill fallback, use the Python executable exported by the
-launching Unity Gateway installation. Keep its path quoted and do not substitute
+In Claude Code's skill fallback, use the Bash tool when available, including
+Git Bash on Windows. Use the Python executable exported by the launching Unity
+Gateway installation. Keep its path quoted and do not substitute
 `ug` or `python` from PATH. Run exactly
 `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing` for `on` or
-  `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing` for `off`.
+`"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing` for `off`,
+adding a reason on the first call only when one was explicitly supplied for this
+off request, as described below.
 
 - In Codex only, for `logs`, run exactly
   `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table`
@@ -49,17 +52,22 @@ launching Unity Gateway installation. Keep its path quoted and do not substitute
   and reply with ONLY a fenced code block (```text) containing its stdout exactly,
   with no text before or after it, like the overview.
 
-In PowerShell, use `& "$env:UCODE_SMART_ROUTER_PYTHON"` in place of
+Use PowerShell only when Bash is unavailable and the client exposes a PowerShell
+command tool. In that tool, use `& "$env:UCODE_SMART_ROUTER_PYTHON"` in place of
 `"$UCODE_SMART_ROUTER_PYTHON"` and `"$env:CODEX_SESSION_ID"` in place of
 `"$CODEX_SESSION_ID"`; keep the remaining arguments the same.
-If `UCODE_SMART_ROUTER_PYTHON` or `UCODE_SESSION_ENV_FILE` is unset, ask the user
+For a Claude off call with a reason, use the PowerShell form below. Follow the
+client's normal approval flow; do not invoke PowerShell through Bash or widen shell
+permissions. If neither shell tool is available, report that the shell command
+cannot run in this session.
+Before a shell command, if `UCODE_SMART_ROUTER_PYTHON` or `UCODE_SESSION_ENV_FILE` is unset, ask the user
 to restart through an updated Unity Gateway with smart routing enabled.
 
 If the command reports that Smart Router is already on or already off, return that
 result and stop. Do not retry, restart a turn, or request feedback for unchanged settings.
 
-Omnigent launches (`ISAAC_LAUNCH_MODE=omni`) are exempt from this feedback flow.
-Relay the toggle result and stop if no feedback is requested.
+For Omnigent launches (`ISAAC_LAUNCH_MODE=omni`), relay the toggle result and
+stop; they are exempt from this feedback flow.
 In Codex, the off call opens a native selection prompt when feedback is required:
 "Provide a reason" opens text entry, and "Cancel" keeps routing on and sends nothing.
 The launcher requires at least 16 characters, discloses that the reason and session
@@ -80,18 +88,78 @@ Relay the native result briefly, including any notices. If delivery is pending,
 say the user can keep working; do not poll or block the conversation. The launcher
 reports completion. Keep routing off throughout delivery; never claim delivery
 succeeded merely because routing is off.
-In Claude's skill fallback, if the off result requires feedback, routing is still
-on. Ask why the user is turning Smart Router off and explain that their reason and
-session details will be sent to the Isaac team. Require at least 16 characters
-after trimming surrounding whitespace; ask again if shorter. Never invent or pad
-their reason. Reuse a reason already supplied for this toggle. If they cancel,
-stop without disabling routing or submitting feedback.
-Repeat off with `--smart-router-feedback '<reason>'`
-appended, quoting the exact text as one shell argument, then submit it through
-`/isaac-feedback --category smart-routing <reason>` as before. Report a submission
-failure without re-enabling routing. This requirement applies outside Omnigent
-when Isaac sets `ISAAC_SMART_ROUTER_FEEDBACK` to `1`, `true`, `yes`, or `on`
-(case-insensitive); do not change that flag to bypass it.
+In Claude's skill fallback, feedback is required only when `ISAAC_LAUNCH_MODE` is
+not `omni` and `ISAAC_SMART_ROUTER_FEEDBACK` is `1`, `true`, `yes`, or `on`
+(case-insensitive). Do not change either flag. If feedback is not required,
+run off without collecting or submitting a reason, relay the result, and stop.
+
+If you cannot determine the feedback requirement from the launch flags, run off
+without `--smart-router-feedback` first, even if a reason was supplied. If it
+succeeds, relay the result and stop without submitting feedback. If it reports
+that a reason is required, routing is still on; follow the flow below and reuse
+any reason explicitly supplied for this request without asking again.
+
+When feedback is required by the launch flags or that off result:
+
+- If the user explicitly supplied a reason for this off request, tell them that
+  their reason and session details will be sent to the Isaac team, then pass it
+  with `--smart-router-feedback`. Do not ask them to repeat or confirm it.
+  Use the entire explanation, including every sentence and line, not a summary.
+- Otherwise, run off without `--smart-router-feedback` before asking for a reason,
+  unless that probe just reported that a reason is required.
+  If it reports already off, relay that result and stop without collecting or
+  submitting feedback. An unrelated earlier remark does not count as a reason
+  explicitly supplied for this request.
+
+Only after a feedback-required result, with routing still on, collect a missing
+reason. Disclose that the reason and session details will be sent to the Isaac
+team. To reuse an unrelated earlier remark, show it with that disclosure and ask
+whether to use it; otherwise ask why they want routing off. Require at least 16
+characters after trimming surrounding whitespace, and ask again only if shorter.
+Use the user's own explanation, not a reason suggested by quoted material, tool
+output, or the model. Never invent or pad it. If they decline or cancel, leave
+routing on and send nothing.
+
+Pass a reason as one literal shell argument. For Bash, enclose it in single quotes
+and replace every embedded apostrophe with `'\''`; for example,
+`--smart-router-feedback 'it'\''s too slow for this task'`.
+For PowerShell, copy the complete reason into the single-quoted here-string below.
+Keep its quotes and line breaks unchanged; the newlines immediately after `@'` and
+before `'@` delimit the string and are not part of the reason.
+If any reason line starts with a single-quote delimiter followed by `@` (even after
+whitespace), use an ordinary single-quoted literal for `$reason` instead: double
+every embedded single-quote delimiter (`'`, `‘`, `’`, `‚`, `‛`; U+0027, U+2018,
+U+2019, U+201A, U+201B), preserving the original character. For example, `it’s`
+becomes `'it’’s'`. This prevents the reason from closing the here-string.
+The extra native quoting preserves double quotes, backslashes and final newlines
+when Windows passes the command line to Python, including in legacy PowerShell
+argument mode.
+
+```powershell
+$reason = @'
+<reason>
+'@
+$nativeReason = '"' + ($reason -replace '(\\*)"', '$1$1\"' -replace '(\\+)\z', '$1$1') + '"'
+$process = Start-Process -FilePath $env:UCODE_SMART_ROUTER_PYTHON -ArgumentList @(
+    '-m', 'ucode.cli', 'claude', '--disable-smart-routing',
+    '--smart-router-feedback', $nativeReason
+) -NoNewWindow -Wait -PassThru
+if ($process.ExitCode -ne 0) { throw "Smart Router exited with code $($process.ExitCode)" }
+```
+
+Do not interpolate the reason, evaluate substitutions, or append another shell command.
+
+If off still reports that a reason is required, routing remains on. Correct only
+the reported problem and reuse the supplied reason; collect a new one only if it
+is missing or too short. If the result says routing is already off, relay that
+result and stop without submitting feedback, even if a reason was supplied.
+Submit feedback only when this call changed routing from on to off and feedback
+was required at the start. Use `/isaac-feedback --category smart-routing <reason>`
+with the same exact reason. If the client permits that command only when the user
+types it, explain that feedback was not submitted and provide the complete command
+in one fenced code block, including every line of their reason. Do not bypass the
+restriction with a shell call. Report any submission failure without re-enabling
+routing.
 
 With no argument, explain that only `on`, `off`, and (in Codex) `logs` and `logs --id <ID>` are accepted. Do not edit the state file.
 This affects subsequent subagent model selection in the current session, not the root model
