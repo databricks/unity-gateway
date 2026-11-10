@@ -141,6 +141,7 @@ from ucode.managed_files import (
     set_machine_wide_only,
 )
 from ucode.managed_resolve import (
+    OTEL_TRACING_TOOLS,
     managed_claude_family_models,
     managed_default_model,
     managed_enabled_tools,
@@ -1874,7 +1875,7 @@ def status() -> int:
         default_model = _status_default_model(tool, effective_state, models)
         if default_model:
             rows.append(("Default model", default_model))
-        if tool in ("claude", "codex"):
+        if tool in OTEL_TRACING_TOOLS:
             rows.append(
                 (
                     "Tracing",

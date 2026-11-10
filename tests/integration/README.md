@@ -923,6 +923,7 @@ test_ug_copilot_models.py               # Copilot model registry: Claude then GP
 test_ug_copilot_providers.py            # Copilot via Model Provider Services: Anthropic, OpenAI, Azure OpenAI, Foundry, Bedrock allow-all; relayed refused
 test_ug_copilot_model_location.py       # Copilot on a Unity Catalog model location: fresh --model-location file task
 test_ug_copilot_mcp.py                  # Copilot MCP: ug mcp add, tool call, ug mcp list, revert keeps the user's server
+test_ug_copilot_tracing.py              # Copilot CLI OTLP export through the session proxy reaches the configured trace table
 test_ug_antigravity_headless.py         # Antigravity via ug's proxy: file task, --model (ug agy), Gemini MPS targets, MCP SQL tool, skill dir
 test_ug_configure_antigravity.py        # Antigravity: configure picker + TUI task + reopen; External Models picker; revert keeps user files
 test_ug_codex_tracing.py                # Codex OTLP export reaches the configured trace table
@@ -1124,7 +1125,7 @@ journeys also check its app-server model catalog.
 The tracing journeys are part of their respective Full agent lanes and use the existing
 e2e workspace and bearer. Because that workspace deliberately has no published managed
 configuration, each journey injects only a tracing-enabled CodingAgentConfig input (the
-`claude_tracing.json` / `codex_tracing.json` fixtures) through the suite's managed-config stub; the agents, inference, OTLP export, and table
+`claude_tracing.json` / `codex_tracing.json` / `copilot_tracing.json` fixtures) through the suite's managed-config stub; the agents, inference, OTLP export, and table
 verification remain real. Each adds the prompt's UUID as a trace-safe
 `ug_integration_marker` attribute, resolves the destination table from the workspace tracing
 configuration, waits 30 seconds, and queries that table through an existing SQL warehouse.

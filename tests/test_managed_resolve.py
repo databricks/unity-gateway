@@ -76,7 +76,7 @@ class TestOtelTracing:
         assert managed_otel_tracing_enabled({"otel_tracing_enabled": True}, "claude") is False
 
     def test_state_overrides_enable_supported_agents(self):
-        for tool in ("claude", "codex"):
+        for tool in ("claude", "codex", "copilot"):
             managed = {"enabled_agents": {tool: {"otel_tracing_enabled": True}}}
             assert managed_state_overrides(managed, tool)[f"{tool}_otel_tracing"] is True
 
