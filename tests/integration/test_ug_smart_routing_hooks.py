@@ -520,6 +520,10 @@ def _assert_claude_calculation_requests(
             and task.marker in request.payload.get("task", {}).get("prompt", "")
         ]
         assert routes, (task.marker, routes)
+        assert any(
+            "Smart Router launch:" in json.dumps(request.payload.get("messages", []))
+            for request in inferences
+        ), "Parent inference must receive the routed child's launch identity"
         recipe = routes[0].payload.get("route_selector", {}).get("router_name")
         assert isinstance(recipe, str) and recipe.strip() and recipe != "DISABLED", (
             task.marker,
@@ -601,7 +605,12 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
         session, "claude", [str(session.binary), "claude"], "smart-router-resume-child"
     ) as tui:
         tui.boot()
-        tui.submit(first.delegate_prompt + " Spawn exactly one agent in total.")
+        tui.submit(
+            first.delegate_prompt
+            + " Spawn exactly one agent in total. If Agent reports a background launch, "
+            "end your turn and wait for its actual completion notification. Do not call "
+            "Agent again to wait, or write a completion notification yourself."
+        )
         tui.wait_for_task(
             first,
             completion=lambda: bool(

@@ -78,7 +78,8 @@ to discovery or change ug's saved default.
 `ug antigravity` (or `ug agy`) runs Google's Antigravity CLI 1.2.15 or later in its
 Enterprise Gateway mode, so it never asks for Google sign-in. It offers the workspace's
 Gemini models under the names Antigravity knows them by (`system.ai.gemini-3-8-flash` is
-`gemini-3.8-flash`) and starts on the newest. A local proxy refreshes the Databricks token
+`gemini-3.8-flash`) and explicitly selects the newest for each launch, including headless
+sessions. A local proxy refreshes the Databricks token
 for the whole session and maps each name back to its Databricks model. `--model` accepts
 either name, or one of Antigravity's thinking tiers such as `gemini-3.8-flash-high`.
 `--provider` routes through a Gemini Enterprise Model Provider Service, as with
@@ -542,6 +543,15 @@ turns routing off for the launch, including over a workspace config.
 An explicit `--model`, from `ug claude --model` or a launcher such as Omnigent, keeps
 subagent routing when first-prompt routing is off; the main session stays on that model.
 With first-prompt routing on, an explicit model still skips routing.
+
+When a model response launches a subagent, UG buffers that step and removes
+premature model claims before displaying or storing them. After launch, UG renders
+the parent's report directly from that request's child records: animal name,
+verified model, completion state and the recorded child answer. No special parent
+output format or Stop-hook retry is required. This replaces free-form parent
+summaries for that delegated request. Tool calls remain available, background
+completion follows the same path, and a fresh main-agent request replies normally.
+Routing-enabled responses are buffered until each model step completes.
 
 ### Codex smart-routing compatibility
 

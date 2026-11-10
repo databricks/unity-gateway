@@ -41,12 +41,16 @@ def is_managed_config_control_plane_cache(home: Path, path: Path) -> bool:
     """Whether ``path`` is ug's workspace-policy state, not agent-owned configuration.
 
     That is the installed policy and its refresh stamps, or, where the machine cannot hold the
-    installed policy (Windows), the per-user cache of the fetched policy.
+    installed policy (UG_SKIP_OS_SETTINGS), the per-user cache of the fetched policy. The installed
+    policy lives under ProgramData on Windows, read from the environment like the other Windows
+    policy paths.
     """
+    program_data = os.environ.get("PROGRAMDATA", "").strip() or r"C:\ProgramData"
     return path in (
         home / ".ucode" / "refresh_ts.json",
         home / ".ucode" / "managed-config.json",
         Path("/etc/unitygateway/managed-settings.json"),
+        Path(program_data) / "UnityGateway" / "managed-settings.json",
     )
 
 

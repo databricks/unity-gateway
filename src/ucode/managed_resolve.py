@@ -35,7 +35,7 @@ _CLAUDE_FAMILY_SLOTS = {
 }
 
 # Agents whose writers support the per-agent managed OTLP tracing flag.
-OTEL_TRACING_TOOLS = ("claude", "codex")
+OTEL_TRACING_TOOLS = ("claude", "codex", "copilot")
 
 # Agents that receive the config's harness-native `agent_native_settings`. Claude only, matching the
 # server: Codex's MCP lockdown is the requirements.toml [mcp_servers] allowlist, which ug doesn't
@@ -194,8 +194,10 @@ def managed_supplies_models(managed: dict | None, tool: str) -> bool:
     """True when the managed config already says which models ``tool`` should use.
 
     Lets the launch path skip Databricks model discovery, whose whole purpose is to find the models
-    the config has now specified. Any of the three counts: a provider (the agent routes by header and
-    pins no Databricks model), a ``default_model``, or at least one entry in ``models``.
+    the config has now specified. Any of the following counts: a provider (the agent routes by
+    header and pins no Databricks model), a ``default_model``, or at least one entry in the
+    legacy ``models`` key. A static list (``sources``/``model_services``) alone doesn't count:
+    Claude still needs discovery to pick a default when the config names none.
     """
     model_config = _agent_model_config(managed or {}, tool)
     if _str(model_config.get("model_provider_service")) or _str(model_config.get("default_model")):
@@ -219,17 +221,27 @@ def managed_unity_catalog_location(managed: dict, tool: str) -> str | None:
 
 
 def managed_static_models(managed: dict, tool: str) -> list[str] | None:
-    """The explicit model allow-list (``model_config.model_services``) the config sets for ``tool``.
+    """The explicit model allow-list (``model_config.sources`` or ``model_services``) for ``tool``.
 
     Static curation: the launch path writes exactly these into the agent's picker allow-list
     (Claude's ``availableModels``/``modelPicker``, Codex's ``model_catalog_json``) instead of
     discovering the workspace's models. The order is the admin's; empty and non-string entries are
-    dropped. None when unset."""
-    model_services = _agent_model_config(managed, tool).get("model_services")
-    if isinstance(model_services, list):
-        listed = [model for model in (_str(item) for item in model_services) if model]
-        return listed or None
-    return None
+    dropped. None when unset. ``sources`` entries may be 4-part MPS model refs, used as-is."""
+    return static_model_list(_agent_model_config(managed, tool)) or None
+
+
+def static_model_list(model_config: dict) -> list[str]:
+    """The static model list from one agent's ``model_config``: ``sources`` or the legacy
+    ``model_services`` (a oneof). Empty and non-string entries are dropped; empty when unset."""
+    if "sources" in model_config:
+        models = model_config["sources"]
+    elif "model_services" in model_config:
+        models = model_config["model_services"]
+    else:
+        models = None
+    if not isinstance(models, list):
+        return []
+    return [model for model in (_str(item) for item in models) if model]
 
 
 def managed_default_model(managed: dict, tool: str) -> str | None:

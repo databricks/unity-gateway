@@ -8504,25 +8504,15 @@ class TestInstalledMachineWorkspace:
 
     # Every agent takes the same `_launch_tool` path, so Claude stands in for the agents next to
     # the bare launch.
-    @pytest.mark.parametrize(
-        ("selection", "tool"),
-        [("state", None), ("state", "claude"), ("flag", None), ("flag", "claude")],
-    )
+    @pytest.mark.parametrize("tool", [None, "claude"])
     @pytest.mark.parametrize("dry_run", [False, True])
-    def test_foreign_workspace_launch_fails_before_setup(
-        self, monkeypatch, tool, selection, dry_run
-    ):
+    def test_foreign_workspace_flag_fails_before_setup(self, monkeypatch, tool, dry_run):
         from ucode.managed_config import save_managed_state
 
         cli_mod.set_dry_run(False)
         save_managed_state(self.INSTALLED, {"default_agent": "CODING_AGENT_CLAUDE_CODE"})
         monkeypatch.setattr(
-            cli_mod,
-            "load_state",
-            lambda: {
-                **MINIMAL_STATE,
-                "workspace": self.SELECTED if selection == "state" else self.INSTALLED,
-            },
+            cli_mod, "load_state", lambda: {**MINIMAL_STATE, "workspace": self.INSTALLED}
         )
         for helper in (
             "set_current_workspace",
@@ -8539,18 +8529,52 @@ class TestInstalledMachineWorkspace:
                 lambda *args, **kwargs: pytest.fail("mismatch must fail before setup"),
             )
         args = [tool] if tool else []
-        args += ["--skip-preflight"]
-        if selection == "flag":
-            args += ["--workspace", self.SELECTED]
+        args += ["--skip-preflight", "--workspace", self.SELECTED]
         if dry_run:
             args = ["--dry-run", *args]
         result = runner.invoke(app, args)
         assert result.exit_code == 1, result.output
         output = " ".join(_strip_ansi(result.output).split())
-        assert "Launch refused" in output
+        assert "the launch was refused" in output
+        assert f"Run `ug configure --workspace {self.SELECTED}`" in output
         assert self.INSTALLED in output
         assert self.SELECTED in output
         assert "IT team or an administrator" in output
+
+    def test_stale_saved_workspace_switches_to_installed_and_sets_up_again(self):
+        """An admin switched the machine since this user configured: follow it, don't refuse."""
+        from ucode.managed_config import save_managed_state
+        from ucode.state import load_full_state, load_state
+
+        cli_mod.set_dry_run(False)
+        save_managed_state(self.INSTALLED, {"default_agent": "CODING_AGENT_CLAUDE_CODE"})
+        real_save_state({"workspace": self.INSTALLED, "available_tools": ["claude"]})
+        real_save_state({"workspace": self.SELECTED, "available_tools": ["claude"]})
+
+        state = cli_mod._launch_workspace_state(None)
+
+        assert state["workspace"] == self.INSTALLED
+        # Set up again, so the launch rewrites the user's agent settings for this workspace.
+        assert "available_tools" not in state
+        assert load_state()["workspace"] == self.INSTALLED
+        # The other workspace's saved setup is kept, only no longer selected.
+        assert load_full_state()["workspaces"][self.SELECTED]["available_tools"] == ["claude"]
+
+    def test_stale_saved_workspace_dry_run_uses_installed_without_saving(self):
+        from ucode.managed_config import save_managed_state
+        from ucode.state import load_state
+
+        save_managed_state(self.INSTALLED, {"default_agent": "CODING_AGENT_CLAUDE_CODE"})
+        real_save_state({"workspace": self.SELECTED, "available_tools": ["claude"]})
+        cli_mod.set_dry_run(True)
+        try:
+            state = cli_mod._launch_workspace_state(None)
+        finally:
+            cli_mod.set_dry_run(False)
+
+        assert state["workspace"] == self.INSTALLED
+        assert "available_tools" not in state
+        assert load_state()["workspace"] == self.SELECTED
 
     def test_bare_launch_without_user_workspace_uses_installed_workspace(self, monkeypatch):
         from ucode.managed_config import save_managed_state
@@ -8866,6 +8890,8 @@ class TestBudgetRecommendationAtLaunch:
 
         monkeypatch.setattr("ucode.cli.get_model_recommendation", fake_recommendation)
         with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.refresh_managed_config", return_value=(managed, False)),
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli.apply_pat_environment"),
             patch("ucode.cli.ensure_bootstrap_dependencies"),
@@ -8876,8 +8902,45 @@ class TestBudgetRecommendationAtLaunch:
             patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
             patch("ucode.cli.launch_agent"),
         ):
-            result = runner.invoke(app, [tool])
+            result = runner.invoke(app, [tool] if tool else [])
         return result, calls, cfg
+
+    @pytest.mark.parametrize("tool", [None, "claude"])
+    @pytest.mark.parametrize(
+        ("reason", "warnings"), [(None, 0), ("HTTP 404 Not Found", 0), ("timed out", 1)]
+    )
+    def test_no_recommendation_is_read_once_per_launch(self, monkeypatch, tool, reason, warnings):
+        managed = {
+            "default_agent": "claude",
+            "enabled_agents": {
+                "claude": {"model_config": {"default_model": "system.ai.claude-opus-4-8"}}
+            },
+            **self.SMART_DEFAULTS,
+        }
+        result, calls, cfg = self._launch(monkeypatch, tool=tool, managed=managed, reason=reason)
+        assert result.exit_code == 0, result.output
+        assert calls == [MINIMAL_STATE["workspace"]]
+        assert cfg.call_args.args[0] == "claude"
+        assert cfg.call_args.args[2] == "system.ai.claude-opus-4-8"
+        assert result.output.count("Could not check your budget") == warnings
+
+    def test_bare_launch_reuses_recommended_agent_and_model(self, monkeypatch):
+        """The new checked flag must preserve an existing successful agent/model override."""
+        managed = {
+            "default_agent": "claude",
+            "enabled_agents": {"claude": {}, "codex": {}},
+            **self.SMART_DEFAULTS,
+        }
+        result, calls, cfg = self._launch(
+            monkeypatch,
+            tool=None,
+            managed=managed,
+            recommendation={"agent": "codex", "model": "system.ai.gpt-5-2"},
+        )
+        assert result.exit_code == 0, result.output
+        assert calls == [MINIMAL_STATE["workspace"]]
+        assert cfg.call_args.args[0] == "codex"
+        assert cfg.call_args.args[2] == "system.ai.gpt-5-2"
 
     def test_not_checked_without_a_managed_config(self, monkeypatch):
         result, calls, _ = self._launch(monkeypatch, managed=None)

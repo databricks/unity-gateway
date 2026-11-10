@@ -125,8 +125,8 @@ def test_antigravity_install_rejects_a_swapped_archive(tmp_path, monkeypatch):
     # The real pinned digest cannot match this stand-in archive.
     _serve(monkeypatch, _archive(tmp_path))
 
-    with pytest.raises(RuntimeError, match="expected 96a259b7"):
-        runner.install_native_agent("antigravity", "1.4.9-4962164969177088", tmp_path / "bin")
+    with pytest.raises(RuntimeError, match="expected 1431a409"):
+        runner.install_native_agent("antigravity", "1.5.4-5037094733742080", tmp_path / "bin")
 
     assert not (tmp_path / "bin/agy").exists()
 
@@ -266,6 +266,7 @@ def test_windows_policy_paths_match_pinned_agent_locations():
     )
 
     assert paths == (
+        Path("C:/ProgramData/UnityGateway/managed-settings.json"),
         Path("C:/ProgramData/OpenAI/Codex/requirements.toml"),
         Path("C:/ProgramData/OpenAI/Codex/config.toml"),
         Path("C:/Program Files/ClaudeCode/managed-settings.json"),

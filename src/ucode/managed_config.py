@@ -103,7 +103,7 @@ class AgentModels:
     """Model configuration for an agent with mutually-exclusive source selection.
 
     Reads the default model and family slots from default_models map, and selects
-    exactly one of: model_provider_service, unity_catalog_location, or model_services.
+    exactly one of: sources, model_provider_service, unity_catalog_location, or model_services.
     """
 
     default_model: str | None = None
@@ -111,6 +111,7 @@ class AgentModels:
     model_provider_service: str | None = None
     unity_catalog_location: str | None = None
     model_services: list[str] | None = None
+    sources: list[str] | None = None  # 3-part model services and/or 4-part MPS model refs
 
     @classmethod
     def from_wire(cls, default_models: object, models_obj: object) -> AgentModels | None:
@@ -127,15 +128,19 @@ class AgentModels:
             for key, value in defaults.items()
             if isinstance(key, str) and _FAMILY_SLOT_RE.fullmatch(key) and (model := _str(value))
         }
-        # The model source is a server-enforced oneof; keep the one present, precedence
-        # model_provider_service > unity_catalog_location > model_services.
-        provider = _str(models_dict.get("model_provider_service"))
-        location = None if provider else _str(models_dict.get("unity_catalog_location"))
-        model_services = (
-            None if provider or location else (_str_list(models_dict.get("model_services")) or None)
-        )
+        # The server validates that at most one model source is set. `sources` may mix 3-part model
+        # services and 4-part MPS model refs, used as-is.
+        provider = location = model_services = sources = None
+        if "sources" in models_dict:
+            sources = _str_list(models_dict["sources"]) or None
+        elif "model_provider_service" in models_dict:
+            provider = _str(models_dict["model_provider_service"])
+        elif "unity_catalog_location" in models_dict:
+            location = _str(models_dict["unity_catalog_location"])
+        elif "model_services" in models_dict:
+            model_services = _str_list(models_dict["model_services"]) or None
 
-        if not (overall_default or slots or provider or location or model_services):
+        if not (overall_default or slots or provider or location or model_services or sources):
             return None
         return cls(
             default_model=overall_default,
@@ -143,6 +148,7 @@ class AgentModels:
             model_provider_service=provider,
             unity_catalog_location=location,
             model_services=model_services,
+            sources=sources,
         )
 
     def to_internal(self) -> dict | None:
@@ -152,7 +158,9 @@ class AgentModels:
             result["default_model"] = self.default_model
         if self.family_slots:
             result["default_models_by_model_family"] = self.family_slots
-        if self.model_provider_service:
+        if self.sources:
+            result["sources"] = self.sources
+        elif self.model_provider_service:
             result["model_provider_service"] = self.model_provider_service
         elif self.unity_catalog_location:
             result["unity_catalog_location"] = self.unity_catalog_location
@@ -723,9 +731,13 @@ def revert_machine_policy() -> str:
     try:
         update_workspace_policy(MANAGED_CONFIG_PATH, None, interactive=True, allow_sudo=True)
     except RuntimeError as exc:
+        retry = (
+            "Rerun `ug revert` from an elevated terminal (Run as administrator)."
+            if current_os() is OS.WINDOWS
+            else "Rerun `ug revert` from a terminal where you can use sudo."
+        )
         print_warning(
-            f"Could not remove the workspace policy at {MANAGED_CONFIG_PATH}: {exc} Rerun "
-            "`ug revert` from a terminal where you can use sudo."
+            f"Could not remove the workspace policy at {MANAGED_CONFIG_PATH}: {exc} {retry}"
         )
         return "failed"
     return "removed"
@@ -772,8 +784,8 @@ def load_managed_configuration(workspace: str | None) -> dict | None:
 def _installed_config(workspace: str) -> dict | None:
     """The installed machine policy for ``workspace``, read only where ug installs one.
 
-    On Windows the POSIX path resolves under the current drive's root, which a standard user may be
-    able to create, so it is never trusted there.
+    On Windows only the protected ProgramData file is read, never a POSIX-style path under a drive
+    root that a standard user may be able to create.
     """
     if not _machine_policy_supported():
         return None
@@ -819,10 +831,12 @@ def managed_launch_workspace(workspace: str | None) -> str | None:
     if installed and selected and selected != installed:
         # UG_SKIP_OS_SETTINGS never writes the policy, so the switch must run without it.
         without_skip = f" without {SKIP_OS_SETTINGS_ENV}" if managed_settings_skipped() else ""
+        # Lead with the fix: a `--workspace` launch can't switch the machine, only configure can.
         raise RuntimeError(
-            f"This machine is managed for {installed}, but your selected workspace is {selected}. "
-            f"Launch refused. Use `--workspace {installed}`, or ask your IT team or an administrator "
-            f"to switch the machine with `ug configure --workspace {selected}`{without_skip}."
+            f"Run `ug configure --workspace {selected}`{without_skip} to use {selected}. This "
+            f"machine is managed for {installed}, so the launch was refused. Switching needs sudo; "
+            f"without it, ask your IT team or an administrator. To keep using {installed}, launch "
+            f"with `--workspace {installed}`."
         )
     return installed or selected
 
@@ -940,10 +954,18 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
         )
     except RuntimeError as exc:
         if force_refresh and _machine_policy_installable():
+            if current_os() is OS.WINDOWS:
+                hint = (
+                    "Run `ug configure` from an elevated terminal (Run as administrator), or ask "
+                    "your IT team or an administrator to run it."
+                )
+            else:
+                hint = (
+                    "This machine-wide file needs sudo. Rerun `ug configure` from a terminal where "
+                    "you can use sudo, or ask your IT team or an administrator to run it."
+                )
             message = (
-                f"Could not install the workspace policy at {MANAGED_CONFIG_PATH}: {exc} "
-                "This machine-wide file needs sudo. Rerun `ug configure` from a terminal where you "
-                "can use sudo, or ask your IT team or an administrator to run it."
+                f"Could not install the workspace policy at {MANAGED_CONFIG_PATH}: {exc} {hint}"
             )
             raise ManagedPolicyInstallDenied(message) from exc
         installed = load_managed_state(workspace)
@@ -988,13 +1010,16 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
 
 
 def _machine_policy_supported() -> bool:
-    """Whether ug installs a machine policy on this OS at all (Linux and macOS)."""
-    return current_os() in (OS.LINUX, OS.MACOS)
+    """Whether ug installs a machine policy on this OS at all (Linux, macOS, and Windows).
+
+    On Windows the path is the protected ProgramData file, never the POSIX one.
+    """
+    return current_os() in (OS.LINUX, OS.MACOS, OS.WINDOWS)
 
 
 def _machine_policy_installable() -> bool:
-    """Whether this machine can hold the installed workspace policy (Linux or macOS, not opted out
-    with ``UG_SKIP_OS_SETTINGS``)."""
+    """Whether this machine can hold the installed workspace policy (Linux, macOS, or Windows, not
+    opted out with ``UG_SKIP_OS_SETTINGS``)."""
     return not managed_settings_skipped() and _machine_policy_supported()
 
 

@@ -521,6 +521,7 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     path_rewriter: Callable[[str], str] | None = None
     body_rewriter: Callable[[str, bytes], bytes] | None = None
     bad_request_rewriter: Callable[[bytes], bytes | None] | None = None
+    discarded_paths: frozenset[str] = frozenset()
 
     def _relay_response(self, resp: httpx.Response, **kwargs: Any) -> None:
         # `read` decodes only these encodings, so the body goes out without Content-Encoding.
@@ -604,6 +605,9 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
         if not self._has_session_secret():
             self._reject(401, "Missing or invalid Unity Gateway session credential.")
             return
+        if self.path.split("?", 1)[0] in self.discarded_paths:
+            self._discard()
+            return
         if self.path_rewriter is not None:
             rewritten = self.path_rewriter(self.path)
             # A rewrite must stay on a path the session may reach.
@@ -612,6 +616,18 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
                 return
             self.path = rewritten
         super()._handle()
+
+    def _discard(self) -> None:
+        """Accept and drop a request the gateway has no route for, with an empty success."""
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length:
+            self.rfile.read(length)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        except OSError:
+            pass
 
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
         added = frozenset(name.lower() for name in self.added_headers)
@@ -760,6 +776,7 @@ def start_gateway_auth_proxy(
     path_rewriter: Callable[[str], str] | None = None,
     body_rewriter: Callable[[str, bytes], bytes] | None = None,
     bad_request_rewriter: Callable[[bytes], bytes | None] | None = None,
+    discarded_paths: Iterable[str] = (),
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start a per-session proxy for agents that only hold a static credential.
 
@@ -769,8 +786,8 @@ def start_gateway_auth_proxy(
     Completions request bodies. ``path_rewriter`` maps an accepted request path to the
     gateway path it is forwarded to, and ``body_rewriter(path, body)`` adjusts a request
     body for the gateway. ``bad_request_rewriter(body)`` may replace the body of a gateway 400
-    (returning None relays it as it is). Binds an OS-assigned port, read from
-    ``server.server_address[1]``.
+    (returning None relays it as it is). ``discarded_paths`` are answered with an empty 200 and
+    never forwarded. Binds an OS-assigned port, read from ``server.server_address[1]``.
     """
     return _start_proxy(
         workspace,
@@ -793,6 +810,7 @@ def start_gateway_auth_proxy(
             "bad_request_rewriter": (
                 staticmethod(bad_request_rewriter) if bad_request_rewriter else None
             ),
+            "discarded_paths": frozenset(discarded_paths),
         },
         on_refresh_failure=on_refresh_failure,
     )

@@ -72,6 +72,12 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(
         vscode_mod, "extensions_dir", lambda folder: tmp_path / folder / "extensions"
     )
+    # Revert edits the user settings.json there.
+    monkeypatch.setattr(
+        vscode_mod,
+        "user_dir",
+        lambda insiders: tmp_path / "vscode-user" / ("Code - Insiders" if insiders else "Code"),
+    )
     monkeypatch.setattr(desktop_auth_mod, "_AUTH_LOCK_PATH", state_dir / "claude-desktop-auth.lock")
     # Antigravity's customization root is shared with the developer's Antigravity app and CLI.
     agy_dir = tmp_path / ".gemini" / "config"

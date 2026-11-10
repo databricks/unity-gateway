@@ -141,6 +141,7 @@ from ucode.managed_files import (
     set_machine_wide_only,
 )
 from ucode.managed_resolve import (
+    OTEL_TRACING_TOOLS,
     managed_claude_family_models,
     managed_default_model,
     managed_enabled_tools,
@@ -1041,9 +1042,11 @@ def _read_policy_for_other_agent(state: dict) -> ManagedConfigResult:
 
 
 def _launch_workspace_state(workspace: str | None) -> dict:
-    """Load launch state on the machine's installed workspace, refusing any other selection.
+    """Load launch state on the machine's installed workspace, refusing another `--workspace`.
 
-    Adopts the installed workspace when none is saved, so a fresh user launches it directly.
+    Adopts the installed workspace when none is saved, so a fresh user launches it directly. A
+    saved selection of another workspace is stale (the machine was switched since this user last
+    configured), so it is replaced and the agent set up again, as if nothing were saved.
     """
     state = load_state()
     saved = state_workspace_key(state)
@@ -1051,7 +1054,20 @@ def _launch_workspace_state(workspace: str | None) -> dict:
     if requested and requested == state.get("workspace"):
         # The bare host of a multi-workspace host keeps its saved workspace.
         requested = saved
-    # The flag wins over the saved selection; either is refused if it isn't the installed one.
+    installed = managed_state_workspace()
+    stale = bool(
+        not requested
+        and saved
+        and installed
+        and normalize_workspace_url(saved) != normalize_workspace_url(installed)
+    )
+    if stale:
+        print_note(
+            f"This machine is managed for {normalize_workspace_url(installed)}; switching your "
+            f"workspace from {saved}."
+        )
+        saved = None
+    # The flag wins over the saved selection; it is refused if it isn't the installed one.
     target = managed_launch_workspace(requested or saved)
     # An explicit --workspace always saves the selection, as on main.
     if target and (requested or not saved or normalize_workspace_url(saved) != target):
@@ -1065,6 +1081,9 @@ def _launch_workspace_state(workspace: str | None) -> dict:
                 state["workspace_id"] = workspace_id
             else:
                 state.pop("workspace_id", None)
+    if stale:
+        # Rewrite this user's agent settings for the new workspace, as a first launch does.
+        state.pop("available_tools", None)
     return state
 
 
@@ -1874,7 +1893,7 @@ def status() -> int:
         default_model = _status_default_model(tool, effective_state, models)
         if default_model:
             rows.append(("Default model", default_model))
-        if tool in ("claude", "codex"):
+        if tool in OTEL_TRACING_TOOLS:
             rows.append(
                 (
                     "Tracing",
@@ -3235,6 +3254,37 @@ def smart_router_describe_cmd() -> None:
     sys.stdout.write(json.dumps(asdict(smart_routing_v2.describe_routing())) + "\n")
 
 
+@app.command("smart-router-logs", hidden=True)
+def smart_router_logs_cmd(
+    session: Annotated[str, typer.Option("--session")],
+    decision: Annotated[str | None, typer.Option("--decision")] = None,
+) -> None:
+    """Print a session's recorded smart-routing decisions as JSON on stdout."""
+    from ucode.smart_routing import session_log
+
+    def emit(payload: dict[str, object]) -> None:
+        sys.stdout.write(json.dumps({"v": 1, **payload}) + "\n")
+
+    try:
+        records = session_log.read_decisions("claude", session)
+    except OSError as exc:
+        emit(
+            {
+                "error": f"cannot read session log at "
+                f"{session_log.session_log_path('claude', session)}: {exc.strerror or exc}"
+            }
+        )
+        raise typer.Exit(1) from exc
+    if decision is None:
+        emit({"decisions": [session_log.overview(record) for record in records]})
+        return
+    record = next((r for r in records if r.get("decision_id") == decision), None)
+    if record is None:
+        emit({"error": "decision not found"})
+        raise typer.Exit(1)
+    emit({"decision": record})
+
+
 @app.command("claude-router-hook", hidden=True)
 def claude_router_hook_cmd(
     event: str,
@@ -3807,6 +3857,7 @@ def _launch_tool(
     custom_oauth: CustomOAuthConfig | None = None,
     routing_already_chosen: bool = False,
     routing_unsupported: bool = False,
+    recommendation_fetched: bool = False,
 ) -> None:
     previous = {}
     try:
@@ -4002,8 +4053,9 @@ def _launch_tool(
         # An admin-published managed config wins over the developer's own settings. Layered on after
         # `configure_shared_state`, whose returned state it overrides, and before the provider and
         # model are settled below — the two state files are never merged on disk.
-        # Bare `ucode` already read one to choose the agent; refetching would double the round trip.
-        if recommendation is None:
+        # A bare launch already checked the budget to select its agent. An empty or failed
+        # read is a completed check too: retrying here adds another timeout and warning.
+        if recommendation is None and not recommendation_fetched:
             recommendation = _fetch_budget_recommendation(state, managed)
         _note_recommended_agent(recommendation, tool)
         if managed is not None:
@@ -4508,6 +4560,7 @@ def _launch_managed_default(
         workspace_url=workspace,
         managed=managed,
         recommendation=recommendation,
+        recommendation_fetched=True,
     )
 
 
