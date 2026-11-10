@@ -771,19 +771,24 @@ Codex decisions carry the same request metadata. These use mocked HTTP responses
 command. Delayed completion must replay the prompt exactly once and restore the saved default.
 Arrow keys and fragmented terminal replies keep recovery active, including sequences split across
 settings restoration. Unfinished sequences and typed input stop replay with a notice but retain
-cleanup. Navigation and fragmented replies share a process case; unit cases include the
+cleanup. Unit cases include the
 `ESC[1~` and `ESC[4~` Home/End keys. PTY cases cover typed and history-based selection of the
 routed model, including a failed recovery handoff. Parser cases cover completion, search,
 other unknown-line edits, and submitted slash commands. Claude's completed `Kept model as` cancellation
 result permits replay, while generic cancel messages and unconfirmed switches stop automatic input.
-Recovery cases read settings before the child exits. The timing cases cover immediate persistence
+Recovery cases use isolated Python processes and production deadlines, and read settings before
+the child exits. The timing cases cover immediate persistence
 with and without a redraw, a pending write, and a write arriving after the persistence deadline.
 The late-write case also checks prompt submission after that deadline and a clean child exit.
 
-`test_claude_smart_routing_v2.py` also covers settings restoration after a failed atomic write or
+`test_claude_smart_routing_v2.py` also covers settings restoration after a denied write or
 temporary parse error, bounded exit cleanup under lock contention, and actionable failure output.
+Real POSIX directory permissions exercise settings-write, recovery-record creation, and manual
+handoff failures. Settings and recovery records survive failures, and writable retries succeed.
 Atomic restoration preserves surviving settings symlinks and existing POSIX file permissions.
-Permissions are asserted after replacement; chmod failure is not separately covered.
+Permissions are asserted after replacement; failures at the exact `os.replace` and `chmod` calls
+are not independently exercised. Permission cases require an unprivileged POSIX user. Native
+Windows permission-failure behavior is not covered.
 Deferred cleanup releases launch ownership after a two-second grace period and retains the
 original default in shared recovery state. Competing-process tests check that late writes before,
 during, and after a second switch cannot become its saved default, including an originally absent
@@ -939,7 +944,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
 | `test_ug_configure_managed_claude`, `test_ug_configure_managed_codex` | Configure on the managed workspace with the stubbed `managed_workspace_default.json` CodingAgentConfig | No agent selector; each agent's generated config exposes exactly the admin's static model_services; real gateway prompt on launch. The Codex case also checks the shared catalog pointer, restart guidance, and a fresh bare app-server's visible model list |
 | `e2e_cuj/test_cuj5_budget_defaults.py` | Launch bare `ug` with separate low-spend and above-tier principals against the fixed 1% tier (`spending_percentage=0.01`); explicitly launch `ug claude`, and `ug claude --model`, above the tier | Bare launches check Claude/Sonnet below the tier and the Codex/Luna recommendation above it; `ug usage` agrees with backend spend, threshold, and percentage. Explicit `ug claude` displays the backend's Codex/Luna recommendation while its generated model setting and native header select Sonnet. `ug claude --model <Sonnet id>` (the workspace's only Claude model) displays the same recommendation, selects Sonnet in the native header, and leaves the user and OS-managed settings files byte-identical to configure's (Sonnet `ANTHROPIC_MODEL`); a following plain launch selects Sonnet without rewriting them. A differing Claude budget pick, alone or with smart routing, is unit-covered only. No budget writes or inference tasks. Runs on its own `E2E CUJs · CUJ 5 · Budget-driven defaults` runner with both credential pairs documented in `integration/README.md`. |
-| `test_case_01_*` | Launch managed Claude without defaults after configure and from fresh state | Claude receives the admin MPS header; its gateway cache and replacement picker match the independently fetched provider model IDs; catalog labels are preserved and a model appears in a numbered picker row |
+| `test_case_01_*` | Launch managed Claude without defaults after configure and from fresh state | Claude receives the admin MPS header; the picker waits for its native cache before exit, and both match the independently fetched provider model IDs; catalog labels are preserved and a model appears in a numbered picker row |
 | `test_case_03_*`, `test_case_05_*` | Pass a provider or model-location override to managed Claude after configure and from fresh state | ug rejects the override before Claude starts and preserves agent-owned state |
 | `test_case_02_*` | Launch managed Codex after configure and from fresh state | The scoped and stable catalogs, ug-launched app server, and fresh bare app server match the independently fetched admin MPS model IDs. The configured case uses real `ug revert` to remove ug's shared pointer and stable file while preserving a user setting |
 | `test_case_04_*`, `test_case_06_*` | Pass a provider or model-location override to managed Codex after configure and from fresh state | ug rejects the override before Codex starts and preserves agent-owned state |

@@ -1434,7 +1434,7 @@ source is `main.default.ci_e2e_anthropic_mps` with no static defaults, across al
 scenarios. The Codex module does the same with `codex_mps.json` and
 `main.default.ci_e2e_openai_mps`. Separate read-only, provider-scoped model-list requests
 establish expected IDs independently of the generated agent files. With no authored defaults,
-Claude's native cache and replacement picker must match those IDs, preserve catalog display names,
+Claude's picker waits for its native cache before exit. Both must match those IDs, preserve catalog display names,
 and show a model in a numbered picker row alongside its admin header.
 Codex's scoped and stable catalogs, ug-launched app server, and fresh bare app server must match
 its independently fetched IDs. The configured Codex journey subsequently runs real `ug revert`,
@@ -1464,15 +1464,18 @@ orchestrator; Codex's managed default is opted out and covered by its launch-onl
 typed and history-based model choices, completed versus ambiguous cancellation, and throttled
 settings recovery before child exit. Parser cases cover completion, search, other unknown-line
 edits, and submitted slash commands. Fragmented navigation and terminal replies complete across
-settings restoration; unfinished sequences and editing input produce resend guidance. Navigation
-and fragmented replies share a process case, with tilde-form Home/End keys covered in unit tests.
+settings restoration; unfinished sequences and editing input produce resend guidance.
+Tilde-form Home/End keys are covered in unit tests.
 The late-write case checks prompt submission after the persistence deadline and a clean child exit.
 A missing late write must release launch ownership.
 `tests/test_claude_smart_routing_v2.py` checks competing processes with bounded deferred ownership,
 late writes across a second switch, same-model and crashed-owner recovery, manual choices,
-failed atomic writes, and bounded exit cleanup. Atomic restoration preserves surviving settings
-symlinks and existing POSIX file permissions. Permissions are asserted after replacement;
-chmod failure is not separately covered.
+denied writes, and bounded exit cleanup. Recovery cases use isolated Python processes and
+production deadlines. Actual POSIX directory permissions cause write and unlink failures;
+settings and recovery records survive, and writable retries succeed. These permission cases
+require an unprivileged POSIX user. Atomic restoration preserves surviving settings symlinks
+and existing POSIX file permissions. Permissions are asserted after replacement; exact
+`os.replace`/`chmod` call failures and native Windows permission failures are not covered.
 These component checks use temporary settings and fake TUIs;
 they do not establish live Claude or gateway coverage.
 These checks do not replace the completed file task required by the live journeys.
