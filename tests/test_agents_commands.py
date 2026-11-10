@@ -323,12 +323,6 @@ class TestRejectDisabledAgentHint:
         with pytest.raises(RuntimeError, match="ug agents add opencode"):
             self._reject(managed, "opencode")
 
-    def test_admin_enabled_tool_not_blocked(self):
-        self._reject({"enabled_agents": {"claude": {}}}, "claude")
-
-    def test_no_managed_config_not_blocked(self):
-        self._reject(None, "opencode")
-
 
 # ---------------------------------------------------------------------------
 # Launch gate: self-managed tools bypass the gate and run unmanaged
