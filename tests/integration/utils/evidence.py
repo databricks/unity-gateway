@@ -2,10 +2,18 @@
 
 import json
 import re
+import secrets
 import uuid
 from pathlib import Path
 
 from .agents import _evidence_id, antigravity, claude, codex, copilot
+
+_TASK_WORDS = (
+    "apple beach bird boat bread brook cake cat cedar chair cloud coast coral corn deer dog "
+    "duck eagle earth elm fern field fish fox frog garden grape grass hill horse lake leaf "
+    "lemon lion maple moon moss oak ocean orange owl peach pear pine plum pond rain reed "
+    "river robin rock rose sand seal shell sky snow star stone sun tree wave wheat wind"
+).split()
 
 _AGENT_HELPERS = {"claude": claude, "codex": codex, "copilot": copilot}
 
@@ -176,6 +184,11 @@ def fresh_id():
     return uuid.uuid4().hex[:12]
 
 
+def fresh_task_value():
+    """Keep hidden answers easy to copy, independent of filesystem identifiers."""
+    return "-".join(secrets.choice(_TASK_WORDS) for _ in range(4))
+
+
 def fresh_session_id():
     """Return a full UUID for Claude's `--session-id`, which rejects shorter ids."""
     return str(uuid.uuid4())
@@ -185,7 +198,7 @@ class FileTask:
     """Ordinary project input; the expected answer is never included in the prompt."""
 
     def __init__(self, session):
-        self.value = fresh_id()
+        self.value = fresh_task_value()
         self.filename = "input-" + fresh_id() + ".txt"
         (session.cwd / self.filename).write_text(self.value + "\n")
         # Say "local file" so agents with MCP fixture tools (read_fixture) don't pick those.
@@ -208,6 +221,17 @@ class FileTask:
         if agent == "antigravity":
             # Antigravity keeps conversations in SQLite, not JSONL, and has no child sessions.
             return not child and antigravity.answer_contains(session, self.value)
+        if agent == "codex" and not child and self.prompt != self.delegate_prompt:
+            for path, records in agent_sessions(session, agent).items():
+                if is_child_session(agent, path, records):
+                    continue
+                for prompt in {self.prompt, self.prompt_with_path}:
+                    turn = codex.completed_prompt_turn(records, prompt)
+                    if turn is not None:
+                        assert self.value in turn.answer, (
+                            f"Codex completed the file task with an incorrect answer: {turn.answer!r}; "
+                            f"expected file value {self.value!r}"
+                        )
         return assistant_answer_contains(session, agent, self.value, child=child)
 
     def assert_completed(self, session, agent: str, *, child: bool = False) -> None:
@@ -293,7 +317,7 @@ class SubagentCalculation:
     def __init__(self, expression: str, expected: str):
         # Codex exposes task_name, rather than the child message, to its routing hook.
         # Keep the correlation marker valid as a native task name for both agents.
-        self.marker = "ug_subagent_" + fresh_id()
+        self.marker = "ug_subagent_" + fresh_task_value().replace("-", "_")
         self.value = f"{self.marker}={expected}"
         self.prompt = (
             f'Please spawn exactly one subagent with task name "{self.marker}" '

@@ -1,5 +1,16 @@
 # Integration tests
 
+Shared file-reading tasks use four independently random, readable words as the hidden
+answer, with separate random filenames. The answer never appears in the prompt or
+filename; completion still requires the full value in native assistant output. Delegated
+calculation labels use the same readable words without changing routing assertions.
+Direct Codex file tasks report a completed wrong or empty answer immediately, correlated
+to the exact prompt and native turn ID; CUJ Claude tasks do so only with an explicit
+end-of-turn stop reason. Incomplete turns, unrelated sessions, tool output alone, and
+background-child acknowledgments cannot trigger this failure. Offline evidence tests
+cover these boundaries; headless tasks retain their existing final-answer checks.
+
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,

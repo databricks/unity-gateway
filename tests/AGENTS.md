@@ -61,9 +61,10 @@ tests. Keep work scoped to the behavior requested by the user.
     seed onboarding completion, intercept model traffic, or replace a TUI with
     print/exec mode while claiming interactive coverage. Require an interactive
     prompt and observable input/exit behavior. Boot is not first-prompt inference.
-12. **Short random ids.** Generate run ids, markers and file values with
-    `fresh_id()` from `integration/utils/evidence.py`. Models drop characters
-    when copying longer ids into tool calls.
+12. **Readable task values.** Use `fresh_task_value()` from
+    `integration/utils/evidence.py` for hidden file contents and model-copied
+    labels. Keep run ids and filenames independent with `fresh_id()`; never
+    include a hidden file value in its prompt or filename.
 
 `configure` no longer runs a post-configure agent probe (the deprecated
 `--skip-validate` flag is accepted as a no-op); task tests still require a real

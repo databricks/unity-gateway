@@ -163,6 +163,25 @@ def test_cuj_inference_requires_nonempty_final_answer(agent, answer):
 def test_cuj_file_task_still_requires_hidden_value(tmp_path, agent):
     task = FileTask(SimpleNamespace(cwd=tmp_path))
     rows = records(agent, SimpleNamespace(prompt=task.prompt, value="Hello!"), "model")
+    with pytest.raises(AssertionError, match="completed the file task with an incorrect answer"):
+        completed_turn(agent, rows, task)
+
+
+@pytest.mark.parametrize("stop_reason", [None, "tool_use"])
+def test_cuj_claude_does_not_fail_on_an_unfinished_answer(tmp_path, stop_reason):
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
+    rows = records(CLAUDE, SimpleNamespace(prompt=task.prompt, value="Reading now."), "model")
+    rows[-1]["message"]["stop_reason"] = stop_reason
+    assert completed_turn(CLAUDE, rows, task) is None
+
+
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
+def test_cuj_delegation_waits_for_child_instead_of_failing_on_parent_acknowledgment(
+    tmp_path, agent
+):
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
+    task.prompt = task.delegate_prompt
+    rows = records(agent, SimpleNamespace(prompt=task.prompt, value="Child is working."), "model")
     assert completed_turn(agent, rows, task) is None
 
 

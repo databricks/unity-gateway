@@ -7,6 +7,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 
+from tests.integration.utils.agents import CompletedTurn, codex, message_text
 from tests.integration.utils.evidence import FileTask, read_jsonl
 from tests.integration.utils.model_discovery import claude_discovery_model_id
 from tests.integration.utils.provider_catalog import MODEL_SERVICE_PARENT_SCHEMA_HEADER
@@ -109,25 +110,9 @@ def claude_file_task(session):
     return task
 
 
-def message_text(content):
-    if isinstance(content, str):
-        return content
-    return "\n".join(
-        part.get("text", "") for part in content or [] if part.get("type") in {"text", "input_text"}
-    )
-
-
 def _answer_matches(task, answer):
     """task.value=None accepts any nonempty final answer."""
     return bool(answer.strip()) and (task.value is None or task.value in answer)
-
-
-@dataclass
-class CompletedTurn:
-    session_id: str
-    turn_id: str
-    models: list[str]
-    answer: str
 
 
 @dataclass
@@ -195,6 +180,17 @@ class ClaudeCujHelper(BaseCujHelper):
         last = responses[-1]
         answer = message_text(last.get("content"))
         if (
+            isinstance(task, FileTask)
+            and task.value is not None
+            and task.prompt != task.delegate_prompt
+            and last.get("stop_reason") in ("end_turn", "stop_sequence")
+            and not any(part.get("type") == "tool_use" for part in last.get("content", []))
+        ):
+            assert task.value in answer, (
+                f"Claude completed the file task with an incorrect answer: {answer!r}; "
+                f"expected file value {task.value!r}"
+            )
+        if (
             not _answer_matches(task, answer)
             or not last.get("id")
             or any(part.get("type") == "tool_use" for part in last.get("content", []))
@@ -210,80 +206,19 @@ class CodexCujHelper(BaseCujHelper):
 
     @staticmethod
     def _completed_turn(records, task):
-        meta = [row["payload"] for row in records if row.get("type") == "session_meta"]
-        if len(meta) != 1 or isinstance(meta[0].get("source"), dict):
+        turn = codex.completed_prompt_turn(records, task.prompt)
+        if turn is None:
             return None
-        contexts, active_turn, target_turn = {}, None, None
-        started_turn, aborted_turn, answer, prompt_sources = None, None, None, set()
-        for row in records:
-            payload = row.get("payload", {})
-            metadata = row.get("internal_chat_message_metadata_passthrough") or {}
-            if "multi_agent.subagent_notification" in metadata.get(
-                "content_item_kinds", ()
-            ) or "<subagent_notification>" in str(
-                payload.get("content") or payload.get("message")
-            ).replace("-", "_"):
-                continue
-            row_turn = payload.get("turn_id")
-            if row.get("type") == "turn_context":
-                contexts.setdefault(row_turn, []).append(payload.get("model"))
-                if target_turn and row_turn != target_turn:
-                    return None
-                active_turn = row_turn
-                continue
-            source = None
-            if row.get("type") == "event_msg" and payload.get("type") == "user_message":
-                source, prompt = "event", payload.get("message")
-            elif (
-                row.get("type") == "response_item"
-                and payload.get("type") == "message"
-                and payload.get("role") == "user"
-            ):
-                source, prompt = "response", message_text(payload.get("content"))
-            if source:
-                if prompt == task.prompt:
-                    assert source not in prompt_sources, "Prompt was submitted more than once"
-                    prompt_sources.add(source)
-                    if target_turn and row_turn and row_turn != target_turn:
-                        return None
-                    target_turn = target_turn or row_turn or active_turn
-                elif prompt_sources:
-                    return None
-                continue
-            if row.get("type") != "event_msg":
-                continue
-            event_type = payload.get("type")
-            if event_type == "task_started":
-                turn_id = payload.get("turn_id")
-                if not turn_id or turn_id == aborted_turn:
-                    return None
-                if target_turn and turn_id != target_turn:
-                    return None
-                active_turn = started_turn = turn_id
-                if prompt_sources and target_turn is None:
-                    target_turn = turn_id
-            elif event_type == "task_complete":
-                turn_id = payload.get("turn_id")
-                if target_turn:
-                    if turn_id != target_turn:
-                        return None
-                    answer = payload.get("last_agent_message") or ""
-                    break
-                if turn_id == active_turn:
-                    active_turn = started_turn = None
-            elif event_type == "turn_aborted":
-                aborted_turn = payload.get("turn_id")
-                if aborted_turn == target_turn:
-                    return None
-                if aborted_turn == active_turn:
-                    active_turn = started_turn = None
-        if not prompt_sources or not target_turn or started_turn != target_turn or answer is None:
-            return None
-        models = contexts.get(target_turn)
-        if not _answer_matches(task, answer) or not models:
-            return None
-        assert all(models), "Missing native turn model metadata"
-        return CompletedTurn(meta[0]["id"], target_turn, models, answer)
+        if (
+            isinstance(task, FileTask)
+            and task.value is not None
+            and task.prompt != task.delegate_prompt
+        ):
+            assert task.value in turn.answer, (
+                f"Codex completed the file task with an incorrect answer: {turn.answer!r}; "
+                f"expected file value {task.value!r}"
+            )
+        return turn if _answer_matches(task, turn.answer) else None
 
 
 def get_cuj_helper(agent):

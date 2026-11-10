@@ -1,6 +1,7 @@
 """Unit checks for interpreting terminal evidence, not live agent substitutes."""
 
 import json
+import re
 
 import pytest
 
@@ -418,6 +419,104 @@ def test_file_task_child_completion_is_independent_of_parent_answer(tmp_path, ag
     _write_answer(tmp_path, agent, child=child, value=task.value)
     assert task.completed(session, agent, child=True) == child
     assert task.completed(session, agent) != child
+
+
+def test_file_task_keeps_readable_answer_independent_of_filename_and_prompts(tmp_path, monkeypatch):
+    words = iter(["apple", "cedar", "lake", "moon", "pear", "pine", "rain", "star"])
+    monkeypatch.setattr(evidence.secrets, "choice", lambda choices: next(words))
+    session = _Session(tmp_path)
+    session.cwd = tmp_path
+    first, second = FileTask(session), FileTask(session)
+
+    assert first.value == "apple-cedar-lake-moon"
+    assert second.value == "pear-pine-rain-star"
+    for task in (first, second):
+        assert (tmp_path / task.filename).read_text() == task.value + "\n"
+        assert re.fullmatch(r"input-[0-9a-f]{12}\.txt", task.filename)
+        for prompt in (task.prompt, task.prompt_with_path, task.delegate_prompt, task.filename):
+            assert task.value not in prompt
+    assert first.filename != second.filename
+
+
+def test_subagent_label_uses_readable_words_and_remains_a_valid_task_name(monkeypatch):
+    words = iter(["apple", "cedar", "lake", "moon"])
+    monkeypatch.setattr(evidence.secrets, "choice", lambda choices: next(words))
+    task = SubagentCalculation("1+1", "2")
+    assert task.marker == "ug_subagent_apple_cedar_lake_moon"
+    assert task.value == task.marker + "=2"
+    assert re.fullmatch(r"[a-z_]+", task.marker)
+
+
+def _codex_file_turn(prompt, answer, turn_id="file-turn"):
+    return [
+        {"type": "session_meta", "payload": {"id": "parent", "source": "cli"}},
+        {"type": "event_msg", "payload": {"type": "task_started", "turn_id": turn_id}},
+        {"type": "turn_context", "payload": {"turn_id": turn_id, "model": "test-model"}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": prompt}},
+        {
+            "type": "event_msg",
+            "payload": {"type": "task_complete", "turn_id": turn_id, "last_agent_message": answer},
+        },
+    ]
+
+
+@pytest.mark.parametrize("prompt_kind", ["prompt", "prompt_with_path"])
+@pytest.mark.parametrize("outcome", ["correct", "dropped-character", "no-read", "empty"])
+def test_file_task_reports_completed_codex_wrong_answer_immediately(tmp_path, prompt_kind, outcome):
+    session = _Session(tmp_path)
+    session.cwd = tmp_path
+    task = FileTask(session)
+    answer = {
+        "correct": task.value,
+        "dropped-character": task.value[:-1],
+        "no-read": "I cannot read the file.",
+        "empty": "",
+    }[outcome]
+    native = _codex_file_turn(getattr(task, prompt_kind), answer)
+    # A correct tool result alone must not hide a wrong final answer.
+    native.insert(
+        -1,
+        {
+            "type": "response_item",
+            "payload": {"type": "function_call_output", "output": task.value},
+        },
+    )
+    _transcript_session(tmp_path, "codex", {"parent.jsonl": native})
+    if outcome == "correct":
+        assert task.completed(session, "codex")
+    else:
+        with pytest.raises(
+            AssertionError, match="completed the file task with an incorrect answer"
+        ):
+            task.completed(session, "codex")
+
+
+@pytest.mark.parametrize(
+    "case", ["unrelated", "incomplete", "wrong-turn", "child", "aborted", "delegated"]
+)
+def test_file_task_does_not_fail_on_unrelated_or_unfinished_codex_turns(tmp_path, case):
+    session = _Session(tmp_path)
+    session.cwd = tmp_path
+    task = FileTask(session)
+    native = _codex_file_turn(task.prompt, "Still working.")
+    if case == "unrelated":
+        native[3]["payload"]["message"] = "An older task."
+    elif case == "incomplete":
+        native.pop()
+    elif case == "wrong-turn":
+        native[-1]["payload"]["turn_id"] = "other-turn"
+    elif case == "child":
+        native[0]["payload"]["source"] = {
+            "subagent": {"thread_spawn": {"parent_thread_id": "parent"}}
+        }
+    elif case == "aborted":
+        native.insert(
+            -1, {"type": "event_msg", "payload": {"type": "turn_aborted", "turn_id": "file-turn"}}
+        )
+    elif case == "delegated":
+        native[3]["payload"]["message"] = task.delegate_prompt
+    _transcript_session(tmp_path, "codex", {"parent.jsonl": native})
+    assert not task.completed(session, "codex")
 
 
 def test_codex_model_identity_uses_only_the_completed_answer_turn():
