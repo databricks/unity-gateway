@@ -5,7 +5,8 @@ import random
 import re
 import sqlite3
 from pathlib import Path
-from urllib.parse import urlparse
+
+from ..web_search import WEB_SEARCH_TOOL, official_website_urls
 
 STATE_DIRECTORY = ".gemini/antigravity-cli"
 # Structured, bounded `agy -p` output; it asks before tools it isn't allowed and answers no.
@@ -90,10 +91,10 @@ def assert_mcp_web_search_answer(events: list[dict], *, server: str, query: str)
         call
         for call in completed_tools(events, "call_mcp_tool")
         if call.get("parameters")
-        == {"ServerName": server, "ToolName": "web_search", "Arguments": {"query": query}}
+        == {"ServerName": server, "ToolName": WEB_SEARCH_TOOL, "Arguments": {"query": query}}
     ]
     assert calls, "No completed MCP web_search call with the requested server and query"
-    returned_urls = set()
+    official_urls = set()
     for call in calls:
         assert not call.get("error"), call
         output = call.get("output")
@@ -103,18 +104,12 @@ def assert_mcp_web_search_answer(events: list[dict], *, server: str, query: str)
         except json.JSONDecodeError:
             payload = None
         assert not (isinstance(payload, dict) and payload.get("isError")), call
-        returned_urls.update(_web_urls(output))
-    official_urls = {
-        url
-        for url in returned_urls
-        if urlparse(url).hostname in {"databricks.com", "www.databricks.com"}
-    }
+        official_urls.update(official_website_urls(output))
     assert official_urls, calls
-    assert official_urls & _web_urls(answer), {"returned_urls": official_urls, "answer": answer}
-
-
-def _web_urls(text: str) -> set[str]:
-    return set(re.findall(r"https?://[^\s<>\"'\\)\]]+", text))
+    assert official_urls & official_website_urls(answer), {
+        "returned_urls": official_urls,
+        "answer": answer,
+    }
 
 
 def _logs(session) -> list[Path]:

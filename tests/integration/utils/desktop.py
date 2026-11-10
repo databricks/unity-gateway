@@ -2,15 +2,20 @@
 
 import json
 import os
-import re
 import sys
 import tempfile
 from pathlib import Path
-from urllib.parse import urlparse
 
 import anyio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+from .web_search import (
+    OFFICIAL_WEBSITE_QUERY,
+    WEB_SEARCH_SERVICE,
+    WEB_SEARCH_TOOL,
+    official_website_urls,
+)
 
 
 def desktop_config_library(session) -> Path:
@@ -70,7 +75,7 @@ async def assert_desktop_mcp(session, registration: dict, workspace: str) -> Non
     assert registration["transport"] == "stdio", registration
     arguments = registration["args"]
     assert arguments[arguments.index("--url") + 1] == (
-        workspace + "/ai-gateway/mcp-services/system.ai.web_search"
+        f"{workspace}/ai-gateway/mcp-services/{WEB_SEARCH_SERVICE}"
     ), registration
     parameters = StdioServerParameters(**registration)
     parameters.env = {**session.env, **(parameters.env or {})}
@@ -81,9 +86,9 @@ async def assert_desktop_mcp(session, registration: dict, workspace: str) -> Non
                     async with ClientSession(*streams) as client:
                         await client.initialize()
                         tools = {tool.name for tool in (await client.list_tools()).tools}
-                        assert "web_search" in tools, tools
+                        assert WEB_SEARCH_TOOL in tools, tools
                         result = await client.call_tool(
-                            "web_search", {"query": "Databricks official website"}
+                            WEB_SEARCH_TOOL, {"query": OFFICIAL_WEBSITE_QUERY}
                         )
                         # MCP 1.x and 2.x expose different Python attribute names.
                         response = result.model_dump(by_alias=True)
@@ -94,10 +99,7 @@ async def assert_desktop_mcp(session, registration: dict, workspace: str) -> Non
                             for block in response["content"]
                             if block["type"] == "text"
                         )
-                        assert any(
-                            urlparse(url).hostname in {"databricks.com", "www.databricks.com"}
-                            for url in re.findall(r"https?://[^\s)<>]+", text)
-                        ), session.redact(text)
+                        assert official_website_urls(text), session.redact(text)
         finally:
             diagnostics.seek(0)
             stderr = session.redact(diagnostics.read())

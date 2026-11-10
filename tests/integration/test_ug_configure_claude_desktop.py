@@ -22,6 +22,7 @@ from utils.desktop import (
 from utils.harness import process_group_options, stop_process
 from utils.provider_catalog import fetch_anthropic_parent_catalog
 from utils.terminal import ConfigureTerminal, TerminalProcess
+from utils.web_search import WEB_SEARCH_SERVICE
 
 pytestmark = [pytest.mark.live, pytest.mark.claude]
 
@@ -271,7 +272,7 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     )
 
     _assert_desktop_selection(config_library, configured=True)
-    session.run("mcp", "add", "--names", "system.ai.web_search", timeout=240)
+    session.run("mcp", "add", "--names", WEB_SEARCH_SERVICE, timeout=240)
     servers = installed_cowork_servers(session, root)
     profile["managedMcpServers"] = _desktop_profile(session, config_library, workspace)[
         "managedMcpServers"
@@ -377,7 +378,7 @@ def test_ug_configure_claude_desktop_subscription_relay(
     # This dated native relay ID must be returned unchanged; it is not a service alias.
     assert message["model"] == CLAUDE_RELAY_TEST_MODEL
     _assert_desktop_selection(config_library, configured=True)
-    session.run("mcp", "add", "--names", "system.ai.web_search", timeout=240)
+    session.run("mcp", "add", "--names", WEB_SEARCH_SERVICE, timeout=240)
     servers = installed_cowork_servers(session, root)
     profile["managedMcpServers"] = _desktop_profile(session, config_library, workspace)[
         "managedMcpServers"

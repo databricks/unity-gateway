@@ -164,6 +164,9 @@ one installed UG entry, and a matching cached version. It registers system.ai.we
 MCP SDK. The check initializes the protocol, discovers web_search, and searches for Databricks'
 official website. A successful result must contain a URL on databricks.com or www.databricks.com;
 the response wording and search rankings are not asserted. No SQL compute is needed.
+Desktop and Antigravity share the request constants and official-URL extraction in
+`utils/web_search.py`. Desktop retains its MCP SDK call and protocol error checks; Antigravity
+retains its native tool-call evidence and final-answer match.
 Both journeys verify reconfiguration preserves the profile/plugin and revert removes UG's entries
 while retaining unrelated profiles and metadata. A separate local personal plugin is installed
 through the real Claude CLI before configuration; its registry entry and installed manifest must

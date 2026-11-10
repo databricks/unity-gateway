@@ -14,6 +14,7 @@ from tests.integration.utils.evidence import (
     tool_outputs,
 )
 from tests.integration.utils.terminal import codex_command_approval_pending
+from tests.integration.utils.web_search import official_website_urls
 
 
 @pytest.mark.parametrize(
@@ -256,6 +257,26 @@ def test_antigravity_resource_exhausted_rejects_non_retryable_results(result):
     stdout = json.dumps({"event": "result", "result": result})
 
     assert not antigravity.resource_exhausted(stdout)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("[Databricks](https://www.databricks.com/)", {"https://www.databricks.com/"}),
+        (
+            '{"text": "Official website: https://databricks.com"}',
+            {"https://databricks.com"},
+        ),
+        (
+            "https://databricks.com/docs https://www.databricks.com/ "
+            "https://databricks.com.example.org/",
+            {"https://databricks.com/docs", "https://www.databricks.com/"},
+        ),
+        ("No official result: https://databricks.com@example.org/", set()),
+    ],
+)
+def test_web_search_official_urls_from_text_and_serialized_results(text, expected):
+    assert official_website_urls(text) == expected
 
 
 def _antigravity_web_search_events():
