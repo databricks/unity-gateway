@@ -246,17 +246,15 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
         children.push(Text({ children: ['Could not load this routing decision.'] }));
         if (detail.hint) children.push(Text({ dimColor: true, children: [detail.hint.slice(0, columns)] }));
       } else {
-        children.push(Text({ dimColor: true, children: [detail.subagent ? `Prompt preview (${detail.subagent})` : 'Prompt preview'] }));
-        children.push(Text({ children: [detail.preview ?? '(prompt not recorded)'] }));
-        // One labeled line per routing outcome; duration keeps the mod's one-decimal seconds.
-        children.push(Box({ flexDirection: 'row', children: [
-          Text({ children: ['Selected: '] }),
-          Text({ color: 'green', bold: true, children: [shortModel(detail.selected)] }),
-        ] }));
-        children.push(Text({ children: [`Routing Time: ${(detail.routing_ms / 1000).toFixed(1)}s`] }));
-        children.push(Text({
-          children: [`Rationale: ${detail.rationale?.trim() || 'No rationale returned.'}`],
-        }));
+        // One labeled line per routing outcome; every label is dim so the block
+        // reads consistently, and each value wraps in its own column.
+        const labeledRow = (label: string, value: ReturnType<typeof Text>) =>
+          Box({ flexDirection: 'row', children: [Text({ dimColor: true, children: [label] }), value] });
+        children.push(labeledRow('Prompt preview: ', Text({ children: [detail.preview ?? '(prompt not recorded)'] })));
+        if (detail.subagent) children.push(labeledRow('Agent type: ', Text({ children: [detail.subagent] })));
+        children.push(labeledRow('Selected: ', Text({ color: 'green', bold: true, children: [shortModel(detail.selected)] })));
+        children.push(labeledRow('Routing Time: ', Text({ children: [`${(detail.routing_ms / 1000).toFixed(1)}s`] })));
+        children.push(labeledRow('Rationale: ', Text({ children: [detail.rationale?.trim() || 'No rationale returned.'] })));
         if (detail.requested !== null && detail.requested !== detail.selected) {
           children.push(Text({ dimColor: true, children: [`Requested: ${shortModel(detail.requested)}`] }));
         }

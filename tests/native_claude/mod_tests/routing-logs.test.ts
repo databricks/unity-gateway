@@ -78,13 +78,21 @@ test('pressing a row fetches the decision and Back returns to the list', { optio
   expect(runs[1]).toEqual(['/bin/ug', 'smart-router-logs', '--session', 'session-one', '--decision', 'd1']);
   const tree = JSON.stringify(await ui.drawn());
   expect(tree).toContain('Recorded prompt preview');
-  expect(tree).toContain('Prompt preview (Explore)');
+  // Labels are dim; the prompt preview carries the agent type on its own line.
+  expect(tree).toContain('"props":{"dimColor":true},"children":["Prompt preview: "]');
+  expect(tree).toContain('"props":{"dimColor":true},"children":["Agent type: "]');
+  expect(tree.indexOf('Prompt preview: ')).toBeLessThan(tree.indexOf('Agent type: '));
   expect(tree).not.toContain('SHA-256');
   expect(tree).not.toContain('Full prompt is not stored.');
   // The routing outcome is three labeled lines in order.
   expect(tree.indexOf('Selected: ')).toBeGreaterThanOrEqual(0);
-  expect(tree.indexOf('Selected: ')).toBeLessThan(tree.indexOf('Routing Time: 0.8s'));
-  expect(tree.indexOf('Routing Time: 0.8s')).toBeLessThan(tree.indexOf('Rationale: Because it is a search.'));
+  expect(tree.indexOf('Agent type: ')).toBeLessThan(tree.indexOf('Selected: '));
+  expect(tree.indexOf('Selected: ')).toBeLessThan(tree.indexOf('Routing Time: '));
+  expect(tree.indexOf('0.8s')).toBeLessThan(tree.indexOf('Rationale: '));
+  expect(tree.indexOf('Rationale: ')).toBeLessThan(tree.indexOf('Because it is a search.'));
+  expect(tree).toContain('"props":{"dimColor":true},"children":["Selected: "]');
+  expect(tree).toContain('"props":{"dimColor":true},"children":["Routing Time: "]');
+  expect(tree).toContain('"props":{"dimColor":true},"children":["Rationale: "]');
   expect(tree).toContain('Requested: claude-opus');
   expect(tree).toContain('Because it is a search.');
   expect(tree).toContain('● claude-sonnet');
@@ -174,7 +182,8 @@ test('hides the requested model when it matches the selection', { options }, asy
   const tree = JSON.stringify(await ui.drawn());
   expect(tree).not.toContain('Requested:');
   expect(tree).toContain('(prompt not recorded)');
-  expect(tree).toContain('Rationale: No rationale returned.');
+  expect(tree).toContain('"props":{"dimColor":true},"children":["Rationale: "]');
+  expect(tree).toContain('No rationale returned.');
   await ui.unmount();
 });
 
@@ -368,6 +377,7 @@ test('a UG route agent type is not shown as the prompt label', { options }, asyn
   await ui.press({ key: 'd1' });
   const tree = JSON.stringify(await ui.drawn());
   expect(tree).toContain('Prompt preview');
+  expect(tree).not.toContain('Agent type: ');
   expect(tree).not.toContain('ucode-route-');
   await ui.unmount();
 });
