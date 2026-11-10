@@ -200,6 +200,20 @@ class TestModelDiscovery:
         models = fetch_codex_models(e2e_workspace, e2e_token)
         assert isinstance(models, list)
 
+    def test_model_services_ids_are_system_ai(self, e2e_workspace, e2e_token):
+        """The launch catalog comes from UC model-services, as the product's launch does."""
+        claude, codex, gemini, _oss, _reason = discover_model_services(e2e_workspace, e2e_token)
+        ids = [*claude.values(), *codex, *gemini]
+        assert all(m.startswith("system.ai.") for m in ids), ids
+
+    def test_e2e_state_prefers_model_services(self, e2e_state, e2e_workspace, e2e_token):
+        """A family UC returns is used verbatim; the legacy listing only fills an empty one."""
+        _claude, codex, gemini, _oss, _reason = discover_model_services(e2e_workspace, e2e_token)
+        if gemini:
+            assert e2e_state["gemini_models"] == gemini
+        if codex:
+            assert e2e_state["codex_models"] == codex
+
 
 # ---------------------------------------------------------------------------
 # Model Provider Services discovery
@@ -437,8 +451,8 @@ E2E_MODEL_SKIP_HARNESSES: dict[str, frozenset[str]] = {
     # Bedrock Grok rejects request/tool shapes from these harnesses.
     "grok": frozenset({"codex", "copilot", "pi"}),
     # These Gemini endpoints hang OpenCode well past its E2E timeout.
-    "databricks-gemini-3-1-flash-lite": frozenset({"opencode"}),
-    "databricks-gemini-3-7-flash": frozenset({"opencode"}),
+    "gemini-3-1-flash-lite": frozenset({"opencode"}),
+    "gemini-3-7-flash": frozenset({"opencode"}),
     # Image-only Gemini endpoints reject function calling, which Pi's launch smoke requires.
     "flash-lite-image": frozenset({"pi"}),
     # These endpoints do not support Copilot's MLflow chat route.
@@ -866,7 +880,7 @@ class TestGeminiLaunch:
         model = model_case
         _require_binary("gemini")
         # Gemini CLI >= 0.45 rewrites forced flash model ids (e.g.
-        # 'databricks-gemini-3-5-flash') to 'gemini-3.5-flash', which Unity
+        # 'system.ai.gemini-3-5-flash') to 'gemini-3.5-flash', which Unity
         # Catalog rejects. ucode caps the supported version below 0.45 and
         # offers a downgrade; skip here if the runner still has a too-new build
         # rather than asserting against a version we deliberately don't support.
