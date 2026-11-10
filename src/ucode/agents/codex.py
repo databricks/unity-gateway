@@ -1542,7 +1542,8 @@ def _set_provider_header(config: dict, provider: str | None) -> None:
 
 
 def _remove_persisted_recipe(config: dict) -> None:
-    # OS-managed headers outrank even thread/resume overrides, freezing attribution.
+    # Keep the recipe launch-scoped so toggles can update it on app-server relaunch.
+    # A persisted OS-managed header would override the new launch value.
     provider = config.get("model_providers", {}).get(CODEX_MODEL_PROVIDER_NAME, {})
     for key in ("http_headers", "env_http_headers"):
         headers = provider.get(key, {})
