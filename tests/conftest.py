@@ -11,6 +11,7 @@ import pytest
 
 from ucode.databricks import (
     build_shared_base_urls,
+    discover_model_services,
     fetch_ai_gateway_claude_models,
     fetch_codex_models,
     fetch_gemini_models,
@@ -234,7 +235,11 @@ def e2e_state_for(workspace: str) -> dict:
     A failed fetch raises and is not cached."""
     token = get_databricks_token(workspace)
     claude_models = fetch_ai_gateway_claude_models(workspace, token)
-    gemini_models = fetch_gemini_models(workspace, token)
+    # Like `ug configure`: UC model services first, the legacy listing only when that is empty.
+    # The legacy endpoints reject UC-only models such as gemini-4-carbon with HTTP 403.
+    gemini_models = discover_model_services(workspace, token)[2] or fetch_gemini_models(
+        workspace, token
+    )
     codex_models = fetch_codex_models(workspace, token)
 
     opencode_models: dict = {}
