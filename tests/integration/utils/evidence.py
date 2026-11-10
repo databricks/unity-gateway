@@ -132,42 +132,6 @@ def assistant_answer_contains(session, agent: str, value: str, *, child: bool = 
     )
 
 
-def claude_delivered_child_answers(sessions: dict[str, list[dict]], value: str) -> set[str]:
-    """Find children that answered and whose answer reached their own parent transcript.
-
-    A peer delivery must be a native user-role record with the child's sender ID,
-    not a prompt, tool input, or assistant-generated notification. A parent
-    assistant answer also counts, but only alongside that child's own answer.
-    """
-    matched = set()
-    for path, records in sessions.items():
-        if not is_child_session("claude", path, records):
-            continue
-        child_path = Path(path)
-        child_id = child_path.stem.removeprefix("agent-")
-        parent_path = child_path.parent.parent.as_posix() + ".jsonl"
-        parents = sessions.get(parent_path, [])
-        if not any(value in answer for answer in assistant_answers("claude", records)):
-            continue
-        parent_answer = any(value in answer for answer in assistant_answers("claude", parents))
-        delivered = any(
-            record.get("type") == "user"
-            and record.get("isMeta") is True
-            and record.get("message", {}).get("role") == "user"
-            and isinstance(record.get("message", {}).get("content"), str)
-            and value in record["message"]["content"]
-            and isinstance(record.get("origin"), dict)
-            and record["origin"].get("kind") == "peer"
-            and record["origin"].get("from") == child_id
-            and isinstance(record["origin"].get("body"), str)
-            and value in record["origin"]["body"]
-            for record in parents
-        )
-        if parent_answer or delivered:
-            matched.add(child_id)
-    return matched
-
-
 def assert_no_bearer_on_disk(session) -> None:
     """No file under the session home holds the Databricks bearer."""
     bearer = session.env.get("DATABRICKS_BEARER")

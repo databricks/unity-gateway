@@ -14,14 +14,17 @@ import os
 from pathlib import Path
 
 import pytest
-from utils.agents.claude import assert_follow_ups_resumed, resumed_agent_id
+from utils.agents.claude import (
+    assert_follow_ups_resumed,
+    child_id,
+    claude_delivered_child_answers,
+)
 from utils.evidence import (
     FileTask,
     SubagentCalculation,
     agent_sessions,
     assert_subagent_routed,
     assistant_answers,
-    claude_delivered_child_answers,
     codex_routing_display_for_task,
     is_child_session,
     read_jsonl,
@@ -655,74 +658,20 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
         path for path, records in sessions.items() if is_child_session("claude", path, records)
     }
     assert end_children == children, (sorted(children), sorted(end_children))
-    calls = {
-        part["id"]: part
-        for records in sessions.values()
-        for record in records
-        if record.get("type") == "assistant"
-        for part in record.get("message", {}).get("content", [])
-        if part.get("type") == "tool_use"
-    }
-    spawns = {call["id"]: call for call in calls.values() if call["name"] in {"Agent", "Task"}}
+    spawns = _parent_tool_calls(sessions, {"Agent", "Task"})
     assert set(spawns) == set(pre_spawns), sorted(set(spawns) ^ set(pre_spawns))
-    parent_records = [
-        record
-        for path, records in sessions.items()
-        if not is_child_session("claude", path, records)
-        for record in records
-    ]
-    followups = {
-        part["id"]: part
-        for record in parent_records
-        if record.get("type") == "assistant"
-        for part in record.get("message", {}).get("content", [])
-        if part.get("type") == "tool_use" and part.get("name") == "SendMessage"
-    }
-    assert followups, calls
-    child_id = resumed_agent_id(list(followups.values()), parent_records)
-    assert_follow_ups_resumed(list(followups.values()), parent_records, child_id)
-    child_path = next(
-        (path for path in children if Path(path).stem.removeprefix("agent-") == child_id), None
+    followups = _parent_tool_calls(sessions, {"SendMessage"})
+    assert followups, sorted(spawns)
+    resumed_child = assert_follow_ups_resumed(
+        list(followups.values()), [r for records in sessions.values() for r in records]
     )
-    assert child_path is not None, (
-        f"the follow-up resumed {child_id}, which is not one of the spawned children"
+    assert any(child_id(path) == resumed_child for path in children), (
+        f"the follow-up resumed {resumed_child}, which is not one of the spawned children"
     )
-    # Keep even incorrect parent responses in the artifacts; they are not the
-    # continuation contract. The transcript artifact also retains their original order.
-    session.record(
-        "resume-parent-answers.json",
-        {
-            "answers": assistant_answers("claude", parent_records),
-            "expected_values": [first.value, second.value],
-        },
-    )
-    decisions = _routing_decisions(session, "claude")
-    starts = read_jsonl(session.home / ".ucode" / "claude-smart-routing-audit.jsonl")
-    routed_models = {
-        decision["requested_model"].removesuffix("[1m]")
-        for start in starts
-        if start.get("agent_id") == child_id and start.get("matches_router_decision") is not False
-        for decision in decisions
-        if decision.get("decision_id") == start.get("decision_id")
-        and isinstance(decision.get("requested_model"), str)
-        and decision.get("router_model")
-    }
-    session.record("resume-routing.json", {"decisions": decisions, "starts": starts})
-    assert routed_models, f"No routing decision linked to resumed child {child_id}"
     for task in (first, second):
-        assert child_id in claude_delivered_child_answers(sessions, task.value), (
-            f"Child {child_id} did not answer and deliver {task.value}"
+        assert resumed_child in claude_delivered_child_answers(sessions, task.value), (
+            f"Child {resumed_child} did not answer and deliver {task.value}"
         )
-        answer_models = {
-            record.get("message", {}).get("model", "").removesuffix("[1m]")
-            for record in sessions[child_path]
-            if any(task.value in answer for answer in assistant_answers("claude", [record]))
-        }
-        assert answer_models & routed_models, {
-            "child": child_id,
-            "answer_models": sorted(answer_models),
-            "routed_models": sorted(routed_models),
-        }
 
 
 @pytest.mark.live

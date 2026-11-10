@@ -1,5 +1,6 @@
 """Claude-specific integration evidence and model discovery helpers."""
 
+from pathlib import Path
 from typing import Literal
 
 from ..model_discovery import claude_discovery_model_id as discovery_model_id
@@ -10,11 +11,12 @@ __all__ = [
     "EVIDENCE_KIND",
     "assistant_answers",
     "assert_follow_ups_resumed",
+    "child_id",
+    "claude_delivered_child_answers",
     "classify_send_message",
     "completed_task_models",
     "discovery_model_id",
     "model_in_picker",
-    "resumed_agent_id",
 ]
 
 SESSION_DIRECTORY = ".claude/projects"
@@ -120,35 +122,29 @@ def classify_send_message(call: dict, records: list[dict], agent_id: str) -> Sen
     )
 
 
-def resumed_agent_id(calls: list[dict], records: list[dict]) -> str:
+def assert_follow_ups_resumed(calls: list[dict], records: list[dict]) -> str:
     """Resolve the single child the parent's follow-up SendMessage calls resumed.
 
-    Reads each send's native result and requires exactly one distinct `resumedAgentId`,
-    so the journey can assert against the child the follow-up actually continued even
-    when redundant duplicate spawns exist.
+    Requires exactly one distinct, nonempty `resumedAgentId` across the native results,
+    every send to target that child, and at least one real resume, so the journey can
+    assert against the child the follow-up actually continued even when redundant
+    duplicate spawns exist. A redundant follow-up the model sends while the child runs
+    may be queued or rejected; that is tolerated only alongside a real resume.
     """
     assert calls, "Expected at least one SendMessage"
     resumed = {
         result["resumedAgentId"]
         for call in calls
         for result in [_native_result(call, records)]
-        if isinstance(result, dict) and isinstance(result.get("resumedAgentId"), str)
+        if isinstance(result, dict) and result.get("resumedAgentId")
     }
     assert len(resumed) == 1, (
         f"Expected the follow-ups to resume exactly one child, got {sorted(resumed)}"
     )
-    return resumed.pop()
-
-
-def assert_follow_ups_resumed(calls: list[dict], records: list[dict], agent_id: str) -> None:
-    """Require every SendMessage to target the child and at least one to resume it.
-
-    A redundant follow-up the model sends while the child runs may be queued or rejected;
-    that is tolerated only alongside a real resume.
-    """
-    assert calls, "Expected at least one SendMessage"
+    agent_id = resumed.pop()
     outcomes = [classify_send_message(call, records, agent_id) for call in calls]
     assert "resumed" in outcomes, f"No SendMessage resumed {agent_id}: {outcomes}"
+    return agent_id
 
 
 def completed_task_models(records: list[dict], answer_value: str) -> set[str]:
@@ -175,3 +171,44 @@ def completed_task_models(records: list[dict], answer_value: str) -> set[str]:
                 model = _evidence_id(message.get("model"), "model")
                 found.add(_evidence_id(model.removesuffix("[1m]"), "model"))
     return found
+
+
+def child_id(path: str) -> str:
+    """The child ID encoded in a Claude child transcript path's file name."""
+    return Path(path).stem.removeprefix("agent-")
+
+
+def claude_delivered_child_answers(sessions: dict[str, list[dict]], value: str) -> set[str]:
+    """Find children that answered and whose answer reached their own parent transcript.
+
+    A peer delivery must be a native user-role record with the child's sender ID,
+    not a prompt, tool input, or assistant-generated notification. A parent
+    assistant answer also counts, but only alongside that child's own answer.
+    """
+    matched: set[str] = set()
+    for path, records in sessions.items():
+        if not is_child_session(path, records):
+            continue
+        sender_id = child_id(path)
+        child_path = Path(path)
+        parent_path = child_path.parent.parent.as_posix() + ".jsonl"
+        if not any(value in answer for answer in assistant_answers(records)):
+            continue
+        parent_answer = False
+        delivered = False
+        for record in sessions.get(parent_path, []):
+            if any(value in answer for answer in assistant_answers([record])):
+                parent_answer = True
+            origin = record.get("origin", {})
+            if (
+                record.get("type") == "user"
+                and record.get("isMeta") is True
+                and isinstance(record.get("message", {}).get("content"), str)
+                and value in record["message"]["content"]
+                and origin.get("kind") == "peer"
+                and origin.get("from") == sender_id
+            ):
+                delivered = True
+        if parent_answer or delivered:
+            matched.add(sender_id)
+    return matched

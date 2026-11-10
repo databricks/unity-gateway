@@ -11,7 +11,6 @@ from tests.integration.utils.evidence import (
     SubagentCalculation,
     assert_no_terminal_api_error,
     assistant_answer_contains,
-    claude_delivered_child_answers,
     tool_outputs,
 )
 from tests.integration.utils.terminal import codex_command_approval_pending
@@ -151,31 +150,34 @@ def test_claude_send_requires_matching_native_result():
 
 def test_claude_follow_ups_tolerate_queued_and_rejected_alongside_a_resume():
     calls = [_call(1), _call(2), _call(3)]
-    claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _QUEUED, _REJECTED), "child-id")
+    resumed = claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _QUEUED, _REJECTED))
+    assert resumed == "child-id"
 
 
 @pytest.mark.parametrize("results", [(_QUEUED,), (_REJECTED,), (_QUEUED, _REJECTED)])
 def test_claude_follow_ups_require_a_real_resume(results):
     calls = [_call(i) for i in range(1, len(results) + 1)]
-    with pytest.raises(AssertionError, match="No SendMessage resumed child-id"):
-        claude.assert_follow_ups_resumed(calls, _records(*results), "child-id")
+    with pytest.raises(AssertionError, match="resume exactly one child"):
+        claude.assert_follow_ups_resumed(calls, _records(*results))
 
 
 def test_claude_follow_ups_fail_when_any_send_targets_another_agent():
     calls = [_call(1), _call(2, to="other-child")]
     with pytest.raises(AssertionError, match="neither resumed nor was queued or rejected"):
-        claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _REJECTED), "child-id")
+        claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _REJECTED))
 
 
-def test_claude_resumed_agent_id_resolves_the_single_resumed_child():
+def test_claude_follow_ups_resolve_the_single_resumed_child():
     calls = [_call(1), _call(2), _call(3)]
-    assert claude.resumed_agent_id(calls, _records(_QUEUED, _RESUMED, _REJECTED)) == "child-id"
+    assert (
+        claude.assert_follow_ups_resumed(calls, _records(_QUEUED, _RESUMED, _REJECTED))
+        == "child-id"
+    )
 
 
 @pytest.mark.parametrize(
     "results",
     [
-        (_QUEUED, _REJECTED),
         (
             {"success": True, "resumedAgentId": "child-id"},
             {"success": True, "resumedAgentId": "other-child"},
@@ -183,15 +185,15 @@ def test_claude_resumed_agent_id_resolves_the_single_resumed_child():
         ({"success": True},),
     ],
 )
-def test_claude_resumed_agent_id_requires_exactly_one_resumed_child(results):
+def test_claude_follow_ups_require_exactly_one_resumed_child(results):
     calls = [_call(i) for i in range(1, len(results) + 1)]
     with pytest.raises(AssertionError, match="resume exactly one child"):
-        claude.resumed_agent_id(calls, _records(*results))
+        claude.assert_follow_ups_resumed(calls, _records(*results))
 
 
-def test_claude_resumed_agent_id_requires_a_native_result():
+def test_claude_follow_ups_require_a_native_result():
     with pytest.raises(AssertionError, match="No native tool result for SendMessage send-1"):
-        claude.resumed_agent_id([_call()], [])
+        claude.assert_follow_ups_resumed([_call()], [])
 
 
 def _transcript_session(home, agent, transcripts):
@@ -250,9 +252,9 @@ def test_claude_child_answer_requires_delivery_even_when_parent_hallucinates():
     parent = "project/session.jsonl"
     child = "project/session/subagents/agent-ae73fb7e161b59bbb.jsonl"
     sessions = {parent: [fabricated], child: [_claude_child_handback(value)]}
-    assert not claude_delivered_child_answers(sessions, value)
+    assert not claude.claude_delivered_child_answers(sessions, value)
     sessions[parent].append(_claude_peer_delivery("ae73fb7e161b59bbb", value))
-    assert claude_delivered_child_answers(sessions, value) == {"ae73fb7e161b59bbb"}
+    assert claude.claude_delivered_child_answers(sessions, value) == {"ae73fb7e161b59bbb"}
 
 
 def test_claude_child_delivery_ignores_prompt_and_tool_input_echoes():
@@ -272,13 +274,13 @@ def test_claude_child_delivery_ignores_prompt_and_tool_input_echoes():
         ],
         child: [_claude_child_handback(value)],
     }
-    assert not claude_delivered_child_answers(sessions, value)
+    assert not claude.claude_delivered_child_answers(sessions, value)
     sessions[parent].append(_claude_peer_delivery("other-child", value))
-    assert not claude_delivered_child_answers(sessions, value)
+    assert not claude.claude_delivered_child_answers(sessions, value)
     sessions[parent].append(_claude_parent_text(value))
-    assert claude_delivered_child_answers(sessions, value) == {"child-id"}
+    assert claude.claude_delivered_child_answers(sessions, value) == {"child-id"}
     sessions[child] = [{"type": "user", "message": {"role": "user", "content": value}}]
-    assert not claude_delivered_child_answers(sessions, value)
+    assert not claude.claude_delivered_child_answers(sessions, value)
 
 
 def test_claude_child_delivery_must_belong_to_same_parent_session():
@@ -288,7 +290,7 @@ def test_claude_child_delivery_must_belong_to_same_parent_session():
         "project/session.jsonl": [],
         "project/session/subagents/agent-child-id.jsonl": [_claude_child_handback(value)],
     }
-    assert not claude_delivered_child_answers(sessions, value)
+    assert not claude.claude_delivered_child_answers(sessions, value)
 
 
 def _write_answer(home, agent, *, child, value):
