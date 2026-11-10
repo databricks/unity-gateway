@@ -36,7 +36,7 @@ on:
         required: true
       antigravity_build:
         description: Exact Antigravity CLI build, <version>-<build id> (Linux lane)
-        default: 1.4.9-4962164969177088
+        default: 1.5.4-5037094733742080
         required: true
       dependency:
         description: Optional exact dependency for reproduction (e.g. tomlkit==0.14.0)
@@ -62,7 +62,7 @@ env:
   CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}
   OPENCODE_VERSION: ${{ inputs.opencode_version || '1.18.31' }}
   COPILOT_VERSION: ${{ inputs.copilot_version || '1.0.91' }}
-  ANTIGRAVITY_BUILD: ${{ inputs.antigravity_build || '1.4.9-4962164969177088' }}
+  ANTIGRAVITY_BUILD: ${{ inputs.antigravity_build || '1.5.4-5037094733742080' }}
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
 
 jobs:

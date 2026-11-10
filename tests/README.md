@@ -150,7 +150,9 @@ tool and query, and an official Databricks URL present in both its result and th
 Native file-reader guidance avoids shell-based tool discovery; permissions remain scoped to
 reads and that MCP server. Offline evidence checks reject denied actions, provider/tool errors,
 missing or unrelated calls, empty answers, misleading domains, and answers absent from the
-search output. These checks do not establish live reliability; SQL execution is no longer
+search output. URL matching ignores surrounding Markdown emphasis and inline-code markers,
+while preserving paths, queries, fragments, and unformatted literal asterisks.
+These checks do not establish live reliability; SQL execution is no longer
 covered by the Antigravity MCP case. Headless journeys save model request URLs even when
 the command fails or times out.
 
