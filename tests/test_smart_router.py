@@ -13,10 +13,32 @@ import pytest
 from typer.testing import CliRunner
 
 from ucode import cli, config_io, skills
+from ucode.constants import SMART_ROUTING_ENV_KEYS
 from ucode.skills import SMART_ROUTER_SKILL
-from ucode.smart_routing import session_env, v2
+from ucode.smart_routing import orchestrator, session_env, v2
 
 runner = CliRunner()
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize(
+    ("frontmatter", "expected"),
+    [
+        ('---\nmetadata:\n  version: "2.3.4"\n---\n', "2.3.4"),
+        ("---\nmetadata:\n    version: '2.3.4'\n---\n", "2.3.4"),
+        ("---\nmetadata:\n  owner:\n    version: nested\n  version: actual\n---\n", "actual"),
+        ("---\nmetadata:\n  owner:\n    version: nested\n---\n", None),
+        ("---\nmetadata:\n  # Release version\n\n  version: actual\n---\n", "actual"),
+        ("---\nmetadata:\n  author: owner\nother:\n  version: unrelated\n---\n", None),
+    ],
+)
+def test_orchestrator_skill_version_reads_direct_metadata_child(
+    tmp_path, monkeypatch, agent, frontmatter, expected
+):
+    (tmp_path / f"SKILL.{agent}.md").write_text(frontmatter)
+    monkeypatch.setattr(orchestrator, "skill_directory", lambda: tmp_path)
+
+    assert orchestrator.skill_version(agent=agent) == expected
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
@@ -120,7 +142,7 @@ def test_claude_skill_toggles_with_launch_installation_despite_shadowed_path(tmp
         )
         assert result.returncode == 0, result.stdout + result.stderr
         assert f"Smart Router is {'off' if action == 'disable' else 'on'}" in result.stdout
-        expected = dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0") if action == "disable" else {}
+        expected = dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if action == "disable" else {}
         assert json.loads(session_path.read_text()) == expected
 
 

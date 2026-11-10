@@ -28,6 +28,10 @@ export function showStatusBand(): void {
   band.isValidationFailed = false
 }
 
+export function startStatusBandTurn(): void {
+  if (band.isVisible) band.isHideArmed = true
+}
+
 // Hides the band at the end of an armed turn; true when the band changed and needs a redraw.
 // The register module owns the one turn.complete handler, which the routing cards share.
 export function endStatusBandTurn(): boolean {
@@ -92,14 +96,10 @@ function routingWarning(): string | undefined {
   return band.isUnsupported ? UNSUPPORTED_MODEL_LIST_WARNING : undefined
 }
 
-export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
+// isReplaced lets another above-prompt row take the band's place while it shows.
+export const registerStatusBand = (on: On, auto?: AutoPicker, isReplaced: () => boolean = () => false): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
-  on('prompt.submit', ($, e, next) => {
-    if (band.isVisible) band.isHideArmed = true
-    return next(e)
-  })
-
   // The prompt hint row always carries the state as a plain tail, so it stays visible after
   // the band hides and flips as soon as a toggle succeeds.
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
@@ -126,7 +126,7 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const theirs = await next(e)
-    const isBandShown = band.isVisible && !validation.isPending
+    const isBandShown = band.isVisible && !validation.isPending && !isReplaced()
     if (!isBandShown) return theirs
     const { Box, Text } = $.ui.resolve(e)
     const { enabled, firstPrompt } = await readRoutingState($)

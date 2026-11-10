@@ -1469,10 +1469,8 @@ selected model and rationale and matches the decision log. The native mod applie
 that model at spawn without rewriting the reviewed tool input. Native task-header
 rendering is outside that CLI-contract check.
 
-The unit/component `../test_smart_routing_config.py` includes a 189-case Cartesian oracle over all
-three legacy routing flags (`None`, `0`, `1`) and seven selector forms (`None` plus the six
-supported presets, including the internal first-prompt-and-subagent mode and the blind
-subagent-model orch v0 preset). It independently
+The unit/component `../test_smart_routing_config.py` checks unset, disabled, enabled, and
+conflicting routing, orchestration, and savings flags against the supported presets. It independently
 hardcodes preset values and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.
