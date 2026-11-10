@@ -32,6 +32,7 @@ from ucode.agents.copilot import (
     location_catalog,
     managed_http_headers,
     provider_service_catalog,
+    resolve_copilot_model,
     unservable_static_models,
 )
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command
@@ -209,7 +210,10 @@ def model_entries(
     state: dict, *, provider: str | None = None, location: str | None = None
 ) -> list[dict[str, object]]:
     """The models of the chosen source, each with the API the extension calls it on."""
-    catalog = _catalog(state, provider, location)
+    return _entries(_catalog(state, provider, location), provider)
+
+
+def _entries(catalog: list[CopilotModel], provider: str | None) -> list[dict[str, object]]:
     if provider:
         # A service's targets are the provider's own ids, which is what its users know it by, and
         # several of them differ only by a region the label would drop.
@@ -221,6 +225,18 @@ def model_entries(
         _model_entry(model, model.id if counts[label] > 1 else label)
         for model, label in labels.items()
     ]
+
+
+def managed_default_model(state: dict, catalog: list[CopilotModel]) -> str | None:
+    """The id in ``catalog`` of the workspace's managed default model, or None when there is none
+    or ``catalog`` doesn't have it."""
+    default = state.get("copilot_default_model")
+    if not isinstance(default, str) or not default:
+        return None
+    try:
+        return resolve_copilot_model(default, catalog).id
+    except RuntimeError:
+        return None
 
 
 def auth_command(state: dict) -> str:
@@ -251,8 +267,8 @@ def next_steps() -> list[str]:
 def configure(state: dict, *, provider: str | None = None, location: str | None = None) -> bool:
     """Install the extension with this workspace's setup and the models of ``provider`` (a Model
     Provider Service), ``location`` (a ``<catalog>.<schema>``) or else the Copilot CLI's, with the
-    workspace's managed headers and its selection on a host that serves several workspaces. Returns
-    False, after a warning, if any step fails."""
+    workspace's managed headers, its managed default model and its selection on a host that serves
+    several workspaces. Returns False, after a warning, if any step fails."""
     code = find_code()
     if code is None:
         print_note(
@@ -262,11 +278,12 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
         )
         return False
     try:
-        models = model_entries(state, provider=provider, location=location)
+        catalog = _catalog(state, provider, location)
     except RuntimeError as exc:
         # Keep what an earlier configure installed: a failed listing shouldn't wipe a working setup.
         print_warning(f"{exc} VS Code was left unchanged.")
         return False
+    models = _entries(catalog, provider)
     config: dict[str, object] = {
         "workspace": state["workspace"],
         "authCommand": auth_command(state),
@@ -274,6 +291,9 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     }
     if provider:
         config["provider"] = provider
+    # The extension makes it VS Code's default for new chats, unless the developer set their own.
+    if default_model := managed_default_model(state, catalog):
+        config["defaultModel"] = default_model
     headers = managed_http_headers(state)
     # Last, so an admin header can't select another workspace.
     headers.update(workspace_headers(state["workspace"]))
