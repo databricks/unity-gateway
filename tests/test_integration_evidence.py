@@ -13,7 +13,12 @@ from tests.integration.utils.evidence import (
     assistant_answer_contains,
     tool_outputs,
 )
-from tests.integration.utils.terminal import codex_command_approval_pending
+from tests.integration.utils.terminal import (
+    codex_approval_command,
+    codex_approval_reads_only,
+    codex_command_approval_pending,
+    codex_turn_answered,
+)
 
 
 @pytest.mark.parametrize(
@@ -60,6 +65,109 @@ def test_codex_approval_requires_the_exact_local_command(command, environment, m
         assert (
             codex_command_approval_pending(screen, "ug codex --disable-smart-routing") is expected
         )
+
+
+def _approval_dialog(command: str) -> str:
+    return (
+        "• Running bash\n"
+        "\n"
+        "  Would you like to run the following command?\n"
+        "\n"
+        "  Environment: local\n"
+        "\n"
+        "  Reason: Read local file contents for user task.\n"
+        "\n"
+        f"  $ {command}\n"
+        "\n"
+        "› 1. Yes, proceed (y)\n"
+        "  2. Yes, and don't ask again for commands that start with `bash` (p)\n"
+        "  3. No, and tell Codex what to do differently (esc)\n"
+        "\n"
+        "  Press enter to confirm or esc to cancel\n"
+    )
+
+
+def test_codex_approval_command_extracts_the_requested_command():
+    assert codex_approval_command(_approval_dialog("bash")) == "bash"
+
+
+def test_codex_approval_command_joins_wrapped_rows_and_blank_separators():
+    assert (
+        codex_approval_command(
+            _approval_dialog('powershell -NoProfile -Command "Get-Content\n    input-abc123.txt"')
+        )
+        == 'powershell -NoProfile -Command "Get-Content input-abc123.txt"'
+    )
+
+
+@pytest.mark.parametrize(
+    "screen",
+    [
+        "• Ran bash\n  └ (no output)\n",
+        "Would you like to run the following command?\n  $ bash\n",
+        _approval_dialog("bash").replace("Press enter to confirm or esc to cancel", ""),
+        _approval_dialog("bash").replace("› 1. Yes, proceed (y)", ""),
+    ],
+    ids=["no-dialog", "no-footer", "no-footer-text", "no-choice"],
+)
+def test_codex_approval_command_requires_a_complete_dialog(screen):
+    assert codex_approval_command(screen) is None
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("bash", True),
+        ("powershell", True),
+        ("cat input-abc123.txt", True),
+        ('bash -lc "cat input-abc123.txt"', True),
+        ("sed -n '1,10p' input-abc123.txt", True),
+        ('powershell -NoProfile -Command "Get-Content -Raw input-abc123.txt"', True),
+        ("cat input-abc123.txt 2>/dev/null", True),
+        ("cat input-abc123.txt | base64", True),
+        ("cat other.txt", False),
+        ("cat input-abc123.txt > copy.txt", False),
+        ("bash -lc 'echo value > input-abc123.txt'", False),
+        ("bash -lc 'cat input-abc123.txt | tee out.txt'", False),
+        ("rm input-abc123.txt", False),
+        ("python -c \"print(open('input-abc123.txt').read())\"", False),
+        ("cat input-000000000000.txt", False),
+    ],
+    ids=[
+        "bare-bash",
+        "bare-powershell",
+        "cat",
+        "bash-lc-cat",
+        "sed",
+        "get-content",
+        "stderr-devnull",
+        "pipe-base64",
+        "other-file",
+        "redirect-write",
+        "shell-redirect-write",
+        "pipe-tee",
+        "rm",
+        "interpreter",
+        "wrong-filename",
+    ],
+)
+def test_codex_approval_reads_only_scopes_escalations_to_the_fixture_read(command, expected):
+    assert codex_approval_reads_only(command, "input-abc123.txt") is expected
+
+
+def test_codex_turn_answered_accepts_an_answer_in_the_same_snapshot():
+    # Run 42727432648: the answer landed between two transcript reads, so the
+    # fail-fast fired with the expected value in its own message.
+    assert codex_turn_answered(["ug_subagent_c5187b801fad=2"], 0, "ug_subagent_c5187b801fad=2")
+
+
+def test_codex_turn_answered_waits_while_no_new_turn_has_completed():
+    assert codex_turn_answered(["earlier turn"], 1, "abc123") is False
+
+
+def test_codex_turn_answered_fails_fast_on_a_new_unanswered_turn():
+    with pytest.raises(AssertionError, match="without answering with 'abc123'"):
+        codex_turn_answered(["earlier turn", "I received no tool output."], 1, "abc123")
 
 
 class _Session:

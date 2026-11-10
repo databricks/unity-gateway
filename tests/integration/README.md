@@ -984,7 +984,13 @@ by unit/component tests, not dedicated live journeys. Tests use real onboarding
 and trust choices, without seeded acceptance or disabled agent sandboxing. If a
 routed child asks to locate the random fixture beneath the disposable project,
 the terminal driver accepts that exact read-only command through Claude's real
-permission dialog; any broader permission request fails immediately.
+permission dialog; any broader permission request fails immediately. Codex's
+native command dialogs are approved too: on Windows, where Codex asks before
+every shell command, any requested command; on Linux, where Codex prompts only
+for escalated commands, only a read-only read of the fixture file (or an
+argument-less interpreter spawn), with any other escalation failing immediately.
+If Codex completes a turn without the fixture's value, the task wait fails at
+once with that turn's message instead of running out its whole timeout.
 
 Codex boot waits for the prompt's model/directory status line before typing. Its
 startup draft may appear before hook review; the driver handles that review through
