@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.abc
+import importlib.util
 import json
 import os
 import subprocess
@@ -9,7 +11,6 @@ import sys
 import zipfile
 from importlib.metadata import version
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 
@@ -206,6 +207,14 @@ def test_metadata_reader_falls_back_for_egg_info(tmp_path, monkeypatch) -> None:
     assert version("unity-gateway") == "1.2.3"
 
 
+def _unreadable_cwd() -> str:
+    raise PermissionError("denied")
+
+
+def _unexpected_chdir(path: str) -> None:
+    raise AssertionError(f"unexpected chdir to {path}")
+
+
 @pytest.mark.parametrize("flag", ["--version", "-V"])
 def test_version_entrypoint_falls_back_to_telemetry(monkeypatch, capsys, flag) -> None:
     from ucode import telemetry
@@ -213,6 +222,7 @@ def test_version_entrypoint_falls_back_to_telemetry(monkeypatch, capsys, flag) -
     monkeypatch.setattr(sys, "argv", ["ug", flag])
     monkeypatch.setattr(entrypoint, "_read_installed_version", lambda: None)
     monkeypatch.setattr(telemetry, "ug_version", lambda: "1.2.3.post4+abc123")
+    monkeypatch.setattr(entrypoint.os, "chdir", _unexpected_chdir)
 
     entrypoint.main()
 
@@ -229,6 +239,7 @@ def test_version_entrypoint_falls_back_to_telemetry(monkeypatch, capsys, flag) -
         ["--version", "--help"],
         ["-V", "claude"],
         ["claude", "--version"],
+        ["configure"],
     ],
 )
 def test_other_arguments_delegate_to_cli_unchanged(monkeypatch, argv) -> None:
@@ -236,6 +247,9 @@ def test_other_arguments_delegate_to_cli_unchanged(monkeypatch, argv) -> None:
 
     calls = []
     monkeypatch.setattr(sys, "argv", ["ug", *argv])
+    # cwd recovery is limited to the apiKeyHelper; even an unreadable cwd is left alone here.
+    monkeypatch.setattr(entrypoint.os, "getcwd", _unreadable_cwd)
+    monkeypatch.setattr(entrypoint.os, "chdir", _unexpected_chdir)
     monkeypatch.setattr(cli, "main", lambda: calls.append(sys.argv.copy()))
     monkeypatch.setattr(
         entrypoint, "_read_installed_version", lambda: pytest.fail("unexpected version fast path")
@@ -246,36 +260,51 @@ def test_other_arguments_delegate_to_cli_unchanged(monkeypatch, argv) -> None:
     assert calls == [["ug", *argv]]
 
 
-def _stub_cli(monkeypatch, output: str = "") -> None:
-    cli = ModuleType("ucode.cli")
-    cli.main = lambda: print(output, end="")
-    proxy = ModuleType("ucode.mcp_proxy_runtime")
-    proxy.main = lambda: None
-    monkeypatch.setitem(sys.modules, "ucode.cli", cli)
-    monkeypatch.setitem(sys.modules, "ucode.mcp_proxy_runtime", proxy)
+class _CwdReadingCliFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """Import a stand-in ``ucode.cli`` that reads the cwd at import time, as Rich does."""
+
+    def __init__(self) -> None:
+        self.import_cwd: str | None = None
+
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "ucode.cli":
+            return importlib.util.spec_from_loader(fullname, self)
+        return None
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module) -> None:
+        self.import_cwd = os.getcwd()  # raises like Rich's import if the cwd is unreadable
+        module.main = lambda: print("token")
 
 
-def test_api_key_helper_always_starts_in_home(tmp_path, monkeypatch, capsys) -> None:
-    home = tmp_path / "home"
-    project = tmp_path / "project"
-    home.mkdir()
-    project.mkdir()
-    monkeypatch.chdir(project)  # an accessible cwd; also restored at teardown
-    _stub_cli(monkeypatch, "token\n")
-    # Windows resolves `~` from USERPROFILE, not HOME, so patch the lookup itself.
-    monkeypatch.setattr(entrypoint.os.path, "expanduser", lambda _path: str(home))
+def _import_cli_through(monkeypatch, finder: _CwdReadingCliFinder) -> None:
+    import ucode
+
+    monkeypatch.delitem(sys.modules, "ucode.cli", raising=False)
+    monkeypatch.delattr(ucode, "cli", raising=False)
+    monkeypatch.setattr(sys, "meta_path", [finder, *sys.meta_path])
+
+
+def test_api_key_helper_keeps_readable_cwd(tmp_path, monkeypatch, capsys) -> None:
+    # A project-relative DATABRICKS_BEARER_COMMAND (e.g. ./get-token.sh) resolves against this cwd.
+    monkeypatch.chdir(tmp_path)
+    finder = _CwdReadingCliFinder()
+    _import_cli_through(monkeypatch, finder)
+    monkeypatch.setattr(entrypoint.os, "chdir", _unexpected_chdir)
     monkeypatch.setattr(sys, "argv", ["ug", "auth-token"])
 
     entrypoint.main()
 
-    captured = capsys.readouterr()
-    assert os.getcwd() == str(home)
-    assert captured.out == "token\n"
-    assert captured.err == ""
+    assert finder.import_cwd == str(tmp_path)
+    assert capsys.readouterr() == ("token\n", "")
 
 
 @pytest.mark.parametrize("failure", [PermissionError("denied"), FileNotFoundError("removed")])
-def test_api_key_helper_runs_from_unreadable_cwd(tmp_path, monkeypatch, capsys, failure) -> None:
+def test_api_key_helper_recovers_unreadable_cwd_before_cli_import(
+    tmp_path, monkeypatch, capsys, failure
+) -> None:
     home = tmp_path / "home"
     blocked = tmp_path / "blocked"
     home.mkdir()
@@ -290,39 +319,54 @@ def test_api_key_helper_runs_from_unreadable_cwd(tmp_path, monkeypatch, capsys, 
             raise failure
         return cwd
 
-    cli = ModuleType("ucode.cli")
-    # Stand in for Rich, which reads the cwd when the CLI is imported.
-    cli.main = lambda: print(f"token for {os.getcwd()}")
-    monkeypatch.setitem(sys.modules, "ucode.cli", cli)
+    finder = _CwdReadingCliFinder()
+    _import_cli_through(monkeypatch, finder)
+    # Windows resolves `~` from USERPROFILE, not HOME, so patch the lookup itself.
     monkeypatch.setattr(entrypoint.os.path, "expanduser", lambda _path: str(home))
     monkeypatch.setattr(os, "getcwd", getcwd_denied_in_blocked)
     monkeypatch.setattr(sys, "argv", ["ug", "auth-token"])
 
     entrypoint.main()
 
-    captured = capsys.readouterr()
-    assert captured.out == f"token for {home}\n"
-    assert captured.err == ""
+    assert finder.import_cwd == str(home)
+    assert capsys.readouterr() == ("token\n", "")
 
 
-def test_api_key_helper_continues_when_home_is_unavailable(tmp_path, monkeypatch) -> None:
+def test_api_key_helper_falls_back_to_temp_when_home_is_unavailable(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    temporary = tmp_path / "temporary"
+    temporary.mkdir()
     monkeypatch.chdir(tmp_path)
-    _stub_cli(monkeypatch)
-    monkeypatch.setattr(entrypoint.os.path, "expanduser", lambda _path: str(tmp_path / "missing"))
+    real_getcwd = os.getcwd
+    unreadable = True
+
+    def getcwd_until_moved() -> str:
+        if unreadable:
+            raise PermissionError("denied")
+        return real_getcwd()
+
+    real_chdir = os.chdir
+    attempts = []
+
+    def chdir_without_home(path: str) -> None:
+        nonlocal unreadable
+        attempts.append(path)
+        if path != str(temporary):
+            raise PermissionError("denied")
+        real_chdir(path)
+        unreadable = False
+
+    finder = _CwdReadingCliFinder()
+    _import_cli_through(monkeypatch, finder)
+    monkeypatch.setattr(entrypoint.os.path, "expanduser", lambda _path: str(tmp_path / "home"))
+    monkeypatch.setattr(entrypoint.tempfile, "gettempdir", lambda: str(temporary))
+    monkeypatch.setattr(os, "getcwd", getcwd_until_moved)
+    monkeypatch.setattr(entrypoint.os, "chdir", chdir_without_home)
     monkeypatch.setattr(sys, "argv", ["ug", "auth-token"])
 
     entrypoint.main()
 
-    assert os.getcwd() == str(tmp_path)
-
-
-@pytest.mark.parametrize("argv", [["configure"], ["mcp-proxy"], ["claude"], ["--version"], []])
-def test_only_api_key_helper_changes_directory(monkeypatch, argv) -> None:
-    def unexpected_chdir(path: str) -> None:
-        raise AssertionError(f"unexpected chdir to {path}")
-
-    _stub_cli(monkeypatch)
-    monkeypatch.setattr(sys, "argv", ["ug", *argv])
-    monkeypatch.setattr(entrypoint.os, "chdir", unexpected_chdir)
-
-    entrypoint.main()
+    assert attempts == [str(tmp_path / "home"), str(temporary)]
+    assert finder.import_cwd == str(temporary)
+    assert capsys.readouterr() == ("token\n", "")

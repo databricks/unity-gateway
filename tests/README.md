@@ -341,10 +341,11 @@ version suffixes, fallback, and unchanged dispatch for other arguments; they do 
 claim a live agent launch or end-to-end startup timing. An isolated interpreter
 without site packages also proves that intact metadata can produce version output
 while `--help` fails on a missing CLI startup dependency.
-It also covers the apiKeyHelper (`ug auth-token`) always changing to the home directory
-before the CLI is imported, so it still prints only the token when started from an
-unreadable cwd (the macOS privacy-protected-folder `PermissionError`, and
-`FileNotFoundError`). Other commands never change directory. These component tests patch
+It also covers the apiKeyHelper (`ug auth-token`) recovering from an unreadable cwd (the
+macOS privacy-protected-folder `PermissionError`, and `FileNotFoundError`) by changing to
+home, or the temp directory, before a stand-in CLI module that reads the cwd at import, as
+Rich does. A readable cwd is kept, so a project-relative `DATABRICKS_BEARER_COMMAND` still
+resolves, and other commands never change directory. These component tests patch
 `os.getcwd`; a real macOS privacy-protected folder is not exercised.
 `TestUpgrade` in `test_cli.py` covers both command names before, during, and after
 the distribution rename with mocked installer calls, including `--help` verification
