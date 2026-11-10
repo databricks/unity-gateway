@@ -95,6 +95,25 @@ def codex_approval_reads_only(command: str, filename: str) -> bool:
     )
 
 
+def codex_turn_answered(answers: list[str], answered_turns: int, value: str) -> bool:
+    """Judge a Codex task from one snapshot of its parent answers.
+
+    Codex appends a completed turn to its rollout while the harness polls, so
+    the completion check and the unanswered-turn check must read the same
+    snapshot; a second read can surface the answer the first one missed.
+    """
+    if any(value in answer for answer in answers):
+        return True
+    # A turn the harness never prompts again cannot recover; fail now with its
+    # message instead of running out the whole timeout.
+    unanswered = answers[answered_turns:]
+    assert not unanswered, (
+        f"Codex ended a turn without answering with {value!r}; its "
+        "completed-turn message(s):\n" + "\n---\n".join(unanswered)
+    )
+    return False
+
+
 def codex_command_approval_pending(screen: str, expected_command: str) -> bool:
     prompt = "Would you like to run the following command?"
     if prompt not in screen:
@@ -743,17 +762,10 @@ class AgentTerminal(TerminalProcess):
             if self.approve_codex_command(screen, task):
                 return False
             permission_in_progress = False
-            if task.completed(self.session, self.agent):
-                return True
             if self.agent == "codex":
-                # A turn the harness never prompts again cannot recover; fail
-                # now with its message instead of running out the whole timeout.
-                answers = parent_assistant_answers(self.session, self.agent)[answered_turns:]
-                assert not answers, (
-                    f"Codex ended a turn without answering with {task.value!r}; its "
-                    "completed-turn message(s):\n" + "\n---\n".join(answers)
-                )
-            return False
+                answers = parent_assistant_answers(self.session, self.agent)
+                return codex_turn_answered(answers, answered_turns, task.value)
+            return task.completed(self.session, self.agent)
 
         self.wait_for(
             completed,

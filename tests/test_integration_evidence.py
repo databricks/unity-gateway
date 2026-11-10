@@ -17,6 +17,7 @@ from tests.integration.utils.terminal import (
     codex_approval_command,
     codex_approval_reads_only,
     codex_command_approval_pending,
+    codex_turn_answered,
 )
 
 
@@ -152,6 +153,21 @@ def test_codex_approval_command_requires_a_complete_dialog(screen):
 )
 def test_codex_approval_reads_only_scopes_escalations_to_the_fixture_read(command, expected):
     assert codex_approval_reads_only(command, "input-abc123.txt") is expected
+
+
+def test_codex_turn_answered_accepts_an_answer_in_the_same_snapshot():
+    # Run 42727432648: the answer landed between two transcript reads, so the
+    # fail-fast fired with the expected value in its own message.
+    assert codex_turn_answered(["ug_subagent_c5187b801fad=2"], 0, "ug_subagent_c5187b801fad=2")
+
+
+def test_codex_turn_answered_waits_while_no_new_turn_has_completed():
+    assert codex_turn_answered(["earlier turn"], 1, "abc123") is False
+
+
+def test_codex_turn_answered_fails_fast_on_a_new_unanswered_turn():
+    with pytest.raises(AssertionError, match="without answering with 'abc123'"):
+        codex_turn_answered(["earlier turn", "I received no tool output."], 1, "abc123")
 
 
 class _Session:
