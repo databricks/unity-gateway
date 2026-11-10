@@ -439,6 +439,8 @@ E2E_MODEL_SKIP_HARNESSES: dict[str, frozenset[str]] = {
     # These Gemini endpoints hang OpenCode well past its E2E timeout.
     "databricks-gemini-3-1-flash-lite": frozenset({"opencode"}),
     "databricks-gemini-3-7-flash": frozenset({"opencode"}),
+    # UC-only: the legacy endpoint returns 403 ("available only via Unity Gateway").
+    "databricks-gemini-4-carbon": frozenset({"gemini", "opencode", "pi"}),
     # Image-only Gemini endpoints reject function calling, which Pi's launch smoke requires.
     "flash-lite-image": frozenset({"pi"}),
     # These endpoints do not support Copilot's MLflow chat route.
@@ -491,7 +493,7 @@ def _claude_launch_models(state: dict) -> list[tuple[str, str]]:
 
 
 def _gemini_launch_models(state: dict) -> list[str]:
-    models: list = state.get("gemini_models") or []
+    models = [m for m in (state.get("gemini_models") or []) if not _model_is_skipped(m, "gemini")]
     # Image-only models can't serve Gemini CLI's tool calls.
     if os.name == "nt":
         models = [m for m in models if not m.endswith("-image")]
@@ -1443,7 +1445,7 @@ class TestGeminiAuthRecovery:
         from ucode.agents import gemini
 
         _require_binary("gemini")
-        gemini_models: list = e2e_state.get("gemini_models") or []
+        gemini_models = _gemini_launch_models(e2e_state)
         if not gemini_models:
             pytest.skip("No Gemini models available on this workspace")
 
