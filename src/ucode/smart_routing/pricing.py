@@ -72,14 +72,9 @@ class ModelPrice:
     cache_read: Decimal | None = None
     cache_write_5m: Decimal | None = None
     cache_write_1h: Decimal | None = None
-    # Rates for requests whose prompt exceeds the threshold (e.g. Sonnet 4.x above 200k tokens).
-    long_context_threshold: int | None = None
-    long_context: ModelPrice | None = None
 
 
-_RATE_FIELDS = tuple(
-    field.name for field in fields(ModelPrice) if not field.name.startswith("long_context")
-)
+_RATE_FIELDS = tuple(field.name for field in fields(ModelPrice))
 
 
 class TokenUsage(NamedTuple):
@@ -120,11 +115,6 @@ class TokenUsage(NamedTuple):
             output=_count(usage.get("output_tokens")),
         )
 
-    @property
-    def prompt_tokens(self) -> int:
-        """Every input-side token, which is what long-context price thresholds measure."""
-        return self.input + self.cache_write_5m + self.cache_write_1h + self.cache_read
-
 
 def _count(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
@@ -136,12 +126,6 @@ def token_cost(price: ModelPrice, tokens: TokenUsage) -> Decimal | None:
     Returning None rather than pricing a missing rate at zero keeps callers from showing a figure
     that silently undercounts.
     """
-    if (
-        price.long_context is not None
-        and price.long_context_threshold is not None
-        and tokens.prompt_tokens > price.long_context_threshold
-    ):
-        price = price.long_context
     total = Decimal(0)
     for count, rate in (
         (tokens.input, price.input),
@@ -168,25 +152,16 @@ def _rate(raw: object) -> Decimal | None:
     return rate if rate.is_finite() and rate >= 0 else None
 
 
-def _dump_price(price: ModelPrice) -> dict[str, Any]:
-    dumped: dict[str, Any] = {
+def _dump_price(price: ModelPrice) -> dict[str, str]:
+    return {
         name: str(value) for name in _RATE_FIELDS if (value := getattr(price, name)) is not None
     }
-    if price.long_context is not None and price.long_context_threshold is not None:
-        dumped["long_context_threshold"] = price.long_context_threshold
-        dumped["long_context"] = _dump_price(price.long_context)
-    return dumped
 
 
 def _load_price(raw: object) -> ModelPrice | None:
     if not isinstance(raw, Mapping):
         return None
-    rates = {name: _rate(raw.get(name)) for name in _RATE_FIELDS}
-    threshold = raw.get("long_context_threshold")
-    long_context = _load_price(raw.get("long_context"))
-    if isinstance(threshold, bool) or not isinstance(threshold, int) or long_context is None:
-        threshold, long_context = None, None
-    return ModelPrice(**rates, long_context_threshold=threshold, long_context=long_context)
+    return ModelPrice(**{name: _rate(raw.get(name)) for name in _RATE_FIELDS})
 
 
 # The endpoint-rates API groups each model's costs by unit; the estimate is in dollars.
@@ -273,8 +248,8 @@ def write_price_cache(
         raise
 
 
-def read_price_cache(path: Path) -> tuple[dict[str, ModelPrice], str] | None:
-    """Load prices keyed by ``model_key``, plus a fingerprint that changes on every refresh."""
+def read_price_cache(path: Path) -> dict[str, ModelPrice] | None:
+    """Load prices keyed by ``model_key``."""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -291,4 +266,4 @@ def read_price_cache(path: Path) -> tuple[dict[str, ModelPrice], str] | None:
     }
     if not prices:
         return None
-    return prices, str(payload.get("fetched_at"))
+    return prices

@@ -24,13 +24,6 @@ SONNET_4 = ModelPrice(
     output=Decimal("15"),
     cache_read=Decimal("0.3"),
     cache_write_5m=Decimal("3.75"),
-    long_context_threshold=200_000,
-    long_context=ModelPrice(
-        input=Decimal("6"),
-        output=Decimal("22.5"),
-        cache_read=Decimal("0.6"),
-        cache_write_5m=Decimal("7.5"),
-    ),
 )
 
 
@@ -102,7 +95,6 @@ class TestTokenUsage:
         assert tokens == TokenUsage(
             input=2, cache_write_5m=509, cache_write_1h=6000, cache_read=143654, output=695
         )
-        assert tokens.prompt_tokens == 2 + 6509 + 143654
 
     def test_treats_missing_breakdown_as_five_minute_writes(self):
         tokens = TokenUsage.from_message_usage({"cache_creation_input_tokens": 40})
@@ -140,13 +132,6 @@ class TestTokenCost:
         # 1k*5 + 2k*6.25 + 3k*10 + 100k*0.5 + 500*25 = 110,000 micro-dollars.
         assert pricing.token_cost(OPUS, tokens) == Decimal("0.11")
 
-    def test_uses_long_context_rates_above_the_threshold(self):
-        short = TokenUsage(input=100_000, output=1_000)
-        long = TokenUsage(input=150_000, cache_read=60_000, output=1_000)
-
-        assert pricing.token_cost(SONNET_4, short) == Decimal("0.315")
-        assert pricing.token_cost(SONNET_4, long) == Decimal("0.9585")
-
     def test_returns_none_when_a_used_class_has_no_rate(self):
         # SONNET_4 publishes no 1-hour write rate.
         assert pricing.token_cost(SONNET_4, TokenUsage(cache_write_1h=10)) is None
@@ -167,7 +152,7 @@ class TestPriceCache:
         cached = pricing.read_price_cache(path)
 
         assert cached is not None
-        assert cached[0] == prices
+        assert cached == prices
 
     def test_round_trips_prices_under_model_keys(self, tmp_path):
         path = tmp_path / "cache" / "model-prices.json"
@@ -178,19 +163,8 @@ class TestPriceCache:
         cached = pricing.read_price_cache(path)
 
         assert cached is not None
-        prices, fingerprint = cached
-        assert prices == {"claude-opus-4-8": OPUS, "claude-sonnet-4": SONNET_4}
-        assert fingerprint == "100.0"
+        assert cached == {"claude-opus-4-8": OPUS, "claude-sonnet-4": SONNET_4}
         assert [entry.name for entry in path.parent.iterdir()] == ["model-prices.json"]
-
-    def test_fingerprint_changes_on_refresh(self, tmp_path):
-        path = tmp_path / "model-prices.json"
-        pricing.write_price_cache(path, {"claude-opus-4-8": OPUS}, now=100.0)
-        first = pricing.read_price_cache(path)
-        pricing.write_price_cache(path, {"claude-opus-4-8": OPUS}, now=200.0)
-
-        assert first is not None and pricing.read_price_cache(path) is not None
-        assert first[1] != pricing.read_price_cache(path)[1]
 
     @pytest.mark.parametrize(
         "content",
@@ -305,7 +279,7 @@ class TestEndpointRates:
 
         assert cached is not None
         served = pricing.model_key("anthropic.claude-haiku-4-5-20251001-v1:0")
-        assert cached[0][served] == ModelPrice(input=Decimal("1"), output=Decimal("5"))
+        assert cached[served] == ModelPrice(input=Decimal("1"), output=Decimal("5"))
 
 
 class TestPriceCachePath:
