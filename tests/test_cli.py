@@ -254,6 +254,14 @@ class TestHelp:
         runner.invoke(app, ["configure", *args])
         assert requests == [expected, None]
 
+    def test_configure_restores_an_inherited_mdm_os(self, monkeypatch):
+        monkeypatch.setenv("MDM_OS", "Mac")
+        monkeypatch.setattr(
+            cli_mod, "install_databricks_cli", lambda: (_ for _ in ()).throw(RuntimeError("stop"))
+        )
+        runner.invoke(app, ["configure", "--mdm"])
+        assert os.environ["MDM_OS"] == "Mac"
+
     def test_configure_help_lists_agents_flag(self):
         result = runner.invoke(app, ["configure", "--help"])
         assert result.exit_code == 0

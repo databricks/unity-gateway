@@ -701,8 +701,9 @@ def mask_user_agent_versions(value: object, key: object = None) -> object:
     User-Agent masked. They change on every ug or agent upgrade, which alone must not rewrite (and
     prompt for sudo to replace) the root-owned file. The ``(<os>; <arch>)`` suffix is dropped too:
     it describes the machine that owns the file, and keeping it would force one sudo rewrite on the
-    first ug upgrade that adds it. Its ``mdm`` field is kept, so ``ug configure --mdm/--no-mdm``
-    rewrites a file that no longer matches. Only User-Agent headers are masked: a
+    first ug upgrade that adds it. Its ``mdm`` field is kept during ``ug configure``/``ug revert``,
+    so ``--mdm/--no-mdm`` rewrites a file that no longer matches; a launch ignores it, so an unsaved
+    MDM change never becomes a policy conflict. Only User-Agent headers are masked: a
     ``User-Agent`` key, or a ``User-Agent:`` line in a header string; every other value compares
     exactly."""
     value = _unwrap(value)
@@ -731,7 +732,8 @@ def _mask_ug_user_agent(user_agent: str) -> str:
     match = _UG_USER_AGENT.fullmatch(user_agent.strip())
     if not match:
         return user_agent
-    mdm = " (mdm)" if (match.group(2) or "").endswith("; mdm)") else ""
+    marked = (match.group(2) or "").endswith("; mdm)")
+    mdm = " (mdm)" if marked and explicit_managed_writes() else ""
     return f"ucode/* {match.group(1)}/*{mdm}"
 
 

@@ -135,6 +135,7 @@ from ucode.managed_config import (
     refresh_managed_config,
     request_mdm_os,
     revert_machine_policy,
+    save_requested_mdm_os,
 )
 from ucode.managed_files import (
     MANAGED_FILES_SUPPORTED_OSES,
@@ -5306,6 +5307,7 @@ def configure(
                 agent, agents = _drop_per_user_agents(agent, agents)
                 if agent is None and agents == "":
                     # Every requested agent has only per-user settings: nothing to write.
+                    save_requested_mdm_os()
                     return
         claude_agent.request_explicit_configure()
         request_explicit_managed_writes()
@@ -5504,6 +5506,7 @@ def configure(
         ):
             configure_mcp_command()
             _sync_claude_cowork_plugin()
+        save_requested_mdm_os()
         save_config_scope(scope)
     except typer.Exit:
         # `typer.Exit` subclasses RuntimeError, so it has to be re-raised ahead of the handler

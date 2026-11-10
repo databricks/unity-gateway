@@ -1924,9 +1924,13 @@ class TestManagedFileLifecycle:
         header = managed_files.mask_user_agent_versions({"h": f"a: 1\nUser-Agent: {user_agent}"})
         assert header == {"h": "a: 1\nUser-Agent: ucode/* claude/*"}
 
-    def test_mdm_marker_survives_masking(self):
+    def test_mdm_marker_counts_only_for_explicit_configure(self, monkeypatch):
         plain = {"User-Agent": "ucode/1.0 claude/2.2 (macos 15.1; arm64)"}
         mdm = {"User-Agent": "ucode/1.1 claude/2.3 (macos 15.2; arm64; mdm)"}
+        # A launch ignores the marker, so an unsaved --mdm can't make a root-owned file conflict.
+        assert managed_files.mask_user_agent_versions(mdm) == {"User-Agent": "ucode/* claude/*"}
+        assert managed_files.managed_file_conflicts(mdm, plain, [["User-Agent"]]) == []
+        monkeypatch.setattr(managed_files, "_explicit_managed_command", "ug configure")
         assert managed_files.mask_user_agent_versions(mdm) == {
             "User-Agent": "ucode/* claude/* (mdm)"
         }

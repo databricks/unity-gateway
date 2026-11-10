@@ -27,6 +27,7 @@ import sys
 from functools import cache
 from importlib.metadata import PackageNotFoundError, version
 
+from ucode.constants import MDM_OS_ENV, MDM_OS_NONE
 from ucode.os_compatibility import subprocess_cross_os
 
 _SEMVER_RE = re.compile(r"\d+\.\d+\.\d+[-+0-9A-Za-z.]*")
@@ -195,6 +196,6 @@ def ucode_user_agent(ug_ver: str, *agent_tokens: str) -> str:
     ``mdm`` follows ``MDM_OS``, which every ``ug`` command sets from ``ug configure --mdm``.
     """
     platform_comment = client_platform()
-    if os.environ.get("MDM_OS", "None") not in ("", "None"):
+    if os.environ.get(MDM_OS_ENV, MDM_OS_NONE) not in ("", MDM_OS_NONE):
         platform_comment = f"{platform_comment[:-1]}; mdm)"
     return " ".join([f"ucode/{ug_ver}", *agent_tokens, platform_comment])
