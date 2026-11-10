@@ -96,6 +96,11 @@ def write_text_file(path: Path, content: str, *, encoding: str = "utf-8") -> Non
     if _dry_run:
         console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
         return
+    try:
+        if path.read_text(encoding=encoding) == content:
+            return
+    except (OSError, UnicodeError):
+        pass
     ensure_parent_dir(path)
     try:
         path.write_text(content, encoding=encoding)
@@ -105,14 +110,7 @@ def write_text_file(path: Path, content: str, *, encoding: str = "utf-8") -> Non
 
 def write_json_file(path: Path, payload: dict) -> None:
     content = json.dumps(payload, indent=2) + "\n"
-    if _dry_run:
-        console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
-        return
-    ensure_parent_dir(path)
-    try:
-        path.write_text(content, encoding="utf-8")
-    except OSError as exc:
-        raise RuntimeError(f"Failed to write config file: {path}") from exc
+    write_text_file(path, content)
 
 
 def deep_merge_dict(base: dict, overlay: dict) -> dict:
@@ -216,14 +214,7 @@ def read_toml_safe(path: Path) -> tomlkit.TOMLDocument:
 
 def write_toml_file(path: Path, doc: tomlkit.TOMLDocument) -> None:
     content = tomlkit.dumps(doc)
-    if _dry_run:
-        console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
-        return
-    ensure_parent_dir(path)
-    try:
-        path.write_text(content, encoding="utf-8")
-    except OSError as exc:
-        raise RuntimeError(f"Failed to write config file: {path}") from exc
+    write_text_file(path, content)
 
 
 def parse_dotenv(path: Path) -> dict[str, str]:

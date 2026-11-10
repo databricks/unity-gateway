@@ -1,5 +1,11 @@
 # Test suites and user journeys
 
+`test_config_write_idempotence.py` checks that repeated text/JSON/TOML/dotenv
+configuration preserves unchanged files without writes or directory creation.
+It covers updates, invalid encodings, unreadable comparisons, write failures,
+dry runs and explicit encodings. These are local component checks, not live
+agent startup or filesystem-watcher latency measurements.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,
