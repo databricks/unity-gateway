@@ -222,7 +222,7 @@ unchanged. If Desktop has not initialized a Cowork account directory, ordinary c
 skips plugin setup until that directory exists. See
 [Desktop plugin installation](docs/claude-desktop.md#cowork-workspace-skills-and-mcp-servers).
 
-For macOS MDM deployment, run `ug configure --agents claude --global --workspace <url>`
+For macOS MDM deployment, run `ug configure --agents claude --global --as-mdm --workspace <url>`
 with a preinstalled shared runtime. Machine writes request sudo when needed. This publishes Desktop's managed plist with
 connectors/tool search and an organization plugin containing skills/hooks. Desktop loads
 the plugin directly; no LaunchAgent or per-user marketplace refresh is installed.

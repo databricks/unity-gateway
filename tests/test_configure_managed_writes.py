@@ -128,6 +128,24 @@ def test_configure_and_revert_request_explicit_writes(monkeypatch, args):
     assert managed_files.explicit_managed_writes()
 
 
+@pytest.mark.parametrize(("args", "expected"), [([], False), (["--as-mdm"], True)])
+def test_configure_as_mdm_flag_is_set_for_the_run_and_reset_after(monkeypatch, args, expected):
+    from ucode import telemetry
+
+    seen = []
+
+    def stop(*_a, **_kw):
+        seen.append(telemetry.as_mdm())
+        raise RuntimeError("stop after the flag is set")
+
+    monkeypatch.setattr(cli_mod, "install_databricks_cli", stop)
+
+    CliRunner().invoke(cli_mod.app, ["configure", *args])
+
+    assert seen == [expected]
+    assert telemetry.as_mdm() is False
+
+
 def _write_policy_env(tmp_path, monkeypatch):
     """A real reconcile/revert of one managed file, with privileged writes landing in tmp_path."""
     path = tmp_path / "managed-settings.json"

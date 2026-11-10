@@ -224,6 +224,7 @@ from ucode.state import (
     workspace_self_managed_agents,
 )
 from ucode.string_utils import is_valid_catalog_schema, is_valid_catalog_schema_name
+from ucode.telemetry import set_as_mdm
 from ucode.ug_headers import parse_header_line
 from ucode.ui import (
     console,
@@ -5102,6 +5103,13 @@ def configure(
             "The choice is saved for later commands.",
         ),
     ] = False,
+    as_mdm: Annotated[
+        bool,
+        typer.Option(
+            "--as-mdm",
+            help="Mark this run as an MDM deployment. Pass it from MDM scripts.",
+        ),
+    ] = False,
     verbose: Annotated[
         str,
         typer.Option(
@@ -5119,6 +5127,7 @@ def configure(
         raise typer.Exit(2)
     set_dry_run(dry_run)
     set_verbosity(verbose)
+    set_as_mdm(as_mdm)
     try:
         if global_scope and user_scope:
             raise RuntimeError("Use either --global or --user, not both.")
@@ -5346,6 +5355,7 @@ def configure(
         raise typer.Exit(130) from None
     finally:
         set_machine_wide_only(False)
+        set_as_mdm(False)
 
 
 # Only these agents have machine-wide settings; every other agent is configured per user.

@@ -522,6 +522,23 @@ class TestFetchClient:
             f" {client_platform()}"
         )
 
+    @pytest.mark.parametrize("as_mdm", [False, True])
+    def test_user_agent_marks_an_as_mdm_configure(self, monkeypatch, as_mdm):
+        from ucode import telemetry
+        from ucode.agents import claude, codex, copilot
+
+        monkeypatch.setattr(db_mod, "ug_version", lambda: "9.9.9")
+        monkeypatch.setattr(claude, "managed_user_agent", lambda: None)
+        monkeypatch.setattr(codex, "managed_user_agent", lambda: None)
+        monkeypatch.setattr(copilot, "managed_user_agent", lambda: None)
+        monkeypatch.setattr(telemetry, "_as_mdm", as_mdm)
+
+        user_agent = db_mod._managed_config_user_agent()
+
+        platform = client_platform()
+        expected = f"{platform[:-1]}; mdm)" if as_mdm else platform
+        assert user_agent == f"ucode/9.9.9 {expected}"
+
     @pytest.mark.parametrize(
         ("claude_ua", "codex_ua", "expected"),
         [

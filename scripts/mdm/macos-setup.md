@@ -15,7 +15,7 @@ A service principal is used only while the Jamf policy runs, to download the wor
 1. A Jamf policy runs `macos-provision.sh` as root, with the workspace URL and the service
    principal's client id and secret as policy parameters.
 2. The script installs the tools under `/usr/local`, exchanges the credentials for a short-lived
-   token, and runs `ug configure --global`, which installs the workspace policy at
+   token, and runs `ug configure --global --as-mdm`, which installs the workspace policy at
    `/etc/unitygateway/managed-settings.json`. Neither the credentials nor the token are written to
    disk.
 

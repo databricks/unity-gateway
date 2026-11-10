@@ -280,3 +280,14 @@ class TestClientPlatform:
         ua = telemetry.ucode_user_agent("0.9.1", "claude/2.1.300")
         assert ua == "ucode/0.9.1 claude/2.1.300 (macos 15.1; arm64)"
         assert ua.startswith("ucode/0.9.1 claude/2.1.300")
+
+    def test_mdm_user_agent_adds_a_field_inside_the_platform_comment(self, monkeypatch):
+        self._host(
+            monkeypatch,
+            "darwin",
+            "arm64",
+            mac_ver=lambda: ("15.1.2", ("", "", ""), ""),
+            _macos_translated=lambda: False,
+        )
+        ua = telemetry.ucode_user_agent("0.9.1", "claude/2.1.300", mdm=True)
+        assert ua == "ucode/0.9.1 claude/2.1.300 (macos 15.1; arm64; mdm)"

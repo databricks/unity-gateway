@@ -44,7 +44,7 @@ from ucode.constants import (
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
-from ucode.telemetry import ucode_user_agent, ug_version
+from ucode.telemetry import as_mdm, ucode_user_agent, ug_version
 from ucode.ug_headers import ug_headers
 from ucode.ui import (
     err_console,
@@ -2593,7 +2593,8 @@ def _managed_config_user_agent() -> str:
 
     The fetch serves every agent, so it reports what ug configured on this machine: Claude Code and
     Codex from the OS-managed files ug wrote, and Copilot, which has none, from the version
-    configure recorded. None of them probes an agent's ``--version`` on every fetch."""
+    configure recorded. None of them probes an agent's ``--version`` on every fetch. A
+    ``ug configure --as-mdm`` run adds ``mdm`` to the platform comment."""
     from ucode.agents import claude, codex, copilot  # the agent modules import this one
     from ucode.managed_files import ug_agent_token
 
@@ -2606,7 +2607,7 @@ def _managed_config_user_agent() -> str:
         token = ug_agent_token(user_agent or "", agent)
         if token:
             tokens.append(token)
-    return ucode_user_agent(ug_version(), *tokens)
+    return ucode_user_agent(ug_version(), *tokens, mdm=as_mdm())
 
 
 def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list[dict], str | None]:

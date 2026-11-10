@@ -3,9 +3,11 @@
 Run from your MDM script or a terminal:
 
 ```sh
-/opt/unitygateway/venv/bin/ug configure --agents claude --global \
+/opt/unitygateway/venv/bin/ug configure --agents claude --global --as-mdm \
   --workspace https://workspace.databricks.com
 ```
+
+Pass `--as-mdm` when running from an MDM script.
 
 Machine writes use the existing elevation behavior: root writes directly, a terminal lets
 sudo prompt, and unattended runs use `sudo -n`. No upfront root check is required.

@@ -185,6 +185,26 @@ def client_platform() -> str:
         return "(unknown unknown; unknown)"
 
 
-def ucode_user_agent(ug_ver: str, *agent_tokens: str) -> str:
-    """`ucode/<v> [<agent>/<v> ...] (<os> <os_ver>; <arch>)`; agent tokens are `<agent>/<v>`."""
-    return " ".join([f"ucode/{ug_ver}", *agent_tokens, client_platform()])
+_as_mdm = False
+
+
+def set_as_mdm(enabled: bool) -> None:
+    """Mark this run as an MDM-started ``ug configure --as-mdm``."""
+    global _as_mdm
+    _as_mdm = enabled
+
+
+def as_mdm() -> bool:
+    """Whether this run was started with ``ug configure --as-mdm``."""
+    return _as_mdm
+
+
+def ucode_user_agent(ug_ver: str, *agent_tokens: str, mdm: bool = False) -> str:
+    """`ucode/<v> [<agent>/<v> ...] (<os> <os_ver>; <arch>[; mdm])`; agent tokens are `<agent>/<v>`.
+
+    `mdm` adds a trailing `mdm` field inside the platform comment, so the agent tokens and the
+    platform suffix keep their positions for parsers that key on them."""
+    platform_suffix = client_platform()
+    if mdm:
+        platform_suffix = f"{platform_suffix[:-1]}; mdm)"
+    return " ".join([f"ucode/{ug_ver}", *agent_tokens, platform_suffix])

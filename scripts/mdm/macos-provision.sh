@@ -103,5 +103,5 @@ if ! DATABRICKS_BEARER="$(printf '%s' "$resp" \
 fi
 export DATABRICKS_BEARER
 
-ug configure --global --workspace "$WORKSPACE" \
+ug configure --global --as-mdm --workspace "$WORKSPACE" \
   --agents claude,codex </dev/null
