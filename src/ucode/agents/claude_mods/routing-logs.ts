@@ -12,6 +12,8 @@ type Decision = {
 type Detail = {
   id: string;
   failed: boolean;
+  // The reader CLI's own error hint, when its failure carries one.
+  hint?: string;
   preview: string | null;
   promptLength: number | null;
   promptHash: string | null;
@@ -72,16 +74,32 @@ function failedDetail(id: string): Detail {
 }
 
 async function openDecision($: EngineInterface, options: PluginOptions, id: string): Promise<Detail> {
+  let result: { exitCode: number; stdout: string; isStdoutTruncated?: boolean };
   try {
-    const result = await $.process.run(
+    result = await $.process.run(
       [...logsReaderCommand(options), '--session', await $.session.id(), '--decision', id],
       { timeoutMs: 10000 },
     );
-    if (result.exitCode !== 0 || result.isStdoutTruncated) throw new Error(`decision command exited ${result.exitCode} or truncated output`);
-    return parseDecision(result.stdout, id);
   } catch (error) {
     $.ui.log(`Smart Router logs: ${error instanceof Error ? error.message : 'load failed'}`, { to: 'debug' });
     return failedDetail(id);
+  }
+  try {
+    if (result.exitCode !== 0 || result.isStdoutTruncated) {
+      throw new Error(`decision command exited ${result.exitCode} or truncated output`);
+    }
+    return parseDecision(result.stdout, id);
+  } catch (error) {
+    $.ui.log(`Smart Router logs: ${error instanceof Error ? error.message : 'load failed'}`, { to: 'debug' });
+    const detail = failedDetail(id);
+    // A failed load is reported as {"v":1,"error":"..."}; surface that hint under the notice.
+    try {
+      const envelope = JSON.parse(result.stdout);
+      if (typeof envelope?.error === 'string' && envelope.error.trim()) {
+        detail.hint = envelope.error.trim().slice(0, 200);
+      }
+    } catch {}
+    return detail;
   }
 }
 
@@ -215,6 +233,7 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
 
   on('ui.render', { component: 'Pane', requestId: ROUTING_LOGS_PANE }, ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e);
+    const columns = Number.isFinite(e.props.bodyColumns) ? e.props.bodyColumns : 80;
     if (detail) {
       const children = [
         Button({
@@ -224,6 +243,7 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
       ];
       if (detail.failed) {
         children.push(Text({ children: ['Could not load this routing decision.'] }));
+        if (detail.hint) children.push(Text({ dimColor: true, children: [detail.hint.slice(0, columns)] }));
       } else {
         children.push(Text({ dimColor: true, children: [detail.subagent ? `Prompt preview (${detail.subagent})` : 'Prompt preview'] }));
         children.push(Text({ children: [detail.preview ?? '(prompt not recorded)'] }));
@@ -250,7 +270,6 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
       }
       return Box({ flexDirection: 'column', children });
     }
-    const columns = Number.isFinite(e.props.bodyColumns) ? e.props.bodyColumns : 80;
     if (failed) {
       const children = [Text({ children: ['Could not read Smart Router logs.'] })];
       if (cliError) children.push(Text({ dimColor: true, children: [cliError.slice(0, columns)] }));

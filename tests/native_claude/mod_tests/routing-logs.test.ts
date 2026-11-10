@@ -193,18 +193,22 @@ test('a decision that fails to load shows an error with a way back', { options }
   await $.command.run(command);
   const ui = await $.ui.mount(pane);
   const invalidId = JSON.stringify({ ...decision, decision: { ...decision.decision, decision_id: 'different-id' } });
-  for (const [stdout, exitCode, truncated] of [
+  const failures = [
     ['{"v":1,"error":"decision not found"}', 1, false],
     ['not json', 0, false],
     ['{"v":1,"decision":{"v":1}}', 0, false],
     [invalidId, 0, false],
     [JSON.stringify(decision), 0, true],
-  ] as const) {
+  ] as const;
+  for (const [index, [stdout, exitCode, truncated]] of failures.entries()) {
     decisionStdout = stdout;
     decisionExit = exitCode;
     decisionTruncated = truncated;
     await ui.press({ key: 'd1' });
-    expect(JSON.stringify(await ui.drawn())).toContain('Could not load this routing decision.');
+    const failedTree = JSON.stringify(await ui.drawn());
+    expect(failedTree).toContain('Could not load this routing decision.');
+    // The reader CLI's own error envelope is surfaced under the generic notice.
+    expect(failedTree.includes('decision not found')).toBe(index === 0);
     await ui.press({ key: 'back' });
     expect(JSON.stringify(await ui.drawn())).toContain('2 routed prompts this session');
   }
