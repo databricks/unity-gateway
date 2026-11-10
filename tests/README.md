@@ -1023,8 +1023,10 @@ Integration tests live directly in `integration/`; shared mechanics live in `uti
 
 Generic Codex and Copilot GPT file tasks use `system.ai.gpt-6-luna`; their OpenAI,
 Azure OpenAI, custom Azure and Foundry provider journeys default to `gpt-6-luna`.
-Managed tracing and Codex lifecycle fixtures use the hosted model too. Dedicated
-`e2e_cuj/` model assertions follow those workspaces' separately provisioned configuration.
+Managed tracing and Codex lifecycle fixtures use the hosted model too. Dedicated CUJ1 and
+CUJ6 Codex Luna selections also use `system.ai.gpt-6-luna`; CUJ2's OpenAI MPS uses
+`gpt-6-luna`. Their separately provisioned workspace configs and CUJ2 MPS must match
+the test expectations; tests never update those fixtures.
 
 Dedicated-workspace CUJs live in `e2e_cuj/` and use the shared `cuj` fixture plus
 integration utilities; only CUJ-specific evidence correlation stays in a test file.

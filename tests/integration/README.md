@@ -245,7 +245,10 @@ is read-only and checked for changes at teardown; concurrent readers need no res
 CUJ2 adds three separately collected cases for exact published MPS/MCP configuration, Codex
 inference, and Claude inference. Its catalog checks require the fixture's exact native APIs,
 model, provider type and target restrictions. Offline checks accept Responses alongside Chat
-Completions in either order and reject missing or additional APIs. Both inference cases ask
+Completions in either order and reject missing or additional APIs. CUJ2 expects only
+`gpt-6-luna` in its OpenAI MPS and as its Codex default. CUJ1 and CUJ6's Codex Luna
+selection is `system.ai.gpt-6-luna`; their published model lists and CUJ6 phase C default
+must be provisioned accordingly outside the tests. Both CUJ2 inference cases ask
 for a short greeting and require a
 completed parent turn matching the submitted prompt with a nonempty answer, plus the expected
 provider/model and paired HTTP 200. Random IDs correlate requests; answers need not repeat them.
