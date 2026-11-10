@@ -7,7 +7,6 @@ import re
 import pytest
 from utils.agents import antigravity
 from utils.evidence import FileTask, assert_no_bearer_on_disk, fresh_id
-from utils.web_search import OFFICIAL_WEBSITE_QUERY, WEB_SEARCH_SERVICE, WEB_SEARCH_TOOL
 
 pytestmark = [pytest.mark.live, pytest.mark.antigravity]
 
@@ -153,28 +152,29 @@ def test_ug_antigravity_mcp_web_search(live_session, workspace):
     registration and invocation without SQL compute, not search ranking or SQL execution.
     """
     session = live_session
-    server = WEB_SEARCH_SERVICE.replace(".", "-")
+    server = "system-ai-web_search"
     model = "system.ai.gemini-3-8-flash"
-    query = OFFICIAL_WEBSITE_QUERY
+    query = "Databricks official website"
     settings, original = _allow_tools(session, f"mcp({server}/*)", "read_file(*)")
     _configure(session, workspace)
-    session.run("mcp", "add", "--names", WEB_SEARCH_SERVICE, "--agents", "antigravity", timeout=240)
+    session.run(
+        "mcp", "add", "--names", "system.ai.web_search", "--agents", "antigravity", timeout=240
+    )
     servers = json.loads((session.home / ".gemini/config/mcp_config.json").read_text())[
         "mcpServers"
     ]
     entry = servers[server]
     assert entry["args"][0] == "mcp-proxy", entry
-    assert any(WEB_SEARCH_SERVICE in arg for arg in entry["args"]), entry
+    assert any("system.ai.web_search" in arg for arg in entry["args"]), entry
     assert settings.read_bytes() == original
 
     discovery = session.home / antigravity.STATE_DIRECTORY / "mcp" / server
-    tool_definition = discovery / f"{WEB_SEARCH_TOOL}.json"
     session.record("model.json", {"model": model, "antigravity_name": "gemini-3.8-flash"})
     result = _ask(
         session,
-        f"Use your native file reader to read {str(tool_definition)!r} and "
+        f"Use your native file reader to read {str(discovery / 'web_search.json')!r} and "
         f"{str(discovery / 'instructions.md')!r}. Then use call_mcp_tool on server {server!r}, "
-        f'tool {WEB_SEARCH_TOOL!r}, with arguments {{"query": {json.dumps(query)}}}. '
+        f"tool 'web_search', with arguments {{\"query\": {json.dumps(query)}}}. "
         "Reply with only an official Databricks website URL from the tool result. "
         "Use file reads and this MCP tool only; do not run shell commands or built-in search.",
         "--model",

@@ -137,10 +137,7 @@ Native file-reader guidance avoids shell-based tool discovery; permissions remai
 reads and that MCP server. Offline evidence checks reject denied actions, provider/tool errors,
 missing or unrelated calls, empty answers, misleading domains, and answers absent from the
 search output. These checks do not establish live reliability; SQL execution is no longer
-covered by the Antigravity MCP case. Antigravity and Desktop share service/tool/query constants
-and official-URL extraction in `integration/utils/web_search.py`; each retains its own native
-invocation and error checks. Offline URL cases cover Markdown, serialized results, multiple
-links, and misleading domains.
+covered by the Antigravity MCP case.
 
 `ug configure --global` (machine-wide settings only) is covered by unit/component checks:
 `TestConfigureScopeFlags` in `test_cli.py` (the flag lasts one run, per-user-only agents are
