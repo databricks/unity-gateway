@@ -195,13 +195,12 @@ def managed_supplies_models(managed: dict | None, tool: str) -> bool:
 
     Lets the launch path skip Databricks model discovery, whose whole purpose is to find the models
     the config has now specified. Any of the following counts: a provider (the agent routes by
-    header and pins no Databricks model), a ``default_model``, a static model list
-    (``sources`` or ``model_services``), or at least one entry in the legacy ``models`` key.
+    header and pins no Databricks model), a ``default_model``, or at least one entry in the
+    legacy ``models`` key. A static list (``sources``/``model_services``) alone doesn't count:
+    Claude still needs discovery to pick a default when the config names none.
     """
     model_config = _agent_model_config(managed or {}, tool)
     if _str(model_config.get("model_provider_service")) or _str(model_config.get("default_model")):
-        return True
-    if static_model_list(model_config):
         return True
     models = model_config.get("models")
     if isinstance(models, dict):
