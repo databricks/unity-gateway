@@ -9,11 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from ucode.cli import discover_models
 from ucode.databricks import (
     build_shared_base_urls,
-    fetch_ai_gateway_claude_models,
-    fetch_codex_models,
-    fetch_gemini_models,
     get_databricks_token,
 )
 from ucode.ui import normalize_workspace_url
@@ -233,9 +231,8 @@ def e2e_state_for(workspace: str) -> dict:
     command mints a fresh token per call, so a token key would miss and fetch a second snapshot.
     A failed fetch raises and is not cached."""
     token = get_databricks_token(workspace)
-    claude_models = fetch_ai_gateway_claude_models(workspace, token)
-    gemini_models = fetch_gemini_models(workspace, token)
-    codex_models = fetch_codex_models(workspace, token)
+    # Discover the way `ug configure` does, so the tests launch the models users get.
+    claude_models, codex_models, gemini_models, _, _ = discover_models(workspace, token)
 
     opencode_models: dict = {}
     if claude_models:
