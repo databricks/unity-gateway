@@ -1506,10 +1506,10 @@ The **harness-latest** workflow runs every six hours on `main` (00:00, 06:00,
 latest Claude and Codex releases, recording exact versions in its artifacts. It covers
 CUJ4, routing hooks, skill toggles (including Claude's recipe-header assertions),
 and first-prompt banners. It runs separately from PR checks, so failures do not block merges.
-Its **Codex desktop · macOS** job runs `test_ug_codex_desktop_macos.py` against the newest
+Its `desktop` suite runs `test_ug_codex_desktop_macos.py` on macOS against the newest
 ChatGPT desktop build in OpenAI's appcast. With no hash to pin, it requires `codesign`,
 `spctl` (notarization) and OpenAI's Developer ID team before opening the app.
-Versions are resolved once for all three suites. A final job sends one success or
+Versions are resolved once for all four suites. A final job sends one success or
 failure message using `SLACK_WEBHOOK_UG_CODING_AGENTS_POD`, with both versions and
 a workflow-run link on success or a failed-job link on failure (the workflow-run
 link if GitHub's jobs API is unavailable).
