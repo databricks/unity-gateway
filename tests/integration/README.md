@@ -1,5 +1,10 @@
 # Integration tests
 
+Foundation-model fallback request sharing has component coverage in
+`../test_foundation_discovery.py` and `../test_cli.py`. Those tests mock transport and
+check request counts, family filtering, errors, ordering and UC precedence. Live
+startup latency and end-to-end foundation fallback remain unmeasured by those checks.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,
