@@ -137,6 +137,7 @@ from .request_tags import request_tags_header_value
 GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
 # If set, Claude Code launches in headless mode instead of the interactive login flow.
 CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
+CLAUDE_AUTH_HELPER_CACHE_SECONDS = 900
 CLAUDE_CONFIG_DIR = Path.home() / ".claude"
 CLAUDE_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "ucode-settings.json"
 CLAUDE_CODE_CONFIG_PATH = Path.home() / ".claude.json"
@@ -610,7 +611,7 @@ def render_overlay(
     env: dict[str, str] = {
         "ANTHROPIC_BASE_URL": base_url,
         "ANTHROPIC_CUSTOM_HEADERS": custom_headers,
-        "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "900000",
+        "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": str(CLAUDE_AUTH_HELPER_CACHE_SECONDS * 1000),
         # 1h prompt caching needs the extended-cache-ttl beta header, which
         # Claude Code only sends when experimental betas are enabled — so we must
         # not set CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS (see CLAUDE_REMOVED_ENV_KEYS).
@@ -670,7 +671,13 @@ def render_overlay(
         if custom_oauth:
             overlay["apiKeyHelper"] = build_custom_auth_shell_command(workspace, custom_oauth)
         else:
-            overlay["apiKeyHelper"] = build_auth_shell_command(workspace, profile, use_pat=use_pat)
+            overlay["apiKeyHelper"] = build_auth_shell_command(
+                workspace,
+                profile,
+                use_pat=use_pat,
+                # Leave a minute for helper execution and request scheduling.
+                minimum_lifetime_s=0 if use_pat else CLAUDE_AUTH_HELPER_CACHE_SECONDS + 60,
+            )
         keys = [["apiKeyHelper"]] + [["env", k] for k in env]
 
     # Disable Claude Code's built-in WebSearch: it declares Anthropic's hosted

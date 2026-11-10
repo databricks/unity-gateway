@@ -5,6 +5,7 @@ from __future__ import annotations
 import configparser
 import json
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -2912,6 +2913,89 @@ class TestGetDatabricksToken:
         )
         return env, log
 
+    @pytest.mark.parametrize("remaining_s", [600, 3600, None])
+    def test_claude_helper_token_outlives_its_cache(self, tmp_path, monkeypatch, remaining_s):
+        """Scenario: Claude obtains a token through its generated helper command.
+
+        Expected: a known short-lived token refreshes before the 15-minute cache;
+        fresh and opaque-lifetime credentials need no forced refresh.
+        """
+        from typer.testing import CliRunner
+
+        from ucode.agents.claude import render_overlay
+        from ucode.cli import app
+
+        env, log = self._logging_fake(
+            tmp_path,
+            "forced = '--force-refresh' in sys.argv\n"
+            f"remaining = 3600 if forced else {remaining_s!r}\n"
+            "payload = {'access_token': 'refreshed' if forced else 'cached'}\n"
+            "if remaining is not None: payload['expires_in'] = remaining\n"
+            "print(json.dumps(payload))",
+        )
+        env.pop("DATABRICKS_BEARER", None)
+        env.pop("DATABRICKS_BEARER_COMMAND", None)
+        monkeypatch.setattr(os, "environ", env)
+        overlay, _ = render_overlay(WS, "sonnet", profile="helper-profile")
+
+        result = CliRunner().invoke(app, shlex.split(overlay["apiKeyHelper"])[1:])
+
+        assert result.exit_code == 0, result.output
+        expected = "refreshed" if remaining_s == 600 else "cached"
+        assert result.stdout == f"{expected}\n"
+        calls = log.read_text().splitlines()
+        assert len(calls) == (2 if remaining_s == 600 else 1)
+        assert sum("--force-refresh" in call for call in calls) == (remaining_s == 600)
+
+    @pytest.mark.parametrize("remaining_s", [600, 3600, None])
+    def test_minimum_lifetime_rechecks_only_a_short_known_memo(
+        self, tmp_path, monkeypatch, remaining_s
+    ):
+        env, log = self._logging_fake(
+            tmp_path,
+            "forced = '--force-refresh' in sys.argv\n"
+            f"remaining = 3600 if forced else {remaining_s!r}\n"
+            "payload = {'access_token': 'refreshed' if forced else 'cached'}\n"
+            "if remaining is not None: payload['expires_in'] = remaining\n"
+            "print(json.dumps(payload))",
+        )
+        env.pop("DATABRICKS_BEARER", None)
+        env.pop("DATABRICKS_BEARER_COMMAND", None)
+        monkeypatch.setattr(os, "environ", env)
+        assert get_databricks_token(WS, "memo-profile") == "cached"
+
+        token = get_databricks_token(WS, "memo-profile", minimum_lifetime_s=960)
+
+        assert token == ("refreshed" if remaining_s == 600 else "cached")
+        calls = log.read_text().splitlines()
+        assert len(calls) == (3 if remaining_s == 600 else 1)
+        assert sum("--force-refresh" in call for call in calls) == (remaining_s == 600)
+
+    @pytest.mark.parametrize("force_refresh", [False, True])
+    def test_insufficient_refreshed_lifetime_fails_once(self, tmp_path, monkeypatch, force_refresh):
+        env, log = self._logging_fake(
+            tmp_path, "print(json.dumps({'access_token': 'too-short', 'expires_in': 600}))"
+        )
+        env.pop("DATABRICKS_BEARER", None)
+        env.pop("DATABRICKS_BEARER_COMMAND", None)
+        monkeypatch.setattr(os, "environ", env)
+
+        with pytest.raises(RuntimeError, match="Reduce the agent's auth-helper cache TTL") as error:
+            get_databricks_token(
+                WS, "short-profile", force_refresh=force_refresh, minimum_lifetime_s=960
+            )
+
+        assert "too-short" not in str(error.value)
+        calls = log.read_text().splitlines()
+        assert len(calls) == (1 if force_refresh else 2)
+        assert sum("--force-refresh" in call for call in calls) == 1
+
+    def test_static_bearer_ignores_minimum_lifetime(self, monkeypatch):
+        monkeypatch.setenv("DATABRICKS_BEARER", "static-token")
+        monkeypatch.setattr(db_mod, "run", lambda *_args, **_kwargs: pytest.fail("CLI ran"))
+
+        assert get_databricks_token(WS, minimum_lifetime_s=960) == "static-token"
+
     # `auth login --help` of CLI v1.17-v1.19: no --no-browser.
     _HELP_WITHOUT_NO_BROWSER = (
         "if sys.argv[1:] == ['auth', 'login', '--help']:\n"
@@ -3385,7 +3469,8 @@ class TestGetDatabricksToken:
         assert len(calls) == 3
         assert "--force-refresh" in calls[1]
 
-    def test_concurrent_same_key_misses_are_single_flight(self, monkeypatch):
+    @pytest.mark.parametrize("minimum_lifetime_s", [0, 960])
+    def test_concurrent_same_key_misses_are_single_flight(self, monkeypatch, minimum_lifetime_s):
         fetch_started = threading.Event()
         release_fetch = threading.Event()
         barrier = threading.Barrier(2)
@@ -3405,8 +3490,9 @@ class TestGetDatabricksToken:
                 calls.append(command)
             fetch_started.set()
             release_fetch.wait(timeout=2)
+            lifetime = 600 if minimum_lifetime_s and "--force-refresh" not in command else 3600
             return subprocess.CompletedProcess(
-                command, 0, json.dumps({"access_token": "shared", "expires_in": 3600}), ""
+                command, 0, json.dumps({"access_token": "shared", "expires_in": lifetime}), ""
             )
 
         monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
@@ -3437,11 +3523,25 @@ class TestGetDatabricksToken:
         threads = [
             threading.Thread(
                 target=worker,
-                args=("get", lambda: get_databricks_token(WS, "same-profile")),
+                args=(
+                    "get",
+                    lambda: get_databricks_token(
+                        WS, "same-profile", minimum_lifetime_s=minimum_lifetime_s
+                    ),
+                ),
             ),
             threading.Thread(
                 target=worker,
-                args=("has_valid", lambda: db_mod.has_valid_databricks_auth(WS, "same-profile")),
+                args=(
+                    "peer",
+                    lambda: (
+                        get_databricks_token(
+                            WS, "same-profile", minimum_lifetime_s=minimum_lifetime_s
+                        )
+                        if minimum_lifetime_s
+                        else db_mod.has_valid_databricks_auth(WS, "same-profile")
+                    ),
+                ),
             ),
         ]
         started_threads = []
@@ -3462,9 +3562,12 @@ class TestGetDatabricksToken:
         assert second_lock_seen
         assert all(not thread.is_alive() for thread in threads)
         assert errors == []
-        assert results == {"get": "shared", "has_valid": True}
+        assert results == {"get": "shared", "peer": "shared" if minimum_lifetime_s else True}
         with calls_lock:
-            assert len(calls) == 1
+            assert len(calls) == (2 if minimum_lifetime_s else 1)
+            assert sum("--force-refresh" in command for command in calls) == bool(
+                minimum_lifetime_s
+            )
 
     def test_waiting_failed_caller_cannot_shadow_successful_memo(self, monkeypatch):
         fetch_started = threading.Event()
@@ -3766,6 +3869,26 @@ class TestGetDatabricksToken:
             now["wall"] -= 3600
         now[expired_clock] += 1
         assert get_databricks_token(WS, "p") == "t"
+        assert len(log.read_text().splitlines()) == 2
+
+    @pytest.mark.parametrize("advanced_clock", ["monotonic", "wall"])
+    def test_minimum_lifetime_checks_both_clocks_before_memo_reuse(
+        self, tmp_path, monkeypatch, advanced_clock
+    ):
+        now = {"monotonic": 1000.0, "wall": 1_000_000_000.0}
+        monkeypatch.setattr(db_mod.time, "monotonic", lambda: now["monotonic"])
+        monkeypatch.setattr(db_mod.time, "time", lambda: now["wall"])
+        env, log = self._logging_fake(
+            tmp_path, "print(json.dumps({'access_token': 't', 'expires_in': 1200}))"
+        )
+        monkeypatch.setattr(os, "environ", env)
+        assert get_databricks_token(WS, "p", minimum_lifetime_s=960) == "t"
+
+        now[advanced_clock] += 239
+        assert get_databricks_token(WS, "p", minimum_lifetime_s=960) == "t"
+        assert len(log.read_text().splitlines()) == 1
+        now[advanced_clock] += 2
+        assert get_databricks_token(WS, "p", minimum_lifetime_s=960) == "t"
         assert len(log.read_text().splitlines()) == 2
 
     def test_parses_cli_expiry_timestamp(self, monkeypatch):

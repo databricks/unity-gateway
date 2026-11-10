@@ -342,7 +342,22 @@ class TestRenderOverlay:
     def test_sets_api_key_helper(self, monkeypatch):
         monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/my tools/{command}")
         overlay, _ = claude.render_overlay(WS, "s4")
-        assert shlex.split(overlay["apiKeyHelper"]) == ["/my tools/ug", "auth-token", "--host", WS]
+        assert shlex.split(overlay["apiKeyHelper"]) == [
+            "/my tools/ug",
+            "auth-token",
+            "--host",
+            WS,
+            "--minimum-lifetime-seconds",
+            "960",
+        ]
+        assert int(overlay["env"]["CLAUDE_CODE_API_KEY_HELPER_TTL_MS"]) < 960 * 1000
+
+    def test_pat_helper_keeps_its_existing_command(self):
+        overlay, _ = claude.render_overlay(WS, "s4", profile="pat-profile", use_pat=True)
+
+        arguments = shlex.split(overlay["apiKeyHelper"])
+        assert "--use-pat" in arguments
+        assert "--minimum-lifetime-seconds" not in arguments
 
     def test_sets_custom_oauth_api_key_helper(self, monkeypatch):
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/opt/ug")

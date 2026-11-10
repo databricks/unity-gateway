@@ -1576,6 +1576,7 @@ class _MemoizedToken:
     error: str | None
     valid_until: float
     wall_valid_until: float
+    lifetime_known: bool = False
 
 
 _TOKEN_MEMO: dict[tuple[str, str | None], _MemoizedToken] = {}
@@ -1614,7 +1615,9 @@ def _token_cache_epoch() -> int:
         return _TOKEN_CACHE_EPOCH
 
 
-def _memoized_token(key: tuple[str, str | None]) -> _MemoizedToken | None:
+def _memoized_token(
+    key: tuple[str, str | None], *, minimum_lifetime_s: float = 0
+) -> _MemoizedToken | None:
     with _TOKEN_MEMO_LOCK:
         entry = _TOKEN_MEMO.get(key)
         if entry is None:
@@ -1623,6 +1626,12 @@ def _memoized_token(key: tuple[str, str | None]) -> _MemoizedToken | None:
         # during sleep, while monotonic time bounds reuse after clock rollback.
         if time.monotonic() >= entry.valid_until or time.time() >= entry.wall_valid_until:
             del _TOKEN_MEMO[key]
+            return None
+        if entry.lifetime_known and (
+            entry.valid_until + _TOKEN_MEMO_EXPIRY_MARGIN_S - time.monotonic() < minimum_lifetime_s
+            or entry.wall_valid_until + _TOKEN_MEMO_EXPIRY_MARGIN_S - time.time()
+            < minimum_lifetime_s
+        ):
             return None
         return entry
 
@@ -1670,7 +1679,13 @@ def _remember_token(
             # token behind for subsequent non-forced callers.
             _TOKEN_MEMO.pop(key, None)
             return
-        _TOKEN_MEMO[key] = _MemoizedToken(token, None, time.monotonic() + ttl, time.time() + ttl)
+        _TOKEN_MEMO[key] = _MemoizedToken(
+            token,
+            None,
+            time.monotonic() + ttl,
+            time.time() + ttl,
+            lifetime_known=lifetime_s is not None,
+        )
 
 
 def _remember_token_failure(
@@ -1761,10 +1776,11 @@ def _get_databricks_token_for_profile(
     *,
     force_refresh: bool,
     browser_login: bool,
+    minimum_lifetime_s: float = 0,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
     if not force_refresh:
-        memoized = _memoized_token(memo_key)
+        memoized = _memoized_token(memo_key, minimum_lifetime_s=minimum_lifetime_s)
         if memoized is not None:
             _debug(
                 "get_databricks_token",
@@ -1780,7 +1796,7 @@ def _get_databricks_token_for_profile(
     # fetch. The lock is per workspace/profile, so unrelated profiles proceed.
     with _token_inflight_lock(memo_key):
         if not force_refresh:
-            memoized = _memoized_token(memo_key)
+            memoized = _memoized_token(memo_key, minimum_lifetime_s=minimum_lifetime_s)
             if memoized is not None:
                 _debug(
                     "get_databricks_token",
@@ -1798,6 +1814,7 @@ def _get_databricks_token_for_profile(
             force_refresh=force_refresh,
             browser_login=browser_login,
             token_epoch=token_epoch,
+            minimum_lifetime_s=minimum_lifetime_s,
         )
 
 
@@ -1808,6 +1825,7 @@ def _fetch_databricks_token_for_profile(
     force_refresh: bool,
     browser_login: bool,
     token_epoch: int,
+    minimum_lifetime_s: float = 0,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
     env = build_databricks_cli_env(workspace, profile)
@@ -1942,6 +1960,22 @@ def _fetch_databricks_token_for_profile(
         if not force_refresh and not transient_failure:
             _remember_token_failure(memo_key, error, _token_epoch=token_epoch)
         raise RuntimeError(error)
+    if minimum_lifetime_s > 0 and lifetime_s is not None and lifetime_s < minimum_lifetime_s:
+        if force_refresh:
+            raise RuntimeError(
+                "The refreshed Databricks token expires before the requested "
+                f"{minimum_lifetime_s:g}-second auth-helper cache window. "
+                "Reduce the agent's auth-helper cache TTL or ask your workspace "
+                "administrator about the token lifetime."
+            )
+        return _fetch_databricks_token_for_profile(
+            workspace,
+            profile,
+            force_refresh=True,
+            browser_login=browser_login,
+            token_epoch=token_epoch,
+            minimum_lifetime_s=minimum_lifetime_s,
+        )
     _remember_token(memo_key, token, lifetime_s, _token_epoch=token_epoch)
     return token
 
@@ -1952,7 +1986,13 @@ def get_databricks_token(
     *,
     force_refresh: bool = False,
     browser_login: bool = False,
+    minimum_lifetime_s: float = 0,
 ) -> str:
+    """Return a bearer, refreshing once when its known lifetime is too short.
+
+    ``minimum_lifetime_s`` reserves a caller's cache window. Static bearers and
+    tokens without expiry metadata retain their existing behavior.
+    """
     # ``DATABRICKS_BEARER`` is the CI escape hatch: when set, skip the
     # `databricks auth token` subprocess entirely and return the pre-fetched
     # bearer directly. Used by the e2e job, where the protected runner has
@@ -1981,6 +2021,7 @@ def get_databricks_token(
         profile,
         force_refresh=force_refresh,
         browser_login=browser_login,
+        minimum_lifetime_s=minimum_lifetime_s,
     )
 
 
@@ -2111,7 +2152,11 @@ def ug_binary() -> str:
 
 
 def build_auth_token_argv(
-    workspace: str, profile: str | None = None, *, use_pat: bool = False
+    workspace: str,
+    profile: str | None = None,
+    *,
+    use_pat: bool = False,
+    minimum_lifetime_s: int = 0,
 ) -> list[str]:
     """Argv for the cross-platform token helper: `ug auth-token ...`.
 
@@ -2125,6 +2170,8 @@ def build_auth_token_argv(
         argv += ["--profile", profile]
     if use_pat:
         argv.append("--use-pat")
+    if minimum_lifetime_s:
+        argv += ["--minimum-lifetime-seconds", str(minimum_lifetime_s)]
     return argv
 
 
@@ -2152,7 +2199,11 @@ def build_mcp_proxy_argv(
 
 
 def build_auth_shell_command(
-    workspace: str, profile: str | None = None, *, use_pat: bool = False
+    workspace: str,
+    profile: str | None = None,
+    *,
+    use_pat: bool = False,
+    minimum_lifetime_s: int = 0,
 ) -> str:
     """Single-line, shell-quoted form of :func:`build_auth_token_argv`.
 
@@ -2160,7 +2211,9 @@ def build_auth_shell_command(
     `apiKeyHelper`). On every platform this resolves to the `ug auth-token`
     executable rather than a POSIX shell pipeline, so no `sh`/`jq` is required."""
     return subprocess_cross_os.shell_command(
-        build_auth_token_argv(workspace, profile, use_pat=use_pat)
+        build_auth_token_argv(
+            workspace, profile, use_pat=use_pat, minimum_lifetime_s=minimum_lifetime_s
+        )
     )
 
 

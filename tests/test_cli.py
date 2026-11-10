@@ -2810,6 +2810,23 @@ class TestAuthTokenCommand:
         assert result.exit_code == 0
         fetch.assert_called_once_with("https://ws", None, force_refresh=True, browser_login=False)
 
+    def test_minimum_token_lifetime_is_forwarded(self):
+        with (
+            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
+            patch("ucode.cli.get_databricks_token", return_value="tok") as fetch,
+        ):
+            result = runner.invoke(app, ["auth-token", "--minimum-lifetime-seconds", "960"])
+
+        assert result.exit_code == 0, result.output
+        assert result.stdout == "tok\n"
+        fetch.assert_called_once_with(
+            "https://ws",
+            None,
+            force_refresh=False,
+            browser_login=False,
+            minimum_lifetime_s=960,
+        )
+
     def test_errors_without_workspace(self):
         with patch("ucode.cli.load_state", return_value={}):
             result = runner.invoke(app, ["auth-token"])
