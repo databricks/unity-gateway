@@ -12,6 +12,8 @@ import {
 import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, registerIsaacFeedback } from './isaac-feedback.ts';
 import { isRoutingEnabled } from './routing-state.ts';
+import { beginStatusBandTurn } from './smart-routing-status.ts';
+import { waitingAgent } from './waiting-notifications.ts';
 
 type Environment = Record<string, string | undefined>;
 
@@ -131,6 +133,21 @@ export function register(on: On, options: PluginOptions): void {
       const current = await readEnvironment($);
       await setRouting($, options, isRoutingEnabled(current), false);
     }
+    return next(e);
+  });
+
+  on('prompt.submit', async ($, e, next) => {
+    if (e.origin?.kind === 'task-notification') {
+      try {
+        if (await readOrchestratorState($, options)) {
+          const waiting = waitingAgent(e, await $.agent.list());
+          if (waiting) return {drop: `${waiting.description} is still running in the background.`};
+        }
+      } catch {
+        // Keep delivery intact when the host cannot confirm the task's state.
+      }
+    }
+    beginStatusBandTurn();
     return next(e);
   });
 

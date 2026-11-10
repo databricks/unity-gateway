@@ -318,6 +318,12 @@ The Claude mod entry point has separate native component checks in
 `../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
 existing Claude skill-toggle journeys check the live recipe payload field (launch recipe at launch and after off/on, DISABLED after off).
+
+Waiting-notification recognition has direct function tests in
+`../native_claude/mod_tests/waiting-notifications.test.ts`, without host mocks.
+Background lifecycle, live gateway cost and notification rendering are not covered
+by the integration suite.
+
 The required Isaac feedback form, evidence submission, and background delivery
 notifications need a separate manual Isaac check. The gateway toggle journey does
 not cover the form or notification timing. Use the released Isaac skill with the
