@@ -1,5 +1,8 @@
 # Integration tests
 
+Shared component fixtures isolate Copilot files per test. Integration retains its
+separate process-level homes and does not use those component mocks.
+
 `../test_config_io.py` and `../test_state.py` cover atomic JSON persistence:
 readers retain the previous complete document during a write, and partial-write or
 replacement failures preserve it and remove temporary files. Checks also cover

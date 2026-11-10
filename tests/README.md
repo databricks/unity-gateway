@@ -1,5 +1,8 @@
 # Test suites and user journeys
 
+Shared component fixtures isolate Copilot config, backup, registry, and proxy-log
+paths per test so CLI setup cannot read or overwrite a developer's Copilot files.
+
 `test_config_io.py` and `test_state.py` cover atomic JSON persistence:
 readers retain the previous complete document during a write, and partial-write or
 replacement failures preserve it and remove temporary files. Checks also cover
