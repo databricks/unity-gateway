@@ -8,10 +8,9 @@ import {
   DISABLED_RECIPE,
   ENABLE_ROUTING_FLAG,
   RECIPE_FIELD,
-  ROUTING_UPDATE_FAILED_REPLY,
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
-import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedback } from './isaac-feedback.ts';
+import { createIsaacFeedbackState, registerIsaacFeedback } from './isaac-feedback.ts';
 import { isRoutingEnabled } from './routing-state.ts';
 
 type Environment = Record<string, string | undefined>;
@@ -84,14 +83,9 @@ async function writeSessionControls(
   }
   const flag = enabled ? ENABLE_ROUTING_FLAG : DISABLE_ROUTING_FLAG;
   const args = [python, '-m', CLI_MODULE, CLI_AGENT, flag, ...sessionControlArgs];
-  // Claude doesn't pass its session ID to mod processes; the CLI checks feedback IDs against it.
-  const result = await $.process.run(args, { env: { CLAUDE_CODE_SESSION_ID: await $.session.id() } });
+  const result = await $.process.run(args);
   if (result.exitCode !== 0) {
-    const stderr = result.stderr.trim();
-    // Callers tell a refused feedback ID from other failures by the exit code.
-    throw Object.assign(new Error(`Smart Router controls exited ${result.exitCode}: ${stderr}`), {
-      exitCode: result.exitCode, stderr,
-    });
+    throw new Error(`Smart Router controls exited ${result.exitCode}: ${result.stderr.trim()}`);
   }
 }
 
@@ -174,13 +168,10 @@ export function register(on: On, options: PluginOptions): void {
 
   // The installed smart-router skill already supplies the slash command.
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
-    const command = parseSmartRouterCommand(e.args);
-    // Only Omnigent's switch saves the off reason through Isaac before it sends a feedback ID.
-    if (!command || (command.feedbackId && await $.env.get('ISAAC_LAUNCH_MODE') !== 'omni')) {
-      return {text: 'Usage: /smart-router on|off'};
-    }
+    const action = e.args.trim();
+    if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
-    if (command.action === 'off') {
+    if (action === 'off') {
       // The mod compiler keeps $ within one file, so bind these before Isaac's guard.
       feedback.readRoutingEnabled = async () => isRoutingEnabled(await readEnvironment($));
       feedback.disableRouting = async (sessionControlArgs) => {
@@ -193,13 +184,13 @@ export function register(on: On, options: PluginOptions): void {
   });
   registerIsaacFeedback(on, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string);
   on('command.run', {command: 'smart-router'}, async ($, e) => {
-    const action = parseSmartRouterCommand(e.args)?.action;
+    const action = e.args.trim();
     try {
       await setRouting($, options, action === 'on', true);
       showStatusBand();
       $.ui.invalidate('ui.render');
     } catch {
-      return {text: ROUTING_UPDATE_FAILED_REPLY};
+      return {text: 'Could not update Smart Router. Check the recipe, CLAUDE_CODE_EXTRA_BODY, and environment permissions; retry or restart through UG.'};
     }
     return {text: `Smart Router is ${action}`};
   });

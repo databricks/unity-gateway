@@ -949,16 +949,11 @@ A denied control-file read or write fails both toggle commands with native-appro
 guidance and leaves the saved controls byte-for-byte unchanged. Write coverage includes
 raw temporary-file errors and wrapped mkdir/replace errors, read-only filesystems,
 and full-disk failures, which report their cause without permission guidance.
-`--smart-router-feedback-id` turns routing off only for a saved Isaac smart-routing report
-about the current Claude session in an Omnigent pane; a missing, unreadable, other-session,
-other-category, other-schema or mismatched report, or a non-UUID ID, exits 3 with the
-controls unchanged. `native_claude/test_mod.py` runs `/smart-router off --feedback-id`
-through Claude, the mod and the real CLI: an unsaved report and another session's report keep
-routing on, this session's report turns it off. `mod_tests/register.test.ts` pins the
-replies, the CLI arguments and session ID, the rollback, and the usage reply outside Omnigent.
-Without the feedback rule the mod drops the ID and runs the ordinary off. Only a rejected ID (exit 3) gets the feedback ID reply; another CLI failure, including exit 2
-from a CLI without the flag, gets the update
-failure reply. Both show the CLI's error in the transcript.
+With Isaac's feedback rule on, an off without a 16-character reason exits 2 and keeps the
+controls, except in an `ISAAC_LAUNCH_MODE=omni` session, where it turns routing off
+(`test_smart_router.py`). `mod_tests/register.test.ts` checks that the mod skips the form there
+and runs the plain CLI off, and `native_claude/test_mod.py` runs that off through Claude, the
+mod and the real CLI.
 
 `test_integration_evidence.py` checks that the Codex approval driver accepts only the
 exact local command. Other commands or environments are rejected, and an incomplete

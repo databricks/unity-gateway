@@ -1,22 +1,9 @@
 import type { EngineInterface, On } from 'claude-code';
-import { envBool, FEEDBACK_ID_REJECTED_EXIT_CODE, ROUTING_UPDATE_FAILED_REPLY } from './constants.ts';
+import { envBool } from './constants.ts';
 
 const FEEDBACK_PANE = 'smart-router-feedback';
 const FEEDBACK_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 type FeedbackCategory = 'smart-routing' | 'other';
-
-export type SmartRouterCommand = { action: 'on' | 'off'; feedbackId?: string };
-
-// `off --feedback-id <id>` names the reason Isaac already saved for Omnigent's switch.
-export function parseSmartRouterCommand(args: string): SmartRouterCommand | undefined {
-  const [action, option, feedbackId, ...rest] = args.trim().split(/\s+/);
-  if (action !== 'on' && action !== 'off') return undefined;
-  if (option === undefined) return { action };
-  if (action === 'off' && option === '--feedback-id' && FEEDBACK_ID.test(feedbackId ?? '') && !rest.length) {
-    return { action, feedbackId: feedbackId.toLowerCase() };
-  }
-  return undefined;
-}
 
 function feedbackSuffix(feedbackId: string): string {
   return feedbackId ? ` Feedback ID: ${feedbackId}` : '';
@@ -176,28 +163,6 @@ async function openFeedbackForm(
   return false;
 }
 
-async function turnOffWithSavedFeedback(
-  $: EngineInterface, state: FeedbackState, feedbackId: string,
-): Promise<{ text: string }> {
-  try {
-    if (!state.readRoutingEnabled || !state.disableRouting) {
-      throw new Error('Smart Router controls are unavailable.');
-    }
-    if (!await state.readRoutingEnabled()) return { text: 'Smart Router is off' };
-    // UG's CLI turns routing off only if Isaac saved this ID as smart routing feedback for this session.
-    await state.disableRouting(['--smart-router-feedback-id', feedbackId]);
-  } catch (error) {
-    const failure = error as { exitCode?: number; stderr?: string } | undefined;
-    if (failure?.stderr) $.ui.log(failure.stderr.split(/\s+/).join(' '));
-    return {
-      text: failure?.exitCode === FEEDBACK_ID_REJECTED_EXIT_CODE
-        ? 'Could not turn Smart Router off with that feedback ID. Smart Router is still on.'
-        : ROUTING_UPDATE_FAILED_REPLY,
-    };
-  }
-  return { text: 'Smart Router is off' };
-}
-
 export function registerIsaacFeedback(
   on: On, state: FeedbackState, isaacExecutable: string, isaacFeedbackDirectory: string,
 ): void {
@@ -258,12 +223,11 @@ export function registerIsaacFeedback(
   });
 
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
-    const command = parseSmartRouterCommand(e.args);
-    if (command?.action !== 'off') return next(e);
+    if (e.args.trim() !== 'off') return next(e);
     const feedbackRequired = envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'));
-    if (!feedbackRequired) return next(e);
+    // An omni launch's UI asks for the reason before it sends the off.
+    if (!feedbackRequired || await $.env.get('ISAAC_LAUNCH_MODE') === 'omni') return next(e);
     if (state.submitted) return { text: 'Feedback is being prepared.' };
-    if (command.feedbackId) return turnOffWithSavedFeedback($, state, command.feedbackId);
     try {
       if (!state.readRoutingEnabled || !state.disableRouting) {
         throw new Error('Smart Router controls are unavailable.');

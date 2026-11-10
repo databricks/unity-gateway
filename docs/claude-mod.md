@@ -150,20 +150,9 @@ Before submitting, Cancel or Escape leaves routing on and sends nothing. A missi
 `isaac` executable at launch or an unavailable form leaves routing on. A feedback submission failure after a valid
 reason leaves routing off and reports the failure in the transcript. The form makes no model requests.
 
-Omnigent sessions (`ISAAC_LAUNCH_MODE=omni`) also accept
-`/smart-router off --feedback-id <uuid>`, which Omnigent's Smart Routing switch types after
-its popup had Isaac save the reason (`isaac feedback --from-omnigent`). It skips the form:
-the mod passes the ID to UG's CLI as `--smart-router-feedback-id`, together with Claude's
-session ID, and the CLI turns routing off only if `~/.isaac/feedback/<id>/receipt.json` has
-`schema_version` 1, that `feedback_id`, `request.category` `smart-routing`, and
-`request.session_id` equal to this session. Isaac enforces the reason rules when it saves,
-so the check reads nothing else and writes nothing. The same ID keeps working for later offs
-in that session. A failed check (the CLI exits 3) keeps routing on and replies "Could not
-turn Smart Router off with that feedback ID. Smart Router is still on." Any other failure,
-including exit 2 from a CLI without `--smart-router-feedback-id` asking for a reason, also
-keeps routing on but gets the usual "Could not update Smart Router" reply, so Omnigent
-reports a rejected ID only when the ID was the problem. Either way, the CLI's error is shown in the transcript. Elsewhere, `--feedback-id` gets the usage reply. Without the feedback
-flag, the ID is ignored and routing turns off as usual.
+Omnigent sessions (`ISAAC_LAUNCH_MODE=omni`) skip both the form and the reason rule:
+`/smart-router off` turns routing off directly, because Omnigent's Web UI asks for the
+reason and has Isaac save it before it sends the command.
 
 In these sessions, with the same flag enabled, `/isaac-feedback` uses the same native
 form, capture, and background uploader as `/smart-router off`. It remains available
