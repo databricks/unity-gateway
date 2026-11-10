@@ -9,9 +9,10 @@ the active inference target or indicator.
 
 `native_claude/test_auto_profile.py` (relative to the tests directory) drives two real
 Claude terminals with the production UG mod. It checks a single checked Auto row,
-Opus 5.5 1M to Haiku 4.5 200K native context, changed effort support, independent
-sessions, Auto reselection, cancellation, and preference-only `/auto` under a manual
-model. It uses a dummy credential with no model responses: it does not establish
+Opus 5.5 switching to Haiku 4.5 (200K), Sonnet 5.5 (1M), Fable 5.1 (1M),
+and Astra with `[1m]` (1M), changed effort support, independent sessions,
+Auto reselection, cancellation, and preference-only `/auto` under a manual model.
+It uses a dummy credential with no model responses: it does not establish
 inference, subagent routing, or actual `/compact` coverage. Native version pins are
 unchanged. It also guards against putting the custom option in settings env, which
 Claude reapplies after `/model` saves a selection.
@@ -20,10 +21,13 @@ The existing `integration/test_ug_claude_auto.py` managed 80-column journey requ
 real parent/child answers and correlated routing decisions before and after a manual
 model choice. The fixed-variant journey passed on Ubuntu ARM64 with the existing Claude 2.1.290
 pin, including real routed and unrouted child tasks. The two-session native profile
-journey also passed on 2.1.290. Older shared-alias runs passed on 2.1.322; the new
-variant implementation has not been validated on that version. The known transient pane
-flash on cancellation/manual selection is not asserted away. Native header labels
-continue to show the underlying model.
+journey passed for all four alternatives on 2.1.290 and for Haiku on 2.1.322.
+A separate 2.1.322 terminal capture found
+no unwanted main-model pane in 28 frames following picker cancellation; this does
+not guarantee frame-by-frame behavior on every terminal. Native header labels
+continue to show the underlying model. Launch regressions cover saved native aliases
+and avoiding an implicit model flag on resume/continue; the live journey additionally
+checks restart and compares resume against the same native Claude and managed settings.
 
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.

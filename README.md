@@ -558,12 +558,14 @@ configured real model without enabling routing.
 The Auto flow hides the old `/smart-router` command and ON/OFF routing banner.
 The Codex integration is unchanged.
 
-This branch is still a prototype. Cancelling `/model` or choosing a regular model
-can briefly display the main-model pane before it closes. The native header shows
-the underlying model name. Capability recognition uses the exact Claude ID or an
-explicit admin `behavesAs` hint; unrelated models are not assigned Claude capabilities.
-Other model families, native Windows/macOS execution and actual compaction require
-separate validation.
+The native header shows the underlying model name. Saved ordinary model aliases
+remain ordinary choices on restart; resume uses Claude's native model precedence
+without UG injecting a new Auto selection. A configured `ANTHROPIC_MODEL` can still
+override the restored model, just as it does in Claude itself. Capability recognition
+uses the exact Claude ID or an explicit admin `behavesAs` hint; unrelated models are not assigned Claude capabilities.
+Native profile checks cover Opus, Sonnet, Haiku, Fable and Astra; inference coverage
+uses the managed Claude catalog. Native Windows/macOS execution and actual compaction
+require separate validation.
 
 On Windows, Claude smart routing uses subagent hooks only. If first-prompt routing
 is enabled, ug warns and falls back to subagent routing because the first-prompt

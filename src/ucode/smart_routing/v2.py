@@ -717,7 +717,7 @@ def launch_claude(
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.args import has_explicit_model_arg
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
-    from ucode.agents.claude_auto import AUTO_MODEL, picker_config
+    from ucode.agents.claude_auto import AUTO_MODEL, is_auto_model, picker_config
 
     if os.name != "nt":
         from ucode.smart_routing import claude_pty
@@ -869,10 +869,23 @@ def launch_claude(
             except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
                 raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc
             start_model = routed_model or launch_model
-            if auto_picker and not start_model and not has_explicit_model_arg(remaining):
+            native_args = remaining[: remaining.index("--")] if "--" in remaining else remaining
+            resuming = any(
+                arg.partition("=")[0] in {"--resume", "-r", "--continue", "-c", "--from-pr"}
+                for arg in native_args
+            )
+            if (
+                auto_picker
+                and not start_model
+                and not has_explicit_model_arg(remaining)
+                and not resuming
+            ):
                 saved = read_json_safe(user_settings_path).get("model")
                 variants = [row["autoModel"] for row in auto_config["models"]]
-                start_model = saved if saved in [*variants, *model_ids] else auto_config["model"]
+                # Native aliases (e.g. opus) need not be literal catalog IDs. Let
+                # Claude enforce its normal policy instead of silently enabling Auto.
+                native_saved = isinstance(saved, str) and bool(saved) and not is_auto_model(saved)
+                start_model = saved if saved in variants or native_saved else auto_config["model"]
             if auto_picker and start_model == AUTO_MODEL:
                 start_model = auto_config["model"]
             model_args = launch_model_args(remaining, start_model)

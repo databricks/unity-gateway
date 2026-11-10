@@ -6,14 +6,25 @@ import re
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from tests.integration.utils.terminal import AgentTerminal
 from ucode.agents.claude_auto import add_picker_entry, picker_config
 from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing.v2 import _claude_mod_launch_options, _write_routed_claude_plugin
 
 
+@pytest.mark.parametrize(
+    ("alternate", "alternate_label", "context_window"),
+    [
+        ("claude-haiku-4-5", "Haiku 4.5", 200_000),
+        ("claude-sonnet-5-5", "Sonnet 5.5", 1_000_000),
+        ("claude-fable-5-1", "Fable 5.1", 1_000_000),
+        ("system.ai.gpt-6-astra[1m]", "Astra 6", 1_000_000),
+    ],
+)
 def test_auto_switch_updates_native_profile_without_changing_another_session(
-    native_binary, tmp_path
+    native_binary, tmp_path, alternate, alternate_label, context_window
 ):
     """Scenario: change Auto's main model through UG's actual pane in one of two TUIs.
 
@@ -50,7 +61,7 @@ export function register(on) {
   });
 }
 """)
-    models = ["claude-opus-5-5", "claude-haiku-4-5"]
+    models = ["claude-opus-5-5", alternate]
     config = add_picker_entry(
         {
             "apiKeyHelper": "printf fixture-dummy-key",
@@ -59,13 +70,15 @@ export function register(on) {
                 "replaceBuiltInOptions": True,
                 "options": [
                     {"model": models[0], "label": "Opus 5.5"},
-                    {"model": models[1], "label": "Haiku 4.5"},
+                    {"model": models[1], "label": alternate_label},
                 ],
             },
         }
     )
     catalog = json.loads(
-        picker_config(AnthropicModelCatalog(models, {}), "https://fixture", config)
+        picker_config(
+            AnthropicModelCatalog(models, {alternate: alternate_label}), "https://fixture", config
+        )
     )
     routing = {
         "ENABLE_SMART_ROUTING_V2": "0",
@@ -152,22 +165,25 @@ export function register(on) {
         picker(a)
         a.submit("/auto")
         a.wait_for(lambda s: selector in s, "UG's main-model selector")
-        a.send("\x1b[B\r", "select Haiku")
+        a.send("\x1b[B\r", "select " + alternate_label)
         a.wait_for(
-            lambda s: selector not in s and "Auto(Haiku 4.5) saved" in s, "the native model switch"
+            lambda s: selector not in s and f"Auto({alternate_label}) saved" in s,
+            "the native model switch",
         )
         changed = observe(a, "changed")
         assert changed["model"] == catalog["models"][1]["autoModel"]
         assert changed["custom"] == changed["model"]
-        assert changed["usage"]["context"]["window"] == 200_000
+        assert changed["usage"]["context"]["window"] == context_window
         assert changed["routing"] == "1"
-        assert "Effort not supported for Auto" in picker(a)
+        auto_screen = picker(a)
+        if alternate == "claude-haiku-4-5":
+            assert "Effort not supported for Auto" in auto_screen
         other = observe(b, "other")
         assert other["model"] == before["model"]
         assert other["usage"]["context"]["window"] == 1_000_000
         assert other["custom"] == before["custom"]
         picker(b)
-        # Reselecting Auto must still open the next step; Escape preserves Haiku.
+        # Reselecting Auto must still open the next step; Escape preserves the model.
         a.submit("/model")
         a.choose("Select model", "Auto")
         a.wait_for(lambda s: selector in s, "the selector after Auto reselection")

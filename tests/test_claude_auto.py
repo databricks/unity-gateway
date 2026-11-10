@@ -64,6 +64,10 @@ def test_default_stays_in_available_catalog_and_preserves_custom_labels():
         (None, None, [], False, False, None, False),
         (None, None, [], True, True, None, False),
         (None, None, ["-p", "hello"], True, False, None, False),
+        ("opus", None, ["--resume", "session-id"], True, False, None, True),
+        ("opus", None, ["--continue"], True, False, None, True),
+        (None, None, ["--resume=session-id"], True, False, None, True),
+        (None, "opus", ["--continue"], True, False, "opus", True),
     ],
 )
 def test_native_launch_default_precedence_and_compatibility(
@@ -86,7 +90,11 @@ def test_native_launch_default_precedence_and_compatibility(
     monkeypatch.setattr(v2, "APP_DIR", tmp_path)
     monkeypatch.setattr(claude, "auto_picker_available", lambda: installed)
     monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "absent-managed.json")
-    monkeypatch.setattr(v2, "_model_picker_catalog", lambda: AnthropicModelCatalog(["opus"], {}))
+    monkeypatch.setattr(
+        v2,
+        "_model_picker_catalog",
+        lambda: AnthropicModelCatalog(["system.ai.claude-opus-5-5"], {}),
+    )
     monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
     monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
     monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
@@ -118,14 +126,14 @@ def test_native_launch_default_precedence_and_compatibility(
         )
     assert exit_info.value.code == 0
     if expected == AUTO_MODEL:
-        expected = auto_variant({"model": "opus"})
+        expected = auto_variant({"model": "system.ai.claude-opus-5-5"})
     argv = captured["argv"]
     assert (argv[argv.index("--model") + 1] if "--model" in argv else None) == expected
     options = captured["settings"]["pluginConfigs"]["ug-smart-router"]["options"]
     assert ("autoPicker" in options) is has_auto
     if has_auto:
         assert picker_is_configured(captured["settings"])
-        assert json.loads(options["autoPicker"])["mainModel"] == "opus"
+        assert json.loads(options["autoPicker"])["mainModel"] == "system.ai.claude-opus-5-5"
         assert options["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "1"
     assert user_settings.read_bytes() == original
 

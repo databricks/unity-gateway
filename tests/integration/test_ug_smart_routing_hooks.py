@@ -208,7 +208,11 @@ def _toggle_routing(tui, session, agent: str, enabled: bool, orchestration_enabl
         # Keep the recipe/request and real-child assertions below unchanged.
         controls = list(Path(session.env["TMPDIR"]).glob("ug-session-env-*/env.json"))
         assert len(controls) == 1, controls
-        tui.submit("/model ug-auto" if enabled else f"/model {CLAUDE_MODELS[0]}")
+        if enabled:
+            tui.submit("/model")
+            tui.choose("Select model", "Auto")
+        else:
+            tui.submit(f"/model {CLAUDE_MODELS[0]}")
         selector = "Choose your main model"
         if enabled:
             tui.wait_for(lambda screen: selector in screen, "the Auto main-model selector")
