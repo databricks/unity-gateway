@@ -14,6 +14,7 @@ __all__ = [
     "completed_task_models",
     "discovery_model_id",
     "model_in_picker",
+    "resumed_agent_id",
 ]
 
 SESSION_DIRECTORY = ".claude/projects"
@@ -78,13 +79,10 @@ def _is_rejected_for(call: dict, result: object, agent_id: str) -> bool:
     return call["input"]["to"] == agent_id or (isinstance(pin, dict) and pin.get("id") == agent_id)
 
 
-def classify_send_message(call: dict, records: list[dict], agent_id: str) -> SendOutcome:
-    """Classify one parent SendMessage for the original child `agent_id`.
+def _native_result(call: dict, records: list[dict]) -> object:
+    """Return the native tool result recorded for one parent SendMessage call.
 
-    Returns "resumed" (the native result resolved to the child), "queued" (accepted for
-    the still-running child) or "rejected" (addressed to the child but not delivered).
-    Raises AssertionError for a missing recipient or result, a result for another agent,
-    or any other shape.
+    Raises AssertionError for a missing or empty recipient or a missing tool result.
     """
     recipient = call.get("input", {}).get("to")
     assert isinstance(recipient, str) and recipient.strip(), (
@@ -95,19 +93,51 @@ def classify_send_message(call: dict, records: list[dict], agent_id: str) -> Sen
         if record.get("type") != "user" or not isinstance(content, list):
             continue
         if any(part.get("tool_use_id") == call["id"] for part in content):
-            result = record.get("toolUseResult")
-            # The native result resolves both names and IDs to the resumed child's ID.
-            if isinstance(result, dict) and result.get("resumedAgentId") == agent_id:
-                return "resumed"
-            if _is_queued_to(result, agent_id):
-                return "queued"
-            if _is_rejected_for(call, result, agent_id):
-                return "rejected"
-            raise AssertionError(
-                f"SendMessage to {recipient!r} neither resumed nor was queued or rejected "
-                f"for {agent_id}: {result}"
-            )
+            return record.get("toolUseResult")
     raise AssertionError(f"No native tool result for SendMessage {call['id']}: {call}")
+
+
+def classify_send_message(call: dict, records: list[dict], agent_id: str) -> SendOutcome:
+    """Classify one parent SendMessage for the original child `agent_id`.
+
+    Returns "resumed" (the native result resolved to the child), "queued" (accepted for
+    the still-running child) or "rejected" (addressed to the child but not delivered).
+    Raises AssertionError for a missing recipient or result, a result for another agent,
+    or any other shape.
+    """
+    recipient = call.get("input", {}).get("to")
+    result = _native_result(call, records)
+    # The native result resolves both names and IDs to the resumed child's ID.
+    if isinstance(result, dict) and result.get("resumedAgentId") == agent_id:
+        return "resumed"
+    if _is_queued_to(result, agent_id):
+        return "queued"
+    if _is_rejected_for(call, result, agent_id):
+        return "rejected"
+    raise AssertionError(
+        f"SendMessage to {recipient!r} neither resumed nor was queued or rejected "
+        f"for {agent_id}: {result}"
+    )
+
+
+def resumed_agent_id(calls: list[dict], records: list[dict]) -> str:
+    """Resolve the single child the parent's follow-up SendMessage calls resumed.
+
+    Reads each send's native result and requires exactly one distinct `resumedAgentId`,
+    so the journey can assert against the child the follow-up actually continued even
+    when redundant duplicate spawns exist.
+    """
+    assert calls, "Expected at least one SendMessage"
+    resumed = {
+        result["resumedAgentId"]
+        for call in calls
+        for result in [_native_result(call, records)]
+        if isinstance(result, dict) and isinstance(result.get("resumedAgentId"), str)
+    }
+    assert len(resumed) == 1, (
+        f"Expected the follow-ups to resume exactly one child, got {sorted(resumed)}"
+    )
+    return resumed.pop()
 
 
 def assert_follow_ups_resumed(calls: list[dict], records: list[dict], agent_id: str) -> None:

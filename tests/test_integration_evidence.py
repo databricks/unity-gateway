@@ -166,6 +166,33 @@ def test_claude_follow_ups_fail_when_any_send_targets_another_agent():
         claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _REJECTED), "child-id")
 
 
+def test_claude_resumed_agent_id_resolves_the_single_resumed_child():
+    calls = [_call(1), _call(2), _call(3)]
+    assert claude.resumed_agent_id(calls, _records(_QUEUED, _RESUMED, _REJECTED)) == "child-id"
+
+
+@pytest.mark.parametrize(
+    "results",
+    [
+        (_QUEUED, _REJECTED),
+        (
+            {"success": True, "resumedAgentId": "child-id"},
+            {"success": True, "resumedAgentId": "other-child"},
+        ),
+        ({"success": True},),
+    ],
+)
+def test_claude_resumed_agent_id_requires_exactly_one_resumed_child(results):
+    calls = [_call(i) for i in range(1, len(results) + 1)]
+    with pytest.raises(AssertionError, match="resume exactly one child"):
+        claude.resumed_agent_id(calls, _records(*results))
+
+
+def test_claude_resumed_agent_id_requires_a_native_result():
+    with pytest.raises(AssertionError, match="No native tool result for SendMessage send-1"):
+        claude.resumed_agent_id([_call()], [])
+
+
 def _transcript_session(home, agent, transcripts):
     directory = home / {"claude": ".claude/projects", "codex": ".codex/sessions"}[agent]
     for name, records in transcripts.items():

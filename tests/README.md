@@ -246,15 +246,21 @@ continuation note, with the `fork` exception only when the host offers fork suba
 
 The live `test_smart_router_claude_resumes_same_subagent_with_send_message` journey
 spawns one child and follows up through `SendMessage` by ID or name, requiring
-both hidden file answers in the same child transcript and exactly one Agent/Task call.
-Each parent SendMessage is classified for the original child: `resumed` (the native result
-resolves to the child's ID), `queued` (accepted for the still-running child, `pin.id` equals
-its ID), or `rejected` (a failed, undelivered send addressed to the child, as for an invented
+both hidden file answers in the resumed child's transcript. Claude may redundantly
+re-spawn the byte-identical task while waiting for the first child's completion
+notification (run 42721826953), so duplicate identical Agent/Task calls are tolerated
+before the follow-up; a differently tasked spawn or any child session or Agent/Task
+call created during the follow-up phase still fails. The resumed child is resolved
+from the send results and must be one of those pre-existing children. Each parent
+SendMessage is classified for that child: `resumed` (the native result resolves to the
+child's ID), `queued` (accepted for the still-running child, `pin.id` equals its ID),
+or `rejected` (a failed, undelivered send addressed to the child, as for an invented
 `notify_when_idle` option). The journey requires at least one `resumed` send and tolerates
 `queued`/`rejected` only alongside it (runs 41759864769 and 41768149986). Only parent
 SendMessage calls are checked; child replies to the parent are allowed. Offline checks reject
 missing recipients, other agents (resumed, queued, or addressed), unknown result shapes,
-missing tool results, and a follow-up set with no real resume. Run it with
+missing tool results, a follow-up set with no real resume, and follow-ups resuming
+more than one child. Run it with
 Claude 2.1.314+; description-only component checks do not prove continuation.
 
 CUJ3 expects GPT Luna in both agents' catalogs and pickers, including Claude's gateway alias,

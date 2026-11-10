@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 
 import pytest
-from utils.agents.claude import assert_follow_ups_resumed
+from utils.agents.claude import assert_follow_ups_resumed, resumed_agent_id
 from utils.evidence import (
     FileTask,
     SubagentCalculation,
@@ -558,6 +558,19 @@ def _assert_claude_session_finished(session, tui) -> str:
     return "".join(tui.output)
 
 
+def _parent_tool_calls(sessions: dict[str, list[dict]], names: set[str]) -> dict[str, dict]:
+    """Collect parent tool_use calls by ID from a sessions mapping."""
+    return {
+        part["id"]: part
+        for path, records in sessions.items()
+        if not is_child_session("claude", path, records)
+        for record in records
+        if record.get("type") == "assistant"
+        for part in record.get("message", {}).get("content", [])
+        if part.get("type") == "tool_use" and part.get("name") in names
+    }
+
+
 def _assert_claude_not_wrapped(session, transcript: str) -> None:
     assert SMART_ROUTING_BANNER not in transcript, transcript
     session.assert_not_routed()
@@ -574,8 +587,9 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
     """Scenario: with orchestration on, spawn one Claude child, then give it a follow-up.
 
     Expected: on Claude 2.1.314+ the parent uses SendMessage to continue the original
-    child. Both hidden file values appear in that same child's completed answers,
-    exactly one Agent/Task call occurs, and no second child session is created.
+    child. Both hidden file values appear in that same child's completed answers, the
+    follow-up phase creates no child session or Agent/Task call, and the SendMessage
+    results resolve to a child spawned before the follow-up.
     """
     session = live_session
     _select_smart_router_version(session, "claude", workspace, tmp_path, True, "subagent_orch_v0")
@@ -600,15 +614,21 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
             timeout=180,
         )
         tui.wait_for_background_tasks()
+        pre_followup = agent_sessions(session, "claude")
+        session.record("agent-sessions-before-followup.json", pre_followup)
         children = {
-            path: records
-            for path, records in agent_sessions(session, "claude").items()
+            path
+            for path, records in pre_followup.items()
             if is_child_session("claude", path, records)
         }
-        session.record("agent-sessions-before-followup.json", agent_sessions(session, "claude"))
-        assert len(children) == 1, list(children)
-        child_path = next(iter(children))
-        child_id = Path(child_path).stem.removeprefix("agent-")
+        assert children, "the parent spawned no child session"
+        # Claude may redundantly re-spawn the identical task while waiting for the first
+        # child's completion notification (run 42721826953). Tolerate only byte-identical
+        # duplicate spawns of one task; a differently tasked second child still fails.
+        pre_spawns = _parent_tool_calls(pre_followup, {"Agent", "Task"})
+        assert (
+            len({json.dumps(call["input"], sort_keys=True) for call in pre_spawns.values()}) == 1
+        ), sorted(pre_spawns.values(), key=lambda call: call["id"])
 
         second = FileTask(session)
         tui.submit(
@@ -620,20 +640,23 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
         tui.wait_for(
             lambda _: any(
                 second.value in answer
-                for answer in assistant_answers(
-                    "claude", agent_sessions(session, "claude").get(child_path, [])
-                )
+                for path, records in agent_sessions(session, "claude").items()
+                if is_child_session("claude", path, records)
+                for answer in assistant_answers("claude", records)
             ),
-            "the original child's completed follow-up answer",
+            "the resumed child's completed follow-up answer",
             timeout=180,
         )
         _assert_claude_session_finished(session, tui)
 
     sessions = agent_sessions(session, "claude")
     session.record("agent-sessions.json", sessions)
-    assert [path for path in sessions if is_child_session("claude", path, sessions[path])] == [
-        child_path
-    ]
+    # The follow-up phase must not create children: every child at the end was spawned
+    # before it began, and the follow-ups resumed one of those existing children.
+    end_children = {
+        path for path, records in sessions.items() if is_child_session("claude", path, records)
+    }
+    assert end_children == children, (sorted(children), sorted(end_children))
     calls = {
         part["id"]: part
         for records in sessions.values()
@@ -642,8 +665,8 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
         for part in record.get("message", {}).get("content", [])
         if part.get("type") == "tool_use"
     }
-    spawns = [call for call in calls.values() if call["name"] in {"Agent", "Task"}]
-    assert len(spawns) == 1, spawns
+    spawns = {call["id"]: call for call in calls.values() if call["name"] in {"Agent", "Task"}}
+    assert set(spawns) == set(pre_spawns), sorted(set(spawns) ^ set(pre_spawns))
     parent_records = [
         record
         for path, records in sessions.items()
@@ -658,7 +681,14 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
         if part.get("type") == "tool_use" and part.get("name") == "SendMessage"
     }
     assert followups, calls
+    child_id = resumed_agent_id(list(followups.values()), parent_records)
     assert_follow_ups_resumed(list(followups.values()), parent_records, child_id)
+    child_path = next(
+        (path for path in children if Path(path).stem.removeprefix("agent-") == child_id), None
+    )
+    assert child_path is not None, (
+        f"the follow-up resumed {child_id}, which is not one of the spawned children"
+    )
     for task in (first, second):
         task.assert_completed(session, "claude")
         assert any(
