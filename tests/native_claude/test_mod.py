@@ -15,9 +15,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from messages_api import messages_api
 from session import Session
 
+from tests.native_claude.messages_api import messages_api
 from ucode.agents.claude import _header_mod_files
 from ucode.smart_routing import config, orchestrator, savings, session_env
 from ucode.smart_routing.v2 import (

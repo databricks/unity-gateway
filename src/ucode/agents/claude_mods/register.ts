@@ -1,5 +1,5 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
-import { endStatusBandTurn, registerStatusBand, showStatusBand, startStatusBandTurn } from './smart-routing-status.ts';
+import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
 import { endSubagentRoutingTurn, registerSubagentRouting } from './subagent-routing.ts';
 import {
   CLI_AGENT,
@@ -10,6 +10,7 @@ import {
   RECIPE_FIELD,
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
+import { startStatusBandTurn } from './smart-routing-status.ts';
 import { createIsaacFeedbackState, registerIsaacFeedback } from './isaac-feedback.ts';
 import { isRoutingEnabled } from './routing-state.ts';
 
@@ -35,10 +36,11 @@ async function readEnvironment($: EngineInterface): Promise<Environment> {
   };
 }
 
-async function withSessionControls($: EngineInterface, current: Environment): Promise<Environment> {
-  try {
-    const sessionFile = await $.env.get('UCODE_SESSION_ENV_FILE');
-    if (sessionFile) {
+async function readSessionEnvironment($: EngineInterface): Promise<Environment> {
+  const current = await readEnvironment($);
+  const sessionFile = await $.env.get('UCODE_SESSION_ENV_FILE');
+  if (sessionFile) {
+    try {
       const overrides = JSON.parse(await $.fs.read(sessionFile));
       for (const key of [
         'ENABLE_SMART_ROUTING_V2',
@@ -48,16 +50,16 @@ async function withSessionControls($: EngineInterface, current: Environment): Pr
       ]) {
         if (typeof overrides?.[key] === 'string') current[key] = overrides[key];
       }
+    } catch {
+      // Match the routing hooks' inherited-environment fallback for unreadable controls.
     }
-  } catch {
-    // Match the routing hooks' inherited-environment fallback for unreadable controls.
   }
   return current;
 }
 
 async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
   if (!options.orchestratorInstructions) return false;
-  const current = await withSessionControls($, await readEnvironment($));
+  const current = await readSessionEnvironment($);
   return isRoutingEnabled(current) && current.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1';
 }
 
@@ -370,10 +372,12 @@ async function readSavingsFlag($: EngineInterface): Promise<string | undefined> 
 
 async function readSavingsState($: EngineInterface): Promise<boolean> {
   if (!enabled) return false;
-  const current = await withSessionControls($, {
-    ENABLE_SMART_ROUTING_SAVINGS: await readSavingsFlag($),
-  });
-  return current.ENABLE_SMART_ROUTING_SAVINGS === '1';
+  try {
+    const current = await readSessionEnvironment($);
+    return current.ENABLE_SMART_ROUTING_SAVINGS === '1';
+  } catch {
+    return false;
+  }
 }
 
 // State is seeded once per module instance, by whichever hook runs first;

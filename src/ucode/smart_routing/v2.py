@@ -17,6 +17,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
+import ucode.smart_routing.pricing as pricing
+import ucode.smart_routing.savings as savings
 from ucode import claude_answer_delivery, config_io
 from ucode.codex_config import (
     codex_config_args,
@@ -61,7 +63,7 @@ from ucode.skills import (
     install_skill,
     uninstall_agent_skill,
 )
-from ucode.smart_routing import claude_routing, orchestrator, pricing, routing, savings
+from ucode.smart_routing import claude_routing, orchestrator, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     ROUTE_SUBAGENT_MOD_EVENT,
