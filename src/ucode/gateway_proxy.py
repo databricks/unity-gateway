@@ -36,7 +36,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import cast
+from typing import Any, cast
 from urllib.parse import unquote
 
 import httpx
@@ -521,6 +521,29 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     dropped_chat_completions_fields: frozenset[str]
     path_rewriter: Callable[[str], str] | None = None
     body_rewriter: Callable[[str, bytes], bytes] | None = None
+    bad_request_rewriter: Callable[[bytes], bytes | None] | None = None
+
+    def _relay_response(self, resp: httpx.Response, **kwargs: Any) -> None:
+        # `read` decodes only these encodings, so the body goes out without Content-Encoding.
+        encoding = resp.headers.get("content-encoding", "identity").strip().lower()
+        if (
+            self.bad_request_rewriter is None
+            or resp.status_code != 400
+            or encoding not in ("identity", "gzip", "deflate")
+        ):
+            return super()._relay_response(resp, **kwargs)
+        body = resp.read()
+        body = self.bad_request_rewriter(body) or body
+        try:
+            self.send_response(400)
+            for key, value in resp.headers.items():
+                if key.lower() not in {*HOP_BY_HOP_HEADERS, "content-encoding"}:
+                    self.send_header(key, value)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:
+            pass
 
     def _request_body(self, body: bytes | None) -> bytes | None:
         if body and self.body_rewriter is not None:
@@ -737,6 +760,7 @@ def start_gateway_auth_proxy(
     allowed_path_prefixes: tuple[str, ...] = GATEWAY_MODEL_PATH_PREFIXES,
     path_rewriter: Callable[[str], str] | None = None,
     body_rewriter: Callable[[str, bytes], bytes] | None = None,
+    bad_request_rewriter: Callable[[bytes], bytes | None] | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start a per-session proxy for agents that only hold a static credential.
 
@@ -745,7 +769,9 @@ def start_gateway_auth_proxy(
     ``added_headers``, after removing ``dropped_chat_completions_fields`` from Chat
     Completions request bodies. ``path_rewriter`` maps an accepted request path to the
     gateway path it is forwarded to, and ``body_rewriter(path, body)`` adjusts a request
-    body for the gateway. Binds an OS-assigned port, read from ``server.server_address[1]``.
+    body for the gateway. ``bad_request_rewriter(body)`` may replace the body of a gateway 400
+    (returning None relays it as it is). Binds an OS-assigned port, read from
+    ``server.server_address[1]``.
     """
     return _start_proxy(
         workspace,
@@ -765,6 +791,9 @@ def start_gateway_auth_proxy(
             # staticmethod: a plain function on the handler class would bind as a method.
             "path_rewriter": staticmethod(path_rewriter) if path_rewriter else None,
             "body_rewriter": staticmethod(body_rewriter) if body_rewriter else None,
+            "bad_request_rewriter": (
+                staticmethod(bad_request_rewriter) if bad_request_rewriter else None
+            ),
         },
         on_refresh_failure=on_refresh_failure,
     )
