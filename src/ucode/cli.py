@@ -3807,6 +3807,7 @@ def _launch_tool(
     custom_oauth: CustomOAuthConfig | None = None,
     routing_already_chosen: bool = False,
     routing_unsupported: bool = False,
+    recommendation_fetched: bool = False,
 ) -> None:
     previous = {}
     try:
@@ -4002,8 +4003,9 @@ def _launch_tool(
         # An admin-published managed config wins over the developer's own settings. Layered on after
         # `configure_shared_state`, whose returned state it overrides, and before the provider and
         # model are settled below — the two state files are never merged on disk.
-        # Bare `ucode` already read one to choose the agent; refetching would double the round trip.
-        if recommendation is None:
+        # A bare launch already checked the budget to select its agent. An empty or failed
+        # read is a completed check too: retrying here adds another timeout and warning.
+        if recommendation is None and not recommendation_fetched:
             recommendation = _fetch_budget_recommendation(state, managed)
         _note_recommended_agent(recommendation, tool)
         if managed is not None:
@@ -4508,6 +4510,7 @@ def _launch_managed_default(
         workspace_url=workspace,
         managed=managed,
         recommendation=recommendation,
+        recommendation_fetched=True,
     )
 
 
