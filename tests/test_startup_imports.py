@@ -308,7 +308,7 @@ def test_entrypoint_falls_back_to_temp_when_home_is_unavailable(
     cli = ModuleType("ucode.cli")
     cli.main = lambda: None
     monkeypatch.setitem(sys.modules, "ucode.cli", cli)
-    monkeypatch.setattr(sys, "argv", ["ug", "configure"])
+    monkeypatch.setattr(sys, "argv", ["ug", "auth-token"])
     monkeypatch.setattr(entrypoint.os, "getcwd", getcwd_once_fails)
     monkeypatch.setattr(entrypoint.os, "chdir", chdir_with_unavailable_home)
     monkeypatch.setattr(entrypoint.os.path, "expanduser", lambda _path: str(home))
@@ -320,7 +320,7 @@ def test_entrypoint_falls_back_to_temp_when_home_is_unavailable(
     assert attempts == [str(home), str(temporary)]
     assert real_getcwd() == str(temporary)
     assert captured.out == ""
-    assert f"using {str(temporary)!r} instead" in captured.err
+    assert captured.err == ""
 
 
 def test_entrypoint_leaves_accessible_cwd_unchanged(monkeypatch, capsys) -> None:
@@ -335,7 +335,7 @@ def test_entrypoint_leaves_accessible_cwd_unchanged(monkeypatch, capsys) -> None
     cli = ModuleType("ucode.cli")
     cli.main = lambda: None
     monkeypatch.setitem(sys.modules, "ucode.cli", cli)
-    monkeypatch.setattr(sys, "argv", ["ug", "configure"])
+    monkeypatch.setattr(sys, "argv", ["ug", "auth-token"])
     monkeypatch.setattr(entrypoint.os, "chdir", record_chdir)
 
     entrypoint.main()
@@ -343,3 +343,24 @@ def test_entrypoint_leaves_accessible_cwd_unchanged(monkeypatch, capsys) -> None
     assert os.getcwd() == original_cwd
     assert chdir_calls == []
     assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("argv", [["configure"], ["mcp-proxy"], ["claude"], []])
+def test_entrypoint_cwd_recovery_is_limited_to_api_key_helper(monkeypatch, argv) -> None:
+    def unreadable_cwd() -> str:
+        raise PermissionError("denied")
+
+    def unexpected_chdir(path: str) -> None:
+        raise AssertionError(f"unexpected chdir to {path}")
+
+    cli = ModuleType("ucode.cli")
+    cli.main = lambda: None
+    proxy = ModuleType("ucode.mcp_proxy_runtime")
+    proxy.main = lambda: None
+    monkeypatch.setitem(sys.modules, "ucode.cli", cli)
+    monkeypatch.setitem(sys.modules, "ucode.mcp_proxy_runtime", proxy)
+    monkeypatch.setattr(sys, "argv", ["ug", *argv])
+    monkeypatch.setattr(entrypoint.os, "getcwd", unreadable_cwd)
+    monkeypatch.setattr(entrypoint.os, "chdir", unexpected_chdir)
+
+    entrypoint.main()
