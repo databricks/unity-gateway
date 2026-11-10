@@ -675,6 +675,14 @@ class TestRenderOverlay:
         labels = [opt["label"] for opt in overlay["modelPicker"]["options"]]
         assert labels == ["Claude Opus 4.8", "GLM 5.3", "Kimi K3", "Databricks Custom Model"]
 
+    def test_static_mps_models_keep_ids_with_short_labels(self):
+        static = ["main.default.lilly-personal-anthropic.claude-haiku-5-5"]
+        overlay, _ = claude.render_overlay(WS, "s4", static_models=static)
+        assert overlay["availableModels"] == static
+        assert overlay["modelPicker"]["options"] == [
+            {"model": static[0], "label": "Claude Haiku 5.5"}
+        ]
+
 
 class TestRenderOverlayOtelTracing:
     def test_otel_tracing_off_by_default(self):
