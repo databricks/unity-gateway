@@ -3235,6 +3235,37 @@ def smart_router_describe_cmd() -> None:
     sys.stdout.write(json.dumps(asdict(smart_routing_v2.describe_routing())) + "\n")
 
 
+@app.command("smart-router-logs", hidden=True)
+def smart_router_logs_cmd(
+    session: Annotated[str, typer.Option("--session")],
+    decision: Annotated[str | None, typer.Option("--decision")] = None,
+) -> None:
+    """Print a session's recorded smart-routing decisions as JSON on stdout."""
+    from ucode.smart_routing import session_log
+
+    def emit(payload: dict[str, object]) -> None:
+        sys.stdout.write(json.dumps({"v": 1, **payload}) + "\n")
+
+    try:
+        records = session_log.read_decisions("claude", session)
+    except OSError as exc:
+        emit(
+            {
+                "error": f"cannot read session log at "
+                f"{session_log.session_log_path('claude', session)}: {exc.strerror or exc}"
+            }
+        )
+        raise typer.Exit(1) from exc
+    if decision is None:
+        emit({"decisions": [session_log.overview(record) for record in records]})
+        return
+    record = next((r for r in records if r.get("decision_id") == decision), None)
+    if record is None:
+        emit({"error": "decision not found"})
+        raise typer.Exit(1)
+    emit({"decision": record})
+
+
 @app.command("claude-router-hook", hidden=True)
 def claude_router_hook_cmd(
     event: str,
