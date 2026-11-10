@@ -143,7 +143,7 @@ export function register(on) {
         tui.wait_for(lambda s: "Select model" not in s, "the closed picker")
         return screen
 
-    selector = "Choose the main agent model for Auto."
+    selector = "Choose your main model"
     with launch("a") as a, launch("b") as b:
         a.boot(timeout=45)
         b.boot(timeout=45)

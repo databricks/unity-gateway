@@ -61,7 +61,7 @@ def test_ug_claude_auto_picker_routes_then_manual_model_disables_routing(live_se
         "--disable-databricks-ai-tools",
         timeout=240,
     )
-    selector = "Choose the main agent model for Auto."
+    selector = "Choose your main model"
     decisions = session.home / ".ucode/claude-smart-routing-decisions.jsonl"
 
     with AgentTerminal(

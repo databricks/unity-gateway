@@ -43,7 +43,7 @@ async function customAutoRow($: EngineInterface, auto: AutoPicker, model: string
 }
 
 async function chooseMainModel($: EngineInterface, auto: AutoPicker): Promise<void> {
-  await $.ui.open({ id: 'auto-main', title: 'Customize main agent model', focus: true, closeOnEscape: true, rows: 18 });
+  await $.ui.open({ id: 'auto-main', title: 'Choose your main model', focus: true, closeOnEscape: true, rows: 18 });
 }
 
 async function syncAutoRouting($: EngineInterface, options: PluginOptions, auto: AutoPicker): Promise<void> {
@@ -216,7 +216,8 @@ export function register(on: On, options: PluginOptions): void {
       if (e.requestId !== 'auto-main') return next(e);
       const { Box, Text, Select } = $.ui.resolve(e);
       return Box({ flexDirection: 'column', children: [
-        Text({ children: ['Choose the main agent model for Auto.'] }),
+        Text({ bold: true, children: ['Choose your main model'] }),
+        Text({ dimColor: true, children: ['Leads your session. Auto routes subagent tasks.'] }),
         Select({ key: 'auto-main', autoFocus: true, value: await mainModel($, auto),
           options: auto.models.map((row) => ({ value: row.model, label: row.label })),
           onSelect: async (value) => {
