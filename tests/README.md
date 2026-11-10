@@ -130,7 +130,14 @@ skills.json entries added after configure) and `test_agents_commands.py` cover d
 native installer, `agy mcp list` parsing, `ug antigravity`/`ug agy`, and
 `ug agents add antigravity`. These are unit/component checks. Automated live coverage is the
 eight journeys in `integration/` (blocking Linux CI lane, Databricks Hosted and the Gemini
-Enterprise MPS; see `integration/README.md`).
+Enterprise MPS; see `integration/README.md`). The MCP journey uses `system.ai.web_search`
+on pinned Gemini 3.8 Flash instead of SQL. It requires a completed call to the exact server,
+tool and query, and an official Databricks URL present in both its result and the final answer.
+Native file-reader guidance avoids shell-based tool discovery; permissions remain scoped to
+reads and that MCP server. Offline evidence checks reject denied actions, provider/tool errors,
+missing or unrelated calls, empty answers, misleading domains, and answers absent from the
+search output. These checks do not establish live reliability; SQL execution is no longer
+covered by the Antigravity MCP case.
 
 `ug configure --global` (machine-wide settings only) is covered by unit/component checks:
 `TestConfigureScopeFlags` in `test_cli.py` (the flag lasts one run, per-user-only agents are

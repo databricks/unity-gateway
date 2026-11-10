@@ -576,11 +576,19 @@ Antigravity name (`gemini-3.8-flash`), launched through the `ug agy` alias; that
 request, not the gateway's destination. Two journeys use the Gemini Enterprise MPS below: one
 launches `--provider` with `--model` for each listed target and requires that launch's requests to
 name it; the other picks External Models in `ug configure`, answers the start-model prompt an
-allow-all service gets (it declares no targets), and completes a bare launch on that model. The MCP case registers `system.ai.dbsql` with `ug mcp add` and requires a finished
-`call_mcp_tool` step and the query's `md5` in the answer. The skill case places a user skill in
+allow-all service gets (it declares no targets), and completes a bare launch on that model.
+The MCP case registers `system.ai.web_search` with `ug mcp add` and pins
+`system.ai.gemini-3-8-flash`, checking the model in Antigravity's request log. Its prompt points
+the native file reader at the server's generated tool definition and instructions, avoiding
+shell-based directory discovery that headless permissions deny. It requires a successful native
+`call_mcp_tool` for the exact server, `web_search` tool, and query, plus an official Databricks
+URL shared by the returned search output and final answer. Search ranking and wording are not
+asserted. This replaces the SQL digest task; SQL execution is no longer covered by this case.
+Denied actions, empty answers, tool errors, and provider errors still fail.
+The skill case places a user skill in
 `~/.agents/skills` and requires its code word. Headless Antigravity cannot answer permission
 prompts, so those two cases start from the user's own `permissions.allow` rules
-(`mcp(system-ai-dbsql/*)`, `read_file(*)`), which ug must leave unchanged. The TUI journey picks
+(`mcp(system-ai-web_search/*)`, `read_file(*)`), which ug must leave unchanged. The TUI journey picks
 Antigravity in `ug configure`'s agent picker, answers first-run color-scheme, terms, and folder
 trust screens through visible choices, and reads the answer from a finished agent-response step
 (type 15 on 1.4.9) in Antigravity's SQLite conversation store (`utils/agents/antigravity.py`); the
