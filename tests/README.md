@@ -197,6 +197,8 @@ not live agent, Windows, or gateway coverage.
 `test_smart_router_logs_cli.py` covers the hidden `ug smart-router-logs` JSON reader:
 overview shape/order, malformed/foreign-version/unknown-type line skipping, missing sessions,
 and `--decision` hit/miss; local component checks only, no pane or live-session coverage.
+Native mod tests cover pane rows, refresh, empty/error states and launch gating with a
+fake logs reader; they do not establish interactive pane or live-session coverage.
 
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
