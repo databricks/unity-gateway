@@ -1,5 +1,9 @@
 # Integration tests
 
+`../test_config_write_idempotence.py` covers unchanged launch-config writes at
+the component level, including preserved mtimes and error/dry-run behavior.
+It does not establish native-agent readiness or live filesystem-watcher latency.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,
