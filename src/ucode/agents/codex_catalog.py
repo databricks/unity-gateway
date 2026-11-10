@@ -17,6 +17,7 @@ from ucode.string_utils import model_picker_label
 from ucode.ui import print_warning
 
 _TIMEOUT_SECONDS = 30
+_GPT_FALLBACK_EFFORTS = ("low", "medium", "high")
 
 # Known hosted-model capabilities, following universe#2591694. These are not
 # universal non-GPT defaults: an arbitrary UC service need not support images,
@@ -80,13 +81,13 @@ def build_codex_catalog(
         if native is not None:
             model = copy.deepcopy(native)
         else:
-            if _model_key(name).startswith(("gpt-", "databricks-gpt-")):
-                if warn is not None:
-                    warn(
-                        f"Codex is missing metadata for managed GPT model '{name}', so UG is "
-                        "falling back to default metadata. Try updating Codex with "
-                        "`ug codex update`."
-                    )
+            missing_gpt = _model_key(name).startswith(("gpt-", "databricks-gpt-"))
+            if missing_gpt and warn is not None:
+                warn(
+                    f"Codex is missing metadata for managed GPT model '{name}', so UG is "
+                    "falling back to default metadata. Try updating Codex with "
+                    "`ug codex update`."
+                )
             baseline = next((m for m in bundled_models if m.get("tool_mode") is None), None)
             if baseline is None:
                 raise RuntimeError(
@@ -95,6 +96,14 @@ def build_codex_catalog(
                 )
             model = copy.deepcopy(baseline)
             model.update(copy.deepcopy(_HOSTED_DEFAULTS))
+            if missing_gpt:
+                model.update(
+                    default_reasoning_level="medium",
+                    supported_reasoning_levels=[
+                        {"effort": effort, "description": f"{effort.capitalize()} reasoning"}
+                        for effort in _GPT_FALLBACK_EFFORTS
+                    ],
+                )
             capabilities = _HOSTED_CAPABILITIES.get(name.removeprefix("system.ai."))
             if capabilities:
                 modalities, efforts = capabilities

@@ -92,7 +92,12 @@ def test_missing_gpt_uses_generic_compatibility_metadata(bundled, name):
     assert model["tool_mode"] is None
     assert model["input_modalities"] == ["text"]
     assert model["context_window"] == 32768
-    assert model["default_reasoning_level"] == "none"
+    assert model["default_reasoning_level"] == "medium"
+    assert model["supported_reasoning_levels"] == [
+        {"effort": "low", "description": "Low reasoning"},
+        {"effort": "medium", "description": "Medium reasoning"},
+        {"effort": "high", "description": "High reasoning"},
+    ]
     assert warnings == [
         f"Codex is missing metadata for managed GPT model '{name}', so UG is falling "
         "back to default metadata. Try updating Codex with `ug codex update`."
@@ -100,12 +105,19 @@ def test_missing_gpt_uses_generic_compatibility_metadata(bundled, name):
 
 
 def test_missing_managed_gpt_keeps_hidden_native_alias(bundled):
-    models = catalog.build_codex_catalog(bundled, ["system.ai.gpt-99"])["models"]
+    models = catalog.build_codex_catalog(bundled, ["system.ai.gpt-6-1-sol"])["models"]
 
     assert [(model["slug"], model["visibility"]) for model in models] == [
-        ("system.ai.gpt-99", "list"),
-        ("gpt-99", "hide"),
+        ("system.ai.gpt-6-1-sol", "list"),
+        ("gpt-6.1-sol", "hide"),
     ]
+    assert models[1]["default_reasoning_level"] == "medium"
+    assert models[1]["supported_reasoning_levels"] == [
+        {"effort": "low", "description": "Low reasoning"},
+        {"effort": "medium", "description": "Medium reasoning"},
+        {"effort": "high", "description": "High reasoning"},
+    ]
+    assert models[1]["supported_reasoning_levels"] is not models[0]["supported_reasoning_levels"]
 
 
 def test_legacy_gpt_alias_uses_native_metadata(bundled):
@@ -126,6 +138,9 @@ def test_generic_non_gpt_uses_conservative_ordinary_tool_defaults(bundled):
     assert first["input_modalities"] == ["text"]
     assert first["context_window"] == first["max_context_window"] == 32768
     assert first["default_reasoning_level"] == "none"
+    assert first["supported_reasoning_levels"] == [
+        {"effort": "none", "description": "Default model behavior"}
+    ]
     assert first["default_reasoning_summary"] == "none"
     assert first["supports_search_tool"] is False
     assert first["use_responses_lite"] is False
