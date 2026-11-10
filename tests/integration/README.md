@@ -654,6 +654,29 @@ revert journey checks the user's own skills.json (including an entry added after
 MCP server survive `ug revert`. Not covered: UC skill download into the declared directory, a
 TUI `/model` switch, and Windows (no Antigravity gateway build).
 
+VS Code Copilot Chat has three live journeys in `test_ug_configure_copilot_vscode.py`. VS Code has
+no ug launch command: `ug configure --agents copilot` installs ug's extension when `code` is on
+PATH. The configure journey runs it twice beside a developer's own `settings.json`, checks VS
+Code's `code --list-extensions` and the installed extension's `ug-config.json` (workspace, sign-in
+command, the Claude and GPT test models on the Anthropic Messages and Responses wires), checks no
+bearer is on disk, then requires `ug revert` to remove the extension and leave the settings file
+byte-identical. The two chat journeys launch the pinned VS Code on a private Xvfb display with
+its DevTools port open, and Playwright reads and clicks the real window (`utils/vscode.py`).
+Nothing is seeded: each journey answers the first-launch onboarding with "Continue without Signing
+In", closes the Welcome editor, trusts the folder from the model picker, enables the bundled
+Copilot Chat with the picker's "Add Models...", and picks a model by its label in the picker.
+Every step acts on one recognized screen; an unknown screen, an unexpected dialog, or a tool
+confirmation fails. The Claude journey asks Agent mode to read a `FileTask` file; the switch journey
+does that on Claude, then picks the GPT test model and reads a second file. Configure points ug at a
+recording forwarder, so each turn's requests must reach the expected route
+(`/ai-gateway/anthropic/v1/messages`, `/ai-gateway/mlflow/v1/responses`) for the picked model, with
+ug's User-Agent naming the Copilot Chat version bundled in that VS Code, and get a non-empty HTTP
+200. The answer must contain the file's value, and VS Code's saved chat
+(`utils/agents/vscode.py`; VS Code saves it about a minute after launch) must record the
+Databricks model, a tool call, the value and no error. Not covered: GitHub sign-in or a Copilot
+seat, Copilot Chat's other agent harnesses, managed config, Model Provider Services, MCP, OTel,
+Windows, and macOS.
+
 The managed saved-config journey installs `/etc/unitygateway/managed-settings.json` through real
 configure, checks root ownership and readable modes, and checks the user-owned
 `~/.ucode/refresh_ts.json` record has a `published` outcome and no timestamp. Two launches then
@@ -736,6 +759,13 @@ records its URL and SHA-512 in
 `versions.json`, and sets `AGY_CLI_DISABLE_AUTO_UPDATE=true` in the runner and isolated test
 sessions. Antigravity requires the literal `true`; `1` leaves background updates enabled
 ([upstream documentation](https://antigravity.google/docs/cli/troubleshooting/#resolve-self-updater-locks-and-failures)).
+VS Code is not on npm either: pass `--vscode-version` (for example `1.144.0`) together with
+`--copilot-version`, since ug sets VS Code up as part of the Copilot setup and would otherwise
+install an unpinned Copilot CLI. The runner downloads the Linux x64 archive from VS Code's update
+service, checks it against the SHA-256 pinned in `VSCODE_SHA256` (or `--vscode-sha256`), extracts
+it whole, puts its `bin/code` on the test PATH, and records the URL, digest, and the bundled
+Copilot Chat version in `versions.json`. Pinning VS Code pins Copilot Chat. The chat journeys need
+`Xvfb` on PATH and install Playwright into the test environment; they use no Playwright browser.
 The runner still fails if an agent's version changes during the suite.
 `../test_integration_contract.py` checks that isolated sessions use this documented value,
 including when the caller supplied `1`; this component check does not run the native updater.
@@ -985,6 +1015,7 @@ test_ug_copilot_mcp.py                  # Copilot MCP: ug mcp add, tool call, ug
 test_ug_copilot_tracing.py              # Copilot CLI OTLP export through the session proxy reaches the configured trace table
 test_ug_antigravity_headless.py         # Antigravity via ug's proxy: file task, --model (ug agy), Gemini MPS targets, MCP SQL tool, skill dir
 test_ug_configure_antigravity.py        # Antigravity: configure picker + TUI task + reopen; External Models picker; revert keeps user files
+test_ug_configure_copilot_vscode.py     # VS Code: extension configure/revert; Copilot Chat file task on Claude; Claude -> GPT switch, all in the real window
 test_ug_codex_tracing.py                # Codex OTLP export reaches the configured trace table
 test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
@@ -1293,7 +1324,7 @@ cases instead complete real file tasks through `--workspace` and `--model-locati
 journeys check setup and launch with existing services, without inference.
 
 There are **88 live cases** (including 12 marked TUI journeys) and **8 installation
-checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds eighteen live cases; selecting Antigravity adds eight live cases (one TUI). One
+checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds eighteen live cases; selecting Antigravity adds eight live cases (one TUI); selecting VS Code adds three live cases (two drive its window). One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
 Claude task. A further **44 `managed_fixture` cases** (twelve of them also `live`) run on the
 managed workspace with a checked-in JSON CodingAgentConfig from `tests/fixtures/managed_config/`
@@ -1555,6 +1586,9 @@ A non-blocking **Copilot** job (`live and copilot`, seventeen cases) runs on Lin
 same way and is likewise outside `cujs` until it is stable.
 A blocking **Antigravity** job (`live and antigravity`, eight cases) runs on Linux only with
 the pinned `ANTIGRAVITY_BUILD`; it is part of the `cujs` gate.
+A non-blocking **VS Code** job (`live and vscode`, three cases) runs on Linux only with the pinned
+`VSCODE_VERSION` and `COPILOT_VERSION`, installs `xvfb` first, and is outside `cujs` until it is
+stable.
 
 Each lane installs only the agent CLIs it needs (one, except the managed OpenCode lane's
 three), once, and runs all its configure, headless,

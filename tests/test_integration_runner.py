@@ -232,6 +232,106 @@ def test_antigravity_has_no_windows_build():
         runner.antigravity_archive_url("1.4.9-4962164969177088", "win32", "AMD64")
 
 
+def test_vscode_version_is_exact_and_needs_a_pinned_copilot():
+    args = runner.arguments(
+        ["--copilot-version", "1.0.91", "--vscode-version", "1.144.0", "--installation-only"],
+        environment={},
+    )
+    assert args.vscode_version == "1.144.0"
+    for version in ("1.144", "latest", "v1.144.0", "1.144.0-insider"):
+        with pytest.raises(SystemExit):
+            runner.arguments(
+                ["--copilot-version", "1.0.91", "--vscode-version", version, "--installation-only"],
+                environment={},
+            )
+    with pytest.raises(SystemExit):
+        runner.arguments(["--vscode-version", "1.144.0", "--installation-only"], environment={})
+
+
+def test_vscode_has_no_headless_journey():
+    with pytest.raises(SystemExit):
+        runner.arguments(
+            ["--copilot-version", "1.0.91", "--vscode-version", "1.144.0", "--headless-only"],
+            environment={"DATABRICKS_BEARER": "bearer", "UCODE_TEST_WORKSPACE": "https://x"},
+        )
+
+
+def test_vscode_archive_url_matches_the_update_service_layout():
+    assert runner.vscode_archive_url("1.144.0", "linux", "x86_64") == (
+        "https://update.code.visualstudio.com/1.144.0/linux-x64/stable"
+    )
+    for system, machine in (("win32", "AMD64"), ("darwin", "arm64"), ("linux", "aarch64")):
+        with pytest.raises(RuntimeError, match="No pinned VS Code archive"):
+            runner.vscode_archive_url("1.144.0", system, machine)
+
+
+def _vscode_archive(*, copilot=True):
+    import io
+    import json
+    import tarfile
+
+    buffer = io.BytesIO()
+    files = {"VSCode-linux-x64/bin/code": b"#!/bin/sh\necho 1.144.0\n"}
+    if copilot:
+        files["VSCode-linux-x64/resources/app/extensions/copilot/package.json"] = json.dumps(
+            {"version": "0.72.0"}
+        ).encode()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as bundle:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mode = 0o755
+            bundle.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def test_vscode_install_checks_the_pinned_sha256_and_reports_copilot_chat(tmp_path, monkeypatch):
+    import hashlib
+
+    payload = _vscode_archive()
+    _serve(monkeypatch, payload)
+    digest = hashlib.sha256(payload).hexdigest()
+
+    installed = runner.install_vscode("1.144.0", tmp_path / "vscode", sha256=digest)
+
+    assert installed["sha256"] == digest
+    assert installed["copilot_chat"] == "0.72.0"
+    assert installed["path"] == str(tmp_path / "vscode/VSCode-linux-x64/bin/code")
+    assert not (tmp_path / "vscode/vscode.tar.gz").exists()
+
+
+def test_vscode_install_rejects_a_swapped_archive(tmp_path, monkeypatch):
+    # The real pinned digest cannot match this stand-in archive.
+    _serve(monkeypatch, _vscode_archive())
+
+    with pytest.raises(RuntimeError, match="expected 17b72a7e"):
+        runner.install_vscode("1.144.0", tmp_path / "vscode")
+
+    assert not (tmp_path / "vscode/VSCode-linux-x64").exists()
+
+
+def test_vscode_install_requires_the_bundled_copilot_chat(tmp_path, monkeypatch):
+    import hashlib
+
+    payload = _vscode_archive(copilot=False)
+    _serve(monkeypatch, payload)
+
+    with pytest.raises(RuntimeError, match="bundles no Copilot Chat"):
+        runner.install_vscode(
+            "1.144.0", tmp_path / "vscode", sha256=hashlib.sha256(payload).hexdigest()
+        )
+
+
+def test_vscode_unpinned_version_needs_an_explicit_sha256():
+    with pytest.raises(RuntimeError, match="--vscode-sha256"):
+        runner.vscode_expected_sha256("1.145.0", "linux", "x86_64")
+    assert runner.vscode_expected_sha256("1.145.0", "linux", "x86_64", "AB" * 32) == "ab" * 32
+
+
+def test_vscode_version_output_is_its_first_line():
+    assert runner.agent_version_output("vscode", "1.144.0\n2c33b50b\nx64\n") == "1.144.0"
+
+
 def test_bedrock_defaults_use_service_credential_fixtures_and_frontier_models():
     args = runner.arguments(["--claude-version", "2.1.290", "--installation-only"], environment={})
 

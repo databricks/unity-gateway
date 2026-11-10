@@ -38,6 +38,10 @@ on:
         description: Exact Antigravity CLI build, <version>-<build id> (Linux lane)
         default: 1.5.4-5037094733742080
         required: true
+      vscode_version:
+        description: Exact VS Code version, which pins its bundled Copilot Chat (non-blocking Linux lane)
+        default: 1.144.0
+        required: true
       dependency:
         description: Optional exact dependency for reproduction (e.g. tomlkit==0.14.0)
         default: ''
@@ -63,6 +67,7 @@ env:
   OPENCODE_VERSION: ${{ inputs.opencode_version || '1.18.31' }}
   COPILOT_VERSION: ${{ inputs.copilot_version || '1.0.91' }}
   ANTIGRAVITY_BUILD: ${{ inputs.antigravity_build || '1.5.4-5037094733742080' }}
+  VSCODE_VERSION: ${{ inputs.vscode_version || '1.144.0' }}
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
   CLAUDE_DESKTOP_WINDOWS_URL: https://downloads.claude.ai/releases/win32/x64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.msix
   CLAUDE_DESKTOP_WINDOWS_SHA256: D737861F0DA3175C6B663172AF0E602494CD99FF1B350D57DAE5910A49519FC9
@@ -392,6 +397,9 @@ jobs:
         run: |
           test -f "$RUNNER_TEMP/.bin/databricks.exe"
           cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
+      - name: Install a virtual display for VS Code
+        if: ${{ env.AGENT == 'vscode' }}
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb
       - name: Run the selected live cases against the e2e workspace
         shell: bash
         run: |
@@ -401,6 +409,7 @@ jobs:
             opencode) args=(--opencode-version "$OPENCODE_VERSION") ;;
             copilot) args=(--copilot-version "$COPILOT_VERSION") ;;
             antigravity) args=(--antigravity-build "$ANTIGRAVITY_BUILD") ;;
+            vscode) args=(--copilot-version "$COPILOT_VERSION" --vscode-version "$VSCODE_VERSION") ;;
           esac
           if [[ -n "$DEPENDENCY" ]]; then
             args+=(--dependency "$DEPENDENCY")
@@ -701,6 +710,25 @@ jobs:
       AGENT: antigravity
       TEST_MARKER: live and antigravity
       ARTIFACT_NAME: integration-full-antigravity-ubuntu-22.04
+    steps: *live-steps
+
+  # Non-blocking pending stabilization, like Copilot: continue-on-error and absent from the cujs
+  # `needs`. Linux only: ug's runner pins the Linux VS Code archive, and the tests drive its window
+  # on a private Xvfb display.
+  vscode:
+    name: Full journeys · VS Code Copilot Chat · Linux (non-blocking)
+    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    needs: workspace
+    continue-on-error: true
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: vscode
+      TEST_MARKER: live and vscode
+      ARTIFACT_NAME: integration-full-vscode-ubuntu-22.04
     steps: *live-steps
 
   # Non-blocking pending stabilization: continue-on-error and absent from the cujs `needs`.

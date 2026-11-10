@@ -600,6 +600,7 @@ SKIPPED_ON_FORK_PRS = {
     "opencode",
     "copilot",
     "antigravity",
+    "vscode",
     "managed",
     "managed-opencode",
     "codex-desktop-macos",
@@ -932,7 +933,11 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
                 marks = module_marks | _markers(node.decorator_list)
                 if marks & {"live", "managed_fixture", "workspace_switch"}:
                     assert (
-                        len(marks & {"claude", "codex", "opencode", "copilot", "antigravity"}) == 1
+                        len(
+                            marks
+                            & {"claude", "codex", "opencode", "copilot", "antigravity", "vscode"}
+                        )
+                        == 1
                     ), node.name
 
 
@@ -1165,3 +1170,25 @@ def test_required_e2e_enforces_integration_result(event, integration_result, pas
         check=False,
     )
     assert (result.returncode == 0) is passes, result.stderr
+
+
+def test_vscode_lane_pins_vscode_and_copilot_and_is_non_blocking():
+    workflow = WORKFLOW.read_text()
+    jobs = _integration_jobs()
+    job = jobs["vscode"]
+    assert "  VSCODE_VERSION: ${{ inputs.vscode_version || '1.144.0' }}" in workflow
+    assert (
+        'vscode) args=(--copilot-version "$COPILOT_VERSION" --vscode-version "$VSCODE_VERSION") ;;'
+        in workflow
+    )
+    assert "runs-on: ubuntu-22.04" in job
+    assert "continue-on-error: true" in job
+    assert "AGENT: vscode" in job
+    assert "TEST_MARKER: live and vscode" in job
+    assert (
+        "      - name: Install a virtual display for VS Code\n"
+        "        if: ${{ env.AGENT == 'vscode' }}\n"
+        "        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb"
+    ) in workflow
+    gate_needs = re.search(r"(?m)^    needs: \[(.*)\]$", jobs["cujs"]).group(1)
+    assert "vscode" not in [need.strip() for need in gate_needs.split(",")]
