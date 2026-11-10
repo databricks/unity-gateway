@@ -571,7 +571,7 @@ from Copilot's own `~/.copilot/session-state/*/events.jsonl` (`utils/agents/copi
 `test_ug_copilot_model_location.py` launches Copilot from fresh state with `--model-location` on the
 model-discovery schema and completes a file task on its Claude-compatible model service.
 `test_ug_copilot_providers.py` runs Copilot through the MPS fixtures below: a file task on the
-Anthropic service's model, on the OpenAI, Azure OpenAI and Microsoft Foundry services' `gpt-5-nano`, and
+Anthropic service's model, on the OpenAI, Azure OpenAI and Microsoft Foundry services' `gpt-6-luna`, and
 on a named model of the Bedrock allow-all service; launching on the relayed service fails before Copilot starts.
 `test_ug_copilot_mcp.py` adds `system.ai.web_search` with `ug mcp add --agents copilot` over a
 developer's own disabled server, checks Copilot's `copilot mcp list --json` and `ug mcp list`, runs
@@ -679,6 +679,8 @@ required; floating `latest`, caret, and tilde versions are rejected. Hosted prov
 exercise explicit model arguments use a real `system.ai` model already discovered
 by `ug configure`, recorded in that case's `model.json`. Optional `--claude-model`
 `--codex-model` and `--opencode-model` overrides reproduce a particular model-related failure.
+Explicit Codex cases prefer `system.ai.gpt-6-luna` on both Linux and Windows; Copilot's
+GPT file tasks use the same model. The Codex and Copilot tracing fixtures also select it.
 OpenCode is opt-in: pass `--opencode-version` (for example `1.18.31`) to install and select it.
 Copilot CLI is opt-in the same way: pass `--copilot-version` (for example `1.0.91`).
 Antigravity CLI is not on npm: pass `--antigravity-build` with the exact `<version>-<build id>`
@@ -1103,7 +1105,7 @@ MPS CUJs select the existing services already used by e2e:
 - Codex (custom Azure OpenAI): `main.ucode.ci_custom_azure_openai_mps` declares GPT deployments
   on `openai/v1/responses`. `test_ug_configure_codex_custom_azure_openai_mps` selects the service
   in the real configure picker, then launches Codex without `--provider` and completes a TUI
-  file-reading task on `gpt-5-nano`. Override with `--codex-custom-provider` and
+  file-reading task on `gpt-6-luna`. Override with `--codex-custom-provider` and
   `--codex-custom-provider-model`.
   Both journeys assert the saved provider, completed-turn model, and normal exit, and run
   in their full agent lanes on Linux and Windows. Codex sets its MPS header at launch;
@@ -1115,11 +1117,11 @@ MPS CUJs select the existing services already used by e2e:
 - Claude (relayed hybrid): `main.ucode.ci_e2e_anthropic_relay_mps`, which also
   requires `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) so the relayed
   launch runs headless instead of opening a browser login.
-- Codex: `main.ucode.ci_openai_mps`, using its allowed `gpt-5-nano` model.
+- Codex and Copilot (OpenAI): `main.ucode.ci_openai_mps`, using its allowed `gpt-6-luna` model.
 - Antigravity CLI (Gemini Enterprise): `main.ucode.ci-gemini-mps`, using its `gemini-3.8-flash`
   target (`--antigravity-provider`, `--antigravity-provider-models`).
-- Codex and Copilot (Azure OpenAI): `main.ucode.ci_azure_openai_mps`, using its `gpt-5-nano` model.
-- Codex and Copilot (Microsoft Foundry): `main.ucode.ci_foundry_mps`, using its `gpt-5-nano` model.
+- Codex and Copilot (Azure OpenAI): `main.ucode.ci_azure_openai_mps`, using its `gpt-6-luna` model.
+- Codex and Copilot (Microsoft Foundry): `main.ucode.ci_foundry_mps`, using its `gpt-6-luna` model.
 
 Use `--claude-provider` / `--claude-relayed-provider` / `--codex-provider` to
 reproduce another existing service. Use `--claude-provider-model` /
@@ -1183,6 +1185,8 @@ the Claude service. Codex's app-server catalog must exactly match a separate rea
 Codex model-list request with the parent-schema header, including the dedicated Codex
 service and no out-of-schema models. A Claude service is included only if that API
 advertises it as compatible. Extra, missing, or duplicate app-server entries fail.
+Codex provider discovery also compares the full app-server list with an independent
+provider-scoped model-list request and requires `--codex-provider-model` in that catalog.
 Claude provider discovery still requires the exact `--claude-provider-model` ID
 in its cache. For the default `claude-haiku-4-5-20251001` fixture, Claude can
 deduplicate it into the native Haiku picker row (Haiku 4.5), while an explicit
