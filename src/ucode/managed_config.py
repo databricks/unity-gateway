@@ -103,7 +103,7 @@ class AgentModels:
     """Model configuration for an agent with mutually-exclusive source selection.
 
     Reads the default model and family slots from default_models map, and selects
-    exactly one of: model_provider_service, unity_catalog_location, or model_services.
+    exactly one of: sources, model_provider_service, unity_catalog_location, or model_services.
     """
 
     default_model: str | None = None
@@ -111,6 +111,7 @@ class AgentModels:
     model_provider_service: str | None = None
     unity_catalog_location: str | None = None
     model_services: list[str] | None = None
+    sources: list[str] | None = None  # 3-part model services and/or 4-part MPS model refs
 
     @classmethod
     def from_wire(cls, default_models: object, models_obj: object) -> AgentModels | None:
@@ -129,9 +130,9 @@ class AgentModels:
         }
         # The server validates that at most one model source is set. `sources` may mix 3-part model
         # services and 4-part MPS model refs, used as-is.
-        provider = location = model_services = None
+        provider = location = model_services = sources = None
         if "sources" in models_dict:
-            model_services = _str_list(models_dict["sources"]) or None
+            sources = _str_list(models_dict["sources"]) or None
         elif "model_provider_service" in models_dict:
             provider = _str(models_dict["model_provider_service"])
         elif "unity_catalog_location" in models_dict:
@@ -139,7 +140,7 @@ class AgentModels:
         elif "model_services" in models_dict:
             model_services = _str_list(models_dict["model_services"]) or None
 
-        if not (overall_default or slots or provider or location or model_services):
+        if not (overall_default or slots or provider or location or model_services or sources):
             return None
         return cls(
             default_model=overall_default,
@@ -147,6 +148,7 @@ class AgentModels:
             model_provider_service=provider,
             unity_catalog_location=location,
             model_services=model_services,
+            sources=sources,
         )
 
     def to_internal(self) -> dict | None:
@@ -156,7 +158,9 @@ class AgentModels:
             result["default_model"] = self.default_model
         if self.family_slots:
             result["default_models_by_model_family"] = self.family_slots
-        if self.model_provider_service:
+        if self.sources:
+            result["sources"] = self.sources
+        elif self.model_provider_service:
             result["model_provider_service"] = self.model_provider_service
         elif self.unity_catalog_location:
             result["unity_catalog_location"] = self.unity_catalog_location

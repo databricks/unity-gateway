@@ -222,16 +222,18 @@ def managed_unity_catalog_location(managed: dict, tool: str) -> str | None:
 
 
 def managed_static_models(managed: dict, tool: str) -> list[str] | None:
-    """The explicit model allow-list (``model_config.model_services``) the config sets for ``tool``.
+    """The explicit model allow-list (``model_config.sources`` or ``model_services``) for ``tool``.
 
     Static curation: the launch path writes exactly these into the agent's picker allow-list
     (Claude's ``availableModels``/``modelPicker``, Codex's ``model_catalog_json``) instead of
     discovering the workspace's models. The order is the admin's; empty and non-string entries are
-    dropped. None when unset."""
-    model_services = _agent_model_config(managed, tool).get("model_services")
-    if isinstance(model_services, list):
-        listed = [model for model in (_str(item) for item in model_services) if model]
-        return listed or None
+    dropped. None when unset. ``sources`` entries may be 4-part MPS model refs, used as-is."""
+    model_config = _agent_model_config(managed, tool)
+    for key in ("sources", "model_services"):
+        models = model_config.get(key)
+        if isinstance(models, list):
+            listed = [model for model in (_str(item) for item in models) if model]
+            return listed or None
     return None
 
 
