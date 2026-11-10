@@ -357,6 +357,32 @@ class TestModelOptions:
             "system.ai.glm-5-3",
         ]
 
+    def test_only_pi_sees_mlflow_only_models(self):
+        # Discovery's oss_models also carry gpt-oss, Qwen, Llama and Gemma, which only Pi serves.
+        state = {
+            "codex_models": ["system.ai.gpt-5-6", "system.ai.grok-4-7"],
+            "oss_models": [
+                "system.ai.glm-5-2",
+                "system.ai.gpt-oss-120b",
+                "system.ai.qwen35-122b-a10b",
+            ],
+        }
+        assert model_options_for_agent("codex", state) == [
+            "system.ai.gpt-5-6",
+            "system.ai.grok-4-7",
+            "system.ai.glm-5-2",
+        ]
+        assert "system.ai.qwen35-122b-a10b" not in model_options_for_agent("opencode", state)
+        assert model_options_for_agent("pi", state) == [
+            "system.ai.gpt-5-6",
+            "system.ai.grok-4-7",
+            "system.ai.glm-5-2",
+            "system.ai.gpt-oss-120b",
+            "system.ai.qwen35-122b-a10b",
+        ]
+        # Copilot's own classifier keeps Grok out.
+        assert model_options_for_agent("copilot", state) == ["system.ai.gpt-5-6"]
+
     def test_empty_state_yields_no_options(self):
         assert model_options_for_agent("claude", {}) == []
 

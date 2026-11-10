@@ -6,7 +6,7 @@ import copy
 import shlex
 import subprocess
 
-from ucode.databricks import build_auth_token_argv
+from ucode.databricks import build_auth_token_argv, canonical_model_name, is_oss_family_model
 from ucode.smart_routing import hooks
 from ucode.workspace import workspace_id_args
 
@@ -14,12 +14,26 @@ ROUTING_HOOK_COMMAND_MARKER = "codex-router-hook"
 
 
 def routing_models(state: dict) -> list[str]:
-    """Return the configured model services compatible with Codex routing."""
+    """Return the configured model services compatible with Codex routing.
+
+    These are the Responses models and the OSS families Codex serves. The other MLflow chat
+    models in ``oss_models`` (gpt-oss, Qwen, Llama, Gemma) fail on Codex's Responses route, and
+    so does gpt-oss in ``codex_models`` saved by earlier versions."""
     models: list[str] = []
     for key in ("codex_models", "oss_models"):
         values = state.get(key)
         if isinstance(values, list):
-            models.extend(value for value in values if isinstance(value, str) and value)
+            models.extend(
+                value
+                for value in values
+                if isinstance(value, str)
+                and value
+                and (
+                    is_oss_family_model(value)
+                    if key == "oss_models"
+                    else not canonical_model_name(value).startswith("gpt-oss")
+                )
+            )
     return list(dict.fromkeys(models))
 
 

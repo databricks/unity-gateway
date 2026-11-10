@@ -659,11 +659,32 @@ class TestManagedUnservableModels:
     def _managed(tool, models):
         return {"enabled_agents": {tool: {"model_config": {"models": models}}}}
 
-    def test_pi_oss_only_is_unservable(self):
-        # Pi has no OSS provider block.
-        assert managed_unservable_models(
-            self._managed("pi", ["system.ai.kimi-k2-7-code"]), "pi"
-        ) == ["system.ai.kimi-k2-7-code"]
+    def test_pi_serves_oss_models_through_its_mlflow_provider(self):
+        managed = self._managed("pi", ["system.ai.kimi-k2-7-code"])
+        assert managed_unservable_models(managed, "pi") == []
+
+    def test_pi_unknown_family_only_is_unservable(self):
+        managed = self._managed("pi", ["system.ai.qwen3-embedding-0-6b", "mystery-model"])
+        assert managed_unservable_models(managed, "pi") == [
+            "system.ai.qwen3-embedding-0-6b",
+            "mystery-model",
+        ]
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "system.ai.qwen35-122b-a10b",
+            "system.ai.meta-llama-3-3-70b-instruct",
+            "system.ai.gemma-3-12b",
+            "system.ai.gpt-oss-120b",
+        ],
+    )
+    def test_pi_serves_the_other_mlflow_chat_models(self, model):
+        assert managed_unservable_models(self._managed("pi", [model]), "pi") == []
+
+    def test_opencode_still_has_no_provider_for_qwen(self):
+        managed = self._managed("opencode", ["system.ai.qwen35-122b-a10b"])
+        assert managed_unservable_models(managed, "opencode") == ["system.ai.qwen35-122b-a10b"]
 
     def test_opencode_gpt_only_is_unservable(self):
         # OpenCode has no OpenAI provider block.
@@ -673,7 +694,7 @@ class TestManagedUnservableModels:
     @pytest.mark.parametrize(
         ("tool", "models"),
         [
-            ("pi", ["system.ai.kimi-k2-7-code", "system.ai.claude-opus-4-8"]),
+            ("pi", ["system.ai.qwen3-embedding-0-6b", "system.ai.claude-opus-4-8"]),
             ("opencode", ["system.ai.gpt-5", "system.ai.claude-opus-4-8"]),
         ],
     )

@@ -93,6 +93,7 @@ from ucode.databricks import (
     get_databricks_token,
     install_databricks_cli,
     is_model_provider_feature_unavailable,
+    is_oss_family_model,
     list_anthropic_model_catalog,
     list_profile_entries,
     list_tool_provider_services,
@@ -104,6 +105,7 @@ from ucode.databricks import (
     resolve_provider_launch_model,
     resolve_provider_service,
     run_databricks_login,
+    runs_web_search_tool,
     ug_binary,
 )
 from ucode.env import env_bool
@@ -262,7 +264,7 @@ _DISCOVERY_CONSUMERS: dict[str, tuple[str, ...]] = {
     "claude": ("claude", "opencode", "kilo", "copilot", "pi"),
     "codex": ("codex", "copilot", "pi"),
     "gemini": ("gemini", "opencode", "kilo", "pi", "antigravity"),
-    "oss": ("opencode", "kilo"),
+    "oss": ("opencode", "kilo", "pi"),
 }
 
 
@@ -782,8 +784,10 @@ def configure_shared_state(
         fetch_all or "codex" in tools or "claude" in tools or "copilot" in tools or "pi" in tools
     )
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
-    # configure must persist that discovered family too.
-    want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
+    # configure must persist that discovered family too. Pi serves them on its MLflow provider.
+    want_oss = (
+        fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools or "pi" in tools
+    )
     want_copilot = fetch_all or "copilot" in tools
 
     claude_reason: str | None = None
@@ -793,6 +797,7 @@ def configure_shared_state(
     copilot_reason: str | None = None
     copilot_models: list[copilot_agent.CopilotModel] | None = None
     claude_models = {}
+    all_claude_models: list[str] = []
     gemini_models = []
     codex_models = []
     oss_models = []
@@ -806,8 +811,7 @@ def configure_shared_state(
         if want_claude:
             with spinner("Fetching available models..."):
                 ws_models, _ = discover_codex_models(workspace, token)
-            if ws_models:
-                web_search_model = ws_models[0]
+            web_search_model = next((m for m in ws_models if runs_web_search_tool(m)), None)
     else:
         # UC-first, best-effort: one UC model-services call yields all families
         # as `system.ai.<model-name>` ids, bucketed by name. If a family comes
@@ -821,6 +825,13 @@ def configure_shared_state(
                 claude_models, claude_reason = ms_claude, ms_reason
                 if not claude_models:
                     claude_models, claude_reason = discover_claude_models(workspace, token)
+                # Every Claude version this run's UC listing found, for Pi's model picker. Without
+                # one, Pi lists the family models above.
+                all_claude_models = [
+                    entry.id
+                    for entry in cached_model_service_entries(workspace) or ()
+                    if "claude-" in entry.id.lower()
+                ]
             if want_gemini:
                 gemini_models, gemini_reason = ms_gemini, ms_reason
                 if not gemini_models:
@@ -842,8 +853,10 @@ def configure_shared_state(
             opencode_models["anthropic"] = list(claude_models.values())
         if gemini_models:
             opencode_models["gemini"] = gemini_models
-        if oss_models:
-            opencode_models["oss"] = oss_models
+        # OpenCode and Kilo serve only the OSS families validated for every agent.
+        opencode_oss = [m for m in oss_models if is_oss_family_model(m)]
+        if opencode_oss:
+            opencode_models["oss"] = opencode_oss
 
     if skip_model_discovery:
         # Don't clobber any previously-discovered Databricks model lists; provider
@@ -854,6 +867,10 @@ def configure_shared_state(
     else:
         if want_claude:
             state["claude_models"] = claude_models
+            if all_claude_models:
+                state["all_claude_models"] = all_claude_models
+            else:
+                state.pop("all_claude_models", None)
         if want_gemini:
             state["gemini_models"] = gemini_models
         if want_codex:
@@ -1690,6 +1707,7 @@ def _status_models(tool: str, state: dict) -> list[str]:
             _model_values(state.get("claude_models"))
             + _model_values(state.get("codex_models"))
             + _model_values(state.get("gemini_models"))
+            + _model_values(state.get("oss_models"))
         )
     else:
         models = []
@@ -1753,8 +1771,9 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
         opencode_models["anthropic"] = list(claude_models.values())
     if gemini_models:
         opencode_models["gemini"] = gemini_models
-    if oss_models:
-        opencode_models["oss"] = oss_models
+    opencode_oss = [m for m in oss_models if is_oss_family_model(m)]
+    if opencode_oss:
+        opencode_models["oss"] = opencode_oss
     live["opencode_models"] = opencode_models
     if "copilot" in tools:
         copilot_models = copilot_agent.catalog_from_listings(

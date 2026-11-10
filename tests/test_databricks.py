@@ -552,6 +552,125 @@ class TestModelTokenLimits:
         assert db_mod.model_token_limits("system.ai.kimi-k2-7-code") is None
 
 
+class TestCanonicalModelName:
+    @pytest.mark.parametrize(
+        ("model_id", "expected"),
+        [
+            ("system.ai.gpt-5.5", "gpt-5-5"),
+            ("gpt-6.1-sol", "gpt-6-1-sol"),
+            ("databricks-gemini-3-1-pro", "gemini-3-1-pro"),
+            ("system.ai.claude-opus-4-8[1m]", "claude-opus-4-8"),
+        ],
+    )
+    def test_strips_prefixes_and_dashes_versions(self, model_id, expected):
+        assert db_mod.canonical_model_name(model_id) == expected
+
+
+class TestClaudeModelName:
+    @pytest.mark.parametrize(
+        ("model_id", "expected"),
+        [
+            ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4-5"),
+            ("system.ai.claude-opus-4-8[1m]", "claude-opus-4-8"),
+            ("system.ai.gpt-5", "gpt-5"),
+        ],
+    )
+    def test_strips_catalog_and_release_suffix(self, model_id, expected):
+        assert db_mod.claude_model_name(model_id) == expected
+
+    @pytest.mark.parametrize(
+        ("model_id", "tokens"),
+        [
+            ("claude-opus-4.6", (1_000_000, 128_000)),
+            ("databricks-claude-fable-5-1", (1_000_000, 128_000)),
+            ("claude-sonnet-4-5-20250929", (200_000, 32_000)),
+            ("claude-sonnet-4-5-thinking", (200_000, 32_000)),
+        ],
+    )
+    def test_token_limits_by_name(self, model_id, tokens):
+        assert db_mod.claude_token_limits(model_id) == tokens
+
+
+class TestGptModelTokenLimits:
+    @pytest.mark.parametrize(
+        ("model_id", "context", "output"),
+        [
+            ("system.ai.gpt-6-sol", 1_050_000, 128_000),
+            ("system.ai.gpt-6-1-terra", 1_050_000, 128_000),
+            # A new GPT-6 variant inherits the family's window.
+            ("system.ai.gpt-6-nova", 1_050_000, 128_000),
+            ("system.ai.gpt-5-6-luna", 1_050_000, 128_000),
+            ("gpt-5.5-pro", 1_050_000, 128_000),
+            ("system.ai.gpt-5-5", 272_000, 128_000),
+            ("system.ai.gpt-5-4", 272_000, 128_000),
+            ("system.ai.gpt-5-4-nano", 400_000, 128_000),
+            ("databricks-gpt-5-mini", 400_000, 128_000),
+            ("system.ai.gpt-5-3-codex", 400_000, 128_000),
+            # Spark is a smaller model than the rest of GPT-5.3 Codex.
+            ("system.ai.gpt-5-3-codex-spark", 128_000, 32_000),
+            ("system.ai.gpt-4o", 128_000, 16_384),
+        ],
+    )
+    def test_limits_are_model_specific(self, model_id, context, output):
+        assert db_mod.gpt_model_token_limits(model_id) == {"context": context, "output": output}
+
+    def test_unknown_model_gets_the_conservative_fallback(self):
+        assert db_mod.gpt_model_token_limits("codex-mini") == {"context": 128_000, "output": 16_384}
+
+
+class TestGeminiModelTokenLimits:
+    def test_text_models_get_the_1m_window(self):
+        assert db_mod.gemini_model_token_limits("system.ai.gemini-3-1-pro") == {
+            "context": 1_048_576,
+            "output": 65_536,
+        }
+
+    def test_image_generation_models_get_the_smaller_window(self):
+        assert db_mod.gemini_model_token_limits("system.ai.gemini-3-1-flash-image") == {
+            "context": 65_536,
+            "output": 32_768,
+        }
+
+
+class TestOssModelTokenLimits:
+    @pytest.mark.parametrize(
+        ("model_id", "context", "output"),
+        [
+            ("system.ai.glm-5-3", 1_048_576, 131_072),
+            ("databricks-glm-5-3-flash", 1_048_576, 131_072),
+            ("system.ai.glm-5.2", 1_000_000, 131_072),
+            ("system.ai.kimi-k3", 1_000_000, 131_072),
+            ("system.ai.kimi-k3-1-pro", 1_000_000, 131_072),
+            ("system.ai.gpt-oss-120b", 128_000, 25_000),
+            ("system.ai.gpt-oss-20b", 128_000, 25_000),
+            ("system.ai.qwen35-122b-a10b", 128_000, 25_000),
+            ("system.ai.qwen3-next-80b-a3b-instruct", 128_000, 10_000),
+            ("system.ai.llama-4-maverick", 128_000, 8_192),
+            ("system.ai.meta-llama-3-3-70b-instruct", 128_000, 8_192),
+            ("system.ai.gemma-3-12b", 128_000, 8_192),
+        ],
+    )
+    def test_limits_are_model_specific(self, model_id, context, output):
+        assert db_mod.oss_model_token_limits(model_id) == {"context": context, "output": output}
+
+    def test_unlisted_glm_keeps_the_shared_family_limits(self):
+        assert db_mod.oss_model_token_limits("system.ai.glm-4-6") == db_mod.model_token_limits(
+            "system.ai.glm-4-6"
+        )
+
+    def test_other_unlisted_models_are_never_uncapped(self):
+        assert db_mod.oss_model_token_limits("system.ai.deepseek-v4-1-flash") == {
+            "context": 128_000,
+            "output": 8_192,
+        }
+
+
+def test_pi_base_urls_include_the_mlflow_route():
+    assert db_mod.build_pi_base_urls("https://example.cloud.databricks.com")["oss"] == (
+        "https://example.cloud.databricks.com/ai-gateway/mlflow/v1"
+    )
+
+
 class TestDiscoverModelServices:
     def test_buckets_families_by_name(self, monkeypatch):
         payload = {
@@ -5482,6 +5601,292 @@ class TestInstallAiTools:
         assert "copilot: cli-not-on-path: could not resolve copilot" in warnings[0]
 
 
+_RESPONSES_APIS = ["mlflow/v1/chat/completions", "openai/v1/responses", "codex/v1/responses"]
+_MLFLOW_APIS = ["mlflow/v1/chat/completions", "mlflow/v1/responses"]
+_GEMINI_APIS = ["mlflow/v1/chat/completions", "gemini/v1/generateContent"]
+# GLM and Kimi also list the Anthropic and Codex Responses routes.
+_GLM_KIMI_APIS = [*_MLFLOW_APIS, "anthropic/v1/messages", "codex/v1/responses"]
+
+
+def _listed_service(
+    model_id: str, api_types: list[str], *, function_calling: bool | None = True
+) -> dict:
+    """A model-services entry with the API types and tool calling the live listing reports."""
+    service: dict = {**_model_service(model_id), "supported_api_types": api_types}
+    if function_calling is not None:
+        service["capabilities"] = {"function_calling": function_calling, "reasoning": False}
+    return service
+
+
+class TestDiscoverModelServicesByApiTypes:
+    """Buckets follow the API types each model service lists, as the live listing reports them."""
+
+    @staticmethod
+    def _discover(monkeypatch, services: list[dict]):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, timeout=10: ({"model_services": services}, None),
+        )
+        return db_mod.discover_model_services(WS, "token")
+
+    def test_buckets_the_live_listing_shape(self, monkeypatch):
+        claude, codex, gemini, oss, reason = self._discover(
+            monkeypatch,
+            [
+                _listed_service(
+                    "system.ai.claude-opus-4-8",
+                    ["mlflow/v1/chat/completions", "anthropic/v1/messages"],
+                ),
+                _listed_service("system.ai.gpt-5-5", _RESPONSES_APIS),
+                _listed_service("system.ai.gpt-6-sol", [*_RESPONSES_APIS, "anthropic/v1/messages"]),
+                _listed_service(
+                    "system.ai.grok-4-7", ["mlflow/v1/chat/completions", "openai/v1/responses"]
+                ),
+                _listed_service("system.ai.gemini-3-5-flash", _GEMINI_APIS),
+                _listed_service("system.ai.glm-5-2", _GLM_KIMI_APIS),
+                _listed_service("system.ai.kimi-k3", _GLM_KIMI_APIS),
+                _listed_service("system.ai.deepseek-v4-1-flash", _MLFLOW_APIS),
+                _listed_service("system.ai.gpt-oss-120b", _MLFLOW_APIS),
+                _listed_service("system.ai.qwen35-122b-a10b", _MLFLOW_APIS),
+                _listed_service(
+                    "system.ai.meta-llama-3-3-70b-instruct", ["mlflow/v1/chat/completions"]
+                ),
+                _listed_service("system.ai.gemma-3-12b", _MLFLOW_APIS),
+            ],
+        )
+
+        assert reason is None
+        assert claude == {"opus": "system.ai.claude-opus-4-8"}
+        # Grok lists the Responses API, so it joins GPT there, after every GPT model.
+        assert codex == ["system.ai.gpt-6-sol", "system.ai.gpt-5-5", "system.ai.grok-4-7"]
+        assert gemini == ["system.ai.gemini-3-5-flash"]
+        # GLM and Kimi list `codex/v1/responses` but not `openai/v1/responses`, so they stay OSS,
+        # with gpt-oss and the other MLflow chat models.
+        assert oss == [
+            "system.ai.deepseek-v4-1-flash",
+            "system.ai.gemma-3-12b",
+            "system.ai.glm-5-2",
+            "system.ai.gpt-oss-120b",
+            "system.ai.kimi-k3",
+            "system.ai.meta-llama-3-3-70b-instruct",
+            "system.ai.qwen35-122b-a10b",
+        ]
+
+    def test_gpt_comes_before_newer_versions_of_other_responses_models(self, monkeypatch):
+        _claude, codex, _gemini, _oss, _reason = self._discover(
+            monkeypatch,
+            [
+                _listed_service("system.ai.grok-9", _RESPONSES_APIS),
+                _listed_service("system.ai.gpt-5-4", _RESPONSES_APIS),
+                _listed_service("system.ai.gpt-5-5", _RESPONSES_APIS),
+            ],
+        )
+
+        assert codex == ["system.ai.gpt-5-5", "system.ai.gpt-5-4", "system.ai.grok-9"]
+
+    def test_non_chat_and_tool_less_models_are_dropped(self, monkeypatch):
+        claude, codex, gemini, oss, reason = self._discover(
+            monkeypatch,
+            [
+                _listed_service("system.ai.glm-5-2", _GLM_KIMI_APIS),
+                _listed_service(
+                    "system.ai.qwen3-embedding-0-6b",
+                    ["mlflow/v1/embeddings"],
+                    function_calling=False,
+                ),
+                _listed_service(
+                    "system.ai.openjev-qwen35-4b", ["typesafe/v1/systemone"], function_calling=False
+                ),
+                _listed_service(
+                    "system.ai.meta-llama-3-1-8b-instruct",
+                    ["mlflow/v1/chat/completions"],
+                    function_calling=False,
+                ),
+                _listed_service("system.ai.custom-embedding-chat", ["mlflow/v1/chat/completions"]),
+            ],
+        )
+
+        assert reason is None
+        assert (claude, codex, gemini) == ({}, [], [])
+        assert oss == ["system.ai.glm-5-2"]
+
+    def test_non_chat_names_stay_out_of_every_bucket_by_name_fallback(self, monkeypatch):
+        _claude, codex, gemini, oss, _reason = self._discover(
+            monkeypatch,
+            [
+                _model_service("system.ai.gemini-embedding-001"),
+                _model_service("system.ai.gpt-embedding-3"),
+                _model_service("system.ai.glm-rerank"),
+                _model_service("system.ai.gpt-5-5"),
+            ],
+        )
+
+        assert (codex, gemini, oss) == (["system.ai.gpt-5-5"], [], [])
+
+    @pytest.mark.parametrize(
+        ("api_types", "function_calling", "expected"),
+        [
+            ((), False, False),
+            ((), True, True),
+            ((), None, True),
+            (("mlflow/v1/chat/completions",), False, False),
+            (("mlflow/v1/chat/completions",), None, True),
+        ],
+    )
+    def test_listed_tool_calling_false_wins_over_the_name_fallback(
+        self, api_types, function_calling, expected
+    ):
+        entry = db_mod.ModelServiceEntry("system.ai.glm-5-2", api_types, function_calling)
+        assert db_mod._is_oss_chat_entry(entry) is expected
+
+    def test_unknown_tool_calling_keeps_a_chat_model(self, monkeypatch):
+        _claude, _codex, _gemini, oss, _reason = self._discover(
+            monkeypatch,
+            [_listed_service("system.ai.qwen35-122b-a10b", _MLFLOW_APIS, function_calling=None)],
+        )
+
+        assert oss == ["system.ai.qwen35-122b-a10b"]
+
+    def test_listed_api_types_override_the_family_name(self, monkeypatch):
+        # A GPT- or Gemini-named service that lists only MLflow chat is not a native-API model.
+        _claude, codex, gemini, oss, _reason = self._discover(
+            monkeypatch,
+            [
+                _listed_service("system.ai.gpt-oss-20b", _MLFLOW_APIS),
+                _listed_service("system.ai.gemini-chat-only", ["mlflow/v1/chat/completions"]),
+            ],
+        )
+
+        assert (codex, gemini) == ([], [])
+        assert oss == ["system.ai.gemini-chat-only", "system.ai.gpt-oss-20b"]
+
+    def test_services_without_api_types_fall_back_to_names(self, monkeypatch):
+        _claude, codex, gemini, oss, _reason = self._discover(
+            monkeypatch,
+            [
+                _model_service("system.ai.gpt-5-5"),
+                _model_service("system.ai.grok-4-7"),
+                _model_service("system.ai.gpt-oss-120b"),
+                _model_service("system.ai.gemini-3-5-flash"),
+                _model_service("system.ai.kimi-k3"),
+                _model_service("system.ai.qwen35-122b-a10b"),
+            ],
+        )
+
+        assert codex == ["system.ai.gpt-5-5", "system.ai.grok-4-7"]
+        assert gemini == ["system.ai.gemini-3-5-flash"]
+        # Without listed API types only the named OSS families and gpt-oss are chat models.
+        assert oss == ["system.ai.gpt-oss-120b", "system.ai.kimi-k3"]
+
+
+class TestModelServiceFunctionCalling:
+    @pytest.mark.parametrize(
+        ("capabilities", "expected"),
+        [
+            ({"function_calling": True}, True),
+            ({"function_calling": False}, False),
+            ({"function_calling": "yes"}, None),
+            ({}, None),
+            (None, None),
+        ],
+    )
+    def test_entry_records_listed_tool_calling(self, monkeypatch, capabilities, expected):
+        service = {**_model_service("system.ai.glm-5-2"), "capabilities": capabilities}
+        monkeypatch.setattr(
+            db_mod,
+            "_get_model_services_page",
+            lambda url, token: ({"model_services": [service]}, None),
+        )
+
+        entries, _ = db_mod.list_model_service_entries(WS, "token")
+
+        assert entries[0].function_calling is expected
+
+
+class TestResponsesModelHelpers:
+    @pytest.mark.parametrize(
+        ("model_id", "expected"),
+        [
+            ("system.ai.gpt-5-5", True),
+            ("databricks-gpt-6-sol", True),
+            ("system.ai.gpt-oss-120b", False),
+            ("system.ai.grok-4-7", False),
+            ("system.ai.glm-5-2", False),
+        ],
+    )
+    def test_is_gpt_model(self, model_id, expected):
+        assert db_mod.is_gpt_model(model_id) is expected
+
+    @pytest.mark.parametrize(
+        ("model_id", "expected"),
+        [
+            ("system.ai.gpt-6-1-sol", True),
+            ("databricks-gpt-5", True),
+            # Grok answers on the Responses route without running the hosted tool.
+            ("system.ai.grok-4-7", False),
+            ("databricks-grok-4-6", False),
+            ("system.ai.gpt-oss-120b", False),
+        ],
+    )
+    def test_runs_web_search_tool(self, model_id, expected):
+        assert db_mod.runs_web_search_tool(model_id) is expected
+
+    @pytest.mark.parametrize(
+        ("model_id", "expected"),
+        [
+            ("system.ai.glm-5-2", True),
+            ("system.ai.kimi-k3", True),
+            ("system.ai.deepseek-v4-1-flash", True),
+            ("system.ai.gpt-oss-120b", False),
+            ("system.ai.qwen35-122b-a10b", False),
+            ("system.ai.llama-4-maverick", False),
+            ("system.ai.gemma-3-12b", False),
+        ],
+    )
+    def test_is_oss_family_model(self, model_id, expected):
+        assert db_mod.is_oss_family_model(model_id) is expected
+
+    @pytest.mark.parametrize(
+        ("model_id", "expected"),
+        [
+            ("system.ai.glm-5-2", True),
+            ("system.ai.gpt-oss-20b", True),
+            ("system.ai.qwen35-122b-a10b", True),
+            ("system.ai.qwen3-next-80b-a3b-instruct", True),
+            ("system.ai.llama-4-maverick", True),
+            ("system.ai.meta-llama-3-3-70b-instruct", True),
+            ("databricks-gemma-3-12b", True),
+            ("system.ai.qwen3-embedding-0-6b", False),
+            ("system.ai.gpt-5-5", False),
+            ("system.ai.gemini-3-flash", False),
+            ("system.ai.grok-4-7", False),
+            ("mystery-model", False),
+        ],
+    )
+    def test_is_mlflow_chat_model_name(self, model_id, expected):
+        assert db_mod.is_mlflow_chat_model_name(model_id) is expected
+
+    def test_codex_fallback_listing_orders_gpt_first(self, monkeypatch):
+        def endpoint(name: str) -> dict:
+            foundation_model = {
+                "ai_gateway_v2_supported": True,
+                "api_types": ["openai/v1/responses"],
+            }
+            return {
+                "name": name,
+                "config": {"served_entities": [{"foundation_model": foundation_model}]},
+            }
+
+        payload = {"endpoints": [endpoint("databricks-grok-9"), endpoint("databricks-gpt-5-5")]}
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token: (payload, None))
+
+        models, reason = db_mod.discover_codex_models(WS, "token")
+
+        assert reason is None
+        assert models == ["databricks-gpt-5-5", "databricks-grok-9"]
+
+
 class TestClassifyModelFamily:
     """Recovers the bucket a model would land in from discovery, so a managed config's flat list
     can be translated into the per-family state each agent reads."""
@@ -5494,6 +5899,9 @@ class TestClassifyModelFamily:
             ("databricks-claude-haiku-4-5", "haiku"),
             ("system.ai.claude-fable-5", "fable"),
             ("system.ai.gpt-5-3-codex", "codex"),
+            ("system.ai.grok-4-7", "codex"),
+            # gpt-oss stays under codex by name; Pi moves it to its MLflow provider.
+            ("system.ai.gpt-oss-120b", "codex"),
             ("system.ai.gemini-3-flash", "gemini"),
             ("system.ai.kimi-k2-7-code", "oss"),
             ("system.ai.glm-4-6", "oss"),

@@ -27,6 +27,7 @@ import uuid
 
 from ucode.databricks import (
     ANTHROPIC_FAMILIES,
+    is_oss_family_model,
     model_version_sort_key,
     tool_supports_provider_type,
 )
@@ -98,7 +99,14 @@ def model_options_for_agent(tool: str, state: dict) -> list[str]:
         key = {"codex": "codex_models", "gemini": "gemini_models", "oss": "oss_models"}[family]
         models = state.get(key)
         if isinstance(models, list):
-            options.extend(m for m in models if isinstance(m, str) and m)
+            options.extend(
+                m
+                for m in models
+                if isinstance(m, str)
+                and m
+                # Only Pi serves the MLflow chat models outside the shared OSS families.
+                and (family != "oss" or tool == "pi" or is_oss_family_model(m))
+            )
     if tool == "copilot":
         from ucode.agents.copilot import classify_copilot_model
 

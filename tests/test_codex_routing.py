@@ -17,14 +17,31 @@ WS = "https://example.databricks.com"
 def test_routing_models_combines_and_deduplicates_codex_and_oss_models():
     assert routing_models(
         {
-            "codex_models": ["system.ai.gpt-5-6-sol", "system.ai.gpt-oss-120b"],
-            "oss_models": ["system.ai.gpt-oss-120b", "system.ai.glm-5-2"],
+            "codex_models": ["system.ai.gpt-5-6-sol", "system.ai.grok-4-7"],
+            "oss_models": ["system.ai.glm-5-2", "system.ai.kimi-k3", "system.ai.glm-5-2"],
         }
     ) == [
         "system.ai.gpt-5-6-sol",
-        "system.ai.gpt-oss-120b",
+        "system.ai.grok-4-7",
         "system.ai.glm-5-2",
+        "system.ai.kimi-k3",
     ]
+
+
+def test_routing_models_skip_mlflow_only_models():
+    # gpt-oss, Qwen, Llama and Gemma are served only on MLflow chat, not Codex's Responses route.
+    assert routing_models(
+        {
+            "codex_models": ["system.ai.gpt-5-6-sol", "system.ai.gpt-oss-120b"],
+            "oss_models": [
+                "system.ai.gpt-oss-120b",
+                "system.ai.qwen35-122b-a10b",
+                "system.ai.llama-4-maverick",
+                "system.ai.gemma-3-12b",
+                "system.ai.deepseek-v4-1-flash",
+            ],
+        }
+    ) == ["system.ai.gpt-5-6-sol", "system.ai.deepseek-v4-1-flash"]
 
 
 class _Response:

@@ -3161,7 +3161,7 @@ class TestStatusLiveModels:
                     {"opus": "live-claude"},
                     ["live-codex"],
                     ["live-gemini"],
-                    ["live-oss"],
+                    ["system.ai.glm-5-2", "system.ai.qwen35-122b-a10b"],
                     None,
                 ),
             ),
@@ -3175,7 +3175,9 @@ class TestStatusLiveModels:
         assert freshness == "live"
         assert live["claude_models"] == {"opus": "live-claude"}
         assert live["codex_models"] == ["live-codex"]
-        assert live["opencode_models"]["oss"] == ["live-oss"]
+        assert live["oss_models"] == ["system.ai.glm-5-2", "system.ai.qwen35-122b-a10b"]
+        # OpenCode serves only the shared OSS families; Qwen is Pi-only.
+        assert live["opencode_models"]["oss"] == ["system.ai.glm-5-2"]
         assert state["codex_models"] == ["cached-codex"]
         get_token.assert_called_once_with("https://example.databricks.com", "explicit-profile")
         legacy_claude.assert_not_called()
@@ -7294,6 +7296,106 @@ class TestConfigureSharedStateUsePat:
         assert state["codex_models"] == ["system.ai.gpt-5-6-sol"]
         assert state["oss_models"] == ["system.ai.glm-5-2"]
 
+    def test_capability_discovered_models_reach_only_the_agents_that_serve_them(self, monkeypatch):
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        codex = ["system.ai.gpt-5-6-sol", "system.ai.grok-4-7"]
+        oss = ["system.ai.glm-5-2", "system.ai.gpt-oss-120b", "system.ai.qwen35-122b-a10b"]
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: ({"opus": "system.ai.claude-opus-5-5"}, codex, [], oss, None),
+        )
+
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
+
+        # Every MLflow chat model is saved for Pi; OpenCode and Kilo keep the shared families.
+        assert state["codex_models"] == codex
+        assert state["oss_models"] == oss
+        assert state["opencode_models"]["oss"] == ["system.ai.glm-5-2"]
+        # Claude's web search stays on GPT even with Grok listed.
+        from ucode.agents import claude as claude_agent
+
+        assert claude_agent._resolve_web_search_model(state) == "system.ai.gpt-5-6-sol"
+
+    def test_configure_saves_every_listed_claude_version(self, monkeypatch):
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        heads = {"opus": "system.ai.claude-opus-5-5", "sonnet": "system.ai.claude-sonnet-5"}
+        monkeypatch.setattr(
+            cli_mod, "discover_model_services", lambda w, t: (heads, [], [], [], None)
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "cached_model_service_entries",
+            lambda w: [
+                db_mod.ModelServiceEntry("system.ai.claude-opus-4-8"),
+                db_mod.ModelServiceEntry("system.ai.claude-opus-5-5"),
+                db_mod.ModelServiceEntry("system.ai.claude-sonnet-5"),
+                db_mod.ModelServiceEntry("system.ai.gpt-5-5"),
+            ],
+        )
+
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["pi"])
+
+        assert state["claude_models"] == heads
+        assert state["all_claude_models"] == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-opus-5-5",
+            "system.ai.claude-sonnet-5",
+        ]
+
+    def test_configure_drops_a_stale_claude_version_list(self, monkeypatch):
+        # Without this run's UC listing (the gateway fallback found the families), Pi lists the
+        # family models rather than versions saved by an earlier configure.
+        cli_mod, *_ = self._stub_deps(
+            monkeypatch,
+            pat_token="dapi-pat",
+            existing_state={
+                "workspace": self.WS,
+                "all_claude_models": ["system.ai.claude-opus-4-8"],
+            },
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_claude_models",
+            lambda w, t: ({"opus": "databricks-claude-opus-5"}, None),
+        )
+        monkeypatch.setattr(cli_mod, "cached_model_service_entries", lambda w: None)
+
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["pi"])
+
+        assert state["claude_models"] == {"opus": "databricks-claude-opus-5"}
+        assert "all_claude_models" not in state
+
+    def test_pi_only_configure_persists_discovered_oss_models(self, monkeypatch):
+        # Pi's MLflow provider reads `oss_models`, so a Pi-only configure must save them.
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: (
+                {},
+                ["system.ai.gpt-5-6-sol"],
+                [],
+                ["system.ai.glm-5-2"],
+                None,
+            ),
+        )
+
+        state = cli_mod.configure_shared_state(
+            self.WS,
+            profile="DEFAULT",
+            tools=["pi"],
+        )
+
+        assert state["oss_models"] == ["system.ai.glm-5-2"]
+        assert cli_mod._status_models("pi", state) == [
+            "system.ai.gpt-5-6-sol",
+            "system.ai.glm-5-2",
+        ]
+        assert cli_mod._status_models("pi", {"oss_models": ["system.ai.glm-5-3"]}) == [
+            "system.ai.glm-5-3"
+        ]
+
     def _stub_with_fable(self, monkeypatch):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
         monkeypatch.setattr(
@@ -7933,6 +8035,26 @@ class TestConfigureSharedStateSkipDiscovery:
         assert state["web_search_model"] == "databricks-gpt-5"
         # Existing model list preserved, not overwritten to {}.
         assert state["claude_models"] == {"opus": "databricks-claude-opus-4-8"}
+
+    def test_web_search_model_skips_grok(self, monkeypatch):
+        # Grok lists the Responses API but never runs the `web_search` tool.
+        import ucode.cli as cli_mod
+
+        ws = "https://prov.databricks.com"
+        self._stub(monkeypatch)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {"workspace": ws})
+        listings = {
+            "grok-first": ["databricks-grok-9", "databricks-gpt-5"],
+            "grok-only": ["databricks-grok-9"],
+        }
+        for listing, expected in (("grok-first", "databricks-gpt-5"), ("grok-only", None)):
+            monkeypatch.setattr(
+                cli_mod, "discover_codex_models", lambda w, t, ids=listings[listing]: (ids, None)
+            )
+
+            state = cli_mod.configure_shared_state(ws, tools=["claude"], skip_model_discovery=True)
+
+            assert state.get("web_search_model") == expected, listing
 
 
 class TestConfigureSharedStateCopilotCatalog:

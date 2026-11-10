@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from ucode.databricks import ANTHROPIC_FAMILIES, classify_model_family
+from ucode.databricks import ANTHROPIC_FAMILIES, classify_model_family, is_mlflow_chat_model_name
 from ucode.state import MANAGED_OVERLAY_KEY
 
 # Proto model-config slot -> the family key `claude.py`'s render_overlay reads. The manifest keeps
@@ -122,8 +122,8 @@ def managed_unservable_models(managed: dict, tool: str) -> list[str]:
 
     Only non-empty when *every* named model is unservable, which is when the translation yields
     nothing and the developer's own models stand — so the caller can say why the admin's list had no
-    effect. opencode has no OpenAI provider and pi has no OSS provider, so each can be handed a
-    valid model FQN it cannot route, and copilot serves only Claude and GPT.
+    effect. opencode has no OpenAI provider, so it can be handed a valid model FQN it cannot route;
+    pi serves every family discovery buckets, and copilot serves only Claude and GPT.
     """
     if tool == "copilot":
         from ucode.agents.copilot import classify_copilot_model
@@ -142,6 +142,7 @@ def managed_unservable_models(managed: dict, tool: str) -> list[str]:
             m
             for m in models
             if classify_model_family(m) in (*ANTHROPIC_FAMILIES, "codex", "gemini")
+            or is_mlflow_chat_model_name(m)
         ]
     )
     return [] if servable else models
