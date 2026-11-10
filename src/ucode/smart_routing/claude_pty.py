@@ -128,11 +128,12 @@ class OutputMarkerDetector:
 
 
 class ModelSwitchInput:
-    """Distinguish edits and explicit /model commands from terminal traffic."""
+    """Distinguish edits and possible model commands from terminal traffic."""
 
     def __init__(self) -> None:
         self._pending = b""
         self._line = b""
+        self._line_known = True
         self._last_input = 0.0
         self._pasting = False
 
@@ -153,22 +154,28 @@ class ModelSwitchInput:
                     self._pending = self._pending[match.end() :]
                     if sequence in (b"\x1b[200~", b"\x1b[201~"):
                         self._pasting = sequence == b"\x1b[200~"
-                    elif sequence.startswith((b"\x1bO", b"\x1b]")) or sequence[-1:] in (
+                    elif sequence.startswith(b"\x1bO") or sequence[-1:] in (
                         b"A",
                         b"B",
                         b"C",
                         b"D",
                         b"F",
                         b"H",
+                    ):
+                        # History and cursor motion leave the submitted text unknown,
+                        # but navigation alone must not interrupt automatic replay.
+                        self._line_known = False
+                    elif sequence.startswith(b"\x1b]") or sequence[-1:] in (
                         b"I",
                         b"O",
                         b"c",
                         b"R",
                         b"n",
                     ):
-                        pass  # Navigation, focus, and terminal replies do not edit the prompt.
+                        pass  # Focus and terminal replies do not edit the prompt.
                     else:
                         edited = True
+                        self._line_known = False
                     continue
                 if (
                     len(self._pending) <= 4096
@@ -179,12 +186,13 @@ class ModelSwitchInput:
             char, self._pending = self._pending[:1], self._pending[1:]
             edited = True
             if char in (b"\r", b"\n") and not self._pasting:
-                selected_model |= (
+                selected_model |= not self._line_known or (
                     b"\n" not in self._line
                     and b"\r" not in self._line
-                    and self._line.strip().split(maxsplit=1)[:1] == [b"/model"]
+                    and self._line.lstrip().startswith(b"/")
                 )
                 self._line = b""
+                self._line_known = True
             elif self._pasting:
                 self._line = (self._line + char)[-4096:]
             elif char in (b"\x08", b"\x7f"):
@@ -193,6 +201,10 @@ class ModelSwitchInput:
                 self._line = b""
             elif char >= b" ":
                 self._line = (self._line + char)[-4096:]
+            else:
+                # Completion, search, and editing bindings can change text without
+                # sending its contents back through stdin.
+                self._line_known = False
         return edited, selected_model
 
 
@@ -415,7 +427,7 @@ def run_claude_pty(
     model_switch_persisted: Callable[[], bool] = lambda: True,
     restore_model_setting: Callable[[], bool | None] = lambda: None,
     defer_model_setting: Callable[[], None] = lambda: None,
-    abandon_model_setting: Callable[[], None] = lambda: None,
+    abandon_model_setting: Callable[[], bool | None] = lambda: None,
     log_path: Path | None = None,
 ) -> int:
     """Run Claude in a PTY, switch its model, and replay the first prompt."""
@@ -500,7 +512,7 @@ def run_claude_pty(
             user_input = ModelSwitchInput()
 
             def observe_input(data: bytes, now: float) -> None:
-                nonlocal phase, model_pending, deferred_restore
+                nonlocal phase, model_pending, deferred_restore, restore_ready
                 if not model_pending and phase not in ("waiting_to_switch", "pasting", "verifying"):
                     return
                 if phase == "verifying" and submitted_event.is_set():
@@ -524,10 +536,15 @@ def run_claude_pty(
                     log("[WARN] user input stopped automatic replay")
                 if model_pending:
                     if selected_model:
-                        # Only an explicit /model hands the saved default back to the user.
-                        abandon_model_setting()
-                        model_pending = False
-                        deferred_restore = False
+                        # Unknown submitted text can select a model through history
+                        # or completion, including the routed model itself.
+                        try:
+                            model_pending = abandon_model_setting() is False
+                        except (OSError, ValueError, RuntimeError) as exc:
+                            model_pending = True
+                            log(f"[WARN] manual model handoff deferred: {exc}")
+                        deferred_restore = model_pending
+                        restore_ready = model_pending
                     else:
                         defer_model_setting()
                         deferred_restore = True
@@ -594,8 +611,9 @@ def run_claude_pty(
                 ):
                     next_restore_check = now + MODEL_RESTORE_INTERVAL_S
                     try:
-                        restore_ready = restore_ready or model_switch_persisted()
-                        if restore_ready and restore_model_setting() is not False:
+                        if (
+                            restore_ready or model_switch_persisted()
+                        ) and restore_model_setting() is not False:
                             model_pending = False
                             deferred_restore = False
                             log("[RESTORE] saved model restored")

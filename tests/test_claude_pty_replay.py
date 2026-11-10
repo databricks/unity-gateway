@@ -537,10 +537,34 @@ capture_path.write_text(json.dumps({
             }
         )
 
+    @pytest.mark.parametrize(
+        ("chunks", "fail_handoff"),
+        [
+            ([b"/model ", b"sonnet\r"], False),
+            ([b"\x1b[A", b"\r"], False),
+            ([b"/mod", b"\t", b"\r"], False),
+            ([b"/mod\r"], False),
+            ([b"\x12", b"model", b"\r"], False),
+            ([b"/model sonnet\r"], True),
+        ],
+        ids=["typed", "history", "completion", "slash-command", "search", "handoff-error"],
+    )
     def test_manual_selection_of_the_routed_model_survives_recovery(
-        self, replay_model_switch, tmp_path, monkeypatch
+        self, replay_model_switch, tmp_path, monkeypatch, chunks, fail_handoff
     ):
         monkeypatch.setattr(claude_pty, "READY_TIMEOUT_S", 0.25)
+        if fail_handoff:
+            unlink = Path.unlink
+            failures = []
+
+            def fail_once(path, *args, **kwargs):
+                if path.name.startswith("claude-v2-model-") and not failures:
+                    failures.append(path)
+                    raise PermissionError("recovery state temporarily read-only")
+                return unlink(path, *args, **kwargs)
+
+            # Fail the state-file boundary, while the guard and PTY loop remain real.
+            monkeypatch.setattr(Path, "unlink", fail_once)
         ready = tmp_path / "ready"
         body = """\
 assert send_hook(socket_path, "hello")["action"] == "block"
@@ -553,13 +577,17 @@ Path(sys.argv[3]).with_name("ready").touch()
 command = read_until(b"\\r")
 Path(sys.argv[3]).write_text(json.dumps({"model": "sonnet"}))
 os.write(1, b"Set model to sonnet\\n")
-time.sleep(0.1)
-capture_path.write_text(json.dumps({"command": command.decode()}))
+time.sleep(0.5)
+capture_path.write_text(json.dumps({
+    "command": command.hex(), "settings_while_running": json.loads(Path(sys.argv[3]).read_text()),
+}))
 """
-        with _stdin_after(ready, [b"/model ", b"sonnet\r"]):
+        with _stdin_after(ready, chunks):
             capture, settings, _ = replay_model_switch(body)
-        assert capture["command"] == "/model sonnet\r"
-        assert settings == {"model": "sonnet"}
+        assert capture["command"] == b"".join(chunks).hex()
+        assert capture["settings_while_running"] == settings == {"model": "sonnet"}
+        if fail_handoff:
+            assert len(failures) == 1
 
     def test_restore_write_failure_is_retried_while_claude_runs(
         self, replay_model_switch, monkeypatch
@@ -570,9 +598,10 @@ capture_path.write_text(json.dumps({"command": command.decode()}))
         attempts = []
 
         def fail_once(path, payload):
-            attempts.append(path)
-            if len(attempts) == 1:
-                raise PermissionError("settings temporarily read-only")
+            if path.name == "settings.json":
+                attempts.append(path)
+                if len(attempts) == 1:
+                    raise PermissionError("settings temporarily read-only")
             write(path, payload)
 
         # Fail only the filesystem boundary; both the PTY loop and guard remain real.
@@ -600,6 +629,46 @@ capture_path.write_text(json.dumps({
 
         assert capture["prompt"] == "hello"
         assert len(attempts) == 2
+        assert (
+            capture["settings_while_running"]
+            == settings
+            == {
+                "model": "haiku",
+                "unrelated": "preserved",
+            }
+        )
+
+    def test_missing_late_write_does_not_reserve_the_default_until_exit(
+        self, replay_model_switch, monkeypatch
+    ):
+        from ucode.smart_routing import v2
+
+        monkeypatch.setattr(claude_pty, "READY_TIMEOUT_S", 0.25)
+        monkeypatch.setattr(v2, "CLAUDE_MODEL_DEFER_TIMEOUT_S", 0.15, raising=False)
+        capture, settings, _ = replay_model_switch(
+            """\
+from ucode.smart_routing import v2
+
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\\r")
+assert os.read(0, 1) == b"\\x1b"
+time.sleep(0.8)
+settings = Path(sys.argv[3])
+v2.APP_DIR = settings.parent
+other = v2._ClaudeModelSettingGuard(settings)
+prepared = other.begin("opus")
+if prepared:
+    settings.write_text(json.dumps({"model": "opus", "unrelated": "preserved"}))
+    assert other.restore()
+capture_path.write_text(json.dumps({
+    "prepared": prepared, "settings_while_running": json.loads(settings.read_text()),
+}))
+"""
+        )
+
+        assert capture["prepared"] is True
         assert (
             capture["settings_while_running"]
             == settings
@@ -693,11 +762,29 @@ class TestModelSwitchInput:
         assert state.observe(b"\x1b", 1.0) == (False, False)
         assert state.observe(b"", 2.0) == (True, False)
 
-    def test_only_a_submitted_model_command_transfers_default_ownership(self):
+    def test_submitted_slash_command_transfers_default_ownership(self):
         state = claude_pty.ModelSwitchInput()
         assert state.observe(b"/model ", 1.0) == (True, False)
         assert state.observe(b"sonnet\r", 1.1) == (True, True)
         assert state.observe(b"plain text\r", 1.2) == (True, False)
+
+    @pytest.mark.parametrize(
+        "editing",
+        [b"\x1b[A", b"\x1bOD", b"\t", b"\x12", b"\x10", b"\x19"],
+        ids=["history", "cursor", "completion", "search", "previous", "yank"],
+    )
+    def test_submitting_an_unknown_line_transfers_default_ownership(self, editing):
+        state = claude_pty.ModelSwitchInput()
+        state.observe(editing, 1.0)
+        assert state.observe(b"\r", 1.1) == (True, True)
+        assert state.observe(b"plain text\r", 1.2) == (True, False)
+
+    def test_terminal_replies_do_not_make_a_known_line_unknown(self):
+        state = claude_pty.ModelSwitchInput()
+        assert state.observe(b"plain text", 1.0) == (True, False)
+        for reply in [b"\x1b[?1;2c", b"\x1b[12;45R", b"\x1b[I", b"\x1b]10;rgb:ff/ff/ff\x07"]:
+            assert state.observe(reply, 1.1) == (False, False)
+        assert state.observe(b"\r", 1.2) == (True, False)
 
     def test_multiline_paste_is_not_a_submitted_model_command(self):
         state = claude_pty.ModelSwitchInput()

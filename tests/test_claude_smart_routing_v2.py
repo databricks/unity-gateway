@@ -5,10 +5,13 @@ from __future__ import annotations
 import io
 import json
 import os
+import select
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -1019,6 +1022,167 @@ class TestModelSettingRecovery:
         yield guard, settings
         guard.finish(timeout=0)
 
+    @pytest.fixture
+    def competing_session(self, settings_guard):
+        _, settings = settings_guard
+        script = """
+import json
+import signal
+import sys
+from pathlib import Path
+from ucode.smart_routing import v2
+
+signal.alarm(15)
+settings = Path(sys.argv[1])
+v2.APP_DIR = settings.parent
+v2.CLAUDE_MODEL_DEFER_TIMEOUT_S = 0
+guard = v2._ClaudeModelSettingGuard(settings)
+try:
+    for line in sys.stdin:
+        request = json.loads(line)
+        result = getattr(guard, request.pop("method"))(**request)
+        print(json.dumps(result), flush=True)
+finally:
+    guard.finish(timeout=0.2)
+"""
+        proc = subprocess.Popen(
+            [sys.executable, "-u", "-c", script, str(settings)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        def request(method, **kwargs):
+            proc.stdin.write(json.dumps({"method": method, **kwargs}) + "\n")
+            proc.stdin.flush()
+            assert select.select([proc.stdout], [], [], 5)[0], "competing guard did not respond"
+            return json.loads(proc.stdout.readline())
+
+        try:
+            yield request
+        finally:
+            proc.stdin.close()
+            proc.stdin = None
+            try:
+                _, stderr = proc.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                _, stderr = proc.communicate(timeout=3)
+            assert proc.returncode == 0, stderr
+
+    @requires_pty
+    @pytest.mark.parametrize("late_write", ["before", "during", "after", "never"])
+    @pytest.mark.parametrize("before", [{"model": "haiku"}, {}], ids=["saved-model", "no-model"])
+    def test_deferred_ownership_is_bounded_without_losing_the_default(
+        self, settings_guard, competing_session, monkeypatch, late_write, before
+    ):
+        first, settings = settings_guard
+        settings.write_text(json.dumps({**before, "theme": "dark"}))
+        monkeypatch.setattr(v2, "CLAUDE_MODEL_DEFER_TIMEOUT_S", 0.05, raising=False)
+        assert first.begin("sonnet")
+        first.defer()
+        assert competing_session("begin", routed_model="opus") is False
+        time.sleep(0.03)
+        first.defer()  # Further edits must not extend the ownership deadline.
+        time.sleep(0.03)
+        first.is_routed()
+        if late_write == "before":
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+
+        assert competing_session("begin", routed_model="opus") is True
+        if late_write == "during":
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+            assert first.is_routed() is False
+            assert first.restore() is False
+        settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
+        assert competing_session("restore") is True
+        assert json.loads(settings.read_text()) == {**before, "theme": "light"}
+
+        if late_write == "after":
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+            assert first.is_routed()
+        assert first.restore() is True
+        assert json.loads(settings.read_text()) == {**before, "theme": "light"}
+
+    @requires_pty
+    def test_deferred_sessions_do_not_consume_the_same_persisted_write(
+        self, settings_guard, competing_session, monkeypatch
+    ):
+        first, settings = settings_guard
+        monkeypatch.setattr(v2, "CLAUDE_MODEL_DEFER_TIMEOUT_S", 0)
+        assert first.begin("sonnet")
+        first.defer()
+        assert competing_session("begin", routed_model="sonnet") is True
+        competing_session("defer")
+        settings.write_text(json.dumps({"model": "sonnet"}))
+        assert first.is_routed()
+        assert competing_session("is_routed") is False
+        assert first.restore()
+        assert competing_session("is_routed") is False
+        settings.write_text(json.dumps({"model": "sonnet"}))
+        assert competing_session("is_routed") is True
+        assert competing_session("restore") is True
+        assert json.loads(settings.read_text()) == {"model": "haiku"}
+
+    @requires_pty
+    @pytest.mark.parametrize("platform", ["posix", "nt"])
+    def test_dead_owner_retains_the_original_default(self, settings_guard, monkeypatch, platform):
+        guard, settings = settings_guard
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                """
+import json
+import os
+import sys
+from pathlib import Path
+from ucode.smart_routing import v2
+
+settings = Path(sys.argv[1])
+v2.APP_DIR = settings.parent
+guard = v2._ClaudeModelSettingGuard(settings)
+assert guard.begin("sonnet")
+settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+os._exit(0)
+""",
+                str(settings),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+        if platform == "nt":
+
+            def unsafe_kill(*_args):
+                pytest.fail("os.kill(pid, 0) can terminate a Windows process")
+
+            # Emulate only the OS boundary; use the real recovery file and guard.
+            monkeypatch.setattr(
+                v2, "os", SimpleNamespace(name="nt", getpid=os.getpid, kill=unsafe_kill)
+            )
+        assert guard.begin("opus")
+        settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
+        assert guard.restore()
+        assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+
+    @requires_pty
+    def test_manual_choice_revokes_older_cleanup_in_competing_sessions(
+        self, settings_guard, competing_session, monkeypatch
+    ):
+        first, settings = settings_guard
+        monkeypatch.setattr(v2, "CLAUDE_MODEL_DEFER_TIMEOUT_S", 0, raising=False)
+        assert first.begin("sonnet")
+        first.defer()
+        assert competing_session("begin", routed_model="opus") is True
+        first.abandon()
+        settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
+        assert competing_session("restore") is True
+        assert first.restore() is True
+        assert json.loads(settings.read_text()) == {"model": "opus", "theme": "light"}
+
     def test_atomic_write_failure_preserves_snapshot_and_file(self, settings_guard, monkeypatch):
         guard, settings = settings_guard
         assert guard.begin("sonnet")
@@ -1041,6 +1205,41 @@ class TestModelSettingRecovery:
         assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
         assert other.begin("opus") is True
         other.finish()
+
+    def test_failed_recovery_record_does_not_start_a_switch(self, settings_guard, monkeypatch):
+        guard, settings = settings_guard
+        write = v2.config_io.atomic_write_json
+
+        def read_only(_path, _payload):
+            raise RuntimeError("recovery directory is read-only")
+
+        monkeypatch.setattr(v2.config_io, "atomic_write_json", read_only)
+        assert guard.begin("sonnet") is False
+        assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "dark"}
+        monkeypatch.setattr(v2.config_io, "atomic_write_json", write)
+        other = v2._ClaudeModelSettingGuard(settings)
+        assert other.begin("opus") is True
+        assert other.finish()
+
+    def test_failed_manual_handoff_never_restores_the_old_default(
+        self, settings_guard, monkeypatch, capsys
+    ):
+        guard, settings = settings_guard
+        assert guard.begin("sonnet")
+        unlink = Path.unlink
+
+        def read_only(path, *args, **kwargs):
+            if path.name.startswith("claude-v2-model-"):
+                raise PermissionError("recovery directory is read-only")
+            return unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", read_only)
+        with pytest.raises(PermissionError):
+            guard.abandon()
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        assert guard.finish(timeout=0) is False
+        assert json.loads(settings.read_text()) == {"model": "sonnet", "theme": "light"}
+        assert "could not discard old model recovery state" in capsys.readouterr().out
 
     def test_incomplete_settings_write_retains_recovery(self, settings_guard):
         guard, settings = settings_guard
@@ -1099,7 +1298,7 @@ class TestModelSettingRecovery:
         assert guard.finish(timeout=0.02) is False
         assert time.monotonic() - started < 1
         assert json.loads(settings.read_text()) == {"model": "sonnet"}
-        warning = capsys.readouterr().out
+        warning = " ".join(capsys.readouterr().out.split())
         assert "could not restore" in warning
         assert "haiku" in warning if before else "Remove its model setting" in warning
 

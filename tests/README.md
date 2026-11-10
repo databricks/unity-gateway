@@ -770,16 +770,22 @@ Codex decisions carry the same request metadata. These use mocked HTTP responses
 2.1.295 and later, which keep a hook-blocked prompt in the input box: `/model` must run as a
 command. Delayed completion must replay the prompt exactly once and restore the saved default.
 Arrow keys and fragmented terminal replies keep recovery active. Typed input stops replay with
-a notice but retains cleanup; an explicit `/model` command transfers the saved default back to
-the user. Claude's completed `Kept model as` cancellation result permits replay, while generic
-cancel messages and unconfirmed switches stop automatic input. Settings assertions run before
+a notice but retains cleanup. Submitting a slash command or text changed through history,
+completion, or untracked editing transfers the saved default back to the user. Manual-choice
+checks include selecting the routed model itself. Claude's completed `Kept model as` cancellation
+result permits replay, while generic cancel messages and unconfirmed switches stop automatic input.
+Settings assertions run before
 the child exits. The timing cases cover immediate persistence with and without a redraw, a pending
 write, and a write arriving after the persistence deadline without duplicating the redraw variants.
 
 `test_claude_smart_routing_v2.py` also covers settings restoration after a failed atomic write or
 temporary parse error, bounded exit cleanup under lock contention, and actionable failure output.
-Deferred cleanup releases the settings lock but reserves the original default until restoration
-or an explicit manual model command; another routed switch cannot capture the temporary value.
+Deferred cleanup releases launch ownership after a two-second grace period and retains the
+original default in shared recovery state. Competing-process tests check that late writes before,
+during, and after a second switch cannot become its saved default, including an originally absent
+model setting. A missing late write does not block the second switch until the first child exits.
+Same-model sessions cannot both consume one persisted write. A crashed owner retains its original
+baseline for the next launch. Manual model input revokes older pending recovery across sessions.
 PTY checks verify that settings reads are throttled during busy output. These are component
 checks; live first-prompt routing on a pinned Claude Code version is not executed here.
 

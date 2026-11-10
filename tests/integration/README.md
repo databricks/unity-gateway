@@ -1461,9 +1461,12 @@ the file task, and normal exit. The managed default alone routes only Claude sub
 orchestrator; Codex's managed default is opted out and covered by its launch-only test.
 
 `tests/test_claude_pty_replay.py` covers delayed switches, terminal input during recovery,
-completed versus ambiguous cancellation, and throttled settings recovery before child exit.
-`tests/test_claude_smart_routing_v2.py` covers deferred ownership, failed atomic writes,
-and bounded exit cleanup. These component checks use temporary settings and fake TUIs;
+history/autocomplete model choices, completed versus ambiguous cancellation, and throttled
+settings recovery before child exit. A missing late write must release launch ownership.
+`tests/test_claude_smart_routing_v2.py` checks competing processes with bounded deferred ownership,
+late writes across a second switch, same-model and crashed-owner recovery, manual choices,
+failed atomic writes, and bounded exit cleanup.
+These component checks use temporary settings and fake TUIs;
 they do not establish live Claude or gateway coverage.
 These checks do not replace the completed file task required by the live journeys.
 
