@@ -1,5 +1,6 @@
 import type { EngineInterface, On, PluginOptions, PromptOrigin } from 'claude-code';
 import {
+  beginStatusBandTurn,
   endStatusBandTurn,
   registerStatusBand,
   settleStartupValidation,
@@ -26,6 +27,7 @@ import {
 } from './constants.ts';
 import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedback } from './isaac-feedback.ts';
 import { isRoutingEnabled } from './routing-state.ts';
+import { waitingAgent } from './waiting-notifications.ts';
 import {
   LOGS_COMMAND_TIMEOUT_MS,
   ROUTING_LOGS_PANE,
@@ -456,6 +458,21 @@ export function register(on: On, options: PluginOptions): void {
       // After the launch write, so a disabling result cannot be overwritten by it.
       await watchStartupValidation($, options);
     }
+    return next(e);
+  });
+
+  on('prompt.submit', async ($, e, next) => {
+    if (e.origin?.kind === 'task-notification') {
+      try {
+        if (await readOrchestratorState($, options)) {
+          const waiting = waitingAgent(e, await $.agent.list());
+          if (waiting) return {drop: `${waiting.description} is still running in the background.`};
+        }
+      } catch {
+        // Keep delivery intact when the host cannot confirm the task's state.
+      }
+    }
+    beginStatusBandTurn();
     return next(e);
   });
 
