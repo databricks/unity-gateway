@@ -322,7 +322,12 @@ def _oauth_http_client(client: str, workspace: str, *, use_pat: bool) -> str | N
 
 
 def _native_oauth_http_entry(
-    oauth_client: str | None, url: str, workspace: str, profile: str | None
+    oauth_client: str | None,
+    url: str,
+    workspace: str,
+    profile: str | None,
+    *,
+    login_required: Mapping[str, bool] | None = None,
 ) -> str | None:
     """The OAuth app id to register ``url`` as a native HTTP+OAuth entry, or ``None`` for the proxy.
 
@@ -339,6 +344,8 @@ def _native_oauth_http_entry(
     connection = connection_from_url(url)
     if connection is None:
         return None
+    if login_required is not None:
+        return oauth_client if login_required.get(url, False) else None
     try:
         token = get_databricks_token(workspace, profile)
     except RuntimeError:
@@ -346,6 +353,34 @@ def _native_oauth_http_entry(
     if not mcp_service_needs_connection_login(workspace, token, connection):
         return None
     return oauth_client
+
+
+def _managed_connection_login_requirements(
+    servers: list[dict],
+    workspace: str,
+    profile: str | None,
+    oauth_clients: Mapping[str, str | None],
+) -> dict[str, bool]:
+    """Resolve connection login once per service for this configure run, with bounded concurrency."""
+    if not any(oauth_clients.values()):
+        return {}
+    connections: dict[str, str] = {}
+    for server in servers:
+        url = server.get("url")
+        if isinstance(url, str) and (connection := connection_from_url(url)):
+            connections[url] = connection
+    if not connections:
+        return {}
+    try:
+        token = get_databricks_token(workspace, profile)
+    except RuntimeError:
+        return {}
+
+    def lookup(url: str) -> tuple[str, bool]:
+        return url, mcp_service_needs_connection_login(workspace, token, connections[url])
+
+    with ThreadPoolExecutor(max_workers=min(4, len(connections))) as pool:
+        return dict(pool.map(lookup, sorted(connections)))
 
 
 def _needs_native_cimd_rewrite(client: str, name: str, url: str, client_id: str) -> bool:
@@ -1136,6 +1171,9 @@ def _agent_managed_file_entries(
     workspace: str,
     profile: str | None,
     use_pat: bool,
+    *,
+    oauth_clients: Mapping[str, str | None] | None = None,
+    login_required: Mapping[str, bool] | None = None,
 ) -> dict[str, dict]:
     """Build the OS-managed-file entry map (name -> entry) for ``agent`` from the resolved set.
 
@@ -1143,11 +1181,13 @@ def _agent_managed_file_entries(
     No-login services and other URLs use the proxy. Only servers naming ``agent``
     in their ``clients`` are included.
     """
-    oauth_client = (
-        _oauth_http_client(agent, workspace, use_pat=use_pat)
-        if agent in ("claude", "codex")
-        else None
-    )
+    oauth_client = None
+    if agent in ("claude", "codex"):
+        oauth_client = (
+            oauth_clients.get(agent)
+            if oauth_clients is not None
+            else _oauth_http_client(agent, workspace, use_pat=use_pat)
+        )
     entries: dict[str, dict] = {}
     for server in servers:
         name = _server_name(server)
@@ -1158,7 +1198,9 @@ def _agent_managed_file_entries(
             # Native HTTP+OAuth only for a connection-backed mcp-service; a no-login service
             # (web_search) or non-mcp-services URL stays on the stdio proxy, so both delivery
             # paths resolve identically and no-login services aren't forced into an OAuth flow.
-            native_client = _native_oauth_http_entry(oauth_client, url, workspace, profile)
+            native_client = _native_oauth_http_entry(
+                oauth_client, url, workspace, profile, login_required=login_required
+            )
             if native_client is None:
                 if agent == "claude":
                     continue
@@ -1220,6 +1262,19 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
         profile, clients, working = state.get("profile"), [], []
     use_pat = bool(state.get("use_pat"))
 
+    oauth_clients = (
+        {
+            client: _oauth_http_client(client, workspace, use_pat=use_pat)
+            for client in clients
+            if client in PINNED_CIMD_CLIENT_IDS
+        }
+        if working
+        else {}
+    )
+    login_required = _managed_connection_login_requirements(
+        working, workspace, profile, oauth_clients
+    )
+
     eligible = set()
     if "claude" in scope and claude.managed_mcp_uses_managed_file(workspace, use_pat=use_pat):
         eligible.add("claude")
@@ -1236,7 +1291,15 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
             continue
         is_eligible = agent in eligible
         entries = (
-            _agent_managed_file_entries(agent, working, workspace, profile, use_pat)
+            _agent_managed_file_entries(
+                agent,
+                working,
+                workspace,
+                profile,
+                use_pat,
+                oauth_clients=oauth_clients,
+                login_required=login_required,
+            )
             if is_eligible
             else {}
         )
@@ -1333,6 +1396,8 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
         profile,
         use_pat=use_pat,
         batch_agents=frozenset(fallback_clients),
+        oauth_clients=oauth_clients,
+        login_required=login_required,
     )
     state["managed_mcp_servers"] = working_fallback
     save_state(state)
@@ -1556,6 +1621,7 @@ def _managed_mcp_entry(
     use_pat: bool,
     always_load: bool,
     http_client: str | None,
+    login_required: Mapping[str, bool] | None = None,
 ) -> dict:
     """The user-scope config entry one MCP server registers as for ``client``, mirroring the
     delivery choice in :func:`configure_client_mcp_server` so a batched direct write matches exactly
@@ -1566,7 +1632,9 @@ def _managed_mcp_entry(
     re-fetch authorization metadata per server. HTTP+OAuth applies here only when that client is
     set AND this server's URL is a *connection-backed* mcp-service (:func:`_native_oauth_http_entry`);
     a no-login service (e.g. web_search) or any other URL uses the stdio proxy."""
-    native_client = _native_oauth_http_entry(http_client, url, workspace, profile)
+    native_client = _native_oauth_http_entry(
+        http_client, url, workspace, profile, login_required=login_required
+    )
     if client == "claude":
         if native_client is not None:
             return claude.managed_mcp_entry(url, client_id=native_client)
@@ -1603,6 +1671,8 @@ def apply_mcp_server_changes(
     *,
     use_pat: bool = False,
     batch_agents: frozenset[str] = frozenset(),
+    oauth_clients: Mapping[str, str | None] | None = None,
+    login_required: Mapping[str, bool] | None = None,
 ) -> bool:
     original_by_name = _servers_by_name(original_servers)
     working_by_name = _servers_by_name(working_servers)
@@ -1621,7 +1691,12 @@ def apply_mcp_server_changes(
     batch_remove: dict[str, set[str]] = {c: set() for c in batched}
     # The HTTP+OAuth choice is URL-independent, so read CIMD metadata once per batched
     # client here rather than once per server inside the entry-building loop below.
-    batch_http_client = {c: _oauth_http_client(c, workspace, use_pat=use_pat) for c in batched}
+    batch_http_client = {
+        c: oauth_clients[c]
+        if oauth_clients is not None and c in oauth_clients
+        else _oauth_http_client(c, workspace, use_pat=use_pat)
+        for c in batched
+    }
     migration_http_client: dict[str, str | None] = {}
     changed = False
 
@@ -1653,11 +1728,17 @@ def apply_mcp_server_changes(
                 if client not in migration_http_client:
                     migration_http_client[client] = batch_http_client.get(client)
                     if client not in batched:
-                        migration_http_client[client] = _oauth_http_client(
-                            client, workspace, use_pat=use_pat
+                        migration_http_client[client] = (
+                            oauth_clients[client]
+                            if oauth_clients is not None and client in oauth_clients
+                            else _oauth_http_client(client, workspace, use_pat=use_pat)
                         )
                 native_client = _native_oauth_http_entry(
-                    migration_http_client[client], url, workspace, profile
+                    migration_http_client[client],
+                    url,
+                    workspace,
+                    profile,
+                    login_required=login_required,
                 )
                 if native_client is None or not _needs_native_cimd_rewrite(
                     client, name, url, native_client
@@ -1672,6 +1753,7 @@ def apply_mcp_server_changes(
                         use_pat=use_pat,
                         always_load=False,
                         http_client=native_client,
+                        login_required=login_required,
                     )
                 else:
                     work[client].append(
@@ -1694,6 +1776,7 @@ def apply_mcp_server_changes(
                     use_pat=use_pat,
                     always_load=always_load,
                     http_client=batch_http_client[client],
+                    login_required=login_required,
                 )
             else:
                 work[client].append(
