@@ -291,6 +291,64 @@ test('missing command fails safely and unrouted launches stay inert', { options:
   await ui.unmount();
 });
 
+test('a failed read surfaces the CLI error envelope', { options }, async ($, on) => {
+  let stdout: string = JSON.stringify({ v: 1, error: 'cannot read session log at /tmp/missing.jsonl' });
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('process.run', () => ({ value: { exitCode: 1, stderr: '', stdout } }));
+  await $.command.run(command);
+  const ui = await $.ui.mount(pane);
+  const tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain('Could not read Smart Router logs.');
+  expect(tree).toContain('cannot read session log at /tmp/missing.jsonl');
+  await ui.unmount();
+  // A failure without a readable envelope keeps only the generic line.
+  stdout = '';
+  await $.command.run(command);
+  const generic = await $.ui.mount(pane);
+  const bare = JSON.stringify(await generic.drawn());
+  expect(bare).toContain('Could not read Smart Router logs.');
+  expect(bare).not.toContain('cannot read session log');
+  await generic.unmount();
+});
+
+test('the open pane refreshes on turn completion and a closed one stops', { options }, async ($, on) => {
+  let reads = 0;
+  let decisions: unknown[] = records;
+  let open: unknown[] = [{ id: 'smart-router-logs' }];
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('ui.panes', () => ({ value: open }));
+  on('turn.complete', () => ({ text: '' }));
+  on('process.run', () => {
+    reads++;
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions }) } };
+  });
+  // No reader runs while the pane has never been opened.
+  await $.turn.complete({ answer: '' });
+  expect(reads).toBe(0);
+  await $.command.run(command);
+  expect(reads).toBe(1);
+  const ui = await $.ui.mount(pane);
+  expect(JSON.stringify(await ui.drawn())).toContain('older task');
+  await ui.unmount();
+  // A decision recorded after the pane opened shows up on the next turn completion.
+  decisions = [records[1]];
+  await $.turn.complete({ answer: '' });
+  expect(reads).toBe(2);
+  const refreshed = await $.ui.mount(pane);
+  const tree = JSON.stringify(await refreshed.drawn());
+  expect(tree).toContain('1 routed prompt this session');
+  expect(tree).not.toContain('older task');
+  await refreshed.unmount();
+  // Once the user closes the pane, later turns spawn no reader.
+  open = [];
+  decisions = records;
+  await $.turn.complete({ answer: '' });
+  await $.turn.complete({ answer: '' });
+  expect(reads).toBe(2);
+});
+
 test('unrouted launch declines logs and usage includes logs', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '0' } }, async ($) => {
   expect((await $.command.run(command)).text).toContain('was not enabled');
   expect((await $.command.run({ command: 'smart-router', args: 'wrong' })).text).toBe('Usage: /smart-router on|off|logs');

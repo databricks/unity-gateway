@@ -213,6 +213,7 @@ async function load($: any, options: PluginOptions): Promise<void> {
 }
 
 export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnabled: boolean): void {
+  // The open decision and its request token: a newer open or a logs rerun retires a load.
   let detail: Detail | null = null;
   let detailRequest = 0;
 
