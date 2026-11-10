@@ -19,7 +19,7 @@ The same entry point routes Agent/Task calls in a native `tool.call` hook. It pi
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
 the `routeCommand` plugin option, and continues with the original input. The matching
 `agent.spawn` hook applies only the selected model, preserving the agent's type, prompt,
-name and permissions. The routing response contains only `model` and `rationale`;
+name and permissions. A successful routing response contains `model` and `rationale`;
 the model retains Claude's `[1m]` context hint for eligible GPT models.
 New native launches offer task roles without generated model-specific agent types.
 Smart Router chooses the execution model independently of the requested role or name.
@@ -69,8 +69,13 @@ Cards survive a turn that ends while the reply waits on a background agent and a
 only when the turn is aborted. Nothing is drawn above the prompt and nothing is logged.
 Decisions are kept for the session; a plugin reload clears them from the screen, and the
 routing decision audit log is unchanged.
-Disabled routing, command failures, and invalid responses keep the original call;
-failures also log a diagnostic.
+A confirmed native background-task 429 excludes that model and equivalent aliases from
+new router requests for 60 seconds. The router chooses from the remaining candidates;
+no candidates or a routing failure during cooldown denies the new spawn. Resumes retain
+their native behavior. A spawn guard also rejects a model rate-limited while routing was
+in flight. This launch-local cooldown does not retry the failed child.
+Explicitly disabled routing keeps the original call. Outside cooldown, command failures
+and invalid responses also keep it and log a diagnostic.
 
 In eligible Smart Router Orchestrator launches, `tool.describe` replaces the native
 Agent/Task delegation advice with the orchestrator's instructions. It changes only the

@@ -652,24 +652,32 @@ test('a spawn step preserves native text and thinking with reviewed tool inputs'
   expect(spawn.chunks[3].json).toBe(JSON.stringify(originalInput));
 });
 
-test('a confirmed 429 temporarily uses the parent model and reports the actual launch model', async ($, on) => {
+test('a confirmed 429 excludes the model from routing until its cooldown expires', async ($, on) => {
   const blocked = 'system.ai.glm-5-3-flash[1m]';
   const parent = 'system.ai.claude-opus-4-8';
-  let selected: string | undefined = blocked;
-  let parentModel = parent;
+  const alternative = 'system.ai.claude-haiku-5-5';
+  const choice = (model: string) => ({ model, rationale: 'Selected for the task' });
+  let response: object | undefined = choice(blocked);
+  let exitCode = 0;
   let timestamp = 10_000;
   const forwarded: any[] = [];
+  const requests: any[] = [];
+  const spawns: any[] = [];
   on('clock.now', () => ({ value: timestamp }));
   on('session.id', () => ({ value: 'session-1' }));
   on('fs.write', () => ({ value: undefined }));
-  on('process.run', () => ({ value: { exitCode: 0, stderr: '',
-    stdout: selected ? JSON.stringify({ model: selected, rationale: 'Selected for the task' }) : '',
-  } }));
-  on('agent.spawn', ($, e) => ({ model: e.model === 'opus' ? parent : e.model!, agentId: `child-${e.tool_use_id}` }));
+  on('process.run', ($, e) => {
+    requests.push(JSON.parse(e.init.stdin));
+    return { value: { exitCode, stderr: '', stdout: response ? JSON.stringify(response) : '' } };
+  });
+  on('agent.spawn', ($, e) => {
+    spawns.push(e);
+    return { model: e.model === 'opus' ? parent : e.model!, agentId: `child-${e.tool_use_id}` };
+  });
   on('tool.call', async (_, e) => {
     const spawned = await $.agent.spawn({
       tool_use_id: e.tool_use_id!, prompt: originalInput.prompt, description: originalInput.description,
-      subagentType: 'general-purpose', model: 'opus', parentModel,
+      subagentType: 'general-purpose', model: 'opus', parentModel: parent,
       provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
     });
     return spawned.deny ? { deny: spawned.deny } : {
@@ -699,31 +707,45 @@ test('a confirmed 429 temporarily uses the parent model and reports the actual l
   ].entries()) {
     await $.prompt.submit(event);
     expect((await launch(`unaffected-${index}`)).result.resolvedModel).toBe(blocked);
+    expect(requests.at(-1).excluded_models).toBeUndefined();
   }
   await $.prompt.submit(notice);
   expect(forwarded.at(-1)).toEqual(notice);
+  response = choice(alternative);
   const retry = await launch('retry');
-  expect(retry.result.resolvedModel).toBe(parent);
+  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+  expect(retry.result.resolvedModel).toBe(alternative);
   expect(retry.context?.[0]).toBe('Existing context');
-  expect(retry.context?.[1]).toContain(`"launched_model":"${parent}"`);
-  selected = 'system.ai.claude-haiku-5-5';
-  expect((await launch('other-model')).result.resolvedModel).toBe(selected);
-  selected = undefined;
+  expect(retry.context?.[1]).toContain(`"launched_model":"${alternative}"`);
+  expect((await $.agent.spawn({ ...spawns[0], resume: { agentId: 'child-first' } })).model).toBe(blocked);
+  const spawnCount = spawns.length;
+  response = choice(blocked);
+  expect((await launch('stale-selection')).deny).toContain('selected model is now rate-limited');
+  response = { deny: 'All routing candidates are rate-limited.' };
+  expect((await launch('all-limited')).deny).toBe('All routing candidates are rate-limited.');
+  response = undefined;
+  expect((await launch('empty-response')).deny).toContain('could not select an available model');
+  exitCode = 1;
+  expect((await launch('failed-router')).deny).toContain('could not select an available model');
+  exitCode = 0;
+  expect(spawns.length).toBe(spawnCount);
+  response = { disabled: true };
   expect((await launch('routing-off')).context).toEqual(['Existing context']);
-  selected = blocked;
-  parentModel = blocked.replace('[1m]', '');
-  expect((await launch('blocked-parent')).deny).toContain('routed and parent models are rate-limited');
-  parentModel = parent;
+  response = choice(alternative);
   timestamp += 59_999;
-  expect((await launch('before-expiry')).result.resolvedModel).toBe(parent);
+  expect((await launch('before-expiry')).result.resolvedModel).toBe(alternative);
+  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
   timestamp += 1;
+  response = choice(blocked);
   expect((await launch('after-expiry')).result.resolvedModel).toBe(blocked);
+  expect(requests.at(-1).excluded_models).toBeUndefined();
   await $.prompt.submit({ ...notice, text: notice.text.replace('HTTP 429,', 'HTTP 429, request id synthetic-request,') });
-  expect((await launch('request-id')).result.resolvedModel).toBe(parent);
-  selected = parent;
-  await launch('parent-limited');
+  response = choice(alternative);
+  expect((await launch('request-id')).result.resolvedModel).toBe(alternative);
+  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
   await $.prompt.submit({ ...notice, text: notice.text
-    .replace('child-first', 'child-parent-limited').replace('system.ai.glm-5-3-flash', parent) });
-  selected = blocked;
-  expect((await launch('both-limited')).deny).toContain('routed and parent models are rate-limited');
+    .replace('child-first', 'child-request-id').replace('system.ai.glm-5-3-flash', 'databricks-claude-haiku-5-5') });
+  response = { deny: 'All routing candidates are rate-limited.' };
+  expect((await launch('both-limited')).deny).toBe('All routing candidates are rate-limited.');
+  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash', 'claude-haiku-5-5']);
 });

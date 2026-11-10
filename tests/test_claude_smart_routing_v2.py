@@ -750,7 +750,39 @@ class TestSubagentRouting:
         assert decision_record["original_subagent_type"] == "Explore"
         assert decision_record["tool_use_id"] == "original-sonnet-call"
 
-    def test_decision_log_keeps_the_request_menu_and_router(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        ("excluded_models", "expected_models"),
+        [
+            (
+                [],
+                [
+                    "system.ai.claude-opus-4-8",
+                    "anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]",
+                    "system.ai.claude-sonnet-5",
+                    "team.models.claude-opus-4-8",
+                ],
+            ),
+            (
+                ["anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]"],
+                ["system.ai.claude-sonnet-5", "team.models.claude-opus-4-8"],
+            ),
+            (
+                ["team.models.claude-opus-4-8"],
+                [
+                    "system.ai.claude-opus-4-8",
+                    "anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]",
+                    "system.ai.claude-sonnet-5",
+                ],
+            ),
+            (
+                ["claude-opus-4-8", "databricks-claude-sonnet-5", "team.models.claude-opus-4-8"],
+                [],
+            ),
+        ],
+    )
+    def test_decision_log_keeps_the_filtered_request_menu_and_router(
+        self, tmp_path, monkeypatch, excluded_models, expected_models
+    ):
         monkeypatch.delenv("SMART_ROUTER_NAME", raising=False)
         decisions_path = tmp_path / "decisions.jsonl"
         monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", decisions_path)
@@ -764,10 +796,17 @@ class TestSubagentRouting:
             )
 
         monkeypatch.setattr(routing.urllib.request, "urlopen", fake_urlopen)
-        v2.route_claude_subagent(
+        available = [
+            "system.ai.claude-opus-4-8",
+            "anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]",
+            "databricks-claude-sonnet-5",
+            "team.models.claude-opus-4-8",
+        ]
+        output = v2.route_claude_subagent(
             {
                 "session_id": "s1",
                 "tool_name": "Agent",
+                "excluded_models": excluded_models,
                 "tool_input": {
                     "subagent_type": "Explore",
                     "prompt": "find all Python entry points",
@@ -776,15 +815,22 @@ class TestSubagentRouting:
             },
             workspace="https://example.com",
             token="token",
-            available_models=["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"],
+            available_models=available,
             audit_decision=True,
         )
 
+        if not expected_models:
+            assert output == {
+                "deny": "All routing candidates are rate-limited. Wait for the cooldown to expire before starting another subagent."
+            }
+            assert captured == {}
+            assert not decisions_path.exists()
+            return
         body = captured["body"]
         assert body["route_options"] == [
-            {"model": "system.ai.claude-opus-4-8", "harness": "claude"},
-            {"model": "system.ai.claude-sonnet-5", "harness": "claude"},
+            {"model": model, "harness": "claude"} for model in expected_models
         ]
+        assert output["model"] == expected_models[0]
         assert body["task"] == {"prompt": "find all Python entry points"}
         record = json.loads(decisions_path.read_text())
         assert record["route_options"] == body["route_options"]

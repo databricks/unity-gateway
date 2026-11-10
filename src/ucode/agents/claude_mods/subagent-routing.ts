@@ -18,6 +18,7 @@ const safeText = (value: unknown, limit: number): string | undefined => {
 
 const canonicalModel = (model: string): string => {
   const original = model.replace(/^anthropic-aigw-[0-9a-fA-F]{8}-/, '')
+    .replace(/^databricks-claude-/, 'system.ai.claude-')
   if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
   return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
 }
@@ -150,6 +151,11 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
     const { tool, tool_use_id, agentId: _agentId, ...input } = e
     let route
+    let denial: string | undefined
+    const timestamp = await now($)
+    const excluded_models = [...rateLimitedUntil]
+      .filter(([, until]) => timestamp !== undefined && until > timestamp)
+      .map(([model]) => model)
     let spinner: { cancel: () => void } | undefined
     if (tool_use_id) {
       if (!names.has(tool_use_id)) {
@@ -181,12 +187,17 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     try {
       const session_id = await $.session.id()
       const result = await $.process.run(command, {
-        stdin: JSON.stringify({ session_id, tool_use_id, tool_name: tool, tool_input: input }),
+        stdin: JSON.stringify({ session_id, tool_use_id, tool_name: tool, tool_input: input,
+          ...(excluded_models.length ? { excluded_models } : {}) }),
         timeoutMs: 35000,
       })
       if (result.exitCode !== 0) throw new Error('Router command failed')
-      // An empty response means routing is disabled or no model could be selected.
-      route = result.stdout.trim() ? JSON.parse(result.stdout) : undefined
+      const response = result.stdout.trim() ? JSON.parse(result.stdout) : undefined
+      if (typeof response?.deny === 'string' && response.deny) denial = response.deny
+      else if (response?.disabled !== true) {
+        if (response === undefined && excluded_models.length) throw new Error('Missing routing decision')
+        route = response
+      }
       if (route !== undefined && (
           typeof route?.model !== 'string' || !route.model ||
           typeof route.rationale !== 'string')) {
@@ -194,7 +205,11 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       }
     } catch {
       route = undefined
-      $.ui.log('Smart Router could not route this subagent; using its original settings.')
+      if (excluded_models.length) {
+        denial = 'Smart Router could not select an available model during rate-limit cooldown. Try again later.'
+      } else {
+        $.ui.log('Smart Router could not route this subagent; using its original settings.')
+      }
     } finally {
       spinner?.cancel()
     }
@@ -212,6 +227,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       }
       $.ui.invalidate('ui.render')
     }
+    if (denial) return { deny: denial }
     // Auto mode reviewed this input; model identity belongs in the result, not its arguments.
     const result = await next(e)
     const record = tool_use_id ? records.get(tool_use_id) : undefined
@@ -228,17 +244,11 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   })
 
   on('agent.spawn', async ($, e, next) => {
-    let route = e.resume ? undefined : records.get(e.tool_use_id)
+    const route = e.resume ? undefined : records.get(e.tool_use_id)
     const timestamp = route ? await now($) : undefined
     if (route && timestamp !== undefined && (rateLimitedUntil.get(canonicalModel(route.model)) ?? 0) > timestamp) {
-      // Use the running parent's resolved model; the call's alias can select the failed model again.
-      if ((rateLimitedUntil.get(canonicalModel(e.parentModel)) ?? 0) > timestamp) {
-        return { deny: 'The routed and parent models are rate-limited. Wait for the limit to reset before starting another subagent.' }
-      }
-      route = { ...route, model: e.parentModel,
-        rationale: `${shortModel(route.model)} recently hit a rate limit; using the parent model during its cooldown.` }
-      records.set(e.tool_use_id, route)
-      $.ui.invalidate('ui.render')
+      // A failure notice may arrive while the routing request is in flight.
+      return { deny: 'The selected model is now rate-limited. Retry to select another available model.' }
     }
     const name = route?.name
     const result = await next(route ? { ...e, model: route.model } : e)
