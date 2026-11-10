@@ -1,5 +1,23 @@
 # Integration tests
 
+Windows Desktop detection allows up to 30 seconds for the native package query.
+Component coverage in `test_desktop_setup.py` verifies slow successful detection creates
+UG's profile, while missing packages, timeouts, launch errors, and query failures leave
+it absent. Query failures report their actual cause instead of asking users to open
+an app that is already installed. Native Cowork CI still requires completed inference.
+
+Windows Cowork desktop coverage and required integration gating are
+documented in the [main test guide](../README.md).
+
+Provider target component tests filter Claude targets by Messages API metadata across
+Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
+metadata across OpenAI, Azure OpenAI, Foundry, Bedrock, Mantle, and custom providers. They
+preserve multiple custom deployment names and cover provider-picker exclusion, the generic
+empty-target error, `allow_all_targets` bypass, and custom Claude defaults through
+configuration and launch with explicit overrides. Other tools retain existing filtering.
+Opaque deployment names such as `team-coding` have component coverage only; the custom-provider
+live journeys below use vendor model IDs.
+
 The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
 service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
 It replaces the obsolete stdio-only expectation; this checks configuration, not live login.
@@ -83,6 +101,10 @@ from configuration/installation, protects read-only managed MCP rows, and checks
 attribution against source identity, target directories, and surviving files. These checks
 do not establish live workspace discovery or agent invocation coverage.
 
+`../test_skills_state.py` covers indexed attribution reconciliation, malformed directory containers and list
+members, within-batch ownership changes, and orphan cleanup with persisted state. These are
+component checks; live skill-download latency is unmeasured.
+
 Claude answer delivery has offline transcript and subprocess coverage in
 `../test_claude_answer_delivery.py`, including stdout preservation for text, JSON and
 streaming JSON when UG redirects diagnostics to stderr. Live model/gateway selection
@@ -126,7 +148,13 @@ ID rather than its alias; this does not pin or prove its backing model revision.
 the real subscription provider through configure and completes
 Messages inference using the subscription token and separate Databricks header returned by its
 helper. Non-relay MPS Desktop configuration is asserted in CUJ2's existing MPS configuration
-journey; no dedicated Desktop MPS integration test is needed.
+journey and in the existing Anthropic, Bedrock, Foundry, and custom Foundry configure/TUI
+journeys. Those journeys supply an isolated Desktop directory and explicit CLI profile,
+then assert literal readable labels and unchanged routing IDs/provider headers in the
+generated 3P profile. Databricks Hosted configure and the Desktop lifecycle journey also
+assert `Claude Haiku 4.5`; CUJ2 requires that label for its dated Anthropic target, including
+when discovery echoes the ID as its display name. Expected labels do not call the
+application formatter. No extra configure or live task is added to these journeys.
 
 Each of these two journeys supplies pre-existing Desktop account directories as inputs and
 requires real Claude CLI installation of the Cowork plugin on both Linux and Windows.
@@ -142,32 +170,42 @@ through the real Claude CLI before configuration; its registry entry and install
 survive installation, reconfiguration, and revert unchanged. Revert also removes UG's marketplace
 registration and generated user source. Root-file preservation is covered by component tests;
 the integration journeys do not inspect OS-managed directories.
-`test_desktop_marketplace.py` covers ordinary default/`--user` configuration writing
-only the user source, no elevation, preservation of the registered legacy root source,
-one registration when switching an earlier root source to user scope, explicit cache
-refresh, content versions (including asset-only skill updates), downloaded workspace
-skills/assets, previous-account cleanup,
-malformed marketplace metadata (including missing or nonstring directory paths),
-equivalent path aliases, source-switch failure recovery
-for both current and legacy-only plugin identities, preserved nonlocal registrations,
-and retained user source/state after refresh failures. Legacy uninstall errors and timeouts
-warn while preserving the updated plugin and native connectors; retry removes the legacy
-registration and preserves unrelated plugins. Explicit global skips ordinary
-Cowork setup. First-time ordinary configure skips an absent Cowork sessions directory.
-Overlapping installer/state checks and duplicate simulated-OS cases are consolidated;
-user installation, persisted account state and registered-source preservation remain covered.
-Unreferenced root-path sentinels and an ineffective temporary-directory alias test were
-removed; content updates and empty-payload cache refresh now share one lifecycle test.
-Equivalent registered-directory aliases remain covered separately.
-Dry-run preservation covers both fresh and already-configured installations.
-Root bundle writer checks belong to the separate MDM follow-up.
-The [component inventory](../README.md) records the isolated native CLI marketplace-add
-spot check; it does not establish Desktop GUI behavior or failure recovery.
-Temporary filesystem destinations are real; external Claude registry/cache operations
-and platform privilege boundaries are simulated. These checks do not establish native
-Desktop sync, Windows ACLs, fresh-user MDM provisioning, or connector runtime.
-`test_desktop_configure_cli.py` also checks explicit-global selection versus default and
-`--user`, reset after the command, and skipping user Desktop profile, Cowork, and Code-tab plugin writers.
+Desktop source placement, native-command simulation, root publication, CLI scope and
+organization-plugin contents, per-user OAuth bindings, and machine-file removal have
+[component coverage](../README.md). These checks use temporary destinations and simulate
+external workspace, ownership, and Claude registration boundaries.
+MDM recovery ledgers, cross-file restoration, interrupted/account-switch cleanup, and
+deferred uninstall are outside this release. Their MDM-only component tests were removed
+with that behavior; ordinary user-plugin and bundle recovery coverage is unchanged.
+Standalone Desktop-only provisioning and its argument tests were removed in favor of
+`configure --global`. Existing auth/MCP/tracing commands are unchanged; MDM-specific
+saved-PAT coexistence tests were removed with that separate behavior change.
+CLI-agent scope unit coverage isolates Desktop prerequisites; Desktop scope components
+exercise macOS Desktop validation. Shared Claude PAT handling is tested against the global
+Desktop OAuth branch. Command-local scope checks isolate machine prerequisites on macOS;
+failure checks cover runtime prerequisites and publication, warning while CLI setup succeeds.
+Global Claude/Codex auth-routing components cover external bearers, bearer commands, and
+normal login. MDM delegates token retrieval to the existing helper; no live service-principal
+authentication is exercised by these component checks.
+These checks replace external authentication and do not exercise native macOS failures.
+Other component regressions cover MCP-only requests bypassing Desktop provisioning,
+intermediate runtime symlink trust, and Databricks/Claude CLI validation before MDM
+authentication or publication. Desktop checks no longer block ordinary CLI setup. Omitted-agent selection and the
+rejection of `--global --mcp` before Desktop publication also have component
+coverage; these are not native macOS integration checks.
+
+MDM component checks assert connectors/tool search in the managed plist and skills/hooks
+in a required root organization plugin with matching version metadata. Provisioning and
+updates leave user profiles and plugin registrations untouched. Plain `ug revert`
+attempts both user and machine cleanup. Component checks cover sudo denial without
+blocking user cleanup, retained state, retry, MDM-only installations, and no elevation
+when nothing is installed. Foreign-policy preservation and binary-plist update/removal
+also have component coverage. Root-start rejection tests were replaced with on-demand
+elevation and caller-owned staging checks; actual sudo prompts still need native Mac validation.
+The earlier LaunchAgent and per-user cache-sync behavior and its tests were removed; ordinary user-cache tests remain.
+Native organization-plugin loading, restart-based updates, fresh-user timing, plist precedence,
+and GUI skill/tool invocation remain unverified by these Linux/Windows journeys.
+Follow the [MDM rollout checklist](../../docs/claude-desktop-mdm.md) before fleet rollout.
 
 The existing Linux/Windows **Full journeys · Claude** jobs run both complete journeys against
 the same workspace as their model calls. The workspace must expose system.ai.web_search and allow
@@ -260,8 +298,25 @@ The Claude Bedrock journeys use Unity Catalog service-credential auth
 `us.anthropic.claude-sonnet-5-5` from the restricted
 `main.ucode.ci_bedrock_runtime_svc_cred_filtered_models` service (Sonnet 5.5 + Opus 5.5, us-west-2).
 The headless journeys pin Sonnet 5.5 through the allow-all
-`main.ucode.ci_bedrock_runtime_svc_cred_all_models`, Opus 5.5 through the filtered service. The Codex journeys pin `us.openai.gpt-5.6-terra` through the allow-all runtime service and
+`main.ucode.ci_bedrock_runtime_svc_cred_all_models`, and Opus 5.5 through the filtered service.
+`test_ug_configure_claude_bedrock_mantle_mps` selects
+`main.ucode.ci_bedrock_mantle_svc_cred_claude` through the real configure picker, verifies the
+saved provider and Claude provider header, then launches the real TUI without a provider override
+on `anthropic.claude-opus-5-5`. It requires a completed file-reading task, the selected response
+model, normal exit, and disabled smart routing. This replaces the Mantle headless journey and
+runs in the full Claude lanes on Linux and Windows. The Mantle service uses us-east-1.
+Override its inputs with `--claude-bedrock-mantle-provider` and `--claude-bedrock-mantle-model`.
+Codex has both headless and interactive journeys for Bedrock Runtime and Mantle.
+`test_ug_configure_codex_bedrock_runtime_mps` and
+`test_ug_configure_codex_bedrock_mantle_mps` each select their provider through the real
+configure picker, verify the saved provider, and launch the real Codex TUI without a
+provider override. Each requires a completed file-reading task, the selected model,
+normal exit, and disabled smart routing. Both run in the full Codex lanes on Linux and Windows.
+The Runtime journeys pin `us.openai.gpt-5.6-terra` through
+`main.ucode.ci_bedrock_runtime_svc_cred_all_models`; the Mantle journeys pin
 `openai.gpt-5.6-terra` through `main.ucode.ci_bedrock_mantle_svc_cred_gpt` (us-west-2).
+Override these inputs with `--codex-bedrock-runtime-provider` / `--codex-bedrock-runtime-model`
+and `--codex-bedrock-mantle-provider` / `--codex-bedrock-mantle-model`.
 
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
@@ -303,10 +358,17 @@ evidence is checked, because Claude can resume a child after its first completed
 
 `../test_startup_imports.py` covers the bare version fast path, deferred imports,
 metadata fallback, and other-argument dispatch as component checks. Installation
-checks still exercise real console-script help and version output; neither suite
-asserts end-to-end agent startup latency. The component suite also checks that
+checks exercise both `ug` and `ucode` help and version output with freshly resolved
+dependencies, including Typer's type-display API. `../test_cli.py::TestHelp` protects
+the help layout across supported Typer versions. Neither suite asserts end-to-end
+agent startup latency. The component suite also checks that
 version output alone cannot establish CLI health when startup dependencies are
 absent; use `--help` for the startup-import probe.
+
+`TestSpinner` in `../test_ui.py` covers waking a waiting animation thread on
+normal and exceptional exit, terminal-line cleanup, and no animation for redirected
+output. These synchronized component checks do
+not measure live agent startup or gateway latency.
 
 `TestEnsureDatabricksCliVersion` in `../test_databricks.py`
 checks that repeated launch preflights reuse a successful CLI version probe, higher
@@ -393,6 +455,18 @@ resource-name ID extraction, unavailable usage, and errors.
 CUJ5 compares a known personal limit's displayed spend, threshold, and percentage
 with live values before and after `ug usage --all`.
 
+Dashboard-link component coverage in `../test_usage.py`, `../test_databricks.py`, and
+`../test_workspace_selection.py` checks the authenticated dashboard GET, workspace selector
+headers, the optional footer after limits or empty/unavailable-budget messages, literal
+URL rendering, and omission for absent URLs or failed lookups. One representative
+failure reason covers the optional lookup; existing budget tests cover `--all` separately.
+An explicit missing-URL case checks that no footer or extra blank line is printed.
+Presentation checks use a real Rich Console at 40 columns with explicit modern-terminal,
+legacy-Windows, and redirected modes. Modern terminals emit the hyperlink target; legacy
+Windows output keeps the full styled URL without OSC 8 links. Checks also cover the bold
+label and link indicator, trailing blank line, URL color, and intact long URLs. These
+checks do not establish native Windows console behavior or live dashboard navigation.
+
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
 enforced by Ruff. These component checks do not establish native Windows coverage
 for every agent; the Windows journeys below validate their explicitly selected paths.
@@ -453,6 +527,13 @@ Caller permission-deny preservation is covered by `TestBuildClaudeArgv` in
 Native parent/child enforcement and the distinction between technical search exclusion
 and a semantic search deny are not yet covered by this integration suite.
 
+`TestEnsureHooksModulesGate` in `../test_agent_claude.py` uses real local locks to cover
+already-enabled launch gates without lock acquisition and updates that re-read after
+another writer changes the file. It also covers stale flags, dry-run, invalid/unreadable
+files, and concurrent MCP updates. The controlled benchmark in
+`scripts/benchmark_claude_hooks_gate.py` isolates lock contention; neither it nor these
+component tests establishes live Claude startup latency or production p90 improvement.
+
 OpenCode `--model` / `-m` selection is covered by unit/component tests in
 `test_cli.py` and `test_agent_opencode.py`: the shared CLI passes raw model values,
 and the OpenCode launcher validates and converts them before starting the native
@@ -471,8 +552,9 @@ sign-in-expired message. It also covers configure/revert, including upgrading fr
 covered by the hermetic proxy tests in `tests/test_gateway_proxy_integration.py`.
 `test_ug_copilot_models.py` covers the per-session model registry: one setup runs a
 Claude task on a model older than its family's newest (only the full catalog registers it)
-and then a GPT task chosen with Copilot's `dbx-responses/<model>` form, an unknown model
-fails before Copilot starts,
+and then a GPT task chosen with Copilot's `dbx-responses/<model>` form, another setup runs a
+GLM, a Kimi and a DeepSeek task on `dbx-completions`, an unknown model fails before Copilot
+starts,
 and the TUI switches from Claude to GPT with `/model` mid-session. Model evidence comes
 from Copilot's own `~/.copilot/session-state/*/events.jsonl` (`utils/agents/copilot.py`).
 `test_ug_copilot_model_location.py` launches Copilot from fresh state with `--model-location` on the
@@ -668,8 +750,8 @@ unacquired handles. Paths use temporary homes across simulated macOS, Windows, a
 including relocated/default Windows Local AppData, missing apps, invalid paths, creation
 failures, and parent-metadata preservation.
 
-Rendering tests cover the exact profile fields without `_comment`, complete model IDs,
-order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
+Rendering tests cover the exact profile fields (manual import enabled, no `_comment`),
+complete model IDs, order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
 are removed on replacement. Shared managed-header parsing retains its pre-Desktop behavior;
 the extra header-validation tests were removed with that out-of-scope parser change.
 The default-model warning assertion was removed because that limitation is documented
@@ -679,8 +761,8 @@ canonicalization tests are replaced by reserved-file replacement/deletion covera
 Reconfigure tests remove the legacy `_comment` field while preserving unrelated profiles,
 metadata, and previous-selection state, and verify subsequent configure is a no-op.
 Existing CLI URL normalization is unchanged. Native Desktop activation,
-GUI/helper/browser behavior, and inference remain untested by these component checks;
-they do not establish native Windows or Linux support.
+GUI/helper/browser behavior, project and chat import, and inference remain untested
+by these component checks; they do not establish native Windows or Linux support.
 
 `../test_file_lock_cross_os.py` tests the shared timeout mechanism used by Desktop:
 real contention, preserving the holder on timeout, and successful acquisition after
@@ -786,10 +868,13 @@ files, or leave fresh installs untouched. Tests cover modern, Bedrock, Vertex, a
 Claude-named routes; they do not verify the model behind a name.
 
 Model-label component tests cover catalog display names in `labelOverride`, unchanged
-routing IDs, order/duplicates, and ID-only entries for missing/empty names. Static
-managed lists use discovery only to label matching IDs; their model selection stays
-authoritative. Repeat configure refreshes or removes labels. Source lists/maps remain
-unchanged.
+routing IDs and order/duplicates, and readable fallback labels for missing/empty names
+or display names that echo the routing ID.
+Cases include Anthropic release IDs, Bedrock regional/global IDs, Mantle-style IDs,
+and Databricks/UC names. Distinct IDs with colliding labels show full IDs, including
+collisions between catalog and fallback labels. Static managed lists retain their model
+selection and get fallback labels even when discovery fails. Repeat configure refreshes
+catalog labels or restores fallback labels. Source lists/maps remain unchanged.
 These checks use temporary files on simulated platforms, not the native model picker.
 
 Desktop OTEL coverage remains in `../test_claude_desktop.py` and
@@ -823,7 +908,7 @@ test_ug_claude_tracing.py               # Claude OTLP export reaches the configu
 test_ug_codex_headless.py               # script prompts and model arguments
 test_ug_copilot_headless.py             # Copilot via the session proxy: Claude + GPT tasks, no token on disk
 test_ug_copilot_lifecycle.py            # Copilot refresh after revocation, sign-in expired, configure/revert, upgrade
-test_ug_copilot_models.py               # Copilot model registry: Claude then GPT, unknown model, TUI /model switch
+test_ug_copilot_models.py               # Copilot model registry: Claude then GPT, GLM/Kimi/DeepSeek, unknown model, TUI /model switch
 test_ug_copilot_providers.py            # Copilot via Model Provider Services: Anthropic, OpenAI, Azure OpenAI, Foundry, Bedrock allow-all; relayed refused
 test_ug_copilot_model_location.py       # Copilot on a Unity Catalog model location: fresh --model-location file task
 test_ug_copilot_mcp.py                  # Copilot MCP: ug mcp add, tool call, ug mcp list, revert keeps the user's server
@@ -979,6 +1064,32 @@ remains uncovered.
 MPS CUJs select the existing services already used by e2e:
 
 - Claude: `main.ucode.ci_e2e_anthropic_nonrelay_mps`.
+- Claude (Microsoft Foundry): `main.ucode.ci_foundry_claude_mps` declares
+  `claude-haiku-5-5` and `claude-sonnet-5-5` on `anthropic/v1/messages`, plus
+  `gpt-5.4` on `openai/v1/responses`. `test_ug_claude_fresh_foundry_mps`
+  completes a headless file task from fresh state with an explicit provider and Haiku deployment.
+  `test_ug_configure_claude_foundry_mps` selects the service through the real configure picker,
+  verifies the saved provider and both family defaults, and completes a Sonnet TUI file task with plain
+  `ug claude`. Override these inputs with `--claude-foundry-provider` and
+  `--claude-foundry-provider-model` (Haiku), and `--claude-foundry-provider-default-model`
+  (Sonnet). Both journeys run in the full Claude lanes on Linux and Windows.
+- Claude (custom Foundry): `main.ucode.ci_custom_foundry_claude_mps` declares Haiku/Sonnet 5.5
+  on `anthropic/v1/messages`. `test_ug_configure_claude_custom_foundry_mps` selects the service
+  in the real configure picker, verifies the saved provider and Sonnet default, then completes
+  a TUI file-reading task on Sonnet through plain `ug claude`. Override with
+  `--claude-custom-provider` and `--claude-custom-provider-model` (Sonnet).
+- Codex (custom Azure OpenAI): `main.ucode.ci_custom_azure_openai_mps` declares GPT deployments
+  on `openai/v1/responses`. `test_ug_configure_codex_custom_azure_openai_mps` selects the service
+  in the real configure picker, then launches Codex without `--provider` and completes a TUI
+  file-reading task on `gpt-5-nano`. Override with `--codex-custom-provider` and
+  `--codex-custom-provider-model`.
+  Both journeys assert the saved provider, completed-turn model, and normal exit, and run
+  in their full agent lanes on Linux and Windows. Codex sets its MPS header at launch;
+  the chosen provider persists in UG state. These tests require preprovisioned services and
+  never create Azure resources or store upstream credentials.
+  Their `custom.direct.header_auth` entries reference UC Secrets
+  `main.ucode.ci_foundry_claude_key` and `main.ucode.ci_azure_openai_key`, respectively.
+  The suite needs only Databricks authentication and MPS `EXECUTE`; it never reads those secrets.
 - Claude (relayed hybrid): `main.ucode.ci_e2e_anthropic_relay_mps`, which also
   requires `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) so the relayed
   launch runs headless instead of opening a browser login.
@@ -994,8 +1105,10 @@ reproduce another existing service. Use `--claude-provider-model` /
 No service is created or modified. A missing service, permission, or OAuth token
 fails the selected CUJ, rather than skipping it.
 
-The fresh `--provider` journeys use these preprovisioned services to check provider selection
-and real agent CLI launch, without inference. Codex also checks its app-server model catalog.
+The `test_ug_claude_fresh_provider_launch` and `test_ug_codex_fresh_provider_launch` journeys
+check provider selection and real agent CLI launch without inference. The Foundry and custom MPS
+journeys above additionally require inference and file-reading task completion. Codex discovery
+journeys also check its app-server model catalog.
 
 The tracing journeys are part of their respective Full agent lanes and use the existing
 e2e workspace and bearer. Because that workspace deliberately has no published managed

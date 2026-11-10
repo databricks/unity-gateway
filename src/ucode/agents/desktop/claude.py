@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -24,6 +25,8 @@ from ucode.agents.desktop.claude_config import (
 )
 from ucode.agents.desktop.claude_state import STATE_FILENAME
 from ucode.config_io import APP_DIR
+from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility.system_cross_os import windows_system32_dir
 from ucode.workspace import workspace_headers
 
 __all__ = [
@@ -37,6 +40,7 @@ __all__ = [
     "ClaudeDesktopUnsupportedError",
     "ConfigureResult",
     "RevertResult",
+    "can_initialize_claude_desktop_directory",
     "claude_desktop_directory",
     "claude_desktop_root_directory",
     "configure_claude_desktop",
@@ -282,10 +286,7 @@ def desktop_mcp_configuration(workspace: str, mcp_config: dict) -> Iterator[None
             raise ClaudeDesktopConflictError(
                 "Claude Desktop is configured for another workspace. Run ug configure again."
             )
-        profile["managedMcpServers"] = [
-            {"name": name, "transport": "stdio", **{k: v for k, v in entry.items() if k != "type"}}
-            for name, entry in mcp_config["mcpServers"].items()
-        ]
+        profile["managedMcpServers"] = desktop_config.render_managed_mcp_servers(mcp_config)
         profile["toolSearchEnabled"] = True
         after = _serialize_json(profile, before)
         desktop_config.write_configuration([(profile_path, before, after, 0o600)])
@@ -315,10 +316,7 @@ def _resolve_paths(*, state_path: Path | str | None, initialize: bool = True) ->
             "Claude Desktop profile configuration is unavailable on this platform."
         )
     if initialize and not resolved_directory.exists():
-        can_initialize = resolved_directory.parent.is_dir()
-        if sys.platform == "darwin":
-            can_initialize = _claude_desktop_installed()
-        if not can_initialize:
+        if not can_initialize_claude_desktop_directory(resolved_directory):
             raise ClaudeDesktopUnavailableError(
                 f"Claude Desktop profile directory is unavailable at {resolved_directory}. "
                 "Install/open Claude Desktop once, then run configure again; Unity Gateway will not "
@@ -346,14 +344,66 @@ def _resolve_paths(*, state_path: Path | str | None, initialize: bool = True) ->
     )
 
 
-def _claude_desktop_installed(*, home: Path | str | None = None) -> bool:
-    """Best-effort macOS app presence check used before creating a native profile directory."""
+def can_initialize_claude_desktop_directory(directory: Path) -> bool:
+    if sys.platform == "darwin":
+        return _claude_desktop_installed()
+    if directory.parent.is_dir():
+        return True
+    return sys.platform == "win32" and _claude_desktop_installed()
 
-    home_path = Path(home) if home is not None else Path.home()
-    return any(
-        path.is_dir()
-        for path in (
-            Path("/Applications/Claude.app"),
-            home_path / "Applications" / "Claude.app",
+
+def _claude_desktop_installed(*, home: Path | str | None = None) -> bool:
+    if sys.platform != "win32":
+        home_path = Path(home) if home is not None else Path.home()
+        return any(
+            path.is_dir()
+            for path in (
+                Path("/Applications/Claude.app"),
+                home_path / "Applications" / "Claude.app",
+            )
         )
-    )
+
+    powershell = windows_system32_dir() / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    command = r"""
+$ErrorActionPreference = 'Stop'
+try {
+    foreach ($package in Get-AppxPackage -Name Claude) {
+        $manifest = Get-AppxPackageManifest -Package $package.PackageFullName
+        foreach ($app in $manifest.Package.Applications.Application) {
+            if ($app.Executable -match '(^|[\\/])claude\.exe$' -and
+                (Test-Path -LiteralPath (Join-Path $package.InstallLocation $app.Executable) -PathType Leaf)) {
+                exit 0
+            }
+        }
+    }
+    exit 3
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 2
+}
+"""
+    try:
+        result = subprocess_cross_os.run(
+            [str(powershell), "-NoProfile", "-NonInteractive", "-Command", command],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ClaudeDesktopUnavailableError(
+            "Checking the installed Claude Desktop package timed out after 30 seconds. "
+            "Run ug configure again"
+        ) from exc
+    except OSError as exc:
+        raise ClaudeDesktopUnavailableError(
+            f"Could not start PowerShell to check the installed Claude Desktop package: {exc}"
+        ) from exc
+    if result.returncode not in (0, 3):
+        detail = (result.stderr or "No error details returned").strip()[:500]
+        raise ClaudeDesktopUnavailableError(
+            "Could not query the installed Claude Desktop package "
+            f"(PowerShell exit code {result.returncode}): {detail}"
+        )
+    return result.returncode == 0

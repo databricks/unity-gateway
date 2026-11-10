@@ -1,5 +1,11 @@
 # Claude Desktop through Unity Gateway
 
+For macOS fleet provisioning, use
+[`ug configure --agents claude --global`](claude-desktop-mdm.md).
+The behavior below describes configure without a scope flag or with `--user`.
+Explicit `--global` uses the macOS MDM path and leaves Desktop's user files unchanged;
+on Windows and Linux it skips Desktop.
+
 After Claude Code is successfully configured, `ug configure` also creates and
 selects a `Unity Gateway - <CLI profile name>` profile for Claude Desktop on macOS,
 Windows, and Linux. This uses
@@ -8,8 +14,9 @@ headers as Claude Code. There is no separate Desktop checkbox or managed field.
 
 ## Requirements and setup
 
-- Claude Desktop installed on macOS, Windows, or Linux. On Windows/Linux, open it
-  once to initialize application data.
+- Claude Desktop installed on macOS, Windows, or Linux. On Windows, UG can initialize application data before the first launch when it
+  detects Claude's registered MSIX package and executable. On Linux, open it once
+  to initialize application data.
 - A named Databricks CLI OAuth profile with gateway/model access. A bearer token
   alone is not enough for Desktop's credential helper.
 - At least one Claude-named model in the configured static list or gateway catalog.
@@ -26,6 +33,24 @@ No terminal process needs to stay running. UG does not install Desktop or manage
 the customer's MDM process. Explicit-agent, selected-agent, and managed configure
 flows all set up Desktop after successful Claude Code configuration. Ordinary agent
 launches and `ug agents add` do not configure Desktop.
+
+## Import existing projects and chats
+
+UG enables Claude Desktop's import wizard with `claudeAiImport.enabled: true`.
+After configuring and reopening Desktop, go to **Settings → Import & export → Import…**.
+Sign in to claude.ai and fetch your export, or choose a downloaded export ZIP,
+then review and import. For Team or Enterprise workspaces, a workspace owner must
+enable member data export first.
+
+Projects, chats, and custom project instructions are copied locally. Accept imported
+instructions before using them. Personal/member exports omit uploaded project knowledge
+files and conversation attachments; add those separately. If an imported project has a
+folder, add it again through **Context → + → Choose a folder → Choose a different folder**
+and start a new chat to let Claude read it.
+
+Import is a one-time copy that you start explicitly. Original data stays intact,
+and later activity on claude.ai requires another import. See Anthropic's
+[import guide](https://claude.com/docs/third-party/claude-desktop/import) for details.
 
 ## Code tab connector guidance
 
@@ -101,15 +126,15 @@ to the generated guidance, not Desktop browser sign-in or live Gmail access.
 Default `ug configure` and `ug configure --user` both write only user-level Desktop
 files: the 3P JSON profile, generated marketplace at `~/.ucode/claude-cowork-marketplace`,
 and the normal Cowork registration/cache. This applies even when UG's saved configuration
-scope is `global`. Neither path publishes or removes a root marketplace or managed plist.
+scope is `global`. Neither path publishes or removes a root organization plugin or managed plist.
 Claude Code and other CLI agents retain their own scope handling.
 
 Explicit `--global` skips these per-user Desktop writers. Machine policy, shared-runtime
-bindings, the root marketplace, and automatic per-user refresh are supplied by the separate
-macOS MDM deployment change. It uses these machine locations:
+bindings, connectors in the managed plist, and a root organization plugin use the
+[macOS MDM deployment path](claude-desktop-mdm.md). It uses these machine locations:
 
 - Policy: `/Library/Managed Preferences/com.anthropic.claudefordesktop.plist`
-- Marketplace: `/Library/Application Support/UnityGateway/claude-cowork-marketplace`
+- Skills/hooks plugin: `/Library/Application Support/Claude/org-plugins/ug`
 
 Ordinary configure uses `claude plugin ... --cowork --json` with one
 `ug@unity-gateway-cowork` registration for the selected account/org. If an earlier UG
@@ -129,8 +154,9 @@ live in the user 3P profile, not the plugin.
 The plugin version changes with its contents. Configure explicitly updates the marketplace
 and installs or updates the user-cached plugin: changing source files alone is insufficient.
 The 3P connection profile, telemetry helper, runtime authentication, and UG state remain
-user-local. A pre-existing `Claude/org-plugins/ug` installation must be removed by its owner
-before configuration, so the organization loader cannot expose a duplicate UG plugin.
+user-local. An installed `Claude/org-plugins/ug` organization plugin blocks user plugin
+installation to avoid duplicates. Remove the managed deployment through its owner before
+switching to the user plugin.
 
 UG records the account/org in `~/.ucode/claude-cowork.json`.
 UG owns the generated user marketplace: configure replaces its contents, including manual
@@ -336,8 +362,11 @@ When the catalog provides a display name, UG writes it as
 [`labelOverride`](https://claude.com/docs/third-party/claude-desktop/configuration#models).
 For example, `system.ai.claude-sonnet-5` can appear as `Claude Sonnet 5` in the
 picker. The `name` field remains the exact model ID sent to the gateway. Missing
-or empty display names keep ID-only entries. For admin static lists, UG fetches
-the catalog only to attach matching display names; the admin's model IDs and
+or empty display names, or display names equal to the model ID, use UG's model-name formatter. For example,
+`us.anthropic.claude-sonnet-4-5-20250929-v1:0` becomes `Claude Sonnet 4.5`.
+Distinct model IDs with the same label show their full IDs to keep routes distinguishable.
+For admin static lists, UG fetches the catalog only to attach matching display names;
+fallback labels also work when discovery is unavailable. The admin's model IDs and
 order remain authoritative. Labels refresh on `ug configure` alongside the
 model list.
 
@@ -446,7 +475,9 @@ otherwise it clears the selection. A later selection of another profile is prese
 Only this previous-selection ID is saved in `~/.ucode/claude-desktop.json`.
 Repeated configure retains it while UG remains selected.
 
-Ordinary revert leaves root Desktop files untouched. It uninstalls
+Ordinary revert also attempts macOS MDM cleanup through the existing sudo path. If it
+cannot remove machine files, it warns and continues user cleanup; retry with sudo available.
+It uninstalls
 `ug@unity-gateway-cowork` and any legacy
 `unity-gateway@unity-gateway-cowork` registration, removes their marketplace
 registration, and deletes UG's generated marketplace. Deleting the reserved Desktop profile
@@ -466,7 +497,7 @@ previous bytes on write failure. This is not a crash-atomic transaction across f
 Workspace and Cowork cleanup state is retained if Desktop revert fails, so cleanup can be
 retried with `ug revert`. The generated Cowork marketplace is also retained until its plugin
 and marketplace registrations are removed successfully. A Desktop cleanup failure produces
-one warning and exit code 1; the summary reports the failed cleanup.
+a warning and exit code 1; the summary reports the failed cleanup.
 Profile configure/revert waits at most five seconds for its file lock. A timeout
 does not interrupt the holder or change profile, metadata, or selection-state files.
 
@@ -532,7 +563,7 @@ and discovers/calls web_search using the profile's stdio registration to find Da
 They also verify that the installed plugin contains no duplicate MCP declarations.
 Both check repeated configuration, preservation of unrelated settings, and revert cleanup.
 Both platforms invoke the Claude CLI's installed Cowork plugin and check registration against
-the user source, a matching cached manifest, and no generated root marketplace.
+the user source, a matching cached manifest, and no generated root organization plugin.
 All calls use the journey's existing model workspace. CUJ1 and CUJ2 compare complete Desktop
 profile/metadata JSON for system.ai models and non-relay Anthropic MPS. CUJ3's existing configure
 journey checks that its incompatible scoped aliases preserve all Desktop profile/metadata bytes.

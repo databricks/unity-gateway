@@ -749,8 +749,16 @@ def _skills_download_background_loader(
         found, reason = list_all_skills(
             workspace, token, on_skills=on_skills, cancel_event=cancel_event
         )
-        if reason == _SKILLS_WALK_TIMEOUT_REASON:
-            return f"⚠ Timed out after {int(_SKILLS_WALK_DEADLINE_SECONDS)}s, found {len(found)} skills"
+        if not cancel_event.is_set() and reason not in (None, "no skills found"):
+            detail = (
+                f"Timed out after {int(_SKILLS_WALK_DEADLINE_SECONDS)}s"
+                if reason == _SKILLS_WALK_TIMEOUT_REASON
+                else "Discovery stopped before the full list loaded"
+            )
+            return (
+                f"⚠ {detail}; found {len(found)} skills. "
+                "Use `ug skills add --names <catalog.schema.skill>` to add a known skill."
+            )
         return None
 
     return loader
