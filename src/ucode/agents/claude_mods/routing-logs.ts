@@ -274,7 +274,7 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
         key: row.decision_id, plain: true,
         // The label prop is the only portable form: 2.1.290 rejects mixed
         // string/Text children ("takes one string child, its label, or none").
-        label: `${label}  ${model}`,
+        label: `${age(row.at).padStart(8)}  ${label.padEnd(room)}  ${model}`,
         onPress: async () => {
           const request = ++detailRequest;
           const loaded = await openDecision($, options, row.decision_id);

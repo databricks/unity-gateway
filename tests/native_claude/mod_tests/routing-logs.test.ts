@@ -6,9 +6,10 @@ const pane = {
   props: { title: 'Smart Router logs', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 20 }, view: {} },
 } as const;
 const command = { command: 'smart-router', args: 'logs' };
+const now = Date.now() / 1000;
 const records = [
-  { decision_id: 'd1', at: 1000, preview: 'older task', selected_model: 'system.ai.claude-sonnet', routing_ms: 1400 },
-  { decision_id: 'd2', at: 2000, preview: null, selected_model: 'databricks-fast', routing_ms: 250 },
+  { decision_id: 'd1', at: now - 2 * 3600, preview: 'older task', selected_model: 'system.ai.claude-sonnet', routing_ms: 1400 },
+  { decision_id: 'd2', at: now - 5, preview: null, selected_model: 'databricks-fast', routing_ms: 250 },
 ];
 const decision = {
   v: 1,
@@ -41,6 +42,8 @@ test('opens and refreshes session rows newest first', { options }, async ($, on)
   const ui = await $.ui.mount(pane);
   const tree = JSON.stringify(await ui.drawn());
   expect(tree).toContain('2 routed prompts this session');
+  expect(tree).toContain('  2h ago  ');
+  expect(tree).toContain('just now  ');
   expect(tree).not.toMatch(/\d{2}:\d{2}/);
   expect(tree.indexOf('(prompt not recorded)')).toBeGreaterThanOrEqual(0);
   expect(tree.indexOf('older task')).toBeGreaterThanOrEqual(0);
@@ -49,10 +52,11 @@ test('opens and refreshes session rows newest first', { options }, async ($, on)
   expect(tree).toContain('fast');
   expect(tree).not.toContain('1.4s');
   expect(tree).not.toContain('0.3s');
-  // Rows are pressable Buttons labeled with the preview and the short model.
+  // Rows are pressable Buttons labeled with the age, the preview, and the short model.
   expect(tree).toContain('"type":"Button"');
-  expect(tree).toContain('"key":"d2","label":"(prompt not recorded)  fast"');
-  expect(tree).toContain('"key":"d1","label":"older task  claude-sonnet"');
+  // Each row fills bodyColumns exactly, so the model name is right-aligned.
+  expect(tree).toContain(`"key":"d2","label":"just now  ${'(prompt not recorded)'.padEnd(80 - 'fast'.length - 12)}  fast"`);
+  expect(tree).toContain(`"key":"d1","label":"  2h ago  ${'older task'.padEnd(80 - 'claude-sonnet'.length - 12)}  claude-sonnet"`);
   await $.command.run(command);
   expect(JSON.stringify(await ui.drawn())).toContain('No routed subagents in this session yet.');
   expect(count).toBe(2);
