@@ -246,121 +246,83 @@ def test_other_arguments_delegate_to_cli_unchanged(monkeypatch, argv) -> None:
     assert calls == [["ug", *argv]]
 
 
-@pytest.mark.parametrize("failure", [PermissionError("denied"), FileNotFoundError("removed")])
-def test_entrypoint_recovers_unavailable_cwd_to_home(
-    tmp_path, monkeypatch, capsys, failure
-) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.chdir(tmp_path)  # restore the original cwd at teardown
-    real_getcwd = os.getcwd
-    first_probe = True
-
-    def getcwd_once_fails() -> str:
-        nonlocal first_probe
-        if first_probe:
-            first_probe = False
-            raise failure
-        return real_getcwd()
-
+def _stub_cli(monkeypatch, output: str = "") -> None:
     cli = ModuleType("ucode.cli")
-    cli.main = lambda: print("token")
-    monkeypatch.setitem(sys.modules, "ucode.cli", cli)
-    # Windows resolves `~` from USERPROFILE, not HOME, so patch the lookup itself.
-    monkeypatch.setattr(entrypoint.os.path, "expanduser", lambda _path: str(home))
-    monkeypatch.setattr(sys, "argv", ["ug", "auth-token"])
-    monkeypatch.setattr(entrypoint.os, "getcwd", getcwd_once_fails)
-
-    entrypoint.main()
-
-    captured = capsys.readouterr()
-    assert real_getcwd() == str(home)
-    assert captured.out == "token\n"
-    assert captured.err == ""
-
-
-def test_entrypoint_falls_back_to_temp_when_home_is_unavailable(
-    tmp_path, monkeypatch, capsys
-) -> None:
-    home = tmp_path / "home"
-    temporary = tmp_path / "temporary"
-    home.mkdir()
-    temporary.mkdir()
-    monkeypatch.chdir(tmp_path)  # restore the original cwd at teardown
-    real_getcwd = os.getcwd
-    real_chdir = os.chdir
-    first_probe = True
-    attempts = []
-
-    def getcwd_once_fails() -> str:
-        nonlocal first_probe
-        if first_probe:
-            first_probe = False
-            raise PermissionError("denied")
-        return real_getcwd()
-
-    def chdir_with_unavailable_home(path: str) -> None:
-        attempts.append(path)
-        if path == str(home):
-            raise PermissionError("denied")
-        real_chdir(path)
-
-    cli = ModuleType("ucode.cli")
-    cli.main = lambda: None
-    monkeypatch.setitem(sys.modules, "ucode.cli", cli)
-    monkeypatch.setattr(sys, "argv", ["ug", "auth-token"])
-    monkeypatch.setattr(entrypoint.os, "getcwd", getcwd_once_fails)
-    monkeypatch.setattr(entrypoint.os, "chdir", chdir_with_unavailable_home)
-    monkeypatch.setattr(entrypoint.os.path, "expanduser", lambda _path: str(home))
-    monkeypatch.setattr(entrypoint.tempfile, "gettempdir", lambda: str(temporary))
-
-    entrypoint.main()
-
-    captured = capsys.readouterr()
-    assert attempts == [str(home), str(temporary)]
-    assert real_getcwd() == str(temporary)
-    assert captured.out == ""
-    assert captured.err == ""
-
-
-def test_entrypoint_leaves_accessible_cwd_unchanged(monkeypatch, capsys) -> None:
-    original_cwd = os.getcwd()
-    real_chdir = os.chdir
-    chdir_calls = []
-
-    def record_chdir(path: str) -> None:
-        chdir_calls.append(path)
-        real_chdir(path)
-
-    cli = ModuleType("ucode.cli")
-    cli.main = lambda: None
-    monkeypatch.setitem(sys.modules, "ucode.cli", cli)
-    monkeypatch.setattr(sys, "argv", ["ug", "auth-token"])
-    monkeypatch.setattr(entrypoint.os, "chdir", record_chdir)
-
-    entrypoint.main()
-
-    assert os.getcwd() == original_cwd
-    assert chdir_calls == []
-    assert capsys.readouterr().err == ""
-
-
-@pytest.mark.parametrize("argv", [["configure"], ["mcp-proxy"], ["claude"], []])
-def test_entrypoint_cwd_recovery_is_limited_to_api_key_helper(monkeypatch, argv) -> None:
-    def unreadable_cwd() -> str:
-        raise PermissionError("denied")
-
-    def unexpected_chdir(path: str) -> None:
-        raise AssertionError(f"unexpected chdir to {path}")
-
-    cli = ModuleType("ucode.cli")
-    cli.main = lambda: None
+    cli.main = lambda: print(output, end="")
     proxy = ModuleType("ucode.mcp_proxy_runtime")
     proxy.main = lambda: None
     monkeypatch.setitem(sys.modules, "ucode.cli", cli)
     monkeypatch.setitem(sys.modules, "ucode.mcp_proxy_runtime", proxy)
+
+
+def test_api_key_helper_always_starts_in_home(tmp_path, monkeypatch, capsys) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    monkeypatch.chdir(project)  # an accessible cwd; also restored at teardown
+    _stub_cli(monkeypatch, "token\n")
+    # Windows resolves `~` from USERPROFILE, not HOME, so patch the lookup itself.
+    monkeypatch.setattr(entrypoint.os.path, "expanduser", lambda _path: str(home))
+    monkeypatch.setattr(sys, "argv", ["ug", "auth-token"])
+
+    entrypoint.main()
+
+    captured = capsys.readouterr()
+    assert os.getcwd() == str(home)
+    assert captured.out == "token\n"
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("failure", [PermissionError("denied"), FileNotFoundError("removed")])
+def test_api_key_helper_runs_from_unreadable_cwd(tmp_path, monkeypatch, capsys, failure) -> None:
+    home = tmp_path / "home"
+    blocked = tmp_path / "blocked"
+    home.mkdir()
+    blocked.mkdir()
+    monkeypatch.chdir(blocked)  # restore the original cwd at teardown
+    real_getcwd = os.getcwd
+
+    def getcwd_denied_in_blocked() -> str:
+        # Like macOS for a privacy-protected folder: only the blocked cwd is unreadable.
+        cwd = real_getcwd()
+        if cwd == str(blocked):
+            raise failure
+        return cwd
+
+    cli = ModuleType("ucode.cli")
+    # Stand in for Rich, which reads the cwd when the CLI is imported.
+    cli.main = lambda: print(f"token for {os.getcwd()}")
+    monkeypatch.setitem(sys.modules, "ucode.cli", cli)
+    monkeypatch.setattr(entrypoint.os.path, "expanduser", lambda _path: str(home))
+    monkeypatch.setattr(os, "getcwd", getcwd_denied_in_blocked)
+    monkeypatch.setattr(sys, "argv", ["ug", "auth-token"])
+
+    entrypoint.main()
+
+    captured = capsys.readouterr()
+    assert captured.out == f"token for {home}\n"
+    assert captured.err == ""
+
+
+def test_api_key_helper_continues_when_home_is_unavailable(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _stub_cli(monkeypatch)
+    monkeypatch.setattr(entrypoint.os.path, "expanduser", lambda _path: str(tmp_path / "missing"))
+    monkeypatch.setattr(sys, "argv", ["ug", "auth-token"])
+
+    entrypoint.main()
+
+    assert os.getcwd() == str(tmp_path)
+
+
+@pytest.mark.parametrize("argv", [["configure"], ["mcp-proxy"], ["claude"], ["--version"], []])
+def test_only_api_key_helper_changes_directory(monkeypatch, argv) -> None:
+    def unexpected_chdir(path: str) -> None:
+        raise AssertionError(f"unexpected chdir to {path}")
+
+    _stub_cli(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["ug", *argv])
-    monkeypatch.setattr(entrypoint.os, "getcwd", unreadable_cwd)
     monkeypatch.setattr(entrypoint.os, "chdir", unexpected_chdir)
 
     entrypoint.main()

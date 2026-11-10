@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import sys
-import tempfile
 
 _DISTRIBUTION = "unity_gateway"
 _VERSION_ARGV = (["--version"], ["-V"])
@@ -18,25 +17,19 @@ _VERSION_ARGV = (["--version"], ["-V"])
 _API_KEY_HELPER_COMMAND = "auth-token"
 
 
-def _ensure_accessible_cwd() -> None:
-    """Leave an unreadable working directory before the apiKeyHelper imports the CLI.
+def _start_api_key_helper_in_home() -> None:
+    """Run the apiKeyHelper from the home directory, before the CLI is imported.
 
-    macOS denies ``os.getcwd()`` with ``PermissionError`` inside privacy-protected folders such as
-    ``~/Desktop``. Rich reads the cwd at import and handles only ``FileNotFoundError``, so the
-    helper would crash before printing a token. The token command does not use the cwd, so move to
-    the home directory, or the temporary directory, silently: its stdout is the token.
+    The helper inherits the agent's cwd. macOS denies ``os.getcwd()`` with ``PermissionError``
+    inside privacy-protected folders such as ``~/Desktop``, and Rich reads the cwd at import
+    (handling only ``FileNotFoundError``), so the helper crashed before printing a token. The
+    token command reads only home-based paths, so it always starts in home. This changes only
+    this short-lived process, never the agent's cwd, and prints nothing: stdout is the token.
     """
     try:
-        os.getcwd()
-        return
+        os.chdir(os.path.expanduser("~"))
     except OSError:
         pass
-    for directory in (lambda: os.path.expanduser("~"), tempfile.gettempdir):
-        try:
-            os.chdir(directory())
-            return
-        except OSError:
-            continue
 
 
 def _read_installed_version() -> str | None:
@@ -84,7 +77,7 @@ def _read_installed_version() -> str | None:
 
 def main() -> None:
     if sys.argv[1:2] == [_API_KEY_HELPER_COMMAND]:
-        _ensure_accessible_cwd()
+        _start_api_key_helper_in_home()
 
     if sys.argv[1:] in _VERSION_ARGV:
         version = _read_installed_version()
