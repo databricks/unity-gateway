@@ -251,6 +251,8 @@ class TestV2Launch:
         monkeypatch.setattr(v2, "CLAUDE_PTY_LOG", tmp_path / "v2.log")
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
+        monkeypatch.setattr(v2, "ug_binary", lambda: "/bin/ug")
+        monkeypatch.setattr("ucode.smart_routing.claude_hooks.ug_binary", lambda: "/bin/ug")
         monkeypatch.setattr(
             v2,
             "list_anthropic_model_catalog",
@@ -362,7 +364,7 @@ class TestV2Launch:
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+        monkeypatch.setattr(v2, "ug_binary", lambda: "ug")
         monkeypatch.setattr(
             v2,
             "list_anthropic_model_catalog",
@@ -397,7 +399,7 @@ class TestV2Launch:
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+        monkeypatch.setattr(v2, "ug_binary", lambda: "ug")
         monkeypatch.setattr(
             v2,
             "list_anthropic_model_catalog",
@@ -435,6 +437,8 @@ class TestV2Launch:
 
     def test_subagent_only_launch_skips_first_prompt_routing(self, tmp_path, monkeypatch):
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
+        monkeypatch.setattr(v2, "ug_binary", lambda: "/bin/ug")
+        monkeypatch.setattr("ucode.smart_routing.claude_hooks.ug_binary", lambda: "/bin/ug")
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
@@ -444,7 +448,7 @@ class TestV2Launch:
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+        monkeypatch.setattr(v2, "ug_binary", lambda: "ug")
         monkeypatch.setattr(
             v2,
             "list_anthropic_model_catalog",
@@ -551,7 +555,7 @@ class TestV2Launch:
             ),
         )
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+        monkeypatch.setattr(v2, "ug_binary", lambda: "ug")
         if sys.platform != "win32":
             monkeypatch.setattr(
                 claude_pty,
@@ -603,7 +607,7 @@ class TestV2ModelPickerDiscovery:
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(v2, "CLAUDE_PTY_LOG", tmp_path / "v2.log")
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+        monkeypatch.setattr(v2, "ug_binary", lambda: "ug")
         monkeypatch.setattr(v2, "_model_picker_catalog", lambda: picker_catalog)
 
         discovery_calls = 0
@@ -1122,7 +1126,7 @@ class TestV2HeadlessClaude:
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+        monkeypatch.setattr(v2, "ug_binary", lambda: "ug")
         monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
         monkeypatch.setattr(
             v2,

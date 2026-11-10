@@ -1,5 +1,12 @@
 # Test suites and user journeys
 
+Credential-helper component checks pin token commands to the configuring Python
+installation, retain profile/host/PAT arguments and Windows quoting, and run an
+offline token helper after a transient console script is removed with an empty
+PATH. Routing-hook dispatch keeps its existing executable contract. These checks
+do not establish live token renewal or survival after the Python installation
+itself is removed.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,

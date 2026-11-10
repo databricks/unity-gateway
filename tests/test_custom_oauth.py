@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -89,7 +90,10 @@ class TestCustomClientToken:
                 "profile": "custom-profile",
             },
         ) == [
-            "/tools/ug",
+            sys.executable,
+            "-P",
+            "-m",
+            "ucode.cli",
             "auth-token",
             "--host",
             WS,

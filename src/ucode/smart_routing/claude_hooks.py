@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import shlex
 
-from ucode.databricks import build_auth_token_argv
+from ucode.databricks import ug_binary
 from ucode.smart_routing import hooks
 from ucode.workspace import workspace_id_args
 
@@ -70,9 +70,7 @@ def routing_hook_argv(state: dict, event: str) -> list[str]:
     """Build the shared CLI command for a lifecycle hook or native mod request."""
     workspace = str(state.get("workspace") or "")
     argv = [
-        build_auth_token_argv(workspace, state.get("profile"), use_pat=bool(state.get("use_pat")))[
-            0
-        ],
+        ug_binary(),
         ROUTING_HOOK_COMMAND_MARKER,
         event,
     ]

@@ -342,7 +342,15 @@ class TestRenderOverlay:
     def test_sets_api_key_helper(self, monkeypatch):
         monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/my tools/{command}")
         overlay, _ = claude.render_overlay(WS, "s4")
-        assert shlex.split(overlay["apiKeyHelper"]) == ["/my tools/ug", "auth-token", "--host", WS]
+        assert shlex.split(overlay["apiKeyHelper"]) == [
+            sys.executable,
+            "-P",
+            "-m",
+            "ucode.cli",
+            "auth-token",
+            "--host",
+            WS,
+        ]
 
     def test_sets_custom_oauth_api_key_helper(self, monkeypatch):
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/opt/ug")
@@ -359,7 +367,10 @@ class TestRenderOverlay:
             },
         )
         assert shlex.split(overlay["apiKeyHelper"]) == [
-            "/opt/ug",
+            sys.executable,
+            "-P",
+            "-m",
+            "ucode.cli",
             "auth-token",
             "--host",
             WS,
@@ -387,7 +398,10 @@ class TestRenderOverlay:
             },
         )
         assert shlex.split(overlay["apiKeyHelper"]) == [
-            "/opt/ug",
+            sys.executable,
+            "-P",
+            "-m",
+            "ucode.cli",
             "auth-token",
             "--host",
             WS,

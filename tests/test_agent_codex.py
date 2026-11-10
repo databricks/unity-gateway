@@ -146,13 +146,12 @@ class TestRenderOverlay:
         assert provider["wire_api"] == "responses"
 
     def test_auth_runs_ug_auth_token(self, monkeypatch):
-        # The auth command runs the `ug auth-token` executable directly
-        # (not `sh -c`), so it works on Windows where there is no POSIX shell.
+        # Codex runs the pinned Python helper directly, preserving Windows argv.
         monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/tools/{command}")
         overlay = codex.render_overlay(WS)
         auth = overlay["model_providers"]["Databricks"]["auth"]
-        assert auth["command"] == "/tools/ug"
-        assert auth["args"][0] == "auth-token"
+        assert auth["command"] == sys.executable
+        assert auth["args"][:4] == ["-P", "-m", "ucode.cli", "auth-token"]
         assert auth["command"] != "sh"
 
     def test_auth_contains_workspace(self):
@@ -171,6 +170,9 @@ class TestRenderOverlay:
         )
         auth = overlay["model_providers"]["Databricks"]["auth"]
         assert auth["args"] == [
+            "-P",
+            "-m",
+            "ucode.cli",
             "auth-token",
             "--host",
             WS,

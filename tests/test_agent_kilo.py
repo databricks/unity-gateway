@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from copy import deepcopy
 from unittest.mock import patch
 
@@ -57,10 +58,19 @@ class TestAuthPlugin:
 
         plugin = kilo.render_auth_plugin({"workspace": WS, "profile": "my profile"})
 
-        assert (
-            'const AUTH_COMMAND = ["/opt/ug", "auth-token", "--host", '
-            f'"{WS}", "--profile", "my profile", "--force-refresh"]'
-        ) in plugin
+        expected = [
+            sys.executable,
+            "-P",
+            "-m",
+            "ucode.cli",
+            "auth-token",
+            "--host",
+            WS,
+            "--profile",
+            "my profile",
+            "--force-refresh",
+        ]
+        assert f"const AUTH_COMMAND = {json.dumps(expected)}" in plugin
         assert "run(AUTH_COMMAND[0], AUTH_COMMAND.slice(1)" in plugin
         assert '"chat.headers"' not in plugin
 
