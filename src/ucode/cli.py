@@ -95,7 +95,7 @@ from ucode.databricks import (
     get_databricks_token,
     install_databricks_cli,
     is_model_provider_feature_unavailable,
-    is_mps_wildcard,
+    is_model_source_wildcard,
     list_anthropic_model_catalog,
     list_profile_entries,
     list_tool_provider_services,
@@ -1094,7 +1094,7 @@ def _launch_workspace_state(workspace: str | None) -> dict:
 
 def _expand_managed_model_sources(managed: dict, state: dict, tool: str) -> dict:
     models = managed_static_models(managed, tool) or []
-    wildcards = [model for model in models if is_mps_wildcard(model)]
+    wildcards = [model for model in models if is_model_source_wildcard(model)]
     if tool not in STATIC_MODEL_LIST_TOOLS or not wildcards:
         return managed
     try:

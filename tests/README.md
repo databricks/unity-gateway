@@ -1455,3 +1455,8 @@ preservation, reversed parallel completion, missing model information, denied/fa
 spawns, and native role menus. Native auto-mode tests verify both foreground and
 background Agent calls deliver the host-reported model to the parent's next request
 while preserving reviewed inputs and denials.
+
+`test_databricks.py` and `test_cli.py` cover managed schema and MPS wildcard model sources.
+Mixed lists expand in order and deduplicate, schema catalogs preserve advertised IDs, schema-
+only sources trigger expansion, and empty or failed schema discovery fails closed for Claude,
+Codex, and Copilot. These are component checks; they do not establish live inference coverage.

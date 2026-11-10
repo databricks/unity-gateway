@@ -1929,15 +1929,16 @@ class TestManagedConfigLaunchSourceGuard:
 
 
 @pytest.mark.parametrize("key", ["sources", "model_services"])
-def test_managed_wildcard_expansion_writes_a_copy(monkeypatch, key):
-    managed = {"enabled_agents": {"claude": {"model_config": {key: ["c.s.mps.*"]}}}}
+@pytest.mark.parametrize("source", ["c.s.mps.*", "system.ai.*"])
+def test_managed_wildcard_expansion_writes_a_copy(monkeypatch, key, source):
+    managed = {"enabled_agents": {"claude": {"model_config": {key: [source]}}}}
     monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *args, **kwargs: "tok")
     monkeypatch.setattr(
         cli_mod, "expand_wildcard_sources", lambda *args, **kwargs: ["c.s.mps.model"]
     )
     expanded = cli_mod._expand_managed_model_sources(managed, MINIMAL_STATE, "claude")
     assert expanded["enabled_agents"]["claude"]["model_config"][key] == ["c.s.mps.model"]
-    assert cli_mod.managed_static_models(managed, "claude") == ["c.s.mps.*"]
+    assert cli_mod.managed_static_models(managed, "claude") == [source]
 
 
 def test_managed_wildcard_expansion_fails_closed_when_every_wildcard_fails(monkeypatch):
@@ -1947,6 +1948,34 @@ def test_managed_wildcard_expansion_fails_closed_when_every_wildcard_fails(monke
     with pytest.raises(RuntimeError, match="c.s.mps"):
         cli_mod._expand_managed_model_sources(managed, MINIMAL_STATE, "claude")
     assert cli_mod.managed_static_models(managed, "claude") == ["c.s.mps.*"]
+
+
+@pytest.mark.parametrize("tool", ["claude", "copilot", "codex"])
+@pytest.mark.parametrize("failure", ["empty", "error"])
+def test_managed_schema_wildcard_fails_closed(monkeypatch, tool, failure):
+    import ucode.databricks as db_mod
+
+    managed = {"enabled_agents": {tool: {"model_config": {"sources": ["system.ai.*"]}}}}
+    monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *args, **kwargs: "tok")
+    monkeypatch.setattr(
+        db_mod,
+        "list_anthropic_model_catalog",
+        lambda *args, **kwargs: db_mod.AnthropicModelCatalog(
+            model_ids=[],
+            model_id_to_display_name={},
+            error_msg="HTTP 403" if failure == "error" else None,
+        ),
+    )
+
+    def codex_catalog(*args, **kwargs):
+        if failure == "error":
+            raise RuntimeError("HTTP 403")
+        raise db_mod.CodexModelCatalogEmpty("no models")
+
+    monkeypatch.setattr(db_mod, "_fetch_codex_model_catalog", codex_catalog)
+    with pytest.raises(RuntimeError, match="system.ai"):
+        cli_mod._expand_managed_model_sources(managed, MINIMAL_STATE, tool)
+    assert cli_mod.managed_static_models(managed, tool) == ["system.ai.*"]
 
 
 class TestManagedClaudeModelDiscovery:

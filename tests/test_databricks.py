@@ -1541,6 +1541,46 @@ class TestResolveProviderService:
         assert service["targets"] == ["gemini-3.5-flash"]
 
 
+@pytest.mark.parametrize("tool", ["claude", "copilot", "codex"])
+def test_expand_schema_wildcard_uses_native_ids_and_deduplicates(monkeypatch, tool):
+    calls = []
+
+    def catalog(workspace, token, *, parent_schema=None, provider=None):
+        calls.append((workspace, token, parent_schema, provider))
+        return db_mod.AnthropicModelCatalog(
+            model_ids=[
+                "system.ai.claude-opus-5-5",
+                "anthropic-aigw-c4442a48-system.ai.gpt-6-1-sol",
+            ],
+            model_id_to_display_name={},
+        )
+
+    def codex_catalog(workspace, token, *, source, identifier):
+        calls.append((workspace, token, source, identifier))
+        return {
+            "models": [
+                {"slug": "system.ai.claude-opus-5-5"},
+                {"slug": "anthropic-aigw-c4442a48-system.ai.gpt-6-1-sol"},
+            ]
+        }
+
+    monkeypatch.setattr(db_mod, "list_anthropic_model_catalog", catalog)
+    monkeypatch.setattr(db_mod, "_fetch_codex_model_catalog", codex_catalog)
+    assert db_mod.expand_wildcard_sources(
+        ["system.ai.claude-opus-5-5", "system.ai.*", "system.ai.*"], tool, WS, "token"
+    ) == [
+        "system.ai.claude-opus-5-5",
+        "system.ai.gpt-6-1-sol"
+        if tool == "copilot"
+        else "anthropic-aigw-c4442a48-system.ai.gpt-6-1-sol",
+    ]
+    assert calls == [
+        (WS, "token", db_mod.CodexCatalogSource.PARENT_SCHEMA, "system.ai")
+        if tool == "codex"
+        else (WS, "token", "system.ai", None)
+    ]
+
+
 @pytest.mark.parametrize("tool", ["claude", "codex"])
 def test_expand_wildcard_sources_in_place_and_deduplicates(monkeypatch, tool):
     monkeypatch.setattr(
@@ -1553,12 +1593,26 @@ def test_expand_wildcard_sources_in_place_and_deduplicates(monkeypatch, tool):
         return ["one", "two"], None
 
     monkeypatch.setattr(db_mod, "list_provider_service_models", catalog)
+    monkeypatch.setattr(
+        db_mod,
+        "list_anthropic_model_catalog",
+        lambda *args, **kwargs: db_mod.AnthropicModelCatalog(
+            model_ids=["system.ai.kimi", "system.ai.claude-sonnet"], model_id_to_display_name={}
+        ),
+    )
+    monkeypatch.setattr(
+        db_mod,
+        "_fetch_codex_model_catalog",
+        lambda *args, **kwargs: {
+            "models": [{"slug": "system.ai.kimi"}, {"slug": "system.ai.claude-sonnet"}]
+        },
+    )
     models = ["system.ai.kimi", "c.s.mps.*", "c.s.mps.one", "system.ai.*"]
     assert db_mod.expand_wildcard_sources(models, tool, WS, "token") == [
         "system.ai.kimi",
         "c.s.mps.one",
         "c.s.mps.two",
-        "system.ai.*",
+        "system.ai.claude-sonnet",
     ]
     assert calls == [(WS, "token", "c.s.mps", "custom", tool)]
 
@@ -1580,18 +1634,19 @@ def test_expand_wildcard_sources_preserves_other_forms(monkeypatch):
         pytest.fail("unexpected lookup")
 
     monkeypatch.setattr(db_mod, "get_model_provider_service", fail)
-    models = ["system.ai.*", "c.s.mps.model", "c.s.*.model", "c.*.mps.*"]
+    models = ["c.s.mps.model", "c.s.*.model", "c.*.mps.*", "system.*.*", "*.ai.*"]
     assert db_mod.expand_wildcard_sources(models, "claude", WS, "token") == models
 
 
-def test_expand_wildcard_sources_without_token_names_the_missing_token(monkeypatch):
+@pytest.mark.parametrize("source", ["c.s.mps.*", "system.ai.*"])
+def test_expand_wildcard_sources_without_token_names_the_missing_token(monkeypatch, source):
     def fail(*args):
         pytest.fail("unexpected lookup without a token")
 
     monkeypatch.setattr(db_mod, "get_model_provider_service", fail)
     warnings = []
     monkeypatch.setattr(db_mod, "print_warning", warnings.append)
-    assert db_mod.expand_wildcard_sources(["c.s.mps.*"], "claude", WS, "") == []
+    assert db_mod.expand_wildcard_sources([source], "claude", WS, "") == []
     assert len(warnings) == 1
     assert "no Databricks token; run `ug configure`" in warnings[0]
 

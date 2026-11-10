@@ -4191,33 +4191,57 @@ def list_provider_service_models(
     return codex_catalog()
 
 
-def is_mps_wildcard(model: str) -> bool:
+def is_model_source_wildcard(model: str) -> bool:
     parts = model.split(".")
-    return len(parts) == 4 and parts[-1] == "*" and all(p and "*" not in p for p in parts[:3])
+    return len(parts) in (3, 4) and parts[-1] == "*" and all(p and "*" not in p for p in parts[:-1])
 
 
 def expand_wildcard_sources(models: list[str], tool: str, workspace: str, token: str) -> list[str]:
     expanded: list[str] = []
     lookups: dict[str, list[str]] = {}
     for model in models:
-        if not is_mps_wildcard(model):
+        if not is_model_source_wildcard(model):
             expanded.append(model)
             continue
         if model not in lookups:
             service_name = model[:-2]
+            schema_source = len(model.split(".")) == 3
             targets: list[str] = []
             reason: str | None = None
             if token:
                 try:
-                    service, reason = get_model_provider_service(service_name, workspace, token)
-                    if service is not None:
-                        targets, reason = list_provider_service_models(
-                            workspace,
-                            token,
-                            service_name,
-                            service.get("provider_type", ""),
-                            tool=tool,
-                        )
+                    if schema_source:
+                        if tool == "codex":
+                            catalog = _fetch_codex_model_catalog(
+                                workspace,
+                                token,
+                                source=CodexCatalogSource.PARENT_SCHEMA,
+                                identifier=service_name,
+                            )
+                            targets = catalog_slugs(catalog)
+                        else:
+                            listing = list_anthropic_model_catalog(
+                                workspace, token, parent_schema=service_name
+                            )
+                            targets, reason = listing.model_ids, listing.error_msg
+                            if tool == "copilot":
+                                from ucode.smart_routing.routing import (
+                                    unwrap_anthropic_gateway_model,
+                                )
+
+                                targets = [
+                                    unwrap_anthropic_gateway_model(target) for target in targets
+                                ]
+                    else:
+                        service, reason = get_model_provider_service(service_name, workspace, token)
+                        if service is not None:
+                            targets, reason = list_provider_service_models(
+                                workspace,
+                                token,
+                                service_name,
+                                service.get("provider_type", ""),
+                                tool=tool,
+                            )
                 except RuntimeError as exc:
                     reason = str(exc)
             if not targets:
@@ -4229,7 +4253,9 @@ def expand_wildcard_sources(models: list[str], tool: str, workspace: str, token:
                     "check service access and compatible models, then retry."
                 )
             lookups[model] = [
-                target if target.startswith(f"{service_name}.") else f"{service_name}.{target}"
+                target
+                if schema_source or target.startswith(f"{service_name}.")
+                else f"{service_name}.{target}"
                 for target in targets
             ]
         expanded.extend(lookups[model])
