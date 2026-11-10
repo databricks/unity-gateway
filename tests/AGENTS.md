@@ -96,7 +96,11 @@ exercise.
   model tasks, one TUI model-switch journey, one MCP add, tool-call and revert journey,
   one OTLP trace-export journey and one managed-config journey turning off VS Code
   (non-blocking lane), plus Antigravity CLI configure, TUI, headless, External Models,
-  MCP-tool, skill-directory, and revert journeys (blocking Linux lane). Do not add other
+  MCP-tool, skill-directory, and revert journeys (blocking Linux lane), plus VS Code Copilot Chat
+  configure/revert and two chat journeys driven through the real VS Code window: a file task on
+  a Databricks Claude model and a Claude-to-GPT model switch (non-blocking Linux lane). The VS Code
+  lane follows rules 1-12 with its window in place of a TUI: visible clicks and keys, no seeded
+  settings or VS Code state, no driver extension or internal commands. Do not add other
   MCP/skills functionality,
   tracing, or the broad configure-option matrix without a new scope request.
   Existing `mcp --help` checks cover dispatch only.
