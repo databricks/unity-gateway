@@ -683,6 +683,61 @@ class TestRenderOverlay:
             {"model": static[0], "label": "Claude Haiku 5.5"}
         ]
 
+    @pytest.mark.parametrize(
+        ("model", "label", "slug", "context_hint"),
+        [
+            (
+                "anthropic-aigw-73ea02b2-system.ai.glm-5-2",
+                "GLM 5.2",
+                "system.ai.glm-5-2",
+                "",
+            ),
+            (
+                "anthropic-aigw-c4442a48-system.ai.gpt-6-1-sol",
+                "GPT 6.1 Sol",
+                "system.ai.gpt-6-1-sol",
+                "[1m]",
+            ),
+            (
+                "anthropic-aigw-ba377e31-system.ai.kimi-k3",
+                "Kimi K3",
+                "system.ai.kimi-k3",
+                "",
+            ),
+        ],
+    )
+    def test_static_gateway_models_hide_alias_in_picker_text(
+        self, model, label, slug, context_hint
+    ):
+        overlay, _ = claude.render_overlay(WS, "s4", static_models=[model])
+        assert overlay["availableModels"] == [model]
+        assert overlay["modelPicker"]["options"] == [
+            {
+                "model": model + context_hint,
+                "label": label,
+                "description": f"Managed by your organization ({slug})",
+            }
+        ]
+
+    @pytest.mark.parametrize("explicit_metadata", [False, True])
+    def test_discovered_gateway_model_preserves_metadata_and_exact_id(self, explicit_metadata):
+        model = "anthropic-aigw-77df06ea-system.ai.glm-5-3-flash"
+        catalog = db_mod.AnthropicModelCatalog(
+            model_ids=[model],
+            model_id_to_display_name={model: "Gateway Flash"} if explicit_metadata else {},
+            model_id_to_description={model: "Gateway description"} if explicit_metadata else {},
+        )
+        overlay, _ = claude.render_overlay(WS, "s4", picker_catalog=catalog)
+        assert overlay["modelPicker"]["options"] == [
+            {
+                "model": model,
+                "label": "Gateway Flash" if explicit_metadata else "GLM 5.3 Flash",
+                "description": "Gateway description"
+                if explicit_metadata
+                else "Managed by your organization (system.ai.glm-5-3-flash)",
+            }
+        ]
+
 
 class TestRenderOverlayOtelTracing:
     def test_otel_tracing_off_by_default(self):

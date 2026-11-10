@@ -1950,3 +1950,7 @@ journey currently covers mixed wildcard sources or proves inference with qualifi
 Short Claude picker labels for qualified MPS IDs have component coverage in
 `../test_string_utils.py` and `../test_agent_claude.py`. The checks retain the full option and
 allow-list IDs and preserve dotted GPT versions. No installed-agent journey covers these labels.
+
+Gateway-alias picker text has component coverage in `../test_agent_claude.py` for short labels,
+prefix-free fallback descriptions, preserved option and allow-list IDs, long-context hints,
+and explicit catalog metadata. No installed-agent journey covers these presentation fields.

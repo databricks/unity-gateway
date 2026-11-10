@@ -120,6 +120,7 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
+from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
@@ -694,10 +695,7 @@ def render_overlay(
         overlay["enforceAvailableModels"] = True
         overlay["modelPicker"] = {
             "replaceBuiltInOptions": True,
-            "options": [
-                {"model": maybe_add_gpt_1m_suffix(m), "label": model_picker_label(m)}
-                for m in static_models
-            ],
+            "options": [_static_picker_option(model) for model in static_models],
         }
         keys += [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
     elif picker_catalog and picker_catalog.model_ids and not relayed:
@@ -706,7 +704,8 @@ def render_overlay(
             "options": [
                 _picker_option(
                     maybe_add_gpt_1m_suffix(model),
-                    picker_catalog.model_id_to_display_name.get(model) or model_picker_label(model),
+                    picker_catalog.model_id_to_display_name.get(model)
+                    or model_picker_label(unwrap_anthropic_gateway_model(model)),
                     picker_catalog.model_id_to_description.get(model),
                 )
                 for model in picker_catalog.model_ids
@@ -730,8 +729,21 @@ _CLAUDE_PICKER_LABEL_RE = re.compile(
 )
 
 
+def _static_picker_option(model: str) -> dict[str, str]:
+    display_model = unwrap_anthropic_gateway_model(model)
+    option = {
+        "model": maybe_add_gpt_1m_suffix(model),
+        "label": model_picker_label(display_model),
+    }
+    if display_model != model:
+        option["description"] = f"Managed by your organization ({display_model})"
+    return option
+
+
 def _picker_option(model: str, label: str, description: str | None = None) -> dict[str, str]:
     option = {"model": model, "label": label}
+    if not description and (display_model := unwrap_anthropic_gateway_model(model)) != model:
+        description = f"Managed by your organization ({display_model})"
     if description:
         option["description"] = description
     match = _CLAUDE_PICKER_LABEL_RE.fullmatch(label)

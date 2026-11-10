@@ -1464,3 +1464,8 @@ Codex, and Copilot. These are component checks; they do not establish live infer
 `test_string_utils.py` and `test_agent_claude.py` cover short Claude picker labels for qualified
 MPS model IDs, preserve dotted GPT versions, and retain the full model IDs in picker options
 and the allow-list. These component checks do not establish live picker or inference coverage.
+
+`test_agent_claude.py` covers gateway-alias picker text for GLM, GPT, and Kimi models.
+Labels and fallback descriptions omit the synthetic Anthropic prefix while option values,
+long-context hints, allow-lists, and explicit catalog metadata are preserved. These component
+checks do not establish native picker rendering or inference coverage.
