@@ -1330,6 +1330,9 @@ Clear/reload, compaction, and denied-write rollback are not independently checke
 A native process check runs the real disabled routing CLI from Claude with inherited
 launch flags; it makes no gateway request.
 
+The spawn-rewrite check in `test_codex_routing.py` covers a prompt preview alongside
+the child name in legacy routing notices. Live rendering remains unverified.
+
 Subagent-routing failures have shared warning coverage in `test_codex_routing.py`;
 the live hook journeys retain their routing assertions and include stderr when no
 decision is returned. This diagnostic coverage does not prove routing service health.
