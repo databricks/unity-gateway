@@ -196,12 +196,12 @@ def managed_supplies_models(managed: dict | None, tool: str) -> bool:
     Lets the launch path skip Databricks model discovery, whose whole purpose is to find the models
     the config has now specified. Any of the following counts: a provider (the agent routes by
     header and pins no Databricks model), a ``default_model``, a static model list
-    (``model_services``), or at least one entry in the legacy ``models`` key.
+    (``sources`` or ``model_services``), or at least one entry in the legacy ``models`` key.
     """
     model_config = _agent_model_config(managed or {}, tool)
     if _str(model_config.get("model_provider_service")) or _str(model_config.get("default_model")):
         return True
-    if managed_static_models(managed or {}, tool):
+    if static_model_list(model_config):
         return True
     models = model_config.get("models")
     if isinstance(models, dict):
@@ -228,16 +228,21 @@ def managed_static_models(managed: dict, tool: str) -> list[str] | None:
     (Claude's ``availableModels``/``modelPicker``, Codex's ``model_catalog_json``) instead of
     discovering the workspace's models. The order is the admin's; empty and non-string entries are
     dropped. None when unset. ``sources`` entries may be 4-part MPS model refs, used as-is."""
-    model_config = _agent_model_config(managed, tool)
-    models = None
+    return static_model_list(_agent_model_config(managed, tool)) or None
+
+
+def static_model_list(model_config: dict) -> list[str]:
+    """The static model list from one agent's ``model_config``: ``sources`` or the legacy
+    ``model_services`` (a oneof). Empty and non-string entries are dropped; empty when unset."""
     if "sources" in model_config:
         models = model_config["sources"]
     elif "model_services" in model_config:
         models = model_config["model_services"]
-    if isinstance(models, list):
-        listed = [model for model in (_str(item) for item in models) if model]
-        return listed or None
-    return None
+    else:
+        models = None
+    if not isinstance(models, list):
+        return []
+    return [model for model in (_str(item) for item in models) if model]
 
 
 def managed_default_model(managed: dict, tool: str) -> str | None:

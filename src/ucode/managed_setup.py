@@ -33,6 +33,7 @@ from ucode.databricks import (
 from ucode.managed_config import (
     AGENT_ENUM_TO_TOOL,
 )
+from ucode.managed_resolve import static_model_list
 
 # ucode tool name -> CodingAgent proto enum. Inverted from the read side's map so the two directions
 # cannot drift: adding an agent to `managed_config._AGENT_ENUM_TO_TOOL` makes it serializable here
@@ -444,18 +445,14 @@ def _validate_agent_models(tool: str, agent_config: dict, known: set[str]) -> li
     family_models = model_config.get("default_models_by_model_family")
     if isinstance(family_models, dict):
         referenced.extend(m for m in family_models.values() if isinstance(m, str) and m)
-    models = None
-    if "sources" in model_config:
-        models = model_config["sources"]
-    elif "model_services" in model_config:
-        models = model_config["model_services"]
-    if isinstance(models, list):
-        referenced.extend(m for m in models if isinstance(m, str) and m)
+    referenced.extend(static_model_list(model_config))
 
+    # A 4-part `catalog.schema.mps.model` ref names a model behind a Model Provider Service, which
+    # the workspace's UC model-service inventory doesn't list.
     return [
         f"{tool}: model '{model}' is not available on this workspace."
         for model in dict.fromkeys(referenced)
-        if model not in known
+        if model not in known and not _is_uc_fqn(model, parts=4)
     ]
 
 
@@ -541,13 +538,7 @@ def _agent_model_ids(agent_config: dict) -> set[str]:
     family_models = model_config.get("default_models_by_model_family")
     if isinstance(family_models, dict):
         ids.update(v for v in family_models.values() if isinstance(v, str) and v)
-    models = None
-    if "sources" in model_config:
-        models = model_config["sources"]
-    elif "model_services" in model_config:
-        models = model_config["model_services"]
-    if isinstance(models, list):
-        ids.update(m for m in models if isinstance(m, str) and m)
+    ids.update(static_model_list(model_config))
     default_model = model_config.get("default_model")
     if isinstance(default_model, str) and default_model:
         ids.add(default_model)

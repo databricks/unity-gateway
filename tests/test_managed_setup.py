@@ -543,6 +543,26 @@ class TestValidate:
         # Nothing configured is not an error here; the wizard decides whether to publish it.
         assert validate_manifest({}, STATE) == []
 
+    def test_mps_model_refs_in_sources_are_not_checked_against_the_inventory(self):
+        manifest = {
+            "default_agent": "claude",
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "default_model": "system.ai.claude-opus-4-8",
+                        "sources": [
+                            "main.anthropic.byok.claude-opus-5-5",
+                            "system.ai.claude-opus-4-8",
+                            "system.ai.not-on-this-workspace",
+                        ],
+                    }
+                }
+            },
+        }
+        assert validate_manifest(manifest, STATE) == [
+            "claude: model 'system.ai.not-on-this-workspace' is not available on this workspace."
+        ]
+
     def test_default_agent_required_when_agents_present(self):
         manifest = {"enabled_agents": {"claude": {"model_config": {"default_model": "m"}}}}
         errors = validate_manifest(manifest)
