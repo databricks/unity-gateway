@@ -133,7 +133,7 @@ class TestHelp:
         assert panels["Usage"] < global_options
         global_options_section = output[global_options:]
         assert "--version, -V" in global_options_section
-        assert "--workspace <str>" in global_options_section
+        assert re.search(r"--workspace (?:TEXT|<str>)\s", global_options_section)
 
         sections = {
             "Launch": output[panels["Launch"] : panels["Setup"]],
@@ -881,6 +881,20 @@ class TestSubcommandRouting:
             explicit_prompt=explicit_prompt,
             user_pinned_model=model,
             provider=provider,
+        )
+
+        assert options.launch_smart_routing is expected
+
+    @pytest.mark.parametrize(("tool", "expected"), [("claude", True), ("codex", False)])
+    def test_external_models_gate_allows_provider_routing(self, tool, expected, monkeypatch):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
+        options = cli_mod._launch_options(
+            tool,
+            [],
+            smart_routing_enabled=True,
+            explicit_prompt=False,
+            user_pinned_model=None,
+            provider="catalog.schema.service",
         )
 
         assert options.launch_smart_routing is expected
@@ -1974,7 +1988,6 @@ class TestManagedClaudeModelDiscovery:
         monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
         monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (managed, False))
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a: "token")
-        monkeypatch.setattr(cli_mod, "get_provider_service", lambda *_a: "main.developer.provider")
         monkeypatch.setattr(cli_mod, "configure_shared_state", shared)
         resolve_provider = MagicMock(return_value=(None, None, relayed))
         monkeypatch.setattr(cli_mod, "resolve_provider_models", resolve_provider)
@@ -2151,6 +2164,18 @@ class TestManagedClaudeModelDiscovery:
         assert "AI Gateway returned no Anthropic model ids" in output
         calls["configure"].assert_not_called()
         calls["launch"].assert_not_called()
+
+    def test_saved_provider_scoped_catalog_for_routed_launch(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        calls = self._invoke(monkeypatch, None)
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is True
+        calls["list_anthropic_model_catalog"].assert_called_once_with(
+            calls["state"]["workspace"], "token", provider="main.developer.provider"
+        )
+        assert calls["configure"].call_args.kwargs["picker_catalog"] is calls["picker_catalog"]
 
 
 def test_claude_discovery_changes_do_not_break_other_managed_providers():
@@ -8522,7 +8547,8 @@ class TestInstalledMachineWorkspace:
         result = runner.invoke(app, args)
         assert result.exit_code == 1, result.output
         output = " ".join(_strip_ansi(result.output).split())
-        assert "Launch refused" in output
+        assert "the launch was refused" in output
+        assert f"Run `ug configure --workspace {self.SELECTED}`" in output
         assert self.INSTALLED in output
         assert self.SELECTED in output
         assert "IT team or an administrator" in output
@@ -8841,6 +8867,8 @@ class TestBudgetRecommendationAtLaunch:
 
         monkeypatch.setattr("ucode.cli.get_model_recommendation", fake_recommendation)
         with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.refresh_managed_config", return_value=(managed, False)),
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli.apply_pat_environment"),
             patch("ucode.cli.ensure_bootstrap_dependencies"),
@@ -8851,8 +8879,45 @@ class TestBudgetRecommendationAtLaunch:
             patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
             patch("ucode.cli.launch_agent"),
         ):
-            result = runner.invoke(app, [tool])
+            result = runner.invoke(app, [tool] if tool else [])
         return result, calls, cfg
+
+    @pytest.mark.parametrize("tool", [None, "claude"])
+    @pytest.mark.parametrize(
+        ("reason", "warnings"), [(None, 0), ("HTTP 404 Not Found", 0), ("timed out", 1)]
+    )
+    def test_no_recommendation_is_read_once_per_launch(self, monkeypatch, tool, reason, warnings):
+        managed = {
+            "default_agent": "claude",
+            "enabled_agents": {
+                "claude": {"model_config": {"default_model": "system.ai.claude-opus-4-8"}}
+            },
+            **self.SMART_DEFAULTS,
+        }
+        result, calls, cfg = self._launch(monkeypatch, tool=tool, managed=managed, reason=reason)
+        assert result.exit_code == 0, result.output
+        assert calls == [MINIMAL_STATE["workspace"]]
+        assert cfg.call_args.args[0] == "claude"
+        assert cfg.call_args.args[2] == "system.ai.claude-opus-4-8"
+        assert result.output.count("Could not check your budget") == warnings
+
+    def test_bare_launch_reuses_recommended_agent_and_model(self, monkeypatch):
+        """The new checked flag must preserve an existing successful agent/model override."""
+        managed = {
+            "default_agent": "claude",
+            "enabled_agents": {"claude": {}, "codex": {}},
+            **self.SMART_DEFAULTS,
+        }
+        result, calls, cfg = self._launch(
+            monkeypatch,
+            tool=None,
+            managed=managed,
+            recommendation={"agent": "codex", "model": "system.ai.gpt-5-2"},
+        )
+        assert result.exit_code == 0, result.output
+        assert calls == [MINIMAL_STATE["workspace"]]
+        assert cfg.call_args.args[0] == "codex"
+        assert cfg.call_args.args[2] == "system.ai.gpt-5-2"
 
     def test_not_checked_without_a_managed_config(self, monkeypatch):
         result, calls, _ = self._launch(monkeypatch, managed=None)
