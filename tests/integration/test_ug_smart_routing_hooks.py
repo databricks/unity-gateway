@@ -57,34 +57,8 @@ def _routing_decisions(session, agent: str) -> list[dict]:
     return read_jsonl(session.home / ".ucode" / f"{agent}-smart-routing-decisions.jsonl")
 
 
-def _claude_routing_row_for_task(lines: list[str], marker: str) -> bool:
-    """Whether the mod's routing row follows the prompt that carries this task's marker.
-
-    The parent chooses the Agent row's description, so the marker may appear only in the
-    prompt. Each calculation is its own prompt, so the row is attributed by screen order:
-    a selected-model line after the tagged prompt and before the next one.
-    """
-    prompts = [index for index, line in enumerate(lines) if line.lstrip().startswith("❯")]
-    for position, start in enumerate(prompts):
-        end = start + 1
-        while end < len(lines) and lines[end].strip():
-            end += 1
-        # The prompt wraps across indented lines; compare without rendered whitespace.
-        if marker not in "".join("".join(lines[start:end]).split()):
-            continue
-        following = prompts[position + 1] if position + 1 < len(prompts) else len(lines)
-        if any("↳ Selected Model:" in line for line in lines[end:following]):
-            return True
-    return False
-
-
-def _routing_display_for_task(
-    screen: str, marker: str, *, agent: str, orchestrator_on: bool
-) -> bool:
-    """Whether the rendered router panel belongs to this uniquely tagged task."""
-    lines = screen.splitlines()
-    if agent == "claude":
-        return _claude_routing_row_for_task(lines, marker)
+def _routing_display_for_task(screen: str, marker: str, *, orchestrator_on: bool) -> bool:
+    """Whether the rendered Codex router panel belongs to this uniquely tagged task."""
     return codex_routing_display_for_task(screen, marker, orchestrator_on=orchestrator_on)
 
 
@@ -102,13 +76,19 @@ def _run_calculation(
     before = _routing_decisions(session, agent)
     tui.submit(task.prompt)
 
-    if routed:
+    if routed and agent == "claude":
+        tui.wait_for(
+            lambda _: any(
+                task.marker in row.get("task_name", "")
+                for row in _routing_decisions(session, agent)[len(before) :]
+            ),
+            f"the Smart Router decision log for {task.marker}",
+            timeout=30,
+        )
+    elif routed:
         tui.wait_for(
             lambda screen: _routing_display_for_task(
-                screen,
-                task.marker,
-                agent=agent,
-                orchestrator_on=orchestration_enabled,
+                screen, task.marker, orchestrator_on=orchestration_enabled
             ),
             f"the Smart Router subagent display for {task.marker}",
             timeout=120,
@@ -127,9 +107,10 @@ def _run_calculation(
     after = _routing_decisions(session, agent)
     new_decisions = after[len(before) :]
     if not routed:
-        assert not _routing_display_for_task(
-            tui.visible, task.marker, agent=agent, orchestrator_on=False
-        ), tui.visible
+        if agent == "codex":
+            assert not _routing_display_for_task(tui.visible, task.marker, orchestrator_on=False), (
+                tui.visible
+            )
         assert not new_decisions, new_decisions
         return task
 
@@ -156,21 +137,6 @@ def _run_calculation(
         assert all(row["task_sha256"] in assignments for row in new_decisions), new_decisions
     else:
         assert all(task.marker in row.get("task_name", "") for row in new_decisions), new_decisions
-    decision = new_decisions[0]
-    if agent == "claude":
-        model = decision["requested_model"].removeprefix("system.ai.").removeprefix("databricks-")
-        rationale = decision["rationale"]
-        tui.wait_for(
-            lambda screen: (
-                f"SelectedModel:{model}" in "".join(screen.split())
-                and (
-                    not rationale
-                    or "".join(f"Reason: {rationale}".split()) in "".join(screen.split())
-                )
-            ),
-            f"the selected model and rationale for {task.marker}",
-            timeout=30,
-        )
     assert_subagent_routed(
         session,
         agent,

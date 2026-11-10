@@ -1,4 +1,5 @@
 import type { On, PluginOptions } from 'claude-code';
+import { shortModel } from './subagent-routing.ts';
 
 export const ROUTING_LOGS_PANE = 'smart-router-logs';
 type Decision = { at: number; preview: string | null; selected_model: string; routing_ms: number };
@@ -141,7 +142,7 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
     const children = [Text({ dimColor: true, children: [`${rows.length} routed prompt${rows.length === 1 ? '' : 's'} this session`] })];
     if (!rows.length) children.push(Text({ dimColor: true, children: ['No routed subagents in this session yet.'] }));
     for (const row of rows) {
-      const model = row.selected_model.replace(/^system\.ai\./, '').replace(/^databricks-/, '');
+      const model = shortModel(row.selected_model);
       // Age (8) + "  " + preview + "  " + model fills the row, so the model ends at the right edge.
       const room = Math.max(1, columns - model.length - 12);
       const preview = (row.preview || '(prompt not recorded)').replace(/\s+/g, ' ');
