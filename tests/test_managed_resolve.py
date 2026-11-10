@@ -509,6 +509,28 @@ class TestManagedSuppliesModels:
         managed = {"enabled_agents": {"opencode": {"model_config": {"models": ["a", "b"]}}}}
         assert managed_supplies_models(managed, "opencode") is True
 
+    def test_false_for_a_static_list_alone(self):
+        # Without a default_model, discovery still has to fill Claude's family defaults.
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"sources": ["main.anthropic.byok.claude-sonnet-5-5"]}}
+            }
+        }
+        assert managed_supplies_models(managed, "claude") is False
+
+    def test_true_for_a_static_list_with_a_default(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "default_model": "main.anthropic.byok.claude-sonnet-5-5",
+                        "sources": ["main.anthropic.byok.claude-sonnet-5-5"],
+                    }
+                }
+            }
+        }
+        assert managed_supplies_models(managed, "claude") is True
+
     def test_false_when_the_config_names_no_models(self):
         # Discovery still has to run, or the launch has nothing to pin.
         managed = {"enabled_agents": {"claude": {}}}

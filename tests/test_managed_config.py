@@ -23,6 +23,7 @@ from ucode.managed_config import (
     refresh_managed_config,
     save_managed_state,
 )
+from ucode.managed_resolve import managed_static_models
 from ucode.managed_setup import serialize_managed_config
 from ucode.telemetry import client_platform
 
@@ -165,6 +166,33 @@ class TestNormalize:
             "system.ai.claude-sonnet-4-6",
             "system.ai.claude-haiku-4-5",
         ]
+
+    def test_sources_are_carried_as_their_own_field(self):
+        raw = {
+            "enabled_agents": [
+                {
+                    "agent": "CODING_AGENT_CLAUDE_CODE",
+                    "config": {
+                        "models": {
+                            "sources": [
+                                "main.anthropic.byok.claude-opus-5-5",
+                                "system.ai.kimi-k3",
+                            ],
+                        }
+                    },
+                }
+            ]
+        }
+        managed = normalize_managed_config(raw)
+        model_config = managed["enabled_agents"]["claude"]["model_config"]
+        assert model_config["sources"] == [
+            "main.anthropic.byok.claude-opus-5-5",
+            "system.ai.kimi-k3",
+        ]
+        assert "model_services" not in model_config
+        assert managed_static_models(managed, "claude") == model_config["sources"]
+        wire_models = serialize_managed_config(managed)["enabled_agents"][0]["config"]["models"]
+        assert wire_models == {"sources": model_config["sources"]}
 
     def test_unity_catalog_location_is_carried(self):
         raw = {
