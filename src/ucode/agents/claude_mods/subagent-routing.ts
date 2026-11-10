@@ -1,5 +1,39 @@
 import type { On, PluginOptions } from 'claude-code'
 
+type RoutingRecord = {
+  name: string; task: string; model: string; rationale: string
+  spawned?: { agentId: string; model?: string; background: boolean }
+}
+
+const safeText = (value: unknown, limit: number): string | undefined => {
+  if (typeof value !== 'string') return undefined
+  const clean = value
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, limit)
+  return clean || undefined
+}
+
+const canonicalModel = (model: string): string => {
+  const original = model.replace(/^anthropic-aigw-[0-9a-fA-F]{8}-/, '')
+  if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
+  return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
+}
+
+const children = new Map<string, RoutingRecord>()
+export const routedModels = {
+  started(record: RoutingRecord) { children.set(record.spawned!.agentId, record) },
+  model(agentId?: string) {
+    const child = agentId ? children.get(agentId) : undefined
+    const resolved = child?.spawned?.model
+    return child && resolved && canonicalModel(resolved) === canonicalModel(child.model)
+      ? resolved : child?.model
+  },
+  reset() { children.clear() },
+}
+
 const ANIMALS = [
   'Otter', 'Panda', 'Lynx', 'Fox', 'Badger', 'Beaver', 'Bison', 'Bobcat', 'Camel', 'Caribou',
   'Cheetah', 'Chipmunk', 'Cougar', 'Coyote', 'Deer', 'Dingo', 'Dolphin', 'Donkey', 'Elephant', 'Elk',
@@ -34,21 +68,19 @@ const secondsSince = async ($: any, start: number | undefined): Promise<number |
   return current === undefined || start === undefined ? undefined : Math.max(0, current - start) / 1000
 }
 
-// Nothing left to clear; kept for the register module's shared turn.complete handler.
-export function endSubagentRoutingTurn(_aborted: boolean): void {}
-
 export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
+  routedModels.reset()
   const names = new Map<string, string>()
   const unusedNames = [...ANIMALS]
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
   const pending = new Map<string, number | undefined>()
   // The routed model by call; the decision itself lives in the /smart-router logs pane.
-  const models = new Map<string, string>()
+  const records = new Map<string, RoutingRecord>()
 
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[]
     if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
-    const { tool, tool_use_id, agentId, ...input } = e
+    const { tool, tool_use_id, agentId: _agentId, ...input } = e
     let route
     let spinner: { cancel: () => void } | undefined
     if (tool_use_id) {
@@ -89,17 +121,40 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     }
     if (tool_use_id) {
       pending.delete(tool_use_id)
-      if (route) models.set(tool_use_id, route.model)
+      if (route) {
+        records.set(tool_use_id, {
+          name: names.get(tool_use_id)!,
+          task: input.description || input.subagent_type || tool,
+          model: route.model,
+          rationale: route.rationale,
+        })
+      }
       $.ui.invalidate('ui.render')
     }
-    // Auto mode reviewed this input; choose the child's model at agent.spawn instead.
-    return next(e)
+    // Auto mode reviewed this input; model identity belongs in the result, not its arguments.
+    const result = await next(e)
+    const record = tool_use_id ? records.get(tool_use_id) : undefined
+    if (result.deny !== undefined || result.isError || !record?.spawned) return result
+    const identity = JSON.stringify({
+      agent_id: record.spawned.agentId,
+      selected_model: record.model,
+      launched_model: record.spawned.model ?? null,
+    })
+    return { ...result, context: [...(result.context ?? []),
+      `Smart Router launch: ${identity}. Use the launched_model from this receipt when identifying `
+      + 'this child. Report only that model in ordinary updates and answers; do not compare it with the requested model unless the user asks about the difference.',
+    ] }
   })
 
   on('agent.spawn', async ($, e, next) => {
-    const model = e.resume ? undefined : models.get(e.tool_use_id)
-    const name = model && names.get(e.tool_use_id)
-    const result = await next(model ? { ...e, model } : e)
+    const route = e.resume ? undefined : records.get(e.tool_use_id)
+    const name = route?.name
+    const result = await next(route ? { ...e, model: route.model } : e)
+    if (route && result.agentId && !result.deny) {
+      route.spawned = { agentId: result.agentId, model: result.model || undefined, background: e.background }
+      routedModels.started(route)
+      $.ui.invalidate('ui.render')
+    }
     if (name && result.agentId) {
       try {
         // The native bottom bar is outside ui.render; join its task ID to this call.
@@ -116,9 +171,9 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   // as the original Agent row with its animal name, with no decision drawn inline.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     const name = names.get(e.requestId)
-    if (!name || (!models.has(e.requestId) && !pending.has(e.requestId))) return next(e)
+    if (!name || (!records.has(e.requestId) && !pending.has(e.requestId))) return next(e)
     const original = await next({ ...e, props: { ...e.props, tool: name } })
-    if (models.has(e.requestId)) return original
+    if (records.has(e.requestId)) return original
     const { Box, Text } = $.ui.resolve(e)
     const glyph = SPINNER[Math.floor(((await now($)) ?? 0) / SPINNER_INTERVAL_MS) % SPINNER.length]
     const seconds = await secondsSince($, pending.get(e.requestId))
@@ -142,5 +197,10 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     const elapsed = seconds === undefined ? '' : ` ${Math.floor(seconds)}s`
     const what = pending.size > 1 ? `Selecting models for ${pending.size} agents` : 'Selecting a model'
     return next({ ...e, props: { ...e.props, message: `${what}…${elapsed}`, suffix: '' } })
+  })
+
+  on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
+    routedModels.reset()
+    return next(e)
   })
 }

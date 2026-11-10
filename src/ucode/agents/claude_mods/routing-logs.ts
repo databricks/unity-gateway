@@ -1,7 +1,7 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
 import { shortModel } from './subagent-routing.ts';
 
-const PANE = 'smart-router-logs';
+export const ROUTING_LOGS_PANE = 'smart-router-logs';
 type Decision = {
   decision_id: string;
   at: number;
@@ -12,6 +12,8 @@ type Decision = {
 type Detail = {
   id: string;
   failed: boolean;
+  // The reader CLI's own error hint, when its failure carries one.
+  hint?: string;
   preview: string | null;
   promptLength: number | null;
   promptHash: string | null;
@@ -22,14 +24,6 @@ type Detail = {
   rationale: string | null;
   candidates: string[];
 };
-
-function logsCommand(options: PluginOptions): string[] {
-  const command = options.logsCommand as string[];
-  if (!Array.isArray(command) || !command.length || command.some(arg => typeof arg !== 'string' || !arg)) {
-    throw new Error('logs command unavailable');
-  }
-  return command;
-}
 
 // A v1 decision record: ignores unknown keys (a later `explanation`, for one).
 function parseDecision(raw: string, id: string): Detail {
@@ -80,16 +74,32 @@ function failedDetail(id: string): Detail {
 }
 
 async function openDecision($: EngineInterface, options: PluginOptions, id: string): Promise<Detail> {
+  let result: { exitCode: number; stdout: string; isStdoutTruncated?: boolean };
   try {
-    const result = await $.process.run(
-      [...logsCommand(options), '--session', await $.session.id(), '--decision', id],
+    result = await $.process.run(
+      [...logsReaderCommand(options), '--session', await $.session.id(), '--decision', id],
       { timeoutMs: 10000 },
     );
-    if (result.exitCode !== 0 || result.isStdoutTruncated) throw new Error(`decision command exited ${result.exitCode} or truncated output`);
-    return parseDecision(result.stdout, id);
   } catch (error) {
     $.ui.log(`Smart Router logs: ${error instanceof Error ? error.message : 'load failed'}`, { to: 'debug' });
     return failedDetail(id);
+  }
+  try {
+    if (result.exitCode !== 0 || result.isStdoutTruncated) {
+      throw new Error(`decision command exited ${result.exitCode} or truncated output`);
+    }
+    return parseDecision(result.stdout, id);
+  } catch (error) {
+    $.ui.log(`Smart Router logs: ${error instanceof Error ? error.message : 'load failed'}`, { to: 'debug' });
+    const detail = failedDetail(id);
+    // A failed load is reported as {"v":1,"error":"..."}; surface that hint under the notice.
+    try {
+      const envelope = JSON.parse(result.stdout);
+      if (typeof envelope?.error === 'string' && envelope.error.trim()) {
+        detail.hint = envelope.error.trim().slice(0, 200);
+      }
+    } catch {}
+    return detail;
   }
 }
 
@@ -99,9 +109,104 @@ const isDecision = (d: Decision): boolean =>
   (d.preview === null || typeof d.preview === 'string') && typeof d.selected_model === 'string' &&
   Number.isFinite(d.routing_ms);
 
+// Relative age avoids showing a wall-clock time in an unknown time zone.
+function age(at: number): string {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - at));
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+let rows: Decision[] = [];
+let failed = false;
+// The reader CLI's own error hint, when its failure carries one.
+let cliError: string | undefined;
+// Whether the logs pane has been placed and has not been seen closed since.
+let paneOpen = false;
+// One reader at a time; a load asked for while one runs reruns after it finishes.
+let loading = false;
+let rerun = false;
+
+// The reader command, validated: an unconfigured or malformed logsCommand fails here.
+export function logsReaderCommand(options: PluginOptions): string[] {
+  const command = options.logsCommand as string[];
+  if (!Array.isArray(command) || !command.length || command.some(arg => typeof arg !== 'string' || !arg)) {
+    throw new Error('logs command unavailable');
+  }
+  return command;
+}
+
+// Store one reader result in the pane state. A failed or malformed read shows the generic
+// notice; a CLI error envelope {"v":1,"error":"..."} adds its hint under that notice.
+// Returns the debug-log note, empty when the read succeeded.
+export function applyRoutingLogsRead(stdout: string, readError?: string): string {
+  cliError = undefined;
+  if (readError !== undefined) {
+    try {
+      const envelope = JSON.parse(stdout);
+      if (typeof envelope?.error === 'string' && envelope.error.trim()) {
+        cliError = envelope.error.trim().slice(0, 200);
+      }
+    } catch {}
+    rows = [];
+    failed = true;
+    return `Smart Router logs: ${readError}`;
+  }
+  try {
+    let data;
+    try { data = JSON.parse(stdout); } catch { throw new Error('invalid logs JSON'); }
+    if (data?.v !== 1 || !Array.isArray(data.decisions)) throw new Error('invalid logs response');
+    rows = data.decisions.filter(isDecision).reverse();
+    failed = false;
+    return '';
+  } catch (error) {
+    rows = [];
+    failed = true;
+    return `Smart Router logs: ${error instanceof Error ? error.message : 'read failed'}`;
+  }
+}
+
+export function routingLogsPaneOpen(): boolean {
+  return paneOpen;
+}
+
+export function routingLogsPaneClosed(): void {
+  paneOpen = false;
+}
+
+async function load($: any, options: PluginOptions): Promise<void> {
+  if (loading) {
+    rerun = true;
+    return;
+  }
+  loading = true;
+  try {
+    let note: string | undefined;
+    try {
+      const command = logsReaderCommand(options);
+      const session = await $.session.id();
+      const result = await $.process.run([...command, '--session', session], { timeoutMs: 10000 });
+      note = applyRoutingLogsRead(result.stdout,
+        result.exitCode !== 0 || result.isStdoutTruncated
+          ? `logs command exited ${result.exitCode} or truncated output`
+          : undefined);
+    } catch (error) {
+      note = applyRoutingLogsRead('', error instanceof Error ? error.message : 'read failed');
+    }
+    if (note) $.ui.log(note, { to: 'debug' });
+  } finally {
+    loading = false;
+  }
+  if (rerun) {
+    rerun = false;
+    await load($, options);
+  }
+  $.ui.invalidate('ui.render');
+}
+
 export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnabled: boolean): void {
-  let rows: Decision[] = [];
-  let failed = false;
+  // The open decision and its request token: a newer open or a logs rerun retires a load.
   let detail: Detail | null = null;
   let detailRequest = 0;
 
@@ -110,26 +215,14 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
     if (!launchedEnabled) return { text: 'Smart Router was not enabled for this session.' };
     detailRequest++;
     detail = null;
+    await load($, options);
     try {
-      const session = await $.session.id();
-      const result = await $.process.run([...logsCommand(options), '--session', session], { timeoutMs: 10000 });
-      if (result.exitCode !== 0 || result.isStdoutTruncated) throw new Error(`logs command exited ${result.exitCode} or truncated output`);
-      let data;
-      try { data = JSON.parse(result.stdout); } catch { throw new Error('invalid logs JSON'); }
-      if (data?.v !== 1 || !Array.isArray(data.decisions)) throw new Error('invalid logs response');
-      rows = data.decisions.filter(isDecision).reverse();
-      failed = false;
-    } catch (error) {
-      rows = [];
-      failed = true;
-      $.ui.log(`Smart Router logs: ${error instanceof Error ? error.message : 'read failed'}`, { to: 'debug' });
-    }
-    try {
-      const pane = await $.ui.open({ id: PANE, title: 'Smart Router logs', focus: true, closeOnEscape: true });
+      const pane = await $.ui.open({ id: ROUTING_LOGS_PANE, title: 'Smart Router logs', focus: true, closeOnEscape: true });
       if (!pane.isPlaced) {
-        await $.ui.close({ id: PANE });
+        await $.ui.close({ id: ROUTING_LOGS_PANE });
         throw new Error('pane was not placed');
       }
+      paneOpen = true;
       $.ui.invalidate('ui.render');
       return { text: 'Smart Router logs opened.' };
     } catch {
@@ -138,8 +231,9 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
     }
   });
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => {
+  on('ui.render', { component: 'Pane', requestId: ROUTING_LOGS_PANE }, ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e);
+    const columns = Number.isFinite(e.props.bodyColumns) ? e.props.bodyColumns : 80;
     if (detail) {
       const children = [
         Button({
@@ -149,6 +243,7 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
       ];
       if (detail.failed) {
         children.push(Text({ children: ['Could not load this routing decision.'] }));
+        if (detail.hint) children.push(Text({ dimColor: true, children: [detail.hint.slice(0, columns)] }));
       } else {
         children.push(Text({ dimColor: true, children: [detail.subagent ? `Prompt preview (${detail.subagent})` : 'Prompt preview'] }));
         children.push(Text({ children: [detail.preview ?? '(prompt not recorded)'] }));
@@ -175,20 +270,24 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
       }
       return Box({ flexDirection: 'column', children });
     }
-    if (failed) return Text({ children: ['Could not read Smart Router logs.'] });
+    if (failed) {
+      const children = [Text({ children: ['Could not read Smart Router logs.'] })];
+      if (cliError) children.push(Text({ dimColor: true, children: [cliError.slice(0, columns)] }));
+      return Box({ flexDirection: 'column', children });
+    }
     const children = [Text({ dimColor: true, children: [`${rows.length} routed prompt${rows.length === 1 ? '' : 's'} this session`] })];
     if (!rows.length) children.push(Text({ dimColor: true, children: ['No routed subagents in this session yet.'] }));
     for (const row of rows) {
       const model = shortModel(row.selected_model);
-      const columns = Number.isFinite(e.props.bodyColumns) ? e.props.bodyColumns : 80;
-      const room = Math.max(1, columns - model.length - 4);
+      // Age (8) + "  " + preview + "  " + model fills the row, so the model ends at the right edge.
+      const room = Math.max(1, columns - model.length - 12);
       const preview = (row.preview || '(prompt not recorded)').replace(/\s+/g, ' ');
       const label = preview.length > room ? preview.slice(0, Math.max(0, room - 1)) + '…' : preview;
       children.push(Button({
         key: row.decision_id, plain: true,
         // The label prop is the only portable form: 2.1.290 rejects mixed
         // string/Text children ("takes one string child, its label, or none").
-        label: `${label}  ${model}`,
+        label: `${age(row.at).padStart(8)}  ${label.padEnd(room)}  ${model}`,
         onPress: async () => {
           const request = ++detailRequest;
           const loaded = await openDecision($, options, row.decision_id);
