@@ -1022,6 +1022,14 @@ Consult the run's JUnit report and artifacts for results. Each function states
 its **Scenario** and **Expected** outcome and shows its configure and launch
 commands. Fixtures supply fresh environments and credentials, never configured ug.
 Integration tests live directly in `integration/`; shared mechanics live in `utils/`.
+
+Generic Codex and Copilot GPT file tasks use `system.ai.gpt-6-luna`; their OpenAI,
+Azure OpenAI, custom Azure and Foundry provider journeys default to `gpt-6-luna`.
+Managed tracing and Codex lifecycle fixtures use the hosted model too. Dedicated CUJ1 and
+CUJ6 Codex Luna selections also use `system.ai.gpt-6-luna`; CUJ2's OpenAI MPS uses
+`gpt-6-luna`. Their separately provisioned workspace configs and CUJ2 MPS must match
+the test expectations; tests never update those fixtures.
+
 Dedicated-workspace CUJs live in `e2e_cuj/` and use the shared `cuj` fixture plus
 integration utilities; only CUJ-specific evidence correlation stays in a test file.
 
@@ -1044,7 +1052,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_case_07_configured_claude_discovers_system_models` (CUJ7), `test_case_09_fresh_claude_discovers_system_models` (integration) | Launch configured/fresh Claude with no discovery flag or source override | Claude caches `system.ai` models (including recognized Anthropic gateway aliases), includes ug's discovered family defaults, and shows a discovered picker entry; case 07 lives in `e2e_cuj/test_cuj7_model_discovery.py` |
 | `test_case_08_configured_codex_uses_default_models` (CUJ7), `test_case_10_fresh_codex_uses_default_models` (integration) | Launch configured/fresh Codex with no source override | ug discovers `system.ai` models but leaves model/reasoning preferences unset; app-server exposes native GPT entries without a generated scoped catalog; case 08 lives in `e2e_cuj/test_cuj7_model_discovery.py` |
 | `test_case_11_*` | Launch configured and fresh Claude with an explicit provider and no managed config | The provider catalog replaces built-in picker rows; the cache contains exactly the provider model, and the picker shows both its row and Default resolving to it |
-| `test_case_12_*` | Launch configured and fresh Codex with a provider | The provider supplies exactly its model catalog |
+| `test_case_12_*` | Launch configured and fresh Codex with a provider | App-server models exactly match the independently fetched provider catalog, which must include the selected provider-task model |
 | `test_case_13_*` | Launch configured and fresh Claude with a model location and no managed config | The explicit parent's catalog replaces built-in picker rows and appears in the real picker; Default resolves to the model in the scoped fixture catalog |
 | `test_case_14_*` | Launch configured and fresh Codex with a model location | The app-server list exactly matches the independent API-compatible parent catalog, includes the dedicated Codex service, and contains no out-of-schema models |
 | `test_ug_claude_headless_prompt_argument`, `test_ug_claude_headless_prompt_stdin`, `test_ug_claude_headless_prompt_after_separator` | Run Claude from a script using each prompt form | Structured final answer contains the file value; exit zero; no routing |

@@ -28,8 +28,8 @@ CLAUDE_A = [
 ]
 CLAUDE_B = ["system.ai.claude-sonnet-4-6", "system.ai.claude-haiku-4-5"]
 # Codex ids must survive the bundled-catalog build; both of these are used elsewhere in the suite.
-CODEX_A = ["system.ai.gpt-5-6-sol", "system.ai.gpt-5-4-nano"]
-CODEX_B = ["system.ai.gpt-5-4-nano"]
+CODEX_A = ["system.ai.gpt-5-6-sol", "system.ai.gpt-6-luna"]
+CODEX_B = ["system.ai.gpt-6-luna"]
 
 
 def _configure_managed(session, workspace):

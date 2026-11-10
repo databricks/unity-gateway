@@ -522,12 +522,12 @@ def arguments(
     )
     parser.add_argument(
         "--codex-custom-provider-model",
-        default="gpt-5-nano",
+        default="gpt-6-luna",
         help="Deployment used by the Codex custom-provider file task.",
     )
     parser.add_argument(
         "--codex-provider-model",
-        default="gpt-5-nano",
+        default="gpt-6-luna",
         help="Model allowed by the OpenAI MPS selected in the configure CUJ.",
     )
     parser.add_argument(
@@ -537,7 +537,7 @@ def arguments(
     )
     parser.add_argument(
         "--codex-azure-provider-model",
-        default="gpt-5-nano",
+        default="gpt-6-luna",
         help="Reasoning-capable model allowed by the Azure OpenAI MPS.",
     )
     parser.add_argument(
@@ -547,7 +547,7 @@ def arguments(
     )
     parser.add_argument(
         "--codex-foundry-provider-model",
-        default="gpt-5-nano",
+        default="gpt-6-luna",
         help="Reasoning-capable model allowed by the Microsoft Foundry MPS.",
     )
     parser.add_argument(
