@@ -16,7 +16,6 @@ type Detail = {
   preview: string | null;
   subagent: string | null;
   selected: string;
-  requested: string | null;
   routing_ms: number;
   rationale: string | null;
   candidates: string[];
@@ -47,7 +46,6 @@ function parseDecision(raw: string, id: string): Detail {
     typeof (candidate as { model?: unknown }).model === 'string');
   if (data?.v !== 1 || !d || d.decision_id !== id || !validPrompt || !validOriginal ||
     typeof d.selected_model !== 'string' || !Number.isFinite(d.routing_ms) ||
-    (d.requested_model !== null && typeof d.requested_model !== 'string') ||
     (d.rationale !== null && typeof d.rationale !== 'string') || !validCandidates) {
     throw new Error('invalid decision response');
   }
@@ -60,7 +58,6 @@ function parseDecision(raw: string, id: string): Detail {
     subagent: typeof original?.subagent_type === 'string' && !/(^|:)ucode-route-/.test(original.subagent_type)
       ? original.subagent_type : null,
     selected: d.selected_model,
-    requested: typeof d.requested_model === 'string' ? d.requested_model : null,
     routing_ms: d.routing_ms,
     rationale: typeof d.rationale === 'string' ? d.rationale : null,
     candidates: candidates.map(candidate => (candidate as { model: string }).model),
@@ -70,7 +67,7 @@ function parseDecision(raw: string, id: string): Detail {
 function failedDetail(id: string): Detail {
   return {
     id, failed: true, preview: null,
-    subagent: null, selected: '', requested: null, routing_ms: 0, rationale: null, candidates: [],
+    subagent: null, selected: '', routing_ms: 0, rationale: null, candidates: [],
   };
 }
 
@@ -255,9 +252,6 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
         children.push(labeledRow('Selected: ', Text({ color: 'green', bold: true, children: [shortModel(detail.selected)] })));
         children.push(labeledRow('Routing Time: ', Text({ children: [`${(detail.routing_ms / 1000).toFixed(1)}s`] })));
         children.push(labeledRow('Rationale: ', Text({ children: [detail.rationale?.trim() || 'No rationale returned.'] })));
-        if (detail.requested !== null && detail.requested !== detail.selected) {
-          children.push(Text({ dimColor: true, children: [`Requested: ${shortModel(detail.requested)}`] }));
-        }
         children.push(Text({ dimColor: true, children: ['Candidates'] }));
         for (const candidate of detail.candidates) {
           children.push(Text({ children: [`${candidate === detail.selected ? '● ' : '○ '}${shortModel(candidate)}`] }));

@@ -93,7 +93,8 @@ test('pressing a row fetches the decision and Back returns to the list', { optio
   expect(tree).toContain('"props":{"dimColor":true},"children":["Selected: "]');
   expect(tree).toContain('"props":{"dimColor":true},"children":["Routing Time: "]');
   expect(tree).toContain('"props":{"dimColor":true},"children":["Rationale: "]');
-  expect(tree).toContain('Requested: claude-opus');
+  // The record's requested model differs from the selection, yet no Requested line is shown.
+  expect(tree).not.toContain('Requested:');
   expect(tree).toContain('Because it is a search.');
   expect(tree).toContain('● claude-sonnet');
   expect(tree).toContain('○ glm-5');
@@ -164,14 +165,14 @@ test('ignores a late decision load after rerunning logs', { options }, async ($,
   await ui.unmount();
 });
 
-test('hides the requested model when it matches the selection', { options }, async ($, on) => {
+test('never shows the requested model even when it differs from the selection', { options }, async ($, on) => {
   on('session.id', () => ({ value: 'session-one' }));
   on('ui.open', () => ({ value: { isPlaced: true } }));
   on('process.run', ($, e) => {
     if (e.argv.includes('--decision')) {
       return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
         ...decision,
-        decision: { ...decision.decision, requested_model: 'system.ai.claude-sonnet', rationale: '  ', prompt: { ...decision.decision.prompt, preview: null } },
+        decision: { ...decision.decision, rationale: '  ', prompt: { ...decision.decision.prompt, preview: null } },
       }) } };
     }
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: records }) } };
@@ -181,6 +182,7 @@ test('hides the requested model when it matches the selection', { options }, asy
   await ui.press({ key: 'd1' });
   const tree = JSON.stringify(await ui.drawn());
   expect(tree).not.toContain('Requested:');
+  expect(tree).not.toContain('claude-opus');
   expect(tree).toContain('(prompt not recorded)');
   expect(tree).toContain('"props":{"dimColor":true},"children":["Rationale: "]');
   expect(tree).toContain('No rationale returned.');
