@@ -1,6 +1,38 @@
 import type { On, PluginOptions } from 'claude-code'
 
-type RoutingRecord = { name: string; task: string; model: string; rationale: string; seconds?: number }
+type RoutingRecord = {
+  name: string; task: string; model: string; rationale: string; seconds?: number
+  spawned?: { agentId: string; model?: string; background: boolean }
+}
+
+const safeText = (value: unknown, limit: number): string | undefined => {
+  if (typeof value !== 'string') return undefined
+  const clean = value
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, limit)
+  return clean || undefined
+}
+
+const canonicalModel = (model: string): string => {
+  const original = model.replace(/^anthropic-aigw-[0-9a-fA-F]{8}-/, '')
+  if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
+  return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
+}
+
+const children = new Map<string, RoutingRecord>()
+export const routedModels = {
+  started(record: RoutingRecord) { children.set(record.spawned!.agentId, record) },
+  model(agentId?: string) {
+    const child = agentId ? children.get(agentId) : undefined
+    const resolved = child?.spawned?.model
+    return child && resolved && canonicalModel(resolved) === canonicalModel(child.model)
+      ? resolved : child?.model
+  },
+  reset() { children.clear() },
+}
 
 const ANIMALS = [
   'Otter', 'Panda', 'Lynx', 'Fox', 'Badger', 'Beaver', 'Bison', 'Bobcat', 'Camel', 'Caribou',
@@ -48,6 +80,11 @@ const selection = ($: any, e: any, record: RoutingRecord, arrow: string, reasonP
       ]),
     ],
   })]
+  if (record.spawned?.model && record.spawned.model !== record.model) {
+    lines.push(Box({ paddingLeft: reasonPadding,
+      children: [Text({ children: [`Launched Model: ${safeText(record.spawned.model, 240)}`] })],
+    }))
+  }
   if (record.rationale) {
     lines.push(Box({
       paddingLeft: reasonPadding,
@@ -79,6 +116,7 @@ export function endSubagentRoutingTurn(aborted: boolean): void {
 }
 
 export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
+  routedModels.reset()
   const names = new Map<string, string>()
   const unusedNames = [...ANIMALS]
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
@@ -96,7 +134,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[]
     if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
-    const { tool, tool_use_id, agentId, ...input } = e
+    const { tool, tool_use_id, agentId: _agentId, ...input } = e
     let route
     let spinner: { cancel: () => void } | undefined
     if (tool_use_id) {
@@ -160,14 +198,30 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       }
       $.ui.invalidate('ui.render')
     }
-    // Auto mode reviewed this input; choose the child's model at agent.spawn instead.
-    return next(e)
+    // Auto mode reviewed this input; model identity belongs in the result, not its arguments.
+    const result = await next(e)
+    const record = tool_use_id ? records.get(tool_use_id) : undefined
+    if (result.deny !== undefined || result.isError || !record?.spawned) return result
+    const identity = JSON.stringify({
+      agent_id: record.spawned.agentId,
+      selected_model: record.model,
+      launched_model: record.spawned.model ?? null,
+    })
+    return { ...result, context: [...(result.context ?? []),
+      `Smart Router launch: ${identity}. Use the launched_model from this receipt when identifying `
+      + 'this child. Report only that model in ordinary updates and answers; do not compare it with the requested model unless the user asks about the difference.',
+    ] }
   })
 
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume ? undefined : records.get(e.tool_use_id)
     const name = route?.name
     const result = await next(route ? { ...e, model: route.model } : e)
+    if (route && result.agentId && !result.deny) {
+      route.spawned = { agentId: result.agentId, model: result.model || undefined, background: e.background }
+      routedModels.started(route)
+      $.ui.invalidate('ui.render')
+    }
     if (name && result.agentId) {
       try {
         // The native bottom bar is outside ui.render; join its task ID to this call.
@@ -231,5 +285,9 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     if (!ids) return original
     const { Box } = $.ui.resolve(e)
     return Box({ flexDirection: 'column', children: [...ids.map((id) => card($, e, records.get(id)!)), original] })
+  })
+  on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
+    routedModels.reset()
+    return next(e)
   })
 }
