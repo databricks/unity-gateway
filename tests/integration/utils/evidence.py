@@ -132,6 +132,16 @@ def assistant_answer_contains(session, agent: str, value: str, *, child: bool = 
     )
 
 
+def parent_assistant_answers(session, agent: str) -> list[str]:
+    """The agent's completed-turn assistant answers from its own (parent) sessions."""
+    return [
+        answer
+        for path, records in agent_sessions(session, agent).items()
+        if not is_child_session(agent, path, records)
+        for answer in assistant_answers(agent, records)
+    ]
+
+
 def assert_no_bearer_on_disk(session) -> None:
     """No file under the session home holds the Databricks bearer."""
     bearer = session.env.get("DATABRICKS_BEARER")

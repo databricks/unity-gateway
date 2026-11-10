@@ -913,7 +913,12 @@ and full-disk failures, which report their cause without permission guidance.
 
 `test_integration_evidence.py` checks that the Codex approval driver accepts only the
 exact local command. Other commands or environments are rejected, and an incomplete
-dialog cannot borrow the confirmation footer from a previous dialog.
+dialog cannot borrow the confirmation footer from a previous dialog. It also checks
+the task-wait driver's command extraction and escalation scoping: on Windows any
+Codex command prompt is approved, while on Linux only a read-only read of the task's
+fixture file (or an argument-less interpreter spawn) is approved and other escalations
+fail; offline cases cover wrapped dialog rows, blank separators, incomplete dialogs,
+and write-shaped or unrelated escalated commands.
 
 `test_skills.py` checks agent-specific instruction installation, bundle updates,
 and matching prompt/compaction hook content for Claude and Codex. It also covers

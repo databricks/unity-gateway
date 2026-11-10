@@ -19,9 +19,80 @@ import time
 import pyte
 from pyte.screens import wcwidth  # wcwidth is only a pyte dependency
 
-from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
+from .evidence import (
+    agent_sessions,
+    assert_no_terminal_api_error,
+    fresh_id,
+    parent_assistant_answers,
+)
 
 SELECTED = "[›❯>]"
+
+CODEX_APPROVAL_PROMPT = "Would you like to run the following command?"
+CODEX_APPROVAL_FOOTER = "Press enter to confirm or esc to cancel"
+
+# First words whose escalated execution can only read (or trivially no-op).
+_CODEX_READ_ONLY_COMMANDS = {
+    "bash",
+    "sh",
+    "cmd",
+    "powershell",
+    "pwsh",
+    "cat",
+    "sed",
+    "head",
+    "tail",
+    "od",
+    "xxd",
+    "base64",
+    "ls",
+    "dir",
+    "get-content",
+    "gc",
+    "type",
+    "test-path",
+    "get-item",
+    "get-childitem",
+}
+
+# Argument-less interpreter spawns read nothing and exit; models emit one after
+# an empty tool result and must be allowed to continue with a real command.
+_CODEX_BARE_INTERPRETERS = {"bash", "sh", "powershell", "pwsh"}
+
+
+def codex_approval_command(screen: str) -> str | None:
+    """The requested command in a pending Codex command-approval dialog, else None.
+
+    Codex wraps long commands across dialog rows and may separate them from the
+    choices with blank rows; join the wrapped pieces back into one command.
+    """
+    if CODEX_APPROVAL_PROMPT not in screen:
+        return None
+    dialog = screen.rsplit(CODEX_APPROVAL_PROMPT, 1)[1]
+    if CODEX_APPROVAL_FOOTER not in dialog:
+        return None
+    command = re.search(
+        r"(?ms)^[ \t]*\$ (.*?)\n(?:[ \t]*\n)*[ \t]*[›❯>][ \t]*1\. Yes, proceed \(y\)[ \t]*$",
+        dialog,
+    )
+    return None if command is None else " ".join(command.group(1).split())
+
+
+def codex_approval_reads_only(command: str, filename: str) -> bool:
+    """Whether a Codex escalation request only reads the expected input file."""
+    if command.strip().lower() in _CODEX_BARE_INTERPRETERS:
+        return True
+    lowered = command.lower()
+    for ignored in ("2>/dev/null", "2>&1", "2> $null", "2>$null", "1>/dev/null", "1>$null"):
+        lowered = lowered.replace(ignored, "")
+    first_word = lowered.split()[0].strip("\"'`(") if lowered.split() else ""
+    flat = re.sub(r"\s+", "", lowered)
+    writes = (">", "|tee", ">tee", "out-file", "set-content", "add-content", "remove-item")
+    return (
+        first_word in _CODEX_READ_ONLY_COMMANDS
+        and filename.lower() in flat
+        and not any(token in flat for token in writes)
+    )
 
 
 def codex_command_approval_pending(screen: str, expected_command: str) -> bool:
@@ -614,16 +685,24 @@ class AgentTerminal(TerminalProcess):
         )
         return screen
 
-    def approve_windows_command(self, screen):
-        """Approve a Codex-on-Windows command prompt once; return whether one is showing."""
-        if "Would you like to run the following command?" not in screen:
+    def approve_codex_command(self, screen, task):
+        """Approve a Codex command prompt once; return whether one is showing."""
+        if CODEX_APPROVAL_PROMPT not in screen:
             self.approving = False
             return False
-        assert self.agent == "codex" and os.name == "nt", (
-            "Agent requested an unrecognized command approval:\n" + screen
-        )
-        # Codex on Windows asks before every shell command. Approve so these tests
-        # exercise ug instead of the model's choice of command; wait until the options render.
+        assert self.agent == "codex", "Agent requested an unrecognized command approval:\n" + screen
+        if os.name != "nt":
+            # Codex prompts on Windows before every shell command; there these
+            # tests approve any request so they exercise ug instead of the
+            # model's choice of command. Elsewhere Codex prompts only for
+            # escalated commands; approve only a read-only read of the task's
+            # input file and fail on anything broader.
+            command = codex_approval_command(screen)
+            assert command is not None and codex_approval_reads_only(command, task.filename), (
+                "Codex requested an escalated command that is not a read-only read of "
+                f"{task.filename}:\n" + screen
+            )
+        # Wait until the options render before pressing Enter.
         if not self.approving and re.search(rf"(?m)^\s*{SELECTED}\s*1\.\s*Yes, proceed", screen):
             self.send("\r", "approve the Codex command prompt")
             self.approving = True
@@ -631,6 +710,12 @@ class AgentTerminal(TerminalProcess):
 
     def wait_for_task(self, task, timeout=180):
         permission_in_progress = False
+        # Codex records one completed turn per final answer. Answers already on
+        # disk belong to earlier turns of the same session (for example a prior
+        # wait in the same journey), not to the turn this wait is watching.
+        answered_turns = (
+            len(parent_assistant_answers(self.session, self.agent)) if self.agent == "codex" else 0
+        )
 
         def completed(screen):
             nonlocal permission_in_progress
@@ -655,10 +740,20 @@ class AgentTerminal(TerminalProcess):
                 self.send("\r", f"allow read-only search for {task.filename}")
                 permission_in_progress = True
                 return False
-            if self.approve_windows_command(screen):
+            if self.approve_codex_command(screen, task):
                 return False
             permission_in_progress = False
-            return task.completed(self.session, self.agent)
+            if task.completed(self.session, self.agent):
+                return True
+            if self.agent == "codex":
+                # A turn the harness never prompts again cannot recover; fail
+                # now with its message instead of running out the whole timeout.
+                answers = parent_assistant_answers(self.session, self.agent)[answered_turns:]
+                assert not answers, (
+                    f"Codex ended a turn without answering with {task.value!r}; its "
+                    "completed-turn message(s):\n" + "\n---\n".join(answers)
+                )
+            return False
 
         self.wait_for(
             completed,
