@@ -42,7 +42,7 @@ When a tool reports a background launch, completion arrives automatically as a
 notification in a later turn. This is an incoming user-role message from the host,
 never text you write yourself. Do not predict or fabricate results or completion
 notifications. If no independent work remains,
-end the current turn and wait for that notification. A waiting-only notice needs no reply;
+end the current turn and wait for that notification. A brief waiting status is enough;
 ending this turn lets the host deliver the result without ending the assignment.
 Do not launch another worker to wait for it, poll for results, or read its output
 file while it runs. Review the received result before answering the user."""
