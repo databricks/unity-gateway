@@ -18,6 +18,7 @@ from ucode.ui import print_warning
 
 _TIMEOUT_SECONDS = 30
 _GPT_FALLBACK_EFFORTS = ("low", "medium", "high")
+_PRE_REASONING_GPT_PREFIXES = ("gpt-3", "gpt-4", "databricks-gpt-3", "databricks-gpt-4")
 
 # Known hosted-model capabilities, following universe#2591694. These are not
 # universal non-GPT defaults: an arbitrary UC service need not support images,
@@ -60,6 +61,12 @@ def _model_key(slug: str) -> str:
     return codex_model_id(slug).removeprefix("system.ai.").replace(".", "-")
 
 
+def _reasoning_levels(efforts) -> list[dict]:
+    return [
+        {"effort": effort, "description": f"{effort.capitalize()} reasoning"} for effort in efforts
+    ]
+
+
 def build_codex_catalog(
     bundled_models: list[dict],
     names: list[str],
@@ -81,7 +88,10 @@ def build_codex_catalog(
         if native is not None:
             model = copy.deepcopy(native)
         else:
-            missing_gpt = _model_key(name).startswith(("gpt-", "databricks-gpt-"))
+            key = _model_key(name)
+            missing_gpt = key.startswith(("gpt-", "databricks-gpt-"))
+            # Pre-GPT-5 models reject reasoning efforts, so they keep the none-only default.
+            missing_reasoning_gpt = missing_gpt and not key.startswith(_PRE_REASONING_GPT_PREFIXES)
             if missing_gpt and warn is not None:
                 warn(
                     f"Codex is missing metadata for managed GPT model '{name}', so UG is "
@@ -96,13 +106,10 @@ def build_codex_catalog(
                 )
             model = copy.deepcopy(baseline)
             model.update(copy.deepcopy(_HOSTED_DEFAULTS))
-            if missing_gpt:
+            if missing_reasoning_gpt:
                 model.update(
                     default_reasoning_level="medium",
-                    supported_reasoning_levels=[
-                        {"effort": effort, "description": f"{effort.capitalize()} reasoning"}
-                        for effort in _GPT_FALLBACK_EFFORTS
-                    ],
+                    supported_reasoning_levels=_reasoning_levels(_GPT_FALLBACK_EFFORTS),
                 )
             capabilities = _HOSTED_CAPABILITIES.get(name.removeprefix("system.ai."))
             if capabilities:
@@ -112,10 +119,7 @@ def build_codex_catalog(
                     context_window=1048576,
                     max_context_window=1048576,
                     default_reasoning_level=efforts[-1],
-                    supported_reasoning_levels=[
-                        {"effort": effort, "description": f"{effort.capitalize()} reasoning"}
-                        for effort in efforts
-                    ],
+                    supported_reasoning_levels=_reasoning_levels(efforts),
                 )
             model["description"] = f"{name} served on the Databricks AI Gateway."
             model["display_name"] = model_picker_label(name.rsplit(".", 1)[-1])

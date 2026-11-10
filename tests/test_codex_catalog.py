@@ -104,6 +104,16 @@ def test_missing_gpt_uses_generic_compatibility_metadata(bundled, name):
     ]
 
 
+@pytest.mark.parametrize("name", ["system.ai.gpt-4o", "gpt-4.1", "databricks-gpt-4o-mini"])
+def test_missing_pre_reasoning_gpt_keeps_none_only_reasoning(bundled, name):
+    model = catalog.build_codex_catalog(bundled, [name])["models"][0]
+
+    assert model["default_reasoning_level"] == "none"
+    assert model["supported_reasoning_levels"] == [
+        {"effort": "none", "description": "Default model behavior"}
+    ]
+
+
 def test_missing_managed_gpt_keeps_hidden_native_alias(bundled):
     models = catalog.build_codex_catalog(bundled, ["system.ai.gpt-6-1-sol"])["models"]
 
